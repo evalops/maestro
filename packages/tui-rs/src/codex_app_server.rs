@@ -894,7 +894,7 @@ pub fn resolve_bundled_codex_bin_path() -> Option<PathBuf> {
             }
         }
     }
-    // Packaged install: vendor/maestro-tui next to dist often coexists with node_modules at package root.
+    // Packaged installs may coexist with node_modules at the package root.
     candidates.into_iter().find(|candidate| candidate.is_file())
 }
 

@@ -88,7 +88,7 @@
 //! When the user presses Escape or sends `AgentCommand::Cancel`, the token is
 //! triggered and the current request stops gracefully.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -480,6 +480,15 @@ impl NativeAgent {
     /// agent.send_ready();
     /// ```
     pub fn new(config: NativeAgentConfig) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
+        Self::new_with_tools(config, Vec::new())
+    }
+
+    /// Create an agent with caller-provided tools. Caller tools override built-ins
+    /// with the same name and are completed through `tool_response_sender`.
+    pub fn new_with_tools(
+        config: NativeAgentConfig,
+        external_tool_definitions: Vec<ToolDefinition>,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
         let policy_id = policy_model_id(&config.model);
         if let Some(reason) = check_model_allowed(&policy_id) {
             return Err(anyhow::anyhow!(reason));
@@ -494,10 +503,17 @@ impl NativeAgent {
 
         // Build tool definitions from the registry
         let registry = ToolRegistry::new();
-        let tools: HashMap<String, ToolDefinition> = registry
+        let mut tools: HashMap<String, ToolDefinition> = registry
             .tools()
             .map(|td| (td.tool.name.clone(), td.clone()))
             .collect();
+        let external_tools = external_tool_definitions
+            .iter()
+            .map(|definition| definition.tool.name.to_lowercase())
+            .collect::<HashSet<_>>();
+        for definition in external_tool_definitions {
+            tools.insert(definition.tool.name.to_lowercase(), definition);
+        }
 
         // Create tool executor
         let tool_executor = ToolExecutor::new(&config.cwd);
@@ -524,6 +540,7 @@ impl NativeAgent {
             config: config.clone(),
             messages: Vec::new(),
             tools,
+            external_tools,
             tool_executor,
             event_tx: event_tx.clone(),
             tool_response_rx,
@@ -797,6 +814,9 @@ struct NativeAgentRunner {
     /// Map of tool name to tool definition. Loaded from the tool registry
     /// at startup and remains constant.
     tools: HashMap<String, ToolDefinition>,
+
+    /// Tools whose execution is owned by the calling client.
+    external_tools: HashSet<String>,
 
     /// Tool executor for running tools
     ///
@@ -2142,13 +2162,20 @@ impl NativeAgentRunner {
                     if crate::mcp::McpClient::is_mcp_tool(&tool_key) {
                         let _ = self.tool_executor.ensure_mcp_annotations().await;
                     }
+                    let is_external_tool = self.external_tools.contains(&tool_key);
                     let annotations = self.tool_executor.tool_annotations(&tool_key);
-                    let firewall_verdict = firewall.check_tool_with_context(FirewallContext {
-                        tool_name: &tool_key,
-                        args: &args,
-                        workflow_state: Some(&workflow_snapshot),
-                        annotations: annotations.as_ref(),
-                    });
+                    let firewall_verdict = if is_external_tool {
+                        // The caller owns execution and applies its own sandbox and approval
+                        // policy. The native firewall only governs native executors.
+                        FirewallVerdict::Allow
+                    } else {
+                        firewall.check_tool_with_context(FirewallContext {
+                            tool_name: &tool_key,
+                            args: &args,
+                            workflow_state: Some(&workflow_snapshot),
+                            annotations: annotations.as_ref(),
+                        })
+                    };
                     if let FirewallVerdict::Block { reason } = &firewall_verdict {
                         self.drain_read_only_tool_calls(
                             &mut pending_read_only_tool_calls,
@@ -2168,9 +2195,9 @@ impl NativeAgentRunner {
                     }
 
                     // Check if this tool requires approval (dynamic bash logic)
-                    let requires_approval =
-                        matches!(&firewall_verdict, FirewallVerdict::RequireApproval { .. })
-                            || self.tool_executor.requires_approval(&tool_name, &args);
+                    let requires_approval = is_external_tool
+                        || matches!(&firewall_verdict, FirewallVerdict::RequireApproval { .. })
+                        || self.tool_executor.requires_approval(&tool_name, &args);
                     let can_parallelize_read_only = is_native_parallel_read_only_tool_call(
                         &tool_key,
                         requires_approval,

@@ -72,6 +72,18 @@ pub struct McpServerConfig {
     #[serde(default)]
     pub headers: HashMap<String, String>,
 
+    #[serde(default, rename = "headersHelper")]
+    pub headers_helper: Option<String>,
+
+    #[serde(default, rename = "authPreset")]
+    pub auth_preset: Option<String>,
+
+    #[serde(default, rename = "supportsParallelToolCalls")]
+    pub supports_parallel_tool_calls: Option<bool>,
+
+    #[serde(default, rename = "requiresProjectApproval")]
+    pub requires_project_approval: Option<bool>,
+
     /// Connection timeout in milliseconds
     #[serde(default)]
     pub timeout: Option<u64>,
@@ -157,6 +169,16 @@ struct RawServerEntry {
     url: Option<String>,
     #[serde(default)]
     cwd: Option<String>,
+    #[serde(default)]
+    headers: HashMap<String, String>,
+    #[serde(default, rename = "headersHelper")]
+    headers_helper: Option<String>,
+    #[serde(default, rename = "authPreset")]
+    auth_preset: Option<String>,
+    #[serde(default, rename = "supportsParallelToolCalls")]
+    supports_parallel_tool_calls: Option<bool>,
+    #[serde(default, rename = "requiresProjectApproval")]
+    requires_project_approval: Option<bool>,
 }
 
 /// Merged MCP configuration from all sources
@@ -321,7 +343,11 @@ fn load_config_file(
             env: entry.env,
             cwd: entry.cwd,
             url: entry.url,
-            headers: HashMap::new(),
+            headers: entry.headers,
+            headers_helper: entry.headers_helper,
+            auth_preset: entry.auth_preset,
+            supports_parallel_tool_calls: entry.supports_parallel_tool_calls,
+            requires_project_approval: entry.requires_project_approval,
             timeout: None,
             enabled: true,
             disabled: false,
@@ -395,6 +421,10 @@ mod tests {
             cwd: None,
             url: None,
             headers: HashMap::new(),
+            headers_helper: None,
+            auth_preset: None,
+            supports_parallel_tool_calls: None,
+            requires_project_approval: None,
             timeout: None,
             enabled: true,
             disabled: false,
@@ -414,6 +444,10 @@ mod tests {
             cwd: None,
             url: None,
             headers: HashMap::new(),
+            headers_helper: None,
+            auth_preset: None,
+            supports_parallel_tool_calls: None,
+            requires_project_approval: None,
             timeout: None,
             enabled: true,
             disabled: false,
@@ -433,6 +467,10 @@ mod tests {
             cwd: None,
             url: Some("http://localhost:8080".to_string()),
             headers: HashMap::new(),
+            headers_helper: None,
+            auth_preset: None,
+            supports_parallel_tool_calls: None,
+            requires_project_approval: None,
             timeout: None,
             enabled: true,
             disabled: false,
@@ -452,6 +490,10 @@ mod tests {
             cwd: None,
             url: None,
             headers: HashMap::new(),
+            headers_helper: None,
+            auth_preset: None,
+            supports_parallel_tool_calls: None,
+            requires_project_approval: None,
             timeout: None,
             enabled: true,
             disabled: false,
@@ -471,6 +513,10 @@ mod tests {
             cwd: None,
             url: None,
             headers: HashMap::new(),
+            headers_helper: None,
+            auth_preset: None,
+            supports_parallel_tool_calls: None,
+            requires_project_approval: None,
             timeout: None,
             enabled: true,
             disabled: false,
@@ -490,6 +536,10 @@ mod tests {
             cwd: None,
             url: None,
             headers: HashMap::new(),
+            headers_helper: None,
+            auth_preset: None,
+            supports_parallel_tool_calls: None,
+            requires_project_approval: None,
             timeout: None,
             enabled: true,
             disabled: false,

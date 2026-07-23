@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 use crate::agent::{resolve_credentials_in_json, FromAgent, NativeAgent, NativeAgentConfig};
+use crate::safety::FirewallVerdict;
+use crate::sandbox::SandboxPolicy;
 use crate::tools::ToolExecutor;
 
 /// Options for print / exec-style runs.
@@ -23,6 +25,24 @@ pub struct PrintModeOptions {
     pub output_last_message: Option<PathBuf>,
     /// JSON Schema path or inline JSON object (required keys + type checks).
     pub output_schema: Option<String>,
+    /// Native sandbox policy for tool subprocesses.
+    pub sandbox_policy: Option<SandboxPolicy>,
+    /// Reject tool calls that would require interactive approval.
+    pub fail_on_approval: bool,
+}
+
+fn approval_denied(
+    executor: &ToolExecutor,
+    tool: &str,
+    args: &serde_json::Value,
+    fail_on_approval: bool,
+) -> bool {
+    fail_on_approval
+        && (executor.requires_approval(tool, args)
+            || matches!(
+                executor.firewall_verdict(tool, args),
+                FirewallVerdict::RequireApproval { .. }
+            ))
 }
 
 /// Run one prompt non-interactively and print the final answer.
@@ -52,7 +72,10 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
     let (agent, mut event_rx) =
         NativeAgent::new(config).context("Failed to create native agent for print mode")?;
     let tool_tx = agent.tool_response_sender();
-    let tool_executor = ToolExecutor::new(&cwd);
+    let tool_executor = match options.sandbox_policy.clone() {
+        Some(policy) => ToolExecutor::new(&cwd).with_sandbox_policy(policy),
+        None => ToolExecutor::new(&cwd),
+    };
 
     agent.send_ready();
     agent
@@ -62,6 +85,7 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
 
     let mut exit_code = 0i32;
     let mut assistant_buf = String::new();
+    let mut last_assistant_message = String::new();
 
     loop {
         let Some(msg) = event_rx.recv().await else {
@@ -110,9 +134,17 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
                 }
 
                 let resolved = resolve_credentials_in_json(&args);
-                let result = tool_executor
-                    .execute(&tool, &resolved, None, &call_id)
-                    .await;
+                let denied =
+                    approval_denied(&tool_executor, &tool, &resolved, options.fail_on_approval);
+                let result = if denied {
+                    crate::agent::ToolResult::failure(format!(
+                        "Tool `{tool}` requires approval, but approval mode is fail"
+                    ))
+                } else {
+                    tool_executor
+                        .execute(&tool, &resolved, None, &call_id)
+                        .await
+                };
 
                 if options.json {
                     let line = serde_json::json!({
@@ -126,10 +158,10 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
                     println!("{line}");
                 }
 
-                let _ = tool_tx.send((call_id, true, Some(result)));
+                let _ = tool_tx.send((call_id, !denied, Some(result)));
             }
-            FromAgent::ResponseEnd { usage, .. } => {
-                if options.json {
+            FromAgent::ResponseEnd { response_id, usage } => {
+                if options.json && !assistant_buf.is_empty() {
                     let line = serde_json::json!({
                         "type": "item",
                         "subtype": "message_complete",
@@ -137,15 +169,28 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
                         "usage": usage,
                     });
                     println!("{line}");
-                    let done = serde_json::json!({
-                        "type": "done",
-                        "status": "ok",
-                    });
-                    println!("{done}");
-                } else if !assistant_buf.ends_with('\n') {
+                } else if !options.json
+                    && !assistant_buf.is_empty()
+                    && !assistant_buf.ends_with('\n')
+                {
                     println!();
                 }
-                break;
+
+                let terminal = record_completed_response(
+                    &response_id,
+                    &mut assistant_buf,
+                    &mut last_assistant_message,
+                );
+                if terminal {
+                    if options.json {
+                        let done = serde_json::json!({
+                            "type": "done",
+                            "status": "ok",
+                        });
+                        println!("{done}");
+                    }
+                    break;
+                }
             }
             FromAgent::Error { message, fatal } => {
                 if options.json {
@@ -169,7 +214,7 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
 
     if exit_code == 0 {
         if let Some(schema_src) = &options.output_schema {
-            if let Err(err) = validate_against_schema(&assistant_buf, schema_src) {
+            if let Err(err) = validate_against_schema(&last_assistant_message, schema_src) {
                 if options.json {
                     let line = serde_json::json!({
                         "type": "error",
@@ -193,7 +238,7 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
                         .with_context(|| format!("create dir for {}", path.display()))?;
                 }
             }
-            std::fs::write(path, &assistant_buf)
+            std::fs::write(path, &last_assistant_message)
                 .with_context(|| format!("write output-last-message to {}", path.display()))?;
             if !options.json {
                 eprintln!("Wrote last message to {}", path.display());
@@ -202,6 +247,24 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
     }
 
     Ok(exit_code)
+}
+
+/// Record a completed model response and report whether the whole agent turn is done.
+/// NativeAgent emits one ResponseEnd per model response, including responses that
+/// request tools, followed by a final synthetic `done` event after the tool loop.
+fn record_completed_response(
+    response_id: &str,
+    current: &mut String,
+    last_completed: &mut String,
+) -> bool {
+    if response_id == "done" {
+        return true;
+    }
+    if !current.is_empty() {
+        last_completed.clone_from(current);
+        current.clear();
+    }
+    false
 }
 
 /// Process multiple prompts sequentially (exec multi-prompt).
@@ -233,6 +296,8 @@ pub async fn run_print_prompts(
             } else {
                 None
             },
+            sandbox_policy: None,
+            fail_on_approval: false,
         })
         .await?;
         if result != 0 {
@@ -369,6 +434,8 @@ mod tests {
             model: None,
             output_last_message: None,
             output_schema: None,
+            sandbox_policy: None,
+            fail_on_approval: false,
         };
         assert!(!opts.json);
         assert_eq!(opts.prompt, "hi");
@@ -388,5 +455,44 @@ mod tests {
         let schema = r#"{"type":"array","items":{"type":"number"}}"#;
         validate_against_schema("[1,2,3]", schema).unwrap();
         assert!(validate_against_schema(r#"["a"]"#, schema).is_err());
+    }
+
+    #[test]
+    fn print_mode_waits_for_terminal_event_and_keeps_last_response() {
+        let mut current = "I will inspect the file.".to_string();
+        let mut last = String::new();
+        assert!(!record_completed_response(
+            "model-turn-1",
+            &mut current,
+            &mut last
+        ));
+        assert_eq!(last, "I will inspect the file.");
+
+        current.push_str("The final answer.");
+        assert!(!record_completed_response(
+            "model-turn-2",
+            &mut current,
+            &mut last
+        ));
+        assert_eq!(last, "The final answer.");
+        assert!(record_completed_response("done", &mut current, &mut last));
+        assert_eq!(last, "The final answer.");
+    }
+
+    #[test]
+    fn fail_approval_mode_denies_restricted_tools() {
+        let executor = ToolExecutor::new(".");
+        assert!(approval_denied(
+            &executor,
+            "write",
+            &serde_json::json!({"file_path":"note.txt","content":"hi"}),
+            true,
+        ));
+        assert!(!approval_denied(
+            &executor,
+            "read",
+            &serde_json::json!({"file_path":"note.txt"}),
+            true,
+        ));
     }
 }

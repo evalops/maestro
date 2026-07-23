@@ -22,6 +22,7 @@
 // IMPORTS
 // ─────────────────────────────────────────────────────────────────────────────
 
+use std::cell::RefCell;
 use std::time::{Instant, SystemTime};
 // `Instant` is for measuring elapsed time (monotonic clock - always goes forward)
 // `SystemTime` is wall-clock time (can go backwards if system time changes)
@@ -35,6 +36,7 @@ use crate::session::ThinkingLevel;
 // Import from our own crate using `crate::` prefix
 // `FromAgent` is an enum of all messages the agent can send us
 
+use crate::components::message_layout::{MessageLayout, MessageLayoutCache, MessageLayoutKey};
 use crate::components::textarea::TextArea;
 // Our multi-line text input component
 
@@ -433,6 +435,9 @@ pub struct AppState {
     /// We use `Vec` because we frequently append and iterate, rarely remove.
     pub messages: Vec<Message>,
 
+    /// Exact transcript heights reused across immutable Ratatui render passes.
+    message_layout_cache: RefCell<MessageLayoutCache>,
+
     /// Input text area for composing messages.
     /// Supports multi-line editing with cursor movement.
     pub textarea: TextArea,
@@ -594,7 +599,8 @@ impl AppState {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            messages: Vec::new(),      // Empty message list
+            messages: Vec::new(), // Empty message list
+            message_layout_cache: RefCell::new(MessageLayoutCache::default()),
             textarea: TextArea::new(), // Empty input area
             input_width: 1,            // Default width until first render
             input_preferred_col: None,
@@ -636,6 +642,26 @@ impl AppState {
     /// Update cached input width (inner width of the input box).
     pub fn set_input_width(&mut self, width: u16) {
         self.input_width = width.max(1);
+    }
+
+    pub(crate) fn prepare_message_layout<F>(
+        &self,
+        width: u16,
+        settings_key: u64,
+        keys: &[MessageLayoutKey],
+        measure: F,
+    ) -> MessageLayout
+    where
+        F: FnMut(usize) -> usize,
+    {
+        self.message_layout_cache
+            .borrow_mut()
+            .prepare(width, settings_key, keys, measure)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn transcript_layout_measurements(&self) -> usize {
+        self.message_layout_cache.borrow().measurements()
     }
 
     /// Get elapsed time since the agent became busy (in seconds).

@@ -79,7 +79,7 @@ The guarded-workspace prompt still reports the same default category summary for
 - `npm run verify-build`
 - `npm run smoke`
 - `npm run check:cli-runtime-conformance`
-- `npm run check:release-surface`
+- `npm run release:check`
 - `node scripts/check-public-surface-boundary.mjs`
 - `node scripts/validate-public-package-deps.js`
 - `node scripts/check-runtime-deps.js`

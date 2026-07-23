@@ -76,6 +76,10 @@ pub mod config;
 /// Terminal-based animations for loading states and visual feedback.
 pub mod effects;
 
+/// Native CLI entrypoint shared by the `maestro-tui` and canonical `maestro` binaries.
+pub mod entrypoint;
+pub use entrypoint::run_cli;
+
 /// File system operations (search, workspace management).
 /// Handles file listing, fuzzy search, and workspace-relative paths.
 pub mod files;

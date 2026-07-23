@@ -37,10 +37,32 @@ pub struct FileSearchResult {
     pub query: String,
 }
 
+struct SearchableFile {
+    file: WorkspaceFile,
+    name_lower: String,
+    path_lower: String,
+}
+
+impl SearchableFile {
+    fn new(file: WorkspaceFile) -> Self {
+        Self {
+            name_lower: file.name.to_lowercase(),
+            path_lower: file.relative_path.to_lowercase(),
+            file,
+        }
+    }
+}
+
+struct ScoredFile<'a> {
+    file: &'a WorkspaceFile,
+    score: i32,
+    matched_indices: Vec<usize>,
+}
+
 /// File search with fuzzy matching
 pub struct FileSearch {
     /// Files to search
-    files: Vec<WorkspaceFile>,
+    files: Vec<SearchableFile>,
     /// Maximum results to return
     max_results: usize,
 }
@@ -50,7 +72,7 @@ impl FileSearch {
     #[must_use]
     pub fn new(files: Vec<WorkspaceFile>) -> Self {
         Self {
-            files,
+            files: files.into_iter().map(SearchableFile::new).collect(),
             max_results: 50,
         }
     }
@@ -65,23 +87,22 @@ impl FileSearch {
     /// Filter to only source code files
     #[must_use]
     pub fn source_code_only(mut self) -> Self {
-        self.files
-            .retain(super::workspace::WorkspaceFile::is_source_code);
+        self.files.retain(|entry| entry.file.is_source_code());
         self
     }
 
     /// Filter to only config files
     #[must_use]
     pub fn config_only(mut self) -> Self {
-        self.files
-            .retain(super::workspace::WorkspaceFile::is_config);
+        self.files.retain(|entry| entry.file.is_config());
         self
     }
 
     /// Filter by file extensions
     #[must_use]
     pub fn with_extensions(mut self, extensions: &[&str]) -> Self {
-        self.files.retain(|f| f.has_extension(extensions));
+        self.files
+            .retain(|entry| entry.file.has_extension(extensions));
         self
     }
 
@@ -93,35 +114,46 @@ impl FileSearch {
 
         if query.is_empty() {
             // Return all files sorted by name
-            let mut matches: Vec<FileMatch> = self
-                .files
-                .iter()
-                .map(|f| FileMatch::new(f.clone(), 0, vec![]))
-                .collect();
+            let mut matches: Vec<&WorkspaceFile> =
+                self.files.iter().map(|entry| &entry.file).collect();
             matches.sort_by(|a, b| {
-                a.file
-                    .name
-                    .cmp(&b.file.name)
-                    .then_with(|| a.file.relative_path.cmp(&b.file.relative_path))
+                a.name
+                    .cmp(&b.name)
+                    .then_with(|| a.relative_path.cmp(&b.relative_path))
             });
             matches.truncate(self.max_results);
+            let matches = matches
+                .into_iter()
+                .map(|file| FileMatch::new(file.clone(), 0, Vec::new()))
+                .collect();
 
             return FileSearchResult {
                 matches,
                 total_files,
-                query: query.clone(),
+                query,
             };
         }
 
-        let mut matches: Vec<FileMatch> = self
+        let pattern_chars: Vec<char> = query.chars().collect();
+        let mut matches: Vec<ScoredFile<'_>> = self
             .files
             .iter()
-            .filter_map(|file| self.score_match(file, &query))
+            .filter_map(|entry| self.score_match(entry, &query, &pattern_chars))
             .collect();
 
         // Sort by score descending
         matches.sort_by_key(|candidate| std::cmp::Reverse(candidate.score));
         matches.truncate(self.max_results);
+        let matches = matches
+            .into_iter()
+            .map(|candidate| {
+                FileMatch::new(
+                    candidate.file.clone(),
+                    candidate.score,
+                    candidate.matched_indices,
+                )
+            })
+            .collect();
 
         FileSearchResult {
             matches,
@@ -131,22 +163,28 @@ impl FileSearch {
     }
 
     /// Score a file against the query
-    fn score_match(&self, file: &WorkspaceFile, query: &str) -> Option<FileMatch> {
-        let name_lower = file.name.to_lowercase();
-        let path_lower = file.relative_path.to_lowercase();
-
+    fn score_match<'a>(
+        &self,
+        entry: &'a SearchableFile,
+        query: &str,
+        pattern_chars: &[char],
+    ) -> Option<ScoredFile<'a>> {
         // Try different matching strategies
         let mut best_score = 0;
         let mut best_indices = Vec::new();
 
         // Exact name match
-        if name_lower == query {
-            return Some(FileMatch::new(file.clone(), 1000, vec![]));
+        if entry.name_lower == query {
+            return Some(ScoredFile {
+                file: &entry.file,
+                score: 1000,
+                matched_indices: Vec::new(),
+            });
         }
 
         // Name prefix match
-        if name_lower.starts_with(query) {
-            let score = 800 - (name_lower.len() - query.len()) as i32;
+        if entry.name_lower.starts_with(query) {
+            let score = 800 - (entry.name_lower.len() - query.len()) as i32;
             if score > best_score {
                 best_score = score;
                 best_indices = (0..query.len()).collect();
@@ -154,7 +192,7 @@ impl FileSearch {
         }
 
         // Name contains match
-        if let Some(pos) = name_lower.find(query) {
+        if let Some(pos) = entry.name_lower.find(query) {
             let score = 600 - pos as i32;
             if score > best_score {
                 best_score = score;
@@ -163,7 +201,7 @@ impl FileSearch {
         }
 
         // Fuzzy match on name
-        if let Some((score, indices)) = fuzzy_match(&name_lower, query) {
+        if let Some((score, indices)) = fuzzy_match(&entry.name_lower, pattern_chars) {
             let adjusted_score = score + 400;
             if adjusted_score > best_score {
                 best_score = adjusted_score;
@@ -173,7 +211,7 @@ impl FileSearch {
 
         // Path contains match (lower priority)
         if best_score == 0 {
-            if let Some(pos) = path_lower.find(query) {
+            if let Some(pos) = entry.path_lower.find(query) {
                 let score = 200 - (pos as i32 / 10);
                 if score > best_score {
                     best_score = score;
@@ -184,14 +222,18 @@ impl FileSearch {
 
         // Fuzzy match on path
         if best_score == 0 {
-            if let Some((score, _indices)) = fuzzy_match(&path_lower, query) {
+            if let Some((score, _indices)) = fuzzy_match(&entry.path_lower, pattern_chars) {
                 best_score = score;
                 best_indices = vec![];
             }
         }
 
         if best_score > 0 {
-            Some(FileMatch::new(file.clone(), best_score, best_indices))
+            Some(ScoredFile {
+                file: &entry.file,
+                score: best_score,
+                matched_indices: best_indices,
+            })
         } else {
             None
         }
@@ -199,10 +241,8 @@ impl FileSearch {
 }
 
 /// Simple fuzzy matching - returns byte indices (not character indices)
-fn fuzzy_match(text: &str, pattern: &str) -> Option<(i32, Vec<usize>)> {
-    let pattern_chars: Vec<char> = pattern.chars().collect();
-
-    if pattern_chars.is_empty() {
+fn fuzzy_match(text: &str, pattern: &[char]) -> Option<(i32, Vec<usize>)> {
+    if pattern.is_empty() {
         return Some((0, vec![]));
     }
 
@@ -214,7 +254,7 @@ fn fuzzy_match(text: &str, pattern: &str) -> Option<(i32, Vec<usize>)> {
     let mut char_count = 0;
 
     for (byte_idx, ch) in text.char_indices() {
-        if pattern_idx < pattern_chars.len() && ch == pattern_chars[pattern_idx] {
+        if pattern_idx < pattern.len() && ch == pattern[pattern_idx] {
             matched_indices.push(byte_idx); // Use byte index, not char index
             pattern_idx += 1;
             consecutive += 1;
@@ -231,7 +271,7 @@ fn fuzzy_match(text: &str, pattern: &str) -> Option<(i32, Vec<usize>)> {
         char_count += 1;
     }
 
-    if pattern_idx == pattern_chars.len() {
+    if pattern_idx == pattern.len() {
         // Penalty for gaps
         let gap_penalty = (char_count - matched_indices.len()) as i32;
         score = score.saturating_sub(gap_penalty);
@@ -305,6 +345,17 @@ mod tests {
     }
 
     #[test]
+    fn normalized_index_preserves_case_insensitive_search() {
+        let search = FileSearch::new(vec![make_file("UserProfileComponent.tsx")]);
+
+        let result = search.search("USERPROFILECOMPONENT.TSX");
+
+        assert_eq!(result.query, "userprofilecomponent.tsx");
+        assert_eq!(result.matches[0].file.name, "UserProfileComponent.tsx");
+        assert_eq!(result.matches[0].score, 1000);
+    }
+
+    #[test]
     fn empty_query_returns_all() {
         let files = vec![make_file("a.rs"), make_file("b.rs"), make_file("c.rs")];
         let search = FileSearch::new(files);
@@ -328,7 +379,8 @@ mod tests {
 
     #[test]
     fn fuzzy_match_function() {
-        let result = fuzzy_match("hello", "hlo");
+        let pattern: Vec<char> = "hlo".chars().collect();
+        let result = fuzzy_match("hello", &pattern);
         assert!(result.is_some());
         let (score, indices) = result.unwrap();
         assert!(score > 0);
@@ -338,7 +390,8 @@ mod tests {
 
     #[test]
     fn fuzzy_match_no_match() {
-        let result = fuzzy_match("hello", "xyz");
+        let pattern: Vec<char> = "xyz".chars().collect();
+        let result = fuzzy_match("hello", &pattern);
         assert!(result.is_none());
     }
 }

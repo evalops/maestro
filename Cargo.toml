@@ -1,0 +1,56 @@
+[workspace]
+resolver = "2"
+members = [
+    "packages/maestro-rs",
+    "packages/control-plane-rs",
+    "packages/tui-rs",
+    "packages/ambient-agent-rs",
+]
+
+[workspace.dependencies]
+anyhow = "1"
+base64 = "0.22"
+chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+futures = "0.3"
+glob = "0.3"
+libc = "0.2"
+maestro-control-plane = { path = "packages/control-plane-rs" }
+maestro-tui = { path = "packages/tui-rs" }
+regex = "1"
+reqwest = { version = "0.12", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1" }
+tokio-stream = "0.1"
+uuid = { version = "1", features = ["v4"] }
+zip = "2"
+
+# Keep local release builds quick enough for iteration while still enabling
+# cross-crate optimization for the distributed binary.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+# Line tables preserve useful backtraces without the multi-gigabyte full debug
+# information duplicated by the former independent Cargo roots.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
+# magic-trace needs symbols and frame pointers. Build with:
+#   RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile magic-trace -p maestro-tui
+[profile.magic-trace]
+inherits = "release"
+debug = true
+strip = false
+lto = false
+codegen-units = 16

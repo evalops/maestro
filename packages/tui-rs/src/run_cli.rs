@@ -3,12 +3,11 @@
 //! Reconstructs a saved session into a human-readable or JSON report covering
 //! timeline, trajectory, and AgentRuntime ledger / replay / promotion slices.
 //!
-//! Residual gaps vs the TypeScript reconstruction pipeline:
-//! - Full session-entry walk (legacy migration, derived file.changed /
-//!   artifact.linked / policy.decision / diagnostic.delta items from tool details)
-//! - Full AgentRuntime promotion operation expansion (work items, waits, etc.)
+//! Legacy entries and structured tool details are normalized into derived
+//! timeline events, and every ledger entry expands to native dry-run Platform
+//! step/work-item/wait promotion operations.
 //!
-//! Trajectory score + inspection follow the TypeScript lab surface:
+//! Trajectory score + inspection follow the frozen replay-lab contract:
 //! [`scoreAgentTrajectoryReport`] with
 //! [`DEFAULT_AGENT_TRAJECTORY_REPLAY_LAB_RULES`] (at least
 //! `final-event-has-evidence`) and a redacted inspection report with
@@ -284,9 +283,7 @@ Options:
 
 Notes:
   Trajectory score uses DEFAULT lab rules (final-event-has-evidence) and
-  inspection emits redacted timeline items + score findings.
-  Derived timeline items (file.changed, policy.decision, artifact.linked)
-  remain residual vs the TypeScript reconstruction pipeline."
+  inspection emits redacted timeline items + score findings."
 }
 
 fn build_run_reconstruction_report(session_id: &str) -> Result<RunReconstructionReport> {
@@ -345,13 +342,7 @@ fn build_report_from_session(
         trajectory_inspection,
         agent_runtime_ledger,
         durability,
-        residual: Some(json!({
-            "notes": [
-                "Native reconstruction builds the core timeline from session header, messages, metadata, and compaction/model/thinking entries.",
-                "Derived timeline items (file.changed, artifact.linked, policy.decision, diagnostic.delta) remain residual vs the TypeScript pipeline.",
-                "AgentRuntime promotion plan is a minimal dry-run projection (handle_trigger + complete_run)."
-            ]
-        })),
+        residual: None,
     }
 }
 
@@ -607,6 +598,8 @@ fn append_message_items(
         AppMessage::ToolResult {
             tool_call_id,
             tool_name,
+            content,
+            details,
             is_error,
             ..
         } => {
@@ -626,7 +619,7 @@ fn append_message_items(
             items.push(TimelineItem {
                 id: format!("tool-result:{base_id}:{tool_call_id}"),
                 session_id: session_id.into(),
-                timestamp,
+                timestamp: timestamp.clone(),
                 item_type: item_type.into(),
                 title,
                 visibility: "user".into(),
@@ -638,8 +631,199 @@ fn append_message_items(
                 tool_name: Some(tool_name.clone()),
                 metadata: None,
             });
+            append_derived_tool_result_items(
+                items,
+                session_id,
+                &base_id,
+                &timestamp,
+                tool_call_id,
+                tool_name,
+                content,
+                details.as_ref(),
+                *is_error,
+            );
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_derived_tool_result_items(
+    items: &mut Vec<TimelineItem>,
+    session_id: &str,
+    base_id: &str,
+    timestamp: &str,
+    tool_call_id: &str,
+    tool_name: &str,
+    content: &str,
+    details: Option<&JsonValue>,
+    is_error: bool,
+) {
+    let details = details.and_then(JsonValue::as_object);
+    let normalized_tool = tool_name.to_ascii_lowercase();
+    if !is_error && matches!(normalized_tool.as_str(), "write" | "edit" | "apply_patch") {
+        let path = detail_string(
+            details,
+            &["displayPath", "path", "filePath", "relativePath"],
+        );
+        let previous_exists = detail_bool(details, "previousExists");
+        let action = if normalized_tool == "write" && previous_exists == Some(false) {
+            "created"
+        } else if normalized_tool == "write" {
+            "wrote"
+        } else {
+            "edited"
+        };
+        let bytes_written = detail_u64(details, "bytesWritten");
+        let edits_applied = detail_u64(details, "editsApplied");
+        items.push(TimelineItem {
+            id: format!("file-change:{base_id}:{tool_call_id}"),
+            session_id: session_id.to_string(),
+            timestamp: timestamp.to_string(),
+            item_type: "file.changed".to_string(),
+            title: format!("File {action}"),
+            visibility: "user".to_string(),
+            source: "local".to_string(),
+            status: "completed".to_string(),
+            role: None,
+            summary: compact_summary(Some(
+                &[
+                    path.clone(),
+                    bytes_written.map(|value| format!("{value} bytes")),
+                    edits_applied.map(|value| format!("{value} edits")),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" | "),
+            )),
+            tool_call_id: Some(tool_call_id.to_string()),
+            tool_name: Some(tool_name.to_string()),
+            metadata: Some(json!({
+                "path": path,
+                "action": action,
+                "previousExists": previous_exists,
+                "bytesWritten": bytes_written,
+                "editsApplied": edits_applied,
+                "hasDiff": details.and_then(|value| value.get("diff")).and_then(JsonValue::as_str).is_some_and(|value| !value.is_empty()),
+            })),
+        });
+    }
+
+    if let Some(delta) = details
+        .and_then(|value| {
+            value
+                .get("diagnosticDelta")
+                .or_else(|| value.get("diagnostic_delta"))
+        })
+        .and_then(JsonValue::as_object)
+    {
+        let introduced = detail_u64(Some(delta), "introducedCount").unwrap_or(0);
+        let repaired = detail_u64(Some(delta), "repairedCount").unwrap_or(0);
+        let remaining = detail_u64(Some(delta), "remainingCount").unwrap_or(0);
+        let display_path = detail_string(Some(delta), &["displayPath", "path"])
+            .unwrap_or_else(|| "workspace".to_string());
+        items.push(TimelineItem {
+            id: format!("diagnostic-delta:{base_id}:{tool_call_id}"),
+            session_id: session_id.to_string(),
+            timestamp: timestamp.to_string(),
+            item_type: "diagnostic.delta".to_string(),
+            title: format!("Diagnostics for {display_path}"),
+            visibility: "user".to_string(),
+            source: "local".to_string(),
+            status: if introduced > 0 { "failed" } else { "completed" }.to_string(),
+            role: None,
+            summary: Some(format!(
+                "Diagnostic delta: {introduced} introduced, {repaired} repaired, {remaining} remaining."
+            )),
+            tool_call_id: Some(tool_call_id.to_string()),
+            tool_name: Some(tool_name.to_string()),
+            metadata: Some(JsonValue::Object(delta.clone())),
+        });
+    }
+
+    if let Some(skill) = details
+        .and_then(|value| {
+            value
+                .get("skillArtifact")
+                .or_else(|| value.get("skill_artifact"))
+        })
+        .and_then(JsonValue::as_object)
+    {
+        let name = detail_string(Some(skill), &["name"]).unwrap_or_else(|| "skill".to_string());
+        items.push(TimelineItem {
+            id: format!("artifact-linked:{base_id}:{tool_call_id}"),
+            session_id: session_id.to_string(),
+            timestamp: timestamp.to_string(),
+            item_type: "artifact.linked".to_string(),
+            title: format!("Skill artifact loaded: {name}"),
+            visibility: "admin".to_string(),
+            source: "local".to_string(),
+            status: "completed".to_string(),
+            role: None,
+            summary: compact_summary(Some(content)),
+            tool_call_id: Some(tool_call_id.to_string()),
+            tool_name: Some(tool_name.to_string()),
+            metadata: Some(JsonValue::Object(skill.clone())),
+        });
+    }
+
+    if let Some(outcome) = details
+        .and_then(|value| {
+            value
+                .get("governedOutcome")
+                .or_else(|| value.get("governed_outcome"))
+        })
+        .and_then(JsonValue::as_object)
+    {
+        let classification = detail_string(Some(outcome), &["classification"]);
+        let status = match classification.as_deref() {
+            Some("denied") => "denied",
+            Some(
+                "approval_required"
+                | "approval_pending"
+                | "authentication_required"
+                | "rate_limited",
+            ) => "pending",
+            _ => "info",
+        };
+        items.push(TimelineItem {
+            id: format!("policy-decision:{base_id}:{tool_call_id}"),
+            session_id: session_id.to_string(),
+            timestamp: timestamp.to_string(),
+            item_type: "policy.decision".to_string(),
+            title: format!("Policy decision for {tool_name}"),
+            visibility: if classification.as_deref() == Some("denied") {
+                "user"
+            } else {
+                "admin"
+            }
+            .to_string(),
+            source: "local".to_string(),
+            status: status.to_string(),
+            role: None,
+            summary: classification.map(|value| format!("Outcome: {value}")),
+            tool_call_id: Some(tool_call_id.to_string()),
+            tool_name: Some(tool_name.to_string()),
+            metadata: Some(JsonValue::Object(outcome.clone())),
+        });
+    }
+}
+
+fn detail_string(details: Option<&Map<String, JsonValue>>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        details?
+            .get(*key)
+            .and_then(JsonValue::as_str)
+            .map(str::to_string)
+    })
+}
+
+fn detail_u64(details: Option<&Map<String, JsonValue>>, key: &str) -> Option<u64> {
+    details?.get(key).and_then(JsonValue::as_u64)
+}
+
+fn detail_bool(details: Option<&Map<String, JsonValue>>, key: &str) -> Option<bool> {
+    details?.get(key).and_then(JsonValue::as_bool)
 }
 
 fn count_timeline(timeline: &ComposerRunTimeline) -> CountSummary {
@@ -1933,32 +2117,105 @@ fn build_agent_runtime_ledger(
     }
 
     let idempotency_key = format!("maestro-local-ledger:{session_id}:{session_id}");
-    let promotion_ops = vec![
-        json!({
-            "operation": "handle_trigger",
-            "id": format!("promote:trigger:{session_id}"),
+    let mut promotion_ops = vec![json!({
+        "operation": "handle_trigger",
+        "id": format!("promote:{session_id}:trigger"),
+        "payload": {
+            "sourceEventType": "maestro.local_ledger_promote",
+            "sourceEventId": session_id,
+            "idempotencyKey": idempotency_key,
+            "sessionId": session_id,
+            "generatedAt": generated_at,
+        }
+    })];
+    for entry in &entries {
+        let entry_id = entry
+            .get("id")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("ledger-entry");
+        let kind = entry
+            .get("kind")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("event");
+        let state = entry
+            .get("state")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("info");
+        let title = entry
+            .get("title")
+            .cloned()
+            .unwrap_or(json!("Runtime event"));
+        let timestamp = entry
+            .get("timestamp")
+            .cloned()
+            .unwrap_or_else(|| json!(generated_at));
+        promotion_ops.push(json!({
+            "operation": "record_run_step",
+            "id": format!("promote:{entry_id}:step"),
+            "ledgerEntryId": entry_id,
             "payload": {
-                "sourceEventType": "maestro.local_ledger_promote",
-                "sourceEventId": format!("ledger-promote:{session_id}"),
-                "idempotencyKey": idempotency_key,
+                "stepId": entry_id,
+                "kind": kind,
+                "state": promotion_step_state(state),
+                "title": title,
+                "timestamp": timestamp,
+                "toolName": entry.get("toolName").cloned().unwrap_or(JsonValue::Null),
+            }
+        }));
+        promotion_ops.push(json!({
+            "operation": "record_run_work_item",
+            "id": format!("promote:{entry_id}:work-item"),
+            "ledgerEntryId": entry_id,
+            "payload": {
+                "workItemId": entry_id,
+                "kind": kind,
+                "state": state,
+                "title": title,
+                "timestamp": timestamp,
+                "evidenceRefs": entry.get("evidence").cloned().unwrap_or_else(|| json!([])),
+                "completionGate": "maestro_agent_runtime_ledger_recorded",
                 "sessionId": session_id,
-                "generatedAt": generated_at,
+                "timelineItemId": entry.get("timelineItemId").cloned().unwrap_or(JsonValue::Null),
             }
-        }),
-        json!({
-            "operation": "complete_run",
-            "id": format!("promote:complete:{session_id}"),
+        }));
+        if entry.get("type").and_then(JsonValue::as_str) == Some("wait.pending") {
+            promotion_ops.push(json!({
+                "operation": "wait_run",
+                "id": format!("promote:{entry_id}:wait"),
+                "ledgerEntryId": entry_id,
+                "payload": {
+                    "waitId": entry_id,
+                    "waitType": "external_input",
+                    "title": title,
+                    "timestamp": timestamp,
+                }
+            }));
+        }
+    }
+    if let Some(terminal) = entries.iter().rev().find(|entry| {
+        !matches!(
+            entry.get("state").and_then(JsonValue::as_str),
+            Some("info" | "pending" | "running")
+        )
+    }) {
+        let succeeded = matches!(
+            terminal.get("state").and_then(JsonValue::as_str),
+            Some("succeeded" | "skipped")
+        );
+        promotion_ops.push(json!({
+            "operation": if succeeded { "complete_run" } else { "fail_run" },
+            "id": format!("promote:{session_id}:terminal"),
             "payload": {
-                "state": "succeeded",
-                "timestamp": generated_at,
-                "ledgerEntryId": entries.first().and_then(|e| e.get("id")).cloned().unwrap_or(json!(null)),
-                "trajectoryEventId": traj_events.first().and_then(|e| e.get("id")).cloned().unwrap_or(json!(null)),
-                "eventType": "session.started",
-                "title": "Local ledger promotion",
-                "evidenceRefs": [],
+                "state": if succeeded { "succeeded" } else { "failed" },
+                "timestamp": terminal.get("timestamp").cloned().unwrap_or_else(|| json!(generated_at)),
+                "ledgerEntryId": terminal.get("id").cloned().unwrap_or(JsonValue::Null),
+                "trajectoryEventId": terminal.get("trajectoryEventId").cloned().unwrap_or(JsonValue::Null),
+                "eventType": terminal.get("type").cloned().unwrap_or(JsonValue::Null),
+                "title": terminal.get("title").cloned().unwrap_or(json!("Local ledger promotion")),
+                "evidenceRefs": terminal.get("evidence").cloned().unwrap_or_else(|| json!([])),
             }
-        }),
-    ];
+        }));
+    }
 
     let replay = json!({
         "schemaVersion": AGENT_RUNTIME_REPLAY_SUMMARY_SCHEMA,
@@ -1999,11 +2256,19 @@ fn build_agent_runtime_ledger(
             "sessionId": session_id,
             "idempotencyKey": idempotency_key,
             "operations": promotion_ops,
-            "warnings": [
-                "Native promotion plan is a minimal dry-run projection; full work-item/wait expansion remains residual."
-            ],
+            "warnings": ["Promotion plan is dry-run only; no Platform AgentRuntime writes were performed."],
         },
     })
+}
+
+fn promotion_step_state(state: &str) -> &'static str {
+    match state {
+        "succeeded" | "completed" | "skipped" => "completed",
+        "failed" | "denied" | "aborted" => "failed",
+        "pending" | "waiting" => "pending",
+        "running" => "running",
+        _ => "completed",
+    }
 }
 
 fn build_durability(
@@ -2391,7 +2656,7 @@ mod tests {
                         },
                         ContentBlock::ToolCall {
                             id: "call-1".into(),
-                            name: "read".into(),
+                            name: "edit".into(),
                             args: json!({ "path": "README.md" }),
                         },
                     ],
@@ -2404,9 +2669,27 @@ mod tests {
                 },
                 AppMessage::ToolResult {
                     tool_call_id: "call-1".into(),
-                    tool_name: "read".into(),
+                    tool_name: "edit".into(),
                     content: "ok".into(),
-                    details: None,
+                    details: Some(json!({
+                        "path": "README.md",
+                        "previousExists": true,
+                        "editsApplied": 1,
+                        "diagnosticDelta": {
+                            "displayPath": "README.md",
+                            "introducedCount": 0,
+                            "repairedCount": 1,
+                            "remainingCount": 0
+                        },
+                        "skillArtifact": {
+                            "name": "docs",
+                            "version": "1"
+                        },
+                        "governedOutcome": {
+                            "classification": "allowed",
+                            "code": "policy_allow"
+                        }
+                    })),
                     is_error: false,
                     timestamp: 1_715_247_603_000,
                 },
@@ -2447,6 +2730,14 @@ mod tests {
         assert!(counts.by_type.get("message.user").copied().unwrap_or(0) >= 1);
         assert!(counts.by_type.get("tool.requested").copied().unwrap_or(0) >= 1);
         assert!(counts.by_type.get("tool.completed").copied().unwrap_or(0) >= 1);
+        for derived in [
+            "file.changed",
+            "diagnostic.delta",
+            "artifact.linked",
+            "policy.decision",
+        ] {
+            assert_eq!(counts.by_type.get(derived).copied(), Some(1), "{derived}");
+        }
         assert!(
             counts
                 .by_type
@@ -2459,6 +2750,15 @@ mod tests {
             report.context_manifest.protocol_version.as_deref(),
             Some("maestro.unified-context-manifest.v1")
         );
+        let operations = report.agent_runtime_ledger["promotion"]["operations"]
+            .as_array()
+            .expect("promotion operations");
+        assert!(operations
+            .iter()
+            .any(|operation| { operation["operation"] == "record_run_step" }));
+        assert!(operations
+            .iter()
+            .any(|operation| { operation["operation"] == "record_run_work_item" }));
         assert_eq!(report.context_manifest.entries, 4);
         assert_eq!(report.context_manifest.mcp_servers, 1);
         assert!(report.coverage.prompt_inputs);

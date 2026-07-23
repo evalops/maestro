@@ -230,16 +230,10 @@ if (existsSync(resolve(cerebroRepo, "Makefile"))) {
 	}
 }
 
-if (existsSync(resolve(root, "scripts/generate-maestro-platform-replay-fixture.ts"))) {
-	ok("Maestro replay generator found");
+if (existsSync(resolve(root, "packages/maestro-rs/Cargo.toml"))) {
+	ok("native Maestro runtime found");
 } else {
-	fail("Maestro replay generator missing");
-}
-
-if (checkCommand("bun", ["--version"])) {
-	ok("command bun");
-} else {
-	fail("command bun is required");
+	fail("native Maestro runtime missing");
 }
 
 if (checkCommand("docker", ["compose", "version"])) {

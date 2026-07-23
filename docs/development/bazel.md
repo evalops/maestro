@@ -1,8 +1,8 @@
 # Bazel Build
 
 Maestro now has a Bazel surface for the repo build contract and for proving the
-shared `bazel-rbe-dev` Buildfarm path. The existing Bun/Nx workflows remain the
-release path while package-level JS targets are migrated behind Bazel.
+shared `bazel-rbe-dev` Buildfarm path. Cargo is the canonical native build and
+release path; Bazel remains a repository-contract and remote-execution lane.
 
 ## Local Checks
 

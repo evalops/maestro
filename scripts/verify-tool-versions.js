@@ -28,19 +28,9 @@ function main() {
 	const versions = JSON.parse(readText(versionsPath));
 
 	const expectedNode = versions.node;
-	const expectedBun = versions.bun;
-	const expectedSemgrep = versions.semgrep;
 
 	if (typeof expectedNode !== "string" || expectedNode.length === 0) {
 		fail(`Invalid tool-versions.json: missing "node"`);
-		return;
-	}
-	if (typeof expectedBun !== "string" || expectedBun.length === 0) {
-		fail(`Invalid tool-versions.json: missing "bun"`);
-		return;
-	}
-	if (typeof expectedSemgrep !== "string" || expectedSemgrep.length === 0) {
-		fail(`Invalid tool-versions.json: missing "semgrep"`);
 		return;
 	}
 
@@ -51,30 +41,6 @@ function main() {
 		if (actual !== expectedNode) {
 			fail(`${rel} is "${actual}" but tool-versions.json node is "${expectedNode}"`);
 		}
-	}
-
-	const setupActionPath = path.join(repoRoot, ".github/actions/setup-bun-nx/action.yml");
-	const setupAction = readText(setupActionPath);
-	const bunVersionMatch = setupAction.match(
-		/^[ \t]*bun-version:\s*$[\s\S]*?^[ \t]*default:\s*"([^"]+)"\s*$/m,
-	);
-	if (!bunVersionMatch) {
-		fail(`Could not find a default bun-version in ${path.relative(repoRoot, setupActionPath)}`);
-	} else {
-		const actualBun = bunVersionMatch[1];
-		if (actualBun !== expectedBun) {
-			fail(
-				`setup-bun-nx bun-version default is "${actualBun}" but tool-versions.json bun is "${expectedBun}"`,
-			);
-		}
-	}
-
-	const evalsWorkflowPath = path.join(repoRoot, ".github/workflows/evals.yml");
-	const evalsWorkflow = readText(evalsWorkflowPath);
-	if (!evalsWorkflow.includes(`semgrep==${expectedSemgrep}`)) {
-		fail(
-			`Expected evals workflow to install semgrep==${expectedSemgrep} (see ${path.relative(repoRoot, evalsWorkflowPath)})`,
-		);
 	}
 
 	if (process.exitCode) {

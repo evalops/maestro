@@ -4,7 +4,6 @@
 //! This module bridges the hook registry with tool execution.
 
 use super::{
-    bridge::NodeHookBridge,
     config::{load_hook_config, HookSource, LoadedHookConfig},
     lua::LuaHookExecutor,
     overflow::{OverflowDetector, OverflowStatus},
@@ -19,14 +18,13 @@ use super::{
 };
 use anyhow::Result;
 use std::panic::{self, AssertUnwindSafe};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
 
 /// Integrated hook system for the native agent
 ///
-/// Combines all hook backends (native, Lua, WASM, IPC) into a unified executor.
+/// Combines all native hook backends (Rust, Lua, and WASM) into a unified executor.
 /// Lua and WASM executors are lazily initialized on first use to minimize
 /// startup overhead (~21µs → ~200ns for basic creation).
 pub struct IntegratedHookSystem {
@@ -36,10 +34,6 @@ pub struct IntegratedHookSystem {
     lua_executor: Option<LuaHookExecutor>,
     /// WASM plugin executor (lazy-initialized)
     wasm_executor: Option<WasmHookExecutor>,
-    /// IPC bridge to Node.js for TypeScript hooks
-    node_bridge: Option<Arc<Mutex<NodeHookBridge>>>,
-    /// TypeScript hook paths (queued for IPC execution)
-    typescript_hooks: Vec<TypeScriptHookConfig>,
     /// Overflow detector
     overflow_detector: OverflowDetector,
     /// Current working directory
@@ -58,15 +52,6 @@ pub struct IntegratedHookSystem {
     timeout: Duration,
     /// Log file path
     log_file: Option<String>,
-}
-
-/// TypeScript hook configuration
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct TypeScriptHookConfig {
-    path: PathBuf,
-    event: HookEventType,
-    tools: Vec<String>,
 }
 
 /// Prompt hook that injects static context on user prompt submission
@@ -93,8 +78,6 @@ impl IntegratedHookSystem {
             registry: HookRegistry::new(),
             lua_executor: None,
             wasm_executor: None,
-            node_bridge: None,
-            typescript_hooks: Vec::new(),
             overflow_detector: OverflowDetector::new(),
             cwd: cwd.to_string(),
             session_id: None,
@@ -200,43 +183,8 @@ impl IntegratedHookSystem {
                     // Shell command hooks - would need shell execution
                     // For now, skip these in native mode
                 }
-                HookSource::TypeScript(path) => {
-                    // Queue TypeScript hooks for IPC execution
-                    self.typescript_hooks.push(TypeScriptHookConfig {
-                        path: path.clone(),
-                        event: hook.definition.event,
-                        tools: hook.definition.tools.clone(),
-                    });
-                }
             }
         }
-
-        // Initialize IPC bridge if we have TypeScript hooks
-        if !self.typescript_hooks.is_empty() {
-            self.node_bridge = Some(Arc::new(Mutex::new(NodeHookBridge::bundled())));
-        }
-    }
-
-    /// Start the IPC bridge (must be called in async context)
-    pub async fn start_bridge(&mut self) -> Result<()> {
-        if let Some(ref bridge) = self.node_bridge {
-            let mut bridge = bridge.lock().await;
-            bridge.start().await?;
-            eprintln!(
-                "[hooks] Started IPC bridge for {} TypeScript hooks",
-                self.typescript_hooks.len()
-            );
-        }
-        Ok(())
-    }
-
-    /// Stop the IPC bridge
-    pub async fn stop_bridge(&mut self) -> Result<()> {
-        if let Some(ref bridge) = self.node_bridge {
-            let mut bridge = bridge.lock().await;
-            bridge.stop().await?;
-        }
-        Ok(())
     }
 
     /// Reload all hooks from config files
@@ -347,8 +295,8 @@ impl IntegratedHookSystem {
     /// Execute `PreToolUse` hooks (sync version - no IPC)
     ///
     /// Returns the hook result which may block, modify, or continue execution.
-    /// Note: This sync version does not execute TypeScript hooks via IPC.
-    /// Use `execute_pre_tool_use_async` for full hook support.
+    /// This is the canonical native hook execution path.
+    /// The async wrapper delegates to this native implementation.
     pub fn execute_pre_tool_use(
         &mut self,
         tool_name: &str,
@@ -410,59 +358,14 @@ impl IntegratedHookSystem {
         result
     }
 
-    /// Execute `PreToolUse` hooks (async version - includes IPC)
-    ///
-    /// This version also executes TypeScript hooks via the IPC bridge.
+    /// Execute `PreToolUse` hooks through the async agent interface.
     pub async fn execute_pre_tool_use_async(
         &mut self,
         tool_name: &str,
         tool_call_id: &str,
         tool_input: &serde_json::Value,
     ) -> HookResult {
-        // First run sync hooks
-        let sync_result = self.execute_pre_tool_use(tool_name, tool_call_id, tool_input);
-        if !matches!(sync_result, HookResult::Continue) {
-            return sync_result;
-        }
-
-        // Then run TypeScript hooks via IPC
-        if let Some(ref bridge) = self.node_bridge {
-            let input = PreToolUseInput {
-                hook_event_name: "PreToolUse".to_string(),
-                cwd: self.cwd.clone(),
-                session_id: self.session_id.clone(),
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                tool_name: tool_name.to_string(),
-                tool_call_id: tool_call_id.to_string(),
-                tool_input: tool_input.clone(),
-            };
-
-            // Check if any TypeScript hooks match this tool
-            let matching_hooks: Vec<_> = self
-                .typescript_hooks
-                .iter()
-                .filter(|h| {
-                    h.event == HookEventType::PreToolUse
-                        && (h.tools.is_empty() || h.tools.contains(&tool_name.to_string()))
-                })
-                .collect();
-
-            if !matching_hooks.is_empty() {
-                let bridge = bridge.lock().await;
-                match bridge.execute_pre_tool_use(&input).await {
-                    Ok(result) => {
-                        if !matches!(result, HookResult::Continue) {
-                            return result;
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("[hooks] TypeScript hook error: {e}");
-                    }
-                }
-            }
-        }
-
-        HookResult::Continue
+        self.execute_pre_tool_use(tool_name, tool_call_id, tool_input)
     }
 
     /// Execute `PostToolUse` hooks
@@ -894,15 +797,8 @@ impl IntegratedHookSystem {
                 .wasm_executor
                 .as_ref()
                 .map_or(0, super::wasm::WasmHookExecutor::plugin_count),
-            typescript_hooks: self.typescript_hooks.len(),
             enabled: self.enabled,
         }
-    }
-
-    /// Check if IPC bridge is available
-    #[must_use]
-    pub fn has_bridge(&self) -> bool {
-        self.node_bridge.is_some()
     }
 
     /// Get execution metrics
@@ -951,7 +847,6 @@ pub struct HookStats {
     pub native_hooks: usize,
     pub lua_scripts: usize,
     pub wasm_plugins: usize,
-    pub typescript_hooks: usize,
     pub enabled: bool,
 }
 
@@ -959,7 +854,7 @@ impl HookStats {
     /// Total number of hooks
     #[must_use]
     pub fn total(&self) -> usize {
-        self.native_hooks + self.lua_scripts + self.wasm_plugins + self.typescript_hooks
+        self.native_hooks + self.lua_scripts + self.wasm_plugins
     }
 }
 

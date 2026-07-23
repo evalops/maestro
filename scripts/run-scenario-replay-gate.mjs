@@ -6,6 +6,9 @@ import { spawnSync } from "node:child_process";
 import { reportScenarioReplayGateFailure } from "./scenario-replay-governance.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const maestroBin =
+	process.env.MAESTRO_BIN ??
+	join(repoRoot, "target", "debug", "maestro");
 
 function valueAfter(flag, fallback) {
 	const index = process.argv.indexOf(flag);
@@ -45,9 +48,6 @@ function runScenario(group, fixtureName) {
 	mkdirSync(outputDir, { recursive: true });
 	const junitPath = join(outputDir, fixtureName.replace(/\.json$/u, ".xml"));
 	const args = [
-		"--import",
-		"tsx",
-		"src/cli.ts",
 		"scenario",
 		"run",
 		relative(repoRoot, fixturePath),
@@ -55,7 +55,7 @@ function runScenario(group, fixtureName) {
 		relative(repoRoot, junitPath),
 		"--json",
 	];
-	const result = spawnSync(process.execPath, args, {
+	const result = spawnSync(maestroBin, args, {
 		cwd: repoRoot,
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],

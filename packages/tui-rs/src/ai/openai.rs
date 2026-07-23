@@ -104,7 +104,7 @@
 use anyhow::{Context, Result};
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -583,6 +583,8 @@ pub struct OpenAiClient {
     api_key: String,
     /// Optional base URL override (for Mistral or other OpenAI-compatible APIs)
     base_url: Option<String>,
+    extra_headers: HeaderMap,
+    request_extensions: serde_json::Map<String, serde_json::Value>,
 }
 
 impl OpenAiClient {
@@ -598,6 +600,8 @@ impl OpenAiClient {
             client,
             api_key,
             base_url: None,
+            extra_headers: HeaderMap::new(),
+            request_extensions: serde_json::Map::new(),
         })
     }
 
@@ -613,7 +617,23 @@ impl OpenAiClient {
             client,
             api_key,
             base_url: Some(base_url.into()),
+            extra_headers: HeaderMap::new(),
+            request_extensions: serde_json::Map::new(),
         })
+    }
+
+    pub(crate) fn with_managed_gateway_context(
+        mut self,
+        organization_id: &str,
+        provider_ref: serde_json::Value,
+    ) -> Result<Self> {
+        self.extra_headers.insert(
+            HeaderName::from_static("x-organization-id"),
+            HeaderValue::from_str(organization_id).context("invalid EvalOps organization id")?,
+        );
+        self.request_extensions
+            .insert("provider_ref".to_string(), provider_ref);
+        Ok(self)
     }
 
     /// Create a new client from environment variable
@@ -701,6 +721,7 @@ impl OpenAiClient {
             HeaderValue::from_str(&format!("Bearer {}", self.api_key))
                 .unwrap_or_else(|_| HeaderValue::from_static("")),
         );
+        headers.extend(self.extra_headers.clone());
         headers
     }
 
@@ -1138,11 +1159,15 @@ impl OpenAiClient {
         messages: &[Message],
         config: &RequestConfig,
     ) -> serde_json::Value {
-        if uses_responses_api(&config.model) {
+        let mut body = if uses_responses_api(&config.model) {
             self.build_responses_request_body(messages, config)
         } else {
             self.build_chat_request_body(messages, config)
+        };
+        if let Some(object) = body.as_object_mut() {
+            object.extend(self.request_extensions.clone());
         }
+        body
     }
 
     /// Resolve the full request URL for a model.
@@ -2018,6 +2043,39 @@ mod tests {
             },
         );
         assert_eq!(chat_body["model"], "gpt-4o");
+    }
+
+    #[test]
+    fn managed_gateway_adds_org_header_and_provider_reference() {
+        let client =
+            OpenAiClient::with_base_url("delegated-token", "https://llm-gateway.evalops.dev/v1")
+                .unwrap()
+                .with_managed_gateway_context(
+                    "org_123",
+                    serde_json::json!({
+                        "provider": "anthropic",
+                        "environment": "prod",
+                        "credential_name": "team-shared"
+                    }),
+                )
+                .unwrap();
+        assert_eq!(
+            client.headers().get("x-organization-id").unwrap(),
+            "org_123"
+        );
+
+        let body = client.build_request_body(
+            &[Message {
+                role: Role::User,
+                content: MessageContent::Text("Hello".to_string()),
+            }],
+            &RequestConfig {
+                model: "evalops/gpt-4o-mini".to_string(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(body["provider_ref"]["provider"], "anthropic");
+        assert_eq!(body["provider_ref"]["credential_name"], "team-shared");
     }
 
     #[test]

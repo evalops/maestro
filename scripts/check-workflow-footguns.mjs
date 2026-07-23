@@ -82,26 +82,53 @@ function evaluateEvalOpsBotDispatch(root) {
 	return failures;
 }
 
-function evaluatePublicReleaseMirrorWorkflowPermission(root) {
+function evaluatePublicMirrorWorkflowBoundary(root) {
 	const failures = [];
-	if (!manifestMirrorsWorkflowFiles(root)) return failures;
+	if (manifestMirrorsWorkflowFiles(root)) {
+		failures.push(
+			".github/release-mirror-manifest.json: public workflows are public-owned and must not be mirrored from internal",
+		);
+	}
 
-	const path = join(root, ".github/workflows/public-release-mirror.yml");
-	const workflowText = readIfExists(path);
-	if (!workflowText) return failures;
-
-	const appTokenBlocks = workflowStepBlocks(workflowText).filter((block) =>
-		/actions\/create-github-app-token@/.test(block),
+	const prepareScript = readIfExists(
+		join(root, "scripts/prepare-public-release-mirror.mjs"),
 	);
-	for (const block of appTokenBlocks) {
-		if (!/permission-workflows:\s*write\b/.test(block)) {
-			failures.push(
-				".github/workflows/public-release-mirror.yml: GitHub App token must request permission-workflows: write before syncing release mirror workflow files",
-			);
+	if (/PUBLIC_INCLUDE_OVERRIDES[\s\S]*?\.github\/workflows\//.test(prepareScript)) {
+		failures.push(
+			"scripts/prepare-public-release-mirror.mjs: public workflow files must not be re-included by mirror preparation",
+		);
+	}
+
+	for (const workflowPath of [
+		".github/workflows/public-release-mirror.yml",
+		".github/workflows/sync-public-release-mirror.yml",
+	]) {
+		const workflowText = readIfExists(join(root, workflowPath));
+		if (!workflowText) continue;
+
+		const appTokenBlocks = workflowStepBlocks(workflowText).filter((block) =>
+			/actions\/create-github-app-token@/.test(block),
+		);
+		for (const block of appTokenBlocks) {
+			if (/permission-workflows:\s*write\b/.test(block)) {
+				failures.push(
+					`${workflowPath}: public mirror App must remain contents-only because public owns workflow files`,
+				);
+			}
+			if (!/permission-contents:\s*write\b/.test(block)) {
+				failures.push(
+					`${workflowPath}: public mirror App must request permission-contents: write`,
+				);
+			}
+			if (!/permission-pull-requests:\s*write\b/.test(block)) {
+				failures.push(
+					`${workflowPath}: public mirror App must request permission-pull-requests: write to maintain generated mirror PRs`,
+				);
+			}
 		}
-		if (!/permission-contents:\s*write\b/.test(block)) {
+		if (!/git status --porcelain -- \.github\/workflows/.test(workflowText)) {
 			failures.push(
-				".github/workflows/public-release-mirror.yml: GitHub App token must preserve permission-contents: write when requesting workflow permission",
+				`${workflowPath}: mirror publication must fail if public-owned workflow files change`,
 			);
 		}
 	}
@@ -196,7 +223,7 @@ function evaluateNoBlacksmithReferences(root) {
 export function evaluateWorkflowFootguns({ root = defaultRoot } = {}) {
 	return [
 		...evaluateEvalOpsBotDispatch(root),
-		...evaluatePublicReleaseMirrorWorkflowPermission(root),
+		...evaluatePublicMirrorWorkflowBoundary(root),
 		...evaluatePullRequestRunnerOverrides(root),
 		...evaluateNoBlacksmithReferences(root),
 	];

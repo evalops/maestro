@@ -4,7 +4,6 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TUI_DIR="$ROOT/packages/tui-rs"
 OUT_DIR="${MAESTRO_MAGIC_TRACE_OUT:-$PWD/magic-trace-out}"
 MT="${MAGIC_TRACE_BIN:-$(command -v magic-trace || true)}"
 PERF_BIN="${PERF_BIN:-$(command -v perf || true)}"
@@ -21,8 +20,8 @@ need_linux_intel() {
 build_bin() {
   mkdir -p "$OUT_DIR"
   export RUSTFLAGS="${RUSTFLAGS:--C force-frame-pointers=yes}"
-  (cd "$TUI_DIR" && cargo build --profile magic-trace)
-  BIN="$TUI_DIR/target/magic-trace/maestro-tui"
+  (cd "$ROOT" && cargo build --profile magic-trace -p maestro-tui)
+  BIN="$ROOT/target/magic-trace/maestro-tui"
   [[ -x "$BIN" ]] || die "missing $BIN"
   echo "$BIN"
 }

@@ -19,18 +19,25 @@
 //! - `ApprovalMode::Fail` → deny immediately
 //! - `ApprovalMode::Prompt` / unset → wait for client `ToolResponse`
 
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::Command;
 use tokio::sync::mpsc;
 
 use crate::agent::{FromAgent, NativeAgent, NativeAgentConfig, PromptKind, ToolResult};
 use crate::git;
 use crate::headless::messages::{
-    ApprovalMode, FromAgentMessage, HeadlessErrorType, ToAgentMessage,
-    TokenUsage as HeadlessTokenUsage, ToolResult as HeadlessToolResult,
+    ApprovalMode, ClientCapabilities, ClientToolResultContent, FromAgentMessage, HeadlessErrorType,
+    ServerRequestResolutionStatus, ServerRequestResolvedBy, ServerRequestType, ToAgentMessage,
+    TokenUsage as HeadlessTokenUsage, ToolResult as HeadlessToolResult, ToolRetryDecisionAction,
+    UtilityCommandShellMode, UtilityCommandStream, UtilityCommandTerminalMode,
+    UtilityFileSearchMatch, UtilityOperation,
 };
 use crate::headless::HEADLESS_PROTOCOL_VERSION;
 
@@ -53,6 +60,25 @@ struct HeadlessState {
     agent: Option<NativeAgent>,
     tool_tx: Option<mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>>,
     event_task: Option<tokio::task::JoinHandle<()>>,
+    utility_commands: HashMap<String, mpsc::UnboundedSender<UtilityCommandControl>>,
+    file_watches: HashMap<String, tokio::task::JoinHandle<()>>,
+}
+
+enum UtilityCommandControl {
+    Terminate,
+    Stdin { content: String, eof: bool },
+}
+
+struct UtilityCommandOptions {
+    command_id: String,
+    command: String,
+    cwd: String,
+    env: Option<HashMap<String, String>>,
+    shell_mode: UtilityCommandShellMode,
+    terminal_mode: UtilityCommandTerminalMode,
+    allow_stdin: bool,
+    columns: Option<u32>,
+    rows: Option<u32>,
 }
 
 impl HeadlessState {
@@ -80,6 +106,8 @@ impl HeadlessState {
             agent: None,
             tool_tx: None,
             event_task: None,
+            utility_commands: HashMap::new(),
+            file_watches: HashMap::new(),
         }
     }
 
@@ -197,6 +225,9 @@ pub async fn run_headless_server() -> Result<i32> {
 
     let exit_code = 0i32;
     while let Some(line) = stdin_rx.recv().await {
+        state
+            .utility_commands
+            .retain(|_, control| !control.is_closed());
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -218,7 +249,7 @@ pub async fn run_headless_server() -> Result<i32> {
             ToAgentMessage::Hello {
                 protocol_version,
                 client_info,
-                capabilities,
+                capabilities: _,
                 role,
                 opt_out_notifications,
             } => {
@@ -227,7 +258,7 @@ pub async fn run_headless_server() -> Result<i32> {
                     connection_id: Some("native-local".to_string()),
                     client_protocol_version: protocol_version,
                     client_info,
-                    capabilities,
+                    capabilities: Some(native_capabilities()),
                     opt_out_notifications,
                     role,
                     controller_connection_id: None,
@@ -313,6 +344,12 @@ pub async fn run_headless_server() -> Result<i32> {
                 if let Some(agent) = state.agent.as_ref() {
                     agent.cancel();
                 }
+                emit(&FromAgentMessage::Error {
+                    request_id: None,
+                    message: "operation cancelled".to_string(),
+                    fatal: false,
+                    error_type: Some(HeadlessErrorType::Cancelled),
+                })?;
             }
             ToAgentMessage::ToolResponse {
                 call_id,
@@ -333,19 +370,249 @@ pub async fn run_headless_server() -> Result<i32> {
                 }
                 if let Some(tool_tx) = state.tool_tx.as_ref() {
                     let _ = tool_tx.send((call_id, approved, agent_result));
+                } else {
+                    protocol_error(Some(call_id), "no pending native tool request")?;
+                }
+            }
+            ToAgentMessage::ClientToolResult {
+                call_id,
+                content,
+                is_error,
+            } => {
+                let result = client_content_to_agent_result(content, is_error);
+                if let Some(tool_tx) = state.tool_tx.as_ref() {
+                    let _ = tool_tx.send((call_id.clone(), true, Some(result.clone())));
+                    for msg in tool_lifecycle_messages(&call_id, None, &result) {
+                        emit(&msg)?;
+                    }
+                } else {
+                    protocol_error(Some(call_id), "no pending native client-tool request")?;
+                }
+            }
+            ToAgentMessage::ServerRequestResponse {
+                request_id,
+                request_type,
+                approved,
+                result,
+                content,
+                is_error,
+                decision_action,
+                reason,
+            } => {
+                let resolution = server_request_resolution(
+                    request_type,
+                    approved,
+                    result.as_ref(),
+                    is_error,
+                    decision_action,
+                );
+                let agent_result = result.map(headless_tool_result_to_agent).or_else(|| {
+                    content.map(|value| {
+                        client_content_to_agent_result(value, is_error.unwrap_or(false))
+                    })
+                });
+                if let Some(tool_tx) = state.tool_tx.as_ref() {
+                    let approved = approved.unwrap_or(!matches!(
+                        resolution,
+                        ServerRequestResolutionStatus::Denied
+                            | ServerRequestResolutionStatus::Failed
+                            | ServerRequestResolutionStatus::Skipped
+                            | ServerRequestResolutionStatus::Aborted
+                    ));
+                    let _ = tool_tx.send((request_id.clone(), approved, agent_result));
+                }
+                emit(&FromAgentMessage::ServerRequestResolved {
+                    request_id: request_id.clone(),
+                    request_type,
+                    call_id: request_id,
+                    resolution,
+                    reason,
+                    resolved_by: ServerRequestResolvedBy::Client,
+                    started_at_ms: None,
+                    resolved_at_ms: Some(unix_timestamp_ms()),
+                })?;
+            }
+            ToAgentMessage::UtilityCommandStart {
+                command_id,
+                command,
+                cwd,
+                env,
+                shell_mode,
+                terminal_mode,
+                allow_stdin,
+                columns,
+                rows,
+            } => {
+                if state.utility_commands.contains_key(&command_id) {
+                    protocol_error(Some(command_id), "utility command id is already running")?;
+                    continue;
+                }
+                let cwd = cwd.unwrap_or_else(|| state.cwd.clone());
+                match start_utility_command(UtilityCommandOptions {
+                    command_id: command_id.clone(),
+                    command,
+                    cwd,
+                    env,
+                    shell_mode: shell_mode.unwrap_or(UtilityCommandShellMode::Shell),
+                    terminal_mode: terminal_mode.unwrap_or(UtilityCommandTerminalMode::Pipe),
+                    allow_stdin: allow_stdin.unwrap_or(false),
+                    columns,
+                    rows,
+                })
+                .await
+                {
+                    Ok(control) => {
+                        state.utility_commands.insert(command_id, control);
+                    }
+                    Err(err) => protocol_error(
+                        Some(command_id),
+                        format!("utility command failed: {err:#}"),
+                    )?,
+                }
+            }
+            ToAgentMessage::UtilityCommandTerminate { command_id, .. } => {
+                match state.utility_commands.remove(&command_id) {
+                    Some(control) => {
+                        let _ = control.send(UtilityCommandControl::Terminate);
+                    }
+                    None => protocol_error(Some(command_id), "utility command is not running")?,
+                }
+            }
+            ToAgentMessage::UtilityCommandStdin {
+                command_id,
+                content,
+                eof,
+            } => match state.utility_commands.get(&command_id) {
+                Some(control) => {
+                    let _ = control.send(UtilityCommandControl::Stdin {
+                        content,
+                        eof: eof.unwrap_or(false),
+                    });
+                }
+                None => protocol_error(Some(command_id), "utility command is not running")?,
+            },
+            ToAgentMessage::UtilityCommandResize {
+                command_id,
+                columns,
+                rows,
+            } => {
+                if state.utility_commands.contains_key(&command_id) {
+                    emit(&FromAgentMessage::UtilityCommandResized {
+                        command_id,
+                        columns,
+                        rows,
+                    })?;
+                } else {
+                    protocol_error(Some(command_id), "utility command is not running")?;
+                }
+            }
+            ToAgentMessage::UtilityFileSearch {
+                search_id,
+                query,
+                cwd,
+                limit,
+            } => {
+                let cwd = cwd.unwrap_or_else(|| state.cwd.clone());
+                match utility_file_search(&cwd, &query, limit.unwrap_or(50) as usize) {
+                    Ok((results, truncated)) => {
+                        emit(&FromAgentMessage::UtilityFileSearchResults {
+                            search_id,
+                            query,
+                            cwd,
+                            results,
+                            truncated,
+                        })?;
+                    }
+                    Err(err) => {
+                        protocol_error(Some(search_id), format!("file search failed: {err:#}"))?;
+                    }
+                }
+            }
+            ToAgentMessage::UtilityFileRead {
+                read_id,
+                path,
+                cwd,
+                offset,
+                limit,
+            } => {
+                let cwd = cwd.unwrap_or_else(|| state.cwd.clone());
+                match utility_file_read(&cwd, &path, offset.unwrap_or(0), limit.unwrap_or(2_000))
+                    .await
+                {
+                    Ok(result) => emit(&FromAgentMessage::UtilityFileReadResult {
+                        read_id,
+                        path,
+                        relative_path: result.relative_path,
+                        cwd,
+                        content: result.content,
+                        start_line: result.start_line,
+                        end_line: result.end_line,
+                        total_lines: result.total_lines,
+                        truncated: result.truncated,
+                    })?,
+                    Err(err) => {
+                        protocol_error(Some(read_id), format!("file read failed: {err:#}"))?;
+                    }
+                }
+            }
+            ToAgentMessage::UtilityFileWatchStart {
+                watch_id,
+                root_dir,
+                include_patterns,
+                exclude_patterns,
+                debounce_ms,
+            } => {
+                if state.file_watches.contains_key(&watch_id) {
+                    protocol_error(Some(watch_id), "file watch id is already running")?;
+                    continue;
+                }
+                let root_dir = root_dir.unwrap_or_else(|| state.cwd.clone());
+                match start_file_watch(
+                    watch_id.clone(),
+                    root_dir.clone(),
+                    include_patterns.clone(),
+                    exclude_patterns.clone(),
+                    debounce_ms.unwrap_or(100),
+                ) {
+                    Ok(task) => {
+                        state.file_watches.insert(watch_id.clone(), task);
+                        emit(&FromAgentMessage::UtilityFileWatchStarted {
+                            watch_id,
+                            root_dir,
+                            include_patterns,
+                            exclude_patterns,
+                            debounce_ms: debounce_ms.unwrap_or(100),
+                            owner_connection_id: Some("native-local".to_string()),
+                        })?;
+                    }
+                    Err(err) => {
+                        protocol_error(Some(watch_id), format!("file watch failed: {err:#}"))?;
+                    }
+                }
+            }
+            ToAgentMessage::UtilityFileWatchStop { watch_id } => {
+                match state.file_watches.remove(&watch_id) {
+                    Some(task) => {
+                        task.abort();
+                        emit(&FromAgentMessage::UtilityFileWatchStopped {
+                            watch_id,
+                            reason: Some("client requested".to_string()),
+                        })?;
+                    }
+                    None => protocol_error(Some(watch_id), "file watch is not running")?,
                 }
             }
             ToAgentMessage::Shutdown => {
+                for (_, control) in state.utility_commands.drain() {
+                    let _ = control.send(UtilityCommandControl::Terminate);
+                }
+                for (_, task) in state.file_watches.drain() {
+                    task.abort();
+                }
                 emit(&FromAgentMessage::Status {
                     message: "shutting down".to_string(),
                 })?;
                 break;
-            }
-            // Utility / client-tool surfaces: acknowledge without full Node parity yet.
-            other => {
-                emit(&FromAgentMessage::Status {
-                    message: format!("native headless ignored message: {other:?}"),
-                })?;
             }
         }
     }
@@ -354,6 +621,425 @@ pub async fn run_headless_server() -> Result<i32> {
         task.abort();
     }
     Ok(exit_code)
+}
+
+fn native_capabilities() -> ClientCapabilities {
+    ClientCapabilities {
+        server_requests: Some(vec![
+            ServerRequestType::Approval,
+            ServerRequestType::ClientTool,
+            ServerRequestType::UserInput,
+            ServerRequestType::ToolRetry,
+        ]),
+        utility_operations: Some(vec![
+            UtilityOperation::CommandExec,
+            UtilityOperation::FileSearch,
+            UtilityOperation::FileRead,
+            UtilityOperation::FileWatch,
+        ]),
+        raw_agent_events: Some(true),
+    }
+}
+
+fn protocol_error(request_id: Option<String>, message: impl Into<String>) -> Result<()> {
+    emit(&FromAgentMessage::Error {
+        request_id,
+        message: message.into(),
+        fatal: false,
+        error_type: Some(HeadlessErrorType::Protocol),
+    })
+}
+
+fn client_content_to_agent_result(
+    content: Vec<ClientToolResultContent>,
+    is_error: bool,
+) -> ToolResult {
+    let output = content
+        .into_iter()
+        .map(|item| match item {
+            ClientToolResultContent::Text { text } => text,
+            ClientToolResultContent::Image { data, mime_type } => {
+                format!("data:{mime_type};base64,{data}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    ToolResult {
+        success: !is_error,
+        error: is_error.then(|| output.clone()),
+        output,
+        details: None,
+    }
+}
+
+fn server_request_resolution(
+    request_type: ServerRequestType,
+    approved: Option<bool>,
+    result: Option<&HeadlessToolResult>,
+    is_error: Option<bool>,
+    decision: Option<ToolRetryDecisionAction>,
+) -> ServerRequestResolutionStatus {
+    if let Some(action) = decision {
+        return match action {
+            ToolRetryDecisionAction::Retry => ServerRequestResolutionStatus::Retried,
+            ToolRetryDecisionAction::Skip => ServerRequestResolutionStatus::Skipped,
+            ToolRetryDecisionAction::Abort => ServerRequestResolutionStatus::Aborted,
+        };
+    }
+    if approved == Some(false) {
+        return ServerRequestResolutionStatus::Denied;
+    }
+    if is_error == Some(true) || result.is_some_and(|value| !value.success) {
+        return ServerRequestResolutionStatus::Failed;
+    }
+    match request_type {
+        ServerRequestType::Approval => ServerRequestResolutionStatus::Approved,
+        ServerRequestType::ClientTool => ServerRequestResolutionStatus::Completed,
+        ServerRequestType::UserInput => ServerRequestResolutionStatus::Answered,
+        ServerRequestType::ToolRetry => ServerRequestResolutionStatus::Retried,
+    }
+}
+
+async fn start_utility_command(
+    options: UtilityCommandOptions,
+) -> Result<mpsc::UnboundedSender<UtilityCommandControl>> {
+    let UtilityCommandOptions {
+        command_id,
+        command,
+        cwd,
+        env,
+        shell_mode,
+        terminal_mode,
+        allow_stdin,
+        columns,
+        rows,
+    } = options;
+    let cwd_path = PathBuf::from(&cwd);
+    if !cwd_path.is_dir() {
+        anyhow::bail!("working directory does not exist: {cwd}");
+    }
+    let mut process = match shell_mode {
+        UtilityCommandShellMode::Shell => {
+            #[cfg(windows)]
+            let process = {
+                let mut process = Command::new("cmd");
+                process.args(["/C", &command]);
+                process
+            };
+            #[cfg(not(windows))]
+            let process = {
+                let mut process = Command::new("sh");
+                process.args(["-lc", &command]);
+                process
+            };
+            process
+        }
+        UtilityCommandShellMode::Direct => {
+            let args = shlex::split(&command).context("parse direct command")?;
+            let (program, args) = args.split_first().context("direct command is empty")?;
+            let mut process = Command::new(program);
+            process.args(args);
+            process
+        }
+    };
+    process
+        .current_dir(&cwd_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(if allow_stdin {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
+    if let Some(env) = env {
+        process.envs(env);
+    }
+    let mut child = process.spawn().context("spawn utility command")?;
+    let pid = child.id();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let mut stdin = child.stdin.take();
+    emit(&FromAgentMessage::UtilityCommandStarted {
+        command_id: command_id.clone(),
+        command,
+        cwd: Some(cwd),
+        shell_mode,
+        terminal_mode,
+        pid,
+        columns,
+        rows,
+        owner_connection_id: Some("native-local".to_string()),
+    })?;
+    if let Some(stdout) = stdout {
+        spawn_command_reader(command_id.clone(), UtilityCommandStream::Stdout, stdout);
+    }
+    if let Some(stderr) = stderr {
+        spawn_command_reader(command_id.clone(), UtilityCommandStream::Stderr, stderr);
+    }
+    let (control_tx, mut control_rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let (success, exit_code, reason) = loop {
+            tokio::select! {
+                status = child.wait() => {
+                    match status {
+                        Ok(status) => break (status.success(), status.code(), None),
+                        Err(err) => break (false, None, Some(format!("wait failed: {err}"))),
+                    }
+                }
+                control = control_rx.recv() => {
+                    match control {
+                        Some(UtilityCommandControl::Terminate) => {
+                            let kill_result = child.kill().await;
+                            let status = child.wait().await.ok();
+                            break (
+                                false,
+                                status.and_then(|value| value.code()),
+                                kill_result.err().map(|err| format!("terminate failed: {err}"))
+                                    .or_else(|| Some("terminated by client".to_string())),
+                            );
+                        }
+                        Some(UtilityCommandControl::Stdin { content, eof }) => {
+                            if let Some(writer) = stdin.as_mut() {
+                                if writer.write_all(content.as_bytes()).await.is_err() {
+                                    stdin = None;
+                                } else if eof {
+                                    let _ = writer.shutdown().await;
+                                    stdin = None;
+                                }
+                            }
+                        }
+                        None => {
+                            let _ = child.kill().await;
+                            let status = child.wait().await.ok();
+                            break (false, status.and_then(|value| value.code()), Some("runtime closed".to_string()));
+                        }
+                    }
+                }
+            }
+        };
+        let _ = emit(&FromAgentMessage::UtilityCommandExited {
+            command_id,
+            success,
+            exit_code,
+            signal: None,
+            reason,
+        });
+    });
+    Ok(control_tx)
+}
+
+fn spawn_command_reader<R>(command_id: String, stream: UtilityCommandStream, mut reader: R)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut buffer = vec![0_u8; 8 * 1024];
+        loop {
+            match reader.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(count) => {
+                    let content = String::from_utf8_lossy(&buffer[..count]).into_owned();
+                    let _ = emit(&FromAgentMessage::UtilityCommandOutput {
+                        command_id: command_id.clone(),
+                        stream,
+                        content,
+                    });
+                }
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+fn utility_file_search(
+    cwd: &str,
+    query: &str,
+    limit: usize,
+) -> Result<(Vec<UtilityFileSearchMatch>, bool)> {
+    let root = Path::new(cwd);
+    if !root.is_dir() {
+        anyhow::bail!("search directory does not exist: {cwd}");
+    }
+    let scan_limit = limit.saturating_mul(100).clamp(1_000, 100_000);
+    let files = crate::files::get_workspace_files(root, scan_limit);
+    let total_files = files.len();
+    let result = crate::files::FileSearch::new(files)
+        .max_results(limit.max(1))
+        .search(query);
+    let results = result
+        .matches
+        .into_iter()
+        .map(|item| UtilityFileSearchMatch {
+            path: item.file.relative_path,
+            score: item.score,
+        })
+        .collect();
+    Ok((results, total_files >= scan_limit))
+}
+
+struct FileReadResult {
+    relative_path: String,
+    content: String,
+    start_line: u32,
+    end_line: u32,
+    total_lines: u32,
+    truncated: bool,
+}
+
+async fn utility_file_read(
+    cwd: &str,
+    path: &str,
+    offset: u32,
+    limit: u32,
+) -> Result<FileReadResult> {
+    let root = tokio::fs::canonicalize(cwd)
+        .await
+        .with_context(|| format!("resolve read directory {cwd}"))?;
+    let requested = Path::new(path);
+    let target = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        root.join(requested)
+    };
+    let target = tokio::fs::canonicalize(&target)
+        .await
+        .with_context(|| format!("resolve file {}", target.display()))?;
+    if !target.starts_with(&root) {
+        anyhow::bail!("file escapes the requested workspace");
+    }
+    let bytes = tokio::fs::read(&target)
+        .await
+        .context("read workspace file")?;
+    let text = String::from_utf8(bytes).context("workspace file is not UTF-8")?;
+    let lines = text.lines().collect::<Vec<_>>();
+    let total_lines = u32::try_from(lines.len()).unwrap_or(u32::MAX);
+    let start = usize::try_from(offset)
+        .unwrap_or(usize::MAX)
+        .min(lines.len());
+    let take = usize::try_from(limit).unwrap_or(usize::MAX);
+    let end = start.saturating_add(take).min(lines.len());
+    let relative_path = target
+        .strip_prefix(&root)
+        .unwrap_or(&target)
+        .to_string_lossy()
+        .into_owned();
+    Ok(FileReadResult {
+        relative_path,
+        content: lines[start..end].join("\n"),
+        start_line: u32::try_from(start.saturating_add(1)).unwrap_or(u32::MAX),
+        end_line: u32::try_from(end).unwrap_or(u32::MAX),
+        total_lines,
+        truncated: end < lines.len(),
+    })
+}
+
+type WatchSnapshot = HashMap<String, (u64, u64)>;
+
+fn start_file_watch(
+    watch_id: String,
+    root_dir: String,
+    include_patterns: Option<Vec<String>>,
+    exclude_patterns: Option<Vec<String>>,
+    debounce_ms: u32,
+) -> Result<tokio::task::JoinHandle<()>> {
+    let root = PathBuf::from(&root_dir);
+    if !root.is_dir() {
+        anyhow::bail!("watch directory does not exist: {root_dir}");
+    }
+    let includes = compile_patterns(include_patterns.as_deref())?;
+    let excludes = compile_patterns(exclude_patterns.as_deref())?;
+    let mut previous = watch_snapshot(&root, &includes, &excludes);
+    Ok(tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(u64::from(
+            debounce_ms.max(25),
+        )));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let current = watch_snapshot(&root, &includes, &excludes);
+            for (path, stamp) in &current {
+                let change_type = match previous.get(path) {
+                    None => Some(crate::headless::messages::UtilityFileWatchChangeType::Create),
+                    Some(previous_stamp) if previous_stamp != stamp => {
+                        Some(crate::headless::messages::UtilityFileWatchChangeType::Modify)
+                    }
+                    _ => None,
+                };
+                if let Some(change_type) = change_type {
+                    emit_watch_event(&watch_id, &root, path, change_type);
+                }
+            }
+            for path in previous.keys().filter(|path| !current.contains_key(*path)) {
+                emit_watch_event(
+                    &watch_id,
+                    &root,
+                    path,
+                    crate::headless::messages::UtilityFileWatchChangeType::Delete,
+                );
+            }
+            previous = current;
+        }
+    }))
+}
+
+fn compile_patterns(patterns: Option<&[String]>) -> Result<Vec<glob::Pattern>> {
+    patterns
+        .unwrap_or(&[])
+        .iter()
+        .map(|pattern| {
+            glob::Pattern::new(pattern).with_context(|| format!("invalid glob {pattern}"))
+        })
+        .collect()
+}
+
+fn watch_snapshot(
+    root: &Path,
+    includes: &[glob::Pattern],
+    excludes: &[glob::Pattern],
+) -> WatchSnapshot {
+    crate::files::get_workspace_files(root, 100_000)
+        .into_iter()
+        .filter_map(|file| {
+            let relative = file.relative_path;
+            let included =
+                includes.is_empty() || includes.iter().any(|pattern| pattern.matches(&relative));
+            let excluded = excludes.iter().any(|pattern| pattern.matches(&relative));
+            if !included || excluded {
+                return None;
+            }
+            let metadata = std::fs::metadata(root.join(&relative)).ok()?;
+            let modified = metadata
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_millis() as u64;
+            Some((relative, (modified, metadata.len())))
+        })
+        .collect()
+}
+
+fn emit_watch_event(
+    watch_id: &str,
+    root: &Path,
+    relative_path: &str,
+    change_type: crate::headless::messages::UtilityFileWatchChangeType,
+) {
+    let _ = emit(&FromAgentMessage::UtilityFileWatchEvent {
+        watch_id: watch_id.to_string(),
+        change_type,
+        path: root.join(relative_path).to_string_lossy().into_owned(),
+        relative_path: relative_path.to_string(),
+        timestamp: unix_timestamp_ms(),
+        is_directory: false,
+    });
+}
+
+fn unix_timestamp_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 async fn handle_agent_event(
@@ -607,6 +1293,59 @@ fn tool_lifecycle_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_capabilities_match_implemented_request_surface() {
+        let capabilities = native_capabilities();
+        assert_eq!(
+            capabilities.utility_operations,
+            Some(vec![
+                UtilityOperation::CommandExec,
+                UtilityOperation::FileSearch,
+                UtilityOperation::FileRead,
+                UtilityOperation::FileWatch,
+            ])
+        );
+        assert_eq!(capabilities.raw_agent_events, Some(true));
+        assert_eq!(capabilities.server_requests.as_ref().map(Vec::len), Some(4));
+    }
+
+    #[test]
+    fn client_tool_content_preserves_text_and_images() {
+        let result = client_content_to_agent_result(
+            vec![
+                ClientToolResultContent::Text {
+                    text: "done".to_string(),
+                },
+                ClientToolResultContent::Image {
+                    data: "AAAA".to_string(),
+                    mime_type: "image/png".to_string(),
+                },
+            ],
+            false,
+        );
+        assert!(result.success);
+        assert_eq!(result.output, "done\ndata:image/png;base64,AAAA");
+        assert_eq!(result.error, None);
+    }
+
+    #[test]
+    fn request_resolution_maps_each_response_shape() {
+        assert_eq!(
+            server_request_resolution(ServerRequestType::Approval, Some(false), None, None, None,),
+            ServerRequestResolutionStatus::Denied
+        );
+        assert_eq!(
+            server_request_resolution(
+                ServerRequestType::ToolRetry,
+                None,
+                None,
+                None,
+                Some(ToolRetryDecisionAction::Skip),
+            ),
+            ServerRequestResolutionStatus::Skipped
+        );
+    }
 
     #[test]
     fn resolve_tool_approval_leaves_auto_exec_to_native() {

@@ -6,7 +6,6 @@
 //! - **Native Rust hooks** - Trait-based, zero overhead
 //! - **Lua scripts** - Lightweight scripting for custom logic
 //! - **WASM plugins** - Sandboxed, polyglot plugins
-//! - **TypeScript hooks** - IPC bridge to Node.js hooks
 //!
 //! # Architecture
 //!
@@ -18,10 +17,10 @@
 //! └─────────────┘   Allow/Block/Modify │  │  Rust   │ │   Lua   │   │
 //!                                      │  │ Traits  │ │ Scripts │   │
 //!                                      │  └─────────┘ └─────────┘   │
-//!                                      │  ┌─────────┐ ┌─────────┐   │
-//!                                      │  │  WASM   │ │ Node.js │   │
-//!                                      │  │ Plugins │ │  Bridge │   │
-//!                                      │  └─────────┘ └─────────┘   │
+//!                                      │  ┌─────────┐                │
+//!                                      │  │  WASM   │                │
+//!                                      │  │ Plugins │                │
+//!                                      │  └─────────┘                │
 //!                                      └─────────────────────────────┘
 //! ```
 //!
@@ -71,7 +70,6 @@
 //! registry.register_pre_tool_use(Arc::new(LoggingHook));
 //! ```
 
-mod bridge;
 mod config;
 mod hot_reload;
 mod integration;
@@ -82,7 +80,6 @@ mod registry;
 mod types;
 mod wasm;
 
-pub use bridge::*;
 pub use config::*;
 pub use hot_reload::*;
 pub use integration::*;

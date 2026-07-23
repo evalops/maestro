@@ -31,7 +31,6 @@ const DEFAULT_EXCLUDES = [
 	".husky/_/**",
 	"*.tsbuildinfo",
 	"**/*.tsbuildinfo",
-	"AGENTS.md",
 	"CLAUDE.md",
 	".github/workflows/**",
 	".github/workflows/public-release-mirror.yml",
@@ -56,7 +55,6 @@ const DEFAULT_EXCLUDES = [
 
 const PUBLIC_INCLUDE_OVERRIDES = new Set([
 	".env.example",
-	".github/workflows/review-thread-guard.yml",
 ]);
 
 const STALE_PUBLIC_TARGET_DELETES = [
@@ -295,15 +293,6 @@ function resolvePublicPackageJson(
 
 function resolvePublicFileContent(sourceRoot, relativePath) {
 	const sourcePath = resolve(sourceRoot, relativePath);
-	if (relativePath === ".github/workflows/review-thread-guard.yml") {
-		return Buffer.from(
-			readFileSync(sourcePath, "utf8").replace(
-				/^[^\S\r\n]*runner_label:.*(?:\r?\n|$)/gmu,
-				"",
-			),
-			"utf8",
-		);
-	}
 	if (relativePath === "MODULE.bazel") {
 		return Buffer.from(
 			readFileSync(sourcePath, "utf8").replace(
@@ -369,10 +358,7 @@ function applyMirrorPlan(sourceRoot, targetRoot, plan) {
 		mkdirSync(dirname(targetPath), { recursive: true });
 		if (relativePath === "package.json") {
 			writeFileSync(targetPath, plan.packageJsonContent);
-		} else if (
-			relativePath === ".github/workflows/review-thread-guard.yml" ||
-			relativePath === "MODULE.bazel"
-		) {
+		} else if (relativePath === "MODULE.bazel") {
 			writeFileSync(targetPath, resolvePublicFileContent(sourceRoot, relativePath));
 		} else {
 			copyFileSync(sourcePath, targetPath);

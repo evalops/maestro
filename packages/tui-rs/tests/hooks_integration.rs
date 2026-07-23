@@ -300,11 +300,10 @@ fn test_hook_stats_total() {
         native_hooks: 2,
         lua_scripts: 3,
         wasm_plugins: 1,
-        typescript_hooks: 4,
         enabled: true,
     };
 
-    assert_eq!(stats.total(), 10);
+    assert_eq!(stats.total(), 6);
 }
 
 #[test]
@@ -451,7 +450,7 @@ fn test_wasm_result_code_conversion() {
 }
 
 // ============================================================================
-// Async Tests (for IPC bridge)
+// Async Tests
 // ============================================================================
 
 #[tokio::test]
@@ -463,24 +462,6 @@ async fn test_async_pre_tool_use() {
         .await;
 
     assert!(matches!(result, HookResult::Continue));
-}
-
-#[tokio::test]
-async fn test_async_with_bridge_start() {
-    let mut system = IntegratedHookSystem::load_from_config("/tmp");
-
-    // Start bridge (may fail if Node.js not available, which is fine)
-    let _ = system.start_bridge().await;
-
-    // Should still work even if bridge fails
-    let result = system
-        .execute_pre_tool_use_async("Read", "1", &serde_json::json!({}))
-        .await;
-
-    assert!(matches!(result, HookResult::Continue));
-
-    // Stop bridge
-    let _ = system.stop_bridge().await;
 }
 
 // ============================================================================
@@ -1393,7 +1374,6 @@ fn test_integrated_system_stats() {
     let _ = stats.native_hooks;
     let _ = stats.lua_scripts;
     let _ = stats.wasm_plugins;
-    let _ = stats.typescript_hooks;
 }
 
 #[test]

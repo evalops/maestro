@@ -18,8 +18,8 @@ pub struct FileSearchModal {
     query: String,
     /// Cursor position in query
     cursor: usize,
-    /// Available files to search
-    files: Vec<WorkspaceFile>,
+    /// Persistent search index; avoids cloning every workspace file per keystroke.
+    searcher: FileSearch,
     /// Current search results
     results: FileSearchResult,
     /// Selected index
@@ -37,7 +37,7 @@ impl FileSearchModal {
         Self {
             query: String::new(),
             cursor: 0,
-            files: Vec::new(),
+            searcher: FileSearch::new(Vec::new()).max_results(20),
             results: FileSearchResult::default(),
             selected: 0,
             visible: false,
@@ -47,7 +47,7 @@ impl FileSearchModal {
 
     /// Set the available files
     pub fn set_files(&mut self, files: Vec<WorkspaceFile>) {
-        self.files = files;
+        self.searcher = FileSearch::new(files).max_results(20);
         self.search();
     }
 
@@ -144,8 +144,7 @@ impl FileSearchModal {
 
     /// Perform the search
     fn search(&mut self) {
-        let searcher = FileSearch::new(self.files.clone()).max_results(20);
-        self.results = searcher.search(&self.query);
+        self.results = self.searcher.search(&self.query);
         // Reset selection if out of bounds
         if self.selected >= self.results.matches.len() {
             self.selected = 0;

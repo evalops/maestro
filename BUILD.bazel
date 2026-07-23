@@ -5,26 +5,20 @@ package(default_visibility = ["//visibility:private"])
 filegroup(
     name = "workspace_manifests",
     srcs = [
-        ".github/actions/setup-bun-nx/action.yml",
         ".node-version",
-        "bun.lockb",
-        "nx.json",
+        "Cargo.lock",
+        "Cargo.toml",
         "package.json",
-        "project.json",
+        "packages/ambient-agent-rs/Cargo.toml",
+        "packages/control-plane-rs/Cargo.toml",
+        "packages/maestro-rs/Cargo.toml",
+        "packages/tui-rs/Cargo.toml",
         "tool-versions.json",
     ],
-)
-
-filegroup(
-    name = "nx_project_manifests",
-    srcs = glob(["packages/*/project.json"]),
 )
 
 sh_test(
     name = "maestro_bazel_contract_test",
     srcs = ["tools/bazel/maestro_bazel_contract_test.sh"],
-    data = [
-        ":nx_project_manifests",
-        ":workspace_manifests",
-    ],
+    data = [":workspace_manifests"],
 )

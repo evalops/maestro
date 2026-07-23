@@ -1,108 +1,32 @@
 #!/usr/bin/env node
-// @ts-check
-
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { getPackageMetadata } from "./package-metadata.js";
 
-const RELEASE_BINARY_TARGETS = new Map([
-	[
-		"linux-x64",
-		{
-			bunTarget: "bun-linux-x64-baseline",
-			outfile: "dist/release/maestro-linux-x64",
-		},
-	],
-	[
-		"darwin-arm64",
-		{
-			bunTarget: "bun-darwin-arm64",
-			outfile: "dist/release/maestro-darwin-arm64",
-		},
-	],
+const TARGETS = new Map([
+	["linux-x64", "x86_64-unknown-linux-gnu"],
+	["linux-arm64", "aarch64-unknown-linux-gnu"],
+	["darwin-x64", "x86_64-apple-darwin"],
+	["darwin-arm64", "aarch64-apple-darwin"],
 ]);
 
-function parseArgs(argv) {
-	const options = {
-		outfile: "",
-		platform: "linux-x64",
-		skipBuild: false,
-		target: "",
-	};
-
-	for (let index = 0; index < argv.length; index += 1) {
-		const arg = argv[index];
-		switch (arg) {
-			case "--outfile":
-				options.outfile = argv[++index] ?? "";
-				break;
-			case "--platform":
-				options.platform = argv[++index] ?? "";
-				break;
-			case "--skip-build":
-				options.skipBuild = true;
-				break;
-			case "--target":
-				options.target = argv[++index] ?? "";
-				break;
-			default:
-				throw new Error(`Unknown argument: ${arg}`);
-		}
-	}
-
-	return options;
+const options = { platform: "linux-x64", outfile: "", target: "", skipBuild: false };
+for (let i = 2; i < process.argv.length; i++) {
+	const arg = process.argv[i];
+	if (arg === "--platform") options.platform = process.argv[++i] ?? "";
+	else if (arg === "--outfile") options.outfile = process.argv[++i] ?? "";
+	else if (arg === "--target") options.target = process.argv[++i] ?? "";
+	else if (arg === "--skip-build") options.skipBuild = true;
+	else throw new Error(`Unknown argument: ${arg}`);
 }
-
-const options = parseArgs(process.argv.slice(2));
-const configuredTarget = RELEASE_BINARY_TARGETS.get(options.platform);
-const bunTarget = options.target || configuredTarget?.bunTarget;
-const outfile = options.outfile || configuredTarget?.outfile;
-
-if (!bunTarget) {
-	throw new Error(
-		`Unsupported release binary platform: ${options.platform}. Expected one of: ${Array.from(
-			RELEASE_BINARY_TARGETS.keys(),
-		).join(", ")}`,
-	);
-}
-
-if (!outfile) {
-	throw new Error("Release binary outfile could not be resolved.");
-}
-
+const target = options.target || TARGETS.get(options.platform);
+if (!target) throw new Error(`Unsupported platform: ${options.platform}`);
+const outfile = resolve(options.outfile || `dist/release/maestro-${options.platform}`);
 if (!options.skipBuild) {
-	execFileSync("npm", ["run", "build"], { stdio: "inherit" });
+	execFileSync("cargo", ["build", "--release", "--locked", "-p", "maestro", "--target", target], { stdio: "inherit" });
 }
-
-const resolvedOutfile = resolve(outfile);
-const { version } = getPackageMetadata();
-mkdirSync(dirname(resolvedOutfile), { recursive: true });
-
-execFileSync(
-	"bun",
-	[
-		"build",
-		"./src/cli.ts",
-		"--compile",
-		`--target=${bunTarget}`,
-		"--define",
-		"MAESTRO_BUNDLE_RUNTIME=true",
-		"--define",
-		`MAESTRO_RELEASE_VERSION=${JSON.stringify(version)}`,
-		"--external",
-		"sharp",
-		"--external",
-		"tree-sitter",
-		"--external",
-		"tree-sitter-bash",
-		`--outfile=${resolvedOutfile}`,
-	],
-	{ stdio: "inherit" },
-);
-
-chmodSync(resolvedOutfile, 0o755);
-const size = statSync(resolvedOutfile).size;
-console.log(
-	`Built release binary ${resolvedOutfile} for ${bunTarget} (${size} bytes).`,
-);
+const source = resolve(`target/${target}/release/maestro`);
+mkdirSync(dirname(outfile), { recursive: true });
+copyFileSync(source, outfile);
+chmodSync(outfile, 0o755);
+console.log(`Built native release ${outfile} (${statSync(outfile).size} bytes).`);

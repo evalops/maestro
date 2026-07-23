@@ -18,7 +18,6 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-	getBunCommand,
 	getNpmCommand,
 	installedBinPath,
 	readInstalledPackageJson,
@@ -27,10 +26,7 @@ import {
 } from "./install-smoke-utils.js";
 import { getPackageMetadata } from "./package-metadata.js";
 import { getRuntimeWorkspaceNames } from "./runtime-workspaces.mjs";
-import {
-	getWorkspacePackages,
-	loadRootPackage,
-} from "./workspace-utils.js";
+import { loadRootPackage } from "./workspace-utils.js";
 import { assertPublishedReplayReleaseGate } from "./published-replay-evidence-gate.js";
 import {
 	REQUIRED_OBSERVABILITY_QUERY_TRACES,
@@ -204,9 +200,6 @@ function inferPublishedInstaller({ installer, installMetadata }) {
 	}
 	const label =
 		typeof installMetadata?.label === "string" ? installMetadata.label : "";
-	if (/\bvia Bun\b/.test(label)) {
-		return "bun";
-	}
 	if (/\bvia npm\b/.test(label)) {
 		return "npm";
 	}
@@ -216,12 +209,7 @@ function inferPublishedInstaller({ installer, installMetadata }) {
 function installLabelForInstaller({ packageSpec, installer }) {
 	const normalizedInstaller =
 		typeof installer === "string" ? installer.trim().toLowerCase() : "";
-	const suffix =
-		normalizedInstaller === "bun"
-			? "via Bun"
-			: normalizedInstaller === "npm"
-				? "via npm"
-				: "published replay install";
+	const suffix = normalizedInstaller === "npm" ? "via npm" : "published replay install";
 	return `${packageSpec} ${suffix}`;
 }
 
@@ -237,17 +225,9 @@ export function registryInstallPlanForInstaller({ installer, packageSpec }) {
 				installArgs: ["install", packageSpec],
 				tempPrefix: "maestro-published-replay-install-",
 			};
-		case "bun":
-			return {
-				installer: "bun",
-				command: getBunCommand(),
-				initArgs: ["init", "-y"],
-				installArgs: ["add", packageSpec],
-				tempPrefix: "maestro-bun-published-replay-install-",
-			};
 		default:
 			throw new Error(
-				`Unsupported published replay installer "${installer}". Use npm or bun, or pass --install-root for a preinstalled package.`,
+				`Unsupported published replay installer "${installer}". Use npm or pass --install-root for a preinstalled package.`,
 			);
 	}
 }
@@ -1419,16 +1399,7 @@ function buildPublishedReplayReleaseGate({
 
 async function getForbiddenWorkspaceNames() {
 	const rootPackage = loadRootPackage();
-	const runtimeWorkspaceNames = getRuntimeWorkspaceNames(rootPackage);
-	const workspacePackages = await getWorkspacePackages(rootPackage);
-	return Array.from(
-		new Set([
-			...runtimeWorkspaceNames,
-			...workspacePackages
-				.filter((workspacePackage) => workspacePackage.data.private === true)
-				.map((workspacePackage) => workspacePackage.name),
-		]),
-	).sort();
+	return getRuntimeWorkspaceNames(rootPackage);
 }
 
 export function resolvePublishedReplayEvidencePath({

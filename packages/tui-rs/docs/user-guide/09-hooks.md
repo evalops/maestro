@@ -42,9 +42,6 @@ Depending on runtime support:
 | `command` | Shell command; JSON on stdin |
 | `lua` / `lua_file` | Inline or file Lua |
 | `wasm` | WASM plugin |
-| `typescript` | TypeScript hook via optional Node IPC bridge |
-
-Native TUI keeps a small Node bridge only for optional TypeScript hooks.
 
 ---
 

@@ -11,10 +11,8 @@ fi
 # Ensure deps are installed (skip scripts to avoid side effects)
 if [ -f package-lock.json ]; then
   npm ci --ignore-scripts >/dev/null
-elif [ -f bun.lockb ]; then
-  bun install --ignore-scripts >/dev/null
 else
-  echo "No package-lock.json or bun.lockb found; cannot install deps" >&2
+  echo "No package-lock.json found; cannot install deps" >&2
   exit 1
 fi
 

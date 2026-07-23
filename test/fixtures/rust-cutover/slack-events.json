@@ -1,0 +1,71 @@
+{
+	"schemaVersion": 1,
+	"cases": [
+		{ "name": "connected", "payload": null },
+		{ "name": "disconnected", "payload": { "reason": "shutdown" } },
+		{
+			"name": "message",
+			"payload": {
+				"text": "hello",
+				"channel": "C123",
+				"user": "U123",
+				"ts": "1710000000.000100"
+			}
+		},
+		{
+			"name": "processing",
+			"payload": { "channel": "C123", "thread_ts": "1710000000.000100" }
+		},
+		{
+			"name": "completed",
+			"payload": {
+				"channel": "C123",
+				"thread_ts": "1710000000.000100",
+				"duration": 42
+			}
+		},
+		{
+			"name": "error",
+			"payload": {
+				"error": { "name": "Error", "message": "failure" },
+				"context": "run"
+			}
+		},
+		{
+			"name": "rateLimited",
+			"payload": { "method": "chat.postMessage", "retryAfter": 1000 }
+		},
+		{
+			"name": "toolExecuted",
+			"payload": { "tool": "read", "success": true, "duration": 15 }
+		},
+		{
+			"name": "runtime.channel-message",
+			"runtimeType": "RUNTIME_EVENT_TYPE_CHANNEL_MESSAGE_RECORDED"
+		},
+		{
+			"name": "runtime.model-response",
+			"runtimeType": "RUNTIME_EVENT_TYPE_MODEL_RESPONSE_RECORDED"
+		},
+		{
+			"name": "runtime.tool-call",
+			"runtimeType": "RUNTIME_EVENT_TYPE_TOOL_CALL_RECORDED"
+		},
+		{
+			"name": "runtime.tool-result",
+			"runtimeType": "RUNTIME_EVENT_TYPE_TOOL_RESULT_RECORDED"
+		},
+		{
+			"name": "runtime.approval-requested",
+			"runtimeType": "RUNTIME_EVENT_TYPE_APPROVAL_REQUESTED"
+		},
+		{
+			"name": "runtime.approval-resolved",
+			"runtimeType": "RUNTIME_EVENT_TYPE_APPROVAL_RESOLVED"
+		},
+		{
+			"name": "runtime.progress",
+			"runtimeType": "RUNTIME_EVENT_TYPE_AGENT_PROGRESS_RECORDED"
+		}
+	]
+}

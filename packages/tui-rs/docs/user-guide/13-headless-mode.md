@@ -13,7 +13,7 @@ maestro "summarize package.json" --mode text
 maestro "summarize package.json" --mode json
 ```
 
-Non-TTY pipes and simple `maestro exec "…"` flows also hand off to `maestro-tui --print` for the Rust agent. Complex exec options such as `--output-schema` may remain on the TypeScript path.
+Non-TTY pipes and `maestro exec "…"` flows dispatch to the native print path. Structured output options such as `--output-schema` are owned by the Rust runtime.
 
 ```bash
 # Direct native binary

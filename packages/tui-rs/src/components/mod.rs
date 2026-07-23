@@ -122,6 +122,7 @@ mod file_search;
 mod input;
 mod layout;
 mod message;
+pub(crate) mod message_layout;
 pub(crate) mod model_selector;
 mod rate_limit;
 mod scroll;

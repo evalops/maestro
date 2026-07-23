@@ -4,24 +4,10 @@
 import { execFileSync as defaultExecFileSync } from "node:child_process";
 
 export const packageImpactingFiles = new Set([
-	"buf.gen.yaml",
 	"buf.yaml",
-	"bun.lockb",
 	"package.json",
-	"tsconfig.base.json",
-	"tsconfig.build.json",
-	"tsconfig.json",
-	"scripts/bundle-runtime-deps.mjs",
-	"scripts/cli-runtime-boundary-externals.mjs",
-	"scripts/copy-db-migrations.js",
-	"scripts/copy-themes.js",
-	"scripts/codegen-utils.mjs",
-	"scripts/ensure-deps.js",
 	"scripts/ensure-dir.js",
-	"scripts/headless-protocol-codegen.mjs",
 	"scripts/package-metadata.js",
-	"scripts/runtime-workspaces.mjs",
-	"scripts/session-wire-format-codegen.mjs",
 	"scripts/workspace-utils.js",
 ]);
 
@@ -40,10 +26,8 @@ export function isPackageImpactingPath(filePath) {
 	return (
 		packageImpactingFiles.has(path) ||
 		path.startsWith("packages/") ||
-		path.startsWith("proto/") ||
 		path.startsWith("skills/") ||
-		path.startsWith("src/") ||
-		path.startsWith("types/")
+		path.startsWith("proto/")
 	);
 }
 

@@ -2,12 +2,15 @@
 //!
 //! Provides a common interface for different AI providers.
 
-use anyhow::Result;
+use std::collections::HashMap;
+
+use anyhow::{Context, Result};
 use tokio::sync::mpsc;
 
 use super::anthropic::AnthropicClient;
 use super::google::GoogleClient;
 use super::openai::OpenAiClient;
+use super::providers::{ProviderProtocol, ProviderRegistry, ResolvedProvider};
 use super::types::{Message, RequestConfig, StreamEvent};
 use super::vertex::VertexAiClient;
 
@@ -79,6 +82,9 @@ impl AiProvider {
     pub fn from_model(model: &str) -> Self {
         let model_lower = model.to_lowercase();
         let provider_prefix = model_lower.split_once('/').map(|(provider, _)| provider);
+        if let Some(descriptor) = provider_prefix.and_then(ProviderRegistry::descriptor) {
+            return ai_provider_for_descriptor(descriptor.id);
+        }
         match provider_prefix {
             Some("anthropic") => return AiProvider::Anthropic,
             Some("openai" | "azure-openai" | "azure") => return AiProvider::OpenAI,
@@ -146,9 +152,13 @@ pub fn provider_model_name(model: &str) -> String {
     }
 
     match provider.to_ascii_lowercase().as_str() {
-        "anthropic" | "openai" | "azure-openai" | "azure" | "google" | "gemini" | "mistral"
-        | "groq" | "vertex-ai" | "vertex" | "deepseek" | "moonshot" | "kimi" | "dashscope"
-        | "qwen" | "minimax" | "zai" | "zhipu" => model_id.to_string(),
+        "anthropic" | "claude" | "openai" | "openai-codex" | "codex" | "azure-openai" | "azure"
+        | "google" | "gemini" | "google-gemini-cli" | "google-antigravity" | "mistral" | "groq"
+        | "vertex-ai" | "vertex" | "deepseek" | "moonshot" | "kimi" | "dashscope" | "qwen"
+        | "minimax" | "zai" | "zhipu" | "evalops" | "maestro-managed" | "bedrock"
+        | "aws-bedrock" | "writer" | "xai" | "grok" | "cerebras" | "openrouter" => {
+            model_id.to_string()
+        }
         _ => trimmed.to_string(),
     }
 }
@@ -266,7 +276,93 @@ impl UnifiedClient {
 
     /// Create client based on model name
     pub fn from_model(model: &str) -> Result<Self> {
-        Self::from_provider(AiProvider::from_model(model))
+        let env = std::env::vars().collect();
+        let resolved = ProviderRegistry::require(model, &env)?;
+        Self::from_resolved_provider(&resolved, &env)
+    }
+
+    fn from_resolved_provider(
+        resolved: &ResolvedProvider,
+        env: &HashMap<String, String>,
+    ) -> Result<Self> {
+        let credential = resolved
+            .credential
+            .as_deref()
+            .context("provider credential unexpectedly missing")?;
+        match resolved.provider.protocol {
+            ProviderProtocol::Anthropic => Ok(Self::Anthropic(AnthropicClient::new(credential)?)),
+            ProviderProtocol::Google => Ok(Self::Google(GoogleClient::new(credential))),
+            ProviderProtocol::Bedrock => {
+                anyhow::bail!("native Bedrock transport requires AWS SigV4 runtime configuration")
+            }
+            ProviderProtocol::Managed => {
+                let base_url = resolved
+                    .base_url
+                    .as_deref()
+                    .context("managed provider requires an explicit base URL")?;
+                let organization_id = ["MAESTRO_EVALOPS_ORG_ID", "EVALOPS_ORGANIZATION_ID"]
+                    .iter()
+                    .find_map(|name| env.get(*name))
+                    .map(String::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .context("EvalOps managed provider requires MAESTRO_EVALOPS_ORG_ID")?;
+                let provider = env
+                    .get("MAESTRO_EVALOPS_PROVIDER")
+                    .map(String::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("openai");
+                let environment = env
+                    .get("MAESTRO_EVALOPS_ENVIRONMENT")
+                    .map(String::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("prod");
+                let mut provider_ref = serde_json::json!({
+                    "provider": provider,
+                    "environment": environment,
+                });
+                if let Some(object) = provider_ref.as_object_mut() {
+                    for (env_name, field) in [
+                        ("MAESTRO_EVALOPS_CREDENTIAL_NAME", "credential_name"),
+                        ("MAESTRO_EVALOPS_TEAM_ID", "team_id"),
+                    ] {
+                        if let Some(value) = env
+                            .get(env_name)
+                            .map(String::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                        {
+                            object.insert(field.to_string(), serde_json::json!(value));
+                        }
+                    }
+                }
+                let client = OpenAiClient::with_base_url(credential, base_url)?
+                    .with_managed_gateway_context(organization_id, provider_ref)?;
+                Ok(Self::OpenAI(client))
+            }
+            ProviderProtocol::OpenAi
+            | ProviderProtocol::OpenAiCompatible
+            | ProviderProtocol::Codex
+            | ProviderProtocol::AzureOpenAi => {
+                let base_url = resolved
+                    .base_url
+                    .as_deref()
+                    .context("provider requires an explicit base URL")?;
+                let client = OpenAiClient::with_base_url(credential, base_url)?;
+                Ok(match resolved.provider.id {
+                    "mistral" => Self::Mistral(client),
+                    "groq" => Self::Groq(client),
+                    "deepseek" => Self::DeepSeek(client),
+                    "moonshot" => Self::Moonshot(client),
+                    "dashscope" => Self::Qwen(client),
+                    "minimax" => Self::MiniMax(client),
+                    "zai" => Self::Zai(client),
+                    _ => Self::OpenAI(client),
+                })
+            }
+        }
     }
 
     /// Get the provider type
@@ -317,6 +413,21 @@ pub fn create_client(provider: AiProvider) -> Result<UnifiedClient> {
 /// Create a unified client based on model name
 pub fn create_client_for_model(model: &str) -> Result<UnifiedClient> {
     UnifiedClient::from_model(model)
+}
+
+fn ai_provider_for_descriptor(id: &str) -> AiProvider {
+    match id {
+        "anthropic" | "bedrock" => AiProvider::Anthropic,
+        "google" | "google-gemini-cli" | "google-antigravity" => AiProvider::Google,
+        "mistral" => AiProvider::Mistral,
+        "groq" => AiProvider::Groq,
+        "deepseek" => AiProvider::DeepSeek,
+        "moonshot" => AiProvider::Moonshot,
+        "dashscope" => AiProvider::Qwen,
+        "minimax" => AiProvider::MiniMax,
+        "zai" => AiProvider::Zai,
+        _ => AiProvider::OpenAI,
+    }
 }
 
 #[cfg(test)]
@@ -523,6 +634,30 @@ mod tests {
             provider_model_name("unknown-provider/model/name"),
             "unknown-provider/model/name"
         );
+    }
+
+    #[test]
+    fn managed_provider_builds_from_delegated_context() {
+        let env = HashMap::from([
+            (
+                "MAESTRO_EVALOPS_ACCESS_TOKEN".to_string(),
+                "delegated-token".to_string(),
+            ),
+            ("MAESTRO_EVALOPS_ORG_ID".to_string(), "org_123".to_string()),
+            (
+                "MAESTRO_EVALOPS_PROVIDER".to_string(),
+                "anthropic".to_string(),
+            ),
+        ]);
+        let resolved = ProviderRegistry::require("evalops/claude-sonnet-4-5", &env).unwrap();
+        assert!(UnifiedClient::from_resolved_provider(&resolved, &env).is_ok());
+
+        let missing_org = HashMap::from([(
+            "MAESTRO_EVALOPS_ACCESS_TOKEN".to_string(),
+            "delegated-token".to_string(),
+        )]);
+        let resolved = ProviderRegistry::require("evalops/gpt-4o-mini", &missing_org).unwrap();
+        assert!(UnifiedClient::from_resolved_provider(&resolved, &missing_org).is_err());
     }
 
     #[test]

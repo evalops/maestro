@@ -82,7 +82,7 @@ export function getPackageMetadata() {
 }
 
 /**
- * @param {"npm" | "bun"} packageManager
+ * @param {"npm"} packageManager
  * @param {string} [packageName]
  */
 export function getGlobalInstallCommand(packageManager, packageName) {

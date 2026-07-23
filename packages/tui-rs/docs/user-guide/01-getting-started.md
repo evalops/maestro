@@ -15,8 +15,6 @@ curl -fsSL https://raw.githubusercontent.com/evalops/maestro/main/scripts/instal
 Package managers (contributors and source workflows):
 
 ```bash
-bun install -g @evalops/maestro
-# or
 npm install -g @evalops/maestro
 ```
 
@@ -37,9 +35,9 @@ See the root [README Install section](../../../../README.md#install) for manual 
 From a source checkout you must build the native TUI before interactive use:
 
 ```bash
-bun install
-bun run tui-rs:build
-# optional: export MAESTRO_TUI_BIN=packages/tui-rs/target/release/maestro-tui
+npm install
+npm run tui-rs:build
+# optional: export MAESTRO_TUI_BIN=target/release/maestro-tui
 ```
 
 ---

@@ -1,7 +1,7 @@
 //! Native `maestro context` command.
 //!
 //! Explains and diffs the unified prompt-context manifest (project docs + MCP
-//! configuration) without booting the TypeScript agent runtime.
+//! configuration) directly from native configuration and live MCP state.
 //!
 //! ## Supported
 //! - `explain` / `diff` subcommands
@@ -12,10 +12,8 @@
 //!   and surface runtime status, resources, and prompts
 //! - Human summary / diff renderers
 //!
-//! ## Residual gaps vs TypeScript
-//! - Full MCP auth-preset / headers-helper / remote-trust metadata parity
-//! - Project MCP paths currently use the Rust loader (`.composer` + home
-//!   `~/.maestro`); `.maestro/mcp.json` at the project root is also scanned
+//! Project MCP paths include both current `.maestro` and legacy `.composer`
+//! locations, with redacted auth, helper, trust, and parallel-safety metadata.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
@@ -672,6 +670,20 @@ fn transport_name(transport: McpTransport) -> &'static str {
     }
 }
 
+fn remote_trust(url: Option<&str>) -> &'static str {
+    let Some(url) = url else {
+        return "unknown";
+    };
+    let Ok(url) = Url::parse(url) else {
+        return "unknown";
+    };
+    match url.host_str().unwrap_or_default() {
+        "mcp.evalops.dev" | "api.evalops.dev" => "official",
+        "" => "unknown",
+        _ => "custom",
+    }
+}
+
 fn project_doc_entry_id(cwd: &str, entry: &PromptProjectDocEntry) -> String {
     if entry.source_kind == "project" {
         let relative = pathdiff::diff_paths(&entry.path, cwd)
@@ -752,6 +764,28 @@ fn mcp_server_config_entry(server: &McpServerConfig) -> UnifiedContextManifestEn
         metadata.insert(
             "headerKeys".into(),
             json!(keys.into_iter().cloned().collect::<Vec<_>>()),
+        );
+    }
+    if server.headers_helper.is_some() {
+        metadata.insert(
+            "headersHelper".into(),
+            json!({ "configured": true, "redacted": true }),
+        );
+    }
+    if let Some(auth_preset) = &server.auth_preset {
+        metadata.insert("authPreset".into(), json!(auth_preset));
+    }
+    if let Some(supports_parallel) = server.supports_parallel_tool_calls {
+        metadata.insert("supportsParallelToolCalls".into(), json!(supports_parallel));
+        metadata.insert("parallelSafetyProvenance".into(), json!("static_config"));
+    }
+    if let Some(requires_approval) = server.requires_project_approval {
+        metadata.insert("requiresProjectApproval".into(), json!(requires_approval));
+    }
+    if matches!(server.transport, McpTransport::Http | McpTransport::Sse) {
+        metadata.insert(
+            "remoteTrust".into(),
+            json!(remote_trust(server.url.as_deref())),
         );
     }
     if let Some(timeout) = server.timeout {
@@ -885,6 +919,18 @@ fn parse_mcp_server_value(
     }
     let cwd = obj.get("cwd").and_then(|v| v.as_str()).map(str::to_string);
     let timeout = obj.get("timeout").and_then(|v| v.as_u64());
+    let headers_helper = obj
+        .get("headersHelper")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let auth_preset = obj
+        .get("authPreset")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let supports_parallel_tool_calls = obj
+        .get("supportsParallelToolCalls")
+        .and_then(|v| v.as_bool());
+    let requires_project_approval = obj.get("requiresProjectApproval").and_then(|v| v.as_bool());
     let enabled = obj.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
     let disabled = obj
         .get("disabled")
@@ -900,6 +946,10 @@ fn parse_mcp_server_value(
         cwd,
         url,
         headers,
+        headers_helper,
+        auth_preset,
+        supports_parallel_tool_calls,
+        requires_project_approval,
         timeout,
         enabled,
         disabled,
@@ -1620,6 +1670,38 @@ mod tests {
         }
         let mut f = File::create(path).unwrap();
         f.write_all(content.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn mcp_manifest_redacts_auth_and_records_native_trust_metadata() {
+        let server = McpServerConfig {
+            name: "platform".to_string(),
+            transport: McpTransport::Http,
+            command: None,
+            args: Vec::new(),
+            env: HashMap::new(),
+            cwd: None,
+            url: Some("https://mcp.evalops.dev/v1".to_string()),
+            headers: HashMap::from([("Authorization".to_string(), "secret".to_string())]),
+            headers_helper: Some("credential-helper".to_string()),
+            auth_preset: Some("evalops".to_string()),
+            supports_parallel_tool_calls: Some(true),
+            requires_project_approval: Some(true),
+            timeout: Some(5_000),
+            enabled: true,
+            disabled: false,
+            scope: McpConfigScope::Project,
+        };
+        let entry = mcp_server_config_entry(&server);
+        let metadata = entry.metadata.expect("MCP metadata");
+        assert_eq!(metadata["headerKeys"], json!(["Authorization"]));
+        assert_eq!(metadata["headersHelper"]["redacted"], true);
+        assert_eq!(metadata["authPreset"], "evalops");
+        assert_eq!(metadata["supportsParallelToolCalls"], true);
+        assert_eq!(metadata["parallelSafetyProvenance"], "static_config");
+        assert_eq!(metadata["requiresProjectApproval"], true);
+        assert_eq!(metadata["remoteTrust"], "official");
+        assert!(!serde_json::to_string(&metadata).unwrap().contains("secret"));
     }
 
     #[test]

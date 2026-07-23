@@ -7,7 +7,6 @@ import { getGlobalInstallCommand, getPackageMetadata } from "./package-metadata.
 const checkOnly = process.argv.includes("--check");
 const { name, cliCommand, canonicalPackageName } = getPackageMetadata();
 const npmInstall = getGlobalInstallCommand("npm");
-const bunInstall = getGlobalInstallCommand("bun");
 const publishedPackageSummary =
 	name === canonicalPackageName
 		? `- The release workflow currently publishes \`${name}\`.`
@@ -31,24 +30,6 @@ function replaceRequired(content, pattern, replacement, description) {
 }
 
 const targets = [
-	{
-		path: "README.md",
-		transform(content) {
-			let next = replaceRequired(
-				content,
-				/^bun install -g\s+.+$/m,
-				bunInstall,
-				"README Bun install command",
-			);
-			next = replaceRequired(
-				next,
-				/^npm install -g\s+.+$/m,
-				npmInstall,
-				"README npm install command",
-			);
-			return next;
-		},
-	},
 	{
 		path: "packages/jetbrains-plugin/README.md",
 		transform(content) {
@@ -97,24 +78,6 @@ const targets = [
 		},
 	},
 	{
-		path: "docs/TOOLS_REFERENCE.md",
-		transform(content) {
-			let next = replaceRequired(
-				content,
-				/exported from `[^`]+`:/,
-				`exported from \`${name}\`:`,
-				"Tools reference SDK package sentence",
-			);
-			next = replaceRequired(
-				next,
-				/from '[^']+';/,
-				`from '${name}';`,
-				"Tools reference SDK package import",
-			);
-			return next;
-		},
-	},
-	{
 		path: "docs/release-ops.md",
 		transform(content) {
 			if (content.includes("The internal repo does not publish npm packages.")) {
@@ -131,17 +94,6 @@ const targets = [
 				/- The release workflow (?:publishes|currently publishes) `[^`]+`(?: through npm trusted publishing)?(?:; the cutover target is `[^`]+`)?\.$/m,
 				publishedPackageSummary,
 				"Release ops package summary",
-			);
-		},
-	},
-	{
-		path: "src/agent/types.ts",
-		transform(content) {
-			return replaceRequired(
-				content,
-				/declare module "[^"]+" \{/,
-				`declare module "${name}" {`,
-				"CustomAgentMessages module augmentation example",
 			);
 		},
 	},

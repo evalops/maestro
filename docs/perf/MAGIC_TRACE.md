@@ -25,7 +25,7 @@ scripts/magic-trace-tui.sh run -- --help
 
 # interactive TUI
 cargo build --profile magic-trace --manifest-path packages/tui-rs/Cargo.toml
-./packages/tui-rs/target/magic-trace/maestro-tui &
+./target/magic-trace/maestro-tui &
 scripts/magic-trace-tui.sh attach
 # Ctrl+C magic-trace to snapshot → open .fxt.gz at https://magic-trace.org/
 ```

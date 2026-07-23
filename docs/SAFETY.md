@@ -172,7 +172,7 @@ explicitly enabled.
 - Document approvals in team workflows: "Maestro asked to run `rm -rf`.
   Approved because we're deleting `tmp/`."
 - When adjusting system-protected paths, update `docs/system-paths.json` and
-  run `node scripts/validate-system-paths.js` (or `bun run bun:lint`) to catch
+  run `npm run check` to catch
   Windows backslash escaping issues.
 
 ## Hardened “prod” profile

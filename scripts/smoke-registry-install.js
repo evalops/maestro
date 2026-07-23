@@ -8,11 +8,8 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 import { getRuntimeWorkspaceNames } from "./runtime-workspaces.mjs";
 import {
 	assertInstallablePackageMetadata,
-	getBunCommand,
 	getNpmCommand,
 	readInstalledPackageJson,
-	runBunxCliSmoke,
-	runBunRuntimeCliSmoke,
 	runInstalledCliSmoke,
 	runInstalledNativeCliSmoke,
 	runInstalledPackageAudit,
@@ -21,10 +18,7 @@ import {
 import { getPackageMetadata } from "./package-metadata.js";
 import { runPublishedReplayE2E } from "./smoke-published-replay-e2e.js";
 import { validatePublishedReplayEvidenceSet } from "./verify-published-replay-evidence.js";
-import {
-	getWorkspacePackages,
-	loadRootPackage,
-} from "./workspace-utils.js";
+import { loadRootPackage } from "./workspace-utils.js";
 
 function parseArgs(argv) {
 	/** @type {{packageName: string; version: string; cliCommand: string; evidenceDir: string}} */
@@ -65,18 +59,8 @@ const name = overrides.packageName || defaults.name;
 const version = overrides.version || defaults.version;
 const packageSpec = `${name}@${version}`;
 const rootPackage = loadRootPackage();
-const runtimeWorkspaceNames = getRuntimeWorkspaceNames(rootPackage);
-const workspacePackages = await getWorkspacePackages(rootPackage);
-const forbiddenWorkspaceNames = Array.from(
-	new Set([
-		...runtimeWorkspaceNames,
-		...workspacePackages
-			.filter((workspacePackage) => workspacePackage.data.private === true)
-			.map((workspacePackage) => workspacePackage.name),
-	]),
-).sort();
+const forbiddenWorkspaceNames = getRuntimeWorkspaceNames(rootPackage);
 const npmCommand = getNpmCommand();
-const bunCommand = getBunCommand();
 const maxAttempts = Number.parseInt(
 	process.env.MAESTRO_REGISTRY_POLL_ATTEMPTS ?? "120",
 	10,
@@ -100,20 +84,6 @@ const evidenceDir =
 
 function sleep(milliseconds) {
 	return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function shouldRunBunInstallSmoke() {
-	if (process.env.MAESTRO_SKIP_BUN_INSTALL_SMOKE === "1") {
-		if (process.env.MAESTRO_ALLOW_REGISTRY_BUN_INSTALL_SMOKE_SKIP !== "1") {
-			throw new Error(
-				`Bun registry install smoke is release-blocking for ${packageSpec}; set MAESTRO_ALLOW_REGISTRY_BUN_INSTALL_SMOKE_SKIP=1 only for non-release debugging.`,
-			);
-		}
-		console.log(`Skipping Bun install smoke for ${packageSpec}.`);
-		return false;
-	}
-
-	return true;
 }
 
 function assertInstalledMetadata(installRoot, label) {
@@ -247,55 +217,6 @@ async function main() {
 		console.log(`Smoke-tested ${packageSpec} from npm.`);
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
-	}
-
-	if (!shouldRunBunInstallSmoke()) {
-		return;
-	}
-
-	const bunTempDir = mkdtempSync(join(tmpdir(), "maestro-bun-registry-smoke-"));
-	try {
-		execFileSync(bunCommand, ["init", "-y"], {
-			cwd: bunTempDir,
-			stdio: "ignore",
-		});
-		execFileSync(bunCommand, ["add", packageSpec], {
-			cwd: bunTempDir,
-			stdio: "inherit",
-		});
-		const bunInstallMetadata = assertInstalledMetadata(
-			bunTempDir,
-			`${packageSpec} via Bun`,
-		);
-		runInstalledCliSmoke(bunTempDir, {
-			cliCommand,
-			expectedVersion: version,
-			label: "Bun-installed registry CLI",
-		});
-		runInstalledNativeCliSmoke(bunTempDir, { cliCommand });
-		runBunxCliSmoke(bunTempDir, {
-			cliCommand,
-			expectedVersion: version,
-			label: "bunx registry CLI",
-		});
-		runBunRuntimeCliSmoke(bunTempDir, {
-			cliCommand,
-			expectedVersion: version,
-			label: "bunx --bun registry CLI",
-		});
-		await runPublishedReplayE2E({
-			cliCommand,
-			evidencePath: publishedReplayEvidencePath("bun"),
-			installer: "bun",
-			installMetadata: bunInstallMetadata,
-			installRoot: bunTempDir,
-			packageSpec,
-		});
-		validatePublishedReplayEvidenceOutputs(["npm", "bun"]);
-
-		console.log(`Smoke-tested ${packageSpec} from Bun.`);
-	} finally {
-		rmSync(bunTempDir, { recursive: true, force: true });
 	}
 }
 
