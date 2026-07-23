@@ -81,7 +81,7 @@ jobs:
           echo "tarball=$(echo "$PACK_JSON" | jq -r '.[0].filename')" >> "$GITHUB_OUTPUT"
       - name: Smoke packed package without JS runtime
         run: node scripts/smoke-release-native-only.mjs bin/maestro
-      - uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
+      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
           tag_name: v${{ steps.version.outputs.value }}
           name: Maestro ${{ steps.version.outputs.value }}
