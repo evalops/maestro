@@ -3,12 +3,26 @@ name: evals
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/*.md"
+      - "docs/**/*.md"
+      - "examples/**/README.md"
+      - "packages/**/README.md"
+      - "src/**/README.md"
+      - "CONTRIBUTING.md"
+      - "CODE_OF_CONDUCT.md"
+      - "SECURITY.md"
+      - "todo.md"
+      - "LICENSE*"
+      - ".github/PUBLIC_TREE_MIRROR_BOUNDARY.md"
+      - ".github/RELEASE_MIRROR_CONTRACT.md"
   pull_request:
-    types: [labeled, synchronize, reopened]
+    types: [opened, reopened, ready_for_review, labeled, synchronize]
   workflow_dispatch:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -18,63 +32,106 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  detect-pr-evals:
+    runs-on: ${{ github.repository == 'evalops/maestro-internal' && (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') }}
+    outputs:
+      should_run: ${{ steps.detect.outputs.result }}
+    steps:
+      - id: detect
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          result-encoding: string
+          script: |
+            if (context.eventName !== "pull_request") {
+              core.info(`Non-PR event (${context.eventName}); running evals.`);
+              return "true";
+            }
+
+            const pull = context.payload.pull_request;
+            if (!pull) {
+              core.info("No pull request payload; skipping evals.");
+              return "false";
+            }
+
+            const labels = new Set((pull.labels ?? []).map((label) => label.name));
+            if (labels.has("run-evals")) {
+              core.info("run-evals label present; running evals.");
+              return "true";
+            }
+
+            const evalSensitivePrefixes = [
+              "packages/maestro-rs/",
+              "packages/tui-rs/",
+              "evals/",
+            ];
+            const evalSensitiveFiles = new Set([
+              "package.json",
+              "packages/ambient-agent-rs/src/prompt.rs",
+              "packages/tui-rs/src/prompts.rs",
+            ]);
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pull.number,
+              per_page: 100,
+            });
+            const matched = files.find(({ filename }) =>
+              evalSensitiveFiles.has(filename) ||
+              evalSensitivePrefixes.some((prefix) => filename.startsWith(prefix))
+            );
+
+            if (!matched) {
+              core.info("No eval-sensitive files changed and no run-evals label present.");
+              return "false";
+            }
+
+            core.info(`Running evals because ${matched.filename} changed.`);
+            return "true";
+
   run-evals:
-    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'run-evals') }}
+    needs: detect-pr-evals
+    if: ${{ needs.detect-pr-evals.outputs.should_run == 'true' }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
+          - os: ubuntu-latest
             chunkIndex: 1
-          - os: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
+          - os: ubuntu-latest
             chunkIndex: 2
-    runs-on: ${{ matrix.os }}
-    # Guardian + build + two vitest shards + evals chunk; keep a hard ceiling so a
-    # hung shard cannot hold the concurrency group open indefinitely.
-    timeout-minutes: 90
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.id != github.event.repository.id && 'ubuntu-latest' || (github.event_name == 'pull_request' && (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') || matrix.os) }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
-      - uses: ./.github/actions/setup-bun-nx
-        with:
-          ensure-ripgrep: "true"
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f
+        with: { node-version: 22 }
 
-      - name: Install uv
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: stable
+          components: "rustfmt,clippy"
+
+      - name: Validate native agent runtime
         if: ${{ matrix.chunkIndex == 1 }}
-        uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
-      - name: Install Semgrep CLI
-        if: ${{ matrix.chunkIndex == 1 }}
-        env:
-          UV_HTTP_TIMEOUT: "120"
         run: |
-          set -e
-          for attempt in 1 2 3; do
-            if uv tool install --force "semgrep==1.144.0"; then
-              break
-            fi
-            if [ "$attempt" = "3" ]; then
-              echo "uv tool install failed after 3 attempts" >&2
-              exit 1
-            fi
-            echo "uv tool install attempt $attempt failed; retrying..." >&2
-            sleep $((attempt * 5))
-          done
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Maestro Guardian
-        if: ${{ matrix.chunkIndex == 1 }}
-        env:
-          MAESTRO_GUARDIAN_TOOL_TIMEOUT_MS: "600000"
-        run: bash scripts/guardian.sh --all --trigger ci
-      - run: npx nx run maestro:build:all
-      - run: npx nx run maestro:lint
-      - name: Run tests
-        timeout-minutes: 25
-        run: bunx vitest --run --reporter=verbose --no-file-parallelism --shard=${{ matrix.chunkIndex }}/2
-      - name: Run evals chunk
+          cargo fmt --all --check
+          cargo clippy --locked -p maestro-tui --all-targets -- -D warnings
+          cargo test --locked -p maestro-tui
+
+      - name: Build native scenario runner
+        if: ${{ matrix.chunkIndex == 2 }}
+        run: cargo build --locked -p maestro
+
+      - name: Run native trajectory and scenario evals
+        if: ${{ matrix.chunkIndex == 2 }}
         timeout-minutes: 45
         env:
-          MAESTRO_EVAL_CHUNK_COUNT: 2
-          MAESTRO_EVAL_CHUNK_INDEX: ${{ matrix.chunkIndex }}
-        run: npx nx run maestro:evals
+          MAESTRO_TOOL_EXECUTION_SERVICE_URL: ${{ vars.MAESTRO_TOOL_EXECUTION_SERVICE_URL }}
+          MAESTRO_TOOL_EXECUTION_SERVICE_TOKEN: ${{ secrets.MAESTRO_TOOL_EXECUTION_SERVICE_TOKEN }}
+          MAESTRO_TOOL_EXECUTION_ORGANIZATION_ID: ${{ vars.MAESTRO_TOOL_EXECUTION_ORGANIZATION_ID }}
+          MAESTRO_TOOL_EXECUTION_WORKSPACE_ID: ${{ vars.MAESTRO_TOOL_EXECUTION_WORKSPACE_ID }}
+          MAESTRO_TOOL_EXECUTION_SERVICE_TIMEOUT_MS: ${{ vars.MAESTRO_TOOL_EXECUTION_SERVICE_TIMEOUT_MS }}
+        run: |
+          npm run check:scenario-replay-gate -- --junit-dir tmp/evals

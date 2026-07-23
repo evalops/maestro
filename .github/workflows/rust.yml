@@ -1,137 +1,18 @@
-name: Rust TUI
-
+name: Rust runtime
 on:
   push:
     branches: [main]
-    paths:
-      - "packages/tui-rs/**"
-      - "proto/maestro/v1/headless.proto"
-      - ".github/workflows/rust.yml"
+    paths: ["Cargo.toml", "Cargo.lock", "packages/**-rs/**", ".github/workflows/rust.yml"]
   pull_request:
-    paths:
-      - "packages/tui-rs/**"
-      - "proto/maestro/v1/headless.proto"
-      - ".github/workflows/rust.yml"
-
-permissions:
-  contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
-env:
-  CARGO_TERM_COLOR: always
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
+permissions: { contents: read }
 jobs:
-  build:
+  test:
     runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 45
-    defaults:
-      run:
-        working-directory: packages/tui-rs
-
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - uses: ./.github/actions/setup-rust
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
-          workspaces: packages/tui-rs -> target
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Run clippy
-        timeout-minutes: 30
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Build
-        timeout-minutes: 45
-        run: |
-          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin/cargo"
-          build_log="$(mktemp)"
-          status=0
-          set +e
-          set -o pipefail
-          "$cargo_bin" build --release 2>&1 | tee "$build_log"
-          status="$?"
-          set +o pipefail
-          if [ "$status" -ne 0 ] && grep -q "could not parse/generate dep info" "$build_log"; then
-            echo "::warning title=Rust release cache repair::cargo reported stale dep-info; cleaning release target and retrying once"
-            "$cargo_bin" clean --release
-            "$cargo_bin" build --release
-            status="$?"
-          fi
-          set -e
-          rm -f "$build_log"
-          exit "$status"
-
-      - name: Run all tests
-        timeout-minutes: 30
-        run: |
-          cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin/cargo"
-          "$cargo_bin" test --all-features -- --nocapture
-
-      - name: Run hook integration tests
-        timeout-minutes: 15
-        run: cargo test --test hooks_integration --all-features -- --nocapture
-
-      - name: Test summary
-        if: always()
-        timeout-minutes: 5
-        run: |
-          echo "## Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Hook Integration Tests" >> $GITHUB_STEP_SUMMARY
-          cargo test --test hooks_integration --all-features -- --list 2>/dev/null | grep -E "^test_" | wc -l | xargs -I {} echo "- Total tests: {}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Features Tested" >> $GITHUB_STEP_SUMMARY
-          echo "- PreToolUse/PostToolUse hooks" >> $GITHUB_STEP_SUMMARY
-          echo "- Session lifecycle (Start/End)" >> $GITHUB_STEP_SUMMARY
-          echo "- Overflow detection" >> $GITHUB_STEP_SUMMARY
-          echo "- PreMessage/PostMessage hooks" >> $GITHUB_STEP_SUMMARY
-          echo "- OnError hooks" >> $GITHUB_STEP_SUMMARY
-          echo "- EvalGate hooks" >> $GITHUB_STEP_SUMMARY
-          echo "- Subagent lifecycle" >> $GITHUB_STEP_SUMMARY
-          echo "- Permission requests" >> $GITHUB_STEP_SUMMARY
-          echo "- Lua executor" >> $GITHUB_STEP_SUMMARY
-          echo "- WASM executor" >> $GITHUB_STEP_SUMMARY
-          echo "- IPC bridge" >> $GITHUB_STEP_SUMMARY
-
-  hooks-coverage:
-    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: packages/tui-rs
-    needs: build
-
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - uses: ./.github/actions/setup-rust
-        with:
-          toolchain: stable
-          components: llvm-tools-preview
-          workspaces: packages/tui-rs -> target
-          install-cargo-llvm-cov: "true"
-
-      - name: Generate coverage for hooks
-        run: |
-          cargo llvm-cov --all-features --lcov --output-path lcov.info -- --test-threads=1
-        continue-on-error: true
-
-      - name: Coverage summary
-        if: always()
-        run: |
-          echo "## Hook Coverage" >> $GITHUB_STEP_SUMMARY
-          if [ -f lcov.info ]; then
-            echo "Coverage report generated" >> $GITHUB_STEP_SUMMARY
-            # Count lines in hooks module
-            grep -E "^SF:.*hooks" lcov.info | wc -l | xargs -I {} echo "- Hook files covered: {}" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "Coverage generation skipped or failed" >> $GITHUB_STEP_SUMMARY
-          fi
+        with: { toolchain: stable, components: "rustfmt,clippy" }
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked

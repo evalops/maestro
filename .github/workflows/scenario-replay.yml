@@ -1,0 +1,60 @@
+name: scenario replay
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: true
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NX_DAEMON: false
+
+jobs:
+  scenario-replay:
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.id != github.event.repository.id && 'ubuntu-latest' || (github.event_name == 'pull_request' && (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest')) }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f
+        with: { node-version: 22 }
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: stable
+
+      - name: Build native scenario runner
+        run: cargo build --locked -p maestro
+
+      - name: Validate replay gate governance reporter
+        run: node --test scripts/scenario-replay-governance.test.mjs
+
+      - name: Run replay gate scenario suite
+        env:
+          MAESTRO_TOOL_EXECUTION_SERVICE_URL: ${{ vars.MAESTRO_TOOL_EXECUTION_SERVICE_URL }}
+          MAESTRO_TOOL_EXECUTION_SERVICE_TOKEN: ${{ secrets.MAESTRO_TOOL_EXECUTION_SERVICE_TOKEN }}
+          MAESTRO_TOOL_EXECUTION_ORGANIZATION_ID: ${{ vars.MAESTRO_TOOL_EXECUTION_ORGANIZATION_ID }}
+          MAESTRO_TOOL_EXECUTION_WORKSPACE_ID: ${{ vars.MAESTRO_TOOL_EXECUTION_WORKSPACE_ID }}
+          MAESTRO_TOOL_EXECUTION_SERVICE_TIMEOUT_MS: ${{ vars.MAESTRO_TOOL_EXECUTION_SERVICE_TIMEOUT_MS }}
+        run: npm run check:scenario-replay-gate -- --junit-dir tmp/scenario-replay
+
+      - name: Upload replay gate artifacts to GCS
+        if: ${{ always() && hashFiles('tmp/scenario-replay/**') != '' }}
+        continue-on-error: true
+        uses: ./.github/actions/gcs-artifacts
+        with:
+          mode: upload
+          if-missing: ignore
+          prefix: maestro-internal/scenario-replay/${{ github.run_id }}/${{ github.run_attempt }}/replay-gate
+          paths: tmp/scenario-replay
+          workload-identity-provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
