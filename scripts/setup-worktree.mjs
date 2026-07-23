@@ -43,15 +43,11 @@ function run(command, args) {
 function main() {
 	const args = parseArgs(process.argv.slice(2));
 	if (!args.skipInstall) {
-		run("bun", ["install"]);
+		run("npm", ["install", "--ignore-scripts"]);
 	}
 
-	run("node", ["scripts/ensure-deps.js", "--no-install"]);
-	run("node", ["scripts/session-wire-format-codegen.mjs", "--check"]);
-	run("node", ["scripts/headless-protocol-codegen.mjs", "--check"]);
-	run("bun", ["run", "verify:headless-proto:sync"]);
-	run("bun", ["run", "check:headless-proto:generated"]);
-	run("node", ["scripts/check-drift-prone-surfaces.mjs"]);
+	run("npm", ["run", "check:rust-only-runtime"]);
+	run("cargo", ["check", "--locked", "--manifest-path", "packages/maestro-rs/Cargo.toml"]);
 
 	if (!args.checkOnly) {
 		console.log("worktree setup complete");

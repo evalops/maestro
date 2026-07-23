@@ -96,6 +96,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::sandbox::SandboxPolicy;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::Value;
 use tokio::io::AsyncBufReadExt;
@@ -386,6 +387,9 @@ pub struct ToolExecutor {
     /// Handles shell command execution with approval logic and timeout enforcement.
     bash: BashTool,
 
+    /// Native sandbox requested for this executor, if any.
+    sandbox_policy: Option<SandboxPolicy>,
+
     /// Web fetch tool for retrieving web content
     ///
     /// Fetches URLs and converts HTML to markdown for the agent to process.
@@ -489,6 +493,7 @@ impl ToolExecutor {
 
         Self {
             bash: BashTool::new(&cwd),
+            sandbox_policy: None,
             web_fetch: WebFetchTool::new(),
             image: ImageTool::new(),
             inline_executor: InlineToolExecutor::new(&cwd),
@@ -534,6 +539,7 @@ impl ToolExecutor {
 
         Self {
             bash: BashTool::new(&cwd),
+            sandbox_policy: None,
             web_fetch: WebFetchTool::new(),
             image: ImageTool::new(),
             inline_executor: InlineToolExecutor::new(&cwd),
@@ -547,6 +553,13 @@ impl ToolExecutor {
             mcp_synced_configs: RwLock::new(HashMap::new()),
             mcp_last_connect_attempts: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Apply a native sandbox to subprocess-backed tools.
+    pub fn with_sandbox_policy(mut self, policy: SandboxPolicy) -> Self {
+        self.bash = BashTool::new(&self.cwd).with_sandbox_policy(policy.clone());
+        self.sandbox_policy = Some(policy);
+        self
     }
 
     /// Get the list of loaded inline tools
@@ -1008,6 +1021,16 @@ impl ToolExecutor {
         event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
         call_id: &str,
     ) -> ToolResult {
+        if self.sandbox_policy.is_some()
+            && self.inline_tools.contains_key(&tool_name.to_lowercase())
+        {
+            return ToolResult::failure("Inline shell tools are disabled for sandboxed exec runs");
+        }
+        if matches!(self.sandbox_policy, Some(SandboxPolicy::ReadOnly))
+            && matches!(tool_name.to_lowercase().as_str(), "write" | "edit")
+        {
+            return ToolResult::failure("Tool blocked by read-only sandbox policy");
+        }
         if let FirewallVerdict::Block { reason } = self.firewall_verdict(tool_name, args) {
             return ToolResult::failure(format!("Blocked by action firewall: {reason}"));
         }

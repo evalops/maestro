@@ -123,6 +123,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget, Wrap},
 };
 
+use crate::components::message_layout::MessageLayoutKey;
 use crate::components::textarea::{TextArea, TextAreaWidget};
 use crate::effects::shimmer_spans;
 use crate::runtime_badges::{build_runtime_badges, RuntimeBadgeParams};
@@ -133,7 +134,9 @@ use crate::state::{
 use crate::tool_output::{clamp_tool_output, format_tool_output_truncation, tool_output_limits};
 use crate::tool_summary::summarize_tool_use;
 use crate::wrapping::{word_wrap_lines, RtOptions};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::time::SystemTime;
 use unicode_width::UnicodeWidthStr;
 
@@ -2248,6 +2251,34 @@ impl Widget for ChatView<'_> {
 }
 
 impl ChatView<'_> {
+    fn message_layout_key(message: &Message) -> MessageLayoutKey {
+        let mut hasher = DefaultHasher::new();
+        message.id.hash(&mut hasher);
+        std::mem::discriminant(&message.role).hash(&mut hasher);
+        std::mem::discriminant(&message.kind).hash(&mut hasher);
+        message.content.len().hash(&mut hasher);
+        message.thinking.len().hash(&mut hasher);
+        message.streaming.hash(&mut hasher);
+        message.thinking_expanded.hash(&mut hasher);
+        message.tool_calls.len().hash(&mut hasher);
+        for tool_call in &message.tool_calls {
+            tool_call.call_id.hash(&mut hasher);
+            tool_call.tool.hash(&mut hasher);
+            tool_call.output.len().hash(&mut hasher);
+        }
+        MessageLayoutKey::new(hasher.finish())
+    }
+
+    fn message_layout_settings_key(&self) -> u64 {
+        let mut key = u64::from(self.state.compact_tool_outputs);
+        for call_id in &self.state.expanded_tool_calls {
+            let mut hasher = DefaultHasher::new();
+            call_id.hash(&mut hasher);
+            key ^= hasher.finish().rotate_left(1);
+        }
+        key ^ (self.state.expanded_tool_calls.len() as u64).rotate_left(32)
+    }
+
     fn render_messages(&self, area: Rect, buf: &mut Buffer) {
         // Filter to only renderable messages
         let renderable_messages: Vec<&Message> = self
@@ -2265,40 +2296,35 @@ impl ChatView<'_> {
             return;
         }
 
-        // Calculate heights for all renderable messages
-        let msg_heights: Vec<u16> = renderable_messages
+        let layout_keys = renderable_messages
             .iter()
-            .map(|m| {
-                calculate_message_height(
-                    m,
+            .map(|message| Self::message_layout_key(message))
+            .collect::<Vec<_>>();
+        let layout = self.state.prepare_message_layout(
+            area.width,
+            self.message_layout_settings_key(),
+            &layout_keys,
+            |index| {
+                usize::from(calculate_message_height(
+                    renderable_messages[index],
                     area.width,
                     &self.state.expanded_tool_calls,
                     self.state.compact_tool_outputs,
-                )
-            })
-            .collect();
-
-        // Calculate total height
-        let total_height: u16 = msg_heights.iter().sum();
+                ))
+            },
+        );
+        let total_height = layout.total_height();
 
         // Clamp scroll_offset to available content
-        let max_offset = total_height.saturating_sub(area.height);
-        let clamped_offset = self.state.scroll_offset.min(max_offset as usize) as u16;
+        let max_offset = total_height.saturating_sub(usize::from(area.height));
+        let clamped_offset = self.state.scroll_offset.min(max_offset);
 
         // Window anchored from bottom by scroll_offset
         let window_bottom = total_height.saturating_sub(clamped_offset);
-        let window_top = window_bottom.saturating_sub(area.height);
+        let window_top = window_bottom.saturating_sub(usize::from(area.height));
 
         // Find the first message whose bottom exceeds window_top
-        let mut start_idx = 0;
-        let mut accumulated: u16 = 0;
-        for (i, h) in msg_heights.iter().enumerate() {
-            if accumulated + *h > window_top {
-                start_idx = i;
-                break;
-            }
-            accumulated += *h;
-        }
+        let start_idx = layout.first_visible(window_top);
 
         // Render messages from start_idx forward
         let mut y = area.y;
@@ -2309,7 +2335,7 @@ impl ChatView<'_> {
                 break;
             }
 
-            let msg_height = msg_heights[i].min(max_y.saturating_sub(y));
+            let msg_height = layout.heights()[i].min(usize::from(max_y.saturating_sub(y))) as u16;
 
             let msg_area = Rect {
                 x: area.x,
@@ -2327,12 +2353,12 @@ impl ChatView<'_> {
         }
 
         // Draw a simple scrollbar on the right
-        if total_height > area.height {
+        if total_height > usize::from(area.height) {
             let bar_x = area.x + area.width.saturating_sub(1);
-            let view_ratio = f32::from(area.height) / f32::from(total_height);
+            let view_ratio = f32::from(area.height) / total_height as f32;
             let thumb_height =
                 (f32::from(area.height) * view_ratio).clamp(1.0, f32::from(area.height));
-            let scroll_ratio = f32::from(window_top) / f32::from(total_height);
+            let scroll_ratio = window_top as f32 / total_height as f32;
             let thumb_start =
                 (scroll_ratio * (f32::from(area.height) - thumb_height)).round() as u16;
             for i in 0..area.height {
@@ -2351,7 +2377,7 @@ impl ChatView<'_> {
             let percent = if total_height == 0 {
                 0
             } else {
-                ((f32::from(window_bottom) / f32::from(total_height)) * 100.0).round() as i32
+                ((window_bottom as f32 / total_height as f32) * 100.0).round() as i32
             };
             let pct_str = format!("{:>3}%", percent.clamp(0, 100));
             let pct_x = bar_x.saturating_sub(pct_str.len() as u16);
@@ -2613,5 +2639,64 @@ mod tests {
         assert!(rendered.contains("Type a message or /help."));
         assert!(!rendered.contains("Welcome to Maestro!"));
         assert!(!rendered.contains("Welcome to Composer! Type a message to get started."));
+    }
+
+    fn transcript_layout_message(id: &str, content: &str) -> Message {
+        Message {
+            id: id.to_string(),
+            role: MessageRole::Assistant,
+            kind: MessageKind::Regular,
+            content: content.to_string(),
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: vec![],
+            usage: None,
+            timestamp: SystemTime::UNIX_EPOCH,
+            thinking_expanded: false,
+        }
+    }
+
+    #[test]
+    fn transcript_layout_reuses_stable_heights_and_remeasures_streaming_tail() {
+        let mut state = crate::state::AppState::default();
+        state.messages = vec![
+            transcript_layout_message("one", "# First\n\nA stable message."),
+            transcript_layout_message("two", "# Second\n\nA streaming message."),
+        ];
+        let area = Rect::new(0, 0, 80, 24);
+
+        ChatView::new(&state).render(area, &mut Buffer::empty(area));
+        let cold_measurements = state.transcript_layout_measurements();
+        assert_eq!(cold_measurements, 2);
+
+        ChatView::new(&state).render(area, &mut Buffer::empty(area));
+        assert_eq!(state.transcript_layout_measurements(), cold_measurements);
+
+        state.messages[1].content.push_str(" More streamed text.");
+        ChatView::new(&state).render(area, &mut Buffer::empty(area));
+        assert_eq!(
+            state.transcript_layout_measurements(),
+            cold_measurements + 1
+        );
+    }
+
+    #[test]
+    fn transcript_layout_width_change_remeasures_every_message() {
+        let mut state = crate::state::AppState::default();
+        state.messages = vec![
+            transcript_layout_message("one", "A stable message."),
+            transcript_layout_message("two", "Another stable message."),
+        ];
+
+        let wide = Rect::new(0, 0, 80, 24);
+        ChatView::new(&state).render(wide, &mut Buffer::empty(wide));
+        let cold_measurements = state.transcript_layout_measurements();
+
+        let narrow = Rect::new(0, 0, 60, 24);
+        ChatView::new(&state).render(narrow, &mut Buffer::empty(narrow));
+        assert_eq!(
+            state.transcript_layout_measurements(),
+            cold_measurements + 2
+        );
     }
 }

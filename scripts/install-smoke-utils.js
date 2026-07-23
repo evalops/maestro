@@ -13,14 +13,6 @@ export function getNpxCommand() {
 	return process.platform === "win32" ? "npx.cmd" : "npx";
 }
 
-export function getBunCommand() {
-	return process.platform === "win32" ? "bun.exe" : "bun";
-}
-
-export function getBunxCommand() {
-	return process.platform === "win32" ? "bunx.exe" : "bunx";
-}
-
 export function installedPackageJsonPath(packageName, installRoot) {
 	return join(
 		installRoot,
@@ -174,7 +166,7 @@ export function runInstalledCliSmoke(
 
 /**
  * Build an env for clean-install native smokes that must resolve the *packaged*
- * Rust binary (vendor/maestro-tui), not a developer's ambient override or PATH.
+ * Rust binary (vendor/maestro), not a developer's ambient override or PATH.
  */
 export function buildNativeInstallSmokeEnv(cwd, baseEnv = process.env) {
 	const isolatedMaestroHome = join(cwd, ".maestro-native-smoke");
@@ -237,25 +229,6 @@ function runCliSmoke(command, prefixArgs, cwd, { cliCommand, expectedVersion, la
 
 export function runNpxCliSmoke(cwd, { cliCommand, expectedVersion, label }) {
 	runCliSmoke(getNpxCommand(), ["--no-install", cliCommand], cwd, {
-		cliCommand,
-		expectedVersion,
-		label,
-	});
-}
-
-export function runBunxCliSmoke(cwd, { cliCommand, expectedVersion, label }) {
-	runCliSmoke(getBunxCommand(), [cliCommand], cwd, {
-		cliCommand,
-		expectedVersion,
-		label,
-	});
-}
-
-export function runBunRuntimeCliSmoke(
-	cwd,
-	{ cliCommand, expectedVersion, label },
-) {
-	runCliSmoke(getBunxCommand(), ["--bun", cliCommand], cwd, {
 		cliCommand,
 		expectedVersion,
 		label,

@@ -15,6 +15,37 @@ pub(crate) struct ChatRequest {
     pub(crate) messages: Vec<ChatMessage>,
     pub(crate) thinking_level: Option<String>,
     pub(crate) session_id: Option<String>,
+    #[serde(default)]
+    pub(crate) tools: Vec<ClientToolDefinition>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ClientToolDefinition {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) parameters: Value,
+}
+
+fn client_tool_definitions(chat: &ChatRequest) -> (Vec<ToolDefinition>, HashSet<String>) {
+    let names = chat
+        .tools
+        .iter()
+        .map(|tool| tool.name.to_lowercase())
+        .collect::<HashSet<_>>();
+    let definitions = chat
+        .tools
+        .iter()
+        .map(|tool| ToolDefinition {
+            tool: Tool::new(&tool.name, &tool.description).with_schema(tool.parameters.clone()),
+            requires_approval: true,
+        })
+        .collect();
+    (definitions, names)
+}
+
+fn is_terminal_agent_response(response_id: &str) -> bool {
+    response_id == "done"
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -426,6 +457,7 @@ pub(crate) async fn handle_chat_endpoint(
         return Ok(());
     }
     let prompt = build_prompt_from_chat(&chat);
+    let system_prompt = system_prompt_from_chat(&chat);
 
     let session_id = chat.session_id.clone();
     let prepared_attachments = match prepare_chat_attachments(&chat, &state.config.cwd).await {
@@ -481,6 +513,7 @@ pub(crate) async fn handle_chat_endpoint(
         return Ok(());
     }
     let (usage_provider, usage_model) = usage_provider_model(&chat, &state, &model).await;
+    let (client_tools, client_tool_names) = client_tool_definitions(&chat);
     let thinking_enabled = chat
         .thinking_level
         .as_deref()
@@ -489,6 +522,7 @@ pub(crate) async fn handle_chat_endpoint(
     let config = NativeAgentConfig {
         model,
         cwd: state.config.cwd.to_string_lossy().to_string(),
+        system_prompt,
         thinking_enabled,
         thinking_budget: env::var("MAESTRO_THINKING_BUDGET")
             .ok()
@@ -497,7 +531,7 @@ pub(crate) async fn handle_chat_endpoint(
         ..NativeAgentConfig::default()
     };
 
-    let (agent, mut events) = match NativeAgent::new(config) {
+    let (agent, mut events) = match NativeAgent::new_with_tools(config, client_tools) {
         Ok(agent) => agent,
         Err(error) => {
             send_sse(
@@ -543,11 +577,13 @@ pub(crate) async fn handle_chat_endpoint(
 
     let mut assistant_text = String::new();
     let mut thinking_text = String::new();
+    let mut last_usage = None;
     let mut response_started = false;
     let mut thinking_started = false;
     let mut terminal_sent = false;
     let mut tool_names: HashMap<String, String> = HashMap::new();
     let mut assistant_tools: Vec<Value> = Vec::new();
+    let mut client_tool_call_ids: HashSet<String> = HashSet::new();
 
     while let Some(event) = events.recv().await {
         match event {
@@ -648,7 +684,25 @@ pub(crate) async fn handle_chat_endpoint(
             } => {
                 tool_names.insert(call_id.clone(), tool.clone());
                 record_tool_call_metadata(&mut assistant_tools, &call_id, &tool, args.clone());
-                if requires_approval {
+                if client_tool_names.contains(&tool.to_lowercase()) {
+                    client_tool_call_ids.insert(call_id.clone());
+                    state
+                        .pending_tool_responses
+                        .lock()
+                        .await
+                        .insert(call_id.clone(), agent.tool_response_sender());
+                    send_sse(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "tool_execution_start",
+                            "toolCallId": call_id,
+                            "toolName": tool,
+                            "args": args,
+                            "clientOwned": true
+                        }),
+                    )
+                    .await?;
+                } else if requires_approval {
                     match approval_mode_for_session(&state, session_id.as_deref())
                         .await
                         .as_str()
@@ -746,6 +800,11 @@ pub(crate) async fn handle_chat_endpoint(
             }
             FromAgent::ToolEnd { call_id, success } => {
                 state.pending_tool_responses.lock().await.remove(&call_id);
+                state
+                    .completed_client_tool_results
+                    .lock()
+                    .await
+                    .remove(&call_id);
                 finish_tool_metadata(&mut assistant_tools, &call_id, success);
                 let tool = tool_names
                     .remove(&call_id)
@@ -838,6 +897,11 @@ pub(crate) async fn handle_chat_endpoint(
                 reason,
             } => {
                 state.pending_tool_responses.lock().await.remove(&call_id);
+                state
+                    .completed_client_tool_results
+                    .lock()
+                    .await
+                    .remove(&call_id);
                 finish_tool_metadata(&mut assistant_tools, &call_id, false);
                 send_sse(
                     &mut stream,
@@ -851,15 +915,27 @@ pub(crate) async fn handle_chat_endpoint(
                 )
                 .await?;
             }
-            FromAgent::ResponseEnd { usage, .. } => {
-                record_usage_entry(
-                    &state,
-                    session_id.as_deref(),
-                    &usage_provider,
-                    &usage_model,
-                    usage.as_ref(),
-                )
-                .await;
+            FromAgent::ResponseEnd { response_id, usage } => {
+                if usage.is_some() {
+                    record_usage_entry(
+                        &state,
+                        session_id.as_deref(),
+                        &usage_provider,
+                        &usage_model,
+                        usage.as_ref(),
+                    )
+                    .await;
+                    last_usage = usage;
+                }
+                if !is_terminal_agent_response(&response_id) {
+                    response_started = false;
+                    thinking_started = false;
+                    continue;
+                }
+                let client_tool_results =
+                    take_client_tool_results(&state, &client_tool_call_ids).await;
+                finish_client_tool_metadata(&mut assistant_tools, &client_tool_results);
+                let usage = last_usage.take();
                 let message = composer_assistant_message_with_tools(
                     &assistant_text,
                     &thinking_text,
@@ -1032,6 +1108,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
         return Ok(());
     }
     let prompt = build_prompt_from_chat(&chat);
+    let system_prompt = system_prompt_from_chat(&chat);
 
     let session_id = chat.session_id.clone();
     let prepared_attachments = match prepare_chat_attachments(&chat, &state.config.cwd).await {
@@ -1089,6 +1166,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
         return Ok(());
     }
     let (usage_provider, usage_model) = usage_provider_model(&chat, &state, &model).await;
+    let (client_tools, client_tool_names) = client_tool_definitions(&chat);
     let thinking_enabled = chat
         .thinking_level
         .as_deref()
@@ -1097,6 +1175,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
     let config = NativeAgentConfig {
         model,
         cwd: state.config.cwd.to_string_lossy().to_string(),
+        system_prompt,
         thinking_enabled,
         thinking_budget: env::var("MAESTRO_THINKING_BUDGET")
             .ok()
@@ -1105,7 +1184,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
         ..NativeAgentConfig::default()
     };
 
-    let (agent, mut events) = match NativeAgent::new(config) {
+    let (agent, mut events) = match NativeAgent::new_with_tools(config, client_tools) {
         Ok(agent) => agent,
         Err(error) => {
             send_ws_json(
@@ -1142,11 +1221,13 @@ pub(crate) async fn handle_chat_websocket_endpoint(
 
     let mut assistant_text = String::new();
     let mut thinking_text = String::new();
+    let mut last_usage = None;
     let mut response_started = false;
     let mut thinking_started = false;
     let mut terminal_sent = false;
     let mut tool_names: HashMap<String, String> = HashMap::new();
     let mut assistant_tools: Vec<Value> = Vec::new();
+    let mut client_tool_call_ids: HashSet<String> = HashSet::new();
 
     while let Some(event) = events.recv().await {
         match event {
@@ -1233,7 +1314,25 @@ pub(crate) async fn handle_chat_websocket_endpoint(
             } => {
                 tool_names.insert(call_id.clone(), tool.clone());
                 record_tool_call_metadata(&mut assistant_tools, &call_id, &tool, args.clone());
-                if requires_approval {
+                if client_tool_names.contains(&tool.to_lowercase()) {
+                    client_tool_call_ids.insert(call_id.clone());
+                    state
+                        .pending_tool_responses
+                        .lock()
+                        .await
+                        .insert(call_id.clone(), agent.tool_response_sender());
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "tool_execution_start",
+                            "toolCallId": call_id,
+                            "toolName": tool,
+                            "args": args,
+                            "clientOwned": true
+                        }),
+                    )
+                    .await?;
+                } else if requires_approval {
                     match approval_mode_for_session(&state, session_id.as_deref())
                         .await
                         .as_str()
@@ -1334,6 +1433,11 @@ pub(crate) async fn handle_chat_websocket_endpoint(
             }
             FromAgent::ToolEnd { call_id, success } => {
                 state.pending_tool_responses.lock().await.remove(&call_id);
+                state
+                    .completed_client_tool_results
+                    .lock()
+                    .await
+                    .remove(&call_id);
                 finish_tool_metadata(&mut assistant_tools, &call_id, success);
                 let tool = tool_names
                     .remove(&call_id)
@@ -1426,6 +1530,11 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                 reason,
             } => {
                 state.pending_tool_responses.lock().await.remove(&call_id);
+                state
+                    .completed_client_tool_results
+                    .lock()
+                    .await
+                    .remove(&call_id);
                 finish_tool_metadata(&mut assistant_tools, &call_id, false);
                 send_ws_json(
                     &mut stream,
@@ -1439,15 +1548,27 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                 )
                 .await?;
             }
-            FromAgent::ResponseEnd { usage, .. } => {
-                record_usage_entry(
-                    &state,
-                    session_id.as_deref(),
-                    &usage_provider,
-                    &usage_model,
-                    usage.as_ref(),
-                )
-                .await;
+            FromAgent::ResponseEnd { response_id, usage } => {
+                if usage.is_some() {
+                    record_usage_entry(
+                        &state,
+                        session_id.as_deref(),
+                        &usage_provider,
+                        &usage_model,
+                        usage.as_ref(),
+                    )
+                    .await;
+                    last_usage = usage;
+                }
+                if !is_terminal_agent_response(&response_id) {
+                    response_started = false;
+                    thinking_started = false;
+                    continue;
+                }
+                let client_tool_results =
+                    take_client_tool_results(&state, &client_tool_call_ids).await;
+                finish_client_tool_metadata(&mut assistant_tools, &client_tool_results);
+                let usage = last_usage.take();
                 let message = composer_assistant_message_with_tools(
                     &assistant_text,
                     &thinking_text,
@@ -1593,14 +1714,17 @@ pub(crate) fn build_prompt_from_chat(chat: &ChatRequest) -> String {
     if chat.messages.len() > 1 {
         let history: Vec<Value> = chat.messages[..chat.messages.len() - 1]
             .iter()
+            .filter(|message| message.role != "system")
             .map(chat_message_prompt_value)
             .collect();
-        let rendered =
-            serde_json::to_string_pretty(&history).expect("chat history should serialize");
-        parts.push(format!(
-            "Conversation so far (structured JSON, preserving content blocks and tool metadata):\n{rendered}"
-        ));
-        parts.push("Current user message:".to_string());
+        if !history.is_empty() {
+            let rendered =
+                serde_json::to_string_pretty(&history).expect("chat history should serialize");
+            parts.push(format!(
+                "Conversation so far (structured JSON, preserving content blocks and tool metadata):\n{rendered}"
+            ));
+            parts.push("Current user message:".to_string());
+        }
     }
 
     if let Some(latest) = chat.messages.last() {
@@ -1615,6 +1739,20 @@ pub(crate) fn build_prompt_from_chat(chat: &ChatRequest) -> String {
     }
 
     parts.join("\n\n")
+}
+
+pub(crate) fn system_prompt_from_chat(chat: &ChatRequest) -> Option<String> {
+    let prompts: Vec<String> = chat
+        .messages
+        .iter()
+        .filter(|message| message.role == "system")
+        .filter_map(|message| {
+            let text = composer_text_content(&message.content);
+            (!text.trim().is_empty()).then(|| text.trim().to_string())
+        })
+        .collect();
+
+    (!prompts.is_empty()).then(|| prompts.join("\n\n"))
 }
 
 pub(crate) fn chat_message_prompt_value(message: &ChatMessage) -> Value {
@@ -1779,6 +1917,30 @@ pub(crate) fn finish_tool_metadata(tools: &mut [Value], call_id: &str, success: 
             "isError": !success
         });
     }
+}
+
+pub(crate) fn finish_client_tool_metadata(
+    tools: &mut [Value],
+    client_tool_results: &HashMap<String, bool>,
+) {
+    for (call_id, success) in client_tool_results {
+        finish_tool_metadata(tools, call_id, *success);
+    }
+}
+
+async fn take_client_tool_results(
+    state: &AppState,
+    client_tool_call_ids: &HashSet<String>,
+) -> HashMap<String, bool> {
+    let mut completed = state.completed_client_tool_results.lock().await;
+    client_tool_call_ids
+        .iter()
+        .filter_map(|call_id| {
+            completed
+                .remove(call_id)
+                .map(|success| (call_id.clone(), success))
+        })
+        .collect()
 }
 
 pub(crate) fn approval_blocked_tool_event(call_id: &str, tool_name: &str) -> Value {
@@ -1994,4 +2156,16 @@ pub(crate) fn sse_headers() -> String {
         response_cors_origin(),
         response_cors_credentials_header()
     )
+}
+
+#[cfg(test)]
+mod chat_stream_tests {
+    use super::is_terminal_agent_response;
+
+    #[test]
+    fn only_synthetic_done_event_closes_native_chat_stream() {
+        assert!(!is_terminal_agent_response("model-response"));
+        assert!(!is_terminal_agent_response("blocked"));
+        assert!(is_terminal_agent_response("done"));
+    }
 }

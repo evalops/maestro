@@ -2280,11 +2280,11 @@ fn validate_trajectory_release_gate(
 
 fn load_typed_json(path: &Path, schema_version: &str, name: &str) -> Result<Value> {
     let value = read_json_file(path)?;
-    let schema = value
-        .get("schemaVersion")
-        .or_else(|| value.get("trajectorySchemaVersion"))
-        .and_then(Value::as_str);
-    if schema != Some(schema_version) {
+    let schema_matches = ["schemaVersion", "trajectorySchemaVersion"]
+        .into_iter()
+        .filter_map(|field| value.get(field).and_then(Value::as_str))
+        .any(|schema| schema == schema_version);
+    if !schema_matches {
         bail!(
             "{name} at {} must use schemaVersion {schema_version}",
             path.display()

@@ -14,7 +14,7 @@ const EVIDENCE_SCHEMA = "evalops.maestro.published-replay-evidence.v1";
 const TRANSCRIPT_SCHEMA = "evalops.maestro.published-replay-transcript.v1";
 const AGENT_RUNTIME_LIFECYCLE_SCHEMA =
 	"evalops.maestro.agent-runtime-lifecycle.v1";
-const REQUIRED_INSTALLERS = ["npm", "bun"];
+const REQUIRED_INSTALLERS = ["npm"];
 const REQUIRED_REPLAY_MODES = ["json", "rpc", "text"];
 const REQUIRED_RELEASE_GATE_CHECKS = [
 	"installablePackageMetadata",
@@ -87,7 +87,7 @@ function parseArgs(argv) {
 				break;
 			default:
 				throw new Error(
-					`Unknown argument: ${arg}\nUsage: node scripts/verify-published-replay-evidence.js [--evidence-dir <dir>] [--installer npm,bun] [--evidence <file>]`,
+					`Unknown argument: ${arg}\nUsage: node scripts/verify-published-replay-evidence.js [--evidence-dir <dir>] [--installer npm] [--evidence <file>]`,
 				);
 		}
 	}
@@ -467,8 +467,6 @@ function parsePackageSpec(spec) {
 
 function expectedInstallLabelFragment(installer) {
 	switch (installer) {
-		case "bun":
-			return "via Bun";
 		case "npm":
 			return "via npm";
 		default:

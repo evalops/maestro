@@ -3,8 +3,8 @@
 
 ## Checklist
 
-- [ ] `make lint` (or `bun run bun:lint`)
-- [ ] `make test` (or `npx nx run maestro:test --skip-nx-cache`)
+- [ ] `make lint` (or `npm run lint`)
+- [ ] `make test` (or `npm test`)
 - [ ] Built any touched packages (e.g., `make build-all`)
 - [ ] If this PR adds or promotes user-visible behavior, explain the staged-rollout choice (or why staging is unnecessary).
 

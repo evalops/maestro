@@ -1,4 +1,4 @@
-# Maestro — ergonomic Make targets wrapping npm/bun scripts
+# Maestro — ergonomic Make targets for the native Rust product
 # Auto-loads .env when present (falls back to shell env otherwise).
 # Only the vars below are exported — bare `export` would leak MAKEFLAGS etc.
 -include .env
@@ -49,8 +49,8 @@ BAZEL_REMOTE_CONFIG ?= remote-gcp-dev
 BAZEL_RBE_SMOKE_TARGETS ?= //:maestro_bazel_contract_test
 BAZEL_CI_REMOTE_DOWNLOAD_FLAGS ?= --remote_download_outputs=minimal
 
-.PHONY: help bazel-check bazel-format bazel-mod-tidy bazel-rbe-smoke bazel-test bazel-test-remote setup install build build-all compile run-ts run-rs run-rs-debug \
-        web web-local dev dev-all developer-surface-check test test-fast test-coverage lint check fmt fmt-unsafe \
+.PHONY: help bazel-check bazel-format bazel-mod-tidy bazel-rbe-smoke bazel-test bazel-test-remote setup build build-all run-rs run-rs-debug \
+        web test lint check fmt \
         smoke cerebro-dev cerebro-env cerebro-e2e cerebro-e2e-doctor cerebro-e2e-trace evals verify clean db-up db-down db-migrate
 
 help: ## Show this help
@@ -78,67 +78,35 @@ bazel-rbe-smoke:
 setup: ## First-time project bootstrap
 	@test -f .env || { test -f .env.example || { echo "error: .env.example not found — is this a complete checkout?" >&2; exit 1; }; \
 		cp .env.example .env && echo "Created .env from .env.example — add your API keys"; }
-	bun install
-	bun run build:all
-	@echo "\nReady! Run 'make run-ts' or 'make help' for all targets."
+	npm run build:all
+	@echo "\nReady! Run 'make run-rs' or 'make help' for all targets."
 
-install: ## Install dependencies (bun install)
-	bun install
-
-build: ## Build TS CLI
+build: ## Build the native Rust CLI
 	npm run build
 
-build-all: ## Build all packages (contracts, tui, web, cli, ai)
+build-all: ## Build the native product
 	npm run build:all
 
-compile: ## Compile standalone binary (dist/maestro-bun)
-	npm run bun:compile
-
-run-ts: ## Launch TS TUI (with .env)
-	bun run ./src/cli.ts
-
 run-rs: build ## Launch Rust TUI (release)
-	cargo build --release --manifest-path packages/tui-rs/Cargo.toml && \
-	MAESTRO_AGENT_SCRIPT="$$(pwd)/dist/cli.js" ./packages/tui-rs/target/release/maestro-tui
+	./target/release/maestro
 
-run-rs-debug: build ## Launch Rust TUI (debug build)
-	cargo build --manifest-path packages/tui-rs/Cargo.toml && \
-	MAESTRO_AGENT_SCRIPT="$$(pwd)/dist/cli.js" ./packages/tui-rs/target/debug/maestro-tui
+run-rs-debug: ## Launch Rust TUI (debug build)
+	cargo build -p maestro && \
+	./target/debug/maestro
 
-web: ## Web UI dev server (backend + Vite)
-	npm run web:dev
-
-web-local: ## Web UI dev server with local-only auth/Redis bypasses
-	npm run web:dev:local
-
-dev: ## TS watch mode
-	npm run dev
-
-dev-all: ## TS watch + test watch
-	npm run dev:all
-
-developer-surface-check: ## Verify local tooling, introspection, and tracing guardrails
-	npm run developer-surface:check
+web: ## Launch the native web control plane
+	npm run web
 
 test: ## Full test suite
-	npx nx run maestro:test --skip-nx-cache
+	npm test
 
-test-fast: ## Fast test subset
-	npm run test:fast
-
-test-coverage: ## Test suite with V8 coverage report
-	npm run test:coverage
-
-lint: ## Biome + eval verifier
-	bun run bun:lint
+lint: ## Rust formatting checks
+	npm run lint
 
 check: lint test ## Full CI check (lint + test)
 
-fmt: ## Auto-format with Biome (safe formatting only)
-	bunx biome format --write .
-
-fmt-unsafe: ## Auto-format + unsafe lint fixes
-	bunx biome check --fix --unsafe .
+fmt: ## Format Rust sources
+	npm run format
 
 smoke: build ## Smoke-test the built CLI
 	npm run smoke
@@ -208,7 +176,7 @@ cerebro-e2e-trace: cerebro-e2e-doctor ## Run the trace-backed Maestro/Cerebro lo
 		$(MAKE) -C "$(LOCAL_CEREBRO_REPO)" local-e2e-trace
 
 evals: ## Run eval scenarios
-	npx nx run maestro:evals --skip-nx-cache
+	npm run check:scenario-replay-gate
 
 verify: fmt lint test build smoke ## Full verification (format + lint + test + build + smoke)
 

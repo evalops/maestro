@@ -1,245 +1,40 @@
-# Maestro by EvalOps
+# Maestro
 
-[![CI](https://github.com/evalops/maestro/actions/workflows/ci.yml/badge.svg)](https://github.com/evalops/maestro/actions/workflows/ci.yml)
-
-Maestro is a coding agent for real software work. It can inspect code, edit files, run shell commands, search large repos, and help across terminal, web, IDE, browser, Slack, and GitHub workflows.
-
-This README is intentionally short. Use it to get running, then jump into the docs for the details.
-
-## What Maestro Covers
-
-- Terminal-first coding agent with both interactive TUI and one-shot CLI flows
-- Shared runtime across the web UI, VS Code, JetBrains, browser automation, Slack, and GitHub
-- Multi-provider model support, OAuth-based logins, and managed EvalOps routing
-- Hooks, MCP servers, context files, and headless automation for custom workflows
-- Visible tool use with approvals, sandboxing, and firewall controls
-
-## Interfaces
-
-| Interface | Best for | Guide |
-| --- | --- | --- |
-| Terminal (TUI/CLI) | Interactive coding sessions and one-shot repo tasks | [Features](docs/FEATURES.md) |
-| Web UI | Browser-based Maestro sessions | [Web UI Guide](docs/WEB_UI.md) |
-| Conductor | Browser automation through a local Maestro server | [Conductor Bridge](docs/CONDUCTOR_BRIDGE.md) |
-| VS Code | Inline chat and IDE-native workflows | [VS Code extension](packages/vscode-extension/README.md) |
-| JetBrains | IntelliJ, WebStorm, PyCharm, and related IDEs | [JetBrains plugin](packages/jetbrains-plugin/README.md) |
-| Slack | Chat-driven agent workflows with sandboxing | [Slack agent](packages/slack-agent/README.md) |
-| GitHub | Issue-driven automation and PR generation | [GitHub agent](packages/github-agent/README.md) |
-| Ambient Agent | Long-running GitHub automation daemon | [Ambient Agent design](docs/design/AMBIENT_AGENT.md) |
-| Headless | Embedding Maestro in CI, tools, and eval harnesses | [Headless protocol](docs/protocols/headless.md) |
+Maestro is EvalOps' native Rust coding agent. One `maestro` executable owns the CLI, interactive terminal UI, headless protocol, hosted runner, and web control plane. Node.js and Bun are not required to run the product.
 
 ## Install
 
-### One-line install (recommended)
-
-```bash
+```sh
 curl -fsSL https://raw.githubusercontent.com/evalops/maestro/main/scripts/install.sh | bash
+maestro --version
 ```
 
-This detects your OS/arch, downloads the matching release binaries
-(`maestro-<platform>` and `maestro-tui-<platform>`), installs them to
-`~/.local/bin` (or `/usr/local/bin` when that is writable and preferred),
-and prints a PATH tip plus `maestro --version`.
+Release assets are named `maestro-darwin-arm64`, `maestro-darwin-x64`, `maestro-linux-arm64`, and `maestro-linux-x64`. The npm package contains the same native binaries and a POSIX launcher; it does not execute JavaScript at runtime.
 
-`maestro-tui` is required for the interactive terminal UI and for the web
-server’s default native chat/headless path. Override resolution with
-`MAESTRO_TUI_BIN` if you install the binary elsewhere.
+## Use
 
-Windows (PowerShell) guidance:
-
-```powershell
-irm https://raw.githubusercontent.com/evalops/maestro/main/scripts/install.ps1 | iex
+```sh
+maestro                         # interactive TUI
+maestro "fix the failing test" # interactive with an initial prompt
+maestro exec "summarize this repository"
+maestro --headless              # NDJSON protocol over stdio
+maestro web --port 3000         # browser UI and HTTP control plane
+maestro hosted-runner
 ```
 
-### Manual release binary
+## Develop
 
-Download **both** `maestro` and `maestro-tui` for your platform from the latest
-GitHub release (interactive TUI and default web/native headless need
-`maestro-tui` on `PATH`, or set `MAESTRO_TUI_BIN`):
+Rust owns every agent/runtime path:
 
-```bash
-# macOS Apple Silicon
-curl -fsSL https://github.com/evalops/maestro/releases/latest/download/maestro-darwin-arm64 -o maestro
-curl -fsSL https://github.com/evalops/maestro/releases/latest/download/maestro-tui-darwin-arm64 -o maestro-tui
-chmod +x ./maestro ./maestro-tui
+- `packages/maestro-rs` — canonical executable and command dispatch
+- `packages/tui-rs` — agent core, providers, tools, TUI, and headless runtime
+- `packages/control-plane-rs` — HTTP/SSE/WebSocket control plane
 
-# macOS Intel
-curl -fsSL https://github.com/evalops/maestro/releases/latest/download/maestro-darwin-x64 -o maestro
-curl -fsSL https://github.com/evalops/maestro/releases/latest/download/maestro-tui-darwin-x64 -o maestro-tui
-chmod +x ./maestro ./maestro-tui
+The repository contains no TypeScript source or TypeScript build toolchain. The browser UI is a versioned static asset snapshot served by the Rust control plane; agent execution, protocols, adapters, CLI, and TUI are Rust.
 
-# Linux x64
-curl -fsSL https://github.com/evalops/maestro/releases/latest/download/maestro-linux-x64 -o maestro
-curl -fsSL https://github.com/evalops/maestro/releases/latest/download/maestro-tui-linux-x64 -o maestro-tui
-chmod +x ./maestro ./maestro-tui
-
-# Linux arm64
-curl -fsSL https://github.com/evalops/maestro/releases/latest/download/maestro-linux-arm64 -o maestro
-curl -fsSL https://github.com/evalops/maestro/releases/latest/download/maestro-tui-linux-arm64 -o maestro-tui
-chmod +x ./maestro ./maestro-tui
+```sh
+cargo test --workspace --locked
+npm run check:rust-only-runtime
 ```
 
-### Package Managers (dev/source workflows)
-
-```bash
-bun install -g @evalops/maestro
-npm install -g @evalops/maestro
-```
-
-Published npm/Bun packages include per-platform `vendor/maestro-tui/…` binaries
-(see `package.json` `files`). Package-manager installs are kept for contributors
-and source-based workflows. Release binaries are the primary install artifact
-and are smoke-tested with `maestro --version` and a headless protocol handshake.
-
-If a global install fails while resolving `@evalops/contracts`, you are installing a deprecated 0.10.8-0.10.20 package
-that referenced private workspace dependencies. Upgrade to
-`@evalops/maestro@latest`; published release verification now runs npm and Bun
-registry install smokes against the public package metadata before promotion.
-
-### Nix
-
-```bash
-nix run github:evalops/maestro
-```
-
-## Quick Start
-
-1. Sign in for the default Codex subscription models:
-
-```bash
-maestro codex login
-```
-
-`maestro codex login` uses Codex app-server auth. Published installs use the
-packaged `@openai/codex` app-server and source checkouts fall back to a `codex`
-binary on `PATH`, so an existing `codex login` is reused automatically.
-
-Bare `maestro` defaults to `openai-codex/gpt-5.5`. Maestro also supports OpenAI API keys, Anthropic, Google, OpenRouter, Azure OpenAI, GitHub Copilot, Groq, xAI, Cerebras, the major Chinese model providers (DeepSeek, Moonshot/Kimi, Alibaba Qwen via DashScope, MiniMax, and Z.ai/Zhipu GLM), and managed EvalOps auth. See [Models](docs/MODELS.md) for provider-specific setup and overrides.
-
-For another Codex subscription model, select models under the `openai-codex` provider such as `openai-codex/gpt-5.5`.
-
-2. Launch the interface you want:
-
-```bash
-maestro
-maestro "Audit this repository and suggest the next refactor"
-maestro web
-```
-
-`maestro web` starts the browser UI on `http://localhost:8080`. Chat defaults to
-native `maestro-tui --headless` (see [Web UI](docs/WEB_UI.md)); ensure
-`maestro-tui` is available or set `MAESTRO_TUI_BIN`.
-
-3. Add project-specific behavior when needed:
-
-- Keys and config: `~/.maestro/keys.json`, `~/.maestro/config.json`
-- MCP servers: `~/.maestro/mcp.json` or `.maestro/mcp.json`
-- Hooks: `~/.maestro/hooks.json` or `.maestro/hooks.json`
-- Skills: `maestro skill new <name>`, `maestro skill lint .maestro/skills`
-- Agent instructions: `AGENT.md`, `.maestro/APPEND_SYSTEM.md`, `~/.maestro/agent/AGENT.md`
-
-## Safety Model
-
-- Approval modes let you choose how much confirmation Maestro needs before acting
-- Sandbox modes range from workspace containment to `danger-full-access`
-- Firewall rules, trusted paths, and CI/secrets protections reduce common footguns
-
-See [Safety](docs/SAFETY.md) and the [Threat Model](docs/THREAT_MODEL.md) for the full behavior.
-
-## Docs
-
-| Goal | Guide |
-| --- | --- |
-| Install, build, and first run | [Quickstart](docs/QUICKSTART.md) |
-| Learn TUI and CLI workflows | [Features](docs/FEATURES.md) |
-| Find slash commands and flags | [Tools Reference](docs/TOOLS_REFERENCE.md) |
-| Configure providers and models | [Models](docs/MODELS.md) |
-| Understand approvals and sandboxing | [Safety](docs/SAFETY.md) |
-| Run the browser interface | [Web UI Guide](docs/WEB_UI.md) |
-| Set up MCP servers | [MCP Guide](docs/MCP_GUIDE.md) |
-| Package reusable skills | [Skill Cookbook](docs/cookbook/skills/README.md) |
-| Work on the repo as a contributor | [Contributor Runbook](docs/CONTRIBUTOR_RUNBOOK.md) |
-| Integrate Maestro headlessly | [Headless protocol](docs/protocols/headless.md) |
-| Bring any coding agent into EvalOps | [Any-Agent Control Plane](docs/design/ANY_AGENT_CONTROL_PLANE.md) |
-| Browse the full docs map | [Documentation index](docs/README.md) |
-
-## Contributing
-
-Fast path for local development:
-
-```bash
-git clone https://github.com/evalops/maestro.git
-cd maestro
-bun install
-npx nx run maestro:build --skip-nx-cache
-npm run smoke:local-e2e
-npx nx run maestro:test --skip-nx-cache
-npx nx run maestro:evals --skip-nx-cache
-```
-
-`npm run smoke:local-e2e` is credential-free after build: it checks help,
-version, the headless protocol handshake, and deterministic mock-agent
-read/write/search/edit flows through the built CLI.
-
-For the browser UI without local API keys or Redis, use the local-only dev
-profile:
-
-```bash
-make web-local
-curl http://localhost:8080/api/models
-```
-
-To prove Maestro works against a local Cerebro stack, keep sibling checkouts and
-run:
-
-```bash
-gh repo clone evalops/cerebro ../cerebro
-make cerebro-e2e-doctor
-make cerebro-e2e
-```
-
-To actually use the two repos together locally, start Cerebro from Maestro and
-export the same Cerebro/MCP env into the Maestro terminal:
-
-```bash
-make cerebro-dev
-
-# In another Maestro terminal:
-eval "$(make -s cerebro-env)"
-make run-ts
-```
-
-That target delegates to Cerebro's `make local-maestro-e2e` with
-`LOCAL_MAESTRO_REPO` set to the current Maestro checkout. It builds and smokes
-Maestro, emits Maestro's canonical Platform replay, publishes it through local
-NATS, and verifies Cerebro graph projection plus MCP recall from the generated
-session traffic. `make cerebro-e2e-doctor` checks the Cerebro checkout, Docker
-Compose, the replay generator, and Cerebro's own local-E2E doctor before the
-full smoke starts. It also checks the effective local Cerebro URL, MCP URL, and
-workspace from `.env` or exported environment values, then verifies that the
-configured API port is free before the self-contained smoke starts. The default
-URL is `http://localhost:18080`; use `LOCAL_BASE_URL`/`MAESTRO_CEREBRO_URL` plus
-matching Cerebro `LOCAL_HTTP_PORT` overrides when that port is occupied. Set
-`LOCAL_CEREBRO_REPO=/path/to/cerebro` when the checkout is not a sibling
-directory. If your machine cannot surface OTEL collector debug logs, run
-`LOCAL_ASSERT_OTEL=false make cerebro-e2e`.
-
-For direct local Maestro runs against an already-running Cerebro dev stack,
-`make cerebro-env` prints copyable exports derived from `.env` or shell
-overrides. The Makefile exports those vars to `make` targets so `make run-ts`,
-`make web-local`, and local smokes all see the same configuration.
-
-Need Redis or PostgreSQL for a specific workflow? Start from `docker-compose.yml` and use the [Contributor Runbook](docs/CONTRIBUTOR_RUNBOOK.md) for the rest of the repo workflow.
-
-## Repository Layout
-
-- `src/` - CLI entrypoints and shared application code
-- `packages/core/` - agent loop, transport, types, and sandbox primitives
-- `packages/ai/` - model registry, provider transport, and event streaming
-- `packages/tui-rs/` - native Rust TUI
-- `packages/web/` - browser UI
-- `packages/vscode-extension/`, `packages/jetbrains-plugin/`, `packages/slack-agent/`, `packages/github-agent/` - interface integrations
-
-## License
-
-Business Source License 1.1. You can use Maestro for development, testing, and production use, but not as a competing hosted or embedded product. On April 14, 2030, the license converts to Apache 2.0. See [LICENSE](LICENSE) for details.
+See [Architecture](docs/ARCHITECTURE.md), [Quickstart](docs/QUICKSTART.md), and [Web UI](docs/WEB_UI.md).

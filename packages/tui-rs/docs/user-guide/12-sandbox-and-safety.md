@@ -13,7 +13,7 @@ Maestro runs tools on your machine. Safety layers include the action firewall, a
 | `/ask` | Safe | Require approval for all tools |
 | `/approvals [yolo\|selective\|safe]` | explicit / cycle | Set or advance mode |
 
-CLI / env (TypeScript and shared surfaces):
+CLI / env:
 
 | Mode | Behavior |
 |------|----------|
@@ -100,10 +100,8 @@ Platform enforcement (summary):
 
 | Runtime | Platform | Native notes |
 |---------|----------|--------------|
-| TypeScript CLI | macOS | Seatbelt via `sandbox-exec` |
-| TypeScript CLI | Linux | Fail closed when native requested without support |
-| Rust TUI | Linux | Landlock + seccomp backend |
-| Rust TUI | macOS | Seatbelt path in sandbox module |
+| Native Rust runtime | Linux | Landlock + seccomp backend |
+| Native Rust runtime | macOS | Seatbelt path in sandbox module |
 
 If `native` or `docker` cannot be enforced, Maestro fails closed unless unsafe fallback is explicitly enabled (`MAESTRO_ALLOW_UNSANDBOXED_SANDBOX_FALLBACK=1`).
 

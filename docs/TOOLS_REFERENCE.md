@@ -3,7 +3,7 @@
 Audience: contributors and advanced users adding/debugging tools.  
 Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Features](FEATURES.md) · [Safety](SAFETY.md)
 
-Contents: [Validation](#parameter-validation) · [Error Handling](#error-handling-for-tool-authors) · [Built-in Tools](#built-in-tools) · [GitHub CLI Tools](#github-cli-tools) · [SDK Tool Types](#sdk-tool-types) · [CLI Commands](#cli-commands) · [Common Errors](#common-errors--remedies)
+Contents: [Validation](#parameter-validation) · [Error Handling](#error-handling-for-tool-authors) · [Built-in Tools](#built-in-tools) · [GitHub CLI Tools](#github-cli-tools) · [CLI Commands](#cli-commands) · [Common Errors](#common-errors--remedies)
 
 The agent and CLI expose a consistent set of tools. Use this sheet when adding
 new tools or debugging existing ones.
@@ -31,45 +31,18 @@ action boundary.
 
 ## Parameter Validation
 
-Every tool declares a TypeBox schema, so arguments coming from the LLM (or
-slash commands) are validated before execution. Defaults (e.g., `write.backup`,
-`read.limit`) are applied automatically, and invalid combinations (such as
-`search.context` alongside `beforeContext`/`afterContext`) are rejected with a
-clear error message in chat.
-
-Type definitions for tool payloads live in `packages/contracts/README.md`.
+Every native tool declares and validates its JSON input contract before
+execution. Serde-backed argument types apply defaults and reject malformed or
+incompatible fields with a structured tool error. Definitions and dispatch live
+under `packages/tui-rs/src/tools`.
 
 ## Error Handling for Tool Authors
 
-When implementing tools using the `createTool` DSL, use `respond.error()` to signal failures:
-
-```typescript
-export const myTool = createTool({
-  name: "my-tool",
-  schema: mySchema,
-  async run(params, { respond }) {
-    try {
-      // Tool logic here
-      const result = await doSomething(params);
-      return respond.text(result);
-    } catch (error) {
-      // Use respond.error() - it throws a ToolError
-      return respond.error("Operation failed", { 
-        code: 500,
-        // Sensitive paths like absolutePath, fullPath, realPath are sanitized
-        context: "additional info"
-      });
-    }
-  }
-});
-```
-
-**Key Points:**
-- `respond.error(message, details?)` throws a `ToolError` exception
-- The transport layer catches it and sets `isError: true` on the result
-- Error details are automatically sanitized to remove sensitive paths (`absolutePath`, `fullPath`, `realPath`)
-- Agents can distinguish between successful tool calls and errors for proper retry logic
-- Never return error text as successful content - always use `respond.error()`
+Implement tools through the native registry in `packages/tui-rs/src/tools/registry`.
+Return typed errors instead of successful text that merely describes a failure;
+the protocol layer maps them to `isError: true`. Sanitize secrets and absolute
+paths before attaching diagnostic context, and preserve retryable versus terminal
+error distinctions.
 
 ## Built-in Tools
 
@@ -109,7 +82,7 @@ export const myTool = createTool({
 - Parallelism is native: emit multiple tool calls in one response when you need concurrent reads/searches; the runtime will execute independent calls in parallel without a batch wrapper.
 
 **Examples:**
-```javascript
+```json
 // Create PR
 {action: "create", title: "Fix auth bug", body: "Details...", base: "main"}
 
@@ -126,43 +99,14 @@ export const myTool = createTool({
 {action: "view", json: true}
 ```
 
-## SDK Tool Types
-
-For external SDK consumers, tool input schemas are exported from `@evalops/maestro`:
-
-```typescript
-import {
-  ReadInputSchema,
-  EditInputSchema,
-  BashInputSchema,
-  NotebookEditInputSchema,
-  AskUserInputSchema,
-  getToolSchema,
-  type ReadInput,
-  type EditInput,
-} from '@evalops/maestro';
-
-// Get schema at runtime
-const schema = getToolSchema('read');
-
-// Type-safe tool parameters
-const readParams: ReadInput = {
-  path: '/path/to/file',
-  offset: 1,
-  limit: 100,
-};
-```
-
-Available schemas: `ReadInputSchema`, `EditInputSchema`, `WriteInputSchema`, `BashInputSchema`, `SearchInputSchema`, `ListInputSchema`, `NotebookEditInputSchema`, `TodoInputSchema`, `AskUserInputSchema`, `WebSearchInputSchema`, `WebFetchInputSchema`, `AgentInputSchema`.
-
 ## CLI Commands
 
-For install/build/test entrypoints, use `docs/QUICKSTART.md` (canonical). Key dev helpers: `bun run cli -- --help`, `npx nx run maestro:evals --skip-nx-cache`, `bun run telemetry:report`.
+For install/build/test entrypoints, use `docs/QUICKSTART.md` (canonical). Key dev helpers are `cargo run --manifest-path packages/maestro-rs/Cargo.toml -- --help`, `npm run check:scenario-replay-gate`, and `npm test`.
 
 ## Common Errors & Remedies
 
-- **File not found** (read/write/list/search): ensure the tool uses absolute
-  paths resolved via `process.cwd()`; sanitize user input before reading.
+- **File not found** (read/write/list/search): resolve paths from the configured
+  workspace root and sanitize user input before reading.
 - **Diff shows nothing**: workspace clean. Use `/diff staged` or ensure `git`
   knows about the changes.
 - **Bash tool blocked**: action firewall flagged a destructive command. Approve
@@ -172,6 +116,6 @@ For install/build/test entrypoints, use `docs/QUICKSTART.md` (canonical). Key de
 
 If you add a tool, expose it in:
 
-1. `src/tools/index.ts` (registration)
+1. `packages/tui-rs/src/tools/registry` (implementation and registration)
 2. Docs (update this file + CLI help if needed)
 3. Tests/evals if the behavior is user-facing

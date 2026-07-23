@@ -18,7 +18,7 @@ Use this workflow for Maestro changes that may affect the public mirror, Platfor
 ## Implementation Rules
 
 - Do not manually commit to `evalops/maestro` for normal mirrored code changes; let the mirror/release automation handle public sync.
-- Keep TypeScript, Rust, generated protocol output, and migration packaging in sync when a runtime contract changes.
+- Keep Rust protocol implementations, fixtures, and native packaging in sync when a runtime contract changes.
 - When touching Platform-facing behavior, identify the matching Platform issue, proto/event contract, or deploy flag in the PR body.
 - Preserve public/private repo asymmetry; do not normalize away internal-only surfaces.
 
@@ -27,22 +27,22 @@ Use this workflow for Maestro changes that may affect the public mirror, Platfor
 Use narrow checks for the touched surface, then broaden if the change crosses package boundaries:
 
 ```bash
-bun run bun:lint
-npx nx run maestro:test --skip-nx-cache
+npm run check
+cargo test --workspace --locked
 ```
 
 Rust runtime changes:
 
 ```bash
-bun run tui-rs:check
-bun run control-plane-rs:check
+cargo check -p maestro-tui
+cargo check -p maestro-control-plane
 ```
 
 Protocol or packaging changes:
 
 ```bash
-bun run lint:headless-proto
-bun run release:check
+cargo test --workspace --locked
+npm run release:check
 ```
 
 ## PR Body Checklist

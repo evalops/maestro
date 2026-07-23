@@ -80,6 +80,7 @@ pub mod app_message;
 mod client;
 mod google;
 mod openai;
+mod providers;
 pub mod sanitize;
 mod transform;
 mod types;
@@ -93,6 +94,7 @@ pub use client::{
 };
 pub use google::GoogleClient;
 pub use openai::OpenAiClient;
+pub use providers::{ProviderDescriptor, ProviderProtocol, ProviderRegistry, ResolvedProvider};
 pub use sanitize::{sanitize_control_chars, sanitize_for_api, sanitize_surrogates};
 pub use transform::{transform_messages, transform_messages_full};
 pub use types::*;

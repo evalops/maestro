@@ -1,0 +1,24 @@
+[package]
+name = "maestro"
+version = "0.10.54"
+edition = "2021"
+license = "MIT"
+description = "Canonical native Rust CLI for Maestro"
+
+[[bin]]
+name = "maestro"
+path = "src/main.rs"
+
+[lib]
+name = "maestro"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+maestro-control-plane.workspace = true
+maestro-tui.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true

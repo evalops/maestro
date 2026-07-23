@@ -1,5 +1,4 @@
 .git
-.nx
 bazel-bin
 bazel-maestro-internal
 bazel-out

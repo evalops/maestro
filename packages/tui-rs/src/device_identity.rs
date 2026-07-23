@@ -331,6 +331,9 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
 
+    static DEVICE_IDENTITY_TEST_ENV_LOCK: tokio::sync::Mutex<()> =
+        tokio::sync::Mutex::const_new(());
+
     fn fake_helper_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../scripts/fake-device-identity-helper.mjs")
@@ -497,6 +500,7 @@ mod tests {
 
     #[tokio::test]
     async fn soft_fails_without_helper() {
+        let _env_lock = DEVICE_IDENTITY_TEST_ENV_LOCK.lock().await;
         let _env = EnvGuard::set(&[
             ("MAESTRO_DEVICE_IDENTITY_HELPER", None),
             ("MAESTRO_DEVICE_IDENTITY_ALLOW_TEST_HELPER", Some("1")),
@@ -520,6 +524,7 @@ mod tests {
         if cfg!(target_os = "macos") {
             return;
         }
+        let _env_lock = DEVICE_IDENTITY_TEST_ENV_LOCK.lock().await;
         let helper = fake_helper_path();
         let _env = EnvGuard::set(&[
             (
@@ -533,6 +538,7 @@ mod tests {
 
     #[tokio::test]
     async fn builds_desktop_proof_against_local_identity_challenge() {
+        let _env_lock = DEVICE_IDENTITY_TEST_ENV_LOCK.lock().await;
         let helper = fake_helper_path();
         let _env = EnvGuard::set(&[
             (
@@ -574,6 +580,7 @@ mod tests {
 
     #[tokio::test]
     async fn suppresses_proofs_when_local_device_not_enrolled() {
+        let _env_lock = DEVICE_IDENTITY_TEST_ENV_LOCK.lock().await;
         let helper = fake_helper_path();
         let _env = EnvGuard::set(&[
             (
@@ -598,6 +605,7 @@ mod tests {
 
     #[tokio::test]
     async fn enrolls_fake_desktop_device_with_signed_challenge() {
+        let _env_lock = DEVICE_IDENTITY_TEST_ENV_LOCK.lock().await;
         let helper = fake_helper_path();
         let _env = EnvGuard::set(&[
             (

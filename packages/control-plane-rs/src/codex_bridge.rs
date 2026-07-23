@@ -102,19 +102,15 @@ pub(crate) async fn record_usage_entry(
 fn codex_app_server_cli_path() -> PathBuf {
     env::var("MAESTRO_CODEX_APP_SERVER_CLI")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let start_dir = env::current_exe()
-                .ok()
-                .and_then(|path| path.parent().map(Path::to_path_buf))
-                .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-            codex_app_server_cli_path_from_start_dir(&start_dir)
-        })
+        .or_else(|_| env::current_exe())
+        .unwrap_or_else(|_| PathBuf::from("maestro"))
 }
 
+#[cfg(test)]
 pub(crate) fn codex_app_server_cli_path_from_start_dir(start_dir: &Path) -> PathBuf {
     let mut package_root_candidate = None;
     for dir in start_dir.ancestors() {
-        let cli_path = dir.join("dist/cli.js");
+        let cli_path = dir.join("bin/maestro");
         if cli_path.exists() {
             return cli_path;
         }
@@ -122,7 +118,17 @@ pub(crate) fn codex_app_server_cli_path_from_start_dir(start_dir: &Path) -> Path
             package_root_candidate = Some(cli_path);
         }
     }
-    package_root_candidate.unwrap_or_else(|| start_dir.join("dist/cli.js"))
+    package_root_candidate.unwrap_or_else(|| start_dir.join("bin/maestro"))
+}
+
+fn codex_bridge_command(cli_path: &Path) -> Command {
+    #[cfg(test)]
+    if cli_path.extension().and_then(|value| value.to_str()) == Some("js") {
+        let mut command = Command::new("node");
+        command.arg(cli_path);
+        return command;
+    }
+    Command::new(cli_path)
 }
 
 fn codex_app_server_timeout() -> Duration {
@@ -232,31 +238,21 @@ pub(crate) fn assistant_output_from_jsonl(stdout: &str) -> Result<CodexBridgeOut
             }
             continue;
         }
-        if current_role.as_deref() != Some("assistant") {
-            continue;
-        }
         if event.get("type").and_then(Value::as_str) == Some("item")
             && event.get("subtype").and_then(Value::as_str) == Some("message_complete")
         {
-            if let Some(stop_reason) = event
-                .get("data")
-                .and_then(|data| data.get("stopReason"))
-                .and_then(Value::as_str)
-            {
+            let native_completion = current_role.is_none() && event.get("text").is_some();
+            if current_role.as_deref() != Some("assistant") && !native_completion {
+                continue;
+            }
+            let completion = event.get("data").unwrap_or(&event);
+            if let Some(stop_reason) = completion.get("stopReason").and_then(Value::as_str) {
                 assistant_stop_reason = Some(stop_reason.to_string());
             }
-            if let Some(usage) = event
-                .get("data")
-                .and_then(|data| data.get("usage"))
-                .and_then(codex_usage_from_json)
-            {
+            if let Some(usage) = completion.get("usage").and_then(codex_usage_from_json) {
                 assistant_usage = Some(usage);
             }
-            if let Some(text) = event
-                .get("data")
-                .and_then(|data| data.get("text"))
-                .and_then(Value::as_str)
-            {
+            if let Some(text) = completion.get("text").and_then(Value::as_str) {
                 assistant_text = Some(text.to_string());
             }
         }
@@ -943,10 +939,16 @@ fn codex_collab_human_tool(tool: &str) -> &'static str {
 }
 
 fn codex_usage_from_json(usage: &Value) -> Option<TokenUsage> {
-    let input_tokens = value_u64_field(usage, &["input", "tokensInput"]);
-    let output_tokens = value_u64_field(usage, &["output", "tokensOutput"]);
-    let cache_read_tokens = value_u64_field(usage, &["cacheRead", "tokensCacheRead"]);
-    let cache_write_tokens = value_u64_field(usage, &["cacheWrite", "tokensCacheWrite"]);
+    let input_tokens = value_u64_field(usage, &["input", "tokensInput", "input_tokens"]);
+    let output_tokens = value_u64_field(usage, &["output", "tokensOutput", "output_tokens"]);
+    let cache_read_tokens = value_u64_field(
+        usage,
+        &["cacheRead", "tokensCacheRead", "cache_read_tokens"],
+    );
+    let cache_write_tokens = value_u64_field(
+        usage,
+        &["cacheWrite", "tokensCacheWrite", "cache_write_tokens"],
+    );
     let cost = usage
         .get("cost")
         .and_then(|cost| {
@@ -1121,23 +1123,19 @@ pub(crate) async fn run_codex_app_server_cli(
     let cli_path = codex_app_server_cli_path();
     if !cli_path.exists() {
         return Err(format!(
-            "Codex app-server bridge requires {}. Run `npm run build:all` first or set MAESTRO_CODEX_APP_SERVER_CLI.",
+            "Codex app-server bridge requires executable {}. Set MAESTRO_CODEX_APP_SERVER_CLI to override it.",
             cli_path.display()
         ));
     }
 
-    let node_bin = env::var("MAESTRO_NODE_BIN").unwrap_or_else(|_| "node".to_string());
     let bridge_prompt = prepare_codex_bridge_prompt(cwd, prompt, attachment_paths).await?;
     let sandbox_mode = codex_app_server_sandbox_mode();
-    let mut command = Command::new(node_bin);
+    let mut command = codex_bridge_command(&cli_path);
     command
-        .arg(cli_path)
-        .arg("--provider")
-        .arg("openai-codex")
+        .arg("exec")
         .arg("--model")
         .arg(model)
-        .arg("--mode")
-        .arg("json")
+        .arg("--json")
         .arg("--no-session")
         .arg("--approval-mode")
         .arg(approval_mode);
@@ -1449,27 +1447,17 @@ pub(crate) async fn run_codex_app_server_headless_cli(
     let cli_path = codex_app_server_cli_path();
     if !cli_path.exists() {
         return Err(format!(
-            "Codex app-server bridge requires {}. Run `npm run build:all` first or set MAESTRO_CODEX_APP_SERVER_CLI.",
+            "Codex app-server bridge requires executable {}. Set MAESTRO_CODEX_APP_SERVER_CLI to override it.",
             cli_path.display()
         ));
     }
 
-    let node_bin = env::var("MAESTRO_NODE_BIN").unwrap_or_else(|_| "node".to_string());
     let bridge_prompt = prepare_codex_bridge_prompt(cwd, prompt, attachment_paths).await?;
     let sandbox_mode = codex_app_server_sandbox_mode();
-    let mut command = Command::new(node_bin);
-    command
-        .arg(cli_path)
-        .arg("--provider")
-        .arg("openai-codex")
-        .arg("--model")
-        .arg(model)
-        .arg("--headless")
-        .arg("--no-session")
-        .arg("--approval-mode")
-        .arg("prompt");
+    let mut command = codex_bridge_command(&cli_path);
+    command.arg("headless").env("MAESTRO_MODEL", model);
     if let Some(sandbox_mode) = sandbox_mode {
-        command.arg("--sandbox").arg(sandbox_mode);
+        command.env("MAESTRO_SANDBOX_MODE", sandbox_mode);
     }
     command
         .current_dir(cwd)

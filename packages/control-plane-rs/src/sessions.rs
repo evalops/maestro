@@ -258,7 +258,22 @@ pub(super) async fn handle_pending_request_resume_endpoint(
         );
     };
     let (approved, result) = pending_tool_response_from_payload(&payload);
+    let completed_client_tool_result = result.as_ref().map(|result| result.success);
+    if let Some(success) = completed_client_tool_result {
+        state
+            .completed_client_tool_results
+            .lock()
+            .await
+            .insert(request_id.clone(), success);
+    }
     if sender.send((request_id.clone(), approved, result)).is_err() {
+        if completed_client_tool_result.is_some() {
+            state
+                .completed_client_tool_results
+                .lock()
+                .await
+                .remove(&request_id);
+        }
         return json_response(
             409,
             &serde_json::json!({ "error": "Pending request is no longer active" }),
@@ -269,8 +284,21 @@ pub(super) async fn handle_pending_request_resume_endpoint(
 
 pub(super) async fn load_session_store(path: &Path) -> (SessionStore, bool) {
     match tokio::fs::read(path).await {
-        Ok(bytes) => match decode_session_store(&bytes) {
-            Ok(store) => (store, true),
+        Ok(bytes) => match decode_session_store_with_migration(&bytes) {
+            Ok((store, migrated)) => {
+                if migrated {
+                    if let Err(error) =
+                        crate::migrations::atomic_write_validated_json(path, &store).await
+                    {
+                        eprintln!(
+                            "failed to atomically migrate session store at {}: {error}",
+                            path.display()
+                        );
+                        return (store, false);
+                    }
+                }
+                (store, true)
+            }
             Err(error) => {
                 eprintln!(
                     "failed to parse session store at {}: {error}; leaving the file untouched",
@@ -286,18 +314,28 @@ pub(super) async fn load_session_store(path: &Path) -> (SessionStore, bool) {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn decode_session_store(bytes: &[u8]) -> Result<SessionStore, String> {
+    decode_session_store_with_migration(bytes).map(|(store, _)| store)
+}
+
+fn decode_session_store_with_migration(bytes: &[u8]) -> Result<(SessionStore, bool), String> {
     let value = serde_json::from_slice::<Value>(bytes).map_err(|error| error.to_string())?;
     if value.get("sessions").is_some() {
-        return serde_json::from_value::<SessionStore>(value).map_err(|error| error.to_string());
+        return serde_json::from_value::<SessionStore>(value)
+            .map(|store| (store, false))
+            .map_err(|error| error.to_string());
     }
     if value.is_object() {
         let sessions = serde_json::from_value::<HashMap<String, SessionRecord>>(value)
             .map_err(|error| error.to_string())?;
-        return Ok(SessionStore {
-            sessions,
-            shared_sessions: HashMap::new(),
-        });
+        return Ok((
+            SessionStore {
+                sessions,
+                shared_sessions: HashMap::new(),
+            },
+            true,
+        ));
     }
     if value.is_array() {
         let sessions = serde_json::from_value::<Vec<SessionRecord>>(value)
@@ -305,10 +343,13 @@ pub(super) fn decode_session_store(bytes: &[u8]) -> Result<SessionStore, String>
             .into_iter()
             .map(|session| (session.id.clone(), session))
             .collect();
-        return Ok(SessionStore {
-            sessions,
-            shared_sessions: HashMap::new(),
-        });
+        return Ok((
+            SessionStore {
+                sessions,
+                shared_sessions: HashMap::new(),
+            },
+            true,
+        ));
     }
     Err("session store must be an object or array".to_string())
 }
@@ -326,8 +367,11 @@ pub(super) async fn persist_session_store(state: &AppState) {
     if let Some(parent) = state.config.session_store_path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
-    if let Ok(bytes) = serde_json::to_vec_pretty(&store) {
-        let _ = tokio::fs::write(&state.config.session_store_path, bytes).await;
+    if let Err(error) =
+        crate::migrations::atomic_write_validated_json(&state.config.session_store_path, &store)
+            .await
+    {
+        eprintln!("failed to persist session store atomically: {error}");
     }
 }
 

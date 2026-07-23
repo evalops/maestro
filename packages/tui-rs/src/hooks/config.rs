@@ -120,10 +120,6 @@ pub struct HookDefinition {
     #[serde(default)]
     pub wasm: Option<String>,
 
-    /// TypeScript hook path (for IPC bridge)
-    #[serde(default)]
-    pub typescript: Option<String>,
-
     /// Hook timeout override
     #[serde(default)]
     pub timeout_ms: Option<u64>,
@@ -137,7 +133,7 @@ pub struct HookDefinition {
     pub description: Option<String>,
 }
 
-/// Raw JSON hooks configuration (TS schema)
+/// Raw JSON hooks configuration
 #[derive(Debug, Clone, Default, Deserialize)]
 struct RawHooksConfig {
     #[serde(default)]
@@ -200,8 +196,6 @@ pub enum HookSource {
     LuaFile(PathBuf),
     /// WASM plugin
     Wasm(PathBuf),
-    /// TypeScript hook (IPC bridge)
-    TypeScript(PathBuf),
 }
 
 /// Load hook configuration from standard locations
@@ -209,7 +203,7 @@ pub fn load_hook_config(cwd: &Path) -> Result<LoadedHookConfig> {
     let mut config = HookConfig::default();
     let mut source_paths = Vec::new();
 
-    // Load JSON config files (TS schema)
+    // Load JSON config files
     if let Some(home) = dirs::home_dir() {
         let global_json = home.join(".composer").join("hooks.json");
         if global_json.exists() {
@@ -359,7 +353,6 @@ fn parse_raw_hooks_config(raw: RawHooksConfig, base_dir: &Path) -> Result<HookCo
                             lua: None,
                             lua_file: None,
                             wasm: None,
-                            typescript: None,
                             timeout_ms: hook.timeout,
                             enabled: true,
                             description: None,
@@ -380,7 +373,6 @@ fn parse_raw_hooks_config(raw: RawHooksConfig, base_dir: &Path) -> Result<HookCo
                         lua: None,
                         lua_file: None,
                         wasm: None,
-                        typescript: None,
                         timeout_ms: hook.timeout,
                         enabled: true,
                         description: None,
@@ -458,13 +450,6 @@ fn determine_hook_source(def: &HookDefinition, cwd: &Path) -> Option<HookSource>
         let path = resolve_path(wasm, cwd);
         if path.exists() {
             return Some(HookSource::Wasm(path));
-        }
-    }
-
-    if let Some(ref ts) = def.typescript {
-        let path = resolve_path(ts, cwd);
-        if path.exists() {
-            return Some(HookSource::TypeScript(path));
         }
     }
 

@@ -1,102 +1,43 @@
-# Contributing Guide
+# Contributing to Maestro
 
-Thanks for helping build Maestro! This document covers the workflow we
-expect before opening a PR.
+Maestro is developed as one Rust workspace with a thin npm distribution wrapper.
 
-## Prerequisites
+## Setup
 
-- Node.js 20+
-- Bun 1.1+ (preferred) or npm 9+
-- Git + GitHub account
-- Familiarity with TypeScript/ESM and modern CLIs
-
-## Development Workflow
-
-1. **Fork & clone** – `git clone https://github.com/evalops/maestro.git`
-2. **Install deps** – `bun install`
-3. **Create a branch** – `git checkout -b feature/my-change`
-4. **Implement + document** – update code + relevant docs (README, docs/*.md, AGENTS.md)
-5. **Run checks**:
-   ```bash
-   bunx biome check .                            # Biome + eval verifier
-   npx nx run maestro:test --skip-nx-cache       # Builds TUI/Web then runs tests (CI-equivalent)
-   npx nx run maestro:evals --skip-nx-cache      # Optional eval scenarios
-   bun run bun:test:fast                         # Fast local Vitest (no Nx build; VITEST_FAST=1)
-   # If you touched specific packages, build them too:
-   bun run tui-rs:build
-   bun run --filter @evalops/maestro-web build
-   ```
-   (CI runs these, but failing locally wastes review cycles.)
-   - Security: `bun run guardian` scans staged files with Semgrep + secrets; install a pre-commit hook with `npm run guardian:install-hook`.
-6. **Commit** – descriptive message, e.g., `feat: add bash history`
-7. **Push & PR** – open a PR against `main`, filling out the template.
-
-### Development Tools
-
-#### VS Code
-- Open the workspace and debugging is pre-configured
-- Press F5 to start debugging
-- Use `.vscode/launch.json` configurations for different scenarios
-
-#### Watch Mode
-```bash
-bun run dev            # TypeScript watch mode
-bun run dev:tui        # TUI dev server
-bun run dev:web        # Web dev server
-```
-
-#### Testing Individual Files
-```bash
-bunx vitest --run test/path/to/file.test.ts
-bunx vitest --run -t "specific test name"
-```
-
-## Code Style
-
-- TypeScript + ES modules (`import ... from "./foo.js"`)
-- Prefer async/await over raw Promises
-- Use Biome for formatting (`npm run format` if needed)
-- Keep comments high-level; avoid narrating obvious code
-
-## Adding Docs
-
-- Quick references live in `docs/`
-- Architecture changes update `docs/ARCHITECTURE_DIAGRAM.md`
-- User-facing features belong in README or the Feature Guide
-
-## Tests & Evals
-
-- Use Vitest for unit tests
-- End-to-end behaviors should be covered by `evals/scenarios.json`
-- When changing CLI output, update the expected regexes and re-run `npx nx run maestro:evals --skip-nx-cache`
-
-## Releases
-
-Use the versioning scripts for consistent releases:
+Install current Node and stable Rust with `rustfmt` and `clippy`, then run:
 
 ```bash
-bun run version:patch    # 0.10.0 -> 0.10.1
-bun run version:minor    # 0.10.0 -> 0.11.0
-bun run version:major    # 0.10.0 -> 1.0.0
+npm install
+npm run build
+./bin/maestro --version
 ```
 
-These scripts automatically:
-- Update package.json files and `bun.lockb`
-- Create CHANGELOG.md entry with timestamp
-- Provide next-step instructions for git tag and npm publish
+## Development
 
-Contributors should not run `npm publish`.
+```bash
+cargo run -p maestro -- --help
+cargo run -p maestro -- exec "summarize this repository"
+cargo run -p maestro -- web --port 3000
+```
 
-## License
+Use `cargo test -p <package> [test-name]` for focused work. Workspace package names are `maestro`, `maestro-tui`, `maestro-control-plane`, and `ambient-agent`.
 
-Maestro is licensed under the Business Source License 1.1 (BUSL-1.1). By
-contributing, you agree that your contributions will be licensed under the same
-terms. See [LICENSE](LICENSE) for details.
+## Verification
 
-## Communication
+Before opening a pull request, run the checks relevant to the changed surface. For workspace or release changes, run the full set:
 
-- Open an issue for feature ideas or bugs
-- Use draft PRs for early feedback
-- Follow the project Code of Conduct (mirrors GitHub’s standard)
+```bash
+npm run check
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+npm run release:check
+```
 
-Thanks again for contributing! 🙌
+Release changes must also pass the packed npm install smoke. The installed CLI must resolve the packaged native binary and run without a JavaScript runtime in its child `PATH`.
+
+## Dependencies and versions
+
+The root `Cargo.toml` and `Cargo.lock` own Rust dependency resolution. Put broadly shared dependencies in `[workspace.dependencies]`. `package.json` and `package-lock.json` describe only the npm distribution and repository scripts.
+
+Use `npm run version:patch`, `npm run version:minor`, or `npm run version:major` for version updates, then verify metadata with `npm run metadata:check`.

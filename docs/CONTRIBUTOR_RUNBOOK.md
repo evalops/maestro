@@ -3,60 +3,56 @@
 Audience: engineers touching code; use as the day-one checklist.  
 Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Tools Reference](TOOLS_REFERENCE.md) · [Safety](SAFETY.md)
 
-## 0. Clone & Install
+## 0. Clone and install
 
-- `bun install` (workspace-aware)  
-- Node is pinned via `.node-version` (and `.nvmrc` for nvm users).
-- Keys: export provider keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.) or place in `~/.maestro/keys.json`.
+- Install stable Rust and Node.js 22 or newer.
+- Run `npm install` for the native packaging and repository-check scripts.
+- Export provider keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.) or place them in `~/.maestro/keys.json`.
 
-## 1. Build & Verify (fresh repo)
+## 1. Build and verify
 
 ```bash
-npx nx run maestro:build --skip-nx-cache           # CLI fast path
-npm run smoke:local-e2e                            # help/version/headless/mock-agent local smoke
-npx nx run maestro:build:all --skip-nx-cache       # CLI + Web packages
-bun run tui-rs:build                               # native maestro-tui (interactive)
-bun run bun:lint                                   # Biome + eval verifier
-npx nx run maestro:test --skip-nx-cache            # Builds deps, then Vitest
-npx nx run maestro:evals --skip-nx-cache           # Scenario runner
+npm run check
+npm run lint
+npm test
+npm run build
+npm run smoke:release-native-only
 ```
 
-Expected: all commands succeed; dist artifacts appear under `dist/`.
-`smoke:local-e2e` is credential-free after build and exercises deterministic
-mock-agent read, write/read, search/read, and edit/read flows.
+The browser bundle under `packages/web/dist` is a versioned static input. Product code, protocols, adapters, CLI, TUI, and the control plane are Rust.
 
-## 2. Inner Loop
+## 2. Inner loop
 
-- `bun run dev` — TS watch (rebuilds `dist/`).
-- Interactive TUI: build with `bun run tui-rs:build`, then `maestro` or `bun run start:native`.
-- One-shot CLI: `bun run cli -- --provider anthropic --model claude-opus-4-6 "hi"`.
-- Web: `bun run web:dev` (server on `:8080`, Vite on `:3000`).
-- Package builds: `bun run tui-rs:build`, `bun run --filter @evalops/maestro-web build`.
+- Interactive TUI: `cargo run --manifest-path packages/maestro-rs/Cargo.toml`
+- One-shot CLI: `cargo run --manifest-path packages/maestro-rs/Cargo.toml -- exec "summarize this repository"`
+- Web control plane: `cargo run --manifest-path packages/maestro-rs/Cargo.toml -- web --port 3000`
+- Focused crate test: `cargo test --manifest-path packages/tui-rs/Cargo.toml <test-name>`
 
-## 3. Safety Checks
+## 3. Safety checks
 
-- Approvals/firewall: see `docs/SAFETY.md`; explicit web **auto-approval** should be paired with Docker or auth when exposed. Prompt/fail modes fail closed.
-- Guardian: `scripts/guardian.sh --staged` (or `/guardian` in TUI) before commits.
+- Approvals/firewall: see `docs/SAFETY.md`; exposed web auto-approval should be paired with Docker or authentication.
+- Run `scripts/guardian.sh --staged` (or `/guardian` in the TUI) before commits.
+- The Rust-only guards run through `npm run check:rust-only-runtime`.
 
-## 4. Docs & References
+## 4. Docs and references
 
 - TUI/CLI UX: `docs/FEATURES.md`
-- Web parity: `docs/WEB_UI.md` (single parity source)
-- Tool behaviors: `docs/TOOLS_REFERENCE.md`
-- Model/registry: `docs/MODELS.md` + `packages/ai/README.md`
-- Types/contracts: `packages/contracts/README.md`
-- Patterns: `docs/patterns/INDEX.md`
+- Web parity: `docs/WEB_UI.md`
+- Tool behavior: `docs/TOOLS_REFERENCE.md`
+- Native crates: `packages/maestro-rs`, `packages/tui-rs`, `packages/control-plane-rs`, and `packages/ambient-agent-rs`
+- Historical design documents are reference material, not current build instructions.
 
-## 5. Pre-PR Checklist
+## 5. Pre-PR checklist
 
-- `bun run bun:lint`
-- `npx nx run maestro:test --skip-nx-cache`
-- Build touched packages (e.g., `bun run tui-rs:build`, `npx nx run maestro-web:build`)
-- Ensure docs updated if flags/options changed (source-of-truth notes above)
+- `npm run check`
+- `npm run lint`
+- `npm test`
+- `npm run build`
+- Update canonical docs when flags or behavior change.
 
-## 6. Troubleshooting Quickies
+## 6. Troubleshooting
 
-- Missing keys → `maestro --diag`
-- Approval blocks → check firewall notes in `SAFETY.md`
-- Web tooling stuck → `curl http://localhost:8080/api/models` to validate server
-- Session issues → `docs/SESSIONS.md` for cleanup and flags
+- Missing keys: `maestro --diag`
+- Approval blocks: check `docs/SAFETY.md`
+- Control plane: `curl http://localhost:3000/api/health`
+- Sessions: see `docs/SESSIONS.md`
