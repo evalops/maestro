@@ -36,7 +36,7 @@ env:
 jobs:
   version-bump:
     if: ${{ github.event_name != 'schedule' || github.repository == 'evalops/maestro-internal' }}
-    runs-on: ${{ github.repository == 'evalops/maestro-internal' && (vars.INTERNAL_CONFIRMATION_RUNNER || 'evalops-internal') || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') }}
+    runs-on: ${{ github.repository == 'evalops/maestro-internal' && (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -44,7 +44,13 @@ jobs:
           fetch-depth: 0
           ref: ${{ env.RELEASE_BASE_REF }}
 
-      - uses: ./.github/actions/setup-bun-nx
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - uses: ./.github/actions/setup-rust
+        with: { toolchain: stable, components: rustfmt }
 
       - name: Summarize release cadence
         run: |
@@ -144,10 +150,7 @@ jobs:
       - name: Format generated release files
         run: |
           set -euo pipefail
-          bunx @biomejs/biome@1.9.4 format --write \
-            package.json \
-            packages/*/package.json \
-            openapi.json
+          npm run metadata:sync
 
       - id: release
         uses: ./.github/actions/release-context
@@ -157,13 +160,10 @@ jobs:
       - name: Run release commit validators
         run: |
           set -euo pipefail
-          if command -v cargo >/dev/null 2>&1; then
-            cargo fmt --manifest-path "$PWD/packages/tui-rs/Cargo.toml" -- --check
-          fi
-          bash "$PWD/scripts/guardian.sh" --trigger pre-commit
-          bun run bun:lint
-          bun run build
-          bun run bun:compile
+          npm run check:rust-only-runtime
+          npm run lint
+          npm run build
+          npm run smoke:release-native-only
 
       - name: Commit release branch
         id: commit

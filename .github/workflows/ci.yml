@@ -1,211 +1,25 @@
 name: ci
-
 on:
-  push:
-    branches: [main]
+  push: { branches: [main] }
   pull_request:
-
-permissions:
-  contents: read
-
+permissions: { contents: read }
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-env:
-  CI: true
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  NX_DAEMON: false
-
 jobs:
-  changes:
+  native:
     runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 5
-    outputs:
-      ci_infrastructure_only: ${{ steps.plan.outputs.ci_infrastructure_only }}
-      coverage: ${{ steps.plan.outputs.coverage }}
-      proof_harness_only: ${{ steps.plan.outputs.proof_harness_only }}
-      pr_checks: ${{ steps.plan.outputs.pr_checks }}
-      rust_hosted_conformance: ${{ steps.plan.outputs.rust_hosted_conformance }}
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
-
-      - name: Plan expensive checks
-        id: plan
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD~1' }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: node scripts/plan-ci-checks.mjs
-
-  pr-checks:
-    needs: changes
-    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.pr_checks == 'true' }}
-    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
-
-      - uses: ./.github/actions/setup-bun-nx
-        with:
-          ensure-ripgrep: "true"
-
-      - name: Setup Java for Gradle Nx tasks
-        if: ${{ github.event_name != 'pull_request' || (needs.changes.outputs.ci_infrastructure_only != 'true' && needs.changes.outputs.proof_harness_only != 'true') }}
-        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
-        with:
-          distribution: temurin
-          java-version: "21"
-
-      - name: Test (Nx affected)
-        if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.ci_infrastructure_only != 'true' }}
-        timeout-minutes: 60
-        env:
-          NX_BASE: ${{ github.event.pull_request.base.sha || 'HEAD~1' }}
-          NX_HEAD: ${{ github.event.pull_request.head.sha || 'HEAD' }}
-        run: bash scripts/ci-nx-tests.sh
-
-      - name: Release readiness (CI mode)
-        if: ${{ github.event_name != 'pull_request' || (needs.changes.outputs.ci_infrastructure_only != 'true' && needs.changes.outputs.proof_harness_only != 'true') }}
-        run: npm run release:check:ci
-
-      - name: Release readiness script smoke
-        if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.ci_infrastructure_only == 'true' }}
-        run: |
-          set -euo pipefail
-          if [[ ! -f scripts/check-workflow-footguns.mjs ]]; then
-            echo "Workflow footgun guardrail script is not present on this public base; skipping."
-            exit 0
-          fi
-          node --check scripts/check-workflow-footguns.mjs
-          npm run check:workflow-footguns
-          node ./scripts/run-vitest.js --run test/scripts/workflow-footguns.test.ts
-
-      - name: Upload Nx test logs (if any)
-        if: ${{ always() && hashFiles('nx-tests-attempt-*.log', 'nx-tests-attempt-*.json') != '' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 14
-          name: nx-tests-logs-${{ github.run_id }}
-          path: |
-            nx-tests-attempt-*.log
-            nx-tests-attempt-*.json
-          if-no-files-found: ignore
-
-      - name: Upload CI timing data (if any)
-        if: ${{ always() && hashFiles('ci-timing.jsonl') != '' }}
-        continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ci-timing-${{ github.run_id }}
-          path: ci-timing.jsonl
-          if-no-files-found: ignore
-          retention-days: 7
-
-  rust-hosted-conformance:
-    needs: changes
-    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.rust_hosted_conformance == 'true' }}
-    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - uses: ./.github/actions/setup-rust
-        with:
-          toolchain: stable
-          workspaces: packages/tui-rs -> target
-
-      - uses: ./.github/actions/setup-bun-nx
-        with:
-          ensure-ripgrep: "true"
-
-      - name: Build workspace packages
-        run: npm run build
-
-      - name: Build Rust conformance fixture
-        working-directory: packages/tui-rs
-        run: cargo build --bin hosted_runner_conformance_fixture
-
-      - name: Rust-hosted headless conformance
-        env:
-          MAESTRO_RUST_HOSTED_CONFORMANCE: "1"
-        run: npm run test -- test/headless/runtime-conformance.test.ts
-
-  coverage-scope:
-    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 10
-    outputs:
-      should_run: ${{ steps.scope.outputs.should_run }}
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
-
-      - id: scope
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          DEPENDENCIES_PR: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'dependencies') }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
-        run: |
-          set -euo pipefail
-
-          if [[ "$EVENT_NAME" != "pull_request" || "$DEPENDENCIES_PR" != "true" ]]; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          changed_files="$(git diff --name-only "$PR_BASE_SHA" "$PR_HEAD_SHA")"
-          if [[ -z "$changed_files" ]]; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          should_run=false
-          while IFS= read -r path; do
-            case "$path" in
-              .github/*|docs/*|README.md|CHANGELOG.md|package.json|package-lock.json|bun.lockb|flake.lock|flake.nix|tool-versions.json|packages/*/package.json)
-                ;;
-              *)
-                should_run=true
-                break
-                ;;
-            esac
-          done <<< "$changed_files"
-
-          echo "should_run=$should_run" >> "$GITHUB_OUTPUT"
-
-  coverage:
-    needs: [changes, coverage-scope]
-    if: ${{ github.event_name != 'pull_request' || (needs.changes.outputs.coverage == 'true' && needs.coverage-scope.outputs.should_run == 'true') }}
-    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 75
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
-
-      - uses: ./.github/actions/setup-bun-nx
-        with:
-          ensure-ripgrep: "true"
-
-      - name: Build all packages
-        run: npm run build:all
-
-      - name: Run tests with coverage
-        timeout-minutes: 60
-        run: npm run test:coverage
-
-      - name: Upload coverage report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          retention-days: 3
-          name: coverage-report-${{ github.run_id }}
-          path: coverage/
-          if-no-files-found: ignore
+        with: { toolchain: stable, components: "rustfmt,clippy" }
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f
+        with: { node-version: 22 }
+      - run: npm run check:rust-only-runtime
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: npm run build
+      - run: npm run smoke:release-native-only

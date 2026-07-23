@@ -6,7 +6,6 @@ on:
     paths:
       - 'package.json'
       - 'package-lock.json'
-      - 'bun.lockb'
 
 permissions:
   contents: write
@@ -20,16 +19,19 @@ env:
 
 jobs:
   update-hash:
-    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
+    # The Nix installer creates /nix and system build users when Nix is absent.
+    # Keep this on a hosted runner with passwordless sudo instead of the internal
+    # runner, which intentionally does not allow sudo escalation.
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     if: "!contains(github.event.head_commit.message, '[skip nix]')"
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
+      - uses: cachix/install-nix-action@7ac1ec25491415c381d9b62f0657c7a028df52a7 # v24
         with:
           enable_kvm: false
           nix_path: nixpkgs=channel:nixos-unstable
@@ -39,16 +41,16 @@ jobs:
         run: |
           # Try to build and capture the error with expected hash
           nix build .# 2>&1 | tee build.log || true
-          
+
           # Extract the expected hash from error message
           EXPECTED_HASH=$(grep -oP 'got:\s+\K[a-zA-Z0-9+/=-]+' build.log | head -n1)
-          
+
           if [ -z "$EXPECTED_HASH" ]; then
             echo "Could not determine hash, skipping"
             exit 0
           fi
-          
-          echo "new_hash=$EXPECTED_HASH" >> $GITHUB_OUTPUT
+
+          echo "new_hash=$EXPECTED_HASH" >> "$GITHUB_OUTPUT"
 
       - name: Commit hash bump
         if: steps.hash.outputs.new_hash != ''

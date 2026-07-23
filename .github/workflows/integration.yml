@@ -1,24 +1,19 @@
 name: integration
 
 on:
+  schedule:
+    - cron: "17 11 * * *"
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - "src/server/**"
-      - "src/db/**"
-      - "src/rbac/**"
-      - "test/db/**"
-      - "test/web/**"
+      - "packages/control-plane-rs/**"
+      - "packages/tui-rs/**"
+      - "packages/web/dist/**"
       - "docker-compose.yml"
+      - ".github/workflows/integration.yml"
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
-    paths:
-      - "src/server/**"
-      - "src/db/**"
-      - "src/rbac/**"
-      - "test/db/**"
-      - "test/web/**"
-      - "docker-compose.yml"
 
 permissions:
   contents: read
@@ -30,17 +25,51 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   HEADLESS_PROTOCOL_RUSTFMT: "off"
-  MAESTRO_INTEGRATION_POSTGRES_PASSWORD: maestro
   SESSION_WIRE_FORMAT_RUSTFMT: "off"
 
 jobs:
+  pull-request-path-check:
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.id != github.event.repository.id && 'ubuntu-latest' || (github.event_name == 'pull_request' && (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest')) }}
+    outputs:
+      integration_paths_changed: ${{ steps.integration_paths.outputs.changed }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Detect integration workflow path changes
+        id: integration_paths
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          changed="false"
+          while IFS= read -r path; do
+            case "$path" in
+              packages/control-plane-rs/* | packages/tui-rs/* | packages/web/dist/* | docker-compose.yml | .github/workflows/integration.yml)
+                changed="true"
+                break
+                ;;
+            esac
+          done < <(git diff --name-only FETCH_HEAD HEAD)
+
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
   integration-tests:
-    if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-integration') }}
-    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
+    needs: pull-request-path-check
+    if: ${{ needs.pull-request-path-check.outputs.integration_paths_changed == 'true' && (github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-integration')) }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.id != github.event.repository.id && 'ubuntu-latest' || (github.event_name == 'pull_request' && (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest')) }}
     timeout-minutes: 45
     services:
       redis:
-        image: redis:7-alpine
+        # Pulled via the Docker Hub mirror to avoid docker.io's anonymous-pull
+        # rate limit on shared self-hosted runners.
+        image: mirror.gcr.io/library/redis:7-alpine
         ports:
           - 6379/tcp
         options: >-
@@ -50,12 +79,14 @@ jobs:
           --health-retries 3
 
       postgres:
-        image: postgres:16-alpine
+        # Pulled via the Docker Hub mirror to avoid docker.io's anonymous-pull
+        # rate limit on shared self-hosted runners.
+        image: mirror.gcr.io/library/postgres:16-alpine
         ports:
           - 5432/tcp
         env:
           POSTGRES_USER: maestro
-          POSTGRES_PASSWORD: ${{ env.MAESTRO_INTEGRATION_POSTGRES_PASSWORD }}
+          POSTGRES_PASSWORD: maestro
           POSTGRES_DB: maestro
         options: >-
           --health-cmd "pg_isready -U maestro"
@@ -64,21 +95,89 @@ jobs:
           --health-retries 3
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - uses: ./.github/actions/setup-bun-nx
+      - uses: ./.github/actions/setup-rust
         with:
-          ensure-rustfmt: "false"
-
-      - name: Build contracts
-        run: npx nx run contracts:build
+          toolchain: stable
 
       - name: Run integration tests
         env:
           MAESTRO_REDIS_URL: redis://localhost:${{ job.services.redis.ports['6379'] }}
           MAESTRO_DATABASE_URL: postgresql://maestro@localhost:${{ job.services.postgres.ports['5432'] }}/maestro
-          PGPASSWORD: ${{ env.MAESTRO_INTEGRATION_POSTGRES_PASSWORD }}
+          PGPASSWORD: maestro
         run: |
-          # Run web tests plus production-schema database regressions with
-          # Redis and PostgreSQL available.
-          bunx vitest run test/web/ test/db/legacy-rbac-migration.integration.test.ts test/db/hosted-session-storage.integration.test.ts --reporter=verbose
+          cargo test --locked -p maestro-control-plane
+
+  capability-gated-tests:
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'run-capability-integration') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.id != github.event.repository.id && 'ubuntu-latest' || (github.event_name == 'pull_request' && (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest')) }}
+    timeout-minutes: 45
+    services:
+      postgres:
+        # Pulled via the Docker Hub mirror to avoid docker.io's anonymous-pull
+        # rate limit on shared self-hosted runners.
+        image: mirror.gcr.io/library/postgres:16-alpine
+        ports:
+          - 5432/tcp
+        env:
+          POSTGRES_USER: maestro
+          POSTGRES_PASSWORD: maestro
+          POSTGRES_DB: maestro
+        options: >-
+          --health-cmd "pg_isready -U maestro"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 3
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: stable
+
+      - name: Install fd when available from apt
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          # Best-effort: fd-gated tests skip when fd is missing. Do not fail the
+          # job on transient apt/network errors (self-hosted runners often block
+          # plain HTTP package mirrors on port 80).
+          set -uo pipefail
+          if command -v fd >/dev/null 2>&1; then
+            fd --version
+            exit 0
+          fi
+          if command -v apt-get >/dev/null 2>&1; then
+            for sources in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+              if [[ -f "$sources" ]]; then
+                sudo sed -i \
+                  -e 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g' \
+                  -e 's|http://security.ubuntu.com|https://security.ubuntu.com|g' \
+                  "$sources" || true
+              fi
+            done
+            if sudo apt-get update && sudo apt-get install -y fd-find; then
+              if command -v fdfind >/dev/null 2>&1; then
+                sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+              fi
+            else
+              echo "fd apt install failed; fd-gated tests will skip."
+            fi
+          fi
+          if command -v fd >/dev/null 2>&1; then
+            fd --version
+          else
+            echo "fd unavailable; fd-gated tests will skip."
+          fi
+
+      - name: Run capability-gated integration tests
+        env:
+          POSTGRES_DB: maestro
+          POSTGRES_HOST: localhost
+          POSTGRES_PASSWORD: maestro
+          POSTGRES_PORT: ${{ job.services.postgres.ports['5432'] }}
+          POSTGRES_USER: maestro
+          PGPASSWORD: maestro
+        run: |
+          cargo test --locked -p maestro-tui --test tools_integration

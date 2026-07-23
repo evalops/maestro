@@ -18,7 +18,7 @@ env:
 
 jobs:
   tag-current-version:
-    runs-on: ${{ github.repository == 'evalops/maestro-internal' && (vars.INTERNAL_CONFIRMATION_RUNNER || 'evalops-internal') || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') }}
+    runs-on: ${{ github.repository == 'evalops/maestro-internal' && (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') }}
     timeout-minutes: 45
     permissions:
       actions: read
@@ -125,11 +125,10 @@ jobs:
           persist-credentials: false
 
       - name: Setup registry install smoke tools
-        uses: ./.github/actions/setup-bun-nx
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f
         with:
-          install: "false"
-          cache-nx: "false"
-          ensure-rustfmt: "false"
+          node-version-file: .node-version
+          cache: npm
 
       - name: Verify already-published package from registry
         env:

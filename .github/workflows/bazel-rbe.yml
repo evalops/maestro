@@ -9,20 +9,15 @@ on:
       - .bazelignore
       - .bazelrc
       - .bazelversion
-      - .github/actions/setup-bun-nx/action.yml
       - .github/workflows/bazel-rbe.yml
       - .node-version
       - BUILD.bazel
       - MODULE.bazel
       - MODULE.bazel.lock
       - Makefile
-      - bun.lockb
       - docs/development/bazel.md
-      - nx.json
       - package.json
       - packages/**/package.json
-      - packages/**/project.json
-      - project.json
       - scripts/run-bazel-rbe.sh
       - tool-versions.json
       - tools/bazel/**
@@ -39,28 +34,20 @@ env:
 
 jobs:
   smoke:
-    # timeout-minutes only applies after a runner is assigned. A push job that
-    # targets a self-hosted label with zero online runners sits in queue for up
-    # to GitHub's 24h default and then cancels as a red/cancelled main check.
-    # Require an explicit readiness flag in addition to BAZEL_RBE_ENABLED so a
-    # missing RBE pool cannot brick default-branch CI. Manual workflow_dispatch
-    # remains available for intentional smoke runs.
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      (vars.BAZEL_RBE_ENABLED == 'true' && vars.BAZEL_RBE_RUNNER_READY == 'true')
+    if: github.event_name == 'workflow_dispatch' || vars.BAZEL_RBE_ENABLED == 'true'
     runs-on:
       - self-hosted
       - Linux
       - X64
-      - evalops-maestro-rbe
+      - evalops-maestro-internal-rbe
     timeout-minutes: 20
     env:
       BAZEL_RBE_USE_EXISTING_TUNNEL: "true"
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0 (tag v5)
         with:
           go-version: "stable"
           cache: false
