@@ -432,3 +432,34 @@ Later        ACP exploration (only if IDE partners need it)
 | Date | Change |
 |------|--------|
 | 2026-07-20 | Initial design map: goals, gap table, tracks A–F, sequencing |
+
+---
+
+## Addendum 2026-07-24 — gap audit against xai-org/grok-build public tree
+
+A full inventory pass compared Maestro against the public grok-build repo
+(TUI guides, tools, workspace, ACP). Outcome:
+
+**Shipped from this audit:**
+
+- Slash-command prefix expansion on submit (`/qui` → `/quit`), ambiguity
+  dropdown, edit-distance typo rescue, `tui.slash_command_fallback` config
+  gate (#3047)
+- Ghost-text inline completion rendered + Right/End accept (#3047)
+- Double-Esc clear input, `@file:LINE` / `@file:START-END` mention
+  expansion, `/loop <interval> <prompt>` scheduler, `/theme auto`
+  (COLORFGBG) (#3050)
+- Mouse click-to-select on the slash completion popup (this change)
+- `maestro import-claude` — MCP + permissions import from Claude Code
+  config (in flight)
+
+**Confirmed open gaps (now tracked as issues):**
+
+| Gap | Grok reference | Maestro anchors |
+|-----|----------------|-----------------|
+| File-level checkpoints + real `/rewind` | per-prompt file snapshots; rewind restores files, not just chat | checkpoint code lives in ambient daemon + headless resume only |
+| ACP server (`agent stdio`) | Zed/Neovim/Emacs via Agent Client Protocol | headless RPC protocol `2026-04-02` is the substrate; ACP is an adapter |
+| Subagent as a TUI tool (`spawn_subagent`) | first-class child transcripts, worktree isolation, resume chaining | swarm + control-plane dispatch exist; no Task-style tool in the TUI registry |
+
+**Deliberately skipped:** media generation, voice dictation, Rhai
+workflows (swarm DAG covers orchestration), pure-Rust Mermaid.
