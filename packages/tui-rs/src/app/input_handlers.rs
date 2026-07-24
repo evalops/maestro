@@ -25,6 +25,7 @@ impl App {
             ActiveModal::ModelSelector => return self.handle_model_selector_key(code, ctrl).await,
             ActiveModal::ThemeSelector => return self.handle_theme_selector_key(code, ctrl).await,
             ActiveModal::ShortcutsHelp => return self.handle_shortcuts_help_key(code).await,
+            ActiveModal::RewindPicker => return self.handle_rewind_picker_key(code),
             ActiveModal::None => {}
         }
 
@@ -334,7 +335,8 @@ impl App {
                 self.state.scroll_offset = 0;
             }
 
-            // Escape: dismiss completions; double-Esc clears a draft input.
+            // Escape: dismiss completions; double-Esc clears a draft input or,
+            // when the input is empty, opens the rewind picker.
             KeyCode::Esc => {
                 if self.slash_state.has_completions() {
                     self.slash_state.reset();
@@ -356,7 +358,19 @@ impl App {
                             .replace("Press Esc again to clear input".to_string());
                     }
                 } else {
-                    self.last_esc_at = None;
+                    let now = Instant::now();
+                    let double_press = self
+                        .last_esc_at
+                        .is_some_and(|t| now.duration_since(t) < Duration::from_millis(700));
+                    if double_press {
+                        self.last_esc_at = None;
+                        self.open_rewind_picker();
+                    } else {
+                        self.last_esc_at = Some(now);
+                        self.state
+                            .status
+                            .replace("Press Esc again to rewind files".to_string());
+                    }
                 }
             }
 
@@ -714,6 +728,30 @@ impl App {
             }
             KeyCode::Right => {
                 self.command_palette.move_right();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Handle keys in rewind picker modal
+    pub(super) fn handle_rewind_picker_key(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Esc => {
+                self.rewind_picker.hide();
+                self.active_modal = ActiveModal::None;
+            }
+            KeyCode::Enter => {
+                if let Some(checkpoint) = self.rewind_picker.confirm() {
+                    self.restore_file_checkpoint(checkpoint);
+                }
+                self.active_modal = ActiveModal::None;
+            }
+            KeyCode::Up => {
+                self.rewind_picker.move_up();
+            }
+            KeyCode::Down => {
+                self.rewind_picker.move_down();
             }
             _ => {}
         }

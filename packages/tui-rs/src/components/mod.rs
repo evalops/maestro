@@ -88,6 +88,7 @@
 //! - `CommandPalette`: Fuzzy command search modal
 //! - `FileSearchModal`: File picker modal
 //! - `ModelSelector`: Model selection modal
+//! - `RewindPicker`: File checkpoint restore picker modal
 //! - `SessionSwitcher`: Session list modal
 //! - `ThemeSelector`: Theme picker modal
 //!
@@ -126,6 +127,7 @@ pub(crate) mod message_layout;
 pub(crate) mod model_selector;
 mod operations;
 mod rate_limit;
+mod rewind_picker;
 mod scroll;
 mod session_switcher;
 mod shortcuts_help;
@@ -156,6 +158,7 @@ pub use rate_limit::{
     format_duration_compact, format_elapsed, CreditsDisplay, RateLimitDisplay, RateLimitState,
     RateLimitTracker, RateLimitWindow,
 };
+pub use rewind_picker::RewindPicker;
 pub use scroll::render_scrollbar;
 pub use session_switcher::SessionSwitcher;
 pub use shortcuts_help::{Shortcut, ShortcutCategory, ShortcutsHelp, ShortcutsHelpBuilder};
