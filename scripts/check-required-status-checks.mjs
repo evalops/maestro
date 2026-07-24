@@ -64,9 +64,20 @@ function fetchRequiredContexts(repo, branch) {
 		throw new Error(`failed to run gh: ${result.error.message}`);
 	}
 	if (result.status !== 0) {
-		throw new Error(
-			`gh api ${endpoint} failed: ${(result.stderr || "").trim() || "unknown error"}`,
-		);
+		const detail = (result.stderr || "").trim() || "unknown error";
+		// A token without Administration read on branch protection gets 403/404.
+		// The invariant guards CI configuration; its own credential problems must
+		// never block PRs, so degrade to a warning + pass (fail-open on
+		// infrastructure, fail-closed on invariant violations).
+		if (/HTTP (403|404)/.test(detail)) {
+			console.warn(
+				`::warning::gh api ${endpoint} failed: ${detail}. ` +
+					"The token cannot read branch protection (needs Administration read); " +
+					"skipping the required status check invariant instead of blocking the PR.",
+			);
+			return null;
+		}
+		throw new Error(`gh api ${endpoint} failed: ${detail}`);
 	}
 	return JSON.parse(result.stdout);
 }
@@ -327,6 +338,10 @@ export function evaluateRequiredStatusChecks({ contexts, root = defaultRoot }) {
 function main() {
 	const options = parseArgs(process.argv.slice(2));
 	const contexts = fetchRequiredContexts(options.repo, options.branch);
+	if (contexts === null) {
+		// Protection endpoint unreadable with this token; warned already.
+		return;
+	}
 	if (contexts.length === 0) {
 		console.log(
 			`No required status checks configured on ${options.repo}@${options.branch}; invariant is vacuous.`,
