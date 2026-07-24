@@ -67,11 +67,28 @@ fn canonicalize_json(value: &serde_json::Value) -> serde_json::Value {
 impl CacheKey {
     /// Create a new cache key
     pub fn new(tool_name: impl Into<String>, args: &serde_json::Value) -> Self {
+        Self::new_with_generation(tool_name, args, None)
+    }
+
+    pub(crate) fn for_generation(
+        tool_name: impl Into<String>,
+        args: &serde_json::Value,
+        generation: u64,
+    ) -> Self {
+        Self::new_with_generation(tool_name, args, Some(generation))
+    }
+
+    fn new_with_generation(
+        tool_name: impl Into<String>,
+        args: &serde_json::Value,
+        generation: Option<u64>,
+    ) -> Self {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         let normalized_args = canonicalize_json(args);
         serde_json::to_string(&normalized_args)
             .unwrap_or_default()
             .hash(&mut hasher);
+        generation.hash(&mut hasher);
         Self {
             tool_name: tool_name.into().to_lowercase(),
             args_hash: hasher.finish(),
@@ -208,6 +225,16 @@ impl ToolResultCache {
     pub fn is_cacheable(&self, tool_name: &str) -> bool {
         let tool_name = tool_name.to_lowercase();
         self.config.enabled && !self.config.excluded_tools.contains(&tool_name)
+    }
+
+    /// Check cache provenance without mutating statistics or recency state.
+    #[must_use]
+    pub fn contains_fresh(&self, key: &CacheKey) -> bool {
+        self.config.enabled
+            && self
+                .entries
+                .get(key)
+                .is_some_and(|entry| !entry.is_expired(self.config.ttl))
     }
 
     /// Get a cached result

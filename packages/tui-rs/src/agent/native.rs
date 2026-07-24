@@ -103,8 +103,8 @@ use uuid::Uuid;
 use super::message_queue::{MessageQueue, PendingMessage, PromptKind, MAX_PENDING_MESSAGES};
 use super::safety::{SafetyController, SafetyVerdict};
 use super::{
-    clear_credentials, resolve_credentials_in_json, vault_credentials_in_json, FromAgent,
-    TokenUsage, ToolResult,
+    CredentialVault, DenialReason, ExecutionPhase, ExecutionSource, FromAgent, TokenUsage,
+    ToolExecution, ToolResult,
 };
 use crate::ai::{
     provider_model_name, AiProvider, ContentBlock, ImageSource, Message, MessageContent,
@@ -480,7 +480,40 @@ impl NativeAgent {
     /// agent.send_ready();
     /// ```
     pub fn new(config: NativeAgentConfig) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
-        Self::new_with_tools(config, Vec::new())
+        Self::new_with_tools_and_credential_vault(config, Vec::new(), CredentialVault::new())
+    }
+
+    /// Create an agent using a caller-provided credential vault.
+    pub fn new_with_credential_vault(
+        config: NativeAgentConfig,
+        credential_vault: CredentialVault,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
+        Self::new_with_tools_and_credential_vault(config, Vec::new(), credential_vault)
+    }
+
+    /// Create an agent that advertises only the selected built-in tools and
+    /// delegates their execution to the caller through `tool_response_sender`.
+    pub fn new_with_allowed_tools_and_credential_vault(
+        config: NativeAgentConfig,
+        allowed_tools: &HashSet<String>,
+        credential_vault: CredentialVault,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
+        let registry = ToolRegistry::new();
+        let definitions = allowed_tools
+            .iter()
+            .map(|name| {
+                registry
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("Unknown allowed tool `{name}`"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Self::new_with_tools_and_credential_vault_filtered(
+            config,
+            definitions,
+            credential_vault,
+            Some(allowed_tools),
+        )
     }
 
     /// Create an agent with caller-provided tools. Caller tools override built-ins
@@ -488,6 +521,33 @@ impl NativeAgent {
     pub fn new_with_tools(
         config: NativeAgentConfig,
         external_tool_definitions: Vec<ToolDefinition>,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
+        Self::new_with_tools_and_credential_vault(
+            config,
+            external_tool_definitions,
+            CredentialVault::new(),
+        )
+    }
+
+    /// Create an agent with caller-provided tools and credential vault.
+    pub fn new_with_tools_and_credential_vault(
+        config: NativeAgentConfig,
+        external_tool_definitions: Vec<ToolDefinition>,
+        credential_vault: CredentialVault,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
+        Self::new_with_tools_and_credential_vault_filtered(
+            config,
+            external_tool_definitions,
+            credential_vault,
+            None,
+        )
+    }
+
+    fn new_with_tools_and_credential_vault_filtered(
+        config: NativeAgentConfig,
+        external_tool_definitions: Vec<ToolDefinition>,
+        credential_vault: CredentialVault,
+        allowed_tools: Option<&HashSet<String>>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
         let policy_id = policy_model_id(&config.model);
         if let Some(reason) = check_model_allowed(&policy_id) {
@@ -505,6 +565,9 @@ impl NativeAgent {
         let registry = ToolRegistry::new();
         let mut tools: HashMap<String, ToolDefinition> = registry
             .tools()
+            .filter(|td| {
+                allowed_tools.is_none_or(|allowed| allowed.contains(&td.tool.name.to_lowercase()))
+            })
             .map(|td| (td.tool.name.clone(), td.clone()))
             .collect();
         let external_tools = external_tool_definitions
@@ -516,7 +579,8 @@ impl NativeAgent {
         }
 
         // Create tool executor
-        let tool_executor = ToolExecutor::new(&config.cwd);
+        let tool_executor =
+            ToolExecutor::with_credential_vault(&config.cwd, credential_vault.clone());
 
         // Load hook system from config files
         let mut hooks = IntegratedHookSystem::load_from_config(&config.cwd);
@@ -542,6 +606,7 @@ impl NativeAgent {
             tools,
             external_tools,
             tool_executor,
+            credential_vault,
             event_tx: event_tx.clone(),
             tool_response_rx,
             command_rx,
@@ -823,6 +888,9 @@ struct NativeAgentRunner {
     /// Handles actual tool execution (bash, read, write, etc.) and determines
     /// which tools require approval based on command content.
     tool_executor: ToolExecutor,
+
+    /// Shared vault for this agent session and its tool executors.
+    credential_vault: CredentialVault,
 
     /// Channel to send events to the TUI
     ///
@@ -1422,6 +1490,17 @@ impl NativeAgentRunner {
                         continue;
                     }
 
+                    if kind == PromptKind::SideQuestion {
+                        self.busy = true;
+                        self.run_side_question(content).await;
+                        self.busy = false;
+                        let _ = self.event_tx.send(FromAgent::ResponseEnd {
+                            response_id: "done".to_string(),
+                            usage: None,
+                        });
+                        continue;
+                    }
+
                     self.busy = true;
                     self.workflow_state.reset();
 
@@ -1675,12 +1754,15 @@ impl NativeAgentRunner {
                     self.messages.clear();
                     self.pending_messages.clear();
                     self.safety.reset(); // Reset doom loop / rate limit state
-                    clear_credentials();
+                    self.credential_vault.clear();
                 }
                 AgentCommand::ReplaceHistory { messages } => {
                     self.messages = messages;
                     self.pending_messages.clear();
                     self.safety.reset();
+                    // Replacing history is used for session restore. References
+                    // from the previous active session must not cross that boundary.
+                    self.credential_vault.clear();
                 }
                 AgentCommand::Continue => {
                     // Continue from current context without adding a new user message
@@ -1772,6 +1854,86 @@ impl NativeAgentRunner {
         }
     }
 
+    async fn run_side_question(&mut self, question: String) {
+        let side_id = Uuid::new_v4().to_string();
+        let _ = self.event_tx.send(FromAgent::SideQuestionStart {
+            side_id: side_id.clone(),
+            question: question.clone(),
+        });
+
+        let mut answer = String::new();
+        let mut usage = TokenUsage::default();
+        let mut saw_usage = false;
+        let result: Result<()> = async {
+            let mut messages = self.messages.clone();
+            messages.push(Message {
+                role: Role::User,
+                content: MessageContent::text(question.clone()),
+            });
+            let mut config = self.build_config();
+            config.tools.clear();
+            let mut rx = self.client.stream(&messages, &config).await?;
+
+            while let Some(event) = rx.recv().await {
+                match event {
+                    StreamEvent::ContentBlockStart {
+                        block: ContentBlock::Text { text },
+                        ..
+                    } if !text.is_empty() => {
+                        answer.push_str(&text);
+                        let _ = self.event_tx.send(FromAgent::SideQuestionChunk {
+                            side_id: side_id.clone(),
+                            content: text,
+                        });
+                    }
+                    StreamEvent::TextDelta { text, .. } => {
+                        answer.push_str(&text);
+                        let _ = self.event_tx.send(FromAgent::SideQuestionChunk {
+                            side_id: side_id.clone(),
+                            content: text,
+                        });
+                    }
+                    StreamEvent::Usage {
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens,
+                        cache_creation_tokens,
+                    } => {
+                        usage.input_tokens = input_tokens;
+                        usage.output_tokens = output_tokens;
+                        usage.cache_read_tokens = cache_read_tokens.unwrap_or(0);
+                        usage.cache_write_tokens = cache_creation_tokens.unwrap_or(0);
+                        saw_usage = true;
+                    }
+                    StreamEvent::Error { message } => return Err(anyhow::anyhow!(message)),
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+        .await;
+
+        let _ = self.event_tx.send(FromAgent::SideQuestionEnd {
+            side_id,
+            question,
+            answer,
+            error: result.err().map(|err| err.to_string()),
+            usage: saw_usage.then_some(usage),
+        });
+    }
+
+    async fn run_queued_side_questions(&mut self) {
+        loop {
+            let pending =
+                self.drain_leading_pending_messages(PromptKind::SideQuestion, QueueMode::One);
+            let Some(pending) = pending.into_iter().next() else {
+                return;
+            };
+            self.announce_next_turn_messages(std::slice::from_ref(&pending));
+            self.run_side_question(pending.content).await;
+        }
+    }
+
     /// Run the agent loop until complete or interrupted
     async fn run_loop(&mut self) -> Result<()> {
         'turn: loop {
@@ -1842,18 +2004,19 @@ impl NativeAgentRunner {
                         index,
                         partial_json,
                     } => {
-                        // Buffer by index so deltas that arrive before the tool block starts aren't lost
-                        pending_tool_inputs
-                            .entry(index)
-                            .and_modify(|s| s.push_str(&partial_json))
-                            .or_insert_with(|| partial_json.clone());
-
-                        // If this is the active tool, append immediately too
+                        // Deltas can precede a block start. Once the matching
+                        // block is active, append only there; buffering as well
+                        // would append the same bytes a second time at stop.
                         if let Some((active_index, _, _, ref mut json)) = current_tool {
                             if active_index == index {
                                 json.push_str(&partial_json);
+                                continue;
                             }
                         }
+                        pending_tool_inputs
+                            .entry(index)
+                            .and_modify(|s| s.push_str(&partial_json))
+                            .or_insert(partial_json);
                     }
                     StreamEvent::ContentBlockStop {
                         index: _,
@@ -1880,7 +2043,7 @@ impl NativeAgentRunner {
                                 Ok(value) => (value, None),
                                 Err(message) => (serde_json::json!({}), Some(message)),
                             };
-                            let vaulted_input = vault_credentials_in_json(&input);
+                            let vaulted_input = self.credential_vault.vault_in_json(&input);
                             assistant_content.push(ContentBlock::ToolUse {
                                 id: id.clone(),
                                 name: name.clone(),
@@ -1957,12 +2120,28 @@ impl NativeAgentRunner {
                     StreamEvent::Error { message } => {
                         let _ = self.event_tx.send(FromAgent::Error {
                             message,
-                            fatal: false,
+                            // A provider stream error ends this response. Mark it
+                            // terminal so print mode cannot report a successful
+                            // completed run after an API failure.
+                            fatal: true,
                         });
                         break;
                     }
                 }
             }
+
+            // Some provider streams repeat a terminal function-call item after
+            // streaming its argument deltas. A duplicate tool result is invalid
+            // for OpenAI-compatible APIs, so preserve only the first occurrence
+            // of each call ID in both history and execution.
+            let mut tool_use_ids = std::collections::HashSet::new();
+            assistant_content.retain(|block| match block {
+                ContentBlock::ToolUse { id, .. } => tool_use_ids.insert(id.clone()),
+                _ => true,
+            });
+            let mut pending_call_ids = std::collections::HashSet::new();
+            pending_tool_calls
+                .retain(|(call_id, _, _, _)| pending_call_ids.insert(call_id.clone()));
 
             let response_text = assistant_content
                 .iter()
@@ -2054,6 +2233,19 @@ impl NativeAgentRunner {
                         });
                         continue;
                     }
+                    if !self.tools.contains_key(&tool_name.to_lowercase()) {
+                        self.drain_read_only_tool_calls(
+                            &mut pending_read_only_tool_calls,
+                            &mut tool_results,
+                        )
+                        .await?;
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: call_id,
+                            content: format!("Tool `{tool_name}` is not available in this run"),
+                            is_error: Some(true),
+                        });
+                        continue;
+                    }
                     // Validate required fields before surfacing to UI/agent
                     let missing = self.tool_executor.missing_required(&tool_name, &args);
                     if !missing.is_empty() {
@@ -2112,8 +2304,8 @@ impl NativeAgentRunner {
                         }
                     };
 
-                    let safe_args = vault_credentials_in_json(&args);
-                    let resolved_args = resolve_credentials_in_json(&safe_args);
+                    let safe_args = self.credential_vault.vault_in_json(&args);
+                    let resolved_args = self.credential_vault.resolve_in_json(&safe_args);
 
                     // Check safety controls (doom loop and rate limiting)
                     match self.safety.check_tool_call(&tool_name, &safe_args) {
@@ -2225,7 +2417,7 @@ impl NativeAgentRunner {
                         pending_read_only_tool_calls.push(QueuedReadOnlyToolExecution {
                             call_id,
                             tool_name,
-                            args,
+                            args: safe_args.clone(),
                             safe_args,
                             resolved_args,
                             extra_context,
@@ -2234,7 +2426,8 @@ impl NativeAgentRunner {
                     }
 
                     // If requires approval, wait for response
-                    let (approved, mut result) = if requires_approval {
+                    let (approved, mut result): (bool, Option<ToolExecution>) = if requires_approval
+                    {
                         match wait_for_tool_response(
                             &call_id,
                             &mut self.tool_response_rx,
@@ -2242,7 +2435,25 @@ impl NativeAgentRunner {
                         )
                         .await
                         {
-                            Some(result) => result,
+                            Some((approved, result)) => (
+                                approved,
+                                if approved {
+                                    result.map(|result| {
+                                        ToolExecution::from_legacy(
+                                            &call_id,
+                                            &tool_name,
+                                            ExecutionSource::RemoteClient,
+                                            result,
+                                        )
+                                    })
+                                } else {
+                                    Some(ToolExecution::denied(
+                                        &call_id,
+                                        &tool_name,
+                                        DenialReason::User,
+                                    ))
+                                },
+                            ),
                             None => {
                                 // Channel closed
                                 return Ok(());
@@ -2251,67 +2462,66 @@ impl NativeAgentRunner {
                     } else {
                         // Auto-approved, execute immediately
                         // Note: ToolExecutor sends ToolStart/ToolEnd events internally
-                        let result = self
-                            .execute_tool(&tool_name, &resolved_args, &call_id)
-                            .await;
+                        let result = {
+                            let resolved_args = self.credential_vault.resolve_in_json(&safe_args);
+                            self.execute_tool(&tool_name, &resolved_args, &call_id)
+                                .await
+                        };
 
                         (true, Some(result))
                     };
                     if approved && result.is_none() {
+                        let resolved_args = self.credential_vault.resolve_in_json(&safe_args);
                         result = Some(
                             self.execute_tool(&tool_name, &resolved_args, &call_id)
                                 .await,
                         );
                     }
 
-                    // Build tool result for conversation
-                    let (result_content, is_error) = if approved {
-                        if let Some(ref res) = result {
-                            let content = if res.success {
-                                res.output.clone()
-                            } else {
-                                format!("Error: {}", res.error.clone().unwrap_or_default())
-                            };
-                            let is_error = !res.success;
-
-                            // Execute PostToolUse hooks
-                            let _post_result = self.hooks.execute_post_tool_use(
-                                &tool_name,
+                    let result = result.unwrap_or_else(|| {
+                        if approved {
+                            ToolExecution::from_legacy(
                                 &call_id,
-                                &args,
-                                &content,
-                                !res.success,
-                            );
-
-                            // Append injected context if any
-                            let mut final_content = if let Some(ref ctx) = extra_context {
-                                format!("{content}\n\n{ctx}")
-                            } else {
-                                content
-                            };
-
-                            if let Err(err) = apply_workflow_state_hooks(
                                 &tool_name,
-                                &call_id,
-                                &args,
-                                &mut self.workflow_state,
-                                is_error,
-                            ) {
-                                // Append workflow hook error to content instead of replacing it
-                                // to preserve successful tool output
-                                final_content = format!(
-                                    "{}\n\n[Workflow error: {}]",
-                                    final_content, err.message
-                                );
-                            }
-
-                            (final_content, is_error)
+                                ExecutionSource::Native,
+                                ToolResult::failure("Tool task did not return a result"),
+                            )
                         } else {
-                            ("Tool executed successfully".to_string(), false)
+                            ToolExecution::denied(&call_id, &tool_name, DenialReason::User)
                         }
+                    });
+
+                    let content = result.model_content();
+                    let is_error = result.is_error();
+
+                    if approved {
+                        // Execute hooks only for tools that were allowed to run.
+                        let _post_result = self
+                            .hooks
+                            .execute_post_tool_use(&tool_name, &call_id, &args, &content, is_error);
+                    }
+
+                    // Append injected context if any
+                    let mut result_content = if let Some(ref ctx) = extra_context {
+                        format!("{content}\n\n{ctx}")
                     } else {
-                        ("Tool call was denied by user".to_string(), true)
+                        content
                     };
+
+                    if approved {
+                        if let Err(err) = apply_workflow_state_hooks(
+                            &tool_name,
+                            &call_id,
+                            &args,
+                            &mut self.workflow_state,
+                            is_error,
+                        ) {
+                            // Append workflow hook error to content instead of replacing it
+                            // to preserve successful tool output
+                            result_content =
+                                format!("{}\n\n[Workflow error: {}]", result_content, err.message);
+                        }
+                    }
 
                     // Record tool call for safety tracking (doom loop / rate limit)
                     self.safety.record_tool_call(&tool_name, &safe_args);
@@ -2342,11 +2552,8 @@ impl NativeAgentRunner {
                         let _ = self.event_tx.send(FromAgent::ToolCall {
                             call_id: call_id.clone(),
                             tool: tool_name.clone(),
-                            args: vault_credentials_in_json(&args),
+                            args: self.credential_vault.vault_in_json(&args),
                             requires_approval: false,
-                        });
-                        let _ = self.event_tx.send(FromAgent::ToolStart {
-                            call_id: call_id.clone(),
                         });
                         let _ = self.event_tx.send(FromAgent::ToolOutput {
                             call_id: call_id.clone(),
@@ -2355,6 +2562,15 @@ impl NativeAgentRunner {
                         let _ = self.event_tx.send(FromAgent::ToolEnd {
                             call_id: call_id.clone(),
                             success: false,
+                            receipt: Some(
+                                ToolExecution::cancelled(
+                                    &call_id,
+                                    &tool_name,
+                                    ExecutionSource::Native,
+                                    ExecutionPhase::Queued,
+                                )
+                                .receipt,
+                            ),
                         });
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: call_id,
@@ -2369,8 +2585,6 @@ impl NativeAgentRunner {
                     role: Role::User,
                     content: MessageContent::Blocks(tool_results),
                 });
-
-                clear_credentials();
 
                 if !deferred_steering.is_empty() {
                     self.workflow_state.reset();
@@ -2437,6 +2651,8 @@ impl NativeAgentRunner {
                 return Err(anyhow::anyhow!("Request cancelled"));
             }
 
+            self.run_queued_side_questions().await;
+
             let mut next_turn_messages = self.dequeue_next_turn_messages(true);
             while !next_turn_messages.is_empty() {
                 self.workflow_state.reset();
@@ -2462,9 +2678,9 @@ impl NativeAgentRunner {
         tool_name: &str,
         args: &serde_json::Value,
         call_id: &str,
-    ) -> ToolResult {
+    ) -> ToolExecution {
         self.tool_executor
-            .execute(tool_name, args, Some(&self.event_tx), call_id)
+            .execute_with_receipt(tool_name, args, Some(&self.event_tx), call_id)
             .await
     }
 
@@ -2481,6 +2697,7 @@ impl NativeAgentRunner {
         let cancel_token = self.cancel_token.clone();
         let mut results_by_call_id = execute_native_read_only_tool_wave(
             &self.config.cwd,
+            self.credential_vault.clone(),
             &self.event_tx,
             &pending_calls,
             cancel_token,
@@ -2488,16 +2705,16 @@ impl NativeAgentRunner {
         .await;
 
         for call in pending_calls {
-            let result = results_by_call_id
-                .remove(&call.call_id)
-                .unwrap_or_else(|| ToolResult::failure("Tool task did not return a result"));
-
-            let content = if result.success {
-                result.output.clone()
-            } else {
-                format!("Error: {}", result.error.clone().unwrap_or_default())
-            };
-            let is_error = !result.success;
+            let result = results_by_call_id.remove(&call.call_id).unwrap_or_else(|| {
+                ToolExecution::from_legacy(
+                    &call.call_id,
+                    &call.tool_name,
+                    ExecutionSource::Native,
+                    ToolResult::failure("Tool task did not return a result"),
+                )
+            });
+            let content = result.model_content();
+            let is_error = result.is_error();
 
             let _post_result = self.hooks.execute_post_tool_use(
                 &call.tool_name,

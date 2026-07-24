@@ -59,6 +59,10 @@ pub mod agents_cli;
 /// AI provider clients (Anthropic, OpenAI, etc.).
 /// Provides unified interfaces for different AI APIs with streaming support.
 pub mod ai;
+pub mod doctor;
+pub mod model_catalog;
+pub mod model_monitor;
+pub mod palette_resource;
 
 /// Slash command system.
 /// Parses and executes commands like /help, /clear, /model, etc.

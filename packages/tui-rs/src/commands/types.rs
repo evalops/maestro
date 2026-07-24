@@ -224,6 +224,10 @@ pub enum CommandAction {
     ViewPlan,
     /// Approve the plan and leave plan mode so implementation can start
     ApprovePlan,
+    /// Manage structured review comments on the current plan
+    PlanReview(PlanReviewAction),
+    /// Ask a tool-free question outside the main conversation history
+    SideQuestion(String),
     /// Set extended thinking level (off, low, medium, high, max)
     SetThinkingLevel(String),
     /// Quit the application
@@ -274,6 +278,15 @@ pub enum CommandAction {
     InvokePromptTemplate { name: String, args: String },
     /// Fire Jane Street magic-trace stop indicator (or toggle slow-frame mode)
     MagicTrace(MagicTraceAction),
+    /// Observe output from an existing background task.
+    BackgroundMonitor(BackgroundMonitorAction),
+}
+
+#[derive(Debug, Clone)]
+pub enum BackgroundMonitorAction {
+    Add { task_id: String, pattern: String },
+    List,
+    Remove { monitor_id: String },
 }
 
 /// magic-trace control from the TUI slash menu.
@@ -299,9 +312,26 @@ pub enum SessionAction {
     /// Fork current conversation into a new session branch
     Fork,
     /// Rewind last N user turns (default 1)
-    Rewind { turns: usize },
+    Rewind { turns: usize, dry_run: bool },
     /// Continue the most recent session for this workspace
     Continue,
+}
+
+/// Structured plan review actions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanReviewAction {
+    Comment {
+        start_line: usize,
+        end_line: usize,
+        text: String,
+    },
+    List,
+    Resolve {
+        id: u64,
+    },
+    Reopen {
+        id: u64,
+    },
 }
 
 /// Queue mode target for queue commands.
@@ -514,6 +544,8 @@ pub enum ModalType {
     ModelSelector,
     /// Session list and management modal
     SessionList,
+    /// Read-only recent persisted tool executions
+    Operations,
     /// File search and browser modal
     FileSearch,
     /// Command palette (searchable command list)

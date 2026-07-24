@@ -798,7 +798,9 @@ pub(crate) async fn handle_chat_endpoint(
                 )
                 .await?;
             }
-            FromAgent::ToolEnd { call_id, success } => {
+            FromAgent::ToolEnd {
+                call_id, success, ..
+            } => {
                 state.pending_tool_responses.lock().await.remove(&call_id);
                 state
                     .completed_client_tool_results
@@ -915,6 +917,9 @@ pub(crate) async fn handle_chat_endpoint(
                 )
                 .await?;
             }
+            FromAgent::SideQuestionStart { .. }
+            | FromAgent::SideQuestionChunk { .. }
+            | FromAgent::SideQuestionEnd { .. } => {}
             FromAgent::ResponseEnd { response_id, usage } => {
                 if usage.is_some() {
                     record_usage_entry(
@@ -1431,7 +1436,9 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                 )
                 .await?;
             }
-            FromAgent::ToolEnd { call_id, success } => {
+            FromAgent::ToolEnd {
+                call_id, success, ..
+            } => {
                 state.pending_tool_responses.lock().await.remove(&call_id);
                 state
                     .completed_client_tool_results
@@ -1548,6 +1555,9 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                 )
                 .await?;
             }
+            FromAgent::SideQuestionStart { .. }
+            | FromAgent::SideQuestionChunk { .. }
+            | FromAgent::SideQuestionEnd { .. } => {}
             FromAgent::ResponseEnd { response_id, usage } => {
                 if usage.is_some() {
                     record_usage_entry(

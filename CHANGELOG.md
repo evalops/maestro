@@ -30,6 +30,45 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.55] - 2026-07-23
+
+### Added
+
+- Complete Rust-only runtime migration (#3016). <!-- maestro-release-note:7a2d69f58819 -->
+- Harden headless tool event parity (#3006). <!-- maestro-release-note:4d692d4ab26c -->
+
+### Changed
+
+- Accelerate file search and transcript rendering (#3020). <!-- maestro-release-note:7951416f1c37 -->
+- Unify and optimize the Rust workspace (#3018). <!-- maestro-release-note:5c49c829a451 -->
+- Remove remaining TypeScript surfaces (#3017). <!-- maestro-release-note:8cf2ee6527fb -->
+- Parallelize release readiness in CI (#3015). <!-- maestro-release-note:1234b116b3f1 -->
+- [maestro] refactor(server): make product agent runtime native-only (#3014). <!-- maestro-release-note:2b381b40f412 -->
+- [maestro] feat(server): native memory extraction/consolidation via maestro-tui (#3011). <!-- maestro-release-note:5f23daef9406 -->
+- [maestro] feat(server): native chat history via headless protocol (#3008). <!-- maestro-release-note:e6971ffa467c -->
+- [maestro] feat(tui-rs): headless conversation history seed (#3012). <!-- maestro-release-note:02d11c7e344e -->
+- [maestro] chore(server): thin native-first handlers; isolate TS agent escape (#3013). <!-- maestro-release-note:060546512657 -->
+- [maestro] feat(tui-rs): native maestro plugins list/info CLI (#3010). <!-- maestro-release-note:c06a1965adb6 -->
+- [maestro] feat(server): auto-approve native headless tool calls for web (#3007). <!-- maestro-release-note:ac69d88a71b4 -->
+- [maestro] chore: delete post-native server dead code (#3009). <!-- maestro-release-note:86500444c737 -->
+
+### Fixed
+
+- Preserve the versioned browser bundle in public mirror generation and restore
+  secure, certificate-verified native container builds.
+- Make release version bumps work without JavaScript workspaces and keep the
+  Rust crate and lockfile versions aligned with the package version.
+- Stop main-push CI cancel churn and restore self-hosted residuals (#3029). <!-- maestro-release-note:ac8108c6868f -->
+- Grant mirror app pull request access (#3027). <!-- maestro-release-note:5912c3f3e724 -->
+- Self-hosted residual CI after mirror workflow preserve (#3028). <!-- maestro-release-note:01d406753fc0 -->
+- Preserve public-owned workflows in mirror (#3025). <!-- maestro-release-note:fc869b3c42d0 -->
+- Prefer mirror token for workflow sync (#3024). <!-- maestro-release-note:33ae1c42f723 -->
+- Restore post-merge publishing (#3023). <!-- maestro-release-note:c4c864746a30 -->
+- Restore post-merge release CI (#3019). <!-- maestro-release-note:2174cf4aca97 -->
+- Main health after native cutover (boot-check + /etc symlink) (#3003). <!-- maestro-release-note:cf78cd74414e -->
+- Stop blocking first paint on home-directory rg scan (#2942). <!-- maestro-release-note:867f537e1161 -->
+- Setup rust after build:all for binary smoke (#2941). <!-- maestro-release-note:c552d0ad2644 -->
+
 ## [0.10.54] - 2026-07-20
 
 ### Added

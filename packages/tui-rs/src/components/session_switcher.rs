@@ -164,6 +164,18 @@ impl SessionSwitcher {
         id
     }
 
+    /// Select a session by stable ID, refreshing the list if necessary.
+    pub fn select_by_id(&mut self, id: &str) -> bool {
+        self.refresh();
+        let Some(index) = self.sessions.iter().position(|session| session.id == id) else {
+            return false;
+        };
+        self.filtered = vec![index];
+        self.selected = 0;
+        self.list_state.select(Some(0));
+        true
+    }
+
     /// Delete the selected session (removes the session file)
     pub fn delete_selected(&mut self) -> Result<(), String> {
         if let Some(session) = self.selected_session() {

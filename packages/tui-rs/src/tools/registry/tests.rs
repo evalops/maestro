@@ -1,6 +1,7 @@
 use super::*;
 use std::path::Path;
 
+use crate::agent::{DenialReason, ExecutionSource, ToolOutcome, ToolReceiptDetails};
 use crate::tools::details;
 use crate::tools::registry::execute::{
     build_windows_grep_fallback_process_from_shell_config, build_windows_grep_shell_command,
@@ -1355,6 +1356,149 @@ async fn test_executor_cache_hit() {
 }
 
 #[tokio::test]
+async fn stale_generation_cacheable_read_cannot_repopulate_new_vault_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("generation-secret.txt");
+    let token = ["ghp", "123456789012345678901234567890123456"].join("_");
+    std::fs::write(&file_path, format!("GITHUB_TOKEN={token}")).unwrap();
+
+    let vault = CredentialVault::new();
+    let executor = ToolExecutor::with_credential_vault(dir.path().to_str().unwrap(), vault.clone());
+    let args = serde_json::json!({
+        "file_path": file_path,
+        "lineNumbers": false,
+        "wrapInCodeFence": false,
+        "withDiagnostics": false,
+    });
+    let old_generation = executor.credential_generation();
+    vault.clear();
+
+    let stale = executor
+        .execute_at_generation("read", &args, None, "stale-read", old_generation)
+        .await;
+    assert!(!stale.output.contains(&token));
+    assert!(stale.output.contains("[REDACTED:api_key:portable-export]"));
+    assert_eq!(vault.stats().count, 0);
+
+    std::fs::write(
+        args["file_path"].as_str().unwrap(),
+        "new generation content",
+    )
+    .unwrap();
+    let current = executor.execute("read", &args, None, "current-read").await;
+    assert_eq!(current.output, "new generation content");
+    assert_eq!(vault.stats().count, 0);
+
+    let cached = executor.execute("read", &args, None, "cached-read").await;
+    assert_eq!(cached.output, current.output);
+    let stats = executor.cache_stats();
+    assert_eq!((stats.hits, stats.misses), (1, 2));
+}
+
+#[tokio::test]
+async fn typed_execution_receipt_marks_cache_provenance() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("cache_receipt.txt");
+    std::fs::write(&file_path, "cached receipt content").unwrap();
+
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let args = serde_json::json!({"file_path": file_path.to_str().unwrap()});
+
+    let first = executor
+        .execute_with_receipt("read", &args, None, "call-1")
+        .await;
+    assert!(matches!(first.outcome, ToolOutcome::Succeeded { .. }));
+    assert_eq!(first.receipt.source, ExecutionSource::Native);
+    assert!(matches!(
+        first.receipt.details,
+        ToolReceiptDetails::BuiltIn(_)
+    ));
+    let stats = executor.cache_stats();
+    assert_eq!((stats.hits, stats.misses), (0, 1));
+
+    let cached = executor
+        .execute_with_receipt("read", &args, None, "call-2")
+        .await;
+    assert!(matches!(cached.outcome, ToolOutcome::Succeeded { .. }));
+    assert_eq!(cached.receipt.source, ExecutionSource::Cache);
+    assert!(matches!(cached.receipt.details, ToolReceiptDetails::Cached));
+    let stats = executor.cache_stats();
+    assert_eq!((stats.hits, stats.misses), (1, 1));
+}
+
+#[tokio::test]
+async fn typed_execution_emits_one_receipt_bearing_tool_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("receipt.txt");
+    std::fs::write(&file_path, "receipt content").unwrap();
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let execution = executor
+        .execute_with_receipt(
+            "read",
+            &serde_json::json!({"file_path": file_path}),
+            Some(&tx),
+            "receipt-call",
+        )
+        .await;
+
+    assert!(matches!(execution.outcome, ToolOutcome::Succeeded { .. }));
+    let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, FromAgent::ToolEnd { .. }))
+            .count(),
+        1
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        FromAgent::ToolEnd {
+            call_id,
+            success: true,
+            receipt: Some(receipt),
+        } if call_id == "receipt-call"
+            && receipt.call_id == "receipt-call"
+            && matches!(&receipt.details, ToolReceiptDetails::BuiltIn(_))
+    )));
+}
+
+#[tokio::test]
+async fn typed_execution_returns_denial_for_read_only_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap())
+        .with_sandbox_policy(crate::sandbox::SandboxPolicy::ReadOnly);
+    let args = serde_json::json!({"file_path": "blocked.txt", "content": "blocked"});
+
+    let execution = executor
+        .execute_with_receipt("write", &args, None, "call-1")
+        .await;
+
+    assert!(matches!(
+        execution.outcome,
+        ToolOutcome::Denied {
+            reason: DenialReason::SandboxPolicy { .. }
+        }
+    ));
+}
+
+#[tokio::test]
+async fn typed_execution_does_not_probe_cache_for_excluded_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let args = serde_json::json!({"command": "printf receipt"});
+
+    let execution = executor
+        .execute_with_receipt("bash", &args, None, "call-1")
+        .await;
+
+    assert!(matches!(execution.outcome, ToolOutcome::Succeeded { .. }));
+    let stats = executor.cache_stats();
+    assert_eq!((stats.hits, stats.misses), (0, 0));
+}
+
+#[tokio::test]
 async fn test_executor_cache_invalidation_on_write() {
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("invalidate_test.txt");
@@ -1443,6 +1587,27 @@ async fn test_executor_vaults_credentials_from_bash_result() {
     assert!(!result.output.contains(&token));
     assert!(result.output.contains("{{CRED:"));
     assert!(!result.details.unwrap().to_string().contains(&token));
+}
+
+#[tokio::test]
+async fn new_executors_use_isolated_credential_vaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = ToolExecutor::new(dir.path().to_str().unwrap());
+    let second = ToolExecutor::new(dir.path().to_str().unwrap());
+    let token = ["ghs", "123456789012345678901234567890123456"].join("_");
+    let args = serde_json::json!({"command": format!("echo GITHUB_TOKEN={token}")});
+
+    let result = first.execute("bash", &args, None, "call-1").await;
+
+    assert!(result.output.contains("{{CRED:"));
+    assert!(first
+        .credential_vault()
+        .resolve_all(&result.output)
+        .contains(&token));
+    assert!(!second
+        .credential_vault()
+        .resolve_all(&result.output)
+        .contains(&token));
 }
 
 #[test]

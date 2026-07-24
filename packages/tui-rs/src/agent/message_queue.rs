@@ -45,6 +45,8 @@ pub enum PromptKind {
     Steer,
     /// Follow-up prompt (queued while running)
     FollowUp,
+    /// Tool-free question excluded from the main conversation history
+    SideQuestion,
 }
 
 impl PromptKind {
@@ -54,6 +56,7 @@ impl PromptKind {
             PromptKind::Prompt => "prompt",
             PromptKind::Steer => "steer",
             PromptKind::FollowUp => "follow-up",
+            PromptKind::SideQuestion => "side question",
         }
     }
 }

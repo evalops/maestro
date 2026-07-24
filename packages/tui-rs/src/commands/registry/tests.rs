@@ -94,6 +94,49 @@ fn built_in_commands_exist() {
     assert!(registry.get("diff").is_some());
     assert!(registry.get("review").is_some());
     assert!(registry.get("a2a").is_some());
+    assert!(registry.get("operations").is_some());
+}
+
+#[test]
+fn operations_command_opens_read_only_modal() {
+    let registry = build_command_registry();
+    let output = registry
+        .execute("/operations", "/tmp", None, None)
+        .expect("operations command");
+    assert!(matches!(
+        output,
+        CommandOutput::OpenModal(ModalType::Operations)
+    ));
+}
+
+#[test]
+fn monitor_command_parses_add_list_and_remove() {
+    let registry = build_command_registry();
+    let add = registry
+        .execute("/monitor add task-1 error \\d+", "/tmp", None, None)
+        .expect("monitor add");
+    assert!(matches!(
+        add,
+        CommandOutput::Action(CommandAction::BackgroundMonitor(
+            BackgroundMonitorAction::Add { task_id, pattern }
+        )) if task_id == "task-1" && pattern == "error \\d+"
+    ));
+    assert!(matches!(
+        registry
+            .execute("/monitor list", "/tmp", None, None)
+            .expect("monitor list"),
+        CommandOutput::Action(CommandAction::BackgroundMonitor(
+            BackgroundMonitorAction::List
+        ))
+    ));
+    assert!(matches!(
+        registry
+            .execute("/monitor remove monitor-1", "/tmp", None, None)
+            .expect("monitor remove"),
+        CommandOutput::Action(CommandAction::BackgroundMonitor(
+            BackgroundMonitorAction::Remove { monitor_id }
+        )) if monitor_id == "monitor-1"
+    ));
 }
 
 #[test]
@@ -615,11 +658,73 @@ fn rewind_parses_turn_count() {
         .execute("/rewind 3", "/tmp", None, None)
         .expect("/rewind")
     {
-        CommandOutput::Action(CommandAction::Session(SessionAction::Rewind { turns })) => {
+        CommandOutput::Action(CommandAction::Session(SessionAction::Rewind { turns, .. })) => {
             assert_eq!(turns, 3);
         }
         other => panic!("expected Rewind, got {other:?}"),
     }
+}
+
+#[test]
+fn rewind_parses_dry_run_and_rejects_history_only() {
+    let registry = build_command_registry();
+    match registry
+        .execute("/rewind --dry-run 2", "/tmp", None, None)
+        .expect("/rewind flags")
+    {
+        CommandOutput::Action(CommandAction::Session(SessionAction::Rewind { turns, dry_run })) => {
+            assert_eq!(turns, 2);
+            assert!(dry_run);
+        }
+        other => panic!("expected flagged Rewind, got {other:?}"),
+    }
+    assert!(registry
+        .execute("/rewind --history-only", "/tmp", None, None)
+        .is_err());
+}
+
+#[test]
+fn btw_and_structured_plan_review_commands_parse() {
+    let registry = build_command_registry();
+    match registry
+        .execute("/btw why is this queued?", "/tmp", None, None)
+        .expect("/btw")
+    {
+        CommandOutput::Action(CommandAction::SideQuestion(question)) => {
+            assert_eq!(question, "why is this queued?");
+        }
+        other => panic!("expected SideQuestion, got {other:?}"),
+    }
+    match registry
+        .execute("/plan comment 3-7 handle errors", "/tmp", None, None)
+        .expect("/plan comment")
+    {
+        CommandOutput::Action(CommandAction::PlanReview(PlanReviewAction::Comment {
+            start_line,
+            end_line,
+            text,
+        })) => {
+            assert_eq!((start_line, end_line), (3, 7));
+            assert_eq!(text, "handle errors");
+        }
+        other => panic!("expected plan comment, got {other:?}"),
+    }
+    assert!(matches!(
+        registry
+            .execute("/plan resolve #4", "/tmp", None, None)
+            .expect("/plan resolve"),
+        CommandOutput::Action(CommandAction::PlanReview(PlanReviewAction::Resolve {
+            id: 4
+        }))
+    ));
+    assert!(matches!(
+        registry
+            .execute("/plan reopen 4", "/tmp", None, None)
+            .expect("/plan reopen"),
+        CommandOutput::Action(CommandAction::PlanReview(PlanReviewAction::Reopen {
+            id: 4
+        }))
+    ));
 }
 
 #[test]

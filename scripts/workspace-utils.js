@@ -241,6 +241,9 @@ export function writePackageJson(path, pkg) {
  * @returns {Promise<Array<{name: string; path: string; data: Record<string, unknown>}>>}
  */
 export async function getWorkspacePackages(rootPackage) {
+	if (!rootPackage.workspaces) {
+		return [];
+	}
 	const packagePaths = await getWorkspacePackagePaths(rootPackage);
 	return packagePaths.map((path) => {
 		const data = readPackageJson(path);

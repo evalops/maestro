@@ -44,12 +44,13 @@ fn test_active_modal_variants_exist() {
         ActiveModal::None,
         ActiveModal::FileSearch,
         ActiveModal::SessionSwitcher,
+        ActiveModal::Operations,
         ActiveModal::CommandPalette,
         ActiveModal::Approval,
         ActiveModal::ModelSelector,
         ActiveModal::ThemeSelector,
     ];
-    assert_eq!(modals.len(), 7);
+    assert_eq!(modals.len(), 8);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -159,11 +160,12 @@ fn test_modal_type_variants() {
         ModalType::ThemeSelector,
         ModalType::ModelSelector,
         ModalType::SessionList,
+        ModalType::Operations,
         ModalType::FileSearch,
         ModalType::CommandPalette,
         ModalType::Help,
     ];
-    assert_eq!(types.len(), 6);
+    assert_eq!(types.len(), 7);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -592,6 +594,8 @@ fn test_restore_visible_session_messages_applies_compactions() {
             auto: true,
             custom_instructions: None,
         }],
+        side_questions: Vec::new(),
+        plan_review_events: Vec::new(),
         usage_entries: Vec::new(),
         file_path: "/tmp/session-1.jsonl".to_string(),
     };
@@ -724,6 +728,8 @@ fn test_restore_visible_session_messages_applies_multiple_compactions_in_order()
                 custom_instructions: None,
             },
         ],
+        side_questions: Vec::new(),
+        plan_review_events: Vec::new(),
         usage_entries: Vec::new(),
         file_path: "/tmp/session-2.jsonl".to_string(),
     };
@@ -799,6 +805,29 @@ fn new_test_app() -> App {
     app.state.steering_mode = QueueMode::default();
     app.state.follow_up_mode = QueueMode::default();
     app
+}
+
+#[tokio::test]
+async fn operations_modal_routes_page_keys_to_the_focused_pane() {
+    let mut app = new_test_app();
+    app.active_modal = ActiveModal::Operations;
+    app.operations.focus_next();
+
+    app.handle_key(KeyCode::PageDown, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    assert_eq!(app.operations.scroll_offsets(), (3, 0));
+
+    app.operations.focus_next();
+    app.handle_key(KeyCode::PageDown, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    assert_eq!(app.operations.scroll_offsets(), (3, 3));
+
+    app.handle_key(KeyCode::PageUp, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    assert_eq!(app.operations.scroll_offsets(), (3, 0));
 }
 
 #[tokio::test]
@@ -1921,4 +1950,212 @@ fn test_system_prompt_includes_year_hint() {
 
     assert!(prompt.contains("websearch/codesearch"));
     assert!(prompt.contains("current year (2026)"));
+}
+
+#[test]
+fn side_messages_do_not_count_toward_compaction() {
+    let mut state = AppState::new();
+    state.add_side_question("side-1".into(), "Question".into());
+    state.add_side_answer("side-1-answer".into(), "Answer".into(), false);
+    assert!(state
+        .messages
+        .iter()
+        .all(|message| !message.counts_toward_compaction_index()));
+}
+
+#[test]
+fn open_plan_comments_block_approval() {
+    let mut app = new_test_app();
+    app.plan_review_comments.push(PlanReviewComment {
+        id: 1,
+        start_line: 1,
+        end_line: 1,
+        text: "Needs work".into(),
+        revision: "revision".into(),
+        excerpt: "line".into(),
+        resolved: false,
+    });
+    app.approve_plan();
+    assert!(app
+        .state
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("1 open review comment")));
+}
+
+#[test]
+fn rewind_is_blocked_while_busy() {
+    let mut app = new_test_app();
+    app.state.add_user_message("keep me".into());
+    app.state.busy = true;
+    app.rewind_turns(1, false);
+    assert_eq!(app.state.messages.len(), 1);
+    assert_eq!(
+        app.state.status.as_deref(),
+        Some("Wait for the active response to finish before rewinding.")
+    );
+}
+
+#[test]
+fn restore_side_questions_by_timestamp_without_model_history_entries() {
+    let mut state = AppState::new();
+    let session = ParsedSession {
+        header: SessionHeader {
+            version: Some(2),
+            id: "ordered-side-questions".into(),
+            timestamp: "2026-07-23T12:00:00Z".into(),
+            cwd: "/tmp".into(),
+            model: "openai/gpt-5.2".into(),
+            subject: None,
+            model_metadata: None,
+            thinking_level: ThinkingLevel::Medium,
+            system_prompt: None,
+            prompt_metadata: None,
+            prompt_context_manifest: None,
+            unified_context_manifest: None,
+            tools: Vec::new(),
+            branched_from: None,
+            parent_session: None,
+        },
+        messages: vec![
+            AppMessage::User {
+                content: MessageContent::Text("before".into()),
+                attachments: None,
+                timestamp: 1_000,
+            },
+            AppMessage::User {
+                content: MessageContent::Text("after".into()),
+                attachments: None,
+                timestamp: 3_000,
+            },
+        ],
+        meta: None,
+        stats: Default::default(),
+        thinking_level_changes: Vec::new(),
+        model_changes: Vec::new(),
+        compactions: Vec::new(),
+        side_questions: vec![SideQuestionEntry {
+            id: "side-1".into(),
+            timestamp: "1970-01-01T00:00:02Z".into(),
+            question: "side".into(),
+            answer: String::new(),
+            error: Some("provider unavailable".into()),
+        }],
+        plan_review_events: Vec::new(),
+        usage_entries: Vec::new(),
+        file_path: "/tmp/ordered-side-questions.jsonl".into(),
+    };
+
+    restore_visible_session_messages(&mut state, &session);
+
+    assert_eq!(
+        state
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "before",
+            "side",
+            "Side question failed: provider unavailable",
+            "after"
+        ]
+    );
+    assert_eq!(state.messages[1].kind, MessageKind::SideQuestion);
+    assert_eq!(state.messages[2].kind, MessageKind::SideAnswer);
+}
+
+#[test]
+fn stale_plan_comments_cannot_be_resolved_or_approved() {
+    let dir = tempdir().unwrap();
+    let plan_dir = dir.path().join(".maestro");
+    std::fs::create_dir_all(&plan_dir).unwrap();
+    let plan_path = plan_dir.join("plan.md");
+    std::fs::write(&plan_path, "first\nselected\nlast\n").unwrap();
+
+    let mut app = new_test_app();
+    app.state.cwd = Some(dir.path().to_string_lossy().to_string());
+    crate::plan_mode::set_active_session_id(None);
+    app.handle_plan_review(PlanReviewAction::Comment {
+        start_line: 2,
+        end_line: 2,
+        text: "review this".into(),
+    });
+    assert_eq!(app.plan_review_comments[0].excerpt, "selected");
+    assert_eq!(
+        app.plan_review_comments[0].revision,
+        crate::plan_mode::plan_revision("first\nselected\nlast\n")
+    );
+
+    std::fs::write(&plan_path, "first\nchanged\nlast\n").unwrap();
+    app.handle_plan_review(PlanReviewAction::Resolve { id: 1 });
+    assert!(!app.plan_review_comments[0].resolved);
+    assert!(app
+        .state
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("stale")));
+
+    app.plan_review_comments[0].resolved = true;
+    app.state.error = None;
+    app.approve_plan();
+    assert!(app
+        .state
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("Plan changed")));
+
+    app.handle_plan_review(PlanReviewAction::List);
+    assert!(app
+        .state
+        .messages
+        .last()
+        .is_some_and(|message| message.content.contains("[stale]")));
+    crate::plan_mode::set_active_session_id(None);
+}
+
+#[test]
+fn open_plan_comments_block_off_cycle_and_approval() {
+    let mut app = new_test_app();
+    app.plan_review_comments.push(PlanReviewComment {
+        id: 1,
+        start_line: 1,
+        end_line: 1,
+        text: "Needs work".into(),
+        revision: "revision".into(),
+        excerpt: "line".into(),
+        resolved: false,
+    });
+    crate::safety::set_plan_mode(true);
+    app.state.interaction_mode = crate::state::InteractionMode::Plan;
+
+    app.apply_plan_mode(false);
+    assert!(crate::safety::is_plan_mode());
+    app.cycle_interaction_mode();
+    assert!(crate::safety::is_plan_mode());
+    app.approve_plan();
+    assert!(crate::safety::is_plan_mode());
+
+    crate::safety::set_plan_mode(false);
+    crate::safety::set_plan_satisfied(true);
+}
+
+#[test]
+fn fork_clears_plan_review_state_and_plan_session_identity() {
+    let mut app = new_test_app();
+    app.plan_review_comments.push(PlanReviewComment {
+        id: 1,
+        start_line: 1,
+        end_line: 1,
+        text: "Needs work".into(),
+        revision: "revision".into(),
+        excerpt: "line".into(),
+        resolved: false,
+    });
+    crate::plan_mode::set_active_session_id(Some("old-session".into()));
+
+    app.fork_session();
+
+    assert!(app.plan_review_comments.is_empty());
+    assert_eq!(crate::plan_mode::active_session_id(), None);
 }

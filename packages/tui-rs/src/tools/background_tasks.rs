@@ -35,15 +35,16 @@
 //! let output = logs(&task.id, 50)?;
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex as StdMutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
+use regex::{Regex, RegexBuilder};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::{Mutex, Notify};
@@ -89,11 +90,281 @@ static TASKS: std::sync::LazyLock<RwLock<HashMap<String, BackgroundTask>>> =
     std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 static ROTATION_OBSERVERS: std::sync::LazyLock<RwLock<HashMap<String, LogRotationObserver>>> =
     std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+static MONITORS: std::sync::LazyLock<RwLock<HashMap<String, BackgroundMonitor>>> =
+    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+static MONITOR_EVENTS: std::sync::LazyLock<RwLock<VecDeque<MonitorEvent>>> =
+    std::sync::LazyLock::new(|| RwLock::new(VecDeque::new()));
+static MONITOR_HISTORY: std::sync::LazyLock<RwLock<VecDeque<MonitorEvent>>> =
+    std::sync::LazyLock::new(|| RwLock::new(VecDeque::new()));
+static MONITOR_BUDGET: std::sync::LazyLock<StdMutex<MonitorBudget>> =
+    std::sync::LazyLock::new(|| StdMutex::new(MonitorBudget::new()));
 
 const DEFAULT_LOG_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const DEFAULT_LOG_SEGMENTS: usize = 2;
 const MAX_LOG_SEGMENTS: usize = 10;
 const MIN_LOG_BYTES: u64 = 50_000;
+const MAX_MONITORS: usize = 32;
+const MAX_MONITORS_PER_TASK: usize = 8;
+const MAX_MONITOR_PATTERN_BYTES: usize = 256;
+const MAX_MONITOR_REGEX_BYTES: usize = 1024 * 1024;
+const MAX_MONITOR_LINE_CHARS: usize = 8192;
+const MAX_MONITOR_OUTPUT_CHARS: usize = 512;
+const MAX_MONITOR_EVENTS: usize = 128;
+const MAX_MONITOR_HISTORY: usize = 200;
+const MAX_MONITOR_EVENTS_PER_SECOND: u32 = 5;
+const MAX_MONITOR_EVALUATIONS_PER_SECOND: u32 = 2_048;
+const MAX_MONITOR_GLOBAL_EVENTS_PER_SECOND: u32 = 32;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorInfo {
+    pub id: String,
+    pub task_id: String,
+    pub pattern: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorEvent {
+    pub monitor_id: String,
+    pub task_id: String,
+    pub stream: &'static str,
+    pub output: String,
+    pub timestamp_ms: u64,
+}
+
+#[derive(Debug)]
+struct BackgroundMonitor {
+    info: MonitorInfo,
+    regex: Regex,
+    window_started: Instant,
+    window_events: u32,
+}
+
+#[derive(Debug)]
+struct MonitorBudget {
+    window_started: Instant,
+    evaluations: u32,
+    events: u32,
+}
+
+impl MonitorBudget {
+    fn new() -> Self {
+        Self {
+            window_started: Instant::now(),
+            evaluations: 0,
+            events: 0,
+        }
+    }
+
+    fn reset_window(&mut self, now: Instant) {
+        if now.duration_since(self.window_started) >= Duration::from_secs(1) {
+            self.window_started = now;
+            self.evaluations = 0;
+            self.events = 0;
+        }
+    }
+
+    fn take_evaluation(&mut self, now: Instant) -> bool {
+        self.reset_window(now);
+        if self.evaluations >= MAX_MONITOR_EVALUATIONS_PER_SECOND {
+            return false;
+        }
+        self.evaluations += 1;
+        true
+    }
+
+    fn take_event(&mut self, now: Instant) -> bool {
+        self.reset_window(now);
+        if self.events >= MAX_MONITOR_GLOBAL_EVENTS_PER_SECOND {
+            return false;
+        }
+        self.events += 1;
+        true
+    }
+}
+
+fn take_monitor_evaluation_budget(now: Instant) -> bool {
+    let Ok(mut budget) = MONITOR_BUDGET.lock() else {
+        return false;
+    };
+    budget.take_evaluation(now)
+}
+
+fn take_monitor_event_budget(now: Instant) -> bool {
+    let Ok(mut budget) = MONITOR_BUDGET.lock() else {
+        return false;
+    };
+    budget.take_event(now)
+}
+
+pub fn attach_monitor(task_id: &str, pattern: &str) -> Result<MonitorInfo, String> {
+    let pattern = pattern.trim();
+    if pattern.is_empty() {
+        return Err("Monitor regex cannot be empty".to_string());
+    }
+    if pattern.len() > MAX_MONITOR_PATTERN_BYTES {
+        return Err(format!(
+            "Monitor regex exceeds {MAX_MONITOR_PATTERN_BYTES} bytes"
+        ));
+    }
+    let regex = RegexBuilder::new(pattern)
+        .size_limit(MAX_MONITOR_REGEX_BYTES)
+        .dfa_size_limit(MAX_MONITOR_REGEX_BYTES)
+        .build()
+        .map_err(|error| format!("Invalid monitor regex: {error}"))?;
+    let tasks = TASKS
+        .read()
+        .map_err(|_| "Task registry unavailable".to_string())?;
+    let task = tasks
+        .get(task_id)
+        .ok_or_else(|| "Task not found".to_string())?;
+    if !matches!(task.status, BackgroundTaskStatus::Running) {
+        return Err("Task is not running".to_string());
+    }
+    let mut monitors = MONITORS
+        .write()
+        .map_err(|_| "Monitor registry unavailable".to_string())?;
+    if monitors.len() >= MAX_MONITORS {
+        return Err(format!("Monitor limit reached ({MAX_MONITORS})"));
+    }
+    let task_count = monitors
+        .values()
+        .filter(|monitor| monitor.info.task_id == task_id)
+        .count();
+    if task_count >= MAX_MONITORS_PER_TASK {
+        return Err(format!(
+            "Task monitor limit reached ({MAX_MONITORS_PER_TASK})"
+        ));
+    }
+    let info = MonitorInfo {
+        id: Uuid::new_v4().to_string(),
+        task_id: task_id.to_string(),
+        pattern: pattern.to_string(),
+    };
+    monitors.insert(
+        info.id.clone(),
+        BackgroundMonitor {
+            info: info.clone(),
+            regex,
+            window_started: Instant::now(),
+            window_events: 0,
+        },
+    );
+    Ok(info)
+}
+
+pub fn list_monitors() -> Vec<MonitorInfo> {
+    let mut monitors = MONITORS
+        .read()
+        .map(|monitors| {
+            monitors
+                .values()
+                .map(|monitor| {
+                    let mut info = monitor.info.clone();
+                    info.pattern = redact_text(&info.pattern);
+                    info
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    monitors.sort_by(|left, right| left.id.cmp(&right.id));
+    monitors
+}
+
+pub fn remove_monitor(id: &str) -> Result<MonitorInfo, String> {
+    MONITORS
+        .write()
+        .map_err(|_| "Monitor registry unavailable".to_string())?
+        .remove(id)
+        .map(|monitor| monitor.info)
+        .ok_or_else(|| "Monitor not found".to_string())
+}
+
+pub fn poll_monitor_events() -> Vec<MonitorEvent> {
+    MONITOR_EVENTS
+        .write()
+        .map(|mut events| events.drain(..).collect())
+        .unwrap_or_default()
+}
+
+pub fn monitor_event_history() -> Vec<MonitorEvent> {
+    MONITOR_HISTORY
+        .read()
+        .map(|events| events.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
+fn redact_text(text: &str) -> String {
+    match crate::agent::credential_store::redact_credentials_in_json(&serde_json::Value::String(
+        text.to_string(),
+    )) {
+        serde_json::Value::String(value) => value,
+        _ => String::new(),
+    }
+}
+
+fn emit_monitor_matches(task_id: &str, stream: &'static str, line: &str) {
+    let bounded: String = line.chars().take(MAX_MONITOR_LINE_CHARS).collect();
+    let now = Instant::now();
+    let mut matched = Vec::new();
+    if let Ok(mut monitors) = MONITORS.write() {
+        for monitor in monitors
+            .values_mut()
+            .filter(|monitor| monitor.info.task_id == task_id)
+        {
+            if !take_monitor_evaluation_budget(now) {
+                break;
+            }
+            if !monitor.regex.is_match(&bounded) {
+                continue;
+            }
+            if now.duration_since(monitor.window_started) >= Duration::from_secs(1) {
+                monitor.window_started = now;
+                monitor.window_events = 0;
+            }
+            if monitor.window_events >= MAX_MONITOR_EVENTS_PER_SECOND {
+                continue;
+            }
+            if !take_monitor_event_budget(now) {
+                break;
+            }
+            monitor.window_events += 1;
+            let redacted = redact_text(&bounded);
+            let mut output: String = redacted.chars().take(MAX_MONITOR_OUTPUT_CHARS).collect();
+            if redacted.chars().count() > MAX_MONITOR_OUTPUT_CHARS {
+                output.push_str("...");
+            }
+            matched.push(MonitorEvent {
+                monitor_id: monitor.info.id.clone(),
+                task_id: task_id.to_string(),
+                stream,
+                output,
+                timestamp_ms: SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map_or(0, |duration| duration.as_millis() as u64),
+            });
+        }
+    }
+    for event in matched {
+        if let Ok(mut events) = MONITOR_EVENTS.write() {
+            if events.len() >= MAX_MONITOR_EVENTS {
+                events.pop_front();
+            }
+            events.push_back(event.clone());
+        }
+        if let Ok(mut history) = MONITOR_HISTORY.write() {
+            if history.len() >= MAX_MONITOR_HISTORY {
+                history.pop_front();
+            }
+            history.push_back(event);
+        }
+    }
+}
+
+fn remove_task_monitors(task_id: &str) {
+    if let Ok(mut monitors) = MONITORS.write() {
+        monitors.retain(|_, monitor| monitor.info.task_id != task_id);
+    }
+}
 
 fn read_env_u64(name: &str, default: u64, min: u64) -> u64 {
     match std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok()) {
@@ -461,15 +732,27 @@ async fn drain_stream<R>(
     writer: Arc<Mutex<RotatingLogWriter>>,
     remaining: Arc<AtomicUsize>,
     task_id: String,
+    stream: &'static str,
 ) where
     R: AsyncRead + Unpin + Send + 'static,
 {
     let mut buffer = [0u8; 8192];
     let mut write_failed = false;
+    let mut monitor_buffer = String::new();
     loop {
         match reader.read(&mut buffer).await {
             Ok(0) => break,
             Ok(count) => {
+                monitor_buffer.push_str(&String::from_utf8_lossy(&buffer[..count]));
+                while let Some(newline) = monitor_buffer.find('\n') {
+                    let line = monitor_buffer[..newline].trim_end_matches('\r').to_string();
+                    monitor_buffer.drain(..=newline);
+                    emit_monitor_matches(&task_id, stream, &line);
+                }
+                if monitor_buffer.chars().count() > MAX_MONITOR_LINE_CHARS {
+                    emit_monitor_matches(&task_id, stream, &monitor_buffer);
+                    monitor_buffer.clear();
+                }
                 if write_failed {
                     continue;
                 }
@@ -488,6 +771,10 @@ async fn drain_stream<R>(
                 break;
             }
         }
+    }
+
+    if !monitor_buffer.is_empty() {
+        emit_monitor_matches(&task_id, stream, &monitor_buffer);
     }
 
     if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
@@ -562,21 +849,24 @@ pub async fn start(
     let stream_count = usize::from(stdout.is_some()) + usize::from(stderr.is_some());
     let remaining = Arc::new(AtomicUsize::new(stream_count.max(1)));
 
+    let mut drain_handles = Vec::with_capacity(stream_count);
     if let Some(out) = stdout {
-        tokio::spawn(drain_stream(
+        drain_handles.push(tokio::spawn(drain_stream(
             out,
             log_writer.clone(),
             remaining.clone(),
             id.clone(),
-        ));
+            "stdout",
+        )));
     }
     if let Some(err) = stderr {
-        tokio::spawn(drain_stream(
+        drain_handles.push(tokio::spawn(drain_stream(
             err,
             log_writer.clone(),
             remaining.clone(),
             id.clone(),
-        ));
+            "stderr",
+        )));
     }
     if stream_count == 0 {
         let mut guard = log_writer.lock().await;
@@ -626,6 +916,10 @@ pub async fn start(
                 };
             }
         }
+        for handle in drain_handles {
+            let _ = handle.await;
+        }
+        remove_task_monitors(&id);
         remove_rotation_observer(&id);
 
         if let Some(pid) = pid {
@@ -672,6 +966,7 @@ pub fn stop(id: &str) -> Result<BackgroundTask, String> {
     task.status = BackgroundTaskStatus::Stopped;
     task.finished_at = Some(SystemTime::now());
     remove_rotation_observer(id);
+    remove_task_monitors(id);
 
     Ok(task.clone())
 }
@@ -983,5 +1278,111 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("Log rotation did not occur before stream ended"));
+    }
+
+    fn insert_running_test_task(id: &str) {
+        TASKS.write().unwrap().insert(
+            id.to_string(),
+            BackgroundTask {
+                id: id.to_string(),
+                pid: None,
+                command: "test".to_string(),
+                cwd: ".".to_string(),
+                log_path: "/tmp/test-monitor.log".to_string(),
+                log_write_failed: false,
+                log_write_error: None,
+                status: BackgroundTaskStatus::Running,
+                started_at: SystemTime::now(),
+                finished_at: None,
+                exit_code: None,
+            },
+        );
+    }
+
+    #[test]
+    fn monitor_validates_regex_and_task() {
+        assert!(attach_monitor("missing-monitor-task", "error").is_err());
+        let task_id = format!("monitor-validation-{}", Uuid::new_v4());
+        insert_running_test_task(&task_id);
+        assert!(attach_monitor(&task_id, "(")
+            .unwrap_err()
+            .contains("Invalid"));
+        assert!(
+            attach_monitor(&task_id, &"x".repeat(MAX_MONITOR_PATTERN_BYTES + 1))
+                .unwrap_err()
+                .contains("exceeds")
+        );
+        TASKS.write().unwrap().remove(&task_id);
+    }
+
+    #[test]
+    fn monitor_events_are_redacted_bounded_and_rate_limited() {
+        let task_id = format!("monitor-events-{}", Uuid::new_v4());
+        insert_running_test_task(&task_id);
+        let monitor = attach_monitor(&task_id, "Authorization").unwrap();
+        for _ in 0..10 {
+            emit_monitor_matches(
+                &task_id,
+                "stderr",
+                &format!("Authorization: Bearer sk-{}", "a".repeat(700)),
+            );
+        }
+        let events: Vec<_> = poll_monitor_events()
+            .into_iter()
+            .filter(|event| event.monitor_id == monitor.id)
+            .collect();
+        assert_eq!(events.len(), MAX_MONITOR_EVENTS_PER_SECOND as usize);
+        assert!(events.iter().all(|event| !event.output.contains("sk-")));
+        assert!(events
+            .iter()
+            .all(|event| event.output.chars().count() <= MAX_MONITOR_OUTPUT_CHARS + 3));
+        remove_monitor(&monitor.id).unwrap();
+        TASKS.write().unwrap().remove(&task_id);
+    }
+
+    #[test]
+    fn monitor_budget_limits_global_evaluations_and_events() {
+        let mut budget = MonitorBudget::new();
+        let now = budget.window_started;
+
+        for _ in 0..MAX_MONITOR_EVALUATIONS_PER_SECOND {
+            assert!(budget.take_evaluation(now));
+        }
+        assert!(!budget.take_evaluation(now));
+        for _ in 0..MAX_MONITOR_GLOBAL_EVENTS_PER_SECOND {
+            assert!(budget.take_event(now));
+        }
+        assert!(!budget.take_event(now));
+        assert!(budget.take_evaluation(now + Duration::from_secs(1)));
+        assert!(budget.take_event(now + Duration::from_secs(1)));
+    }
+
+    #[tokio::test]
+    async fn natural_completion_drains_output_before_removing_monitors() {
+        let directory = tempfile::tempdir().unwrap();
+        let cwd = directory.path().to_string_lossy().to_string();
+        let task = start(
+            "sleep 0.1; printf 'final-match\\n'".to_string(),
+            cwd.clone(),
+            cwd,
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+        let monitor = attach_monitor(&task.id, "final-match").unwrap();
+
+        for _ in 0..100 {
+            if !list_monitors().iter().any(|item| item.id == monitor.id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert!(!list_monitors().iter().any(|item| item.id == monitor.id));
+        assert!(monitor_event_history()
+            .iter()
+            .any(|event| event.monitor_id == monitor.id && event.output.contains("final-match")));
+        TASKS.write().unwrap().remove(&task.id);
     }
 }

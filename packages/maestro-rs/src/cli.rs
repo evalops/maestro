@@ -7,6 +7,7 @@ const UTILITY_COMMANDS: &[&str] = &[
     "codex",
     "config",
     "context",
+    "doctor",
     "cost",
     "evalops",
     "export",

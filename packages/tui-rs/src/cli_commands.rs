@@ -29,6 +29,7 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
         "cost" => run_cost(&args[1..]),
         "stats" => run_stats(&args[1..]),
         "models" => run_models(&args[1..]),
+        "doctor" => crate::doctor::run_doctor(&args[1..]).await,
         "status" if args.get(1).is_some_and(|arg| is_help(arg)) => {
             println!("Usage: maestro-tui status");
             Ok(0)
@@ -706,7 +707,17 @@ fn run_models(args: &[String]) -> Result<i32> {
         println!("{provider}  ({} models)", entries.len());
         for m in entries {
             println!("  • {:<28}  {}", m.id, m.description);
-            println!("    {}", m.name);
+            println!(
+                "    {} | {:?} | tools={} vision={} reasoning={} streaming={} context={} | verification={:?}",
+                m.name,
+                m.capabilities.protocol,
+                m.capabilities.tools,
+                m.capabilities.vision,
+                m.capabilities.reasoning,
+                m.capabilities.streaming,
+                m.capabilities.context_tokens,
+                m.verification.state,
+            );
         }
     }
     Ok(0)

@@ -7,6 +7,47 @@ use super::super::wire_format_generated::{
 use super::*;
 use serde_json::{json, Map, Value};
 
+#[test]
+fn side_questions_and_plan_review_are_typed_entries() {
+    let side = SessionEntry::SideQuestion(SideQuestionEntry {
+        id: "side-1".into(),
+        timestamp: "2026-07-23T12:00:00Z".into(),
+        question: "Why?".into(),
+        answer: "Because.".into(),
+        error: None,
+    });
+    let value = serde_json::to_value(&side).unwrap();
+    assert_eq!(value["type"], "side_question");
+
+    let events = vec![
+        PlanReviewEntry {
+            timestamp: "2026-07-23T12:00:01Z".into(),
+            event: PlanReviewEvent::Comment {
+                id: 1,
+                start_line: 2,
+                end_line: 4,
+                text: "Clarify this".into(),
+                revision: "revision-1".into(),
+                excerpt: "selected lines".into(),
+            },
+        },
+        PlanReviewEntry {
+            timestamp: "2026-07-23T12:00:02Z".into(),
+            event: PlanReviewEvent::Resolve { id: 1 },
+        },
+        PlanReviewEntry {
+            timestamp: "2026-07-23T12:00:03Z".into(),
+            event: PlanReviewEvent::Reopen { id: 1 },
+        },
+    ];
+    let comments = reconstruct_plan_review(&events);
+    assert_eq!(comments.len(), 1);
+    assert!(!comments[0].resolved);
+    assert_eq!((comments[0].start_line, comments[0].end_line), (2, 4));
+    assert_eq!(comments[0].revision, "revision-1");
+    assert_eq!(comments[0].excerpt, "selected lines");
+}
+
 fn repo_test_fixture(kind: &str, name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -287,10 +328,43 @@ fn parse_shared_session_wire_fixtures() {
     for fixture in [
         "canonical-tool-session.jsonl",
         "legacy-rust-tool-session.jsonl",
+        "receipt-tool-session.jsonl",
     ] {
         let entries = parse_fixture(fixture);
         assert!(!entries.is_empty(), "fixture {fixture} should not be empty");
     }
+}
+
+#[test]
+fn tool_result_receipt_survives_session_wire_round_trip() {
+    let entries = parse_fixture("receipt-tool-session.jsonl");
+    let serialized = serde_json::to_value(&entries[1]).expect("serialize receipt entry");
+    let receipt = &serialized["message"]["receipt"];
+    assert_eq!(receipt["call_id"], "call-1");
+    assert_eq!(receipt["tool_name"], "read");
+    assert_eq!(receipt["source"], "remote_client");
+    assert_eq!(receipt["duration_ms"], 42);
+    assert_eq!(receipt["status"]["status"], "cancelled");
+    assert_eq!(receipt["status"]["phase"], "running");
+    assert_eq!(receipt["details"]["kind"], "mcp");
+    assert_eq!(receipt["details"]["details"]["server"], "filesystem");
+    assert_eq!(receipt["details"]["details"]["tool"], "read");
+    assert_eq!(receipt["details"]["details"]["is_error"], true);
+
+    let round_tripped: SessionEntry =
+        serde_json::from_value(serialized.clone()).expect("deserialize receipt entry");
+    assert_eq!(
+        serde_json::to_value(round_tripped).expect("reserialize receipt entry")["message"]
+            ["receipt"],
+        *receipt
+    );
+}
+
+#[test]
+fn legacy_tool_result_session_omits_missing_receipt() {
+    let entries = parse_fixture("legacy-rust-tool-session.jsonl");
+    let serialized = serde_json::to_value(&entries[3]).expect("serialize legacy tool result");
+    assert!(serialized["message"].get("receipt").is_none());
 }
 
 #[derive(Debug, Clone)]
@@ -565,7 +639,9 @@ fn replay_normalized_timeline(entries: &[SessionEntry]) -> Value {
             | SessionEntry::ThinkingLevelChange(_)
             | SessionEntry::ModelChange(_)
             | SessionEntry::Custom(_)
-            | SessionEntry::Label(_) => {}
+            | SessionEntry::Label(_)
+            | SessionEntry::SideQuestion(_)
+            | SessionEntry::PlanReview(_) => {}
         }
     }
 

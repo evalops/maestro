@@ -23,12 +23,24 @@ Defaults from the native TUI. Some bindings are customizable via `~/.maestro/key
 |-----|--------|
 | `/` | Start a slash command |
 | `@` | Fuzzy workspace file search |
-| `Ctrl+P` | Command palette |
+| `Ctrl+K` | Unified palette for commands, files, sessions, models, and themes |
 | `Ctrl+O` | Session switcher (also bound as the default file-search related label in keybinding config — see `/hotkeys`) |
 | `Ctrl+T` | Toggle last tool call details |
 | `g` / `G` | Jump to top / bottom of scrollback |
 
 Note: package docs list `Ctrl+O` for sessions and `@` / `/files` for file search. Use `/hotkeys show` for the effective binding table on your machine.
+
+The palette accepts an unprefixed query across every resource type. Prefix a query to restrict results:
+
+| Prefix | Resource |
+|--------|----------|
+| `>` or `command:` | Slash commands |
+| `@` or `file:` | Workspace files |
+| `#` or `session:` | Recent sessions |
+| `:` or `model:` | Models |
+| `%` or `theme:` | Themes |
+
+The `@`, session, model, and theme modals remain available through their existing shortcuts and slash commands.
 
 ---
 

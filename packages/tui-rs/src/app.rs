@@ -68,27 +68,29 @@ use tokio::sync::mpsc;
 
 use crate::agent::MAX_PENDING_MESSAGES;
 use crate::agent::{
-    resolve_credentials_in_json, FromAgent, NativeAgent, NativeAgentConfig, PromptKind, ToolResult,
+    CredentialVault, FromAgent, NativeAgent, NativeAgentConfig, PromptKind, ToolResult,
 };
 use crate::ai::AiProvider;
 use crate::clipboard::ClipboardManager;
 use crate::commands::{
-    build_command_registry_with_extensions, CommandAction, CommandOutput, CommandRegistry,
-    ModalType, QueueAction, QueueModeKind, SlashCommandMatcher, SlashCycleState,
+    build_command_registry_with_extensions, BackgroundMonitorAction, CommandAction, CommandOutput,
+    CommandRegistry, ModalType, PlanReviewAction, QueueAction, QueueModeKind, SlashCommandMatcher,
+    SlashCycleState,
 };
 use crate::components::{
     calculate_input_height, ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest,
     ChatInputWidget, ChatInputWidgetOptions, ChatView, CommandPalette, FileSearchModal,
-    ModelSelector, SessionSwitcher, ShortcutsHelp, ThemeSelector,
+    ModelSelector, OperationsModal, SessionSwitcher, ShortcutsHelp, ThemeSelector,
 };
 use crate::config_watcher::{ConfigEvent, ConfigWatcher, ConfigWatcherBuilder};
-use crate::files::get_workspace_files;
+use crate::files::{get_workspace_files, WorkspaceFile};
 use crate::git;
 use crate::keybindings::load_rust_tui_keybindings;
 use crate::keybindings::{is_keybindings_config_path, summarize_keybindings_config_issues};
 use crate::mcp::{
     append_mcp_prompt_summary, McpConfigScope, McpPrompt, McpRuntimeEvent, McpTransport,
 };
+use crate::palette_resource::{PaletteResource, PaletteResourceKind};
 use crate::plugins::PluginRegistry;
 use crate::prompts::{load_prompts, parse_args, render_prompt, PromptDefinition};
 use crate::safety::{
@@ -96,8 +98,9 @@ use crate::safety::{
 };
 use crate::session::{
     AppMessage, CompactionEntry, ContentBlock as SessionContentBlock, MessageContent, MessageEntry,
-    ModelChange, ParsedSession, SessionEntry, SessionExporter, SessionHeader, SessionManager,
-    ThinkingLevel, ThinkingLevelChange, TokenCost, TokenUsage as SessionTokenUsage, ToolInfo,
+    ModelChange, ParsedSession, PlanReviewComment, PlanReviewEntry, PlanReviewEvent, SessionEntry,
+    SessionExporter, SessionHeader, SessionManager, SideQuestionEntry, ThinkingLevel,
+    ThinkingLevelChange, TokenCost, TokenUsage as SessionTokenUsage, ToolInfo,
 };
 use crate::skills::{skills_to_prompt, LoadedSkill, SkillLoadError, SkillLoader, SkillRegistry};
 use crate::state::{AppState, ApprovalMode, Message, MessageKind, MessageRole, QueueMode};
@@ -121,6 +124,8 @@ pub enum ActiveModal {
     FileSearch,
     /// Session history browser
     SessionSwitcher,
+    /// Read-only persisted tool execution browser
+    Operations,
     /// Command palette (Ctrl+Shift+P style)
     CommandPalette,
     /// Tool execution approval dialog
@@ -472,6 +477,9 @@ pub struct App {
     /// Executes tools (bash commands, file reads, etc.) requested by the agent.
     tool_executor: ToolExecutor,
 
+    /// Shared credential vault for the active application session.
+    credential_vault: CredentialVault,
+
     /// The ratatui terminal handle for rendering.
     terminal: terminal::Terminal,
 
@@ -497,8 +505,14 @@ pub struct App {
     /// File search modal component (like VS Code's Ctrl+P).
     file_search: FileSearchModal,
 
+    /// Workspace files shared by file search and the unified palette.
+    workspace_files: Vec<WorkspaceFile>,
+
     /// Session history browser modal.
     session_switcher: SessionSwitcher,
+
+    /// Recent persisted tool executions.
+    operations: OperationsModal,
 
     /// Command palette modal (like VS Code's Ctrl+Shift+P).
     command_palette: CommandPalette,
@@ -560,6 +574,9 @@ pub struct App {
     /// Next id for queued prompts.
     next_queue_id: u64,
 
+    /// Structured comments on the current plan, rebuilt from session events.
+    plan_review_comments: Vec<PlanReviewComment>,
+
     /// When the current session started (for policy limits).
     session_started_at: SystemTime,
 
@@ -583,6 +600,10 @@ pub struct App {
 
     /// Pending model change awaiting agent confirmation.
     pending_model_change: Option<PendingModelChange>,
+
+    /// Bounded actor and result channel for selected-model verification.
+    model_monitor: crate::model_monitor::ModelMonitor,
+    model_verification_rx: std::sync::mpsc::Receiver<crate::model_monitor::ModelVerificationEvent>,
 
     /// Cached git branch for session info updates.
     current_git_branch: Option<String>,
@@ -690,6 +711,7 @@ impl App {
         let cwd = std::env::current_dir()
             .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string());
         let workspace_dir = std::path::PathBuf::from(&cwd);
+        let credential_vault = CredentialVault::new();
 
         let mut state = AppState::new();
         state.context_window = context_window;
@@ -719,6 +741,7 @@ impl App {
             skill_registry.register(loaded.definition.clone());
         }
         let custom_prompts = load_prompts(&workspace_dir);
+        let (model_monitor, model_verification_rx) = crate::model_monitor::spawn_model_monitor();
 
         let command_registry = Arc::new(build_command_registry_with_extensions(
             &loaded_skills,
@@ -731,7 +754,8 @@ impl App {
             native_agent: None,
             native_event_rx: None,
             tool_response_tx: None,
-            tool_executor: ToolExecutor::new(&cwd),
+            tool_executor: ToolExecutor::with_credential_vault(&cwd, credential_vault.clone()),
+            credential_vault,
             terminal,
             should_quit: false,
             capabilities,
@@ -741,7 +765,9 @@ impl App {
             slash_state: SlashCycleState::new(),
             active_modal: ActiveModal::None,
             file_search: FileSearchModal::new(),
+            workspace_files: Vec::new(),
             session_switcher: SessionSwitcher::new(&cwd),
+            operations: OperationsModal::new(&cwd),
             approval_controller: ApprovalController::new(),
             session_manager: SessionManager::new(&cwd),
             clipboard: ClipboardManager::new(),
@@ -761,6 +787,7 @@ impl App {
             queued_prompt_inflight: None,
             queued_prompt_active: None,
             next_queue_id: 1,
+            plan_review_comments: Vec::new(),
             session_started_at: SystemTime::now(),
             session_resume_failed: false,
             current_model: String::new(),
@@ -769,6 +796,8 @@ impl App {
             last_mcp_server_statuses: HashMap::new(),
             config_watcher: build_mcp_config_watcher(),
             pending_model_change: None,
+            model_monitor,
+            model_verification_rx,
             current_git_branch: None,
             command_palette_binding: keybindings.command_palette,
             file_search_binding: keybindings.file_search,
@@ -911,6 +940,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             if let Some(rx) = workspace_rx.as_ref() {
                 match rx.try_recv() {
                     Ok(files) => {
+                        self.workspace_files.clone_from(&files);
                         self.file_search.set_files(files);
                         workspace_rx = None;
                         needs_redraw = true;
@@ -962,6 +992,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 needs_redraw = true;
             }
 
+            if self.poll_model_verification() {
+                needs_redraw = true;
+            }
+
             // Drain live MCP notifications so list changes refresh the UI
             // without waiting for a reconnect or a manual status check.
             if self.poll_mcp_updates().await {
@@ -976,6 +1010,15 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
             // Refresh MCP badge counts periodically without blocking the UI.
             if self.refresh_mcp_badges().await {
+                needs_redraw = true;
+            }
+
+            if self.operations.poll_load() {
+                needs_redraw = true;
+            }
+
+            for event in crate::tools::background_tasks::poll_monitor_events() {
+                self.operations.add_monitor_event(&event);
                 needs_redraw = true;
             }
 
@@ -1009,6 +1052,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     fn load_workspace_files(&mut self) {
         let cwd = std::env::current_dir().unwrap_or_default();
         let files = get_workspace_files(&cwd, 10000);
+        self.workspace_files.clone_from(&files);
         self.file_search.set_files(files);
     }
 
@@ -1047,7 +1091,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
         self.state.status = Some(format!("Initializing agent ({model})..."));
 
-        match NativeAgent::new(config) {
+        match NativeAgent::new_with_credential_vault(config, self.credential_vault.clone()) {
             Ok((agent, event_rx)) => {
                 let tool_tx = agent.tool_response_sender();
                 self.native_agent = Some(agent);
@@ -1252,6 +1296,23 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             self.handle_agent_message(msg).await?;
         }
         Ok(had_messages)
+    }
+
+    fn poll_model_verification(&mut self) -> bool {
+        let mut changed = false;
+        while let Ok(event) = self.model_verification_rx.try_recv() {
+            if !event.is_for_model(&self.current_model) {
+                continue;
+            }
+            changed |= self
+                .model_selector
+                .set_verification(&event.model, event.verification.clone());
+            if event.verification.state == crate::model_catalog::VerificationState::Unavailable {
+                self.state.status = event.verification.detail;
+                changed = true;
+            }
+        }
+        changed
     }
 
     fn update_mcp_badge_counts(&mut self, servers: &[crate::tools::McpServerStatus]) {
@@ -1479,6 +1540,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 self.state.status = Some(format!("Connected: {model} via {provider}"));
                 self.current_model = model.clone();
                 self.usage_tracker.set_model(model.clone());
+                self.model_monitor.verify(model.clone());
             }
             FromAgent::ModelChanged { model, provider } => {
                 let pending_matches = self
@@ -1491,6 +1553,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 self.state.model = Some(model.clone());
                 self.state.provider = Some(provider.clone());
                 self.usage_tracker.set_model(model.clone());
+                self.model_monitor.verify(model.clone());
                 self.state.status = Some(format!("Model: {model}"));
 
                 if pending_matches {
@@ -1532,17 +1595,71 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 );
                 return Ok(());
             }
-            FromAgent::ResponseEnd { .. } => {
-                // Clear busy state when response completes
-                self.state.busy = false;
-                self.queued_prompt_active = None;
-                self.queued_prompt_inflight = None;
-                self.queued_prompt_inflight = self
-                    .queued_prompts
-                    .front()
-                    .map(|prompt| QueuedPromptCursor { id: prompt.id });
-                self.sync_queue_prompt_count();
-                needs_post_interrupt_queue = true;
+            FromAgent::SideQuestionStart { side_id, question } => {
+                if let Some(index) = self.queued_prompts.iter().position(|prompt| {
+                    prompt.kind == PromptKind::SideQuestion && prompt.content == *question
+                }) {
+                    self.queued_prompts.remove(index);
+                    self.sync_queue_prompt_count();
+                }
+                self.state
+                    .add_side_question(side_id.clone(), question.clone());
+                self.state
+                    .add_side_answer(format!("{side_id}-answer"), String::new(), true);
+            }
+            FromAgent::SideQuestionChunk { side_id, content } => {
+                if let Some(answer) = self
+                    .state
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == format!("{side_id}-answer"))
+                {
+                    answer.content.push_str(content);
+                }
+            }
+            FromAgent::SideQuestionEnd {
+                side_id,
+                question,
+                answer,
+                error,
+                ..
+            } => {
+                let display_answer = match error {
+                    Some(error) if answer.is_empty() => format!("Side question failed: {error}"),
+                    Some(error) => format!("{answer}\n\nSide question failed: {error}"),
+                    None => answer.clone(),
+                };
+                if let Some(message) = self
+                    .state
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == format!("{side_id}-answer"))
+                {
+                    message.streaming = false;
+                    message.content = display_answer;
+                }
+                self.record_side_question(
+                    side_id.clone(),
+                    question.clone(),
+                    answer.clone(),
+                    error.clone(),
+                );
+            }
+            FromAgent::ResponseEnd { response_id, .. } => {
+                // Model responses can end before their tool calls and follow-up
+                // responses complete. Only the runner's terminal sentinel ends
+                // the full agent turn.
+                if response_id == "done" {
+                    self.state.busy = false;
+                    self.queued_prompt_active = None;
+                    self.queued_prompt_inflight = None;
+                    self.queued_prompt_inflight = self
+                        .queued_prompts
+                        .front()
+                        .map(|prompt| QueuedPromptCursor { id: prompt.id });
+                    self.sync_queue_prompt_count();
+                    needs_post_interrupt_queue = true;
+                }
             }
             FromAgent::Error { .. } => {
                 // Clear busy state on error
@@ -1702,15 +1819,14 @@ Add the required fields and retry.",
         tool: String,
         args: serde_json::Value,
     ) -> Result<()> {
-        let resolved_args = resolve_credentials_in_json(&args);
-
-        // Execute the tool
-        let result = self
+        let resolved_args = self.credential_vault.resolve_in_json(&args);
+        let execution = self
             .tool_executor
-            .execute(&tool, &resolved_args, None, &call_id)
+            .execute_with_receipt(&tool, &resolved_args, None, &call_id)
             .await;
+        let result = execution.to_legacy();
 
-        self.record_tool_result(&call_id, &tool, &result);
+        self.record_tool_result(&call_id, &tool, &result, Some(&execution));
 
         if tool.eq_ignore_ascii_case("extract_document") && result.success {
             let attachment_id = result
@@ -1811,6 +1927,7 @@ Slash Commands:
         let slash_state = &mut self.slash_state;
         let file_search = &mut self.file_search;
         let session_switcher = &mut self.session_switcher;
+        let operations = &mut self.operations;
         let command_palette = &mut self.command_palette;
         let approval_controller = &self.approval_controller;
         let model_selector = &mut self.model_selector;
@@ -1847,6 +1964,9 @@ Slash Commands:
                 }
                 ActiveModal::SessionSwitcher => {
                     session_switcher.render(frame, area);
+                }
+                ActiveModal::Operations => {
+                    operations.render(frame, area);
                 }
                 ActiveModal::CommandPalette => {
                     command_palette.render(frame, area);
@@ -2028,7 +2148,7 @@ fn restore_visible_session_messages(state: &mut AppState, session: &ParsedSessio
             streaming: false,
             tool_calls: Vec::new(),
             usage: None,
-            timestamp: SystemTime::now(),
+            timestamp: UNIX_EPOCH + Duration::from_millis(app_msg.timestamp()),
             thinking_expanded: false,
         });
     }
@@ -2042,6 +2162,52 @@ fn restore_visible_session_messages(state: &mut AppState, session: &ParsedSessio
                     .unwrap_or_else(|_| SystemTime::now()),
             );
         }
+    }
+
+    let mut side_questions = session.side_questions.iter().collect::<Vec<_>>();
+    side_questions
+        .sort_by_key(|side| parse_rfc3339_system_time(&side.timestamp).unwrap_or(UNIX_EPOCH));
+    for side in side_questions {
+        let timestamp =
+            parse_rfc3339_system_time(&side.timestamp).unwrap_or_else(|_| SystemTime::now());
+        let question = Message {
+            id: side.id.clone(),
+            role: MessageRole::User,
+            kind: MessageKind::SideQuestion,
+            content: side.question.clone(),
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: Vec::new(),
+            usage: None,
+            timestamp,
+            thinking_expanded: false,
+        };
+        let answer = match &side.error {
+            Some(error) if side.answer.is_empty() => format!("Side question failed: {error}"),
+            Some(error) => format!("{}\n\nSide question failed: {error}", side.answer),
+            None => side.answer.clone(),
+        };
+        let response = Message {
+            id: format!("{}-answer", side.id),
+            role: MessageRole::Assistant,
+            kind: MessageKind::SideAnswer,
+            content: answer,
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: Vec::new(),
+            usage: None,
+            timestamp,
+            thinking_expanded: false,
+        };
+        let insert_at = state
+            .messages
+            .iter()
+            .position(|message| {
+                message.kind != MessageKind::CompactionBoundary && message.timestamp > timestamp
+            })
+            .unwrap_or(state.messages.len());
+        state.messages.insert(insert_at, question);
+        state.messages.insert(insert_at + 1, response);
     }
 }
 

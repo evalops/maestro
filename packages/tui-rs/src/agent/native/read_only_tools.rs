@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::super::{FromAgent, ToolResult};
+use super::super::{ExecutionSource, FromAgent, ToolExecution};
+use crate::agent::CredentialVault;
 use crate::mcp::McpToolAnnotations;
 use crate::tools::{BatchConfig, BatchExecutor, BatchToolCall, ToolExecutor};
 
@@ -13,6 +14,7 @@ pub(super) struct QueuedReadOnlyToolExecution {
     pub(super) tool_name: String,
     pub(super) args: serde_json::Value,
     pub(super) safe_args: serde_json::Value,
+    // Resolve before scheduling so tools receive concrete command arguments.
     pub(super) resolved_args: serde_json::Value,
     pub(super) extra_context: Option<String>,
 }
@@ -97,10 +99,12 @@ pub(super) fn is_explicit_inline_read_only_tool(
 
 pub(super) async fn execute_native_read_only_tool_wave(
     cwd: &str,
+    credential_vault: CredentialVault,
     event_tx: &mpsc::UnboundedSender<FromAgent>,
     pending: &[QueuedReadOnlyToolExecution],
     cancel_token: Option<CancellationToken>,
-) -> HashMap<String, ToolResult> {
+) -> HashMap<String, ToolExecution> {
+    let credential_generation = credential_vault.generation();
     let calls = pending
         .iter()
         .map(|call| {
@@ -111,25 +115,46 @@ pub(super) async fn execute_native_read_only_tool_wave(
             )
         })
         .collect();
-    let batch_executor =
-        BatchExecutor::with_config(cwd.to_string(), native_read_only_batch_config());
+    let batch_executor = BatchExecutor::with_config_and_credential_vault(
+        cwd.to_string(),
+        native_read_only_batch_config(),
+        credential_vault,
+    );
     let results = if let Some(cancel_token) = cancel_token {
         batch_executor
-            .execute_with_cancel(calls, Some(event_tx.clone()), cancel_token)
+            .execute_with_cancel_at_generation(
+                calls,
+                Some(event_tx.clone()),
+                cancel_token,
+                credential_generation,
+            )
             .await
     } else {
-        batch_executor.execute(calls, Some(event_tx.clone())).await
+        batch_executor
+            .execute_at_generation(calls, Some(event_tx.clone()), credential_generation)
+            .await
     };
 
     results
         .into_iter()
-        .map(|result| (result.call_id, result.result))
+        .map(|result| {
+            let execution = result.execution.unwrap_or_else(|| {
+                ToolExecution::from_legacy(
+                    &result.call_id,
+                    &result.tool_name,
+                    ExecutionSource::Native,
+                    result.result,
+                )
+            });
+            (result.call_id, execution)
+        })
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::ToolOutcome;
     use crate::mcp::McpToolAnnotations;
 
     #[test]
@@ -193,7 +218,7 @@ mod tests {
                 "tools": [{
                     "name": "read_probe",
                     "description": "Delayed read-only probe for native batching tests",
-                    "command": "sleep 0.08; cat",
+                    "command": "sleep 0.08; printf GITHUB_TOKEN=ghs_123456789012345678901234567890123456",
                     "parameters": {
                         "phase": {"type": "string"},
                         "index": {"type": "number"}
@@ -217,7 +242,7 @@ mod tests {
                     tool_name: "read_probe".to_string(),
                     args: args.clone(),
                     safe_args: args.clone(),
-                    resolved_args: args,
+                    resolved_args: args.clone(),
                     extra_context: None,
                 }
             })
@@ -235,12 +260,26 @@ mod tests {
         }));
 
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let results =
-            execute_native_read_only_tool_wave(temp.path().to_str().unwrap(), &tx, &pending, None)
-                .await;
+        let credential_vault = CredentialVault::new();
+        let results = execute_native_read_only_tool_wave(
+            temp.path().to_str().unwrap(),
+            credential_vault.clone(),
+            &tx,
+            &pending,
+            None,
+        )
+        .await;
 
         assert_eq!(results.len(), 4);
-        assert!(results.values().all(|result| result.success));
+        assert!(results
+            .values()
+            .all(|result| matches!(result.outcome, ToolOutcome::Succeeded { .. })));
+        assert!(results
+            .values()
+            .all(|result| result.model_content().contains("{{CRED:")));
+        assert!(results.values().all(|result| credential_vault
+            .resolve_all(&result.model_content())
+            .contains("ghs_123456789012345678901234567890123456")));
 
         let mut starts = 0;
         let mut ends = 0;
@@ -272,5 +311,48 @@ mod tests {
             starts_before_first_end, 4,
             "read-only wave should start every member before the first completion"
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_read_only_wave_retains_queued_receipts_and_terminal_events() {
+        let temp = tempfile::tempdir().unwrap();
+        let pending = vec![QueuedReadOnlyToolExecution {
+            call_id: "inspect-0".to_string(),
+            tool_name: "glob".to_string(),
+            args: serde_json::json!({"pattern": "*.rs"}),
+            safe_args: serde_json::json!({"pattern": "*.rs"}),
+            resolved_args: serde_json::json!({"pattern": "*.rs"}),
+            extra_context: None,
+        }];
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let cancel_token = CancellationToken::new();
+        cancel_token.cancel();
+
+        let results = execute_native_read_only_tool_wave(
+            temp.path().to_str().unwrap(),
+            CredentialVault::new(),
+            &tx,
+            &pending,
+            Some(cancel_token),
+        )
+        .await;
+
+        let execution = results.get("inspect-0").unwrap();
+        assert!(matches!(
+            execution.outcome,
+            ToolOutcome::Cancelled {
+                phase: super::super::ExecutionPhase::Queued
+            }
+        ));
+
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            FromAgent::ToolEnd {
+                call_id,
+                success: false,
+                receipt: Some(receipt),
+            } if call_id == "inspect-0" && receipt.call_id == "inspect-0"
+        )));
     }
 }

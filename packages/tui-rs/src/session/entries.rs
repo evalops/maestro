@@ -182,6 +182,7 @@
 //! ```
 
 use super::wire_format_generated::canonical_stop_reason;
+use crate::agent::ExecutionReceipt;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
@@ -282,6 +283,12 @@ pub enum SessionEntry {
 
     /// User-facing label attached to another tree entry.
     Label(LabelEntry),
+
+    /// Tool-free side question and its answer, excluded from main history.
+    SideQuestion(SideQuestionEntry),
+
+    /// Append-only structured plan review event.
+    PlanReview(PlanReviewEntry),
 }
 
 /// Session initialization parameters (first entry in every session file).
@@ -657,6 +664,10 @@ pub enum AppMessage {
         /// Can include timing, file paths, or other metadata. Omitted if None.
         #[serde(skip_serializing_if = "Option::is_none")]
         details: Option<serde_json::Value>,
+
+        /// Typed execution receipt retained for audit and replay.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receipt: Option<ExecutionReceipt>,
 
         /// Whether this result represents an error.
         ///
@@ -1051,6 +1062,92 @@ pub struct LabelEntry {
     pub target_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+}
+
+/// A completed tool-free side question.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SideQuestionEntry {
+    pub id: String,
+    pub timestamp: String,
+    pub question: String,
+    pub answer: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// An append-only event in the structured plan review workflow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanReviewEntry {
+    pub timestamp: String,
+    #[serde(flatten)]
+    pub event: PlanReviewEvent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum PlanReviewEvent {
+    Comment {
+        id: u64,
+        start_line: usize,
+        end_line: usize,
+        text: String,
+        revision: String,
+        excerpt: String,
+    },
+    Resolve {
+        id: u64,
+    },
+    Reopen {
+        id: u64,
+    },
+}
+
+/// Current state reconstructed from append-only plan review events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanReviewComment {
+    pub id: u64,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub text: String,
+    pub revision: String,
+    pub excerpt: String,
+    pub resolved: bool,
+}
+
+#[must_use]
+pub fn reconstruct_plan_review(events: &[PlanReviewEntry]) -> Vec<PlanReviewComment> {
+    let mut comments = Vec::new();
+    for entry in events {
+        match &entry.event {
+            PlanReviewEvent::Comment {
+                id,
+                start_line,
+                end_line,
+                text,
+                revision,
+                excerpt,
+            } => comments.push(PlanReviewComment {
+                id: *id,
+                start_line: *start_line,
+                end_line: *end_line,
+                text: text.clone(),
+                revision: revision.clone(),
+                excerpt: excerpt.clone(),
+                resolved: false,
+            }),
+            PlanReviewEvent::Resolve { id } => {
+                if let Some(comment) = comments.iter_mut().find(|comment| comment.id == *id) {
+                    comment.resolved = true;
+                }
+            }
+            PlanReviewEvent::Reopen { id } => {
+                if let Some(comment) = comments.iter_mut().find(|comment| comment.id == *id) {
+                    comment.resolved = false;
+                }
+            }
+        }
+    }
+    comments
 }
 
 fn default_true() -> bool {

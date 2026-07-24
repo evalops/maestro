@@ -736,125 +736,198 @@ impl OpenAiClient {
         is_mistral: bool,
         tool_id_to_name: &std::collections::HashMap<String, String>,
     ) -> Vec<OpenAiMessage> {
-        messages
-            .iter()
-            .filter_map(|msg| {
-                let role = match msg.role {
-                    Role::User => "user",
-                    Role::Assistant => "assistant",
-                    Role::System => "system",
-                };
-
-                // Convert content
-                match &msg.content {
-                    MessageContent::Text(text) => Some(OpenAiMessage {
-                        role: role.to_string(),
-                        content: Some(OpenAiContent::Text(text.clone())),
-                        tool_calls: None,
-                        tool_call_id: None,
-                        name: None,
-                    }),
-                    MessageContent::Blocks(blocks) => {
-                        // Handle tool results specially
-                        if let Some(ContentBlock::ToolResult {
+        let mut converted = Vec::new();
+        for msg in messages {
+            if let MessageContent::Blocks(blocks) = &msg.content {
+                let tool_results: Vec<_> = blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::ToolResult {
                             tool_use_id,
                             content,
                             ..
-                        }) = blocks.first()
-                        {
-                            let normalized_id = if is_mistral {
-                                normalize_mistral_tool_id(tool_use_id)
-                            } else {
-                                tool_use_id.clone()
-                            };
+                        } => Some((tool_use_id, content)),
+                        _ => None,
+                    })
+                    .collect();
+                if !tool_results.is_empty() {
+                    for (tool_use_id, content) in tool_results {
+                        let normalized_id = if is_mistral {
+                            normalize_mistral_tool_id(tool_use_id)
+                        } else {
+                            tool_use_id.clone()
+                        };
+                        converted.push(OpenAiMessage {
+                            role: "tool".to_string(),
+                            content: Some(OpenAiContent::Text(content.clone())),
+                            tool_calls: None,
+                            tool_call_id: Some(normalized_id),
+                            name: is_mistral
+                                .then(|| tool_id_to_name.get(tool_use_id).cloned())
+                                .flatten(),
+                        });
+                    }
+                    continue;
+                }
+            }
+            if let Some(message) = self.convert_message(msg, is_mistral, tool_id_to_name) {
+                converted.push(message);
+            }
+        }
+        converted
+    }
 
-                            // Mistral requires the tool name in tool results
-                            let name = if is_mistral {
-                                tool_id_to_name.get(tool_use_id).cloned()
-                            } else {
-                                None
-                            };
+    fn convert_message(
+        &self,
+        msg: &Message,
+        is_mistral: bool,
+        tool_id_to_name: &std::collections::HashMap<String, String>,
+    ) -> Option<OpenAiMessage> {
+        let role = match msg.role {
+            Role::User => "user",
+            Role::Assistant => "assistant",
+            Role::System => "system",
+        };
 
-                            return Some(OpenAiMessage {
-                                role: "tool".to_string(),
-                                content: Some(OpenAiContent::Text(content.clone())),
-                                tool_calls: None,
-                                tool_call_id: Some(normalized_id),
-                                name,
-                            });
-                        }
+        // Convert content
+        match &msg.content {
+            MessageContent::Text(text) => Some(OpenAiMessage {
+                role: role.to_string(),
+                content: Some(OpenAiContent::Text(text.clone())),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            }),
+            MessageContent::Blocks(blocks) => {
+                // Handle tool results specially
+                if let Some(ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                }) = blocks.first()
+                {
+                    let normalized_id = if is_mistral {
+                        normalize_mistral_tool_id(tool_use_id)
+                    } else {
+                        tool_use_id.clone()
+                    };
 
-                        // Convert blocks to OpenAI content parts
-                        let parts: Vec<OpenAiContentPart> = blocks
+                    // Mistral requires the tool name in tool results
+                    let name = if is_mistral {
+                        tool_id_to_name.get(tool_use_id).cloned()
+                    } else {
+                        None
+                    };
+
+                    return Some(OpenAiMessage {
+                        role: "tool".to_string(),
+                        content: Some(OpenAiContent::Text(content.clone())),
+                        tool_calls: None,
+                        tool_call_id: Some(normalized_id),
+                        name,
+                    });
+                }
+
+                // Chat Completions requires an assistant `tool_calls`
+                // array before any subsequent `role: tool` result.
+                // Serializing tool uses as text leaves tool results
+                // orphaned and is rejected by OpenAI.
+                if msg.role == Role::Assistant {
+                    let tool_calls: Vec<OpenAiToolCall> = blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::ToolUse { id, name, input } => Some(OpenAiToolCall {
+                                index: None,
+                                id: Some(id.clone()),
+                                tool_type: Some("function".to_string()),
+                                function: Some(OpenAiFunctionCall {
+                                    name: Some(name.clone()),
+                                    arguments: Some(
+                                        serde_json::to_string(input)
+                                            .unwrap_or_else(|_| "{}".to_string()),
+                                    ),
+                                }),
+                            }),
+                            _ => None,
+                        })
+                        .collect();
+                    if !tool_calls.is_empty() {
+                        let text = blocks
                             .iter()
                             .filter_map(|block| match block {
-                                ContentBlock::Text { text } => {
-                                    Some(OpenAiContentPart::Text { text: text.clone() })
-                                }
-                                ContentBlock::Image { source } => match source {
-                                    ImageSource::Url { url } => Some(OpenAiContentPart::ImageUrl {
-                                        image_url: ImageUrlData {
-                                            url: url.clone(),
-                                            detail: None,
-                                        },
-                                    }),
-                                    ImageSource::Base64 { media_type, data } => {
-                                        Some(OpenAiContentPart::ImageUrl {
-                                            image_url: ImageUrlData {
-                                                url: format!("data:{media_type};base64,{data}"),
-                                                detail: None,
-                                            },
-                                        })
-                                    }
-                                },
-                                ContentBlock::ToolUse { id, name, input } => {
-                                    // This would be in assistant message
-                                    Some(OpenAiContentPart::Text {
-                                        text: format!(
-                                            "Tool call: {} ({}): {}",
-                                            name,
-                                            id,
-                                            serde_json::to_string(input).unwrap_or_default()
-                                        ),
-                                    })
-                                }
+                                ContentBlock::Text { text } => Some(text.as_str()),
                                 _ => None,
                             })
-                            .collect();
-
-                        if parts.is_empty() {
-                            None
-                        } else if parts.len() == 1 {
-                            if let OpenAiContentPart::Text { text } = &parts[0] {
-                                Some(OpenAiMessage {
-                                    role: role.to_string(),
-                                    content: Some(OpenAiContent::Text(text.clone())),
-                                    tool_calls: None,
-                                    tool_call_id: None,
-                                    name: None,
-                                })
-                            } else {
-                                Some(OpenAiMessage {
-                                    role: role.to_string(),
-                                    content: Some(OpenAiContent::Parts(parts)),
-                                    tool_calls: None,
-                                    tool_call_id: None,
-                                    name: None,
-                                })
-                            }
-                        } else {
-                            Some(OpenAiMessage {
-                                role: role.to_string(),
-                                content: Some(OpenAiContent::Parts(parts)),
-                                tool_calls: None,
-                                tool_call_id: None,
-                                name: None,
-                            })
-                        }
+                            .collect::<String>();
+                        return Some(OpenAiMessage {
+                            role: "assistant".to_string(),
+                            content: (!text.is_empty()).then_some(OpenAiContent::Text(text)),
+                            tool_calls: Some(tool_calls),
+                            tool_call_id: None,
+                            name: None,
+                        });
                     }
                 }
-            })
-            .collect()
+
+                // Convert blocks to OpenAI content parts
+                let parts: Vec<OpenAiContentPart> = blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => {
+                            Some(OpenAiContentPart::Text { text: text.clone() })
+                        }
+                        ContentBlock::Image { source } => match source {
+                            ImageSource::Url { url } => Some(OpenAiContentPart::ImageUrl {
+                                image_url: ImageUrlData {
+                                    url: url.clone(),
+                                    detail: None,
+                                },
+                            }),
+                            ImageSource::Base64 { media_type, data } => {
+                                Some(OpenAiContentPart::ImageUrl {
+                                    image_url: ImageUrlData {
+                                        url: format!("data:{media_type};base64,{data}"),
+                                        detail: None,
+                                    },
+                                })
+                            }
+                        },
+                        ContentBlock::ToolUse { .. } => None,
+                        _ => None,
+                    })
+                    .collect();
+
+                if parts.is_empty() {
+                    None
+                } else if parts.len() == 1 {
+                    if let OpenAiContentPart::Text { text } = &parts[0] {
+                        Some(OpenAiMessage {
+                            role: role.to_string(),
+                            content: Some(OpenAiContent::Text(text.clone())),
+                            tool_calls: None,
+                            tool_call_id: None,
+                            name: None,
+                        })
+                    } else {
+                        Some(OpenAiMessage {
+                            role: role.to_string(),
+                            content: Some(OpenAiContent::Parts(parts)),
+                            tool_calls: None,
+                            tool_call_id: None,
+                            name: None,
+                        })
+                    }
+                } else {
+                    Some(OpenAiMessage {
+                        role: role.to_string(),
+                        content: Some(OpenAiContent::Parts(parts)),
+                        tool_calls: None,
+                        tool_call_id: None,
+                        name: None,
+                    })
+                }
+            }
+        }
     }
 
     /// Build a mapping from tool call IDs to tool names from the message history.
@@ -1773,6 +1846,8 @@ struct OpenAiToolCall {
     index: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    tool_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     function: Option<OpenAiFunctionCall>,
 }
@@ -2043,6 +2118,153 @@ mod tests {
             },
         );
         assert_eq!(chat_body["model"], "gpt-4o");
+    }
+
+    fn tool_call_history(calls: &[(&str, &str, serde_json::Value, &str)]) -> Vec<Message> {
+        vec![
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Blocks(
+                    calls
+                        .iter()
+                        .map(|(id, name, input, _)| ContentBlock::ToolUse {
+                            id: (*id).to_string(),
+                            name: (*name).to_string(),
+                            input: input.clone(),
+                        })
+                        .collect(),
+                ),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(
+                    calls
+                        .iter()
+                        .map(|(id, _, _, output)| ContentBlock::ToolResult {
+                            tool_use_id: (*id).to_string(),
+                            content: (*output).to_string(),
+                            is_error: Some(false),
+                        })
+                        .collect(),
+                ),
+            },
+        ]
+    }
+
+    #[test]
+    fn chat_history_keeps_single_and_parallel_tool_calls_with_their_results() {
+        let client = OpenAiClient::new("test-key").unwrap();
+        for calls in [
+            vec![(
+                "call_read",
+                "read",
+                serde_json::json!({"path": "Cargo.toml"}),
+                "contents",
+            )],
+            vec![
+                (
+                    "call_read",
+                    "read",
+                    serde_json::json!({"path": "Cargo.toml"}),
+                    "contents",
+                ),
+                (
+                    "call_glob",
+                    "glob",
+                    serde_json::json!({"pattern": "*.rs"}),
+                    "src/main.rs",
+                ),
+            ],
+        ] {
+            let body = client.build_chat_request_body(
+                &tool_call_history(&calls),
+                &RequestConfig {
+                    model: "openai/gpt-4.1-mini".to_string(),
+                    ..Default::default()
+                },
+            );
+            let messages = body["messages"].as_array().expect("chat messages");
+            assert_eq!(messages.len(), calls.len() + 1);
+
+            let tool_calls = messages[0]["tool_calls"].as_array().expect("tool calls");
+            assert_eq!(tool_calls.len(), calls.len());
+            for (tool_call, (id, name, input, _)) in tool_calls.iter().zip(&calls) {
+                assert_eq!(tool_call["id"], *id);
+                assert_eq!(tool_call["type"], "function");
+                assert_eq!(tool_call["function"]["name"], *name);
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(
+                        tool_call["function"]["arguments"]
+                            .as_str()
+                            .expect("function arguments"),
+                    )
+                    .expect("valid function arguments"),
+                    *input
+                );
+            }
+            for (result, (id, _, _, output)) in messages[1..].iter().zip(&calls) {
+                assert_eq!(result["role"], "tool");
+                assert_eq!(result["tool_call_id"], *id);
+                assert_eq!(result["content"], *output);
+            }
+        }
+    }
+
+    #[test]
+    fn responses_history_keeps_single_and_parallel_tool_calls_with_their_results() {
+        let client = OpenAiClient::new("test-key").unwrap();
+        for calls in [
+            vec![(
+                "call_read",
+                "read",
+                serde_json::json!({"path": "Cargo.toml"}),
+                "contents",
+            )],
+            vec![
+                (
+                    "call_read",
+                    "read",
+                    serde_json::json!({"path": "Cargo.toml"}),
+                    "contents",
+                ),
+                (
+                    "call_glob",
+                    "glob",
+                    serde_json::json!({"pattern": "*.rs"}),
+                    "src/main.rs",
+                ),
+            ],
+        ] {
+            let body = client.build_responses_request_body(
+                &tool_call_history(&calls),
+                &RequestConfig {
+                    model: "openai/gpt-5.1-codex-max".to_string(),
+                    ..Default::default()
+                },
+            );
+            let input = body["input"].as_array().expect("Responses input");
+            assert_eq!(input.len(), calls.len() * 2);
+
+            for (function_call, (id, name, args, _)) in input[..calls.len()].iter().zip(&calls) {
+                assert_eq!(function_call["type"], "function_call");
+                assert_eq!(function_call["call_id"], *id);
+                assert_eq!(function_call["name"], *name);
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(
+                        function_call["arguments"]
+                            .as_str()
+                            .expect("function arguments"),
+                    )
+                    .expect("valid function arguments"),
+                    *args
+                );
+            }
+            for (result, (id, _, _, output)) in input[calls.len()..].iter().zip(&calls) {
+                assert_eq!(result["type"], "function_call_output");
+                assert_eq!(result["call_id"], *id);
+                assert_eq!(result["output"], *output);
+            }
+        }
     }
 
     #[test]

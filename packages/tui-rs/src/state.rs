@@ -149,6 +149,8 @@ pub enum MessageKind {
     Regular,
     System,
     CompactionBoundary,
+    SideQuestion,
+    SideAnswer,
 }
 
 /// State of a tool call.
@@ -771,13 +773,19 @@ impl AppState {
                     msg.streaming = false;
                     msg.usage = usage;
                 }
-                self.busy = false;
-                self.busy_since = None;
+                if response_id == "done" {
+                    self.busy = false;
+                    self.busy_since = None;
+                }
 
                 // Clear thinking state for next response
                 self.thinking_header = None;
                 self.thinking_buffer.clear();
             }
+
+            FromAgent::SideQuestionStart { .. }
+            | FromAgent::SideQuestionChunk { .. }
+            | FromAgent::SideQuestionEnd { .. } => {}
 
             // Agent wants to call a tool
             FromAgent::ToolCall {
@@ -827,7 +835,9 @@ impl AppState {
             }
 
             // Tool finished
-            FromAgent::ToolEnd { call_id, success } => {
+            FromAgent::ToolEnd {
+                call_id, success, ..
+            } => {
                 self.update_tool_status(
                     &call_id,
                     if success {
@@ -957,6 +967,38 @@ impl AppState {
         self.busy = true;
         self.busy_since = Some(Instant::now());
         id
+    }
+
+    /// Add a visually distinct question that is not part of main history.
+    pub fn add_side_question(&mut self, id: String, content: String) {
+        self.messages.push(Message {
+            id,
+            role: MessageRole::User,
+            kind: MessageKind::SideQuestion,
+            content,
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: Vec::new(),
+            usage: None,
+            timestamp: SystemTime::now(),
+            thinking_expanded: false,
+        });
+    }
+
+    /// Add a visually distinct answer that is not part of main history.
+    pub fn add_side_answer(&mut self, id: String, content: String, streaming: bool) {
+        self.messages.push(Message {
+            id,
+            role: MessageRole::Assistant,
+            kind: MessageKind::SideAnswer,
+            content,
+            thinking: String::new(),
+            streaming,
+            tool_calls: Vec::new(),
+            usage: None,
+            timestamp: SystemTime::now(),
+            thinking_expanded: false,
+        });
     }
 
     // ─────────────────────────────────────────────────────────────────────────

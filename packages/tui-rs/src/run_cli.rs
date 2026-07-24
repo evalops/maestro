@@ -2690,6 +2690,7 @@ mod tests {
                             "code": "policy_allow"
                         }
                     })),
+                    receipt: None,
                     is_error: false,
                     timestamp: 1_715_247_603_000,
                 },
@@ -2717,6 +2718,8 @@ mod tests {
                 auto: true,
                 custom_instructions: None,
             }],
+            side_questions: vec![],
+            plan_review_events: vec![],
             usage_entries: vec![],
             file_path: path.display().to_string(),
         }

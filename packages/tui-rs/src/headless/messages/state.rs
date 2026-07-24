@@ -1,3 +1,4 @@
+use crate::agent::ExecutionReceipt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -1051,6 +1052,8 @@ impl AgentState {
                 success,
                 tool,
                 details,
+                receipt,
+                ..
             } => {
                 let active_tool = self.active_tools.remove(&call_id);
                 let tracked_tool = self.tracked_tools.remove(&call_id);
@@ -1083,6 +1086,7 @@ impl AgentState {
                     call_id,
                     success,
                     duration: active_tool.map(|t| t.started.elapsed()),
+                    receipt,
                 })
             }
 
@@ -1382,6 +1386,7 @@ pub enum AgentEvent {
         call_id: String,
         success: bool,
         duration: Option<std::time::Duration>,
+        receipt: Option<ExecutionReceipt>,
     },
     Error {
         request_id: Option<String>,

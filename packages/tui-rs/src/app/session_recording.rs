@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::ToolExecution;
 
 impl App {
     pub(super) fn active_session_count(&self) -> Option<usize> {
@@ -78,6 +79,7 @@ impl App {
         let _ = self.session_manager.flush();
 
         self.state.session_id = Some(session_id.clone());
+        crate::plan_mode::set_active_session_id(Some(session_id.clone()));
         self.session_started_at = SystemTime::now();
         self.session_resume_failed = false;
         self.usage_tracker = crate::usage::UsageTracker::with_session(session_id.clone());
@@ -188,7 +190,13 @@ impl App {
         let _ = self.session_manager.flush();
     }
 
-    pub(super) fn record_tool_result(&mut self, call_id: &str, tool: &str, result: &ToolResult) {
+    pub(super) fn record_tool_result(
+        &mut self,
+        call_id: &str,
+        tool: &str,
+        result: &ToolResult,
+        execution: Option<&ToolExecution>,
+    ) {
         if result.success {
             self.tool_history.complete_with_details(
                 call_id,
@@ -226,6 +234,7 @@ impl App {
                 tool_name: tool.to_string(),
                 content,
                 details: result.details.clone(),
+                receipt: execution.map(|execution| execution.receipt.clone()),
                 is_error: !result.success,
                 timestamp: system_time_to_millis(SystemTime::now()),
             },
@@ -283,6 +292,37 @@ impl App {
             custom_instructions,
         });
         self.write_session_entry(entry);
+    }
+
+    pub(super) fn record_side_question(
+        &mut self,
+        id: String,
+        question: String,
+        answer: String,
+        error: Option<String>,
+    ) {
+        if self.ensure_session_started().is_err() {
+            return;
+        }
+        self.write_session_entry(SessionEntry::SideQuestion(SideQuestionEntry {
+            id,
+            timestamp: Utc::now().to_rfc3339(),
+            question,
+            answer,
+            error,
+        }));
+        let _ = self.session_manager.flush();
+    }
+
+    pub(super) fn record_plan_review_event(&mut self, event: PlanReviewEvent) {
+        if self.ensure_session_started().is_err() {
+            return;
+        }
+        self.write_session_entry(SessionEntry::PlanReview(PlanReviewEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            event,
+        }));
+        let _ = self.session_manager.flush();
     }
 
     pub(super) fn hydrate_usage_from_session(&mut self, session: &ParsedSession) {

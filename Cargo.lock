@@ -2480,7 +2480,7 @@ dependencies = [
 
 [[package]]
 name = "maestro"
-version = "0.10.54"
+version = "0.10.55"
 dependencies = [
  "anyhow",
  "maestro-control-plane",
@@ -2572,6 +2572,7 @@ dependencies = [
  "uuid",
  "wait-timeout",
  "wasmtime",
+ "zeroize",
  "zip",
 ]
 

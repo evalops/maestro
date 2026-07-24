@@ -55,6 +55,7 @@ const DEFAULT_EXCLUDES = [
 
 const PUBLIC_INCLUDE_OVERRIDES = new Set([
 	".env.example",
+	"packages/web/dist",
 ]);
 
 const STALE_PUBLIC_TARGET_DELETES = [
@@ -184,7 +185,15 @@ function createMatcher(patterns) {
 		const normalized = normalizePath(relativePath).replace(/^\.?\//u, "");
 		if (!normalized) return false;
 		if (exact.has(normalized)) return true;
-		if (PUBLIC_INCLUDE_OVERRIDES.has(normalized)) return false;
+		if (
+			[...PUBLIC_INCLUDE_OVERRIDES].some(
+				(overridePath) =>
+					normalized === overridePath ||
+					normalized.startsWith(`${overridePath}/`),
+			)
+		) {
+			return false;
+		}
 		if (
 			prefixes.some(
 				(prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`),

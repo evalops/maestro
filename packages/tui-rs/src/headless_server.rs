@@ -30,7 +30,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use crate::agent::{FromAgent, NativeAgent, NativeAgentConfig, PromptKind, ToolResult};
+use crate::agent::{
+    CredentialVault, FromAgent, NativeAgent, NativeAgentConfig, PromptKind, ToolResult,
+};
 use crate::git;
 use crate::headless::messages::{
     ApprovalMode, ClientCapabilities, ClientToolResultContent, FromAgentMessage, HeadlessErrorType,
@@ -54,6 +56,7 @@ struct HeadlessState {
     system_prompt: String,
     thinking_enabled: bool,
     thinking_budget: u32,
+    credential_vault: CredentialVault,
     /// Seeded conversation history applied on agent creation / init.
     history: Option<Vec<crate::headless::messages::HistoryMessage>>,
     meta: Arc<Mutex<RuntimeMeta>>,
@@ -98,6 +101,7 @@ impl HeadlessState {
             system_prompt,
             thinking_enabled: false,
             thinking_budget: 10_000,
+            credential_vault: CredentialVault::new(),
             history: None,
             meta: Arc::new(Mutex::new(RuntimeMeta {
                 session_id,
@@ -149,8 +153,9 @@ impl HeadlessState {
                 thinking_budget: self.thinking_budget,
                 cwd: self.cwd.clone(),
             };
-            let (agent, mut event_rx) = NativeAgent::new(config)
-                .context("Failed to create native agent for headless server")?;
+            let (agent, mut event_rx) =
+                NativeAgent::new_with_credential_vault(config, self.credential_vault.clone())
+                    .context("Failed to create native agent for headless server")?;
             // Apply any seeded multi-turn history before the first prompt.
             if let Some(history) = self.history.as_deref() {
                 let messages = crate::headless::messages::history_to_ai_messages(Some(history));
@@ -1118,13 +1123,18 @@ async fn handle_agent_event(
         FromAgent::ToolOutput { call_id, content } => {
             emit(&FromAgentMessage::ToolOutput { call_id, content })?;
         }
-        FromAgent::ToolEnd { call_id, success } => {
+        FromAgent::ToolEnd {
+            call_id,
+            success,
+            receipt,
+        } => {
             emit(&FromAgentMessage::ToolEnd {
                 call_id,
                 tool_execution_id: None,
                 success,
                 tool: None,
                 details: None,
+                receipt,
             })?;
         }
         FromAgent::Error { message, fatal } => {
@@ -1286,6 +1296,7 @@ fn tool_lifecycle_messages(
         success: result.success,
         tool,
         details: result.details.clone(),
+        receipt: None,
     });
     msgs
 }

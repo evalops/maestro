@@ -1,6 +1,34 @@
 use super::*;
 
 impl App {
+    pub(super) async fn handle_side_question(&mut self, question: String) -> Result<bool> {
+        if question.trim().is_empty() {
+            return Ok(false);
+        }
+        if self.ensure_session_started().is_err() {
+            return Ok(false);
+        }
+        if self.state.busy {
+            return self
+                .queue_prompt(question, PromptKind::SideQuestion, false)
+                .await;
+        }
+        let Some(agent) = &self.native_agent else {
+            self.state.error = Some("Agent not initialized".to_string());
+            return Ok(false);
+        };
+        self.state.busy = true;
+        if let Err(err) = agent
+            .prompt_with_kind(question, vec![], PromptKind::SideQuestion, None)
+            .await
+        {
+            self.state.busy = false;
+            self.state.error = Some(format!("Failed to ask side question: {err}"));
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
     pub(super) async fn handle_follow_up_submit(&mut self, content: String) -> Result<bool> {
         if content.trim().is_empty() {
             return Ok(false);
@@ -379,7 +407,7 @@ impl App {
                     follow_up_count += 1;
                     follow_up_preview.push(Self::format_queue_snippet(&prompt.content, 120));
                 }
-                PromptKind::Prompt => {}
+                PromptKind::Prompt | PromptKind::SideQuestion => {}
             }
         }
 

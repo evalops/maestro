@@ -135,7 +135,7 @@ enum ManagedTransport {
 }
 
 enum ManagedIncoming {
-    Message(FromAgentMessage),
+    Message(Box<FromAgentMessage>),
     Snapshot {
         state: Box<AgentState>,
         last_init: Option<InitConfig>,
@@ -205,10 +205,10 @@ impl ManagedTransport {
         match self {
             Self::Local(transport) => transport
                 .try_recv_message()
-                .map(|result| result.map(ManagedIncoming::Message)),
+                .map(|result| result.map(|message| ManagedIncoming::Message(Box::new(message)))),
             Self::Remote(transport) => transport.try_recv_incoming().map(|result| {
                 result.map(|incoming| match incoming {
-                    RemoteIncoming::Message(message) => ManagedIncoming::Message(message),
+                    RemoteIncoming::Message(message) => ManagedIncoming::Message(Box::new(message)),
                     RemoteIncoming::Snapshot { state, last_init } => {
                         ManagedIncoming::Snapshot { state, last_init }
                     }
@@ -229,13 +229,18 @@ impl ManagedTransport {
 
     async fn recv_incoming(&mut self) -> Result<ManagedIncoming, AsyncTransportError> {
         match self {
-            Self::Local(transport) => transport.recv_message().await.map(ManagedIncoming::Message),
+            Self::Local(transport) => transport
+                .recv_message()
+                .await
+                .map(|message| ManagedIncoming::Message(Box::new(message))),
             Self::Remote(transport) => {
                 transport
                     .recv_incoming()
                     .await
                     .map(|incoming| match incoming {
-                        RemoteIncoming::Message(message) => ManagedIncoming::Message(message),
+                        RemoteIncoming::Message(message) => {
+                            ManagedIncoming::Message(Box::new(message))
+                        }
                         RemoteIncoming::Snapshot { state, last_init } => {
                             ManagedIncoming::Snapshot { state, last_init }
                         }
@@ -841,7 +846,7 @@ impl AgentSupervisor {
         match incoming {
             ManagedIncoming::Message(message) => {
                 self.mark_response_received(emit_health_event);
-                self.apply_agent_message(message)
+                self.apply_agent_message(*message)
             }
             ManagedIncoming::Snapshot { state, last_init } => {
                 self.mark_response_received(emit_health_event);
@@ -1272,13 +1277,17 @@ pub fn agent_event_to_message(event: &AgentEvent) -> FromAgentMessage {
             content: content.clone(),
         },
         AgentEvent::ToolEnd {
-            call_id, success, ..
+            call_id,
+            success,
+            receipt,
+            ..
         } => FromAgentMessage::ToolEnd {
             call_id: call_id.clone(),
             tool_execution_id: None,
             success: *success,
             tool: None,
             details: None,
+            receipt: receipt.clone(),
         },
         AgentEvent::Error {
             request_id,

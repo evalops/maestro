@@ -14,7 +14,7 @@ const dockerfile = readFileSync(dockerfilePath, "utf8");
 const required = [
 	[/FROM\s+rust:[^\s]+\s+AS\s+native/, "Rust native build stage"],
 	[/https:\/\/deb\.debian\.org/, "HTTPS Debian package mirror"],
-	[/Acquire::https::Verify-Peer=false/, "HTTPS apt fallback without peer verify"],
+	[/COPY\s+packages\/web\/dist\s+\.\/packages\/web\/dist/, "versioned browser assets"],
 	[
 		/COPY\s+--from=native\s+\/app\/target\/release\/maestro\s+\/usr\/local\/bin\/maestro/,
 		"native Maestro binary copy",
@@ -30,6 +30,10 @@ const missing = required
 	.map(([, label]) => label);
 if (missing.length > 0) {
 	console.error(`Dockerfile is missing native runtime contracts: ${missing.join(", ")}`);
+	process.exit(1);
+}
+if (/Acquire::https::Verify-(?:Peer|Host)=false/.test(dockerfile)) {
+	console.error("Dockerfile must not disable HTTPS certificate verification.");
 	process.exit(1);
 }
 if (/ENTRYPOINT\s+\[(?:"node"|"bun")/.test(dockerfile)) {

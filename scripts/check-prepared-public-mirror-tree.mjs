@@ -40,6 +40,11 @@ if (existsSync(resolve(targetRoot, ".github/public-release-mirror.exclude"))) {
 	fail(".github/public-release-mirror.exclude must not exist in the prepared public mirror tree.");
 }
 
+const browserEntry = resolve(targetRoot, "packages/web/dist/index.html");
+if (!existsSync(browserEntry)) {
+	fail(`Prepared public mirror is missing versioned browser assets: ${browserEntry}`);
+}
+
 const boundaryScript = resolve(
 	targetRoot,
 	"scripts/check-public-surface-boundary.mjs",
