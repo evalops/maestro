@@ -163,6 +163,18 @@ pub fn provider_model_name(model: &str) -> String {
     }
 }
 
+/// Default maximum time a streaming response may go without delivering any
+/// event before the attempt is abandoned as stalled.
+///
+/// This bounds idle gaps only: a slow stream that keeps producing events never
+/// trips it, while a fully hung HTTP stream (no bytes, no error) is cut off
+/// instead of blocking the turn forever.
+pub const DEFAULT_STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(2);
+
+/// Default number of times a stalled stream attempt is retried (from scratch)
+/// before the failure is surfaced to the caller as a terminal error.
+pub const DEFAULT_STREAM_MAX_RETRIES: u32 = 2;
+
 /// Unified AI client trait
 #[allow(async_fn_in_trait)]
 pub trait AiClient: Send + Sync {
@@ -178,6 +190,7 @@ pub trait AiClient: Send + Sync {
 }
 
 /// Enum-based unified client that can hold either provider
+#[derive(Clone)]
 pub enum UnifiedClient {
     Anthropic(AnthropicClient),
     OpenAI(OpenAiClient),
@@ -384,7 +397,45 @@ impl UnifiedClient {
     }
 
     /// Stream a request to the AI provider
+    ///
+    /// Applies the default stream idle policy
+    /// (`DEFAULT_STREAM_IDLE_TIMEOUT` / `DEFAULT_STREAM_MAX_RETRIES`): an
+    /// attempt that delivers no event for the idle window is retried, and if
+    /// stalls persist a terminal `StreamEvent::Error` is emitted so exec and
+    /// headless callers fail loudly instead of hanging on a dead stream.
     pub async fn stream(
+        &self,
+        messages: &[Message],
+        config: &RequestConfig,
+    ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
+        // Start the first attempt inline so connect/request failures surface
+        // from this call exactly as they did before the idle policy existed.
+        let first = self.stream_once(messages, config).await?;
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        let client = self.clone();
+        let messages = messages.to_vec();
+        let config = config.clone();
+        tokio::spawn(async move {
+            forward_stream_with_idle_policy(
+                first,
+                move || {
+                    let client = client.clone();
+                    let messages = messages.clone();
+                    let config = config.clone();
+                    async move { client.stream_once(&messages, &config).await }
+                },
+                DEFAULT_STREAM_IDLE_TIMEOUT,
+                DEFAULT_STREAM_MAX_RETRIES,
+                tx,
+            )
+            .await;
+        });
+        Ok(rx)
+    }
+
+    /// A single streaming attempt with no idle-timeout or retry policy.
+    async fn stream_once(
         &self,
         messages: &[Message],
         config: &RequestConfig,
@@ -403,6 +454,103 @@ impl UnifiedClient {
             Self::Zai(client) => client.stream(messages, config).await,
         }
     }
+}
+
+/// Forward events from streaming attempts to `tx`, bounding how long an
+/// attempt may go without delivering any event.
+///
+/// `first` is the already-started first attempt; `begin_attempt` starts a
+/// fresh attempt and is only used for retries. An attempt that stalls (no
+/// event for `idle_timeout`) is retried from scratch up to `max_retries`
+/// times, but only while no content event has been forwarded yet — replaying
+/// a request after partial content would duplicate it for the consumer. A
+/// stall after partial content, or after retries are exhausted, produces a
+/// terminal `StreamEvent::Error`.
+///
+/// Only the streaming phase is bounded here; request/connect semantics are
+/// unchanged. A retried attempt's receiver is dropped, which detaches the
+/// provider's stream task until its HTTP connection ends.
+async fn forward_stream_with_idle_policy<F, Fut>(
+    first: mpsc::UnboundedReceiver<StreamEvent>,
+    mut begin_attempt: F,
+    idle_timeout: std::time::Duration,
+    max_retries: u32,
+    tx: mpsc::UnboundedSender<StreamEvent>,
+) where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<mpsc::UnboundedReceiver<StreamEvent>>>,
+{
+    let max_attempts = max_retries.saturating_add(1);
+    let mut attempt = 1u32;
+    let mut attempt_rx = first;
+    loop {
+        let mut committed_content = false;
+        loop {
+            let event = match tokio::time::timeout(idle_timeout, attempt_rx.recv()).await {
+                Ok(Some(event)) => event,
+                // Attempt stream ended; whatever it delivered was forwarded.
+                Ok(None) => return,
+                Err(_elapsed) => {
+                    if !committed_content && attempt < max_attempts {
+                        break; // Discard the stalled attempt and retry.
+                    }
+                    let message = if committed_content {
+                        format!(
+                            "Provider stream stalled: no data received for {}s mid-response; \
+                             not retrying because partial content was already streamed",
+                            idle_timeout.as_secs()
+                        )
+                    } else {
+                        format!(
+                            "Provider stream stalled: no data received for {}s after \
+                             {attempt} attempt(s); giving up",
+                            idle_timeout.as_secs()
+                        )
+                    };
+                    let _ = tx.send(StreamEvent::Error { message });
+                    return;
+                }
+            };
+            committed_content |= stream_event_commits_content(&event);
+            let terminal = matches!(
+                event,
+                StreamEvent::MessageStop { .. } | StreamEvent::Error { .. }
+            );
+            if tx.send(event).is_err() {
+                return; // Caller dropped the receiver.
+            }
+            if terminal {
+                return;
+            }
+        }
+        attempt += 1;
+        match begin_attempt().await {
+            Ok(next) => attempt_rx = next,
+            Err(err) => {
+                let _ = tx.send(StreamEvent::Error {
+                    message: format!("Provider stream retry failed: {err:#}"),
+                });
+                return;
+            }
+        }
+    }
+}
+
+/// Whether forwarding this event commits partial response content to the
+/// consumer. A retried attempt replays events from the beginning, so a retry
+/// is only safe while nothing contentful has been forwarded. Marker events
+/// (`MessageStart`, `Usage`) are idempotent for consumers and do not block a
+/// retry.
+fn stream_event_commits_content(event: &StreamEvent) -> bool {
+    matches!(
+        event,
+        StreamEvent::ContentBlockStart { .. }
+            | StreamEvent::ContentBlockStop { .. }
+            | StreamEvent::TextDelta { .. }
+            | StreamEvent::ThinkingDelta { .. }
+            | StreamEvent::ThinkingSignature { .. }
+            | StreamEvent::InputJsonDelta { .. }
+    )
 }
 
 /// Create a unified client for the given provider
@@ -669,5 +817,213 @@ mod tests {
         assert_ne!(AiProvider::Anthropic, AiProvider::OpenAI);
         assert_ne!(AiProvider::OpenAI, AiProvider::Mistral);
         assert_ne!(AiProvider::Mistral, AiProvider::Groq);
+    }
+}
+
+#[cfg(test)]
+mod stream_idle_policy_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    const IDLE: Duration = Duration::from_millis(100);
+    const RETRIES: u32 = 2;
+
+    type AttemptRx = mpsc::UnboundedReceiver<StreamEvent>;
+    type Attempts = Arc<AtomicU32>;
+    /// Senders kept alive so stub channels stay open (hung) instead of closing.
+    type Keepalive = Vec<mpsc::UnboundedSender<StreamEvent>>;
+
+    fn drain(rx: &mut AttemptRx) -> Vec<StreamEvent> {
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        events
+    }
+
+    /// A channel that never delivers an event and never closes.
+    fn hung_attempt(keepalive: &mut Keepalive) -> AttemptRx {
+        let (tx, rx) = mpsc::unbounded_channel();
+        keepalive.push(tx);
+        rx
+    }
+
+    #[test]
+    fn stream_idle_policy_defaults_are_sane() {
+        assert_eq!(DEFAULT_STREAM_IDLE_TIMEOUT, Duration::from_mins(2));
+        assert_eq!(DEFAULT_STREAM_MAX_RETRIES, 2);
+    }
+
+    #[tokio::test]
+    async fn stalled_stream_exhausts_retries_and_surfaces_error() {
+        let attempts = Attempts::new(AtomicU32::new(0));
+        let mut keepalive = Keepalive::new();
+        let first = hung_attempt(&mut keepalive);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        forward_stream_with_idle_policy(
+            first,
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
+                std::mem::forget(attempt_tx); // Retry attempts hang too.
+                async move { Ok(attempt_rx) }
+            },
+            IDLE,
+            RETRIES,
+            tx,
+        )
+        .await;
+
+        // 1 initial attempt + 2 retries, then a terminal error.
+        assert_eq!(attempts.load(Ordering::SeqCst), RETRIES);
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::Error { message } => {
+                assert!(
+                    message.contains("stalled"),
+                    "error should name the stall: {message}"
+                );
+                assert!(
+                    message.contains("3 attempt(s)"),
+                    "error should report exhausted attempts: {message}"
+                );
+            }
+            other => panic!("expected terminal error event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn slow_but_progressing_stream_is_not_killed() {
+        let retried = Attempts::new(AtomicU32::new(0));
+        let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            for i in 0..5 {
+                // Gaps stay under the idle window: the stream is slow but
+                // never fully idle.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let _ = attempt_tx.send(StreamEvent::TextDelta {
+                    index: 0,
+                    text: format!("chunk{i}"),
+                });
+            }
+            let _ = attempt_tx.send(StreamEvent::MessageStop { stop_reason: None });
+        });
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        forward_stream_with_idle_policy(
+            attempt_rx,
+            || {
+                retried.fetch_add(1, Ordering::SeqCst);
+                let (retry_tx, retry_rx) = mpsc::unbounded_channel();
+                std::mem::forget(retry_tx);
+                async move { Ok(retry_rx) }
+            },
+            IDLE,
+            RETRIES,
+            tx,
+        )
+        .await;
+
+        assert_eq!(retried.load(Ordering::SeqCst), 0);
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 6);
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, StreamEvent::Error { .. })),
+            "progressing stream must not surface an error"
+        );
+        assert!(matches!(
+            events.last(),
+            Some(StreamEvent::MessageStop { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn stalled_first_attempt_is_retried_and_success_streams() {
+        let attempts = Attempts::new(AtomicU32::new(0));
+        let mut keepalive = Keepalive::new();
+        let first = hung_attempt(&mut keepalive);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        forward_stream_with_idle_policy(
+            first,
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
+                tokio::spawn(async move {
+                    let _ = attempt_tx.send(StreamEvent::MessageStart {
+                        id: "msg-1".to_string(),
+                        model: "test-model".to_string(),
+                    });
+                    let _ = attempt_tx.send(StreamEvent::TextDelta {
+                        index: 0,
+                        text: "hello".to_string(),
+                    });
+                    let _ = attempt_tx.send(StreamEvent::MessageStop { stop_reason: None });
+                });
+                async move { Ok(attempt_rx) }
+            },
+            IDLE,
+            RETRIES,
+            tx,
+        )
+        .await;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 3);
+        assert!(matches!(events[0], StreamEvent::MessageStart { .. }));
+        assert!(matches!(events[1], StreamEvent::TextDelta { .. }));
+        assert!(matches!(events[2], StreamEvent::MessageStop { .. }));
+    }
+
+    #[tokio::test]
+    async fn stall_after_partial_content_surfaces_error_without_retry() {
+        let retried = Attempts::new(AtomicU32::new(0));
+        let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
+        attempt_tx
+            .send(StreamEvent::TextDelta {
+                index: 0,
+                text: "partial".to_string(),
+            })
+            .unwrap();
+        // Sender stays alive (moved into the factory closure's keepalive) but
+        // never sends again.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        forward_stream_with_idle_policy(
+            attempt_rx,
+            || {
+                retried.fetch_add(1, Ordering::SeqCst);
+                let (retry_tx, retry_rx) = mpsc::unbounded_channel::<StreamEvent>();
+                std::mem::forget(retry_tx);
+                async move { Ok(retry_rx) }
+            },
+            IDLE,
+            RETRIES,
+            tx,
+        )
+        .await;
+        drop(attempt_tx);
+
+        // No retry: replaying the request would duplicate the partial content.
+        assert_eq!(retried.load(Ordering::SeqCst), 0);
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], StreamEvent::TextDelta { .. }));
+        match &events[1] {
+            StreamEvent::Error { message } => {
+                assert!(
+                    message.contains("mid-response"),
+                    "error should explain why no retry happened: {message}"
+                );
+            }
+            other => panic!("expected terminal error event, got {other:?}"),
+        }
     }
 }

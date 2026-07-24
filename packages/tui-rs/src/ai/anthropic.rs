@@ -120,6 +120,7 @@ fn is_anthropic_opus_4_family(model: &str) -> bool {
 /// This struct implements `Send + Sync` (via the `AiClient` trait requirement),
 /// allowing it to be safely shared across threads. The underlying `reqwest::Client`
 /// is internally synchronized.
+#[derive(Clone)]
 pub struct AnthropicClient {
     /// Reusable HTTP client with connection pooling
     client: reqwest::Client,
