@@ -13,6 +13,7 @@ const UTILITY_COMMANDS: &[&str] = &[
     "export",
     "hooks",
     "import",
+    "import-claude",
     "init",
     "memory",
     "mission",

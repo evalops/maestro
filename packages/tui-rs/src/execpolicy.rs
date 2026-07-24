@@ -492,18 +492,30 @@ pub fn load_policy(workspace_dir: &Path) -> &'static Policy {
     })
 }
 
-/// Append an allow rule to the policy file.
-pub fn append_allow_prefix_rule(policy_path: &Path, prefix: &[String]) -> Result<(), String> {
-    if prefix.is_empty() {
-        return Err("prefix cannot be empty".to_string());
-    }
-
+/// Render a prefix rule in the policy file syntax.
+#[must_use]
+pub fn render_prefix_rule(prefix: &[String], decision: Decision) -> String {
     let tokens: Vec<String> = prefix
         .iter()
         .map(|t| serde_json::to_string(t).unwrap_or_else(|_| format!("\"{t}\"")))
         .collect();
     let pattern = format!("[{}]", tokens.join(", "));
-    let rule = format!(r#"prefix_rule(pattern={pattern}, decision="allow")"#);
+    format!(
+        r#"prefix_rule(pattern={pattern}, decision="{}")"#,
+        decision.as_str()
+    )
+}
+
+/// Append a prefix rule with an explicit decision to the policy file.
+pub fn append_prefix_rule(
+    policy_path: &Path,
+    prefix: &[String],
+    decision: Decision,
+) -> Result<(), String> {
+    if prefix.is_empty() {
+        return Err("prefix cannot be empty".to_string());
+    }
+    let rule = render_prefix_rule(prefix, decision);
 
     // Create directory if needed
     if let Some(dir) = policy_path.parent() {
@@ -540,6 +552,11 @@ pub fn append_allow_prefix_rule(policy_path: &Path, prefix: &[String]) -> Result
         .map_err(|e| format!("Failed to write rule: {e}"))?;
 
     Ok(())
+}
+
+/// Append an allow rule to the policy file.
+pub fn append_allow_prefix_rule(policy_path: &Path, prefix: &[String]) -> Result<(), String> {
+    append_prefix_rule(policy_path, prefix, Decision::Allow)
 }
 
 // ─────────────────────────────────────────────────────────────

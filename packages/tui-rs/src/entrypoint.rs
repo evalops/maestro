@@ -47,7 +47,7 @@ use crate::sandbox::SandboxPolicy;
 // HELPER FUNCTIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NATIVE_UTILITY_COMMANDS: [&str; 31] = [
+const NATIVE_UTILITY_COMMANDS: [&str; 32] = [
     "sessions",
     "cost",
     "stats",
@@ -56,6 +56,7 @@ const NATIVE_UTILITY_COMMANDS: [&str; 31] = [
     "hooks",
     "export",
     "import",
+    "import-claude",
     "skill",
     "update",
     "modes",

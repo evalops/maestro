@@ -49,6 +49,11 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
             Ok(0)
         }
         "import" => run_sessions_import(&args[1..]),
+        "import-claude" if args.get(1).is_some_and(|arg| is_help(arg)) => {
+            println!("Usage: maestro import-claude [--dry-run]");
+            Ok(0)
+        }
+        "import-claude" => crate::import_claude_cli::run_import_claude(&args[1..]),
         "skill" => crate::skill_cli::run_skill(&args[1..]).await,
         "update" => crate::update_cli::run_update(&args[1..]).await,
         "modes" => crate::mode_cli::run_modes(&args[1..]).await,
@@ -796,6 +801,7 @@ mod tests {
             argv(&["status", "--help"]),
             argv(&["export", "--help"]),
             argv(&["import", "--help"]),
+            argv(&["import-claude", "--help"]),
             argv(&["update", "--help"]),
             argv(&["plugins", "--help"]),
             argv(&["plugin", "--help"]),
