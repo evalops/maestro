@@ -1026,3 +1026,76 @@ fn edit_distance_basics() {
     assert_eq!(edit_distance("quit", "quite"), 1);
     assert_eq!(edit_distance("quit", "zebra"), 5);
 }
+
+#[test]
+fn loop_command_parses_interval_and_prompt() {
+    let registry = build_command_registry();
+
+    match registry
+        .execute("/loop 5m check the build", "/tmp", None, None)
+        .expect("/loop 5m")
+    {
+        CommandOutput::Action(CommandAction::Loop(LoopAction::Start {
+            interval_secs,
+            prompt,
+        })) => {
+            assert_eq!(interval_secs, 300);
+            assert_eq!(prompt, "check the build");
+        }
+        other => panic!("expected Loop::Start, got {other:?}"),
+    }
+
+    match registry
+        .execute("/loop 30s tail logs", "/tmp", None, None)
+        .expect("/loop 30s")
+    {
+        CommandOutput::Action(CommandAction::Loop(LoopAction::Start { interval_secs, .. })) => {
+            assert_eq!(interval_secs, 30);
+        }
+        other => panic!("expected Loop::Start, got {other:?}"),
+    }
+
+    // Bare number = minutes.
+    match registry
+        .execute("/loop 2 standup", "/tmp", None, None)
+        .expect("/loop 2")
+    {
+        CommandOutput::Action(CommandAction::Loop(LoopAction::Start { interval_secs, .. })) => {
+            assert_eq!(interval_secs, 120);
+        }
+        other => panic!("expected Loop::Start, got {other:?}"),
+    }
+
+    match registry
+        .execute("/loop stop", "/tmp", None, None)
+        .expect("stop")
+    {
+        CommandOutput::Action(CommandAction::Loop(LoopAction::Stop)) => {}
+        other => panic!("expected Loop::Stop, got {other:?}"),
+    }
+
+    match registry
+        .execute("/loop", "/tmp", None, None)
+        .expect("status")
+    {
+        CommandOutput::Action(CommandAction::Loop(LoopAction::Status)) => {}
+        other => panic!("expected Loop::Status, got {other:?}"),
+    }
+
+    assert!(registry
+        .execute("/loop nonsense", "/tmp", None, None)
+        .is_err());
+    assert!(registry.execute("/loop 5m", "/tmp", None, None).is_err());
+}
+
+#[test]
+fn parse_loop_interval_units() {
+    assert_eq!(parse_loop_interval("30s"), Some(30));
+    assert_eq!(parse_loop_interval("5m"), Some(300));
+    assert_eq!(parse_loop_interval("1h"), Some(3600));
+    assert_eq!(parse_loop_interval("2"), Some(120));
+    // Minimum clamp: 10 seconds.
+    assert_eq!(parse_loop_interval("1s"), Some(10));
+    assert_eq!(parse_loop_interval("0m"), None);
+    assert_eq!(parse_loop_interval("abc"), None);
+}

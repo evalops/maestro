@@ -305,6 +305,38 @@ impl App {
                     }
                 }
             },
+            CommandAction::Loop(action) => match action {
+                LoopAction::Start {
+                    interval_secs,
+                    prompt,
+                } => {
+                    self.loop_schedule = Some(LoopSchedule {
+                        interval: Duration::from_secs(interval_secs),
+                        prompt: prompt.clone(),
+                        next_fire: Instant::now() + Duration::from_secs(interval_secs),
+                    });
+                    self.state.add_system_message(format!(
+                        "Loop started: every {interval_secs}s — \"{prompt}\". Use /loop stop to cancel."
+                    ));
+                }
+                LoopAction::Stop => {
+                    if self.loop_schedule.take().is_some() {
+                        self.state.add_system_message("Loop stopped.".to_string());
+                    } else {
+                        self.state.status = Some("No active loop.".to_string());
+                    }
+                }
+                LoopAction::Status => match &self.loop_schedule {
+                    Some(schedule) => self.state.add_system_message(format!(
+                        "Loop active: every {}s — \"{}\"",
+                        schedule.interval.as_secs(),
+                        schedule.prompt
+                    )),
+                    None => self
+                        .state
+                        .add_system_message("No active loop. Usage: /loop <interval> <prompt>".to_string()),
+                },
+            },
             CommandAction::CompactConversation(instructions) => {
                 // Compact conversation by summarizing older messages
                 let transcript_messages: Vec<_> = self

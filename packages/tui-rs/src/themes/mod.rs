@@ -431,6 +431,7 @@ pub fn high_contrast_theme() -> Theme {
 #[must_use]
 pub fn available_themes() -> Vec<String> {
     let mut themes = vec![
+        "auto".to_string(),
         "dark".to_string(),
         "light".to_string(),
         "high-contrast".to_string(),
@@ -469,8 +470,32 @@ pub fn available_themes() -> Vec<String> {
     themes
 }
 
+/// Resolve the `auto` theme to a concrete built-in based on the terminal's
+/// reported background color.
+///
+/// Uses the `COLORFGBG` environment variable (set by most xterm-family
+/// terminals as `fg;bg`): a background in 0-6 (or 8) reads as dark, 7/15 as
+/// light. Falls back to `dark` when the variable is missing or unparsable.
+#[must_use]
+pub fn resolve_auto_theme_name() -> &'static str {
+    resolve_auto_theme_from(std::env::var("COLORFGBG").ok().as_deref())
+}
+
+fn resolve_auto_theme_from(colorfgbg: Option<&str>) -> &'static str {
+    let background = colorfgbg.and_then(|value| value.rsplit(';').next()?.parse::<u8>().ok());
+    match background {
+        Some(7 | 15) => "light",
+        _ => "dark",
+    }
+}
+
 /// Load a theme by name
 pub fn load_theme(name: &str) -> Result<Theme, ThemeError> {
+    // `auto` follows the terminal's background color.
+    if name == "auto" {
+        return load_theme(resolve_auto_theme_name());
+    }
+
     // Check built-in themes first
     match name {
         "dark" => return Ok(dark_theme()),
@@ -585,5 +610,29 @@ mod tests {
         assert_eq!(current_theme_name(), "light");
         // Reset to dark
         set_theme(dark_theme());
+    }
+}
+
+#[cfg(test)]
+mod auto_theme_tests {
+    use super::resolve_auto_theme_from;
+
+    #[test]
+    fn auto_theme_dark_backgrounds() {
+        assert_eq!(resolve_auto_theme_from(Some("15;0")), "dark");
+        assert_eq!(resolve_auto_theme_from(Some("7;0")), "dark");
+        assert_eq!(resolve_auto_theme_from(Some("0;8")), "dark");
+    }
+
+    #[test]
+    fn auto_theme_light_backgrounds() {
+        assert_eq!(resolve_auto_theme_from(Some("0;15")), "light");
+        assert_eq!(resolve_auto_theme_from(Some("0;7")), "light");
+    }
+
+    #[test]
+    fn auto_theme_fallback_is_dark() {
+        assert_eq!(resolve_auto_theme_from(None), "dark");
+        assert_eq!(resolve_auto_theme_from(Some("garbage")), "dark");
     }
 }

@@ -89,6 +89,9 @@ pub use entrypoint::run_cli;
 pub mod files;
 pub(crate) mod path_utils;
 
+/// Inline `@file` mention expansion for the composer.
+pub mod file_mentions;
+
 /// Headless mode communication protocol.
 /// JSON-based IPC protocol for communicating with the Node.js agent.
 pub mod headless;

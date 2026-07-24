@@ -334,9 +334,30 @@ impl App {
                 self.state.scroll_offset = 0;
             }
 
-            // Escape to clear completions
+            // Escape: dismiss completions; double-Esc clears a draft input.
             KeyCode::Esc => {
-                self.slash_state.reset();
+                if self.slash_state.has_completions() {
+                    self.slash_state.reset();
+                    self.last_esc_at = None;
+                } else if !self.state.input().is_empty() {
+                    let now = Instant::now();
+                    let double_press = self
+                        .last_esc_at
+                        .is_some_and(|t| now.duration_since(t) < Duration::from_millis(700));
+                    if double_press {
+                        self.state.set_input("");
+                        self.update_slash_state();
+                        self.last_esc_at = None;
+                        self.state.status.replace("Input cleared".to_string());
+                    } else {
+                        self.last_esc_at = Some(now);
+                        self.state
+                            .status
+                            .replace("Press Esc again to clear input".to_string());
+                    }
+                } else {
+                    self.last_esc_at = None;
+                }
             }
 
             _ => {}
