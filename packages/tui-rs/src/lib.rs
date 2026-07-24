@@ -187,6 +187,7 @@ pub mod config_cli;
 pub mod context_cli;
 pub mod device_identity;
 pub mod evalops_cli;
+pub mod import_claude_cli;
 pub mod init_cli;
 pub mod memory_cli;
 pub mod mission_cli;
