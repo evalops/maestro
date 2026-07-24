@@ -560,6 +560,16 @@ pub struct AppState {
 
     /// Cached MCP failed server count for runtime badges.
     pub mcp_failed: usize,
+
+    /// Ghost-text suffix for the current slash-command inline completion.
+    /// Rendered dimmed after the cursor; accepted with Right/End at end of input.
+    /// `None` when there is nothing worth suggesting.
+    pub ghost_completion: Option<String>,
+
+    /// Whether an unknown slash command is forwarded to the agent as a prompt.
+    /// Sourced from `tui.slash_command_fallback` in the config; defaults to true
+    /// (the historical behavior).
+    pub unknown_slash_command_fallback: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -638,6 +648,8 @@ impl AppState {
             mcp_connected: 0,
             mcp_tool_count: 0,
             mcp_failed: 0,
+            ghost_completion: None,
+            unknown_slash_command_fallback: true,
         }
     }
 

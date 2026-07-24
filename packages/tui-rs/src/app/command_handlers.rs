@@ -22,8 +22,17 @@ impl App {
             // Strip every leading `/` so `//help` still matches `help`.
             let query = self.state.input().trim_start_matches('/');
             self.slash_state.set_query(query, &self.slash_matcher);
+            // Ghost text only makes sense at the end of the input.
+            self.state.ghost_completion = if self.state.cursor() == self.state.input().len() {
+                self.slash_matcher
+                    .get_inline_completion(self.state.input())
+                    .map(|completion| completion.suffix)
+            } else {
+                None
+            };
         } else {
             self.slash_state.reset();
+            self.state.ghost_completion = None;
         }
     }
 
@@ -2139,6 +2148,79 @@ Manual snapshot: `/magic-trace stop`",
     pub(super) async fn execute_slash_command(&mut self) -> Result<()> {
         let input = self.state.take_input();
 
+        // Expand an unambiguous partial command ("/qui" -> "/quit") or rescue
+        // a one-character typo ("/quti" -> "/quit") so that pressing Enter runs
+        // the intended command instead of erroring — or worse, forwarding the
+        // partial text to the agent as a prompt.
+        let without_slash = input.trim().trim_start_matches('/');
+        let mut parts = without_slash.splitn(2, char::is_whitespace);
+        let typed_word = parts.next().unwrap_or("");
+        let typed_args = parts.next().unwrap_or("").trim();
+        let word = typed_word.to_lowercase();
+
+        let expand = |name: &str| {
+            if typed_args.is_empty() {
+                format!("/{name}")
+            } else {
+                format!("/{name} {typed_args}")
+            }
+        };
+
+        let input = if !word.is_empty() && self.command_registry.get(&word).is_none() {
+            let prefix = self.command_registry.resolve_unique_prefix(&word);
+            match prefix {
+                Ok(Some(cmd)) => {
+                    let expanded = expand(&cmd.name.clone());
+                    self.state
+                        .status
+                        .replace(format!("Expanded /{typed_word} → /{}", cmd.name));
+                    expanded
+                }
+                Ok(None) => match self.command_registry.resolve_typo(&word) {
+                    Ok(Some(cmd)) => {
+                        let expanded = expand(&cmd.name.clone());
+                        self.state
+                            .status
+                            .replace(format!("Interpreted /{typed_word} as /{}", cmd.name));
+                        expanded
+                    }
+                    Ok(None) => input,
+                    Err(candidates) => {
+                        // Rescuable typo with more than one candidate: restore
+                        // the input, open the completion dropdown, and explain.
+                        let list = candidates
+                            .iter()
+                            .map(|name| format!("/{name}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        self.state.set_input(&input);
+                        self.update_slash_state();
+                        self.state.error = Some(format!(
+                            "Unknown command: /{typed_word} — did you mean {list}?"
+                        ));
+                        return Ok(());
+                    }
+                },
+                Err(candidates) => {
+                    // Ambiguous prefix: restore the input, open the completion
+                    // dropdown with the candidates, and explain.
+                    let list = candidates
+                        .iter()
+                        .map(|name| format!("/{name}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.state.set_input(&input);
+                    self.update_slash_state();
+                    self.state.error = Some(format!(
+                        "Ambiguous command: /{typed_word} (could be {list})"
+                    ));
+                    return Ok(());
+                }
+            }
+        } else {
+            input
+        };
+
         // Try executing through the registry first
         let cwd = self.state.cwd.clone().unwrap_or_else(|| ".".to_string());
         let session_id = self.state.session_id.clone();
@@ -2155,11 +2237,19 @@ Manual snapshot: `/magic-trace stop`",
             }
             Err(e) => {
                 if e.message.contains("Unknown command") {
-                    if let Some(agent) = &self.native_agent {
-                        let _ = agent.prompt(input.clone(), vec![]).await;
-                        self.state.busy = true;
+                    if self.state.unknown_slash_command_fallback {
+                        if let Some(agent) = &self.native_agent {
+                            let _ = agent.prompt(input.clone(), vec![]).await;
+                            self.state.busy = true;
+                        } else {
+                            self.state.error = Some(format!("Unknown command: {input}"));
+                        }
                     } else {
-                        self.state.error = Some(format!("Unknown command: {input}"));
+                        // Fallback disabled via tui.slash_command_fallback = false:
+                        // never turn an unknown slash command into an agent prompt.
+                        self.state.error = Some(format!(
+                            "Unknown command: {input} (Type /help to see available commands)"
+                        ));
                     }
                 } else {
                     // Other errors (like missing args) should be shown to user

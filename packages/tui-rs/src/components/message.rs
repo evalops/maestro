@@ -1173,6 +1173,7 @@ pub struct ChatInputWidget<'a> {
     placeholder: &'a str,
     busy: bool,
     pending_input_preview: Option<PendingInputPreview>,
+    ghost_text: Option<String>,
     runtime_footer: Option<String>,
 }
 
@@ -1180,6 +1181,9 @@ pub struct ChatInputWidget<'a> {
 pub struct ChatInputWidgetOptions {
     pub busy: bool,
     pub pending_input_preview: Option<PendingInputPreview>,
+    /// Ghost-text suffix shown dimmed after the cursor (slash-command
+    /// inline completion). Only pass it when the cursor is at end of input.
+    pub ghost_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1376,6 +1380,7 @@ impl<'a> ChatInputWidget<'a> {
             placeholder,
             busy: options.busy,
             pending_input_preview: options.pending_input_preview,
+            ghost_text: options.ghost_text,
             runtime_footer: None,
         }
     }
@@ -1502,6 +1507,21 @@ impl Widget for ChatInputWidget<'_> {
             .placeholder(self.placeholder, placeholder_style);
 
         textarea_widget.render(textarea_area, buf);
+
+        // Render ghost-text completion dimmed right after the cursor.
+        // The caller only passes `ghost_text` when the cursor is at end of
+        // input, so the cursor position is exactly where the suffix belongs.
+        if let Some(ghost) = &self.ghost_text {
+            if let Some((cursor_x, cursor_y)) = self.textarea.cursor_pos(textarea_area) {
+                let remaining = usize::from(textarea_area.right().saturating_sub(cursor_x));
+                if remaining > 0 {
+                    let ghost_style = Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM);
+                    buf.set_stringn(cursor_x, cursor_y, ghost, remaining, ghost_style);
+                }
+            }
+        }
     }
 }
 
@@ -2210,6 +2230,11 @@ impl Widget for ChatView<'_> {
             ChatInputWidgetOptions {
                 busy: self.state.busy,
                 pending_input_preview: PendingInputPreview::from_state(self.state),
+                ghost_text: if self.state.cursor() == self.state.input().len() {
+                    self.state.ghost_completion.clone()
+                } else {
+                    None
+                },
             },
         )
         .with_runtime_footer(
@@ -2524,6 +2549,7 @@ mod tests {
             ChatInputWidgetOptions {
                 busy: false,
                 pending_input_preview: None,
+                ghost_text: None,
             },
         )
         .with_runtime_footer(
@@ -2539,6 +2565,54 @@ mod tests {
 
         let rendered = buffer_lines(&buf, width, height).join("\n");
         assert!(rendered.contains("gpt-5.4 (high) · always-approve"));
+    }
+
+    #[test]
+    fn input_renders_ghost_text_completion_after_cursor() {
+        let mut textarea = TextArea::new();
+        textarea.set_text("/qui");
+        textarea.set_cursor(4);
+        let widget = ChatInputWidget::new(
+            &textarea,
+            "",
+            ChatInputWidgetOptions {
+                busy: false,
+                pending_input_preview: None,
+                ghost_text: Some("t".to_string()),
+            },
+        );
+        let width = 40;
+        let height = 3;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+
+        widget.render(Rect::new(0, 0, width, height), &mut buf);
+
+        let rendered = buffer_lines(&buf, width, height).join("\n");
+        assert!(rendered.contains("/quit"));
+    }
+
+    #[test]
+    fn input_without_ghost_text_leaves_trailing_cells_blank() {
+        let mut textarea = TextArea::new();
+        textarea.set_text("/qui");
+        textarea.set_cursor(4);
+        let widget = ChatInputWidget::new(
+            &textarea,
+            "",
+            ChatInputWidgetOptions {
+                busy: false,
+                pending_input_preview: None,
+                ghost_text: None,
+            },
+        );
+        let width = 40;
+        let height = 3;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+
+        widget.render(Rect::new(0, 0, width, height), &mut buf);
+
+        let rendered = buffer_lines(&buf, width, height).join("\n");
+        assert!(!rendered.contains("/quit"));
     }
 
     #[test]
