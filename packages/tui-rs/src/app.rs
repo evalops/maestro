@@ -1004,6 +1004,30 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                                 self.state.scroll_down(3);
                                 needs_redraw = true;
                             }
+                            MouseEventKind::Down(crossterm::event::MouseButton::Left)
+                                if self.slash_state.has_completions() =>
+                            {
+                                // Click-to-select on the slash completion popup.
+                                if let Ok(size) = self.terminal.size() {
+                                    let area = Rect::new(0, 0, size.width, size.height);
+                                    let popup = Self::slash_popup_area(
+                                        area,
+                                        self.slash_state.completions().len(),
+                                    );
+                                    let in_x = mouse.column >= popup.x
+                                        && mouse.column < popup.x + popup.width;
+                                    let in_y = mouse.row > popup.y
+                                        && mouse.row < popup.y + popup.height - 1;
+                                    if in_x && in_y {
+                                        let offset = self.slash_state.list_state_mut().offset();
+                                        let index = offset + (mouse.row - popup.y - 1) as usize;
+                                        self.slash_state.select(index);
+                                        self.apply_slash_completion();
+                                        self.update_slash_state();
+                                        needs_redraw = true;
+                                    }
+                                }
+                            }
                             _ => {} // Ignore other mouse events
                         }
                     }
@@ -2100,6 +2124,22 @@ Slash Commands:
         }
     }
 
+    /// Compute the slash completion popup's on-screen area.
+    ///
+    /// Shared by the renderer and mouse hit-testing so a click maps to the
+    /// same geometry that was painted.
+    fn slash_popup_area(area: Rect, completion_count: usize) -> Rect {
+        let popup_height = (completion_count as u16 + 2).min(10);
+        let popup_width = 40.min(area.width.saturating_sub(4));
+        let popup_y = area.height.saturating_sub(4 + popup_height);
+        Rect {
+            x: area.x + 1,
+            y: popup_y,
+            width: popup_width,
+            height: popup_height,
+        }
+    }
+
     /// Render slash command completions popup (static version for closure)
     fn render_slash_completions_static(
         slash_state: &mut SlashCycleState,
@@ -2113,17 +2153,7 @@ Slash Commands:
             return;
         }
 
-        // Position above the input
-        let popup_height = (completions.len() as u16 + 2).min(10);
-        let popup_width = 40.min(area.width.saturating_sub(4));
-        let popup_y = area.height.saturating_sub(4 + popup_height);
-
-        let popup_area = Rect {
-            x: area.x + 1,
-            y: popup_y,
-            width: popup_width,
-            height: popup_height,
-        };
+        let popup_area = Self::slash_popup_area(area, completions.len());
 
         frame.render_widget(Clear, popup_area);
 
