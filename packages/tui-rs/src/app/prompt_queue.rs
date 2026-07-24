@@ -475,6 +475,9 @@ impl App {
             return Ok(false);
         }
 
+        // Snapshot the worktree so `/rewind files` can restore what this turn changes.
+        self.begin_file_checkpoint(&content);
+
         // Add user message to state
         self.state.add_user_message(content.clone());
         self.state.busy = true;
