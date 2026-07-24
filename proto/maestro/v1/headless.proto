@@ -368,6 +368,7 @@ message ToolEndMessage {
   optional string tool = 3;
   google.protobuf.Value details = 4;
   optional string tool_execution_id = 5;
+  google.protobuf.Value receipt = 6;
 }
 
 message ClientToolRequestMessage {

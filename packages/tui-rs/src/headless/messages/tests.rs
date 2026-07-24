@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::{ExecutionReceipt, ExecutionSource, ExecutionStatus, ToolReceiptDetails};
 
 #[test]
 fn parse_ready_message() {
@@ -18,6 +19,29 @@ fn parse_ready_message() {
         }
         _ => panic!("Expected Ready message"),
     }
+}
+
+#[test]
+fn tool_end_serializes_typed_receipt_additively() {
+    let message = FromAgentMessage::ToolEnd {
+        call_id: "call-1".to_string(),
+        tool_execution_id: None,
+        success: true,
+        tool: Some("read".to_string()),
+        details: None,
+        receipt: Some(ExecutionReceipt {
+            call_id: "call-1".to_string(),
+            tool_name: "read".to_string(),
+            source: ExecutionSource::Native,
+            status: ExecutionStatus::Succeeded,
+            duration_ms: Some(4),
+            details: ToolReceiptDetails::None,
+        }),
+    };
+
+    let json = serde_json::to_value(message).unwrap();
+    assert_eq!(json["receipt"]["call_id"], "call-1");
+    assert_eq!(json["receipt"]["source"], "native");
 }
 
 #[test]
@@ -1367,6 +1391,7 @@ fn state_uses_codex_subagent_tool_end_details_for_child_targets() {
             },
             "prompt": "Sensitive child task prompt"
         })),
+        receipt: None,
     });
 
     assert_eq!(
@@ -1486,6 +1511,7 @@ fn state_persists_governed_codex_subagent_id_from_retry_request() {
         success: true,
         tool: None,
         details: None,
+        receipt: None,
     });
 
     assert_eq!(

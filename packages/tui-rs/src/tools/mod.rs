@@ -76,7 +76,7 @@
 //! ```
 
 mod ask_user;
-mod background_tasks;
+pub(crate) mod background_tasks;
 mod bash;
 mod batch;
 mod cache;

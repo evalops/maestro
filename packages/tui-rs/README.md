@@ -41,7 +41,7 @@ This is a **pure Rust implementation** - no subprocess communication, no Node.js
 - **Chat Interface**: Message rendering with markdown support, syntax highlighting
 - **Extended Thinking**: Support for Claude's extended thinking mode (`/thinking`)
 - **Slash Commands**: `/help`, `/clear`, `/theme`, `/model`, `/thinking`, `/zen`, etc.
-- **Command Palette**: Ctrl+P for fuzzy command search
+- **Resource Palette**: Ctrl+K for commands, files, sessions, models, and themes
 - **File Search Modal**: `@` for fuzzy file search with workspace indexing
 - **Session Management**: Ctrl+O to browse/switch sessions, auto-save
 - **Tool Approval**: Interactive approve/deny for tool calls (`/approvals`)
@@ -166,7 +166,7 @@ src/
 | `Shift+Enter` | Insert newline (multi-line input) |
 | `Esc` | Cancel/close modal |
 | `Ctrl+C` | Interrupt agent / Quit |
-| `Ctrl+P` | Command palette |
+| `Ctrl+K` | Unified resource palette |
 | `Ctrl+O` | Session switcher |
 | `Ctrl+T` | Toggle last tool call details |
 | `Tab` | Toggle thinking / Cycle completions |

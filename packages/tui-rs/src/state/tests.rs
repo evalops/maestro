@@ -791,8 +791,14 @@ fn test_handle_response_end() {
     });
 
     assert!(!state.messages[0].streaming);
-    assert!(!state.busy);
+    assert!(state.busy);
     assert!(state.thinking_header.is_none());
+
+    state.handle_agent_message(FromAgent::ResponseEnd {
+        response_id: "done".to_string(),
+        usage: None,
+    });
+    assert!(!state.busy);
 }
 
 #[test]
@@ -872,6 +878,7 @@ fn test_handle_tool_lifecycle() {
     state.handle_agent_message(FromAgent::ToolEnd {
         call_id: "call-1".to_string(),
         success: true,
+        receipt: None,
     });
     assert_eq!(
         state.messages[0].tool_calls[0].status,
@@ -897,6 +904,7 @@ fn test_handle_tool_failure() {
     state.handle_agent_message(FromAgent::ToolEnd {
         call_id: "call-1".to_string(),
         success: false,
+        receipt: None,
     });
 
     assert_eq!(

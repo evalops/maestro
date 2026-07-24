@@ -9,6 +9,29 @@ Maestro loads model/provider metadata from multiple locations so you can mix
 built-in configs with Factory CLI settings. This page clarifies the resolution
 order and how to customize providers.
 
+## Native capability catalog and doctor
+
+`maestro models` and the TUI model selector consume the same typed native
+catalog. Each entry reports protocol, tool use, vision, reasoning, streaming,
+and context-window metadata. Verification is a separate field: built-in claims
+are marked `catalog`, while provider checks can report `verified`, `unavailable`,
+or `unknown` without rewriting capability metadata.
+
+Run `maestro doctor` for offline config, provider, selected-model, and Codex tool
+schema checks. The JSON report is versioned (`schema_version: 1`):
+
+```bash
+maestro doctor
+maestro doctor --json --model openai/gpt-4o
+maestro doctor --json --live --model openai/gpt-4o
+```
+
+`--live` is opt-in. OpenAI-compatible providers receive one `GET /models`
+request with a three-second timeout; providers without a safe metadata probe are
+skipped. Timeouts, authentication errors, server errors, and missing selected
+models exit with status 1. Reports omit credential values and URL userinfo,
+queries, and fragments.
+
 ## Config Sources
 
 `src/models/registry.ts` builds the registry from:

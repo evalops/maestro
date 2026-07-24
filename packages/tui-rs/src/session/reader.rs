@@ -251,8 +251,8 @@ use std::path::Path;
 
 use super::entries::{
     AppMessage, BranchSummaryEntry, CompactionEntry, CustomMessageEntry, MessageContent,
-    ModelChange, SessionEntry, SessionHeader, SessionMeta, SessionStats, ThinkingLevelChange,
-    TokenUsage,
+    ModelChange, PlanReviewEntry, SessionEntry, SessionHeader, SessionMeta, SessionStats,
+    SideQuestionEntry, ThinkingLevelChange, TokenUsage,
 };
 use super::wire_format_generated::is_compaction_context_excluded_message_role;
 
@@ -441,6 +441,12 @@ pub struct ParsedSession {
     /// Recorded compaction events.
     pub compactions: Vec<CompactionEntry>,
 
+    /// Tool-free side questions, excluded from `messages` and model history.
+    pub side_questions: Vec<SideQuestionEntry>,
+
+    /// Append-only structured plan review events.
+    pub plan_review_events: Vec<PlanReviewEntry>,
+
     /// Usage entries extracted from assistant messages (for fast usage hydration).
     pub usage_entries: Vec<UsageEntry>,
 
@@ -533,6 +539,8 @@ impl SessionReader {
         let mut thinking_level_changes: Vec<ThinkingLevelChange> = Vec::new();
         let mut model_changes: Vec<ModelChange> = Vec::new();
         let mut compactions: Vec<CompactionEntry> = Vec::new();
+        let mut side_questions: Vec<SideQuestionEntry> = Vec::new();
+        let mut plan_review_events: Vec<PlanReviewEntry> = Vec::new();
         let mut usage_entries: Vec<UsageEntry> = Vec::new();
         let mut compaction_context_entries: Vec<CompactionContextEntry> = Vec::new();
         let mut visible_context_len = 0usize;
@@ -665,6 +673,8 @@ impl SessionReader {
                         messages.push(message);
                     }
                 }
+                SessionEntry::SideQuestion(entry) => side_questions.push(entry),
+                SessionEntry::PlanReview(entry) => plan_review_events.push(entry),
                 SessionEntry::Custom(_) | SessionEntry::Label(_) => {}
             }
         }
@@ -687,6 +697,8 @@ impl SessionReader {
             thinking_level_changes,
             model_changes,
             compactions,
+            side_questions,
+            plan_review_events,
             usage_entries,
             file_path: path.to_string_lossy().to_string(),
         })
@@ -906,5 +918,20 @@ mod tests {
             .iter()
             .any(|message| message.text_content().contains("Hidden hook context")));
         assert_eq!(session.compactions[0].first_kept_entry_index, Some(1));
+    }
+
+    #[test]
+    fn side_questions_are_loaded_outside_main_message_history() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"{{"type":"session","version":2,"id":"test123","timestamp":"2024-01-15T10:30:00Z","cwd":"/tmp","model":"openai/gpt-5.2","thinkingLevel":"medium"}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","timestamp":"2024-01-15T10:30:01Z","message":{{"role":"user","content":"Main question","timestamp":1}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"side_question","id":"side-1","timestamp":"2024-01-15T10:30:02Z","question":"Side question","answer":"Side answer"}}"#).unwrap();
+        writeln!(file, r#"{{"type":"plan_review","timestamp":"2024-01-15T10:30:03Z","action":"comment","id":1,"start_line":2,"end_line":3,"text":"Clarify","revision":"abc","excerpt":"lines"}}"#).unwrap();
+
+        let session = SessionReader::read_file(file.path()).unwrap();
+        assert_eq!(session.messages.len(), 1);
+        assert_eq!(session.side_questions.len(), 1);
+        assert_eq!(session.side_questions[0].question, "Side question");
+        assert_eq!(session.plan_review_events.len(), 1);
     }
 }

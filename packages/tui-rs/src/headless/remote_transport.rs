@@ -124,6 +124,9 @@ pub struct UtilityCommandStartOptions {
 }
 
 #[derive(Debug, Clone)]
+// `FromAgentMessage` carries optional typed receipts. Keep this public transport
+// enum source-compatible; the supervisor boxes messages before retaining them.
+#[allow(clippy::large_enum_variant)]
 pub enum RemoteIncoming {
     Snapshot {
         state: Box<AgentState>,

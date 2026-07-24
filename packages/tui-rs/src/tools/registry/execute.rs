@@ -558,6 +558,7 @@ impl ToolExecutor {
         args: &serde_json::Value,
         event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
         call_id: &str,
+        generation: u64,
     ) -> ToolResult {
         if McpClient::is_mcp_tool(tool_name) {
             let client = match self.ensure_mcp_client().await {
@@ -591,7 +592,16 @@ impl ToolExecutor {
                         "content": result.content,
                         "isError": result.is_error
                     });
-                    return ToolResult::success(output).with_details(details);
+                    return if result.is_error {
+                        ToolResult {
+                            success: false,
+                            output,
+                            error: Some("MCP tool reported an error".to_string()),
+                            details: Some(details),
+                        }
+                    } else {
+                        ToolResult::success(output).with_details(details)
+                    };
                 }
                 Err(err) => {
                     return ToolResult::failure(format!("MCP tool error: {err}"));
@@ -619,7 +629,11 @@ impl ToolExecutor {
                     });
                 }
 
-                let result = vault_tool_result_credentials(self.bash.execute(bash_args).await);
+                let result = vault_tool_result_credentials(
+                    &self.credential_vault,
+                    generation,
+                    self.bash.execute(bash_args).await,
+                );
 
                 // Send tool output event
                 if let Some(tx) = event_tx {
@@ -633,6 +647,7 @@ impl ToolExecutor {
                     let _ = tx.send(FromAgent::ToolEnd {
                         call_id: call_id.to_string(),
                         success: result.success,
+                        receipt: None,
                     });
                 }
 
@@ -2327,6 +2342,7 @@ impl ToolExecutor {
                     let _ = tx.send(FromAgent::ToolEnd {
                         call_id: call_id.to_string(),
                         success: result.success,
+                        receipt: None,
                     });
                 }
 
@@ -2361,6 +2377,7 @@ impl ToolExecutor {
                     let _ = tx.send(FromAgent::ToolEnd {
                         call_id: call_id.to_string(),
                         success: result.success,
+                        receipt: None,
                     });
                 }
 
@@ -2395,6 +2412,7 @@ impl ToolExecutor {
                     let _ = tx.send(FromAgent::ToolEnd {
                         call_id: call_id.to_string(),
                         success: result.success,
+                        receipt: None,
                     });
                 }
 
@@ -2412,6 +2430,8 @@ impl ToolExecutor {
                     }
 
                     let result = vault_tool_result_credentials(
+                        &self.credential_vault,
+                        generation,
                         self.inline_executor
                             .execute(inline_tool, args.clone())
                             .await,
@@ -2429,6 +2449,7 @@ impl ToolExecutor {
                         let _ = tx.send(FromAgent::ToolEnd {
                             call_id: call_id.to_string(),
                             success: result.success,
+                            receipt: None,
                         });
                     }
 

@@ -124,6 +124,7 @@ mod layout;
 mod message;
 pub(crate) mod message_layout;
 pub(crate) mod model_selector;
+mod operations;
 mod rate_limit;
 mod scroll;
 mod session_switcher;
@@ -135,6 +136,7 @@ mod theme_selector;
 mod thinking_indicator;
 mod welcome;
 
+pub use crate::model_catalog::{available_models, ModelInfo};
 pub use approval::{ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest};
 pub use ascii_animation::{logos, AsciiAnimation, ALL_VARIANTS, FRAME_TICK_DEFAULT};
 pub use command_palette::CommandPalette;
@@ -148,7 +150,8 @@ pub use message::{
     ChatInputWidget, ChatInputWidgetOptions, ChatView, MessageWidget, StatusBarWidget,
     ToolCallWidget,
 };
-pub use model_selector::{available_models, ModelInfo, ModelSelector};
+pub use model_selector::ModelSelector;
+pub use operations::{project_session, OperationRow, OperationsModal, ReceiptSummary};
 pub use rate_limit::{
     format_duration_compact, format_elapsed, CreditsDisplay, RateLimitDisplay, RateLimitState,
     RateLimitTracker, RateLimitWindow,

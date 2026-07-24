@@ -47,7 +47,7 @@ use crate::sandbox::SandboxPolicy;
 // HELPER FUNCTIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NATIVE_UTILITY_COMMANDS: [&str; 30] = [
+const NATIVE_UTILITY_COMMANDS: [&str; 31] = [
     "sessions",
     "cost",
     "stats",
@@ -78,6 +78,7 @@ const NATIVE_UTILITY_COMMANDS: [&str; 30] = [
     "a2a",
     "plugins",
     "plugin",
+    "doctor",
 ];
 
 const GLOBAL_FLAGS_WITH_VALUES: [&str; 26] = [

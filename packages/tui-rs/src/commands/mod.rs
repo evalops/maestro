@@ -101,8 +101,9 @@ pub use registry::{
     build_command_registry, build_command_registry_with_extensions, CommandRegistry,
 };
 pub use types::{
-    A2aAction, Command, CommandAction, CommandArgument, CommandArgumentType, CommandCategory,
-    CommandContext, CommandError, CommandHandler, CommandOutput, CommandResult, ExportAction,
-    HistoryAction, HooksAction, MagicTraceAction, McpAction, ModalType, PluginsAction, QueueAction,
-    QueueModeKind, SessionAction, SkillsAction, ToolHistoryAction, UsageAction,
+    A2aAction, BackgroundMonitorAction, Command, CommandAction, CommandArgument,
+    CommandArgumentType, CommandCategory, CommandContext, CommandError, CommandHandler,
+    CommandOutput, CommandResult, ExportAction, HistoryAction, HooksAction, MagicTraceAction,
+    McpAction, ModalType, PlanReviewAction, PluginsAction, QueueAction, QueueModeKind,
+    SessionAction, SkillsAction, ToolHistoryAction, UsageAction,
 };

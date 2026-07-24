@@ -22,7 +22,7 @@ This page lists **built-in** commands only. Skills and prompt templates can add 
 | `/export [format] [path]` | | Export session (`markdown`, `html`, `json`, `text`) |
 | `/history [count\|query\|clear]` | `/hist` | Show or search prompt history |
 | `/files` | | Search workspace files |
-| `/commands` | | Open command palette |
+| `/commands` | | Open the unified resource palette |
 | `/refresh` | | Refresh workspace files |
 
 ---
@@ -78,6 +78,7 @@ Queue modes: `/queue mode [steer|followup] <one|all>`.
 | `/skills […]` | `/skill` | Manage skills (`list`, `activate`, `deactivate`, `reload`, `info`) |
 | `/toolhistory […]` | `/th` | Tool execution history and stats |
 | `/a2a …` | | Pair, inspect, and delegate to A2A peer agents |
+| `/monitor [list\|add …\|remove …]` | | Manage regex monitors for existing background tasks |
 
 ---
 
@@ -95,6 +96,20 @@ Queue modes: `/queue mode [steer|followup] <one|all>`.
 | `/diff [path]` | | Git diff for working tree or path |
 | `/review` | | Summarize git status and diff stats |
 | `/git [status\|diff\|review]` | | Git helper group |
+
+## Background task monitors
+
+Attach a monitor to a task that is already running:
+
+```text
+/monitor add <task-id> <regex>
+/monitor list
+/monitor remove <monitor-id>
+```
+
+Monitors read the task's existing stdout and stderr streams. Monitor attachment creates no process. A match adds a system notification and a live row in `/operations`. Model prompt submission is disabled for monitor events.
+
+Limits per process: 32 monitors total, 8 per task, 256 bytes per regex, 1 MiB compiled-regex size, 5 events per monitor per second, 512 displayed characters per match, 128 pending notifications, and 200 retained operation rows. Credential-shaped values are redacted before an event is stored or displayed.
 
 ---
 

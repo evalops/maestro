@@ -600,25 +600,27 @@ impl Widget for MessageWidget<'_> {
 
             match self.message.role {
                 MessageRole::User => {
-                    // User messages: "› You" prefix
+                    let (label, color) = if self.message.kind == MessageKind::SideQuestion {
+                        ("BTW", Color::Blue)
+                    } else {
+                        ("You", Color::Cyan)
+                    };
                     header_spans.push(Span::styled(
                         "› ",
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(color)
                             .add_modifier(Modifier::BOLD | Modifier::DIM),
                     ));
                     header_spans.push(Span::styled(
-                        "You",
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
+                        label,
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
                     ));
                 }
                 MessageRole::Assistant => {
-                    let (prefix, label, color) = if self.message.kind == MessageKind::System {
-                        ("• ", "System", Color::Yellow)
-                    } else {
-                        ("• ", "Maestro", Color::Magenta)
+                    let (prefix, label, color) = match self.message.kind {
+                        MessageKind::System => ("• ", "System", Color::Yellow),
+                        MessageKind::SideAnswer => ("• ", "Maestro (side)", Color::Blue),
+                        _ => ("• ", "Maestro", Color::Magenta),
                     };
                     header_spans.push(Span::styled(
                         prefix,

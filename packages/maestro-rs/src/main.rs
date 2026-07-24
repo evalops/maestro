@@ -29,7 +29,7 @@ fn configure_web_static_root() {
 
 fn print_help() {
     println!(
-		"Maestro\n\nUsage:\n  maestro [options] [prompt]\n  maestro exec <prompt>\n  maestro --headless\n  maestro web [--port <port>]\n  maestro hosted-runner [options]\n\nThe product runtime is native Rust; no Node.js or Bun runtime is required."
+		"Maestro\n\nUsage:\n  maestro [options] [prompt]\n  maestro exec <prompt>\n  maestro doctor [--json] [--live] [--model <provider/model>]\n  maestro --headless\n  maestro web [--port <port>]\n  maestro hosted-runner [options]\n\nThe product runtime is native Rust; no Node.js or Bun runtime is required."
 	);
 }
 

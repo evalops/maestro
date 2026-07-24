@@ -36,6 +36,19 @@ fn exec_dispatches_to_native_print() {
 }
 
 #[test]
+fn doctor_dispatches_as_native_utility() {
+    assert_eq!(
+        classify(["doctor", "--json", "--model", "openai/gpt-4o"]).unwrap(),
+        Command::Utility(vec![
+            OsString::from("doctor"),
+            OsString::from("--json"),
+            OsString::from("--model"),
+            OsString::from("openai/gpt-4o"),
+        ])
+    );
+}
+
+#[test]
 fn frozen_cli_routes_are_owned_by_native_dispatch() {
     let fixture: Fixture = serde_json::from_str(include_str!(
         "../../../test/fixtures/rust-cutover/cli-routing.json"

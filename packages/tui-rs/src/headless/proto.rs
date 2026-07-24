@@ -13,7 +13,7 @@ pub mod maestro {
 #[cfg(test)]
 mod tests {
     use super::maestro::v1::to_agent_envelope::Payload;
-    use super::maestro::v1::{HelloMessage, ToAgentEnvelope};
+    use super::maestro::v1::{HelloMessage, ToAgentEnvelope, ToolEndMessage};
 
     #[test]
     fn generated_headless_proto_types_compile() {
@@ -27,5 +27,13 @@ mod tests {
         };
 
         assert!(matches!(envelope.payload, Some(Payload::Hello(_))));
+
+        let tool_end = ToolEndMessage {
+            call_id: "call-1".to_string(),
+            success: true,
+            receipt: Some(prost_types::Value::default()),
+            ..ToolEndMessage::default()
+        };
+        assert!(tool_end.receipt.is_some());
     }
 }

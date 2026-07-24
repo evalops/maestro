@@ -6,6 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use sha2::{Digest, Sha256};
+
 use crate::safety::{is_plan_mode, set_plan_mode, set_plan_satisfied};
 
 /// Mirror of `session::writer::sanitize_path_for_dirname` (private module).
@@ -182,6 +184,23 @@ pub fn read_plan(cwd: &str) -> Option<String> {
         .filter(|t| !t.trim().is_empty())
 }
 
+#[must_use]
+pub fn plan_revision(plan: &str) -> String {
+    format!("{:x}", Sha256::digest(plan.as_bytes()))
+}
+
+#[must_use]
+pub fn plan_excerpt(plan: &str, start_line: usize, end_line: usize) -> Option<String> {
+    if start_line == 0 || end_line < start_line {
+        return None;
+    }
+    let lines = plan.lines().collect::<Vec<_>>();
+    if end_line > lines.len() {
+        return None;
+    }
+    Some(lines[start_line - 1..end_line].join("\n"))
+}
+
 /// Approve the plan: leave plan mode so implementation tools unlock.
 pub fn approve_plan() {
     set_plan_mode(false);
@@ -287,5 +306,14 @@ mod tests {
         let text = read_plan(cwd).expect("plan");
         assert!(text.contains("My Plan"));
         set_active_session_id(None);
+    }
+
+    #[test]
+    fn plan_revision_and_excerpt_track_exact_content() {
+        let plan = "one\ntwo\nthree\n";
+        assert_eq!(plan_excerpt(plan, 2, 3).as_deref(), Some("two\nthree"));
+        assert_ne!(plan_revision(plan), plan_revision("one\nchanged\nthree\n"));
+        assert!(plan_excerpt(plan, 0, 1).is_none());
+        assert!(plan_excerpt(plan, 2, 4).is_none());
     }
 }

@@ -15,7 +15,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::details::BatchDetails;
 use super::registry::ToolExecutor;
-use crate::agent::{FromAgent, ToolResult};
+use crate::agent::{
+    CredentialVault, ExecutionPhase, ExecutionSource, FromAgent, ToolExecution, ToolResult,
+};
 
 /// A single tool call in a batch
 #[derive(Debug, Clone)]
@@ -52,6 +54,30 @@ pub struct BatchToolResult {
     pub tool_name: String,
     /// The result from the tool
     pub result: ToolResult,
+    /// Typed execution evidence when the batch path retained it.
+    pub execution: Option<ToolExecution>,
+}
+
+impl BatchToolResult {
+    fn from_execution(call_id: String, tool_name: String, execution: ToolExecution) -> Self {
+        let result = execution.to_legacy();
+        Self {
+            call_id,
+            tool_name,
+            result,
+            execution: Some(execution),
+        }
+    }
+
+    fn cancelled(call_id: String, tool_name: String, phase: ExecutionPhase) -> Self {
+        let execution = ToolExecution::cancelled(
+            call_id.clone(),
+            tool_name.clone(),
+            ExecutionSource::Native,
+            phase,
+        );
+        Self::from_execution(call_id, tool_name, execution)
+    }
 }
 
 /// Configuration for batch execution
@@ -113,18 +139,35 @@ pub struct BatchExecutor {
 impl BatchExecutor {
     /// Create a new batch executor with the given working directory
     pub fn new(cwd: impl Into<String>) -> Self {
+        Self::with_credential_vault(cwd, CredentialVault::new())
+    }
+
+    /// Create a new batch executor using a caller-provided credential vault.
+    pub fn with_credential_vault(
+        cwd: impl Into<String>,
+        credential_vault: CredentialVault,
+    ) -> Self {
         let cwd = cwd.into();
         Self {
-            executor: Arc::new(ToolExecutor::new(&cwd)),
+            executor: Arc::new(ToolExecutor::with_credential_vault(&cwd, credential_vault)),
             config: BatchConfig::default(),
         }
     }
 
     /// Create with custom configuration
     pub fn with_config(cwd: impl Into<String>, config: BatchConfig) -> Self {
+        Self::with_config_and_credential_vault(cwd, config, CredentialVault::new())
+    }
+
+    /// Create a batch executor with custom configuration and a shared vault.
+    pub fn with_config_and_credential_vault(
+        cwd: impl Into<String>,
+        config: BatchConfig,
+        credential_vault: CredentialVault,
+    ) -> Self {
         let cwd = cwd.into();
         Self {
-            executor: Arc::new(ToolExecutor::new(&cwd)),
+            executor: Arc::new(ToolExecutor::with_credential_vault(&cwd, credential_vault)),
             config,
         }
     }
@@ -137,6 +180,16 @@ impl BatchExecutor {
         &self,
         calls: Vec<BatchToolCall>,
         event_tx: Option<mpsc::UnboundedSender<FromAgent>>,
+    ) -> Vec<BatchToolResult> {
+        self.execute_at_generation(calls, event_tx, self.executor.credential_generation())
+            .await
+    }
+
+    pub(crate) async fn execute_at_generation(
+        &self,
+        calls: Vec<BatchToolCall>,
+        event_tx: Option<mpsc::UnboundedSender<FromAgent>>,
+        generation: u64,
     ) -> Vec<BatchToolResult> {
         if calls.is_empty() {
             return Vec::new();
@@ -158,13 +211,14 @@ impl BatchExecutor {
                         call_id: call.call_id,
                         tool_name: call.tool_name,
                         result: ToolResult::failure("Skipped due to previous error in batch"),
+                        execution: None,
                     });
                     continue;
                 }
 
                 let result = self
                     .executor
-                    .execute(
+                    .execute_at_generation(
                         &call.tool_name,
                         &call.args,
                         if self.config.emit_events {
@@ -173,6 +227,7 @@ impl BatchExecutor {
                             None
                         },
                         &call.call_id,
+                        generation,
                     )
                     .await;
 
@@ -184,6 +239,7 @@ impl BatchExecutor {
                     call_id: call.call_id,
                     tool_name: call.tool_name,
                     result,
+                    execution: None,
                 });
             }
 
@@ -224,7 +280,7 @@ impl BatchExecutor {
 
             handles.push(tokio::spawn(async move {
                 let result = executor
-                    .execute(
+                    .execute_at_generation(
                         &tool_name,
                         &args,
                         if emit_events {
@@ -233,6 +289,7 @@ impl BatchExecutor {
                             None
                         },
                         &call_id,
+                        generation,
                     )
                     .await;
 
@@ -243,6 +300,7 @@ impl BatchExecutor {
                     call_id,
                     tool_name,
                     result,
+                    execution: None,
                 }
             }));
         }
@@ -281,6 +339,22 @@ impl BatchExecutor {
         event_tx: Option<mpsc::UnboundedSender<FromAgent>>,
         cancel_token: CancellationToken,
     ) -> Vec<BatchToolResult> {
+        self.execute_with_cancel_at_generation(
+            calls,
+            event_tx,
+            cancel_token,
+            self.executor.credential_generation(),
+        )
+        .await
+    }
+
+    pub(crate) async fn execute_with_cancel_at_generation(
+        &self,
+        calls: Vec<BatchToolCall>,
+        event_tx: Option<mpsc::UnboundedSender<FromAgent>>,
+        cancel_token: CancellationToken,
+        generation: u64,
+    ) -> Vec<BatchToolResult> {
         let total = calls.len();
         if calls.is_empty() {
             return Vec::new();
@@ -300,11 +374,13 @@ impl BatchExecutor {
             for call in calls {
                 if cancelled || cancel_token.is_cancelled() {
                     cancelled = true;
-                    results.push(BatchToolResult {
-                        call_id: call.call_id,
-                        tool_name: call.tool_name,
-                        result: ToolResult::failure("Batch execution cancelled"),
-                    });
+                    let result = BatchToolResult::cancelled(
+                        call.call_id,
+                        call.tool_name,
+                        ExecutionPhase::Queued,
+                    );
+                    emit_batch_completion(event_tx.as_ref(), self.config.emit_events, &result);
+                    results.push(result);
                     continue;
                 }
 
@@ -313,32 +389,44 @@ impl BatchExecutor {
                         call_id: call.call_id,
                         tool_name: call.tool_name,
                         result: ToolResult::failure("Skipped due to previous error in batch"),
+                        execution: None,
                     });
                     continue;
                 }
 
-                let result = tokio::select! {
-                    result = self.executor.execute(
+                if self.config.emit_events {
+                    if let Some(tx) = event_tx.as_ref() {
+                        let _ = tx.send(FromAgent::ToolStart {
+                            call_id: call.call_id.clone(),
+                        });
+                    }
+                }
+                let execution = tokio::select! {
+                    execution = self.executor.execute_with_receipt_at_generation(
                         &call.tool_name,
                         &call.args,
-                        if self.config.emit_events { event_tx.as_ref() } else { None },
+                        None,
                         &call.call_id,
-                    ) => result,
+                        generation,
+                    ) => execution,
                     () = cancel_token.cancelled() => {
                         cancelled = true;
-                        ToolResult::failure("Batch execution cancelled")
+                        ToolExecution::cancelled(
+                            &call.call_id,
+                            &call.tool_name,
+                            ExecutionSource::Native,
+                            ExecutionPhase::Running,
+                        )
                     }
                 };
+                let result =
+                    BatchToolResult::from_execution(call.call_id, call.tool_name, execution);
 
-                if !result.success {
+                if !result.result.success {
                     failed = true;
                 }
-
-                results.push(BatchToolResult {
-                    call_id: call.call_id,
-                    tool_name: call.tool_name,
-                    result,
-                });
+                emit_batch_completion(event_tx.as_ref(), self.config.emit_events, &result);
+                results.push(result);
             }
 
             if let Some(ref tx) = event_tx {
@@ -370,6 +458,7 @@ impl BatchExecutor {
         let mut task_set: JoinSet<(usize, BatchToolResult)> = JoinSet::new();
         let mut result_slots: Vec<Option<BatchToolResult>> =
             std::iter::repeat_with(|| None).take(total).collect();
+        let mut started = vec![false; total];
         let mut cancelled = cancel_token.is_cancelled();
 
         if !cancelled {
@@ -387,24 +476,23 @@ impl BatchExecutor {
                     break;
                 };
 
+                if self.config.emit_events {
+                    if let Some(tx) = event_tx.as_ref() {
+                        let _ = tx.send(FromAgent::ToolStart {
+                            call_id: call.call_id.clone(),
+                        });
+                    }
+                }
+                started[index] = true;
                 let executor = Arc::clone(&self.executor);
-                let event_tx_clone = event_tx.clone();
-                let emit_events = self.config.emit_events;
                 let call_id = call.call_id;
                 let tool_name = call.tool_name;
                 let args = call.args;
 
                 task_set.spawn(async move {
-                    let result = executor
-                        .execute(
-                            &tool_name,
-                            &args,
-                            if emit_events {
-                                event_tx_clone.as_ref()
-                            } else {
-                                None
-                            },
-                            &call_id,
+                    let execution = executor
+                        .execute_with_receipt_at_generation(
+                            &tool_name, &args, None, &call_id, generation,
                         )
                         .await;
 
@@ -412,11 +500,7 @@ impl BatchExecutor {
 
                     (
                         index,
-                        BatchToolResult {
-                            call_id,
-                            tool_name,
-                            result,
-                        },
+                        BatchToolResult::from_execution(call_id, tool_name, execution),
                     )
                 });
             }
@@ -446,15 +530,26 @@ impl BatchExecutor {
         for (index, slot) in result_slots.iter_mut().enumerate() {
             if slot.is_none() {
                 let (call_id, tool_name) = &call_metadata[index];
-                *slot = Some(BatchToolResult {
-                    call_id: call_id.clone(),
-                    tool_name: tool_name.clone(),
-                    result: ToolResult::failure("Batch execution cancelled"),
-                });
+                let phase = if started[index] {
+                    ExecutionPhase::Running
+                } else {
+                    ExecutionPhase::Queued
+                };
+                *slot = Some(BatchToolResult::cancelled(
+                    call_id.clone(),
+                    tool_name.clone(),
+                    phase,
+                ));
             }
         }
 
         let results: Vec<BatchToolResult> = result_slots.into_iter().flatten().collect();
+
+        if self.config.emit_events {
+            for result in &results {
+                emit_batch_completion(event_tx.as_ref(), true, result);
+            }
+        }
 
         if let Some(ref tx) = event_tx {
             if self.config.emit_events {
@@ -479,6 +574,20 @@ impl BatchExecutor {
         &self,
         calls: Vec<BatchToolCall>,
         event_tx: Option<mpsc::UnboundedSender<FromAgent>>,
+    ) -> (Vec<BatchToolResult>, BatchDetails) {
+        self.execute_with_details_at_generation(
+            calls,
+            event_tx,
+            self.executor.credential_generation(),
+        )
+        .await
+    }
+
+    pub(crate) async fn execute_with_details_at_generation(
+        &self,
+        calls: Vec<BatchToolCall>,
+        event_tx: Option<mpsc::UnboundedSender<FromAgent>>,
+        generation: u64,
     ) -> (Vec<BatchToolResult>, BatchDetails) {
         let start_time = Instant::now();
         let total = calls.len();
@@ -509,6 +618,7 @@ impl BatchExecutor {
                         call_id: call.call_id,
                         tool_name: call.tool_name,
                         result: ToolResult::failure("Skipped due to previous error in batch"),
+                        execution: None,
                     });
                     continue;
                 }
@@ -516,7 +626,7 @@ impl BatchExecutor {
                 let tool_start = Instant::now();
                 let result = self
                     .executor
-                    .execute(
+                    .execute_at_generation(
                         &call.tool_name,
                         &call.args,
                         if self.config.emit_events {
@@ -525,6 +635,7 @@ impl BatchExecutor {
                             None
                         },
                         &call.call_id,
+                        generation,
                     )
                     .await;
                 let duration_ms = tool_start.elapsed().as_millis() as u64;
@@ -538,6 +649,7 @@ impl BatchExecutor {
                     call_id: call.call_id,
                     tool_name: call.tool_name,
                     result,
+                    execution: None,
                 });
             }
 
@@ -588,7 +700,7 @@ impl BatchExecutor {
             handles.push(tokio::spawn(async move {
                 let tool_start = Instant::now();
                 let result = executor
-                    .execute(
+                    .execute_at_generation(
                         &tool_name,
                         &args,
                         if emit_events {
@@ -597,6 +709,7 @@ impl BatchExecutor {
                             None
                         },
                         &call_id,
+                        generation,
                     )
                     .await;
 
@@ -610,6 +723,7 @@ impl BatchExecutor {
                         call_id: call_id.clone(),
                         tool_name,
                         result,
+                        execution: None,
                     },
                     call_id,
                     duration_ms,
@@ -673,6 +787,20 @@ impl BatchExecutor {
         calls: Vec<BatchToolCall>,
         event_tx: Option<mpsc::UnboundedSender<FromAgent>>,
     ) -> Vec<BatchToolResult> {
+        self.execute_sequential_at_generation(
+            calls,
+            event_tx,
+            self.executor.credential_generation(),
+        )
+        .await
+    }
+
+    pub(crate) async fn execute_sequential_at_generation(
+        &self,
+        calls: Vec<BatchToolCall>,
+        event_tx: Option<mpsc::UnboundedSender<FromAgent>>,
+        generation: u64,
+    ) -> Vec<BatchToolResult> {
         let mut results = Vec::with_capacity(calls.len());
         let mut failed = false;
 
@@ -682,17 +810,19 @@ impl BatchExecutor {
                     call_id: call.call_id,
                     tool_name: call.tool_name,
                     result: ToolResult::failure("Skipped due to previous error in batch"),
+                    execution: None,
                 });
                 continue;
             }
 
             let result = self
                 .executor
-                .execute(
+                .execute_at_generation(
                     &call.tool_name,
                     &call.args,
                     event_tx.as_ref(),
                     &call.call_id,
+                    generation,
                 )
                 .await;
 
@@ -701,6 +831,7 @@ impl BatchExecutor {
                 call_id: call.call_id,
                 tool_name: call.tool_name,
                 result,
+                execution: None,
             });
 
             // Stop on first error if configured
@@ -757,6 +888,34 @@ fn record_joined_batch_result(
     }
 }
 
+fn emit_batch_completion(
+    event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+    emit_events: bool,
+    result: &BatchToolResult,
+) {
+    if !emit_events {
+        return;
+    }
+    let Some(tx) = event_tx else {
+        return;
+    };
+
+    if !result.result.output.is_empty() {
+        let _ = tx.send(FromAgent::ToolOutput {
+            call_id: result.call_id.clone(),
+            content: result.result.output.clone(),
+        });
+    }
+    let _ = tx.send(FromAgent::ToolEnd {
+        call_id: result.call_id.clone(),
+        success: result.result.success,
+        receipt: result
+            .execution
+            .as_ref()
+            .map(|execution| execution.receipt.clone()),
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -801,6 +960,76 @@ mod tests {
 
         let results = batch.execute(vec![], None).await;
         assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn batch_executor_uses_the_injected_credential_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = CredentialVault::new();
+        let batch =
+            BatchExecutor::with_credential_vault(dir.path().to_str().unwrap(), vault.clone());
+        let token = ["ghs", "123456789012345678901234567890123456"].join("_");
+        let calls = vec![BatchToolCall::new(
+            "call-1",
+            "bash",
+            json!({"command": format!("echo GITHUB_TOKEN={token}")}),
+        )];
+
+        let results = batch.execute(calls, None).await;
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].result.output.contains("{{CRED:"));
+        assert!(vault
+            .resolve_all(&results[0].result.output)
+            .contains(&token));
+    }
+
+    #[tokio::test]
+    async fn batch_rotation_does_not_vault_queued_old_session_output() {
+        let vault = CredentialVault::new();
+        let batch = BatchExecutor::with_config_and_credential_vault(
+            "/tmp",
+            BatchConfig::default().with_concurrency(1),
+            vault.clone(),
+        );
+        let token = ["ghp", "123456789012345678901234567890123456"].join("_");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let run = batch.execute(
+            vec![
+                BatchToolCall::new("blocking", "bash", json!({"command": "sleep 0.2"})),
+                BatchToolCall::new(
+                    "stale",
+                    "bash",
+                    json!({"command": format!("printf 'GITHUB_TOKEN={token}'")}),
+                ),
+            ],
+            Some(tx),
+        );
+        tokio::pin!(run);
+
+        loop {
+            tokio::select! {
+                results = &mut run => panic!("batch completed before rotation: {results:?}"),
+                event = rx.recv() => match event {
+                    Some(FromAgent::ToolStart { call_id }) if call_id == "blocking" => break,
+                    Some(_) => {}
+                    None => panic!("batch closed the event channel before starting the tool"),
+                }
+            }
+        }
+        vault.clear();
+
+        let results = run.await;
+        let stale = results
+            .iter()
+            .find(|result| result.call_id == "stale")
+            .expect("queued call should complete");
+        assert!(stale
+            .result
+            .output
+            .contains("[REDACTED:api_key:portable-export]"));
+        assert!(!stale.result.output.contains(&token));
+        assert_eq!(vault.stats().count, 0);
     }
 
     #[test]
@@ -954,9 +1183,19 @@ mod tests {
                 .as_deref()
                 .is_some_and(|error| error.contains("cancelled"))
         }));
+        assert!(results.iter().all(|result| matches!(
+            result
+                .execution
+                .as_ref()
+                .map(|execution| &execution.outcome),
+            Some(crate::agent::ToolOutcome::Cancelled {
+                phase: ExecutionPhase::Queued
+            })
+        )));
 
         let mut saw_start = false;
         let mut saw_end = false;
+        let mut terminal_receipts = 0;
         while let Ok(event) = rx.try_recv() {
             match event {
                 FromAgent::BatchStart { total } => {
@@ -973,12 +1212,101 @@ mod tests {
                     assert_eq!(failures, 3);
                     saw_end = true;
                 }
+                FromAgent::ToolEnd {
+                    success: false,
+                    receipt: Some(receipt),
+                    ..
+                } if matches!(&receipt.details, crate::agent::ToolReceiptDetails::None) => {
+                    terminal_receipts += 1;
+                }
                 _ => {}
             }
         }
 
         assert!(saw_start);
         assert!(saw_end);
+        assert_eq!(terminal_receipts, 3);
+    }
+
+    #[test]
+    fn cancelled_batch_result_retains_execution_phase() {
+        let queued = BatchToolResult::cancelled(
+            "queued".to_string(),
+            "glob".to_string(),
+            ExecutionPhase::Queued,
+        );
+        let running = BatchToolResult::cancelled(
+            "running".to_string(),
+            "glob".to_string(),
+            ExecutionPhase::Running,
+        );
+
+        assert!(matches!(
+            queued
+                .execution
+                .as_ref()
+                .map(|execution| &execution.outcome),
+            Some(crate::agent::ToolOutcome::Cancelled {
+                phase: ExecutionPhase::Queued
+            })
+        ));
+        assert!(matches!(
+            running
+                .execution
+                .as_ref()
+                .map(|execution| &execution.outcome),
+            Some(crate::agent::ToolOutcome::Cancelled {
+                phase: ExecutionPhase::Running
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancelling_started_batch_tool_retains_running_phase_and_one_tool_end() {
+        let batch = BatchExecutor::with_config("/tmp", BatchConfig::default().with_concurrency(1));
+        let cancel_token = CancellationToken::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let run = batch.execute_with_cancel(
+            vec![BatchToolCall::new(
+                "running",
+                "bash",
+                json!({"command": "sleep 30"}),
+            )],
+            Some(tx),
+            cancel_token.clone(),
+        );
+        tokio::pin!(run);
+
+        loop {
+            tokio::select! {
+                result = &mut run => panic!("batch completed before cancellation: {result:?}"),
+                event = rx.recv() => match event {
+                    Some(FromAgent::ToolStart { call_id }) if call_id == "running" => break,
+                    Some(_) => {}
+                    None => panic!("batch closed the event channel before starting the tool"),
+                }
+            }
+        }
+        cancel_token.cancel();
+        let results = run.await;
+
+        assert!(matches!(
+            results[0]
+                .execution
+                .as_ref()
+                .map(|execution| &execution.outcome),
+            Some(crate::agent::ToolOutcome::Cancelled {
+                phase: ExecutionPhase::Running
+            })
+        ));
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, FromAgent::ToolEnd { .. }))
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -991,6 +1319,7 @@ mod tests {
                     call_id: "1".to_string(),
                     tool_name: "glob".to_string(),
                     result: ToolResult::success("completed before cancellation"),
+                    execution: None,
                 },
             )
         });

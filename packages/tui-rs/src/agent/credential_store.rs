@@ -54,10 +54,12 @@
 
 use rand::Rng;
 use regex::{Captures, Regex};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fmt;
 use std::fmt::Write;
-use std::sync::LazyLock;
-use std::sync::Mutex;
+use std::sync::{Arc, LazyLock, Mutex};
+use zeroize::{Zeroize, Zeroizing};
 
 /// Credential types that can be stored
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -108,14 +110,24 @@ impl CredentialType {
 }
 
 /// Stored credential metadata
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct StoredCredential {
     /// The actual credential value
-    value: String,
+    value: Zeroizing<String>,
     /// Type of credential
     cred_type: CredentialType,
     /// How many times it's been resolved
     resolve_count: u32,
+}
+
+impl fmt::Debug for StoredCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StoredCredential")
+            .field("cred_type", &self.cred_type)
+            .field("resolve_count", &self.resolve_count)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Reference pattern for matching credential references in strings
@@ -129,6 +141,7 @@ enum ReplaceKind {
     Full,
     Bearer,
     KeyValue,
+    UriUserInfo,
 }
 
 #[derive(Debug)]
@@ -156,6 +169,20 @@ static CREDENTIAL_PATTERNS: LazyLock<Vec<CredentialPattern>> = LazyLock::new(|| 
     vec![
         CredentialPattern {
             regex: Regex::new(
+                r#"(?i)(password|passwd|pwd|credential|credentials)(['"]?\s*[:=]\s*['"]?)([^\s'",;}{}\[\]]+)"#,
+            )
+            .expect("Invalid regex pattern"),
+            kind: CredentialType::Password,
+            replace: ReplaceKind::KeyValue,
+        },
+        CredentialPattern {
+            regex: Regex::new(r"(?i)([a-z][a-z0-9+.-]*://[^:/\s@]+:)([^@\s]+)(@)")
+                .expect("Invalid regex pattern"),
+            kind: CredentialType::Password,
+            replace: ReplaceKind::UriUserInfo,
+        },
+        CredentialPattern {
+            regex: Regex::new(
                 r#"(?i)(api[_-]?key|apikey|api[_-]?token|token|secret)(['"\s:=]+)([A-Za-z0-9_-]{20,})"#,
             )
             .expect("Invalid regex pattern"),
@@ -168,6 +195,14 @@ static CREDENTIAL_PATTERNS: LazyLock<Vec<CredentialPattern>> = LazyLock::new(|| 
             )
             .expect("Invalid regex pattern"),
             kind: CredentialType::Secret,
+            replace: ReplaceKind::KeyValue,
+        },
+        CredentialPattern {
+            regex: Regex::new(
+                r#"(?i)(token|access[_-]?token|refresh[_-]?token|auth[_-]?token)(['"]?\s*[:=]\s*['"]?)([^\s'",;}{}\[\]]+)"#,
+            )
+            .expect("Invalid regex pattern"),
+            kind: CredentialType::Token,
             replace: ReplaceKind::KeyValue,
         },
         CredentialPattern {
@@ -254,13 +289,174 @@ fn generate_id() -> String {
     hex_string
 }
 
+fn random_fingerprint_key() -> [u8; 32] {
+    rand::rng().random()
+}
+
 /// Credential Store - manages secure credential storage
-#[derive(Debug)]
 pub struct CredentialStore {
     /// Credentials indexed by ID
     credentials: HashMap<String, StoredCredential>,
-    /// Reverse lookup: value -> reference
-    value_to_ref: HashMap<String, String>,
+    /// Reverse lookup: keyed digest -> reference. Raw credential values are never duplicated.
+    value_to_ref: HashMap<[u8; 32], String>,
+    /// Per-store key for reverse lookup fingerprints.
+    fingerprint_key: Zeroizing<[u8; 32]>,
+}
+
+/// Shared, session-scoped credential vault.
+///
+/// Clones share the same in-memory credentials while independent vaults remain
+/// isolated. Inject this into every component that needs to vault or resolve
+/// credentials for a session.
+#[derive(Clone)]
+pub struct CredentialVault(Arc<Mutex<CredentialVaultState>>);
+
+struct CredentialVaultState {
+    store: CredentialStore,
+    generation: u64,
+}
+
+impl fmt::Debug for CredentialVault {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .store
+            .fmt(formatter)
+    }
+}
+
+impl Default for CredentialVault {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CredentialVault {
+    /// Create a new empty, independently scoped credential vault.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Arc::new(Mutex::new(CredentialVaultState {
+            store: CredentialStore::new(),
+            generation: 0,
+        })))
+    }
+
+    /// Store a credential and return its opaque reference.
+    pub fn store(&self, value: &str, cred_type: CredentialType) -> String {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .store
+            .store(value, cred_type)
+    }
+
+    /// Capture the current session generation for an execution.
+    #[must_use]
+    pub(crate) fn generation(&self) -> u64 {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .generation
+    }
+
+    /// Resolve all credential references in a string.
+    pub fn resolve_all(&self, input: &str) -> String {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .store
+            .resolve_all(input)
+    }
+
+    /// Resolve all credential references in a JSON value.
+    pub fn resolve_in_json(&self, value: &serde_json::Value) -> serde_json::Value {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .store
+            .resolve_in_json(value)
+    }
+
+    /// Vault credentials in a plain text value.
+    pub fn vault_in_text(&self, value: &str) -> String {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        vault_credentials_in_string(&mut state.store, value)
+    }
+
+    /// Vault credentials only when the execution still belongs to this session.
+    ///
+    /// Stale output is redacted rather than stored so a cleared vault cannot be
+    /// repopulated by an execution that began under an earlier generation.
+    pub(crate) fn vault_in_text_at_generation(&self, generation: u64, value: &str) -> String {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.generation == generation {
+            vault_credentials_in_string(&mut state.store, value)
+        } else {
+            redact_credentials_in_string(value)
+        }
+    }
+
+    /// Vault credentials in a JSON value.
+    pub fn vault_in_json(&self, value: &serde_json::Value) -> serde_json::Value {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        vault_credentials_in_json(&mut state.store, value)
+    }
+
+    /// Vault JSON credentials only if the execution generation remains active.
+    pub(crate) fn vault_in_json_at_generation(
+        &self,
+        generation: u64,
+        value: &serde_json::Value,
+    ) -> serde_json::Value {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.generation == generation {
+            vault_credentials_in_json(&mut state.store, value)
+        } else {
+            redact_credentials_in_json(value)
+        }
+    }
+
+    /// Clear and zeroize all credentials in this vault.
+    pub fn clear(&self) {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.store.clear();
+        state.generation = state.generation.wrapping_add(1);
+    }
+
+    /// Get credential statistics for this vault.
+    #[must_use]
+    pub fn stats(&self) -> CredentialStats {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .store
+            .stats()
+    }
+}
+
+impl fmt::Debug for CredentialStore {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CredentialStore")
+            .field("credential_count", &self.credentials.len())
+            .finish()
+    }
 }
 
 impl Default for CredentialStore {
@@ -276,7 +472,15 @@ impl CredentialStore {
         Self {
             credentials: HashMap::new(),
             value_to_ref: HashMap::new(),
+            fingerprint_key: Zeroizing::new(random_fingerprint_key()),
         }
+    }
+
+    fn fingerprint(&self, value: &str) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(*self.fingerprint_key);
+        hasher.update(value.as_bytes());
+        hasher.finalize().into()
     }
 
     /// Store a credential and return a reference token
@@ -294,7 +498,8 @@ impl CredentialStore {
     /// A reference token like `{{CRED:api_key:a1b2c3d4e5f6}}`
     pub fn store(&mut self, value: &str, cred_type: CredentialType) -> String {
         // Check if we already have this value stored
-        if let Some(existing_ref) = self.value_to_ref.get(value) {
+        let fingerprint = self.fingerprint(value);
+        if let Some(existing_ref) = self.value_to_ref.get(&fingerprint) {
             return existing_ref.clone();
         }
 
@@ -306,13 +511,12 @@ impl CredentialStore {
         self.credentials.insert(
             id,
             StoredCredential {
-                value: value.to_string(),
+                value: Zeroizing::new(value.to_string()),
                 cred_type,
                 resolve_count: 0,
             },
         );
-        self.value_to_ref
-            .insert(value.to_string(), reference.clone());
+        self.value_to_ref.insert(fingerprint, reference.clone());
 
         reference
     }
@@ -332,7 +536,7 @@ impl CredentialStore {
 
         let credential = self.credentials.get_mut(id)?;
         credential.resolve_count += 1;
-        Some(credential.value.clone())
+        Some(credential.value.to_string())
     }
 
     /// Resolve all credential references in a string
@@ -415,8 +619,13 @@ impl CredentialStore {
 
     /// Clear all stored credentials
     pub fn clear(&mut self) {
+        for credential in self.credentials.values_mut() {
+            credential.value.zeroize();
+        }
         self.credentials.clear();
         self.value_to_ref.clear();
+        self.fingerprint_key.zeroize();
+        self.fingerprint_key = Zeroizing::new(random_fingerprint_key());
     }
 
     /// Get statistics about stored credentials
@@ -438,32 +647,63 @@ impl CredentialStore {
     }
 }
 
-fn vault_credentials_in_string(input: &str) -> String {
+fn vault_credentials_in_string(store: &mut CredentialStore, input: &str) -> String {
     let mut output = input.to_string();
 
     for pattern in CREDENTIAL_PATTERNS.iter() {
         let replaced = match pattern.replace {
             ReplaceKind::Full => pattern.regex.replace_all(&output, |caps: &Captures| {
                 let value = caps.get(0).map(|m| m.as_str()).unwrap_or("");
-                store_credential(value, pattern.kind)
+                store.store(value, pattern.kind)
             }),
             ReplaceKind::Bearer => pattern.regex.replace_all(&output, |caps: &Captures| {
                 let value = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-                let reference = store_credential(value, pattern.kind);
+                let reference = store.store(value, pattern.kind);
                 format!("Bearer {}", reference)
             }),
             ReplaceKind::KeyValue => pattern.regex.replace_all(&output, |caps: &Captures| {
                 let prefix = caps.get(1).map(|m| m.as_str()).unwrap_or("");
                 let sep = caps.get(2).map(|m| m.as_str()).unwrap_or("");
                 let value = caps.get(3).map(|m| m.as_str()).unwrap_or("");
-                let reference = store_credential(value, pattern.kind);
+                let reference = store.store(value, pattern.kind);
                 format!("{}{}{}", prefix, sep, reference)
+            }),
+            ReplaceKind::UriUserInfo => pattern.regex.replace_all(&output, |caps: &Captures| {
+                let prefix = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+                let value = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+                let suffix = caps.get(3).map(|m| m.as_str()).unwrap_or("");
+                let reference = store.store(value, pattern.kind);
+                format!("{prefix}{reference}{suffix}")
             }),
         };
         output = replaced.into_owned();
     }
 
     output
+}
+
+fn vault_credentials_in_json(
+    store: &mut CredentialStore,
+    value: &serde_json::Value,
+) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(value) => {
+            serde_json::Value::String(vault_credentials_in_string(store, value))
+        }
+        serde_json::Value::Array(values) => serde_json::Value::Array(
+            values
+                .iter()
+                .map(|value| vault_credentials_in_json(store, value))
+                .collect(),
+        ),
+        serde_json::Value::Object(values) => serde_json::Value::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), vault_credentials_in_json(store, value)))
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
 }
 
 /// Replace credentials in an arbitrary JSON value with stable, non-reversible masks.
@@ -513,6 +753,14 @@ fn redact_credentials_in_string(input: &str) -> String {
                     format!("{prefix}{separator}{mask}")
                 })
                 .into_owned(),
+            ReplaceKind::UriUserInfo => pattern
+                .regex
+                .replace_all(&output, |caps: &Captures| {
+                    let prefix = caps.get(1).map(|value| value.as_str()).unwrap_or("");
+                    let suffix = caps.get(3).map(|value| value.as_str()).unwrap_or("");
+                    format!("{prefix}{mask}{suffix}")
+                })
+                .into_owned(),
         };
         output = replaced;
     }
@@ -528,76 +776,6 @@ pub struct CredentialStats {
     pub types: HashMap<CredentialType, usize>,
     /// Total number of times credentials have been resolved
     pub total_resolves: u32,
-}
-
-/// Global credential store for the session
-///
-/// This provides a convenient singleton for use throughout the application.
-/// For testing or isolation, create a local `CredentialStore` instance instead.
-static GLOBAL_STORE: LazyLock<Mutex<CredentialStore>> =
-    LazyLock::new(|| Mutex::new(CredentialStore::new()));
-
-/// Store a credential in the global store
-pub fn store_credential(value: &str, cred_type: CredentialType) -> String {
-    GLOBAL_STORE
-        .lock()
-        .expect("Failed to lock credential store")
-        .store(value, cred_type)
-}
-
-/// Resolve credential references in the global store
-pub fn resolve_credentials(input: &str) -> String {
-    GLOBAL_STORE
-        .lock()
-        .expect("Failed to lock credential store")
-        .resolve_all(input)
-}
-
-/// Resolve credential references in a JSON value using the global store
-pub fn resolve_credentials_in_json(value: &serde_json::Value) -> serde_json::Value {
-    GLOBAL_STORE
-        .lock()
-        .expect("Failed to lock credential store")
-        .resolve_in_json(value)
-}
-
-/// Vault credentials in a plain text value using the global store.
-pub fn vault_credentials_in_text(value: &str) -> String {
-    vault_credentials_in_string(value)
-}
-
-/// Vault credentials in a JSON value using the global store
-pub fn vault_credentials_in_json(value: &serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::String(s) => serde_json::Value::String(vault_credentials_in_string(s)),
-        serde_json::Value::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(vault_credentials_in_json).collect())
-        }
-        serde_json::Value::Object(map) => {
-            let mut out = serde_json::Map::new();
-            for (k, v) in map {
-                out.insert(k.clone(), vault_credentials_in_json(v));
-            }
-            serde_json::Value::Object(out)
-        }
-        _ => value.clone(),
-    }
-}
-
-/// Clear the global credential store
-pub fn clear_credentials() {
-    GLOBAL_STORE
-        .lock()
-        .expect("Failed to lock credential store")
-        .clear();
-}
-
-/// Get statistics from the global credential store
-pub fn credential_stats() -> CredentialStats {
-    GLOBAL_STORE
-        .lock()
-        .expect("Failed to lock credential store")
-        .stats()
 }
 
 #[cfg(test)]
@@ -625,6 +803,31 @@ mod tests {
 
         assert_eq!(ref1, ref2);
         assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn cloned_vaults_share_credentials_but_separate_vaults_do_not() {
+        let vault = CredentialVault::new();
+        let clone = vault.clone();
+        let isolated = CredentialVault::new();
+        let secret = "credential-isolation-secret";
+        let reference = vault.store(secret, CredentialType::Secret);
+
+        assert_eq!(clone.resolve_all(&reference), secret);
+        assert_eq!(isolated.resolve_all(&reference), reference);
+    }
+
+    #[test]
+    fn clear_drops_references_and_does_not_expose_secret_in_debug_output() {
+        let mut store = CredentialStore::new();
+        let secret = "credential-that-must-not-appear-in-debug-output";
+        let reference = store.store(secret, CredentialType::Secret);
+
+        assert!(!format!("{store:?}").contains(secret));
+        store.clear();
+
+        assert!(store.is_empty());
+        assert_eq!(store.resolve(&reference), None);
     }
 
     #[test]
@@ -664,19 +867,19 @@ mod tests {
 
     #[test]
     fn test_vault_credentials_in_json_roundtrip() {
-        clear_credentials();
+        let vault = CredentialVault::new();
         let sample_key = ["sk", "-", "abc123def456ghi789jkl012mno345pqr678"].join("");
         let payload = json!({
             "header": format!("Authorization: Bearer {}", sample_key),
         });
 
-        let vaulted = vault_credentials_in_json(&payload);
+        let vaulted = vault.vault_in_json(&payload);
         let header = vaulted.get("header").and_then(|v| v.as_str()).unwrap_or("");
 
         assert!(header.contains("{{CRED:"));
         assert!(!header.contains("abc123def456"));
 
-        let resolved = resolve_credentials_in_json(&vaulted);
+        let resolved = vault.resolve_in_json(&vaulted);
         assert_eq!(resolved, payload);
     }
 
@@ -697,8 +900,48 @@ mod tests {
     }
 
     #[test]
+    fn portable_redaction_masks_uri_userinfo_and_generic_assignments() {
+        let payload = json!({
+            "database": "DATABASE_URL=postgres://alice:db-password@db.example/app",
+            "password": "password = plain-secret",
+            "credential": "credential: service-secret",
+            "tokens": "token=plain-token access_token=access-secret refresh-token:refresh-secret authToken=auth-secret",
+        });
+
+        let redacted = redact_credentials_in_json(&payload);
+        let serialized = serde_json::to_string(&redacted).unwrap();
+
+        for secret in [
+            "db-password",
+            "plain-secret",
+            "service-secret",
+            "plain-token",
+            "access-secret",
+            "refresh-secret",
+            "auth-secret",
+        ] {
+            assert!(!serialized.contains(secret));
+        }
+        assert!(serialized.contains("postgres://alice:[REDACTED:password:portable-export]@"));
+    }
+
+    #[test]
+    fn vault_roundtrips_uri_userinfo_and_generic_assignments() {
+        let vault = CredentialVault::new();
+        let payload = json!({
+            "command": "connect postgres://alice:db-password@db.example/app password=plain-secret",
+        });
+
+        let vaulted = vault.vault_in_json(&payload);
+        let serialized = serde_json::to_string(&vaulted).unwrap();
+        assert!(!serialized.contains("db-password"));
+        assert!(!serialized.contains("plain-secret"));
+        assert_eq!(vault.resolve_in_json(&vaulted), payload);
+    }
+
+    #[test]
     fn test_vaults_private_key_blocks() {
-        clear_credentials();
+        let vault = CredentialVault::new();
         let rsa_label = ["RSA", "PRIVATE", "KEY"].join(" ");
         let private_key = [
             "-----BEGIN ",
@@ -712,7 +955,7 @@ mod tests {
             "key": private_key,
         });
 
-        let vaulted = vault_credentials_in_json(&payload);
+        let vaulted = vault.vault_in_json(&payload);
         let value = vaulted.get("key").and_then(|v| v.as_str()).unwrap_or("");
 
         assert!(value.contains("{{CRED:"));
@@ -722,7 +965,7 @@ mod tests {
 
     #[test]
     fn test_vaults_jwt_and_aws_secret() {
-        clear_credentials();
+        let vault = CredentialVault::new();
         let aws_secret = ["wJalrXUtnFEMI/K7MDENG", "/bPxRfiCY", "EXAMPLEKEY"].join("");
         let jwt = [
             "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
@@ -735,7 +978,7 @@ mod tests {
             "token": jwt,
         });
 
-        let vaulted = vault_credentials_in_json(&payload);
+        let vaulted = vault.vault_in_json(&payload);
         let header = vaulted.get("header").and_then(|v| v.as_str()).unwrap_or("");
         let token = vaulted.get("token").and_then(|v| v.as_str()).unwrap_or("");
 

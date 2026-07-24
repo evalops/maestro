@@ -74,10 +74,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::types::{
-    A2aAction, ArgumentValue, Command, CommandAction, CommandArgument, CommandCategory,
-    CommandContext, CommandError, CommandOutput, CommandResult, ExportAction, HistoryAction,
-    HooksAction, McpAction, ModalType, PluginsAction, QueueAction, QueueModeKind, SessionAction,
-    SkillsAction, ToolHistoryAction, UsageAction,
+    A2aAction, ArgumentValue, BackgroundMonitorAction, Command, CommandAction, CommandArgument,
+    CommandCategory, CommandContext, CommandError, CommandOutput, CommandResult, ExportAction,
+    HistoryAction, HooksAction, McpAction, ModalType, PlanReviewAction, PluginsAction, QueueAction,
+    QueueModeKind, SessionAction, SkillsAction, ToolHistoryAction, UsageAction,
 };
 use crate::git;
 use crate::keybindings::{
@@ -693,6 +693,44 @@ fn a2a_value_flag(token: &str) -> bool {
     )
 }
 
+fn parse_rewind_args(raw: &str, usage: &str) -> Result<SessionAction, CommandError> {
+    let mut turns = None;
+    let mut dry_run = false;
+    for arg in raw.split_whitespace() {
+        match arg {
+            "--dry-run" => dry_run = true,
+            _ if turns.is_none() => {
+                turns = Some(arg.parse::<usize>().map_err(|_| CommandError::new(usage))?);
+            }
+            _ => return Err(CommandError::new(usage)),
+        }
+    }
+    let turns = turns.unwrap_or(1);
+    if turns == 0 {
+        return Err(CommandError::new("Rewind count must be >= 1"));
+    }
+    Ok(SessionAction::Rewind { turns, dry_run })
+}
+
+fn parse_plan_range(raw: &str) -> Result<(usize, usize), CommandError> {
+    let (start, end) = raw
+        .split_once('-')
+        .or_else(|| raw.split_once(':'))
+        .unwrap_or((raw, raw));
+    let start = start
+        .parse::<usize>()
+        .map_err(|_| CommandError::new("Plan comment range must be LINE or START-END"))?;
+    let end = end
+        .parse::<usize>()
+        .map_err(|_| CommandError::new("Plan comment range must be LINE or START-END"))?;
+    if start == 0 || end < start {
+        return Err(CommandError::new(
+            "Plan comment range must be positive and ordered",
+        ));
+    }
+    Ok((start, end))
+}
+
 /// Build the default command registry with all built-in commands
 ///
 /// Constructs and returns a fully populated `CommandRegistry` containing all
@@ -870,27 +908,34 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "rewind",
-            "Rewind the last N user turns (default 1)",
+            "Remove the last N user turns from in-memory history",
             CommandCategory::Session,
             Box::new(|ctx| {
-                let turns = if ctx.raw_args.trim().is_empty() {
-                    1usize
-                } else {
-                    ctx.raw_args
-                        .trim()
-                        .parse::<usize>()
-                        .map_err(|_| CommandError::new("Usage: /rewind [n]"))?
-                };
-                if turns == 0 {
-                    return Err(CommandError::new("Rewind count must be >= 1"));
-                }
                 Ok(CommandOutput::Action(CommandAction::Session(
-                    SessionAction::Rewind { turns },
+                    parse_rewind_args(&ctx.raw_args, "Usage: /rewind [n] [--dry-run]")?,
                 )))
             }),
         )
         .alias("undo")
-        .usage("/rewind [n]"),
+        .usage("/rewind [n] [--dry-run]"),
+    );
+
+    registry.register(
+        Command::new(
+            "btw",
+            "Ask a tool-free side question outside main history",
+            CommandCategory::Context,
+            Box::new(|ctx| {
+                let question = ctx.raw_args.trim();
+                if question.is_empty() {
+                    return Err(CommandError::new("Usage: /btw <question>"));
+                }
+                Ok(CommandOutput::Action(CommandAction::SideQuestion(
+                    question.to_string(),
+                )))
+            }),
+        )
+        .usage("/btw <question>"),
     );
 
     // Quit command
@@ -1127,17 +1172,15 @@ pub fn build_command_registry() -> CommandRegistry {
                     "fork" => Ok(CommandOutput::Action(CommandAction::Session(
                         SessionAction::Fork,
                     ))),
-                    "rewind" | "undo" => {
-                        let rest = ctx.raw_args.split_whitespace().nth(1).unwrap_or("1");
-                        let turns = rest
-                            .parse::<usize>()
-                            .map_err(|_| CommandError::new("Usage: /session rewind [n]"))?;
-                        Ok(CommandOutput::Action(CommandAction::Session(
-                            SessionAction::Rewind {
-                                turns: turns.max(1),
-                            },
-                        )))
-                    }
+                    "rewind" | "undo" => Ok(CommandOutput::Action(CommandAction::Session(
+                        parse_rewind_args(
+                            ctx.raw_args
+                                .strip_prefix(ctx.raw_args.split_whitespace().next().unwrap_or(""))
+                                .unwrap_or("")
+                                .trim(),
+                            "Usage: /session rewind [n] [--dry-run]",
+                        )?,
+                    ))),
                     "info" | "" => Ok(CommandOutput::Action(CommandAction::ShowDiagnostics)),
                     _ => Ok(CommandOutput::Message(
                         "Usage: /session [info|new|clear|fork|rewind|cleanup]".to_string(),
@@ -1158,6 +1201,59 @@ pub fn build_command_registry() -> CommandRegistry {
         CommandCategory::Session,
         Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::SessionList))),
     ));
+
+    registry.register(Command::new(
+        "operations",
+        "Inspect recent persisted tool executions",
+        CommandCategory::Diagnostics,
+        Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::Operations))),
+    ));
+
+    registry.register(
+        Command::new(
+            "monitor",
+            "Monitor output from an existing background task",
+            CommandCategory::Diagnostics,
+            Box::new(|ctx| {
+                let raw = ctx.raw_args.trim();
+                let (action, rest) = raw
+                    .split_once(char::is_whitespace)
+                    .map_or((raw, ""), |(action, rest)| (action, rest.trim_start()));
+                match action {
+                    "" | "list" => Ok(CommandOutput::Action(CommandAction::BackgroundMonitor(
+                        BackgroundMonitorAction::List,
+                    ))),
+                    "add" => {
+                        let (task_id, pattern) =
+                            rest.split_once(char::is_whitespace).ok_or_else(|| {
+                                CommandError::new("Usage: /monitor add <task-id> <regex>")
+                            })?;
+                        Ok(CommandOutput::Action(CommandAction::BackgroundMonitor(
+                            BackgroundMonitorAction::Add {
+                                task_id: task_id.to_string(),
+                                pattern: pattern.trim_start().to_string(),
+                            },
+                        )))
+                    }
+                    "remove" | "rm" => {
+                        if rest.is_empty() {
+                            return Err(CommandError::new("Usage: /monitor remove <monitor-id>"));
+                        }
+                        Ok(CommandOutput::Action(CommandAction::BackgroundMonitor(
+                            BackgroundMonitorAction::Remove {
+                                monitor_id: rest.to_string(),
+                            },
+                        )))
+                    }
+                    _ => Err(CommandError::new(
+                        "Usage: /monitor [list|add <task-id> <regex>|remove <monitor-id>]",
+                    )),
+                }
+            }),
+        )
+        .usage("/monitor [list|add <task-id> <regex>|remove <monitor-id>]")
+        .group(vec!["list", "add", "remove"]),
+    );
 
     registry.register(Command::new(
         "files",
@@ -1672,8 +1768,10 @@ pub fn build_command_registry() -> CommandRegistry {
             "Plan mode: explore + write plan.md only until approved",
             CommandCategory::Context,
             Box::new(|ctx| {
-                let arg = ctx.raw_args.trim().to_lowercase();
-                match arg.as_str() {
+                let raw = ctx.raw_args.trim();
+                let mut parts = raw.split_whitespace();
+                let subcommand = parts.next().unwrap_or("").to_lowercase();
+                match subcommand.as_str() {
                     "" | "on" | "true" | "1" => {
                         Ok(CommandOutput::Action(CommandAction::SetPlanMode(true)))
                     }
@@ -1684,11 +1782,47 @@ pub fn build_command_registry() -> CommandRegistry {
                         Ok(CommandOutput::Action(CommandAction::ApprovePlan))
                     }
                     "view" | "show" => Ok(CommandOutput::Action(CommandAction::ViewPlan)),
-                    _ => Err(CommandError::new("Usage: /plan [on|off|approve|view]")),
+                    "comments" | "list" => Ok(CommandOutput::Action(CommandAction::PlanReview(
+                        PlanReviewAction::List,
+                    ))),
+                    "comment" => {
+                        let range = parts.next().ok_or_else(|| {
+                            CommandError::new("Usage: /plan comment <line|start-end> <text>")
+                        })?;
+                        let (start_line, end_line) = parse_plan_range(range)?;
+                        let text = parts.collect::<Vec<_>>().join(" ");
+                        if text.is_empty() {
+                            return Err(CommandError::new(
+                                "Usage: /plan comment <line|start-end> <text>",
+                            ));
+                        }
+                        Ok(CommandOutput::Action(CommandAction::PlanReview(
+                            PlanReviewAction::Comment {
+                                start_line,
+                                end_line,
+                                text,
+                            },
+                        )))
+                    }
+                    "resolve" | "reopen" => {
+                        let id = parts
+                            .next()
+                            .ok_or_else(|| CommandError::new("Usage: /plan resolve|reopen <id>"))?
+                            .trim_start_matches('#')
+                            .parse::<u64>()
+                            .map_err(|_| CommandError::new("Plan comment id must be a number"))?;
+                        let action = if subcommand == "resolve" {
+                            PlanReviewAction::Resolve { id }
+                        } else {
+                            PlanReviewAction::Reopen { id }
+                        };
+                        Ok(CommandOutput::Action(CommandAction::PlanReview(action)))
+                    }
+                    _ => Err(CommandError::new("Usage: /plan [on|off|approve|view|comments|comment <range> <text>|resolve <id>|reopen <id>]")),
                 }
             }),
         )
-        .usage("/plan [on|off|approve|view]"),
+        .usage("/plan [on|off|approve|view|comments|comment <range> <text>|resolve <id>|reopen <id>]"),
     );
 
     registry.register(

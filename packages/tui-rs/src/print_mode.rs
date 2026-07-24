@@ -4,11 +4,12 @@
 //! assistant response, and exits. Supports `--output-last-message` and a
 //! lightweight JSON Schema check via `--output-schema`.
 
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-use crate::agent::{resolve_credentials_in_json, FromAgent, NativeAgent, NativeAgentConfig};
+use crate::agent::{CredentialVault, FromAgent, NativeAgent, NativeAgentConfig};
 use crate::safety::FirewallVerdict;
 use crate::sandbox::SandboxPolicy;
 use crate::tools::ToolExecutor;
@@ -45,16 +46,182 @@ fn approval_denied(
             ))
 }
 
+#[derive(Debug, Clone)]
+struct PrintModeLimits {
+    max_tokens: u32,
+    max_tool_calls: usize,
+    max_turns: usize,
+    workspace_only_file_tools: bool,
+    allowed_tools: Option<HashSet<String>>,
+}
+
+impl PrintModeLimits {
+    fn from_env() -> Result<Self> {
+        Ok(Self {
+            max_tokens: positive_env("MAESTRO_PRINT_MAX_TOKENS", 16384)?,
+            max_tool_calls: positive_env("MAESTRO_PRINT_MAX_TOOL_CALLS", usize::MAX)?,
+            max_turns: positive_env("MAESTRO_PRINT_MAX_TURNS", usize::MAX)?,
+            workspace_only_file_tools: bool_env("MAESTRO_PRINT_WORKSPACE_ONLY_FILE_TOOLS")?,
+            allowed_tools: allowed_tools_from_env()?,
+        })
+    }
+}
+
+fn positive_env<T>(name: &str, default: T) -> Result<T>
+where
+    T: std::str::FromStr + PartialOrd + From<u8> + Copy,
+    T::Err: std::fmt::Display,
+{
+    let Ok(raw) = std::env::var(name) else {
+        return Ok(default);
+    };
+    let value = raw
+        .parse::<T>()
+        .map_err(|error| anyhow::anyhow!("{name} must be a positive integer: {error}"))?;
+    if value < T::from(1) {
+        bail!("{name} must be a positive integer");
+    }
+    Ok(value)
+}
+
+fn bool_env(name: &str) -> Result<bool> {
+    match std::env::var(name) {
+        Err(std::env::VarError::NotPresent) => Ok(false),
+        Err(err) => Err(err.into()),
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" | "" => Ok(false),
+            _ => bail!("{name} must be a boolean"),
+        },
+    }
+}
+
+fn allowed_tools_from_env() -> Result<Option<HashSet<String>>> {
+    let Ok(raw) = std::env::var("MAESTRO_PRINT_ALLOWED_TOOLS") else {
+        return Ok(None);
+    };
+    let tools = raw
+        .split(',')
+        .map(|tool| tool.trim().to_ascii_lowercase())
+        .filter(|tool| !tool.is_empty())
+        .collect::<HashSet<_>>();
+    if tools.is_empty() {
+        bail!("MAESTRO_PRINT_ALLOWED_TOOLS must list at least one tool");
+    }
+    Ok(Some(tools))
+}
+
+fn canonical_workspace_path(workspace: &Path, input: &str) -> Result<PathBuf> {
+    let candidate = if Path::new(input).is_absolute() {
+        PathBuf::from(input)
+    } else {
+        workspace.join(input)
+    };
+    let canonical = candidate
+        .canonicalize()
+        .with_context(|| format!("canonicalize tool path {}", candidate.display()))?;
+    if !canonical.starts_with(workspace) {
+        bail!(
+            "Tool path `{}` resolves outside workspace `{}`",
+            input,
+            workspace.display()
+        );
+    }
+    Ok(canonical)
+}
+
+fn canonical_existing_ancestor(path: &Path) -> Result<PathBuf> {
+    let mut ancestor = path.to_path_buf();
+    while !ancestor.exists() {
+        if !ancestor.pop() {
+            bail!("Tool path has no existing ancestor: {}", path.display());
+        }
+    }
+    ancestor
+        .canonicalize()
+        .with_context(|| format!("canonicalize tool path ancestor {}", ancestor.display()))
+}
+
+fn prepare_workspace_tool_args(
+    tool: &str,
+    args: &serde_json::Value,
+    workspace: &Path,
+) -> Result<serde_json::Value> {
+    let mut prepared = args.clone();
+    match tool.to_ascii_lowercase().as_str() {
+        "read" => {
+            let input = args
+                .get("path")
+                .or_else(|| args.get("file_path"))
+                .and_then(serde_json::Value::as_str)
+                .context("read tool requires a path")?;
+            let canonical = canonical_workspace_path(workspace, input)?;
+            prepared["path"] = serde_json::Value::String(canonical.display().to_string());
+            if let Some(object) = prepared.as_object_mut() {
+                object.remove("file_path");
+            }
+        }
+        "glob" => {
+            let pattern = args
+                .get("pattern")
+                .and_then(serde_json::Value::as_str)
+                .context("glob tool requires a pattern")?;
+            let pattern_path = Path::new(pattern);
+            if pattern_path.is_absolute()
+                || pattern_path.components().any(|component| {
+                    matches!(
+                        component,
+                        Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                    )
+                })
+            {
+                bail!("Glob pattern must stay relative to its workspace base path");
+            }
+            let base_input = args
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(".");
+            let base = canonical_workspace_path(workspace, base_input)?;
+            let components = pattern_path.components().collect::<Vec<_>>();
+            let first_magic = components.iter().position(|component| {
+                component
+                    .as_os_str()
+                    .to_string_lossy()
+                    .chars()
+                    .any(|character| matches!(character, '*' | '?' | '[' | '{'))
+            });
+            if first_magic.is_some_and(|index| index + 1 < components.len()) {
+                bail!("Workspace-only glob patterns cannot wildcard directories");
+            }
+            let fixed_prefix = components
+                .iter()
+                .take(first_magic.unwrap_or(components.len()))
+                .copied()
+                .collect::<PathBuf>();
+            let prefix = canonical_existing_ancestor(&base.join(fixed_prefix))?;
+            if !prefix.starts_with(workspace) {
+                bail!("Glob pattern resolves through a symlink outside the workspace");
+            }
+            prepared["path"] = serde_json::Value::String(base.display().to_string());
+        }
+        _ => {}
+    }
+    Ok(prepared)
+}
+
 /// Run one prompt non-interactively and print the final answer.
 pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
+    let limits = PrintModeLimits::from_env()?;
     let model = options
         .model
         .or_else(|| std::env::var("MAESTRO_MODEL").ok())
         .unwrap_or_else(|| "gpt-5.1-codex-max".to_string());
 
-    let cwd = std::env::current_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| ".".to_string());
+    let workspace = std::env::current_dir()
+        .context("resolve print-mode working directory")?
+        .canonicalize()
+        .context("canonicalize print-mode working directory")?;
+    let cwd = workspace.to_string_lossy().to_string();
 
     let system_prompt = format!(
         "You are Maestro, an AI coding assistant. Working directory: {cwd}. Be concise and use tools when helpful."
@@ -62,19 +229,28 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
 
     let config = NativeAgentConfig {
         model: model.clone(),
-        max_tokens: 16384,
+        max_tokens: limits.max_tokens,
         system_prompt: Some(system_prompt),
         thinking_enabled: false,
         thinking_budget: 0,
         cwd: cwd.clone(),
     };
 
-    let (agent, mut event_rx) =
-        NativeAgent::new(config).context("Failed to create native agent for print mode")?;
+    let credential_vault = CredentialVault::new();
+    let (agent, mut event_rx) = match &limits.allowed_tools {
+        Some(allowed_tools) => NativeAgent::new_with_allowed_tools_and_credential_vault(
+            config,
+            allowed_tools,
+            credential_vault.clone(),
+        ),
+        None => NativeAgent::new_with_credential_vault(config, credential_vault.clone()),
+    }
+    .context("Failed to create native agent for print mode")?;
     let tool_tx = agent.tool_response_sender();
     let tool_executor = match options.sandbox_policy.clone() {
-        Some(policy) => ToolExecutor::new(&cwd).with_sandbox_policy(policy),
-        None => ToolExecutor::new(&cwd),
+        Some(policy) => ToolExecutor::with_credential_vault(&cwd, credential_vault.clone())
+            .with_sandbox_policy(policy),
+        None => ToolExecutor::with_credential_vault(&cwd, credential_vault.clone()),
     };
 
     agent.send_ready();
@@ -86,6 +262,8 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
     let mut exit_code = 0i32;
     let mut assistant_buf = String::new();
     let mut last_assistant_message = String::new();
+    let mut tool_calls = 0usize;
+    let mut turns = 0usize;
 
     loop {
         let Some(msg) = event_rx.recv().await else {
@@ -120,6 +298,28 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
                 args,
                 ..
             } => {
+                tool_calls += 1;
+                let normalized_tool = tool.to_ascii_lowercase();
+                let limit_error = if limits
+                    .allowed_tools
+                    .as_ref()
+                    .is_some_and(|allowed| !allowed.contains(&normalized_tool))
+                {
+                    Some(format!("Tool `{tool}` is not allowed in this print run"))
+                } else if tool_calls > limits.max_tool_calls {
+                    Some(format!(
+                        "Print run exceeded MAESTRO_PRINT_MAX_TOOL_CALLS ({})",
+                        limits.max_tool_calls
+                    ))
+                } else if turns >= limits.max_turns {
+                    Some(format!(
+                        "Tool `{tool}` would exceed MAESTRO_PRINT_MAX_TURNS ({})",
+                        limits.max_turns
+                    ))
+                } else {
+                    None
+                };
+
                 if options.json {
                     let line = serde_json::json!({
                         "type": "item",
@@ -133,10 +333,28 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
                     eprintln!("[tool] {tool}");
                 }
 
-                let resolved = resolve_credentials_in_json(&args);
+                let mut resolved = credential_vault.resolve_in_json(&args);
+                let workspace_error = if limits.workspace_only_file_tools {
+                    match prepare_workspace_tool_args(&tool, &resolved, &workspace) {
+                        Ok(prepared) => {
+                            resolved = prepared;
+                            None
+                        }
+                        Err(error) => Some(error.to_string()),
+                    }
+                } else {
+                    None
+                };
                 let denied =
                     approval_denied(&tool_executor, &tool, &resolved, options.fail_on_approval);
-                let result = if denied {
+                let rejection = limit_error.or(workspace_error).or_else(|| {
+                    denied.then(|| {
+                        format!("Tool `{tool}` requires approval, but approval mode is fail")
+                    })
+                });
+                let result = if let Some(message) = &rejection {
+                    crate::agent::ToolResult::failure(message)
+                } else if denied {
                     crate::agent::ToolResult::failure(format!(
                         "Tool `{tool}` requires approval, but approval mode is fail"
                     ))
@@ -158,9 +376,36 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
                     println!("{line}");
                 }
 
-                let _ = tool_tx.send((call_id, !denied, Some(result)));
+                let approved = rejection.is_none() && !denied;
+                let _ = tool_tx.send((call_id, approved, Some(result)));
+                if rejection.is_some() {
+                    exit_code = 1;
+                    agent.cancel();
+                    break;
+                }
             }
             FromAgent::ResponseEnd { response_id, usage } => {
+                if response_id != "done" {
+                    turns += 1;
+                    if turns > limits.max_turns {
+                        if options.json {
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "type": "error",
+                                    "message": format!(
+                                        "Print run exceeded MAESTRO_PRINT_MAX_TURNS ({})",
+                                        limits.max_turns
+                                    ),
+                                    "fatal": true,
+                                })
+                            );
+                        }
+                        exit_code = 1;
+                        agent.cancel();
+                        break;
+                    }
+                }
                 if options.json && !assistant_buf.is_empty() {
                     let line = serde_json::json!({
                         "type": "item",
@@ -494,5 +739,72 @@ mod tests {
             &serde_json::json!({"file_path":"note.txt"}),
             true,
         ));
+    }
+
+    #[test]
+    fn workspace_paths_reject_traversal() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("secret.txt");
+        std::fs::write(&outside_file, "secret").unwrap();
+
+        let read = prepare_workspace_tool_args(
+            "read",
+            &serde_json::json!({"path": outside_file}),
+            workspace.path(),
+        );
+        assert!(read.is_err());
+        let glob = prepare_workspace_tool_args(
+            "glob",
+            &serde_json::json!({"path": ".", "pattern": "../*.txt"}),
+            workspace.path(),
+        );
+        assert!(glob.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_paths_reject_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+        symlink(outside.path(), workspace.path().join("outside-link")).unwrap();
+
+        let read = prepare_workspace_tool_args(
+            "read",
+            &serde_json::json!({"path": "outside-link/secret.txt"}),
+            workspace.path(),
+        );
+        assert!(read.is_err());
+        let glob = prepare_workspace_tool_args(
+            "glob",
+            &serde_json::json!({"path": ".", "pattern": "outside-link/*.txt"}),
+            workspace.path(),
+        );
+        assert!(glob.is_err());
+        let wildcarded_link = prepare_workspace_tool_args(
+            "glob",
+            &serde_json::json!({"path": ".", "pattern": "*/*.txt"}),
+            workspace.path(),
+        );
+        assert!(wildcarded_link.is_err());
+    }
+
+    #[test]
+    fn workspace_read_rewrites_to_canonical_path() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir(workspace.path().join("nested")).unwrap();
+        let file = workspace.path().join("nested").join("marker.txt");
+        std::fs::write(&file, "marker").unwrap();
+
+        let args = prepare_workspace_tool_args(
+            "read",
+            &serde_json::json!({"path": "nested/../nested/marker.txt"}),
+            workspace.path(),
+        )
+        .unwrap();
+        assert_eq!(args["path"].as_str(), file.canonicalize().unwrap().to_str());
     }
 }

@@ -98,15 +98,15 @@ pub mod token_counting;
 pub mod token_estimation;
 
 pub use compaction::{CompactionConfig, CompactionResult, ContextCompactor, CutPoint};
-pub use credential_store::{
-    clear_credentials, credential_stats, resolve_credentials, resolve_credentials_in_json,
-    store_credential, vault_credentials_in_json, vault_credentials_in_text, CredentialStats,
-    CredentialStore, CredentialType,
-};
+pub use credential_store::{CredentialStats, CredentialStore, CredentialType, CredentialVault};
 pub use message_queue::{
     MessageQueue, PendingMessage, PromptKind, QueueStats, MAX_PENDING_MESSAGES,
 };
 pub use native::{NativeAgent, NativeAgentConfig, ToolDefinition};
-pub use protocol::{FromAgent, ToAgent, TokenUsage, ToolResult};
+pub use protocol::{
+    DenialReason, ExecutionPhase, ExecutionReceipt, ExecutionSource, ExecutionStatus, FromAgent,
+    ToAgent, TokenUsage, ToolError, ToolExecution, ToolOutcome, ToolOutput, ToolReceiptDetails,
+    ToolResult,
+};
 pub use retry::{ErrorKind, RetryConfig, RetryDecision, RetryPolicy};
 pub use safety::{is_context_overflow, is_retryable_error, SafetyController, SafetyVerdict};

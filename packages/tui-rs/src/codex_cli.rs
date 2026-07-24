@@ -459,6 +459,19 @@ fn compile_codex_dynamic_tool_specs(tools: &[&CodingTool]) -> DynamicToolCompila
     }
 }
 
+/// Compile the selected Codex tool profile and return error diagnostics.
+pub fn codex_schema_diagnostics() -> Result<Vec<String>> {
+    let profile_name =
+        resolve_codex_tool_profile_name(env::var("MAESTRO_CODEX_TOOL_PROFILE").ok().as_deref())?;
+    let selected = select_codex_tool_profile(&CODING_TOOLS_FIXTURE.tools, profile_name);
+    Ok(compile_codex_dynamic_tool_specs(&selected)
+        .diagnostics
+        .into_iter()
+        .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
+        .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
+        .collect())
+}
+
 fn empty_object_schema() -> Value {
     json!({
         "type": "object",

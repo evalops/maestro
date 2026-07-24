@@ -76,13 +76,16 @@ impl App {
                         self.session_switcher.show();
                         self.active_modal = ActiveModal::SessionSwitcher;
                     }
+                    ModalType::Operations => {
+                        self.operations.show();
+                        self.active_modal = ActiveModal::Operations;
+                    }
                     ModalType::FileSearch => {
                         self.file_search.show();
                         self.active_modal = ActiveModal::FileSearch;
                     }
                     ModalType::CommandPalette => {
-                        self.command_palette.show();
-                        self.active_modal = ActiveModal::CommandPalette;
+                        self.show_command_palette();
                     }
                     ModalType::ShortcutsHelp => {
                         self.shortcuts_help.show();
@@ -168,6 +171,12 @@ impl App {
             CommandAction::ApprovePlan => {
                 self.approve_plan();
             }
+            CommandAction::PlanReview(action) => {
+                self.handle_plan_review(action);
+            }
+            CommandAction::SideQuestion(question) => {
+                let _ = self.handle_side_question(question).await;
+            }
             CommandAction::MagicTrace(action) => {
                 self.handle_magic_trace(action);
             }
@@ -250,6 +259,43 @@ impl App {
                     self.state.error = Some("No agent available to set model".to_string());
                 }
             }
+            CommandAction::BackgroundMonitor(action) => match action {
+                BackgroundMonitorAction::Add { task_id, pattern } => {
+                    match crate::tools::background_tasks::attach_monitor(&task_id, &pattern) {
+                        Ok(monitor) => self.state.add_system_message(format!(
+                            "Background monitor {} attached to task {}. Matches are notifications only.",
+                            monitor.id, monitor.task_id
+                        )),
+                        Err(error) => self.state.error = Some(error),
+                    }
+                }
+                BackgroundMonitorAction::List => {
+                    let monitors = crate::tools::background_tasks::list_monitors();
+                    let message = if monitors.is_empty() {
+                        "No background monitors.".to_string()
+                    } else {
+                        monitors
+                            .iter()
+                            .map(|monitor| {
+                                format!(
+                                    "{}  task={}  regex={}",
+                                    monitor.id, monitor.task_id, monitor.pattern
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    };
+                    self.state.add_system_message(message);
+                }
+                BackgroundMonitorAction::Remove { monitor_id } => {
+                    match crate::tools::background_tasks::remove_monitor(&monitor_id) {
+                        Ok(_) => self
+                            .state
+                            .add_system_message(format!("Removed background monitor {monitor_id}.")),
+                        Err(error) => self.state.error = Some(error),
+                    }
+                }
+            },
             CommandAction::CompactConversation(instructions) => {
                 // Compact conversation by summarizing older messages
                 let transcript_messages: Vec<_> = self
@@ -471,8 +517,8 @@ impl App {
             SessionAction::Fork => {
                 self.fork_session();
             }
-            SessionAction::Rewind { turns } => {
-                self.rewind_turns(turns);
+            SessionAction::Rewind { turns, dry_run } => {
+                self.rewind_turns(turns, dry_run);
             }
             SessionAction::Continue => {
                 self.continue_last_session();
@@ -555,9 +601,22 @@ impl App {
     }
 
     fn continue_last_session(&mut self) {
+        if self.state.busy {
+            self.state.status = Some(
+                "Wait for the active response to finish before continuing another session."
+                    .to_string(),
+            );
+            return;
+        }
         match self.session_manager.most_recent_session() {
             Ok(Some(session)) => {
+                // Resuming a persisted transcript begins a new credential scope.
+                // Historical references intentionally cannot resolve after reload.
+                self.credential_vault.clear();
+                crate::plan_mode::set_active_session_id(None);
                 restore_visible_session_messages(&mut self.state, &session);
+                self.plan_review_comments =
+                    crate::session::reconstruct_plan_review(&session.plan_review_events);
                 let session_id = session.header.id.clone();
                 self.state.session_id = Some(session_id.clone());
                 if let Err(err) = self
@@ -565,11 +624,13 @@ impl App {
                     .resume_session_by_path(session_id.clone(), session.file_path.as_str())
                 {
                     self.session_manager.reset_session();
+                    crate::plan_mode::set_active_session_id(None);
                     self.session_resume_failed = true;
                     self.state.error = Some(format!("Failed to resume session writer: {err}"));
                     return;
                 }
                 self.session_resume_failed = false;
+                crate::plan_mode::set_active_session_id(Some(session_id.clone()));
                 self.hydrate_usage_from_session(&session);
                 use crate::ai::{Message as AiMessage, MessageContent, Role};
                 use crate::state::{MessageKind, MessageRole};
@@ -611,10 +672,19 @@ impl App {
     }
 
     fn start_new_session(&mut self, status: &str) {
+        if self.state.busy {
+            self.state.status = Some(
+                "Wait for the active response to finish before starting a new session.".to_string(),
+            );
+            return;
+        }
+        self.credential_vault.clear();
         self.state.messages.clear();
+        self.plan_review_comments.clear();
         self.state.scroll_offset = 0;
         self.session_manager.reset_session();
         self.state.session_id = None;
+        crate::plan_mode::set_active_session_id(None);
         self.session_started_at = SystemTime::now();
         self.session_resume_failed = false;
         self.usage_tracker = crate::usage::UsageTracker::new();
@@ -629,7 +699,13 @@ impl App {
         self.state.add_system_message(status.to_string());
     }
 
-    fn fork_session(&mut self) {
+    pub(super) fn fork_session(&mut self) {
+        if self.state.busy {
+            self.state.status = Some(
+                "Wait for the active response to finish before forking the session.".to_string(),
+            );
+            return;
+        }
         use crate::session::BranchPoint;
 
         let fork_index = self.state.messages.len().saturating_sub(1);
@@ -642,9 +718,13 @@ impl App {
         let branch = BranchPoint::new(fork_id, fork_index).with_description("Forked via /fork");
 
         // Detach writer so the next message starts a new session file, keeping transcript.
+        // A fork must not retain credentials introduced by its parent session.
+        self.credential_vault.clear();
+        self.plan_review_comments.clear();
         let parent_session = self.state.session_id.clone();
         self.session_manager.reset_session();
         self.state.session_id = None;
+        crate::plan_mode::set_active_session_id(None);
         self.session_started_at = SystemTime::now();
         self.session_resume_failed = false;
 
@@ -665,11 +745,17 @@ impl App {
         self.state.add_system_message(msg);
     }
 
-    fn rewind_turns(&mut self, turns: usize) {
+    pub(super) fn rewind_turns(&mut self, turns: usize, dry_run: bool) {
         use crate::ai::{Message as AiMessage, MessageContent, Role};
         use crate::state::{MessageKind, MessageRole};
 
-        // Drop the last `turns` user messages and everything after each.
+        if self.state.busy {
+            self.state.status =
+                Some("Wait for the active response to finish before rewinding.".to_string());
+            return;
+        }
+
+        // Drop the last `turns` main-history user messages and everything after each.
         let mut remaining = self.state.messages.clone();
         let mut removed_users = 0usize;
         while removed_users < turns {
@@ -685,6 +771,14 @@ impl App {
 
         if removed_users == 0 {
             self.state.status = Some("Nothing to rewind.".to_string());
+            return;
+        }
+
+        if dry_run {
+            self.state.status = Some(format!(
+                "Dry run: would remove {removed_users} turn{} from in-memory history. The session file would remain unchanged.",
+                if removed_users == 1 { "" } else { "s" }
+            ));
             return;
         }
 
@@ -715,9 +809,11 @@ impl App {
         }
 
         let label = if removed_users == 1 {
-            "Rewound 1 turn.".to_string()
+            "Removed 1 turn from in-memory history. The session file is unchanged.".to_string()
         } else {
-            format!("Rewound {removed_users} turns.")
+            format!(
+                "Removed {removed_users} turns from in-memory history. The session file is unchanged."
+            )
         };
         self.state.status = Some(label.clone());
         self.state.add_system_message(label);
@@ -729,6 +825,12 @@ impl App {
     }
 
     fn apply_interaction_mode(&mut self, mode: crate::state::InteractionMode) {
+        if mode != crate::state::InteractionMode::Plan
+            && crate::safety::is_plan_mode()
+            && !self.leave_plan_mode()
+        {
+            return;
+        }
         self.state.interaction_mode = mode;
         self.state.approval_mode = mode.approval_mode();
         match mode {
@@ -737,9 +839,7 @@ impl App {
             }
             crate::state::InteractionMode::Normal
             | crate::state::InteractionMode::AlwaysApprove => {
-                // Leaving plan mode when cycling away.
-                crate::safety::set_plan_mode(false);
-                crate::safety::set_plan_satisfied(true);
+                self.update_agent_system_prompt();
             }
         }
         self.state.status = Some(format!(
@@ -753,9 +853,9 @@ impl App {
         self.state.cwd.clone().unwrap_or_else(|| ".".to_string())
     }
 
-    fn apply_plan_mode(&mut self, enabled: bool) {
-        crate::safety::set_plan_mode(enabled);
+    pub(super) fn apply_plan_mode(&mut self, enabled: bool) {
         if enabled {
+            crate::safety::set_plan_mode(true);
             self.state.interaction_mode = crate::state::InteractionMode::Plan;
             if matches!(self.state.approval_mode, ApprovalMode::Yolo) {
                 self.state.approval_mode = ApprovalMode::Selective;
@@ -786,14 +886,63 @@ impl App {
                 let _ = agent.set_system_prompt(prompt);
             }
         } else {
-            if self.state.interaction_mode == crate::state::InteractionMode::Plan {
-                self.state.interaction_mode = crate::state::InteractionMode::Normal;
+            if !self.leave_plan_mode() {
+                return;
             }
-            crate::safety::set_plan_satisfied(true);
             self.state.status = Some("Plan mode off.".to_string());
-            // Restore normal system prompt without plan-mode addendum.
-            self.update_agent_system_prompt();
         }
+    }
+
+    fn stale_plan_review_ids(&self) -> Vec<u64> {
+        let plan = crate::plan_mode::read_plan(&self.plan_cwd());
+        self.plan_review_comments
+            .iter()
+            .filter(|comment| {
+                let Some(plan) = plan.as_deref() else {
+                    return true;
+                };
+                comment.revision != crate::plan_mode::plan_revision(plan)
+                    || crate::plan_mode::plan_excerpt(plan, comment.start_line, comment.end_line)
+                        .as_deref()
+                        != Some(comment.excerpt.as_str())
+            })
+            .map(|comment| comment.id)
+            .collect()
+    }
+
+    fn plan_exit_blocker(&self) -> Option<String> {
+        let open_count = self
+            .plan_review_comments
+            .iter()
+            .filter(|comment| !comment.resolved)
+            .count();
+        if open_count > 0 {
+            return Some(format!(
+                "Plan exit blocked by {open_count} open review comment{}. Use `/plan comments`.",
+                if open_count == 1 { "" } else { "s" }
+            ));
+        }
+        let stale = self.stale_plan_review_ids();
+        (!stale.is_empty()).then(|| {
+            format!(
+                "Plan changed after {} review comment{} were created. Recreate stale comments before leaving plan mode.",
+                stale.len(),
+                if stale.len() == 1 { "" } else { "s" }
+            )
+        })
+    }
+
+    fn leave_plan_mode(&mut self) -> bool {
+        if let Some(error) = self.plan_exit_blocker() {
+            self.state.error = Some(error);
+            return false;
+        }
+        crate::plan_mode::approve_plan();
+        if self.state.interaction_mode == crate::state::InteractionMode::Plan {
+            self.state.interaction_mode = crate::state::InteractionMode::Normal;
+        }
+        self.update_agent_system_prompt();
+        true
     }
 
     fn show_plan(&mut self) {
@@ -818,14 +967,13 @@ impl App {
         }
     }
 
-    fn approve_plan(&mut self) {
+    pub(super) fn approve_plan(&mut self) {
         let cwd = self.plan_cwd();
         let preview = crate::plan_mode::read_plan(&cwd);
-        crate::plan_mode::approve_plan();
-        if self.state.interaction_mode == crate::state::InteractionMode::Plan {
-            self.state.interaction_mode = crate::state::InteractionMode::Normal;
+        if !self.leave_plan_mode() {
+            return;
         }
-        self.state.status = Some("Plan approved — implementation tools unlocked.".to_string());
+        self.state.status = Some("Plan approved. Implementation tools are enabled.".to_string());
         if let Some(text) = preview {
             self.state.add_system_message(format!(
                 "Plan approved. Leaving plan mode. Summary of approved plan:\n\n{text}"
@@ -835,7 +983,121 @@ impl App {
                 "Plan approved (empty plan). Leaving plan mode so you can implement.".to_string(),
             );
         }
-        self.update_agent_system_prompt();
+    }
+
+    pub(super) fn handle_plan_review(&mut self, action: PlanReviewAction) {
+        match action {
+            PlanReviewAction::Comment {
+                start_line,
+                end_line,
+                text,
+            } => {
+                let Some(plan) = crate::plan_mode::read_plan(&self.plan_cwd()) else {
+                    self.state.error = Some("No plan is available for review.".to_string());
+                    return;
+                };
+                let line_count = plan.lines().count();
+                if end_line > line_count {
+                    self.state.error = Some(format!(
+                        "Plan has {line_count} lines; comment range ends at {end_line}."
+                    ));
+                    return;
+                }
+                let id = self
+                    .plan_review_comments
+                    .iter()
+                    .map(|comment| comment.id)
+                    .max()
+                    .unwrap_or(0)
+                    .saturating_add(1);
+                let revision = crate::plan_mode::plan_revision(&plan);
+                let excerpt = crate::plan_mode::plan_excerpt(&plan, start_line, end_line)
+                    .expect("validated plan comment range");
+                self.plan_review_comments.push(PlanReviewComment {
+                    id,
+                    start_line,
+                    end_line,
+                    text: text.clone(),
+                    revision: revision.clone(),
+                    excerpt: excerpt.clone(),
+                    resolved: false,
+                });
+                self.record_plan_review_event(PlanReviewEvent::Comment {
+                    id,
+                    start_line,
+                    end_line,
+                    text,
+                    revision,
+                    excerpt,
+                });
+                self.state.status = Some(format!("Added plan comment #{id}."));
+            }
+            PlanReviewAction::List => {
+                let mut message = String::from("## Plan review comments\n\n");
+                let stale = self.stale_plan_review_ids();
+                if self.plan_review_comments.is_empty() {
+                    message.push_str("No review comments.");
+                } else {
+                    for comment in &self.plan_review_comments {
+                        let state = if stale.contains(&comment.id) {
+                            "stale"
+                        } else if comment.resolved {
+                            "resolved"
+                        } else {
+                            "open"
+                        };
+                        message.push_str(&format!(
+                            "- #{} lines {}-{} [{}]: {}\n  ```\n  {}\n  ```\n",
+                            comment.id,
+                            comment.start_line,
+                            comment.end_line,
+                            state,
+                            comment.text,
+                            comment.excerpt.replace('\n', "\n  ")
+                        ));
+                    }
+                }
+                self.state.add_system_message(message);
+            }
+            PlanReviewAction::Resolve { id } => {
+                if self.stale_plan_review_ids().contains(&id) {
+                    self.state.error = Some(format!(
+                        "Plan comment #{id} is stale. Recreate it against the current plan."
+                    ));
+                    return;
+                }
+                let Some(comment) = self
+                    .plan_review_comments
+                    .iter_mut()
+                    .find(|comment| comment.id == id)
+                else {
+                    self.state.error = Some(format!("Plan comment #{id} does not exist."));
+                    return;
+                };
+                comment.resolved = true;
+                self.record_plan_review_event(PlanReviewEvent::Resolve { id });
+                self.state.status = Some(format!("Plan comment #{id} resolved."));
+            }
+            PlanReviewAction::Reopen { id } => {
+                if self.stale_plan_review_ids().contains(&id) {
+                    self.state.error = Some(format!(
+                        "Plan comment #{id} is stale. Recreate it against the current plan."
+                    ));
+                    return;
+                }
+                let Some(comment) = self
+                    .plan_review_comments
+                    .iter_mut()
+                    .find(|comment| comment.id == id)
+                else {
+                    self.state.error = Some(format!("Plan comment #{id} does not exist."));
+                    return;
+                };
+                comment.resolved = false;
+                self.record_plan_review_event(PlanReviewEvent::Reopen { id });
+                self.state.status = Some(format!("Plan comment #{id} reopened."));
+            }
+        }
     }
 
     fn handle_magic_trace(&mut self, action: crate::commands::MagicTraceAction) {

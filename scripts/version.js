@@ -42,6 +42,32 @@ function bumpVersion(currentVersion, type) {
 	}
 }
 
+function rustVersionFiles() {
+	return [
+		{
+			path: join(process.cwd(), "packages/maestro-rs/Cargo.toml"),
+			pattern: /(\[package\]\nname = "maestro"\nversion = ")[^"]+(")/u,
+		},
+		{
+			path: join(process.cwd(), "Cargo.lock"),
+			pattern: /(\[\[package\]\]\nname = "maestro"\nversion = ")[^"]+(")/u,
+		},
+	];
+}
+
+function updateRustVersion(newVersion, backups) {
+	for (const entry of rustVersionFiles()) {
+		const original = readFileSync(entry.path, "utf8");
+		const updated = original.replace(entry.pattern, `$1${newVersion}$2`);
+		if (updated === original) {
+			throw new Error(`Unable to update Rust package version in ${entry.path}`);
+		}
+		backups.push({ path: entry.path, original });
+		writeFileSync(entry.path, updated);
+	}
+	console.log("🦀 Updated Rust package version");
+}
+
 function updateChangelog(
 	newVersion,
 	{ releaseNotesRef = "HEAD", replaceExisting = false } = {},
@@ -99,7 +125,11 @@ function hasScript(rootPkg, scriptName) {
 
 function restoreBackups(backups) {
 	for (const backup of backups) {
-		writePackageJson(backup.path, backup.original);
+		if (backup.path.endsWith(".json")) {
+			writePackageJson(backup.path, backup.original);
+		} else {
+			writeFileSync(backup.path, backup.original);
+		}
 	}
 }
 
@@ -142,6 +172,7 @@ async function updateVersionedFiles(
 		for (const pkg of workspacePkgs) {
 			writePackageJson(pkg.path, pkg.data);
 		}
+		updateRustVersion(newVersion, backups);
 		console.log("✅ Updated package.json files");
 
 		// Update changelog
@@ -176,7 +207,7 @@ async function updateVersionedFiles(
 			console.log("📦 Skipped package-lock.json update for workspace-only repo");
 		}
 	} catch (error) {
-		console.error("⚠️  Version bump failed, restoring package.json files");
+		console.error("⚠️  Version bump failed, restoring versioned files");
 		restoreBackups(backups);
 		throw error;
 	}

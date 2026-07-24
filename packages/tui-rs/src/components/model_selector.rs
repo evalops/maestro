@@ -10,87 +10,7 @@ use ratatui::{
     Frame,
 };
 
-/// Available AI models
-#[derive(Debug, Clone)]
-pub struct ModelInfo {
-    /// Model identifier (for API calls)
-    pub id: String,
-    /// Display name
-    pub name: String,
-    /// Provider (Anthropic, `OpenAI`, etc.)
-    pub provider: String,
-    /// Short description
-    pub description: String,
-}
-
-impl ModelInfo {
-    fn new(id: &str, name: &str, provider: &str, description: &str) -> Self {
-        Self {
-            id: id.to_string(),
-            name: name.to_string(),
-            provider: provider.to_string(),
-            description: description.to_string(),
-        }
-    }
-}
-
-/// Built-in model catalog (TUI selector + `maestro-tui models` CLI).
-#[must_use]
-pub fn available_models() -> Vec<ModelInfo> {
-    vec![
-        // Anthropic Claude models
-        ModelInfo::new(
-            "claude-sonnet-4-5-20250514",
-            "Claude Sonnet 4.5",
-            "Anthropic",
-            "Fast and intelligent, good balance",
-        ),
-        ModelInfo::new(
-            "claude-opus-4-6",
-            "Claude Opus 4.6",
-            "Anthropic",
-            "Most capable, best for complex tasks",
-        ),
-        ModelInfo::new(
-            "claude-3-5-haiku-20241022",
-            "Claude Haiku 3.5",
-            "Anthropic",
-            "Fastest, most economical",
-        ),
-        // OpenAI / Codex
-        ModelInfo::new(
-            "gpt-5.1-codex-max",
-            "GPT-5.1 Codex Max",
-            "OpenAI",
-            "Default coding model",
-        ),
-        ModelInfo::new("gpt-4o", "GPT-4o", "OpenAI", "Multimodal flagship model"),
-        ModelInfo::new(
-            "gpt-4o-mini",
-            "GPT-4o Mini",
-            "OpenAI",
-            "Fast and affordable",
-        ),
-        ModelInfo::new("o1", "O1", "OpenAI", "Advanced reasoning model"),
-        ModelInfo::new("o3", "O3", "OpenAI", "Next-gen reasoning model"),
-        // Google
-        ModelInfo::new(
-            "gemini-2.5-pro",
-            "Gemini 2.5 Pro",
-            "Google",
-            "Strong multimodal reasoning",
-        ),
-        ModelInfo::new(
-            "gemini-2.0-flash",
-            "Gemini 2.0 Flash",
-            "Google",
-            "Fast and economical",
-        ),
-        // xAI
-        ModelInfo::new("grok-3", "Grok 3", "xAI", "xAI frontier model"),
-        ModelInfo::new("grok-4", "Grok 4", "xAI", "xAI latest generation"),
-    ]
-}
+pub use crate::model_catalog::{available_models, ModelInfo, ModelVerification};
 
 /// Model selector modal state
 pub struct ModelSelector {
@@ -139,6 +59,25 @@ impl ModelSelector {
     /// Set the current model (for highlighting)
     pub fn set_current_model(&mut self, model_id: Option<String>) {
         self.current_model = model_id;
+    }
+
+    /// Apply verification to the matching catalog entry.
+    pub fn set_verification(&mut self, model_id: &str, verification: ModelVerification) -> bool {
+        let Some(catalog_model) = crate::model_catalog::find_model(model_id) else {
+            return false;
+        };
+        let Some(model) = self
+            .models
+            .iter_mut()
+            .find(|model| model.id == catalog_model.id)
+        else {
+            return false;
+        };
+        if model.verification == verification {
+            return false;
+        }
+        model.verification = verification;
+        true
     }
 
     /// Show the modal
@@ -248,6 +187,7 @@ impl ModelSelector {
                 m.id.to_lowercase().contains(&query)
                     || m.name.to_lowercase().contains(&query)
                     || m.provider.to_lowercase().contains(&query)
+                    || crate::palette_resource::PaletteResource::from(*m).matches(&query)
             })
             .map(|(i, _)| i)
             .collect();
@@ -337,6 +277,20 @@ impl ModelSelector {
                     spans.push(Span::styled("*", Style::default().fg(Color::Green)));
                 }
 
+                spans.push(Span::styled(
+                    format!(
+                        " {:?} T{} V{} R{} S{} {}k | {:?}",
+                        model.capabilities.protocol,
+                        u8::from(model.capabilities.tools),
+                        u8::from(model.capabilities.vision),
+                        u8::from(model.capabilities.reasoning),
+                        u8::from(model.capabilities.streaming),
+                        model.capabilities.context_tokens / 1000,
+                        model.verification.state,
+                    ),
+                    Style::default().fg(Color::DarkGray),
+                ));
+
                 ListItem::new(Line::from(spans))
             })
             .collect();
@@ -407,5 +361,25 @@ mod tests {
         let model_id = selector.confirm();
         assert!(model_id.is_some());
         assert!(!selector.is_visible());
+    }
+
+    #[test]
+    fn verification_updates_matching_catalog_model_only() {
+        let mut selector = ModelSelector::new();
+        let verification = ModelVerification {
+            state: crate::model_catalog::VerificationState::Verified,
+            source: "test".to_owned(),
+            detail: None,
+        };
+        assert!(selector.set_verification("openai/gpt-4o", verification.clone()));
+        assert_eq!(
+            selector
+                .models
+                .iter()
+                .find(|model| model.id == "gpt-4o")
+                .map(|model| &model.verification),
+            Some(&verification)
+        );
+        assert!(!selector.set_verification("anthropic/gpt-4o", verification));
     }
 }

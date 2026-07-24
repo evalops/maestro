@@ -152,7 +152,33 @@ use ratatui::{
     Frame,
 };
 
-use crate::commands::{CommandMatch, CommandRegistry, SlashCommandMatcher};
+use crate::commands::CommandRegistry;
+use crate::palette_resource::{PaletteResource, PaletteResourceKind};
+
+const RESULT_LIMIT: usize = 30;
+
+fn parse_filter(query: &str) -> (Option<PaletteResourceKind>, &str) {
+    let trimmed = query.trim_start();
+    let prefixes = [
+        (">", PaletteResourceKind::Command),
+        ("@", PaletteResourceKind::File),
+        ("#", PaletteResourceKind::Session),
+        (":", PaletteResourceKind::Model),
+        ("%", PaletteResourceKind::Theme),
+        ("command:", PaletteResourceKind::Command),
+        ("cmd:", PaletteResourceKind::Command),
+        ("file:", PaletteResourceKind::File),
+        ("session:", PaletteResourceKind::Session),
+        ("model:", PaletteResourceKind::Model),
+        ("theme:", PaletteResourceKind::Theme),
+    ];
+    for (prefix, kind) in prefixes {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            return (Some(kind), rest.trim_start());
+        }
+    }
+    (None, trimmed)
+}
 
 /// Stateful command palette modal with fuzzy search.
 ///
@@ -199,14 +225,13 @@ use crate::commands::{CommandMatch, CommandRegistry, SlashCommandMatcher};
 /// }
 /// ```
 pub struct CommandPalette {
-    /// Command matcher for fuzzy search
-    matcher: SlashCommandMatcher,
+    resources: Vec<PaletteResource>,
     /// Current search query
     query: String,
     /// Cursor position in query
     cursor: usize,
     /// Matched commands
-    matches: Vec<CommandMatch>,
+    matches: Vec<usize>,
     /// Selected index
     selected: usize,
     /// Whether the modal is visible
@@ -219,8 +244,9 @@ impl CommandPalette {
     /// Create a new command palette
     #[must_use]
     pub fn new(registry: Arc<CommandRegistry>) -> Self {
+        let resources = command_resources(&registry);
         Self {
-            matcher: SlashCommandMatcher::new(registry),
+            resources,
             query: String::new(),
             cursor: 0,
             matches: Vec::new(),
@@ -232,7 +258,14 @@ impl CommandPalette {
 
     /// Update the registry
     pub fn update_registry(&mut self, registry: Arc<CommandRegistry>) {
-        self.matcher = SlashCommandMatcher::new(registry);
+        self.resources
+            .retain(|resource| resource.kind != PaletteResourceKind::Command);
+        self.resources.extend(command_resources(&registry));
+        self.search();
+    }
+
+    pub fn set_resources(&mut self, resources: Vec<PaletteResource>) {
+        self.resources = resources;
         self.search();
     }
 
@@ -321,17 +354,19 @@ impl CommandPalette {
 
     /// Get the selected command
     #[must_use]
-    pub fn selected_command(&self) -> Option<&CommandMatch> {
-        self.matches.get(self.selected)
+    pub fn selected_resource(&self) -> Option<&PaletteResource> {
+        self.matches
+            .get(self.selected)
+            .and_then(|index| self.resources.get(*index))
     }
 
     /// Confirm the selected command, hide the modal, and return the command name.
     ///
     /// Returns `None` if no command is selected or if the results list is empty.
-    pub fn confirm(&mut self) -> Option<String> {
-        let name = self.selected_command().map(|m| m.command.name.clone());
+    pub fn confirm(&mut self) -> Option<PaletteResource> {
+        let resource = self.selected_resource().cloned();
         self.hide();
-        name
+        resource
     }
 
     /// Perform fuzzy search and update match results.
@@ -342,9 +377,16 @@ impl CommandPalette {
     ///
     /// Called automatically by text input methods.
     fn search(&mut self) {
-        self.matches = self.matcher.get_matches(&self.query);
-        // Limit to 15 results
-        self.matches.truncate(15);
+        let (filter, query) = parse_filter(&self.query);
+        self.matches = self
+            .resources
+            .iter()
+            .enumerate()
+            .filter(|(_, resource)| filter.is_none_or(|kind| resource.kind == kind))
+            .filter(|(_, resource)| resource.matches(query))
+            .map(|(index, _)| index)
+            .take(RESULT_LIMIT)
+            .collect();
         // Reset selection if out of bounds
         if self.selected >= self.matches.len() {
             self.selected = 0;
@@ -394,7 +436,7 @@ impl CommandPalette {
 
         // Draw modal block
         let block = Block::default()
-            .title(" Commands ")
+            .title(" Palette  > commands  @ files  # sessions  : models  % themes ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Green))
             .style(Style::default().bg(Color::Black));
@@ -417,16 +459,16 @@ impl CommandPalette {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray));
 
-        let input_text = format!("/{}", self.query);
+        let input_text = self.query.clone();
         let input = Paragraph::new(input_text)
             .style(Style::default().fg(Color::White))
             .block(input_block);
 
         frame.render_widget(input, area);
 
-        // Position cursor inside input (after the "/" prefix)
+        // Position cursor inside input.
         use unicode_width::UnicodeWidthStr;
-        let inner_x = area.x + 1 + 1; // +1 for border, +1 for "/"
+        let inner_x = area.x + 1;
         let inner_y = area.y + 1;
         let col = self.query[..self.cursor.min(self.query.len())].width() as u16;
         frame.set_cursor_position((inner_x + col, inner_y));
@@ -435,9 +477,9 @@ impl CommandPalette {
     fn render_results(&mut self, frame: &mut Frame, area: Rect) {
         if self.matches.is_empty() {
             let empty_msg = if self.query.is_empty() {
-                "Type to search commands..."
+                "Type to search resources..."
             } else {
-                "No matching commands"
+                "No matching resources"
             };
             let paragraph = Paragraph::new(empty_msg).style(Style::default().fg(Color::DarkGray));
             frame.render_widget(paragraph, area);
@@ -448,19 +490,25 @@ impl CommandPalette {
             .matches
             .iter()
             .enumerate()
-            .map(|(i, m)| self.render_command(m, i == self.selected))
+            .filter_map(|(i, index)| {
+                self.resources
+                    .get(*index)
+                    .map(|resource| self.render_resource(resource, i == self.selected))
+            })
             .collect();
 
         let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
         frame.render_stateful_widget(list, area, &mut self.list_state);
     }
 
-    fn render_command(&self, m: &CommandMatch, selected: bool) -> ListItem<'static> {
+    fn render_resource(&self, resource: &PaletteResource, selected: bool) -> ListItem<'static> {
         let mut spans = Vec::new();
-
-        // Command name
         spans.push(Span::styled(
-            format!("/{}", m.command.name),
+            format!("{} {:<7} ", resource.kind.prefix(), resource.kind.label()),
+            Style::default().fg(Color::DarkGray),
+        ));
+        spans.push(Span::styled(
+            resource.label.clone(),
             Style::default().fg(Color::Cyan).add_modifier(if selected {
                 Modifier::BOLD
             } else {
@@ -468,10 +516,15 @@ impl CommandPalette {
             }),
         ));
 
-        // Description
-        if !m.command.description.is_empty() {
+        if let Some(status) = &resource.status {
             spans.push(Span::styled(
-                format!("  {}", m.command.description),
+                format!("  [{status}]"),
+                Style::default().fg(Color::Green),
+            ));
+        }
+        if let Some(description) = &resource.description {
+            spans.push(Span::styled(
+                format!("  {description}"),
                 Style::default().fg(Color::DarkGray),
             ));
         }
@@ -486,6 +539,23 @@ impl CommandPalette {
     }
 }
 
+fn command_resources(registry: &CommandRegistry) -> Vec<PaletteResource> {
+    let mut commands = registry.all();
+    commands.sort_by(|left, right| left.name.cmp(&right.name));
+    commands
+        .into_iter()
+        .map(|command| {
+            PaletteResource::new(
+                PaletteResourceKind::Command,
+                command.name.clone(),
+                format!("/{}", command.name),
+            )
+            .description(command.description.clone())
+            .search_terms(command.aliases.clone())
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,6 +565,11 @@ mod tests {
     fn command_palette_basics() {
         let registry = Arc::new(build_command_registry());
         let mut palette = CommandPalette::new(registry);
+        palette.set_resources(vec![
+            PaletteResource::new(PaletteResourceKind::Command, "help", "/help")
+                .description("Show help"),
+            PaletteResource::new(PaletteResourceKind::File, "src/main.rs", "src/main.rs"),
+        ]);
 
         assert!(!palette.is_visible());
 
@@ -508,7 +583,7 @@ mod tests {
         palette.insert_char('p');
 
         // Should match /help
-        assert!(palette.matches.iter().any(|m| m.command.name == "help"));
+        assert_eq!(palette.selected_resource().unwrap().id, "help");
 
         palette.hide();
         assert!(!palette.is_visible());
@@ -518,6 +593,10 @@ mod tests {
     fn navigation() {
         let registry = Arc::new(build_command_registry());
         let mut palette = CommandPalette::new(registry);
+        palette.set_resources(vec![
+            PaletteResource::new(PaletteResourceKind::Command, "help", "/help"),
+            PaletteResource::new(PaletteResourceKind::File, "src/main.rs", "src/main.rs"),
+        ]);
         palette.show();
 
         let initial_count = palette.matches.len();
@@ -530,5 +609,22 @@ mod tests {
         assert_eq!(palette.selected, 0);
         palette.move_up(); // At start, should stay
         assert_eq!(palette.selected, 0);
+    }
+
+    #[test]
+    fn typed_prefix_filters_resources() {
+        let registry = Arc::new(build_command_registry());
+        let mut palette = CommandPalette::new(registry);
+        palette.set_resources(vec![
+            PaletteResource::new(PaletteResourceKind::Command, "model", "/model"),
+            PaletteResource::new(PaletteResourceKind::Model, "gpt-4o", "GPT-4o"),
+        ]);
+        palette.show();
+        palette.insert_char(':');
+        assert_eq!(palette.matches.len(), 1);
+        assert_eq!(
+            palette.selected_resource().unwrap().kind,
+            PaletteResourceKind::Model
+        );
     }
 }

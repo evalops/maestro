@@ -69,6 +69,9 @@
 //! discriminator field, making the JSON format compatible with TypeScript and
 //! other languages.
 
+use crate::tools::{
+    BashDetails, GlobDetails, GrepDetails, ImageDetails, ListDetails, ToolDetails, WebFetchDetails,
+};
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -174,7 +177,370 @@ pub enum ToAgent {
     Shutdown,
 }
 
-/// Result of a tool execution
+/// Model-safe output emitted by a completed tool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ToolOutput(String);
+
+impl ToolOutput {
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+/// Classified failure returned by a tool invocation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ToolError {
+    Validation { message: String },
+    Execution { message: String },
+    Transport { message: String },
+}
+
+impl ToolError {
+    #[must_use]
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Validation { message }
+            | Self::Execution { message }
+            | Self::Transport { message } => message,
+        }
+    }
+}
+
+/// Reason a requested tool was not allowed to execute.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DenialReason {
+    User,
+    SandboxPolicy { message: String },
+    ActionFirewall { message: String },
+}
+
+impl DenialReason {
+    #[must_use]
+    pub fn message(&self) -> &str {
+        match self {
+            Self::User => "Tool call was denied by user",
+            Self::SandboxPolicy { message } | Self::ActionFirewall { message } => message,
+        }
+    }
+}
+
+/// Stage at which a tool invocation was cancelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionPhase {
+    Queued,
+    Running,
+}
+
+/// The semantic result of a tool invocation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ToolOutcome {
+    Succeeded {
+        output: ToolOutput,
+    },
+    Failed {
+        error: ToolError,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        partial_output: Option<ToolOutput>,
+    },
+    Denied {
+        reason: DenialReason,
+    },
+    Cancelled {
+        phase: ExecutionPhase,
+    },
+}
+
+/// Terminal classification persisted with a receipt without duplicating tool output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ExecutionStatus {
+    Succeeded,
+    Failed,
+    Denied,
+    Cancelled { phase: ExecutionPhase },
+}
+
+impl ToolOutcome {
+    #[must_use]
+    pub fn status(&self) -> ExecutionStatus {
+        match self {
+            Self::Succeeded { .. } => ExecutionStatus::Succeeded,
+            Self::Failed { .. } => ExecutionStatus::Failed,
+            Self::Denied { .. } => ExecutionStatus::Denied,
+            Self::Cancelled { phase } => ExecutionStatus::Cancelled { phase: *phase },
+        }
+    }
+}
+
+/// Where the result was produced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionSource {
+    Native,
+    RemoteClient,
+    Cache,
+}
+
+/// Typed evidence captured for an execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "details", rename_all = "snake_case")]
+pub enum ToolReceiptDetails {
+    BuiltIn(ToolDetails),
+    Mcp {
+        server: String,
+        tool: String,
+        is_error: bool,
+    },
+    Cached,
+    None,
+}
+
+/// Audit information that must not be sent as provider tool-result content.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionReceipt {
+    pub call_id: String,
+    pub tool_name: String,
+    pub source: ExecutionSource,
+    pub status: ExecutionStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    pub details: ToolReceiptDetails,
+}
+
+/// Typed internal result used by native execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolExecution {
+    pub outcome: ToolOutcome,
+    pub receipt: ExecutionReceipt,
+}
+
+impl ToolExecution {
+    #[must_use]
+    pub fn denied(
+        call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        reason: DenialReason,
+    ) -> Self {
+        let outcome = ToolOutcome::Denied { reason };
+        Self {
+            outcome: outcome.clone(),
+            receipt: ExecutionReceipt {
+                call_id: call_id.into(),
+                tool_name: tool_name.into(),
+                source: ExecutionSource::Native,
+                status: outcome.status(),
+                duration_ms: Some(0),
+                details: ToolReceiptDetails::None,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn from_legacy(
+        call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        source: ExecutionSource,
+        result: ToolResult,
+    ) -> Self {
+        let call_id = call_id.into();
+        let tool_name = tool_name.into();
+        let details = receipt_details(&tool_name, result.details.as_ref());
+        let outcome = if result.success && result.error.is_none() {
+            ToolOutcome::Succeeded {
+                output: ToolOutput::new(result.output),
+            }
+        } else if let Some(error) = result.error {
+            ToolOutcome::Failed {
+                error: legacy_error(&error),
+                partial_output: (!result.output.is_empty()).then(|| ToolOutput::new(result.output)),
+            }
+        } else {
+            ToolOutcome::Failed {
+                error: ToolError::Execution {
+                    message: "Tool returned an unsuccessful result without an error".to_string(),
+                },
+                partial_output: (!result.output.is_empty()).then(|| ToolOutput::new(result.output)),
+            }
+        };
+
+        Self {
+            outcome: outcome.clone(),
+            receipt: ExecutionReceipt {
+                call_id,
+                tool_name,
+                source,
+                status: outcome.status(),
+                duration_ms: None,
+                details,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn with_duration(mut self, duration_ms: u64) -> Self {
+        self.receipt.duration_ms = Some(duration_ms);
+        self
+    }
+
+    #[must_use]
+    pub fn cancelled(
+        call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        source: ExecutionSource,
+        phase: ExecutionPhase,
+    ) -> Self {
+        let outcome = ToolOutcome::Cancelled { phase };
+        Self {
+            outcome: outcome.clone(),
+            receipt: ExecutionReceipt {
+                call_id: call_id.into(),
+                tool_name: tool_name.into(),
+                source,
+                status: outcome.status(),
+                duration_ms: Some(0),
+                details: ToolReceiptDetails::None,
+            },
+        }
+    }
+
+    /// Convert to the compatibility DTO used by existing headless clients.
+    #[must_use]
+    pub fn to_legacy(&self) -> ToolResult {
+        let details = match &self.receipt.details {
+            ToolReceiptDetails::BuiltIn(details) => Some(details.to_json()),
+            ToolReceiptDetails::Mcp {
+                server,
+                tool,
+                is_error,
+            } => Some(serde_json::json!({"server": server, "tool": tool, "isError": is_error})),
+            ToolReceiptDetails::Cached | ToolReceiptDetails::None => None,
+        };
+        match &self.outcome {
+            ToolOutcome::Succeeded { output } => ToolResult {
+                success: true,
+                output: output.as_str().to_string(),
+                error: None,
+                details,
+            },
+            ToolOutcome::Failed {
+                error,
+                partial_output,
+            } => ToolResult {
+                success: false,
+                output: partial_output
+                    .as_ref()
+                    .map_or_else(String::new, |output| output.as_str().to_string()),
+                error: Some(error.message().to_string()),
+                details,
+            },
+            ToolOutcome::Denied { reason } => ToolResult::failure(reason.message()),
+            ToolOutcome::Cancelled { phase } => {
+                ToolResult::failure(format!("Tool execution cancelled during {phase:?}"))
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn is_error(&self) -> bool {
+        !matches!(self.outcome, ToolOutcome::Succeeded { .. })
+    }
+
+    #[must_use]
+    pub fn model_content(&self) -> String {
+        match &self.outcome {
+            ToolOutcome::Succeeded { output } => output.as_str().to_string(),
+            ToolOutcome::Failed {
+                error,
+                partial_output: Some(output),
+            } => format!(
+                "Error: {}\n\nPartial output:\n{}",
+                error.message(),
+                output.as_str()
+            ),
+            ToolOutcome::Failed {
+                error,
+                partial_output: None,
+            } => format!("Error: {}", error.message()),
+            ToolOutcome::Denied { reason } => reason.message().to_string(),
+            ToolOutcome::Cancelled { phase } => {
+                format!("Tool execution cancelled during {phase:?}")
+            }
+        }
+    }
+}
+
+fn legacy_error(message: &str) -> ToolError {
+    if message.starts_with("Invalid ") {
+        ToolError::Validation {
+            message: message.to_string(),
+        }
+    } else if message.starts_with("MCP tool error:") {
+        ToolError::Transport {
+            message: message.to_string(),
+        }
+    } else {
+        ToolError::Execution {
+            message: message.to_string(),
+        }
+    }
+}
+
+fn receipt_details(tool_name: &str, details: Option<&serde_json::Value>) -> ToolReceiptDetails {
+    let Some(details) = details else {
+        return ToolReceiptDetails::None;
+    };
+
+    if let (Some(server), Some(tool), Some(is_error)) = (
+        details.get("server").and_then(serde_json::Value::as_str),
+        details.get("tool").and_then(serde_json::Value::as_str),
+        details.get("isError").and_then(serde_json::Value::as_bool),
+    ) {
+        return ToolReceiptDetails::Mcp {
+            server: server.to_string(),
+            tool: tool.to_string(),
+            is_error,
+        };
+    }
+
+    let builtin = match tool_name.to_ascii_lowercase().as_str() {
+        "bash" => BashDetails::from_json(details).map(ToolDetails::Bash),
+        "read" => serde_json::from_value(details.clone())
+            .ok()
+            .map(ToolDetails::Read),
+        "write" => serde_json::from_value(details.clone())
+            .ok()
+            .map(ToolDetails::Write),
+        "edit" => serde_json::from_value(details.clone())
+            .ok()
+            .map(ToolDetails::Edit),
+        "image" => ImageDetails::from_json(details).map(ToolDetails::Image),
+        "webfetch" | "web_fetch" => WebFetchDetails::from_json(details).map(ToolDetails::WebFetch),
+        "glob" => GlobDetails::from_json(details).map(ToolDetails::Glob),
+        "grep" => GrepDetails::from_json(details).map(ToolDetails::Grep),
+        "list" => ListDetails::from_json(details).map(ToolDetails::List),
+        _ => ToolDetails::from_json(details),
+    };
+
+    builtin.map_or(ToolReceiptDetails::None, ToolReceiptDetails::BuiltIn)
+}
+
+/// Legacy wire result of a tool execution.
 ///
 /// Contains the outcome of running a tool (bash, read, write, etc.).
 /// Either `success` is true with output, or false with an error message.
@@ -398,6 +764,23 @@ pub enum FromAgent {
         usage: Option<TokenUsage>,
     },
 
+    /// A tool-free side question started outside the main conversation history.
+    SideQuestionStart { side_id: String, question: String },
+
+    /// Streaming answer text for a side question.
+    SideQuestionChunk { side_id: String, content: String },
+
+    /// A side question completed without changing native conversation history.
+    SideQuestionEnd {
+        side_id: String,
+        question: String,
+        answer: String,
+        #[serde(default)]
+        error: Option<String>,
+        #[serde(default)]
+        usage: Option<TokenUsage>,
+    },
+
     /// Agent wants to call a tool
     ///
     /// The agent has requested to execute a tool (bash, read, write, etc.).
@@ -466,6 +849,10 @@ pub enum FromAgent {
         ///
         /// True if the tool executed without errors, false otherwise.
         success: bool,
+
+        /// Typed execution evidence when the producer has it available.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receipt: Option<ExecutionReceipt>,
     },
 
     /// Batch tool execution started
@@ -699,6 +1086,84 @@ mod tests {
                 auto,
                 ..
             } if first_kept_entry_index == 4 && tokens_before == 12345 && auto
+        ));
+    }
+
+    #[test]
+    fn legacy_failure_preserves_partial_output_in_typed_outcome() {
+        let execution = ToolExecution::from_legacy(
+            "call-1",
+            "bash",
+            ExecutionSource::Native,
+            ToolResult {
+                success: false,
+                output: "stdout before failure".to_string(),
+                error: Some("Exit code: 1".to_string()),
+                details: Some(serde_json::json!({
+                    "command": "false",
+                    "exit_code": 1,
+                    "cancelled": false,
+                    "truncated": false,
+                    "background": false,
+                    "required_approval": false,
+                })),
+            },
+        );
+
+        assert!(matches!(
+            execution.outcome,
+            ToolOutcome::Failed {
+                partial_output: Some(_),
+                ..
+            }
+        ));
+        assert!(execution.model_content().contains("stdout before failure"));
+        assert!(matches!(
+            execution.receipt.details,
+            ToolReceiptDetails::BuiltIn(ToolDetails::Bash(_))
+        ));
+    }
+
+    #[test]
+    fn legacy_contradiction_is_never_a_typed_success() {
+        let execution = ToolExecution::from_legacy(
+            "call-2",
+            "read",
+            ExecutionSource::RemoteClient,
+            ToolResult {
+                success: true,
+                output: "stale output".to_string(),
+                error: Some("remote failure".to_string()),
+                details: None,
+            },
+        );
+
+        assert!(matches!(execution.outcome, ToolOutcome::Failed { .. }));
+        assert!(execution.is_error());
+    }
+
+    #[test]
+    fn mcp_receipt_keeps_semantic_error_metadata() {
+        let execution = ToolExecution::from_legacy(
+            "call-3",
+            "mcp_server_tool",
+            ExecutionSource::Native,
+            ToolResult {
+                success: false,
+                output: "MCP error body".to_string(),
+                error: Some("MCP tool reported an error".to_string()),
+                details: Some(serde_json::json!({
+                    "server": "server",
+                    "tool": "tool",
+                    "isError": true,
+                })),
+            },
+        );
+
+        assert!(matches!(execution.outcome, ToolOutcome::Failed { .. }));
+        assert!(matches!(
+            execution.receipt.details,
+            ToolReceiptDetails::Mcp { is_error: true, .. }
         ));
     }
 }

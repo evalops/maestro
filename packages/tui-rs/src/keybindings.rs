@@ -22,6 +22,7 @@ enum RustTuiKeybindingAction {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum RustTuiKeybindingShortcut {
+    CtrlK,
     CtrlP,
     CtrlO,
     CtrlT,
@@ -40,7 +41,7 @@ pub struct RustTuiKeybindingLabels {
 impl Default for RustTuiKeybindingLabels {
     fn default() -> Self {
         Self {
-            command_palette: ctrl(KeyCode::Char('p')).display(),
+            command_palette: ctrl(KeyCode::Char('k')).display(),
             file_search: ctrl(KeyCode::Char('o')).display(),
             toggle_tool_outputs: ctrl(KeyCode::Char('t')).display(),
             edit_last_queued_follow_up: alt(KeyCode::Up).display(),
@@ -276,6 +277,7 @@ fn default_rust_shortcuts() -> HashMap<&'static str, &'static str> {
             std::env::var_os("TMUX").is_some(),
         )) {
             RustTuiKeybindingShortcut::CtrlP => "ctrl+p",
+            RustTuiKeybindingShortcut::CtrlK => "ctrl+k",
             RustTuiKeybindingShortcut::CtrlO => "ctrl+o",
             RustTuiKeybindingShortcut::CtrlT => "ctrl+t",
             RustTuiKeybindingShortcut::AltUp => "alt+up",
@@ -283,7 +285,7 @@ fn default_rust_shortcuts() -> HashMap<&'static str, &'static str> {
         };
 
     HashMap::from([
-        ("command-palette", "ctrl+p"),
+        ("command-palette", "ctrl+k"),
         ("file-search", "ctrl+o"),
         ("toggle-tool-outputs", "ctrl+t"),
         ("edit-last-follow-up", queued_follow_up),
@@ -516,7 +518,14 @@ fn inspect_keybindings_config_at_path(path: &Path) -> KeybindingConfigReport {
             "toggle-tool-outputs",
             "edit-last-follow-up",
         ],
-        &["ctrl+p", "ctrl+o", "ctrl+t", "alt+up", "shift+left"],
+        &[
+            "ctrl+k",
+            "ctrl+p",
+            "ctrl+o",
+            "ctrl+t",
+            "alt+up",
+            "shift+left",
+        ],
         &mut issues,
     );
 
@@ -645,7 +654,7 @@ fn default_shortcuts(
     HashMap::from([
         (
             RustTuiKeybindingAction::CommandPalette,
-            RustTuiKeybindingShortcut::CtrlP,
+            RustTuiKeybindingShortcut::CtrlK,
         ),
         (
             RustTuiKeybindingAction::FileSearch,
@@ -723,6 +732,7 @@ fn parse_shortcut_name(value: &str) -> Option<RustTuiKeybindingShortcut> {
         .collect::<String>()
         .to_ascii_lowercase();
     match normalized.as_str() {
+        "ctrl+k" => Some(RustTuiKeybindingShortcut::CtrlK),
         "ctrl+p" => Some(RustTuiKeybindingShortcut::CtrlP),
         "ctrl+o" => Some(RustTuiKeybindingShortcut::CtrlO),
         "ctrl+t" => Some(RustTuiKeybindingShortcut::CtrlT),
@@ -734,6 +744,7 @@ fn parse_shortcut_name(value: &str) -> Option<RustTuiKeybindingShortcut> {
 
 fn binding_for_shortcut(shortcut: RustTuiKeybindingShortcut) -> KeyBinding {
     match shortcut {
+        RustTuiKeybindingShortcut::CtrlK => ctrl(KeyCode::Char('k')),
         RustTuiKeybindingShortcut::CtrlP => ctrl(KeyCode::Char('p')),
         RustTuiKeybindingShortcut::CtrlO => ctrl(KeyCode::Char('o')),
         RustTuiKeybindingShortcut::CtrlT => ctrl(KeyCode::Char('t')),
@@ -744,6 +755,9 @@ fn binding_for_shortcut(shortcut: RustTuiKeybindingShortcut) -> KeyBinding {
 
 fn shortcut_for_binding(binding: KeyBinding) -> RustTuiKeybindingShortcut {
     match (binding.key, binding.modifiers) {
+        (KeyCode::Char('k'), crossterm::event::KeyModifiers::CONTROL) => {
+            RustTuiKeybindingShortcut::CtrlK
+        }
         (KeyCode::Char('p'), crossterm::event::KeyModifiers::CONTROL) => {
             RustTuiKeybindingShortcut::CtrlP
         }
@@ -824,7 +838,7 @@ mod tests {
 
         let resolved = load_rust_tui_keybindings_from_path(Some(&path), "wezterm", false);
 
-        assert_eq!(resolved.command_palette, ctrl(KeyCode::Char('p')));
+        assert_eq!(resolved.command_palette, ctrl(KeyCode::Char('k')));
         assert_eq!(resolved.file_search, ctrl(KeyCode::Char('o')));
     }
 

@@ -135,7 +135,7 @@ All widgets implement ratatui's `Widget` trait.
 
 - **`message.rs`**: `ChatView`, `ChatInputWidget`, `MessageWidget`, `StatusBarWidget`
 - **`approval.rs`**: `ApprovalModal`, `ApprovalController` for tool approval flow
-- **`command_palette.rs`**: Ctrl+P command search modal
+- **`command_palette.rs`**: Ctrl+K typed resource palette
 - **`file_search.rs`**: `@` file search modal
 - **`session_switcher.rs`**: Ctrl+O session browser
 - **`textarea.rs`**: Text input with cursor positioning (from Codex)

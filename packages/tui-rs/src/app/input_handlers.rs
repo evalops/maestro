@@ -17,6 +17,7 @@ impl App {
             ActiveModal::SessionSwitcher => {
                 return self.handle_session_switcher_key(code, ctrl).await
             }
+            ActiveModal::Operations => return self.handle_operations_key(code),
             ActiveModal::CommandPalette => {
                 return self.handle_command_palette_key(code, ctrl).await
             }
@@ -42,8 +43,7 @@ impl App {
         }
 
         if self.matches_binding(self.command_palette_binding, code, modifiers) {
-            self.command_palette.show();
-            self.active_modal = ActiveModal::CommandPalette;
+            self.show_command_palette();
             return Ok(());
         }
         if self.matches_binding(self.file_search_binding, code, modifiers) {
@@ -392,11 +392,28 @@ impl App {
                 self.active_modal = ActiveModal::None;
             }
             KeyCode::Enter => {
+                if self.state.busy {
+                    self.state.status = Some(
+                        "Wait for the active response to finish before switching sessions."
+                            .to_string(),
+                    );
+                    return Ok(());
+                }
                 if let Some(session_id) = self.session_switcher.confirm() {
                     // Load and restore the session
                     match self.session_manager.load_session(&session_id) {
                         Ok(session) => {
+                            self.credential_vault.clear();
+                            crate::plan_mode::set_active_session_id(None);
+                            if let Some(agent) = &self.native_agent {
+                                // Drop any active-session state before the new
+                                // transcript and credential scope become visible.
+                                agent.clear_history();
+                            }
                             restore_visible_session_messages(&mut self.state, &session);
+                            self.plan_review_comments = crate::session::reconstruct_plan_review(
+                                &session.plan_review_events,
+                            );
 
                             self.state.session_id = Some(session_id.clone());
                             self.state.status = Some(format!("Resumed session: {session_id}"));
@@ -456,6 +473,7 @@ impl App {
                                 session.file_path.as_str(),
                             ) {
                                 self.session_manager.reset_session();
+                                crate::plan_mode::set_active_session_id(None);
                                 self.session_resume_failed = true;
                                 self.state.error =
                                     Some(format!("Failed to resume session writer: {err}"));
@@ -464,6 +482,7 @@ impl App {
                                 ));
                             } else {
                                 self.session_resume_failed = false;
+                                crate::plan_mode::set_active_session_id(Some(session_id.clone()));
                             }
                         }
                         Err(e) => {
@@ -495,7 +514,98 @@ impl App {
         Ok(())
     }
 
+    fn handle_operations_key(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Esc => {
+                self.operations.hide();
+                self.active_modal = ActiveModal::None;
+            }
+            KeyCode::Up => self.operations.move_up(),
+            KeyCode::Down => self.operations.move_down(),
+            KeyCode::Home => self.operations.select_first(),
+            KeyCode::End => self.operations.select_last(),
+            KeyCode::Left | KeyCode::BackTab => self.operations.focus_previous(),
+            KeyCode::Right | KeyCode::Tab => self.operations.focus_next(),
+            KeyCode::PageUp => self.operations.scroll_up(),
+            KeyCode::PageDown => self.operations.scroll_down(),
+            KeyCode::Char('r') => self.operations.refresh(),
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Handle keys in command palette modal
+    pub(super) fn show_command_palette(&mut self) {
+        let mut resources = Vec::new();
+        let mut commands = self.command_registry.all();
+        commands.sort_by(|left, right| left.name.cmp(&right.name));
+        resources.extend(commands.into_iter().map(|command| {
+            PaletteResource::new(
+                PaletteResourceKind::Command,
+                command.name.clone(),
+                format!("/{}", command.name),
+            )
+            .description(command.description.clone())
+            .search_terms(command.aliases.clone())
+        }));
+        resources.extend(self.workspace_files.iter().map(|file| {
+            PaletteResource::new(
+                PaletteResourceKind::File,
+                file.relative_path.clone(),
+                file.relative_path.clone(),
+            )
+            .description(file.name.clone())
+        }));
+        if let Ok(sessions) = self.session_manager.list_sessions() {
+            resources.extend(sessions.into_iter().map(|session| {
+                let mut resource = PaletteResource::new(
+                    PaletteResourceKind::Session,
+                    session.id.clone(),
+                    session.title(),
+                )
+                .description(format!(
+                    "{} · {} messages · {}",
+                    session.timestamp,
+                    session.stats.total_messages(),
+                    session.model
+                ))
+                .search_terms([session.cwd.clone(), session.model.clone()]);
+                if session.is_favorite() {
+                    resource = resource.status("favorite");
+                }
+                resource
+            }));
+        }
+        resources.extend(
+            crate::model_catalog::available_models()
+                .into_iter()
+                .map(|model| {
+                    let mut resource = PaletteResource::from(&model).description(format!(
+                        "{} · {}k context · {:?}",
+                        model.provider,
+                        model.capabilities.context_tokens / 1000,
+                        model.verification.state
+                    ));
+                    if model.id == self.current_model {
+                        resource = resource.status("current");
+                    }
+                    resource
+                }),
+        );
+        let current_theme = crate::themes::current_theme_name();
+        resources.extend(crate::themes::available_themes().into_iter().map(|theme| {
+            let mut resource =
+                PaletteResource::new(PaletteResourceKind::Theme, theme.clone(), theme.clone());
+            if theme == current_theme {
+                resource = resource.status("current");
+            }
+            resource
+        }));
+        self.command_palette.set_resources(resources);
+        self.command_palette.show();
+        self.active_modal = ActiveModal::CommandPalette;
+    }
+
     pub(super) async fn handle_command_palette_key(
         &mut self,
         code: KeyCode,
@@ -507,11 +617,44 @@ impl App {
                 self.active_modal = ActiveModal::None;
             }
             KeyCode::Enter => {
-                if let Some(cmd_name) = self.command_palette.confirm() {
-                    // Set input to the command
-                    self.state.set_input(&format!("/{cmd_name}"));
-                    // Execute it
-                    self.execute_slash_command().await?;
+                if let Some(resource) = self.command_palette.confirm() {
+                    match resource.kind {
+                        PaletteResourceKind::Command => {
+                            self.state.set_input(&format!("/{}", resource.id));
+                            self.execute_slash_command().await?;
+                        }
+                        PaletteResourceKind::File => {
+                            for c in resource.id.chars() {
+                                self.state.insert_char(c);
+                            }
+                            self.state.insert_char(' ');
+                        }
+                        PaletteResourceKind::Session => {
+                            if self.state.busy {
+                                self.state.status = Some(
+                                    "Wait for the active response to finish before switching sessions."
+                                        .to_string(),
+                                );
+                                self.active_modal = ActiveModal::None;
+                                return Ok(());
+                            }
+                            self.session_switcher.show();
+                            if self.session_switcher.select_by_id(&resource.id) {
+                                self.handle_session_switcher_key(KeyCode::Enter, false)
+                                    .await?;
+                            } else {
+                                self.state.error = Some("Session no longer exists".to_string());
+                            }
+                        }
+                        PaletteResourceKind::Model => {
+                            self.handle_command_action(CommandAction::SetModel(resource.id))
+                                .await;
+                        }
+                        PaletteResourceKind::Theme => {
+                            self.handle_command_action(CommandAction::SetTheme(resource.id))
+                                .await;
+                        }
+                    }
                 }
                 self.active_modal = ActiveModal::None;
             }

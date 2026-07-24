@@ -90,6 +90,7 @@
 //!  | <------- ToolEnd -----------|
 //! ```
 
+use crate::agent::ExecutionReceipt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -619,6 +620,8 @@ pub enum FromAgentMessage {
         tool: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         details: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receipt: Option<ExecutionReceipt>,
     },
     /// Client-side tool execution requested
     ClientToolRequest {

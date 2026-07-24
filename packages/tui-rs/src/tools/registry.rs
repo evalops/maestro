@@ -119,7 +119,8 @@ use super::status;
 use super::todo;
 use super::web_fetch::{WebFetchArgs, WebFetchTool};
 use crate::agent::{
-    vault_credentials_in_json, vault_credentials_in_text, FromAgent, ToolDefinition, ToolResult,
+    CredentialVault, DenialReason, ExecutionSource, FromAgent, ToolDefinition, ToolExecution,
+    ToolResult,
 };
 use crate::lsp;
 use crate::mcp::{
@@ -136,13 +137,17 @@ const MAX_LIST_LINES: usize = 200;
 const MAX_DIFF_LINES: usize = 400;
 const MCP_RECONNECT_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
 
-fn vault_tool_result_credentials(mut result: ToolResult) -> ToolResult {
-    result.output = vault_credentials_in_text(&result.output);
+fn vault_tool_result_credentials(
+    vault: &CredentialVault,
+    generation: u64,
+    mut result: ToolResult,
+) -> ToolResult {
+    result.output = vault.vault_in_text_at_generation(generation, &result.output);
     if let Some(error) = result.error.take() {
-        result.error = Some(vault_credentials_in_text(&error));
+        result.error = Some(vault.vault_in_text_at_generation(generation, &error));
     }
     if let Some(details) = result.details.take() {
-        result.details = Some(vault_credentials_in_json(&details));
+        result.details = Some(vault.vault_in_json_at_generation(generation, &details));
     }
     result
 }
@@ -382,6 +387,9 @@ pub struct McpServerStatus {
 /// non-Sync primitives. However, it can be moved across async tasks and used within
 /// a single-threaded context safely.
 pub struct ToolExecutor {
+    /// Shared vault used to keep credential references valid across this execution session.
+    credential_vault: CredentialVault,
+
     /// Bash command execution tool
     ///
     /// Handles shell command execution with approval logic and timeout enforcement.
@@ -470,6 +478,14 @@ impl ToolExecutor {
     /// let executor = ToolExecutor::new(path.display().to_string());
     /// ```
     pub fn new(cwd: impl Into<String>) -> Self {
+        Self::with_credential_vault(cwd, CredentialVault::new())
+    }
+
+    /// Create a new tool executor using a caller-provided credential vault.
+    pub fn with_credential_vault(
+        cwd: impl Into<String>,
+        credential_vault: CredentialVault,
+    ) -> Self {
         let cwd = cwd.into();
         let cwd_path = std::path::Path::new(&cwd);
 
@@ -492,6 +508,7 @@ impl ToolExecutor {
         }
 
         Self {
+            credential_vault,
             bash: BashTool::new(&cwd),
             sandbox_policy: None,
             web_fetch: WebFetchTool::new(),
@@ -516,6 +533,15 @@ impl ToolExecutor {
     /// - `cwd`: Working directory for all tool operations
     /// - `cache_config`: Configuration for the tool result cache
     pub fn with_cache_config(cwd: impl Into<String>, cache_config: CacheConfig) -> Self {
+        Self::with_cache_config_and_credential_vault(cwd, cache_config, CredentialVault::new())
+    }
+
+    /// Create a new tool executor with custom cache configuration and a shared vault.
+    pub fn with_cache_config_and_credential_vault(
+        cwd: impl Into<String>,
+        cache_config: CacheConfig,
+        credential_vault: CredentialVault,
+    ) -> Self {
         let cwd = cwd.into();
         let cwd_path = std::path::Path::new(&cwd);
 
@@ -538,6 +564,7 @@ impl ToolExecutor {
         }
 
         Self {
+            credential_vault,
             bash: BashTool::new(&cwd),
             sandbox_policy: None,
             web_fetch: WebFetchTool::new(),
@@ -560,6 +587,16 @@ impl ToolExecutor {
         self.bash = BashTool::new(&self.cwd).with_sandbox_policy(policy.clone());
         self.sandbox_policy = Some(policy);
         self
+    }
+
+    /// Return a clone of the vault used by this executor.
+    #[must_use]
+    pub fn credential_vault(&self) -> CredentialVault {
+        self.credential_vault.clone()
+    }
+
+    pub(crate) fn credential_generation(&self) -> u64 {
+        self.credential_vault.generation()
     }
 
     /// Get the list of loaded inline tools
@@ -1021,6 +1058,24 @@ impl ToolExecutor {
         event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
         call_id: &str,
     ) -> ToolResult {
+        self.execute_at_generation(
+            tool_name,
+            args,
+            event_tx,
+            call_id,
+            self.credential_generation(),
+        )
+        .await
+    }
+
+    pub(crate) async fn execute_at_generation(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+        call_id: &str,
+        generation: u64,
+    ) -> ToolResult {
         if self.sandbox_policy.is_some()
             && self.inline_tools.contains_key(&tool_name.to_lowercase())
         {
@@ -1036,7 +1091,7 @@ impl ToolExecutor {
         }
 
         // Check cache for cacheable tools
-        let cache_key = CacheKey::new(tool_name, args);
+        let cache_key = CacheKey::for_generation(tool_name, args, generation);
         let is_cacheable = self
             .cache
             .read()
@@ -1062,6 +1117,7 @@ impl ToolExecutor {
                         let _ = tx.send(FromAgent::ToolEnd {
                             call_id: call_id.to_string(),
                             success: !cached.is_error,
+                            receipt: None,
                         });
                     }
 
@@ -1080,7 +1136,12 @@ impl ToolExecutor {
         }
 
         // Execute the tool
-        let result = self.execute_impl(tool_name, args, event_tx, call_id).await;
+        let result = vault_tool_result_credentials(
+            &self.credential_vault,
+            generation,
+            self.execute_impl(tool_name, args, event_tx, call_id, generation)
+                .await,
+        );
 
         // Store result in cache for cacheable tools
         if is_cacheable {
@@ -1100,6 +1161,130 @@ impl ToolExecutor {
 
         result
     }
+
+    /// Execute a tool and convert the legacy transport DTO into the typed internal outcome.
+    ///
+    /// The existing `execute` API remains for headless and control-plane clients which still
+    /// exchange the legacy `{ success, output, error, details }` schema.
+    pub async fn execute_with_receipt(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+        call_id: &str,
+    ) -> ToolExecution {
+        self.execute_with_receipt_at_generation(
+            tool_name,
+            args,
+            event_tx,
+            call_id,
+            self.credential_generation(),
+        )
+        .await
+    }
+
+    pub(crate) async fn execute_with_receipt_at_generation(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+        call_id: &str,
+        generation: u64,
+    ) -> ToolExecution {
+        if self.sandbox_policy.is_some()
+            && self.inline_tools.contains_key(&tool_name.to_lowercase())
+        {
+            let execution = ToolExecution::denied(
+                call_id,
+                tool_name,
+                DenialReason::SandboxPolicy {
+                    message: "Inline shell tools are disabled for sandboxed exec runs".to_string(),
+                },
+            );
+            emit_typed_tool_end(event_tx, call_id, &execution);
+            return execution;
+        }
+        if matches!(self.sandbox_policy, Some(SandboxPolicy::ReadOnly))
+            && matches!(tool_name.to_lowercase().as_str(), "write" | "edit")
+        {
+            let execution = ToolExecution::denied(
+                call_id,
+                tool_name,
+                DenialReason::SandboxPolicy {
+                    message: "Tool blocked by read-only sandbox policy".to_string(),
+                },
+            );
+            emit_typed_tool_end(event_tx, call_id, &execution);
+            return execution;
+        }
+        if let FirewallVerdict::Block { reason } = self.firewall_verdict(tool_name, args) {
+            let execution = ToolExecution::denied(
+                call_id,
+                tool_name,
+                DenialReason::ActionFirewall {
+                    message: format!("Blocked by action firewall: {reason}"),
+                },
+            );
+            emit_typed_tool_end(event_tx, call_id, &execution);
+            return execution;
+        }
+
+        let started = Instant::now();
+        let cache_key = CacheKey::for_generation(tool_name, args, generation);
+        let cache_hit =
+            self.cache.read().ok().is_some_and(|cache| {
+                cache.is_cacheable(tool_name) && cache.contains_fresh(&cache_key)
+            });
+        if let Some(tx) = event_tx {
+            let _ = tx.send(FromAgent::ToolStart {
+                call_id: call_id.to_string(),
+            });
+        }
+        // Execute without event forwarding so the receipt-bearing ToolEnd below is the
+        // sole terminal event for this call.
+        let result = self
+            .execute_at_generation(tool_name, args, None, call_id, generation)
+            .await;
+        let mut execution = ToolExecution::from_legacy(
+            call_id,
+            tool_name,
+            if cache_hit {
+                ExecutionSource::Cache
+            } else {
+                ExecutionSource::Native
+            },
+            result,
+        )
+        .with_duration(started.elapsed().as_millis() as u64);
+        if cache_hit {
+            execution.receipt.details = crate::agent::ToolReceiptDetails::Cached;
+        }
+        emit_typed_tool_end(event_tx, call_id, &execution);
+        execution
+    }
+}
+
+fn emit_typed_tool_end(
+    event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+    call_id: &str,
+    execution: &ToolExecution,
+) {
+    let Some(tx) = event_tx else {
+        return;
+    };
+
+    let result = execution.to_legacy();
+    if !result.output.is_empty() {
+        let _ = tx.send(FromAgent::ToolOutput {
+            call_id: call_id.to_string(),
+            content: result.output,
+        });
+    }
+    let _ = tx.send(FromAgent::ToolEnd {
+        call_id: call_id.to_string(),
+        success: result.success,
+        receipt: Some(execution.receipt.clone()),
+    });
 }
 
 mod execute;
