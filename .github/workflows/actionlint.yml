@@ -1,10 +1,12 @@
 name: actionlint
 
 on:
+  # Run on every PR: actionlint is a required status check, and a
+  # path-filtered required check can never report on PRs that do not touch
+  # these paths, wedging mergeStateStatus at BLOCKED (seen on mirror sync
+  # PRs 868/870). The job is ~20s; align with maestro-internal, which runs
+  # it on all PRs.
   pull_request:
-    paths:
-      - ".github/workflows/**"
-      - ".github/actions/**"
   push:
     branches: [main]
     paths:
