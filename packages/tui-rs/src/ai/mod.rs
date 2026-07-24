@@ -90,7 +90,7 @@ pub use anthropic::AnthropicClient;
 pub use app_message::{from_api_messages, transform_to_api_messages, AppMessage, BashExecution};
 pub use client::{
     create_client, create_client_for_model, provider_model_name, AiClient, AiProvider,
-    UnifiedClient,
+    UnifiedClient, DEFAULT_STREAM_IDLE_TIMEOUT, DEFAULT_STREAM_MAX_RETRIES,
 };
 pub use google::GoogleClient;
 pub use openai::OpenAiClient;

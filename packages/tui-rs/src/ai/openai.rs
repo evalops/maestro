@@ -576,6 +576,7 @@ fn api_url_for_model(model: &str) -> &'static str {
 /// Like `AnthropicClient`, this implements `Send + Sync` for safe concurrent use.
 /// The `reqwest::Client` is internally synchronized and benefits from connection
 /// pooling when reused across requests.
+#[derive(Clone)]
 pub struct OpenAiClient {
     /// Reusable HTTP client with connection pooling
     client: reqwest::Client,
