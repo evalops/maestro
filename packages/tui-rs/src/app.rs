@@ -654,6 +654,10 @@ pub struct App {
 
     /// Pre-turn file checkpoint awaiting turn completion (git worktrees only).
     pending_checkpoint: Option<crate::checkpoints::PendingTurn>,
+
+    /// Terminal-native turn notifications (OSC 9;4 tab progress, OSC 0 title,
+    /// focus-gated desktop notifications).
+    terminal_notifier: crate::notifications::TerminalStateNotifier,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -773,6 +777,16 @@ impl App {
         let custom_prompts = load_prompts(&workspace_dir);
         let (model_monitor, model_verification_rx) = crate::model_monitor::spawn_model_monitor();
 
+        let tui_settings = crate::config::load_config(&workspace_dir, None).tui;
+        let terminal_notifier = crate::notifications::TerminalStateNotifier::from_config(
+            tui_settings.as_ref().and_then(|tui| tui.tab_progress),
+            tui_settings.as_ref().and_then(|tui| tui.title_updates),
+            tui_settings
+                .as_ref()
+                .and_then(|tui| tui.focus_gated_notifications),
+            std::env::var("TERM_PROGRAM").ok().as_deref(),
+        );
+
         let command_registry = Arc::new(build_command_registry_with_extensions(
             &loaded_skills,
             &custom_prompts,
@@ -840,6 +854,7 @@ impl App {
             submit_queued_steering_after_interrupt: false,
             restore_queued_prompts_after_interrupt: false,
             pending_checkpoint: None,
+            terminal_notifier,
         }
     }
 
@@ -941,6 +956,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         // entire cwd (often `$HOME`), so typing `maestro` looked hung/broken.
         self.render()?;
 
+        // Save the terminal title and show the idle state (OSC title stack).
+        let startup_seqs = self.terminal_notifier.session_started();
+        Self::write_terminal_sequences(&startup_seqs);
+
         // Index @-mention files with a bounded, killable scan (see workspace.rs).
         // Kick it off on a background thread so agent spawn is not gated on it.
         let (workspace_tx, workspace_rx) = std::sync::mpsc::channel();
@@ -1038,7 +1057,13 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     Event::Resize(_, _) => {
                         needs_redraw = true;
                     }
-                    _ => {} // Ignore other events (focus, paste handled elsewhere)
+                    Event::FocusGained => {
+                        self.terminal_notifier.record_focus(true);
+                    }
+                    Event::FocusLost => {
+                        self.terminal_notifier.record_focus(false);
+                    }
+                    _ => {} // Ignore other events (paste handled elsewhere)
                 }
             }
 
@@ -1118,6 +1143,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         if process_count > 0 {
             eprintln!("[app] Cleaned up {process_count} background process(es)");
         }
+
+        // Clear tab progress and restore the original terminal title.
+        let shutdown_seqs = self.terminal_notifier.session_ended();
+        Self::write_terminal_sequences(&shutdown_seqs);
 
         // Cleanup terminal
         terminal::restore()?;
@@ -1558,7 +1587,32 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         self.last_keybinding_issue_summary = next_issue_summary;
     }
 
-    /// Handle an agent message (common for both backends)
+    /// Write terminal-notification escape sequences (OSC progress/title) to
+    /// the terminal device. No-ops when the terminal is not initialized.
+    fn write_terminal_sequences(seqs: &[String]) {
+        if !seqs.is_empty() {
+            let _ = terminal::write_raw(&seqs.concat());
+        }
+    }
+
+    /// Emit the turn-start terminal state: indeterminate tab progress and the
+    /// working title.
+    fn notify_terminal_turn_started(&mut self) {
+        let seqs = self.terminal_notifier.turn_started();
+        Self::write_terminal_sequences(&seqs);
+    }
+
+    /// Emit the turn-end terminal state: clear tab progress, restore the idle
+    /// title, and send the desktop notification unless the focus gate
+    /// suppresses it (terminal focused).
+    fn notify_terminal_turn_finished(&mut self) {
+        let seqs = self.terminal_notifier.turn_finished();
+        Self::write_terminal_sequences(&seqs);
+        if self.terminal_notifier.should_send_desktop_notification() {
+            crate::notifications::notify_turn_complete();
+        }
+    }
+
     async fn handle_agent_message(&mut self, msg: FromAgent) -> Result<()> {
         let response_end_info = match &msg {
             FromAgent::ResponseEnd { response_id, usage } => {
@@ -1572,6 +1626,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             let was_busy = self.state.busy;
             self.state.busy = true;
             self.queued_prompt_inflight = None;
+            if !was_busy {
+                self.notify_terminal_turn_started();
+            }
             if !was_busy {
                 let drain_count = match self.queued_prompts.front().map(|prompt| prompt.kind) {
                     Some(PromptKind::Steer)
@@ -1728,6 +1785,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 // the full agent turn.
                 if response_id == "done" {
                     self.state.busy = false;
+                    self.notify_terminal_turn_finished();
                     self.finalize_file_checkpoint();
                     self.queued_prompt_active = None;
                     self.queued_prompt_inflight = None;
@@ -1742,6 +1800,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             FromAgent::Error { .. } => {
                 // Clear busy state on error
                 self.state.busy = false;
+                self.notify_terminal_turn_finished();
                 self.finalize_file_checkpoint();
                 self.queued_prompt_inflight = None;
                 self.queued_prompt_active = None;
