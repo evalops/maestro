@@ -651,6 +651,9 @@ pub struct App {
 
     /// Interrupt should restore queued prompts into the composer after the run ends.
     restore_queued_prompts_after_interrupt: bool,
+
+    /// Pre-turn file checkpoint awaiting turn completion (git worktrees only).
+    pending_checkpoint: Option<crate::checkpoints::PendingTurn>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -836,6 +839,7 @@ impl App {
             editing_queued_follow_up: None,
             submit_queued_steering_after_interrupt: false,
             restore_queued_prompts_after_interrupt: false,
+            pending_checkpoint: None,
         }
     }
 
@@ -1724,6 +1728,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 // the full agent turn.
                 if response_id == "done" {
                     self.state.busy = false;
+                    self.finalize_file_checkpoint();
                     self.queued_prompt_active = None;
                     self.queued_prompt_inflight = None;
                     self.queued_prompt_inflight = self
@@ -1737,6 +1742,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             FromAgent::Error { .. } => {
                 // Clear busy state on error
                 self.state.busy = false;
+                self.finalize_file_checkpoint();
                 self.queued_prompt_inflight = None;
                 self.queued_prompt_active = None;
                 self.sync_queue_prompt_count();
@@ -2346,6 +2352,7 @@ fn policy_model_id(model: &str) -> String {
 // TESTS
 // ─────────────────────────────────────────────────────────────────────────────
 
+mod checkpoints;
 mod command_handlers;
 mod input_handlers;
 mod prompt_queue;

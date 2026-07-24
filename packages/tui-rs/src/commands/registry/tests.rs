@@ -684,6 +684,28 @@ fn rewind_parses_dry_run_and_rejects_history_only() {
 }
 
 #[test]
+fn rewind_parses_files_and_checkpoints_subcommands() {
+    let registry = build_command_registry();
+    match registry
+        .execute("/rewind files", "/tmp", None, None)
+        .expect("/rewind files")
+    {
+        CommandOutput::Action(CommandAction::Session(SessionAction::RewindFiles)) => {}
+        other => panic!("expected RewindFiles, got {other:?}"),
+    }
+    match registry
+        .execute("/rewind checkpoints", "/tmp", None, None)
+        .expect("/rewind checkpoints")
+    {
+        CommandOutput::Action(CommandAction::Session(SessionAction::ListCheckpoints)) => {}
+        other => panic!("expected ListCheckpoints, got {other:?}"),
+    }
+    assert!(registry
+        .execute("/rewind files extra", "/tmp", None, None)
+        .is_err());
+}
+
+#[test]
 fn btw_and_structured_plan_review_commands_parse() {
     let registry = build_command_registry();
     match registry

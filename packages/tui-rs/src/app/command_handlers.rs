@@ -561,6 +561,12 @@ impl App {
             SessionAction::Rewind { turns, dry_run } => {
                 self.rewind_turns(turns, dry_run);
             }
+            SessionAction::RewindFiles => {
+                self.rewind_files();
+            }
+            SessionAction::ListCheckpoints => {
+                self.list_file_checkpoints();
+            }
             SessionAction::Continue => {
                 self.continue_last_session();
             }

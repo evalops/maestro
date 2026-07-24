@@ -59,6 +59,8 @@ pub mod agents_cli;
 /// AI provider clients (Anthropic, OpenAI, etc.).
 /// Provides unified interfaces for different AI APIs with streaming support.
 pub mod ai;
+/// File-level checkpoints for `/rewind files` (restore files an agent turn modified).
+pub mod checkpoints;
 pub mod doctor;
 pub mod model_catalog;
 pub mod model_monitor;

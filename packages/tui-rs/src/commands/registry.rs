@@ -836,9 +836,22 @@ fn a2a_value_flag(token: &str) -> bool {
 }
 
 fn parse_rewind_args(raw: &str, usage: &str) -> Result<SessionAction, CommandError> {
+    let tokens: Vec<&str> = raw.split_whitespace().collect();
+    if let Some(&first) = tokens.first() {
+        if first == "files" || first == "checkpoints" {
+            if tokens.len() > 1 {
+                return Err(CommandError::new(usage));
+            }
+            return Ok(if first == "files" {
+                SessionAction::RewindFiles
+            } else {
+                SessionAction::ListCheckpoints
+            });
+        }
+    }
     let mut turns = None;
     let mut dry_run = false;
-    for arg in raw.split_whitespace() {
+    for arg in tokens {
         match arg {
             "--dry-run" => dry_run = true,
             _ if turns.is_none() => {
@@ -1050,16 +1063,19 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "rewind",
-            "Remove the last N user turns from in-memory history",
+            "Remove the last N user turns, or restore files from a checkpoint",
             CommandCategory::Session,
             Box::new(|ctx| {
                 Ok(CommandOutput::Action(CommandAction::Session(
-                    parse_rewind_args(&ctx.raw_args, "Usage: /rewind [n] [--dry-run]")?,
+                    parse_rewind_args(
+                        &ctx.raw_args,
+                        "Usage: /rewind [n] [--dry-run] | /rewind files | /rewind checkpoints",
+                    )?,
                 )))
             }),
         )
         .alias("undo")
-        .usage("/rewind [n] [--dry-run]"),
+        .usage("/rewind [n] [--dry-run] | /rewind files | /rewind checkpoints"),
     );
 
     registry.register(
@@ -1320,7 +1336,7 @@ pub fn build_command_registry() -> CommandRegistry {
                                 .strip_prefix(ctx.raw_args.split_whitespace().next().unwrap_or(""))
                                 .unwrap_or("")
                                 .trim(),
-                            "Usage: /session rewind [n] [--dry-run]",
+                            "Usage: /session rewind [n] [--dry-run] | /session rewind files | /session rewind checkpoints",
                         )?,
                     ))),
                     "info" | "" => Ok(CommandOutput::Action(CommandAction::ShowDiagnostics)),

@@ -325,6 +325,10 @@ pub enum SessionAction {
     Fork,
     /// Rewind last N user turns (default 1)
     Rewind { turns: usize, dry_run: bool },
+    /// Restore files from the most recent turn checkpoint
+    RewindFiles,
+    /// List file checkpoints recorded for this session
+    ListCheckpoints,
     /// Continue the most recent session for this workspace
     Continue,
 }
