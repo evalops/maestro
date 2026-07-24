@@ -15,11 +15,22 @@ runs:
         fi
 
         install_with_apt() {
+          # Bound apt's network waits. apt's defaults (120s per connection,
+          # several retries per index file) let a black-holed mirror stall
+          # "apt-get update" for 45+ minutes — this burned a full
+          # integration-tests job timeout on 2026-07-23 when
+          # azure.archive.ubuntu.com hung. 10s per fetch with one retry
+          # keeps the worst case at a couple of minutes.
+          local apt_opts=(
+            -o Acquire::http::Timeout=10
+            -o Acquire::https::Timeout=10
+            -o Acquire::Retries=1
+          )
           for attempt in 1 2 3; do
             if command -v sudo >/dev/null 2>&1; then
-              sudo apt-get update && sudo apt-get install -y ripgrep
+              sudo apt-get "${apt_opts[@]}" update && sudo apt-get "${apt_opts[@]}" install -y ripgrep
             else
-              apt-get update && apt-get install -y ripgrep
+              apt-get "${apt_opts[@]}" update && apt-get "${apt_opts[@]}" install -y ripgrep
             fi
             if command -v rg >/dev/null 2>&1; then
               return 0

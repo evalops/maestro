@@ -864,3 +864,165 @@ fn plugins_command_list_info_and_reload() {
         other => panic!("expected Plugins::Info via alias, got {other:?}"),
     }
 }
+
+fn prefix_test_registry() -> CommandRegistry {
+    let mut registry = CommandRegistry::new();
+    registry.register(
+        Command::new(
+            "quit",
+            "Quit the app",
+            CommandCategory::Session,
+            Box::new(|_| Ok(CommandOutput::Silent)),
+        )
+        .alias("exit"),
+    );
+    registry.register(
+        Command::new(
+            "queue",
+            "Manage queued prompts",
+            CommandCategory::Session,
+            Box::new(|_| Ok(CommandOutput::Silent)),
+        )
+        .alias("q"),
+    );
+    registry.register(Command::new(
+        "theme",
+        "Pick a theme",
+        CommandCategory::Ui,
+        Box::new(|_| Ok(CommandOutput::Silent)),
+    ));
+    registry
+}
+
+#[test]
+fn resolve_unique_prefix_unique_match() {
+    let registry = prefix_test_registry();
+
+    let resolved = registry
+        .resolve_unique_prefix("qui")
+        .expect("unique prefix")
+        .expect("a match");
+    assert_eq!(resolved.name, "quit");
+}
+
+#[test]
+fn resolve_unique_prefix_via_alias() {
+    let registry = prefix_test_registry();
+
+    // "exi" is a prefix of the "exit" alias and resolves to the canonical command.
+    let resolved = registry
+        .resolve_unique_prefix("exi")
+        .expect("unique prefix")
+        .expect("a match");
+    assert_eq!(resolved.name, "quit");
+}
+
+#[test]
+fn resolve_unique_prefix_ambiguous() {
+    let registry = prefix_test_registry();
+
+    // "qu" is a prefix of both "quit" and "queue" (and alias "q" is exact, not prefix-relevant here).
+    let mut candidates = registry.resolve_unique_prefix("qu").unwrap_err();
+    candidates.sort();
+    assert_eq!(candidates, vec!["queue".to_string(), "quit".to_string()]);
+}
+
+#[test]
+fn resolve_unique_prefix_no_match() {
+    let registry = prefix_test_registry();
+
+    assert!(registry.resolve_unique_prefix("xyz").unwrap().is_none());
+}
+
+#[test]
+fn resolve_unique_prefix_empty_is_no_match() {
+    let registry = prefix_test_registry();
+
+    assert!(registry.resolve_unique_prefix("").unwrap().is_none());
+}
+
+#[test]
+fn resolve_unique_prefix_is_case_insensitive() {
+    let registry = prefix_test_registry();
+
+    let resolved = registry
+        .resolve_unique_prefix("QUI")
+        .expect("unique prefix")
+        .expect("a match");
+    assert_eq!(resolved.name, "quit");
+}
+
+#[test]
+fn resolve_unique_prefix_real_registry_qui_is_quit() {
+    let registry = build_command_registry();
+
+    let resolved = registry
+        .resolve_unique_prefix("qui")
+        .expect("/qui should be unambiguous")
+        .expect("/qui should match a command");
+    assert_eq!(resolved.name, "quit");
+}
+
+#[test]
+fn resolve_typo_single_edit_rescues() {
+    let registry = prefix_test_registry();
+
+    // Transposition: "quti" -> "quit"
+    let resolved = registry
+        .resolve_typo("quti")
+        .expect("unique rescue")
+        .expect("a match");
+    assert_eq!(resolved.name, "quit");
+
+    // Missing letter: "them" -> "theme"
+    let resolved = registry
+        .resolve_typo("them")
+        .expect("unique rescue")
+        .expect("a match");
+    assert_eq!(resolved.name, "theme");
+}
+
+#[test]
+fn resolve_typo_ignores_short_input() {
+    let registry = prefix_test_registry();
+
+    // "qu" is within distance 2 of "quit"/"queue" but short input never rescues.
+    assert!(registry.resolve_typo("qu").unwrap().is_none());
+}
+
+#[test]
+fn resolve_typo_no_match_when_too_far() {
+    let registry = prefix_test_registry();
+
+    assert!(registry.resolve_typo("zebra").unwrap().is_none());
+}
+
+#[test]
+fn resolve_typo_ambiguous_returns_candidates() {
+    let mut registry = CommandRegistry::new();
+    registry.register(Command::new(
+        "dump",
+        "Dump state",
+        CommandCategory::Diagnostics,
+        Box::new(|_| Ok(CommandOutput::Silent)),
+    ));
+    registry.register(Command::new(
+        "pump",
+        "Pump state",
+        CommandCategory::Diagnostics,
+        Box::new(|_| Ok(CommandOutput::Silent)),
+    ));
+
+    // "xump" is distance 1 from both "dump" and "pump" (and a prefix of neither).
+    let candidates = registry.resolve_typo("xump").unwrap_err();
+    assert_eq!(candidates, vec!["dump".to_string(), "pump".to_string()]);
+}
+
+#[test]
+fn edit_distance_basics() {
+    assert_eq!(edit_distance("quit", "quit"), 0);
+    assert_eq!(edit_distance("quti", "quit"), 1);
+    assert_eq!(edit_distance("quit", "qui"), 1);
+    assert_eq!(edit_distance("quit", "quite"), 1);
+    assert_eq!(edit_distance("quit", "zebra"), 5);
+}

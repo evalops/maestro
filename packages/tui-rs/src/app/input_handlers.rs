@@ -246,6 +246,14 @@ impl App {
             KeyCode::Right => {
                 if ctrl || alt {
                     self.state.move_word_right();
+                } else if self.state.cursor() == self.state.input().len()
+                    && self.state.ghost_completion.is_some()
+                {
+                    // Accept the ghost-text completion (fish-shell style).
+                    if let Some(suffix) = self.state.ghost_completion.take() {
+                        self.state.insert_str(&suffix);
+                        self.update_slash_state();
+                    }
                 } else {
                     self.state.move_right();
                 }
@@ -254,7 +262,17 @@ impl App {
                 self.state.move_home_smart();
             }
             KeyCode::End => {
-                self.state.move_end();
+                if self.state.cursor() == self.state.input().len()
+                    && self.state.ghost_completion.is_some()
+                {
+                    // Already at end: End accepts the ghost-text completion.
+                    if let Some(suffix) = self.state.ghost_completion.take() {
+                        self.state.insert_str(&suffix);
+                        self.update_slash_state();
+                    }
+                } else {
+                    self.state.move_end();
+                }
             }
 
             // Submit or newline (Shift+Enter for newline)

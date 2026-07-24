@@ -248,10 +248,102 @@ impl CommandRegistry {
         None
     }
 
+    /// Resolve a mistyped command name when it is within edit distance 1 of
+    /// exactly one command name or alias (e.g. `quti` -> `quit`).
+    ///
+    /// This is the last-resort rescue before an unknown slash command falls
+    /// through to the agent as a prompt: a single-character typo should not
+    /// turn into a paid LLM call.
+    ///
+    /// Inputs shorter than 3 characters never match — at that length a
+    /// distance-1 match is more likely to be a different intent than a typo.
+    ///
+    /// # Returns
+    ///
+    /// Same contract as [`Self::resolve_unique_prefix`]: `Ok(Some(cmd))` for a
+    /// unique rescue, `Ok(None)` when nothing is close enough, and
+    /// `Err(candidates)` when more than one command is within edit distance 1.
+    pub fn resolve_typo(&self, typed: &str) -> Result<Option<Arc<Command>>, Vec<String>> {
+        let typed = typed.to_lowercase();
+        if typed.chars().count() < 3 {
+            return Ok(None);
+        }
+
+        let mut matches: Vec<Arc<Command>> = Vec::new();
+        for cmd in self.commands.values() {
+            let name_hit = edit_distance(&typed, &cmd.name.to_lowercase()) <= 1;
+            let alias_hit = cmd
+                .aliases
+                .iter()
+                .any(|alias| edit_distance(&typed, &alias.to_lowercase()) <= 1);
+            if name_hit || alias_hit {
+                matches.push(Arc::clone(cmd));
+            }
+        }
+
+        match matches.len() {
+            0 => Ok(None),
+            1 => Ok(matches.pop()),
+            _ => {
+                let mut names: Vec<String> = matches.iter().map(|cmd| cmd.name.clone()).collect();
+                names.sort_unstable();
+                Err(names)
+            }
+        }
+    }
+
     /// Get all commands
     #[must_use]
     pub fn all(&self) -> Vec<Arc<Command>> {
         self.commands.values().cloned().collect()
+    }
+
+    /// Resolve a partial command name when it is an unambiguous prefix of
+    /// exactly one command name or alias (e.g. `qui` -> `quit`).
+    ///
+    /// Used to make bare `Enter` on a partial slash command do what the user
+    /// means instead of erroring (or leaking the partial command to the agent
+    /// as a prompt).
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(Some(cmd))`: exactly one command matches the prefix
+    /// - `Ok(None)`: no command name or alias starts with `partial`
+    /// - `Err(candidates)`: the prefix is ambiguous; `candidates` is the
+    ///   sorted list of matching canonical command names for display
+    ///
+    /// Exact matches should be resolved via [`Self::get`] first; this method
+    /// only considers proper prefixes and is case-insensitive.
+    pub fn resolve_unique_prefix(
+        &self,
+        partial: &str,
+    ) -> Result<Option<Arc<Command>>, Vec<String>> {
+        let partial = partial.to_lowercase();
+        if partial.is_empty() {
+            return Ok(None);
+        }
+
+        let mut matches: Vec<Arc<Command>> = Vec::new();
+        for cmd in self.commands.values() {
+            let name_hit = cmd.name.to_lowercase().starts_with(&partial);
+            let alias_hit = cmd
+                .aliases
+                .iter()
+                .any(|alias| alias.to_lowercase().starts_with(&partial));
+            if name_hit || alias_hit {
+                matches.push(Arc::clone(cmd));
+            }
+        }
+
+        match matches.len() {
+            0 => Ok(None),
+            1 => Ok(matches.pop()),
+            _ => {
+                let mut names: Vec<String> = matches.iter().map(|cmd| cmd.name.clone()).collect();
+                names.sort_unstable();
+                Err(names)
+            }
+        }
     }
 
     /// Get all command names (including aliases)
@@ -385,6 +477,40 @@ impl Default for CommandRegistry {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Edit distance between two strings, counted in characters.
+///
+/// Optimal string alignment distance: Levenshtein plus adjacent-character
+/// transpositions at cost 1, since swapped neighbors ("quti") are the most
+/// common typo on a keyboard. Used for typo rescue of slash commands; inputs
+/// are command names, so strings stay short and the O(n*m) cost is negligible.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (n, m) = (a.len(), b.len());
+
+    let mut d = vec![vec![usize::MAX; m + 1]; n + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+
+    for i in 1..=n {
+        for j in 1..=m {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            d[i][j] = (d[i - 1][j] + 1)
+                .min(d[i][j - 1] + 1)
+                .min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+            }
+        }
+    }
+
+    d[n][m]
 }
 
 /// Parse argument string into typed values

@@ -326,6 +326,10 @@ impl Default for NotificationsSetting {
 pub struct TuiConfig {
     pub notifications: Option<NotificationsSetting>,
     pub animations: Option<bool>,
+    /// When true (default), an unrecognized slash command is forwarded to the
+    /// agent as a prompt. Set to false to surface an error instead, so a typo
+    /// can never become an unintended (and billed) agent call.
+    pub slash_command_fallback: Option<bool>,
 }
 
 /// Shell environment inheritance mode
@@ -480,6 +484,7 @@ pub static DEFAULT_CONFIG: std::sync::LazyLock<ComposerConfig> =
         tui: Some(TuiConfig {
             notifications: Some(NotificationsSetting::Enabled(true)),
             animations: Some(true),
+            slash_command_fallback: Some(true),
         }),
         file_opener: Some(FileOpener::Vscode),
         project_doc_max_bytes: Some(32 * 1024),
@@ -656,6 +661,9 @@ fn deep_merge(target: &mut ComposerConfig, source: &ComposerConfig) {
         }
         if source_tui.animations.is_some() {
             target_tui.animations = source_tui.animations;
+        }
+        if source_tui.slash_command_fallback.is_some() {
+            target_tui.slash_command_fallback = source_tui.slash_command_fallback;
         }
     }
 
@@ -1051,6 +1059,48 @@ mod tests {
         assert_eq!(config.model_provider.as_deref(), Some("openai"));
         assert_eq!(config.approval_policy, Some(ApprovalPolicy::Untrusted));
         assert_eq!(config.sandbox_mode, Some(SandboxMode::WorkspaceWrite));
+    }
+
+    #[test]
+    fn test_tui_slash_command_fallback_loads_from_project_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join(".composer");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let config_path = config_dir.join("config.toml");
+        fs::write(
+            &config_path,
+            r"
+[tui]
+slash_command_fallback = false
+",
+        )
+        .unwrap();
+
+        clear_config_cache();
+        let config = load_config(temp_dir.path(), None);
+        assert_eq!(
+            config.tui.and_then(|tui| tui.slash_command_fallback),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn test_deep_merge_tui_slash_command_fallback() {
+        let mut target = ComposerConfig::default();
+        let source = ComposerConfig {
+            tui: Some(TuiConfig {
+                slash_command_fallback: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        deep_merge(&mut target, &source);
+        assert_eq!(
+            target.tui.and_then(|tui| tui.slash_command_fallback),
+            Some(false)
+        );
     }
 
     #[test]

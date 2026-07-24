@@ -2159,3 +2159,96 @@ fn fork_clears_plan_review_state_and_plan_session_identity() {
     assert!(app.plan_review_comments.is_empty());
     assert_eq!(crate::plan_mode::active_session_id(), None);
 }
+
+#[tokio::test]
+async fn slash_unique_prefix_expands_and_executes() {
+    let mut app = new_test_app();
+    app.state.set_input("/qui");
+
+    app.handle_key(KeyCode::Enter, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+
+    assert!(app.should_quit);
+    assert_eq!(app.state.status.as_deref(), Some("Expanded /qui → /quit"));
+}
+
+#[tokio::test]
+async fn slash_typo_rescue_expands_and_executes() {
+    let mut app = new_test_app();
+    app.state.set_input("/quti");
+
+    app.handle_key(KeyCode::Enter, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+
+    assert!(app.should_quit);
+    assert_eq!(
+        app.state.status.as_deref(),
+        Some("Interpreted /quti as /quit")
+    );
+}
+
+#[tokio::test]
+async fn slash_ambiguous_prefix_restores_input_and_opens_dropdown() {
+    let mut app = new_test_app();
+    app.state.set_input("/qu");
+
+    app.handle_key(KeyCode::Enter, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+
+    assert!(!app.should_quit);
+    assert_eq!(app.state.input(), "/qu");
+    let error = app.state.error.as_deref().expect("ambiguity error");
+    assert!(error.contains("Ambiguous command: /qu"));
+    assert!(error.contains("/queue"));
+    assert!(error.contains("/quit"));
+    // The completion dropdown stays open so the user can pick a candidate.
+    assert!(app.slash_state.has_completions());
+}
+
+#[tokio::test]
+async fn slash_unknown_command_fallback_disabled_shows_error() {
+    let mut app = new_test_app();
+    app.state.unknown_slash_command_fallback = false;
+    app.state.set_input("/zzznotacommand");
+
+    app.handle_key(KeyCode::Enter, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+
+    assert!(!app.state.busy);
+    let error = app.state.error.as_deref().expect("unknown command error");
+    assert!(error.contains("Unknown command"));
+}
+
+#[tokio::test]
+async fn slash_ghost_completion_accepted_with_right_arrow() {
+    let mut app = new_test_app();
+    app.state.set_input("/qui");
+    app.update_slash_state();
+    assert_eq!(app.state.ghost_completion.as_deref(), Some("t"));
+
+    app.handle_key(KeyCode::Right, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+
+    assert_eq!(app.state.input(), "/quit");
+    assert!(app.state.ghost_completion.is_none());
+}
+
+#[tokio::test]
+async fn slash_ghost_completion_hidden_when_cursor_not_at_end() {
+    let mut app = new_test_app();
+    app.state.set_input("/qui");
+    app.update_slash_state();
+    assert!(app.state.ghost_completion.is_some());
+
+    app.handle_key(KeyCode::Left, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    app.update_slash_state();
+
+    assert!(app.state.ghost_completion.is_none());
+}

@@ -692,13 +692,20 @@ impl App {
         let prompt_history =
             crate::history::PromptHistory::load_with_config(history_config.clone())
                 .unwrap_or_else(|_| crate::history::PromptHistory::new(history_config));
-        Self::new_with_terminal_with_history(
+        let slash_command_fallback = config
+            .tui
+            .as_ref()
+            .and_then(|tui| tui.slash_command_fallback)
+            .unwrap_or(true);
+        let mut app = Self::new_with_terminal_with_history(
             terminal,
             capabilities,
             prompt_history,
             initial_prompt,
             context_window,
-        )
+        );
+        app.state.unknown_slash_command_fallback = slash_command_fallback;
+        app
     }
 
     fn new_with_terminal_with_history(
@@ -2011,6 +2018,7 @@ Slash Commands:
                     ChatInputWidgetOptions {
                         busy: state.busy,
                         pending_input_preview: None,
+                        ghost_text: None,
                     },
                 );
 
