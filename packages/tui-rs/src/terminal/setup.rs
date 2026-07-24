@@ -308,6 +308,22 @@ pub fn restore() -> io::Result<()> {
     restore_impl()
 }
 
+/// Write raw output (e.g. OSC escape sequences) to the terminal device.
+///
+/// Uses the terminal handle stored during [`init()`]; when the terminal was
+/// never initialized (headless/fallback contexts, unit tests) this is a
+/// no-op so callers never write stray sequences to stdout/stderr.
+pub fn write_raw(data: &str) -> io::Result<()> {
+    let mut guard = TTY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(ref mut tty) = *guard {
+        tty.write_all(data.as_bytes())?;
+        tty.flush()?;
+    }
+    Ok(())
+}
+
 fn restore_impl() -> io::Result<()> {
     // Get the TTY handle - recover from poisoned lock to ensure terminal cleanup
     let mut guard = TTY

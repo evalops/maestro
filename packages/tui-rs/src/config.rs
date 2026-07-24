@@ -321,6 +321,20 @@ impl Default for NotificationsSetting {
     }
 }
 
+/// Tab progress bar (OSC 9;4) support mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TabProgressMode {
+    /// Emit OSC 9;4 only when the detected terminal is known to support it
+    /// (iTerm2, `WezTerm`, ConEmu, detected via `TERM_PROGRAM`).
+    #[default]
+    Auto,
+    /// Always emit OSC 9;4 sequences, regardless of the detected terminal.
+    Always,
+    /// Never emit OSC 9;4 sequences.
+    Never,
+}
+
 /// TUI configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TuiConfig {
@@ -330,6 +344,15 @@ pub struct TuiConfig {
     /// agent as a prompt. Set to false to surface an error instead, so a typo
     /// can never become an unintended (and billed) agent call.
     pub slash_command_fallback: Option<bool>,
+    /// Tab progress bar via OSC 9;4 sequences: indeterminate while a turn is
+    /// running, cleared on completion. Defaults to `auto`.
+    pub tab_progress: Option<TabProgressMode>,
+    /// Update the terminal title (OSC 0) with working/idle state, restoring
+    /// the original title on exit. Defaults to true.
+    pub title_updates: Option<bool>,
+    /// Suppress desktop notifications while the terminal window is focused
+    /// (only when the terminal reports focus in/out events). Defaults to true.
+    pub focus_gated_notifications: Option<bool>,
 }
 
 /// Shell environment inheritance mode
@@ -485,6 +508,9 @@ pub static DEFAULT_CONFIG: std::sync::LazyLock<ComposerConfig> =
             notifications: Some(NotificationsSetting::Enabled(true)),
             animations: Some(true),
             slash_command_fallback: Some(true),
+            tab_progress: Some(TabProgressMode::Auto),
+            title_updates: Some(true),
+            focus_gated_notifications: Some(true),
         }),
         file_opener: Some(FileOpener::Vscode),
         project_doc_max_bytes: Some(32 * 1024),
@@ -664,6 +690,15 @@ fn deep_merge(target: &mut ComposerConfig, source: &ComposerConfig) {
         }
         if source_tui.slash_command_fallback.is_some() {
             target_tui.slash_command_fallback = source_tui.slash_command_fallback;
+        }
+        if source_tui.tab_progress.is_some() {
+            target_tui.tab_progress = source_tui.tab_progress;
+        }
+        if source_tui.title_updates.is_some() {
+            target_tui.title_updates = source_tui.title_updates;
+        }
+        if source_tui.focus_gated_notifications.is_some() {
+            target_tui.focus_gated_notifications = source_tui.focus_gated_notifications;
         }
     }
 
@@ -1101,6 +1136,59 @@ slash_command_fallback = false
             target.tui.and_then(|tui| tui.slash_command_fallback),
             Some(false)
         );
+    }
+
+    #[test]
+    fn test_tui_terminal_notification_flags_parse() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join(".composer");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let config_path = config_dir.join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+[tui]
+tab_progress = "always"
+title_updates = false
+focus_gated_notifications = false
+"#,
+        )
+        .unwrap();
+
+        clear_config_cache();
+        let config = load_config(temp_dir.path(), None);
+        let tui = config.tui.expect("tui config");
+        assert_eq!(tui.tab_progress, Some(TabProgressMode::Always));
+        assert_eq!(tui.title_updates, Some(false));
+        assert_eq!(tui.focus_gated_notifications, Some(false));
+    }
+
+    #[test]
+    fn test_deep_merge_tui_terminal_notification_flags() {
+        let mut target = ComposerConfig {
+            tui: Some(TuiConfig {
+                tab_progress: Some(TabProgressMode::Never),
+                title_updates: Some(false),
+                focus_gated_notifications: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // A source that only sets one flag must not clobber the others.
+        let source = ComposerConfig {
+            tui: Some(TuiConfig {
+                tab_progress: Some(TabProgressMode::Always),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        deep_merge(&mut target, &source);
+        let tui = target.tui.expect("tui config");
+        assert_eq!(tui.tab_progress, Some(TabProgressMode::Always));
+        assert_eq!(tui.title_updates, Some(false));
+        assert_eq!(tui.focus_gated_notifications, Some(false));
     }
 
     #[test]

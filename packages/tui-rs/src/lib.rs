@@ -598,9 +598,13 @@ pub use notifications::{
     notify_turn_complete,
     send_notification,
     send_terminal_notification,
+    tab_progress_enabled,
+    term_supports_tab_progress,
+    FocusGate,
     NotificationConfig,
     NotificationEvent,
     NotificationPayload,
+    TerminalStateNotifier,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
