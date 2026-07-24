@@ -80,7 +80,7 @@ use crate::commands::{
 use crate::components::{
     calculate_input_height, ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest,
     ChatInputWidget, ChatInputWidgetOptions, ChatView, CommandPalette, FileSearchModal,
-    ModelSelector, OperationsModal, SessionSwitcher, ShortcutsHelp, ThemeSelector,
+    ModelSelector, OperationsModal, RewindPicker, SessionSwitcher, ShortcutsHelp, ThemeSelector,
 };
 use crate::config_watcher::{ConfigEvent, ConfigWatcher, ConfigWatcherBuilder};
 use crate::files::{get_workspace_files, WorkspaceFile};
@@ -136,6 +136,8 @@ pub enum ActiveModal {
     ThemeSelector,
     /// Keyboard shortcuts help overlay
     ShortcutsHelp,
+    /// File checkpoint restore picker (double-Esc on empty input)
+    RewindPicker,
 }
 
 #[derive(Debug, Clone)]
@@ -548,6 +550,9 @@ pub struct App {
     /// Keyboard shortcuts help overlay.
     shortcuts_help: ShortcutsHelp,
 
+    /// File checkpoint restore picker modal.
+    rewind_picker: RewindPicker,
+
     /// Token usage and cost tracker.
     usage_tracker: crate::usage::UsageTracker,
 
@@ -818,6 +823,7 @@ impl App {
             model_selector: ModelSelector::new(),
             theme_selector: ThemeSelector::new(),
             shortcuts_help: ShortcutsHelp::new_with_binding_labels(keybinding_labels),
+            rewind_picker: RewindPicker::new(),
             usage_tracker: crate::usage::UsageTracker::new(),
             prompt_history,
             tool_history: crate::tools::ToolHistory::default(),
@@ -2071,6 +2077,7 @@ Slash Commands:
         let model_selector = &mut self.model_selector;
         let theme_selector = &mut self.theme_selector;
         let shortcuts_help = &self.shortcuts_help;
+        let rewind_picker = &mut self.rewind_picker;
 
         self.terminal.draw(|frame| {
             let area = frame.area();
@@ -2123,6 +2130,9 @@ Slash Commands:
                 }
                 ActiveModal::ShortcutsHelp => {
                     frame.render_widget(shortcuts_help.clone(), area);
+                }
+                ActiveModal::RewindPicker => {
+                    rewind_picker.render(frame, area);
                 }
                 ActiveModal::None => {}
             }

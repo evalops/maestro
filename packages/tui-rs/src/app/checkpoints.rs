@@ -57,7 +57,56 @@ impl App {
             self.state.status = Some("No file checkpoints recorded for this session.".to_string());
             return;
         };
-        match crate::checkpoints::restore_latest(&store) {
+        let result = crate::checkpoints::restore_latest(&store);
+        self.report_file_restore(result);
+    }
+
+    /// Double-Esc on an empty composer: open the rewind picker with this
+    /// session's file checkpoints, newest first. Falls back to a status
+    /// message when there is nothing to pick.
+    pub(super) fn open_rewind_picker(&mut self) {
+        if self.state.busy {
+            self.state.status =
+                Some("Wait for the active response to finish before rewinding.".to_string());
+            return;
+        }
+        let Some(store) = self.file_checkpoint_store() else {
+            self.state.status = Some("No file checkpoints recorded for this session.".to_string());
+            return;
+        };
+        let checkpoints = store.list();
+        if checkpoints.is_empty() {
+            self.state.status = Some("No file checkpoints recorded for this session.".to_string());
+            return;
+        }
+        self.rewind_picker
+            .show(checkpoints.into_iter().rev().collect());
+        self.active_modal = ActiveModal::RewindPicker;
+    }
+
+    /// Restore the checkpoint chosen in the rewind picker. Uses the same
+    /// hash-guarded restore path as `/rewind files`: files the user edited
+    /// after the turn are skipped, never clobbered.
+    pub(super) fn restore_file_checkpoint(&mut self, checkpoint: crate::checkpoints::Checkpoint) {
+        if self.state.busy {
+            self.state.status =
+                Some("Wait for the active response to finish before rewinding.".to_string());
+            return;
+        }
+        let Some(store) = self.file_checkpoint_store() else {
+            self.state.status = Some("No file checkpoints recorded for this session.".to_string());
+            return;
+        };
+        let result = crate::checkpoints::restore_checkpoint(&store, &checkpoint).map(Some);
+        self.report_file_restore(result);
+    }
+
+    /// Surface the outcome of a file checkpoint restore to the user.
+    fn report_file_restore(
+        &mut self,
+        result: std::io::Result<Option<crate::checkpoints::RestoreReport>>,
+    ) {
+        match result {
             Ok(Some(report)) => {
                 let mut msg = format!(
                     "Restored checkpoint {} (\"{}\"):",
