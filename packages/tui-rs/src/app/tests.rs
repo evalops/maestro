@@ -2252,3 +2252,56 @@ async fn slash_ghost_completion_hidden_when_cursor_not_at_end() {
 
     assert!(app.state.ghost_completion.is_none());
 }
+
+#[tokio::test]
+async fn double_esc_clears_input() {
+    let mut app = new_test_app();
+    app.state.set_input("draft text");
+
+    app.handle_key(KeyCode::Esc, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    // First Esc: draft kept, hint shown.
+    assert_eq!(app.state.input(), "draft text");
+
+    app.handle_key(KeyCode::Esc, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    assert_eq!(app.state.input(), "");
+}
+
+#[tokio::test]
+async fn esc_with_completions_only_dismisses_menu() {
+    let mut app = new_test_app();
+    app.state.set_input("/qu");
+    app.update_slash_state();
+    assert!(app.slash_state.has_completions());
+
+    app.handle_key(KeyCode::Esc, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+
+    assert!(!app.slash_state.has_completions());
+    assert_eq!(app.state.input(), "/qu");
+}
+
+#[tokio::test]
+async fn loop_command_start_and_stop_via_handler() {
+    let mut app = new_test_app();
+    app.state.set_input("/loop 10m check the build");
+
+    app.handle_key(KeyCode::Enter, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    assert!(app.loop_schedule.is_some());
+    assert_eq!(
+        app.loop_schedule.as_ref().map(|s| s.interval.as_secs()),
+        Some(600)
+    );
+
+    app.state.set_input("/loop stop");
+    app.handle_key(KeyCode::Enter, CrosstermModifiers::NONE)
+        .await
+        .unwrap();
+    assert!(app.loop_schedule.is_none());
+}

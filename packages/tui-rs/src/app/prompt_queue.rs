@@ -489,7 +489,13 @@ impl App {
         if let Some(agent) = &self.native_agent {
             // Send the prompt - returns immediately, actual work happens in background task
             // Events will be received via poll_agent in the main loop
-            if let Err(e) = agent.prompt_with_kind(content, vec![], kind, None).await {
+            let cwd = self.state.cwd.clone().unwrap_or_else(|| ".".to_string());
+            let agent_content =
+                crate::file_mentions::expand_file_mentions(&content, std::path::Path::new(&cwd));
+            if let Err(e) = agent
+                .prompt_with_kind(agent_content, vec![], kind, None)
+                .await
+            {
                 self.state.error = Some(format!("Failed to send prompt: {e}"));
                 self.state.busy = false;
                 return Ok(false);

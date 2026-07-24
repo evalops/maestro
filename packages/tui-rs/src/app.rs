@@ -74,8 +74,8 @@ use crate::ai::AiProvider;
 use crate::clipboard::ClipboardManager;
 use crate::commands::{
     build_command_registry_with_extensions, BackgroundMonitorAction, CommandAction, CommandOutput,
-    CommandRegistry, ModalType, PlanReviewAction, QueueAction, QueueModeKind, SlashCommandMatcher,
-    SlashCycleState,
+    CommandRegistry, LoopAction, ModalType, PlanReviewAction, QueueAction, QueueModeKind,
+    SlashCommandMatcher, SlashCycleState,
 };
 use crate::components::{
     calculate_input_height, ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest,
@@ -455,6 +455,19 @@ fn render_mcp_prompt_lines(
 /// `command_registry: Arc<CommandRegistry>` is wrapped in `Arc` because
 /// multiple components need read access to the registry. Arc provides
 /// thread-safe shared ownership through reference counting.
+/// A `/loop` schedule: re-fires a prompt on an interval.
+///
+/// The loop only fires while the app is idle; a due prompt waits for the
+/// current turn to finish rather than interrupting it.
+struct LoopSchedule {
+    /// Seconds between firings.
+    interval: Duration,
+    /// The prompt to re-submit.
+    prompt: String,
+    /// Next time the loop should fire.
+    next_fire: Instant,
+}
+
 pub struct App {
     /// Central application state (messages, input, status).
     /// See `state.rs` for details.
@@ -591,6 +604,13 @@ pub struct App {
 
     /// Last time we refreshed MCP status for runtime badges.
     last_mcp_status_refresh: Option<Instant>,
+
+    /// Last Esc press used for double-Esc "clear input" detection.
+    last_esc_at: Option<Instant>,
+
+    /// Active `/loop` schedule: re-fires a prompt on an interval while the
+    /// app is running.
+    loop_schedule: Option<LoopSchedule>,
 
     /// Last observed MCP server status snapshots for transition messages.
     last_mcp_server_statuses: HashMap<String, crate::tools::McpServerStatus>,
@@ -800,6 +820,8 @@ impl App {
             current_model: String::new(),
             current_thinking_level: ThinkingLevel::Off,
             last_mcp_status_refresh: None,
+            last_esc_at: None,
+            loop_schedule: None,
             last_mcp_server_statuses: HashMap::new(),
             config_watcher: build_mcp_config_watcher(),
             pending_model_change: None,
@@ -1026,6 +1048,26 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
             for event in crate::tools::background_tasks::poll_monitor_events() {
                 self.operations.add_monitor_event(&event);
+                needs_redraw = true;
+            }
+
+            // Fire a due /loop prompt. Loops never interrupt a running turn:
+            // a due prompt waits for idle and then submits.
+            let loop_prompt = if self.state.busy {
+                None
+            } else {
+                self.loop_schedule.as_mut().and_then(|schedule| {
+                    if Instant::now() >= schedule.next_fire {
+                        schedule.next_fire = Instant::now() + schedule.interval;
+                        Some(schedule.prompt.clone())
+                    } else {
+                        None
+                    }
+                })
+            };
+            if let Some(prompt) = loop_prompt {
+                self.state.status.replace(format!("Loop: \"{prompt}\""));
+                self.submit_prompt(prompt).await?;
                 needs_redraw = true;
             }
 

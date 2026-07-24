@@ -280,6 +280,18 @@ pub enum CommandAction {
     MagicTrace(MagicTraceAction),
     /// Observe output from an existing background task.
     BackgroundMonitor(BackgroundMonitorAction),
+    /// Re-run a prompt on an interval (Grok-style `/loop`).
+    Loop(LoopAction),
+}
+
+#[derive(Debug, Clone)]
+pub enum LoopAction {
+    /// Start re-running `prompt` every `interval_secs` seconds.
+    Start { interval_secs: u64, prompt: String },
+    /// Stop the active loop.
+    Stop,
+    /// Show the active loop, if any.
+    Status,
 }
 
 #[derive(Debug, Clone)]

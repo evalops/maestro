@@ -76,8 +76,8 @@ use std::sync::Arc;
 use super::types::{
     A2aAction, ArgumentValue, BackgroundMonitorAction, Command, CommandAction, CommandArgument,
     CommandCategory, CommandContext, CommandError, CommandOutput, CommandResult, ExportAction,
-    HistoryAction, HooksAction, McpAction, ModalType, PlanReviewAction, PluginsAction, QueueAction,
-    QueueModeKind, SessionAction, SkillsAction, ToolHistoryAction, UsageAction,
+    HistoryAction, HooksAction, LoopAction, McpAction, ModalType, PlanReviewAction, PluginsAction,
+    QueueAction, QueueModeKind, SessionAction, SkillsAction, ToolHistoryAction, UsageAction,
 };
 use crate::git;
 use crate::keybindings::{
@@ -511,6 +511,22 @@ fn edit_distance(a: &str, b: &str) -> usize {
     }
 
     d[n][m]
+}
+
+/// Parse a `/loop` interval: `30s`, `5m`, `1h`, or a bare number of minutes.
+/// Returns seconds; minimum 10s to avoid tight re-fire loops.
+fn parse_loop_interval(text: &str) -> Option<u64> {
+    let (digits, unit_secs) = match text.chars().last() {
+        Some('s') => (&text[..text.len() - 1], 1),
+        Some('m') => (&text[..text.len() - 1], 60),
+        Some('h') => (&text[..text.len() - 1], 3600),
+        _ => (text, 60),
+    };
+    let value: u64 = digits.parse().ok()?;
+    if value == 0 {
+        return None;
+    }
+    Some((value * unit_secs).max(10))
 }
 
 /// Parse argument string into typed values
@@ -1379,6 +1395,45 @@ pub fn build_command_registry() -> CommandRegistry {
         )
         .usage("/monitor [list|add <task-id> <regex>|remove <monitor-id>]")
         .group(vec!["list", "add", "remove"]),
+    );
+
+    registry.register(
+        Command::new(
+            "loop",
+            "Re-run a prompt on an interval",
+            CommandCategory::Session,
+            Box::new(|ctx| {
+                let raw = ctx.raw_args.trim();
+                if raw.is_empty() {
+                    return Ok(CommandOutput::Action(CommandAction::Loop(LoopAction::Status)));
+                }
+                if raw == "stop" {
+                    return Ok(CommandOutput::Action(CommandAction::Loop(LoopAction::Stop)));
+                }
+                let (interval_text, prompt) = raw
+                    .split_once(char::is_whitespace)
+                    .ok_or_else(|| {
+                        CommandError::new("Usage: /loop [stop|<interval> <prompt>]")
+                    })?;
+                let prompt = prompt.trim();
+                if prompt.is_empty() {
+                    return Err(CommandError::new(
+                        "Usage: /loop [stop|<interval> <prompt>]",
+                    ));
+                }
+                let interval_secs = parse_loop_interval(interval_text).ok_or_else(|| {
+                    CommandError::new(format!(
+                        "Invalid interval '{interval_text}' (try 30s, 5m, 1h, or minutes as a bare number)"
+                    ))
+                })?;
+                Ok(CommandOutput::Action(CommandAction::Loop(LoopAction::Start {
+                    interval_secs,
+                    prompt: prompt.to_string(),
+                })))
+            }),
+        )
+        .usage("/loop [stop|<interval> <prompt>]")
+        .group(vec!["stop"]),
     );
 
     registry.register(Command::new(
