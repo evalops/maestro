@@ -30,7 +30,7 @@
 //! ## Example config.toml
 //!
 //! ```toml
-//! model = "gpt-5.1-codex-max"
+//! model = "gpt-5.5"
 //! model_provider = "openai"
 //! approval_policy = "on-failure"
 //!
@@ -353,6 +353,11 @@ pub struct TuiConfig {
     /// Suppress desktop notifications while the terminal window is focused
     /// (only when the terminal reports focus in/out events). Defaults to true.
     pub focus_gated_notifications: Option<bool>,
+    /// When true (default false), start in the `auto` theme and refine its
+    /// dark/light choice with a one-time OSC 11 background-color probe at
+    /// startup (enhanced terminals only). Live polling is intentionally not
+    /// done — see `themes::osc11` for why.
+    pub theme_follow: Option<bool>,
 }
 
 /// Shell environment inheritance mode
@@ -373,6 +378,59 @@ pub struct ShellEnvironmentPolicy {
     pub exclude: Option<Vec<String>>,
     pub set: Option<HashMap<String, String>>,
     pub include_only: Option<Vec<String>>,
+}
+
+/// Returns true if a workspace is marked trusted in the given config.
+///
+/// Trust is keyed by the canonical workspace path under `projects."<path>"`.
+/// Only honor trust grants from global config: callers must evaluate this
+/// against config loaded before any project config is merged, otherwise a
+/// repository could grant itself trust.
+#[must_use]
+pub fn workspace_trusted(config: &ComposerConfig, workspace_dir: &Path) -> bool {
+    let canonical =
+        dunce::canonicalize(workspace_dir).unwrap_or_else(|_| workspace_dir.to_path_buf());
+    let key = canonical.to_string_lossy();
+    config
+        .projects
+        .as_ref()
+        .and_then(|projects| projects.get(key.as_ref()))
+        .and_then(|settings| settings.trust_level)
+        == Some(TrustLevel::Trusted)
+}
+
+/// Returns true if the workspace is trusted in the *global* config only.
+///
+/// Trust decisions that gate repository-controlled behavior (project MCP
+/// servers, project shell environment policy) must not consult project
+/// config, or a repository could grant itself trust.
+#[must_use]
+pub fn workspace_trusted_in_global_config(workspace_dir: &Path) -> bool {
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    let global_path = home.join(".composer").join("config.toml");
+    parse_config_file(&global_path)
+        .map(|config| workspace_trusted(&config, workspace_dir))
+        .unwrap_or(false)
+}
+
+/// Env var names that a project config must never inject into shell commands:
+/// they execute code or preload libraries on shell/process startup.
+fn is_dangerous_shell_env_override(key: &str) -> bool {
+    let key = key.to_ascii_uppercase();
+    matches!(key.as_str(), "BASH_ENV" | "ENV" | "LD_PRELOAD") || key.starts_with("DYLD_")
+}
+
+/// Strip dangerous knobs from a project-supplied shell environment policy.
+///
+/// A repository-controlled `.composer/config.toml` must not disable the
+/// default secret filter or inject startup-code env vars.
+fn sanitize_project_shell_environment_policy(policy: &mut ShellEnvironmentPolicy) {
+    policy.ignore_default_excludes = None;
+    if let Some(set) = policy.set.as_mut() {
+        set.retain(|key, _| !is_dangerous_shell_env_override(key));
+    }
 }
 
 /// Sandbox workspace write configuration
@@ -491,7 +549,7 @@ pub struct ComposerConfig {
 /// Default configuration values
 pub static DEFAULT_CONFIG: std::sync::LazyLock<ComposerConfig> =
     std::sync::LazyLock::new(|| ComposerConfig {
-        model: Some("gpt-5.1-codex-max".to_string()),
+        model: Some("gpt-5.5".to_string()),
         model_provider: Some("openai".to_string()),
         approval_policy: Some(ApprovalPolicy::Untrusted),
         sandbox_mode: Some(SandboxMode::WorkspaceWrite),
@@ -511,6 +569,7 @@ pub static DEFAULT_CONFIG: std::sync::LazyLock<ComposerConfig> =
             tab_progress: Some(TabProgressMode::Auto),
             title_updates: Some(true),
             focus_gated_notifications: Some(true),
+            theme_follow: Some(false),
         }),
         file_opener: Some(FileOpener::Vscode),
         project_doc_max_bytes: Some(32 * 1024),
@@ -699,6 +758,9 @@ fn deep_merge(target: &mut ComposerConfig, source: &ComposerConfig) {
         }
         if source_tui.focus_gated_notifications.is_some() {
             target_tui.focus_gated_notifications = source_tui.focus_gated_notifications;
+        }
+        if source_tui.theme_follow.is_some() {
+            target_tui.theme_follow = source_tui.theme_follow;
         }
     }
 
@@ -945,7 +1007,19 @@ pub fn load_config(workspace_dir: &Path, profile_name: Option<&str>) -> Composer
 
     // Load project config
     let project_path = workspace_dir.join(".composer").join("config.toml");
-    if let Some(project_config) = parse_config_file(&project_path) {
+    if let Some(mut project_config) = parse_config_file(&project_path) {
+        // The shell environment policy is applied verbatim to every spawned
+        // command, so a repository-controlled config must not weaken secret
+        // filtering or inject code-execution env vars. Only honor it when the
+        // workspace is trusted (trust is read from global config above, so a
+        // project cannot grant itself trust), and sanitize it even then.
+        if workspace_trusted(&config, workspace_dir) {
+            if let Some(policy) = project_config.shell_environment_policy.as_mut() {
+                sanitize_project_shell_environment_policy(policy);
+            }
+        } else {
+            project_config.shell_environment_policy = None;
+        }
         deep_merge(&mut config, &project_config);
     }
 
@@ -1090,7 +1164,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = DEFAULT_CONFIG.clone();
-        assert_eq!(config.model.as_deref(), Some("gpt-5.1-codex-max"));
+        assert_eq!(config.model.as_deref(), Some("gpt-5.5"));
         assert_eq!(config.model_provider.as_deref(), Some("openai"));
         assert_eq!(config.approval_policy, Some(ApprovalPolicy::Untrusted));
         assert_eq!(config.sandbox_mode, Some(SandboxMode::WorkspaceWrite));
@@ -1136,6 +1210,48 @@ slash_command_fallback = false
             target.tui.and_then(|tui| tui.slash_command_fallback),
             Some(false)
         );
+    }
+
+    #[test]
+    fn test_tui_theme_follow_defaults_to_off() {
+        let config = ComposerConfig::default();
+        assert_eq!(config.tui.and_then(|tui| tui.theme_follow), None);
+    }
+
+    #[test]
+    fn test_tui_theme_follow_loads_from_project_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join(".composer");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let config_path = config_dir.join("config.toml");
+        fs::write(
+            &config_path,
+            r"
+[tui]
+theme_follow = true
+",
+        )
+        .unwrap();
+
+        clear_config_cache();
+        let config = load_config(temp_dir.path(), None);
+        assert_eq!(config.tui.and_then(|tui| tui.theme_follow), Some(true));
+    }
+
+    #[test]
+    fn test_deep_merge_tui_theme_follow() {
+        let mut target = ComposerConfig::default();
+        let source = ComposerConfig {
+            tui: Some(TuiConfig {
+                theme_follow: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        deep_merge(&mut target, &source);
+        assert_eq!(target.tui.and_then(|tui| tui.theme_follow), Some(true));
     }
 
     #[test]
@@ -1345,7 +1461,7 @@ startup_timeout_sec = 30
     }
 
     #[test]
-    fn test_shell_environment_policy() {
+    fn test_shell_environment_policy_ignored_for_untrusted_workspace() {
         let temp_dir = TempDir::new().unwrap();
         let config_dir = temp_dir.path().join(".composer");
         fs::create_dir_all(&config_dir).unwrap();
@@ -1365,13 +1481,70 @@ NODE_ENV = "development"
 
         clear_config_cache();
         let config = load_config(temp_dir.path(), None);
-        let policy = config.shell_environment_policy.as_ref().unwrap();
+        // Untrusted workspaces must not apply a repository-controlled shell
+        // environment policy at all.
+        assert!(config.shell_environment_policy.is_none());
+    }
+
+    #[test]
+    fn test_workspace_trusted_reads_canonical_project_key() {
+        let temp_dir = TempDir::new().unwrap();
+        let canonical = dunce::canonicalize(temp_dir.path()).unwrap();
+        let key = canonical.to_string_lossy().to_string();
+
+        let mut config = ComposerConfig::default();
+        assert!(!workspace_trusted(&config, temp_dir.path()));
+
+        config.projects = Some(HashMap::from([(
+            key,
+            ProjectSettings {
+                trust_level: Some(TrustLevel::Trusted),
+            },
+        )]));
+        assert!(workspace_trusted(&config, temp_dir.path()));
+
+        config.projects = Some(HashMap::from([(
+            dunce::canonicalize(temp_dir.path())
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+            ProjectSettings {
+                trust_level: Some(TrustLevel::Untrusted),
+            },
+        )]));
+        assert!(!workspace_trusted(&config, temp_dir.path()));
+    }
+
+    #[test]
+    fn test_sanitize_project_shell_environment_policy() {
+        let mut policy = ShellEnvironmentPolicy {
+            inherit: Some(ShellInherit::Core),
+            ignore_default_excludes: Some(true),
+            exclude: Some(vec!["SECRET_KEY".to_string()]),
+            set: Some(HashMap::from([
+                ("BASH_ENV".to_string(), "/tmp/evil.sh".to_string()),
+                ("ENV".to_string(), "/tmp/evil.sh".to_string()),
+                ("LD_PRELOAD".to_string(), "/tmp/evil.so".to_string()),
+                (
+                    "DYLD_INSERT_LIBRARIES".to_string(),
+                    "/tmp/evil.dylib".to_string(),
+                ),
+                ("NODE_ENV".to_string(), "development".to_string()),
+            ])),
+            include_only: None,
+        };
+
+        sanitize_project_shell_environment_policy(&mut policy);
+
+        assert_eq!(policy.ignore_default_excludes, None);
+        let set = policy.set.as_ref().unwrap();
+        assert!(!set.contains_key("BASH_ENV"));
+        assert!(!set.contains_key("ENV"));
+        assert!(!set.contains_key("LD_PRELOAD"));
+        assert!(!set.contains_key("DYLD_INSERT_LIBRARIES"));
+        assert_eq!(set.get("NODE_ENV"), Some(&"development".to_string()));
+        // Benign knobs survive sanitization.
         assert_eq!(policy.inherit, Some(ShellInherit::Core));
-        let expected_exclude: Vec<String> = vec!["SECRET_KEY".to_string(), "API_TOKEN".to_string()];
-        assert_eq!(policy.exclude, Some(expected_exclude));
-        assert_eq!(
-            policy.set.as_ref().unwrap().get("NODE_ENV"),
-            Some(&"development".to_string())
-        );
+        assert_eq!(policy.exclude, Some(vec!["SECRET_KEY".to_string()]));
     }
 }

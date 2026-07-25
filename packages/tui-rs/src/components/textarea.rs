@@ -42,6 +42,16 @@
 //! Cursor positioning supports "end of line" without sentinel bytes by treating
 //! the end of each wrapped range as a valid cursor position.
 //!
+//! ## Paste Folding
+//!
+//! Large pasted blocks (more than `PASTE_FOLD_MIN_LINES` lines or
+//! `PASTE_FOLD_MIN_CHARS` bytes) are elided from the display as a single
+//! `[Pasted: N lines]` chip line, while the full content stays in the text
+//! buffer and is submitted byte-identically. Folding is display-only:
+//! `display_text()` produces the elided view that wrapping and cursor math
+//! operate on, with byte offsets mapped between the two representations.
+//! Any edit (`set_text`) drops all folds.
+//!
 //! # Usage Pattern
 //!
 //! ```rust,ignore
@@ -89,12 +99,52 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Widget;
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::ops::Range;
 use textwrap::core::break_words;
 use textwrap::word_splitters::split_words;
 use textwrap::Options;
 use unicode_width::UnicodeWidthStr;
+
+/// A pasted block is folded into a chip when it spans more than this many lines.
+pub const PASTE_FOLD_MIN_LINES: usize = 8;
+/// A pasted block is folded into a chip when it exceeds this many bytes.
+pub const PASTE_FOLD_MIN_CHARS: usize = 400;
+
+/// A pasted region of the text that is elided from the display as a chip.
+///
+/// The full pasted content stays in the text buffer (submission is
+/// byte-identical); only rendering and cursor math elide the region into a
+/// single `[Pasted: N lines]` chip line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasteFold {
+    /// Byte range of the pasted block within the full text.
+    pub range: Range<usize>,
+    /// Number of lines the pasted block spans (shown in the chip label).
+    pub lines: usize,
+}
+
+/// The chip label shown in place of a folded paste.
+fn chip_label(lines: usize) -> String {
+    if lines == 1 {
+        "[Pasted: 1 line]".to_string()
+    } else {
+        format!("[Pasted: {lines} lines]")
+    }
+}
+
+/// Mapping between a folded region in the real text and its chip in the
+/// display text.
+#[derive(Debug)]
+struct FoldSpan {
+    /// Byte range in the real text.
+    real: Range<usize>,
+    /// Byte range of the chip in the display text.
+    display: Range<usize>,
+    /// The chip label shown in place of the folded region.
+    chip: String,
+}
 
 /// A stateful text area widget with cursor tracking and efficient text wrapping.
 ///
@@ -125,6 +175,8 @@ pub struct TextArea {
     text: String,
     /// Cursor position in bytes (not characters or display columns)
     cursor_pos: usize,
+    /// Pasted regions elided from the display as `[Pasted: N lines]` chips
+    folds: Vec<PasteFold>,
     /// Cached wrapped lines for performance
     wrap_cache: RefCell<Option<WrapCache>>,
 }
@@ -142,14 +194,19 @@ impl TextArea {
         Self {
             text: String::new(),
             cursor_pos: 0,
+            folds: Vec::new(),
             wrap_cache: RefCell::new(None),
         }
     }
 
     /// Set the text content
+    ///
+    /// This replaces the whole buffer, so any paste folds (which are keyed on
+    /// byte ranges of the old buffer) are dropped: editing unfolds.
     pub fn set_text(&mut self, text: &str) {
         self.text = text.to_string();
         self.cursor_pos = self.cursor_pos.clamp(0, self.text.len());
+        self.folds.clear();
         self.wrap_cache.replace(None);
     }
 
@@ -171,6 +228,148 @@ impl TextArea {
     /// Check if empty
     pub fn is_empty(&self) -> bool {
         self.text.is_empty()
+    }
+
+    /// Register a pasted region to elide from the display as a chip.
+    ///
+    /// The range must be valid for the current text; call this immediately
+    /// after inserting the pasted text (any later `set_text` drops all folds).
+    pub fn add_paste_fold(&mut self, range: Range<usize>, lines: usize) {
+        self.folds.push(PasteFold { range, lines });
+        self.folds.sort_by_key(|fold| fold.range.start);
+        self.wrap_cache.replace(None);
+    }
+
+    /// Remove all paste folds, restoring the full display.
+    pub fn clear_paste_folds(&mut self) {
+        if !self.folds.is_empty() {
+            self.folds.clear();
+            self.wrap_cache.replace(None);
+        }
+    }
+
+    /// The currently folded paste regions.
+    #[must_use]
+    pub fn paste_folds(&self) -> &[PasteFold] {
+        &self.folds
+    }
+
+    /// Total number of pasted lines currently folded, if any (for the
+    /// status line note).
+    #[must_use]
+    pub fn folded_paste_lines(&self) -> Option<usize> {
+        if self.folds.is_empty() {
+            None
+        } else {
+            Some(self.folds.iter().map(|fold| fold.lines).sum())
+        }
+    }
+
+    /// Range of the fold whose pasted block ends exactly at `byte`, if any.
+    ///
+    /// Used for unit delete: Backspace right after a folded paste removes the
+    /// whole pasted block.
+    #[must_use]
+    pub fn fold_ending_at(&self, byte: usize) -> Option<Range<usize>> {
+        self.folds
+            .iter()
+            .find(|fold| fold.range.end == byte)
+            .map(|fold| fold.range.clone())
+    }
+
+    /// The text as displayed: folded paste regions replaced by chip labels.
+    ///
+    /// When there are no folds this borrows the real text; all rendering and
+    /// cursor math operate on display-text byte offsets.
+    #[must_use]
+    pub fn display_text(&self) -> Cow<'_, str> {
+        if self.folds.is_empty() {
+            return Cow::Borrowed(&self.text);
+        }
+        let mut out = String::with_capacity(self.text.len());
+        let mut cursor = 0;
+        for span in self.fold_spans() {
+            out.push_str(&self.text[cursor..span.real.start]);
+            out.push_str(&span.chip);
+            cursor = span.real.end;
+        }
+        out.push_str(&self.text[cursor..]);
+        Cow::Owned(out)
+    }
+
+    /// Compute the real/display range pairs for each valid fold.
+    ///
+    /// Stale or overlapping folds (defensive; folds are dropped on edit) are
+    /// skipped. Display ranges index into the string built by
+    /// `display_text()`.
+    fn fold_spans(&self) -> Vec<FoldSpan> {
+        let mut spans = Vec::with_capacity(self.folds.len());
+        let mut real_cursor = 0;
+        let mut display_cursor = 0;
+        for fold in &self.folds {
+            let start = fold.range.start.min(self.text.len());
+            let end = fold.range.end.min(self.text.len()).max(start);
+            if start < real_cursor {
+                continue;
+            }
+            display_cursor += start - real_cursor;
+            let chip = chip_label(fold.lines);
+            display_cursor += chip.len();
+            spans.push(FoldSpan {
+                real: start..end,
+                display: display_cursor - chip.len()..display_cursor,
+                chip,
+            });
+            real_cursor = end;
+        }
+        spans
+    }
+
+    /// Map a byte offset in the real text to a byte offset in display text.
+    ///
+    /// Offsets inside a folded region snap to the nearest chip edge.
+    fn to_display_offset(&self, real: usize) -> usize {
+        let mut display = real;
+        for span in self.fold_spans() {
+            if real <= span.real.start {
+                break;
+            }
+            if real >= span.real.end {
+                display = display - span.real.len() + span.display.len();
+            } else {
+                let chip_start = span.display.start;
+                return if real - span.real.start <= span.real.end - real {
+                    chip_start
+                } else {
+                    span.display.end
+                };
+            }
+        }
+        display
+    }
+
+    /// Map a byte offset in the display text back to a byte offset in the
+    /// real text. Offsets inside a chip snap to the nearest edge of the
+    /// folded region.
+    fn to_real_offset(&self, display: usize) -> usize {
+        let spans = self.fold_spans();
+        for span in &spans {
+            if display <= span.display.start {
+                return display + (span.real.start - span.display.start);
+            }
+            if display < span.display.end {
+                return if display - span.display.start <= span.display.end - display {
+                    span.real.start
+                } else {
+                    span.real.end
+                };
+            }
+        }
+        if let Some(last) = spans.last() {
+            display + (last.real.end - last.display.end)
+        } else {
+            display
+        }
     }
 
     /// Get the desired height for the given width
@@ -222,10 +421,12 @@ impl TextArea {
             return None;
         }
         let lines = self.wrapped_lines(width);
-        let line_idx = Self::wrapped_line_index(&lines, self.cursor_pos)?;
+        let display = self.display_text();
+        let display_cursor = self.to_display_offset(self.cursor_pos);
+        let line_idx = Self::wrapped_line_index(&lines, display_cursor)?;
         let line_range = &lines[line_idx];
-        let slice_end = self.cursor_pos.min(line_range.end);
-        let col = self.text[line_range.start..slice_end].width() as u16;
+        let slice_end = display_cursor.min(line_range.end);
+        let col = display[line_range.start..slice_end].width() as u16;
         Some((line_idx, col))
     }
 
@@ -235,12 +436,13 @@ impl TextArea {
             return None;
         }
         let lines = self.wrapped_lines(width);
+        let display = self.display_text();
         let range = lines.get(line_idx)?;
         if col == 0 {
-            return Some(range.start);
+            return Some(self.to_real_offset(range.start));
         }
 
-        let slice = &self.text[range.start..range.end];
+        let slice = &display[range.start..range.end];
         let mut acc_width: u16 = 0;
         let mut byte_pos = range.start;
 
@@ -253,11 +455,8 @@ impl TextArea {
             byte_pos = range.start + offset + ch.len_utf8();
         }
 
-        if acc_width < col {
-            Some(range.end)
-        } else {
-            Some(byte_pos)
-        }
+        let display_pos = if acc_width < col { range.end } else { byte_pos };
+        Some(self.to_real_offset(display_pos))
     }
 
     /// Find which wrapped line contains the given byte position
@@ -271,6 +470,9 @@ impl TextArea {
     }
 
     /// Get wrapped lines for the given width (cached)
+    ///
+    /// Wraps the display text, so returned ranges are byte offsets into
+    /// `display_text()` (identical to `text()` when there are no folds).
     fn wrapped_lines(&self, width: u16) -> Vec<Range<usize>> {
         {
             let cache = self.wrap_cache.borrow();
@@ -281,7 +483,8 @@ impl TextArea {
             }
         }
 
-        let lines = wrap_ranges(&self.text, width as usize);
+        let display = self.display_text();
+        let lines = wrap_ranges(&display, width as usize);
         self.wrap_cache.replace(Some(WrapCache {
             width,
             lines: lines.clone(),
@@ -473,15 +676,16 @@ impl Widget for TextAreaWidget<'_> {
             return;
         }
 
-        // Render text with wrapping
+        // Render text with wrapping (display text elides folded pastes)
+        let display = self.textarea.display_text();
         let lines = self.textarea.wrapped_lines(area.width);
         for (row, range) in lines.iter().enumerate() {
             if row as u16 >= area.height {
                 break;
             }
-            let end = range.end.min(self.textarea.text.len());
+            let end = range.end.min(display.len());
             if range.start <= end {
-                let line_text = &self.textarea.text[range.start..end];
+                let line_text = &display[range.start..end];
                 buf.set_string(area.x, area.y + row as u16, line_text, self.style);
             }
         }
@@ -555,5 +759,116 @@ mod tests {
         assert_eq!(ranges[0], 0..3);
         assert_eq!(ranges[1], 4..7);
         assert_eq!(ranges[2], 8..8);
+    }
+
+    fn folded_textarea() -> TextArea {
+        // "before\n" + 10 pasted lines + "after"
+        let pasted: String = (1..=10).fold(String::new(), |mut acc, i| {
+            use std::fmt::Write as _;
+            let _ = writeln!(acc, "line{i}");
+            acc
+        });
+        let text = format!("before\n{pasted}after");
+        let mut ta = TextArea::new();
+        ta.set_text(&text);
+        let start = "before\n".len();
+        ta.add_paste_fold(start..start + pasted.len(), 10);
+        ta.set_cursor(start + pasted.len());
+        ta
+    }
+
+    #[test]
+    fn paste_fold_elides_display_but_keeps_text() {
+        let ta = folded_textarea();
+        // Full text is untouched (submission is byte-identical).
+        assert!(ta.text().contains("line5"));
+        assert_eq!(ta.display_text(), "before\n[Pasted: 10 lines]after");
+        assert_eq!(ta.folded_paste_lines(), Some(10));
+    }
+
+    #[test]
+    fn paste_fold_shrinks_wrapped_height() {
+        let mut ta = TextArea::new();
+        let pasted: String = (1..=10).fold(String::new(), |mut acc, i| {
+            use std::fmt::Write as _;
+            let _ = writeln!(acc, "line{i}");
+            acc
+        });
+        ta.set_text(&pasted);
+        let unfolded_height = ta.desired_height(80);
+        assert!(unfolded_height >= 10);
+
+        ta.add_paste_fold(0..pasted.len(), 10);
+        assert_eq!(ta.desired_height(80), 1);
+    }
+
+    #[test]
+    fn paste_fold_cursor_maps_after_chip() {
+        let ta = folded_textarea();
+        // Cursor is at the end of the pasted block: it should render right
+        // after the chip on the chip's line.
+        let (line_idx, col) = ta.cursor_line_col(80).unwrap();
+        assert_eq!(line_idx, 1);
+        assert_eq!(col, "[Pasted: 10 lines]".len() as u16);
+
+        // And the on-screen position matches.
+        let area = Rect::new(0, 0, 80, 10);
+        assert_eq!(
+            ta.cursor_pos(area),
+            Some((u16::try_from("[Pasted: 10 lines]".len()).unwrap(), 1))
+        );
+    }
+
+    #[test]
+    fn paste_fold_display_real_offset_roundtrip() {
+        let ta = folded_textarea();
+        // Positions before the fold are unaffected.
+        assert_eq!(ta.to_display_offset(3), 3);
+        assert_eq!(ta.to_real_offset(3), 3);
+        // Fold start/end map to the chip edges.
+        let start = "before\n".len();
+        let end = ta.text().len() - "after".len();
+        let chip_start = start;
+        let chip_end = start + "[Pasted: 10 lines]".len();
+        assert_eq!(ta.to_display_offset(start), chip_start);
+        assert_eq!(ta.to_display_offset(end), chip_end);
+        assert_eq!(ta.to_real_offset(chip_start), start);
+        assert_eq!(ta.to_real_offset(chip_end), end);
+        // Text after the fold shifts by the elision delta.
+        let text_end = ta.text().len();
+        assert_eq!(ta.to_display_offset(text_end), ta.display_text().len());
+        assert_eq!(ta.to_real_offset(ta.display_text().len()), text_end);
+    }
+
+    #[test]
+    fn paste_fold_byte_pos_for_line_col_crossing_chip() {
+        let ta = folded_textarea();
+        // Start of the chip line maps to the fold start.
+        let start = "before\n".len();
+        assert_eq!(ta.byte_pos_for_line_col(80, 1, 0), Some(start));
+        // End of the chip maps to the fold end.
+        let chip_cols = "[Pasted: 10 lines]".len() as u16;
+        let fold_end = ta.text().len() - "after".len();
+        assert_eq!(ta.byte_pos_for_line_col(80, 1, chip_cols), Some(fold_end));
+    }
+
+    #[test]
+    fn set_text_drops_paste_folds() {
+        let mut ta = folded_textarea();
+        assert_eq!(ta.paste_folds().len(), 1);
+        // Any edit replaces the buffer and unfolds.
+        ta.set_text("edited");
+        assert!(ta.paste_folds().is_empty());
+        assert_eq!(ta.display_text(), "edited");
+        assert_eq!(ta.folded_paste_lines(), None);
+    }
+
+    #[test]
+    fn fold_ending_at_matches_block_end_only() {
+        let ta = folded_textarea();
+        let fold_end = ta.text().len() - "after".len();
+        assert!(ta.fold_ending_at(fold_end).is_some());
+        assert!(ta.fold_ending_at(fold_end - 1).is_none());
+        assert!(ta.fold_ending_at(0).is_none());
     }
 }

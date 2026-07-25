@@ -86,8 +86,7 @@ struct UtilityCommandOptions {
 
 impl HeadlessState {
     fn new() -> Self {
-        let model =
-            std::env::var("MAESTRO_MODEL").unwrap_or_else(|_| "gpt-5.1-codex-max".to_string());
+        let model = std::env::var("MAESTRO_MODEL").unwrap_or_else(|_| "gpt-5.5".to_string());
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());

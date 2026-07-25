@@ -240,6 +240,8 @@ pub enum CommandAction {
     SetTheme(String),
     /// Set the current model
     SetModel(String),
+    /// Set the current model and persist it as the user default
+    SetDefaultModel(String),
     /// Compact conversation history (with optional custom instructions)
     CompactConversation(Option<String>),
     /// MCP (Model Context Protocol) actions
@@ -250,6 +252,8 @@ pub enum CommandAction {
     HooksManage(HooksAction),
     /// Show usage and cost statistics
     ShowUsage(UsageAction),
+    /// Show a token breakdown of the current session's context by category
+    ShowContext,
     /// Export current session
     ExportSession(ExportAction),
     /// Show or search prompt history
@@ -266,6 +270,8 @@ pub enum CommandAction {
     Steer(String),
     /// Show diagnostics/status summary
     ShowDiagnostics,
+    /// List recorded alerts (agent/API errors) in the transcript
+    ShowAlerts,
     /// List built-in tools
     ShowTools,
     /// Show local/cross-session memory status
@@ -276,6 +282,8 @@ pub enum CommandAction {
     InvokeSkill { name: String, args: String },
     /// Invoke a flat markdown prompt/command template as a slash command
     InvokePromptTemplate { name: String, args: String },
+    /// Invoke an executable script (Droid-style `.composer/commands/`) as a slash command
+    InvokeExecCommand { name: String, args: String },
     /// Fire Jane Street magic-trace stop indicator (or toggle slow-frame mode)
     MagicTrace(MagicTraceAction),
     /// Observe output from an existing background task.

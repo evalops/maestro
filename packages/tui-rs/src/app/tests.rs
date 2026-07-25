@@ -37,6 +37,19 @@ fn test_active_modal_copy() {
     assert_eq!(modal, copy);
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Key Event Filtering Tests
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_should_handle_key_event_press_and_repeat() {
+    // Kitty-protocol terminals report Press/Repeat/Release; repeats must be
+    // handled so held keys auto-repeat, releases must be ignored.
+    assert!(should_handle_key_event(KeyEventKind::Press));
+    assert!(should_handle_key_event(KeyEventKind::Repeat));
+    assert!(!should_handle_key_event(KeyEventKind::Release));
+}
+
 #[test]
 fn test_active_modal_variants_exist() {
     // Ensure all modal variants are defined correctly
@@ -830,6 +843,178 @@ async fn operations_modal_routes_page_keys_to_the_focused_pane() {
     assert_eq!(app.operations.scroll_offsets(), (3, 0));
 }
 
+#[test]
+fn test_poll_workspace_scan_applies_results_and_confirms_refresh() {
+    let mut app = new_test_app();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.workspace_scan_rx = Some(rx);
+
+    // Nothing yet: poll is a no-op and keeps the receiver.
+    assert!(!app.poll_workspace_scan());
+    assert!(app.workspace_scan_rx.is_some());
+
+    let files = vec![crate::files::WorkspaceFile {
+        path: std::path::PathBuf::from("/ws/src/main.rs"),
+        relative_path: "src/main.rs".to_string(),
+        name: "main.rs".to_string(),
+        extension: Some("rs".to_string()),
+        is_dir: false,
+    }];
+    tx.send(files).unwrap();
+
+    // Startup-style scan: applies files silently.
+    assert!(app.poll_workspace_scan());
+    assert_eq!(app.workspace_files.len(), 1);
+    assert_eq!(app.workspace_files[0].relative_path, "src/main.rs");
+    assert!(app.workspace_scan_rx.is_none());
+    assert!(app.state.status.is_none());
+
+    // /refresh-workspace scan: completion confirms in the status line.
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<crate::files::WorkspaceFile>>();
+    app.workspace_scan_rx = Some(rx);
+    app.workspace_refresh_pending = true;
+    tx.send(Vec::new()).unwrap();
+    assert!(app.poll_workspace_scan());
+    assert!(app.workspace_files.is_empty());
+    assert_eq!(
+        app.state.status.as_deref(),
+        Some("Workspace files refreshed")
+    );
+
+    // A dead scan thread (sender dropped) clears the pending refresh flag.
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<crate::files::WorkspaceFile>>();
+    app.workspace_scan_rx = Some(rx);
+    app.workspace_refresh_pending = true;
+    drop(tx);
+    assert!(!app.poll_workspace_scan());
+    assert!(app.workspace_scan_rx.is_none());
+    assert!(!app.workspace_refresh_pending);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Spawned Tool Execution Tests
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Poll until a spawned tool completion lands, failing after `secs`.
+async fn await_tool_completion(app: &mut App, secs: u64) {
+    let completed = tokio::time::timeout(Duration::from_secs(secs), async {
+        loop {
+            if app.poll_tool_completions() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(completed.is_ok(), "tool completion timed out");
+}
+
+#[tokio::test]
+async fn test_tool_execution_runs_on_spawned_task_and_responds() {
+    let mut app = new_test_app();
+    // Skip session-file writes from record_tool_result in the test.
+    app.session_resume_failed = true;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    app.tool_response_tx = Some(tx);
+
+    app.execute_tool_and_respond(
+        "call-1".to_string(),
+        "bash".to_string(),
+        serde_json::json!({"command": "echo hello-from-tool"}),
+    );
+    // The call returns immediately; execution is in flight, not awaited inline.
+    assert!(app.running_tools.contains_key("call-1"));
+
+    await_tool_completion(&mut app, 10).await;
+    assert!(app.running_tools.is_empty());
+
+    let (call_id, success, result) = rx.try_recv().expect("tool response sent");
+    assert_eq!(call_id, "call-1");
+    assert!(success);
+    assert!(result.unwrap().output.contains("hello-from-tool"));
+}
+
+#[tokio::test]
+async fn test_cancel_running_tools_kills_long_command() {
+    let mut app = new_test_app();
+    app.session_resume_failed = true;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    app.tool_response_tx = Some(tx);
+
+    app.execute_tool_and_respond(
+        "call-2".to_string(),
+        "bash".to_string(),
+        serde_json::json!({"command": "sleep 60", "timeout": 60_000}),
+    );
+    // Let the task spawn the child, then interrupt (the Ctrl+C path).
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    app.cancel_running_tools();
+    assert!(app.running_tools.is_empty());
+
+    // The 60s command must finish promptly once cancelled.
+    await_tool_completion(&mut app, 10).await;
+
+    // The tuple bool is the "executed (not denied)" flag; the tool result
+    // itself must report the cancellation failure.
+    let (call_id, answered, result) = rx.try_recv().expect("tool response sent");
+    assert_eq!(call_id, "call-2");
+    assert!(answered);
+    let result = result.unwrap();
+    assert!(!result.success);
+    assert_eq!(result.error.as_deref(), Some("Command cancelled"));
+}
+
+#[test]
+fn test_update_viewport_capabilities_on_resize() {
+    let mut app = new_test_app();
+    // new_test_app starts with viewport_top 1, viewport_height 24.
+
+    // Growing the terminal recomputes both fields.
+    assert!(app.update_viewport_capabilities(40));
+    assert_eq!(app.capabilities.viewport_height, 38);
+    assert_eq!(app.capabilities.viewport_top, 3);
+
+    // Same height again: no change (the caller skips terminal recreation).
+    assert!(!app.update_viewport_capabilities(40));
+
+    // Very small terminals clamp to the 10-row minimum.
+    assert!(app.update_viewport_capabilities(8));
+    assert_eq!(app.capabilities.viewport_height, 10);
+    assert_eq!(app.capabilities.viewport_top, 1);
+}
+
+#[test]
+fn test_handle_paste_routes_to_modal_or_main_input() {
+    let mut app = new_test_app();
+
+    // No modal: paste goes to the main input and strips carriage returns.
+    app.handle_paste("hello\r\nworld");
+    assert_eq!(app.state.input(), "hello\nworld");
+
+    // A modal with a text input consumes the paste; the main input is
+    // left untouched (previously the paste vanished into the catch-all).
+    for modal in [
+        ActiveModal::FileSearch,
+        ActiveModal::SessionSwitcher,
+        ActiveModal::CommandPalette,
+        ActiveModal::ModelSelector,
+        ActiveModal::ThemeSelector,
+    ] {
+        app.active_modal = modal;
+        app.handle_paste("query text");
+        assert_eq!(
+            app.state.input(),
+            "hello\nworld",
+            "paste leaked into main input while {modal:?} was open"
+        );
+    }
+
+    // A modal without a text input ignores pastes entirely.
+    app.active_modal = ActiveModal::ShortcutsHelp;
+    app.handle_paste("ignored");
+    assert_eq!(app.state.input(), "hello\nworld");
+}
+
 #[tokio::test]
 async fn test_queue_counts_sync_on_response_start() {
     let mut app = new_test_app();
@@ -1529,6 +1714,86 @@ async fn test_queue_counts_clear_on_error() {
     assert_eq!(app.state.queued_prompt_count, 1);
 }
 
+#[tokio::test]
+async fn test_alerts_command_lists_recorded_alerts() {
+    use crate::commands::CommandAction;
+
+    let mut app = new_test_app();
+    app.handle_agent_message(FromAgent::Error {
+        message: "API error 400 Bad Request: invalid_request_error: messages.0: empty".to_string(),
+        fatal: false,
+    })
+    .await
+    .expect("handle error");
+    app.handle_agent_message(FromAgent::Error {
+        message: "API error 429 Too Many Requests: rate_limit_error: slow down".to_string(),
+        fatal: false,
+    })
+    .await
+    .expect("handle error");
+    assert_eq!(app.state.unseen_alerts, 2);
+
+    app.handle_command_action(CommandAction::ShowAlerts).await;
+
+    let listing = &app
+        .state
+        .messages
+        .last()
+        .expect("alerts listing message")
+        .content;
+    assert!(listing.contains("2 recorded"), "listing: {listing}");
+    assert!(
+        listing.contains("invalid_request_error: messages.0: empty"),
+        "listing: {listing}"
+    );
+    assert!(
+        listing.contains("rate_limit_error: slow down"),
+        "listing: {listing}"
+    );
+    assert_eq!(app.state.unseen_alerts, 0);
+}
+
+#[tokio::test]
+async fn test_alerts_command_without_alerts() {
+    use crate::commands::CommandAction;
+
+    let mut app = new_test_app();
+    app.handle_command_action(CommandAction::ShowAlerts).await;
+
+    let listing = &app
+        .state
+        .messages
+        .last()
+        .expect("alerts listing message")
+        .content;
+    assert!(listing.contains("No alerts recorded"), "listing: {listing}");
+}
+
+#[tokio::test]
+async fn test_new_session_clears_error_surface_and_alerts() {
+    use crate::commands::{CommandAction, SessionAction};
+
+    let mut app = new_test_app();
+    app.state.error = Some("stale API error".to_string());
+    app.state.record_alert("stale API error".to_string());
+    app.state
+        .add_system_message("old transcript line".to_string());
+
+    app.handle_command_action(CommandAction::Session(SessionAction::New))
+        .await;
+
+    assert!(app.state.error.is_none(), "error surface must be cleared");
+    assert!(app.state.alerts.is_empty(), "alert history resets");
+    assert_eq!(app.state.unseen_alerts, 0);
+    assert!(
+        !app.state
+            .messages
+            .iter()
+            .any(|m| m.content.contains("old transcript line")),
+        "old transcript must not survive /clear"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Input Cursor Tests
 // ─────────────────────────────────────────────────────────────────────────
@@ -1777,7 +2042,7 @@ async fn test_handle_config_event_forces_mcp_badge_refresh() {
     std::fs::create_dir_all(temp.path().join(".composer")).expect("create config dir");
 
     let mut app = new_test_app();
-    app.tool_executor = ToolExecutor::new(temp.path().display().to_string());
+    app.tool_executor = Arc::new(ToolExecutor::new(temp.path().display().to_string()));
     app.last_mcp_status_refresh = Some(Instant::now());
     app.state.mcp_connected = 7;
     app.state.mcp_tool_count = 9;
@@ -2493,4 +2758,167 @@ async fn double_esc_rewind_picker_blocked_while_busy() {
         app.state.status.as_deref(),
         Some("Wait for the active response to finish before rewinding.")
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Detail View Tests (Ctrl+E)
+// ─────────────────────────────────────────────────────────────────────────
+
+fn push_tool_call_message(app: &mut App, output: String) {
+    app.state.messages.push(Message {
+        id: "m-detail".to_string(),
+        role: MessageRole::Assistant,
+        kind: MessageKind::Regular,
+        content: String::new(),
+        thinking: String::new(),
+        streaming: false,
+        tool_calls: vec![crate::state::ToolCallState {
+            call_id: "call-detail".to_string(),
+            tool: "bash".to_string(),
+            args: serde_json::json!({"command": "seq 1 120"}),
+            status: crate::state::ToolCallStatus::Completed,
+            output,
+        }],
+        usage: None,
+        timestamp: SystemTime::now(),
+        thinking_expanded: false,
+    });
+}
+
+#[tokio::test]
+async fn test_detail_view_opens_with_full_untruncated_tool_output() {
+    let mut app = new_test_app();
+    // The inline transcript caps tool output at 50 lines even when expanded;
+    // the detail view must show every line.
+    let output = (1..=120)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    push_tool_call_message(&mut app, output);
+
+    app.handle_key(KeyCode::Char('e'), CrosstermModifiers::CONTROL)
+        .await
+        .expect("open detail view");
+
+    assert_eq!(app.active_modal, ActiveModal::DetailView);
+    let detail = app.detail_view.as_ref().expect("detail view open");
+    assert_eq!(detail.title(), "Tool: bash");
+    assert!(detail.content().contains("\"command\": \"seq 1 120\""));
+    assert!(detail.content().contains("line 1\n"));
+    assert!(detail.content().contains("line 120"));
+}
+
+#[tokio::test]
+async fn test_detail_view_esc_restores_transcript_view() {
+    let mut app = new_test_app();
+    push_tool_call_message(&mut app, "full output".to_string());
+
+    app.handle_key(KeyCode::Char('e'), CrosstermModifiers::CONTROL)
+        .await
+        .expect("open detail view");
+    assert_eq!(app.active_modal, ActiveModal::DetailView);
+
+    app.handle_key(KeyCode::Esc, CrosstermModifiers::NONE)
+        .await
+        .expect("close detail view");
+    assert_eq!(app.active_modal, ActiveModal::None);
+    assert!(app.detail_view.is_none());
+}
+
+#[tokio::test]
+async fn test_detail_view_scrolls_with_paging_keys() {
+    let mut app = new_test_app();
+    let output = (1..=120)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    push_tool_call_message(&mut app, output);
+
+    app.handle_key(KeyCode::Char('e'), CrosstermModifiers::CONTROL)
+        .await
+        .expect("open detail view");
+    assert_eq!(app.detail_view.as_ref().expect("open").scroll_position(), 0);
+
+    app.handle_key(KeyCode::PageDown, CrosstermModifiers::NONE)
+        .await
+        .expect("page down");
+    let scrolled = app.detail_view.as_ref().expect("open").scroll_position();
+    assert!(scrolled > 0, "PageDown should scroll the detail view");
+
+    app.handle_key(KeyCode::Up, CrosstermModifiers::NONE)
+        .await
+        .expect("scroll up");
+    assert_eq!(
+        app.detail_view.as_ref().expect("open").scroll_position(),
+        scrolled - 1
+    );
+}
+
+#[tokio::test]
+async fn test_detail_view_falls_back_to_latest_message_text() {
+    let mut app = new_test_app();
+    app.state.messages.clear();
+    app.state
+        .add_system_message("full system body that was clipped inline".to_string());
+
+    app.handle_key(KeyCode::Char('e'), CrosstermModifiers::CONTROL)
+        .await
+        .expect("open detail view");
+
+    assert_eq!(app.active_modal, ActiveModal::DetailView);
+    let detail = app.detail_view.as_ref().expect("detail view open");
+    assert_eq!(detail.title(), "System message");
+    assert_eq!(detail.content(), "full system body that was clipped inline");
+}
+
+#[tokio::test]
+async fn test_detail_view_nothing_to_expand_sets_status() {
+    let mut app = new_test_app();
+    app.state.messages.clear();
+    app.state.error = None;
+
+    app.handle_key(KeyCode::Char('e'), CrosstermModifiers::CONTROL)
+        .await
+        .expect("handle key");
+
+    assert_eq!(app.active_modal, ActiveModal::None);
+    assert_eq!(app.state.status.as_deref(), Some("Nothing to expand"));
+}
+
+#[tokio::test]
+async fn test_detail_view_from_approval_modal_expands_and_restores() {
+    let mut app = new_test_app();
+    let long_command = format!("run --flag {}", "x".repeat(400));
+    app.approval_controller.enqueue(
+        ApprovalRequest::new(
+            "call-approve",
+            "bash",
+            serde_json::json!({"command": long_command.clone()}),
+        )
+        .with_reason("Needs a very long command reviewed"),
+    );
+    app.active_modal = ActiveModal::Approval;
+
+    // Ctrl+E on the approval prompt expands the full command/args.
+    app.handle_key(KeyCode::Char('e'), CrosstermModifiers::CONTROL)
+        .await
+        .expect("expand approval");
+
+    assert_eq!(app.active_modal, ActiveModal::DetailView);
+    let detail = app.detail_view.as_ref().expect("detail view open");
+    assert_eq!(detail.title(), "Approval: bash");
+    assert!(detail
+        .content()
+        .contains("Needs a very long command reviewed"));
+    assert!(detail.content().contains(&long_command));
+    // The approval is still pending: expanding must not decide anything.
+    assert!(app.approval_controller.current().is_some());
+
+    // Esc returns to the approval modal, not the plain transcript.
+    app.handle_key(KeyCode::Esc, CrosstermModifiers::NONE)
+        .await
+        .expect("close detail view");
+    assert_eq!(app.active_modal, ActiveModal::Approval);
+    assert!(app.detail_view.is_none());
+    assert!(app.approval_controller.current().is_some());
 }

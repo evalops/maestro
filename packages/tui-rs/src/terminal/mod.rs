@@ -55,6 +55,6 @@ mod setup;
 pub use events::{TerminalEvent, TerminalEventStream};
 pub use history::push_history_lines;
 pub use setup::{
-    calculate_viewport, check_tty, init, init_fallback, is_tty_available, restore, size, write_raw,
-    Terminal, TerminalCapabilities,
+    calculate_viewport, check_tty, init, init_fallback, is_tty_available, recreate_with_viewport,
+    restore, size, write_raw, Terminal, TerminalCapabilities,
 };

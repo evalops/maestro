@@ -76,7 +76,7 @@ impl App {
         self.session_manager
             .start_session(header)
             .context("Failed to start session")?;
-        let _ = self.session_manager.flush();
+        self.flush_session();
 
         self.state.session_id = Some(session_id.clone());
         crate::plan_mode::set_active_session_id(Some(session_id.clone()));
@@ -109,6 +109,12 @@ impl App {
         }
     }
 
+    pub(super) fn flush_session(&mut self) {
+        if let Err(err) = self.session_manager.flush() {
+            self.state.error = Some(format!("Failed to flush session: {err}"));
+        }
+    }
+
     pub(super) fn record_user_message(&mut self, content: &str) {
         if self.ensure_session_started().is_err() {
             return;
@@ -125,7 +131,7 @@ impl App {
             },
         });
         self.write_session_entry(entry);
-        let _ = self.session_manager.flush();
+        self.flush_session();
     }
 
     pub(super) fn record_assistant_message(
@@ -187,7 +193,7 @@ impl App {
             },
         });
         self.write_session_entry(entry);
-        let _ = self.session_manager.flush();
+        self.flush_session();
     }
 
     pub(super) fn record_tool_result(
@@ -240,7 +246,7 @@ impl App {
             },
         });
         self.write_session_entry(entry);
-        let _ = self.session_manager.flush();
+        self.flush_session();
     }
 
     pub(super) fn record_model_change(&mut self, model: &str) {
@@ -311,7 +317,7 @@ impl App {
             answer,
             error,
         }));
-        let _ = self.session_manager.flush();
+        self.flush_session();
     }
 
     pub(super) fn record_plan_review_event(&mut self, event: PlanReviewEvent) {
@@ -322,7 +328,7 @@ impl App {
             timestamp: Utc::now().to_rfc3339(),
             event,
         }));
-        let _ = self.session_manager.flush();
+        self.flush_session();
     }
 
     pub(super) fn hydrate_usage_from_session(&mut self, session: &ParsedSession) {

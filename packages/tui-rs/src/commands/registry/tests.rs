@@ -76,6 +76,40 @@ fn registry_execute_unknown() {
 }
 
 #[test]
+fn model_command_parses_default_subcommand() {
+    let registry = build_command_registry();
+
+    let result = registry
+        .execute("/model default gpt-5.5", "/tmp", None, None)
+        .expect("parse");
+    match result {
+        CommandOutput::Action(CommandAction::SetDefaultModel(model)) => {
+            assert_eq!(model, "gpt-5.5");
+        }
+        other => panic!("expected SetDefaultModel, got {other:?}"),
+    }
+
+    let bare = registry.execute("/model default", "/tmp", None, None);
+    assert!(bare.is_err(), "/model default requires a model name");
+
+    let session_only = registry
+        .execute("/model gpt-5.5", "/tmp", None, None)
+        .expect("parse");
+    assert!(matches!(
+        session_only,
+        CommandOutput::Action(CommandAction::SetModel(_))
+    ));
+
+    let modal = registry
+        .execute("/model", "/tmp", None, None)
+        .expect("parse");
+    assert!(matches!(
+        modal,
+        CommandOutput::OpenModal(ModalType::ModelSelector)
+    ));
+}
+
+#[test]
 fn built_in_commands_exist() {
     let registry = build_command_registry();
     assert!(registry.get("help").is_some());
@@ -372,6 +406,22 @@ fn hotkeys_command_requires_force_to_overwrite_existing_config() {
             Some("Re-run with /hotkeys init --force to overwrite it.".to_string())
         );
     });
+}
+
+#[test]
+fn context_command_exists() {
+    let registry = build_command_registry();
+    assert!(registry.get("context").is_some());
+}
+
+#[test]
+fn context_command_returns_show_context_action() {
+    let registry = build_command_registry();
+    let result = registry.execute("/context", "/tmp", None, None);
+    assert!(matches!(
+        result,
+        Ok(CommandOutput::Action(CommandAction::ShowContext))
+    ));
 }
 
 #[test]
@@ -1120,4 +1170,16 @@ fn parse_loop_interval_units() {
     assert_eq!(parse_loop_interval("1s"), Some(10));
     assert_eq!(parse_loop_interval("0m"), None);
     assert_eq!(parse_loop_interval("abc"), None);
+}
+
+#[test]
+fn alerts_command_returns_show_alerts_action() {
+    let registry = build_command_registry();
+    let output = registry
+        .execute("/alerts", "/tmp", None, None)
+        .expect("alerts command");
+    assert!(matches!(
+        output,
+        CommandOutput::Action(CommandAction::ShowAlerts)
+    ));
 }

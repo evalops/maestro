@@ -246,7 +246,7 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use super::entries::{
@@ -528,7 +528,19 @@ impl SessionReader {
     /// Read a session from a file
     pub fn read_file(path: impl AsRef<Path>) -> Result<ParsedSession, SessionReadError> {
         let path = path.as_ref();
-        let file = File::open(path)?;
+        let mut file = File::open(path)?;
+
+        // A crash mid-`writeln!` leaves a torn final line, recognizable by
+        // the missing trailing newline. Only that case is tolerated below;
+        // a newline-terminated corrupt line still fails the load.
+        let has_torn_tail = file
+            .seek(SeekFrom::End(-1))
+            .and_then(|_| {
+                let mut byte = [0u8; 1];
+                file.read_exact(&mut byte).map(|()| byte[0] != b'\n')
+            })
+            .unwrap_or(false);
+        file.seek(SeekFrom::Start(0))?;
         let reader = BufReader::new(file);
 
         let mut header: Option<SessionHeader> = None;
@@ -545,15 +557,31 @@ impl SessionReader {
         let mut compaction_context_entries: Vec<CompactionContextEntry> = Vec::new();
         let mut visible_context_len = 0usize;
 
+        // Tolerate a single unparseable line only when it is the torn final
+        // one; a corrupt line anywhere else means real data damage and fails.
+        let mut trailing_parse_error: Option<String> = None;
+
         for (line_num, line) in reader.lines().enumerate() {
             let line = line?;
             if line.trim().is_empty() {
                 continue;
             }
 
-            let entry: SessionEntry = serde_json::from_str(&line).map_err(|e| {
-                SessionReadError::ParseError(format!("Line {}: {}", line_num + 1, e))
-            })?;
+            let entry: SessionEntry = match serde_json::from_str(&line) {
+                Ok(entry) => {
+                    if let Some(err) = trailing_parse_error.take() {
+                        return Err(SessionReadError::ParseError(err));
+                    }
+                    entry
+                }
+                Err(e) => {
+                    let err = format!("Line {}: {}", line_num + 1, e);
+                    if !has_torn_tail || trailing_parse_error.replace(err.clone()).is_some() {
+                        return Err(SessionReadError::ParseError(err));
+                    }
+                    continue;
+                }
+            };
 
             match entry {
                 SessionEntry::Session(h) => {
@@ -677,6 +705,13 @@ impl SessionReader {
                 SessionEntry::PlanReview(entry) => plan_review_events.push(entry),
                 SessionEntry::Custom(_) | SessionEntry::Label(_) => {}
             }
+        }
+
+        if let Some(err) = trailing_parse_error {
+            eprintln!(
+                "Skipping unparseable trailing line in session file {}: {err}",
+                path.display()
+            );
         }
 
         if !extracted_by_id.is_empty() {
@@ -933,5 +968,40 @@ mod tests {
         assert_eq!(session.side_questions.len(), 1);
         assert_eq!(session.side_questions[0].question, "Side question");
         assert_eq!(session.plan_review_events.len(), 1);
+    }
+
+    #[test]
+    fn torn_trailing_line_is_skipped() {
+        let mut file = create_test_session();
+        // Simulate a crash mid-`writeln!`: a partial JSON line with no newline.
+        write!(file, r#"{{"type":"message","timestamp":"2024-01-15T10:30"#).unwrap();
+        file.flush().unwrap();
+
+        let session = SessionReader::read_file(file.path()).unwrap();
+        assert_eq!(session.messages.len(), 2);
+        assert_eq!(session.stats.user_messages, 1);
+    }
+
+    #[test]
+    fn corrupt_middle_line_still_fails() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"{{"type":"session","id":"test123","timestamp":"2024-01-15T10:30:00Z","cwd":"/tmp","model":"anthropic/claude-3","thinking_level":"medium"}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","timestamp":"2024-01-15T10:30"#).unwrap();
+        writeln!(file, r#"{{"type":"message","timestamp":"2024-01-15T10:30:01Z","message":{{"role":"user","content":"Hello","timestamp":0}}}}"#).unwrap();
+
+        let result = SessionReader::read_file(file.path());
+        assert!(matches!(result, Err(SessionReadError::ParseError(_))));
+    }
+
+    #[test]
+    fn newline_terminated_corrupt_last_line_still_fails() {
+        let mut file = create_test_session();
+        // Unlike a torn write, this corrupt line is newline-terminated, so it
+        // is real data damage rather than a crash artifact and must fail.
+        writeln!(file, "not-json").unwrap();
+        file.flush().unwrap();
+
+        let result = SessionReader::read_file(file.path());
+        assert!(matches!(result, Err(SessionReadError::ParseError(_))));
     }
 }

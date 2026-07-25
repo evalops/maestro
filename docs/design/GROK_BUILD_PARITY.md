@@ -450,6 +450,9 @@ A full inventory pass compared Maestro against the public grok-build repo
   expansion, `/loop <interval> <prompt>` scheduler, `/theme auto`
   (COLORFGBG) (#3050)
 - Mouse click-to-select on the slash completion popup (this change)
+- `/theme auto` follows the terminal background: one-time OSC 11 startup
+  probe behind `tui.theme_follow` (default off); live polling rejected —
+  crossterm 0.28 mangles OSC replies into Alt-key input (this change)
 - `maestro import-claude` — MCP + permissions import from Claude Code
   config (in flight)
 

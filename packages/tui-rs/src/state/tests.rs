@@ -925,6 +925,24 @@ fn test_handle_error() {
 
     assert_eq!(state.error, Some("Connection failed".to_string()));
     assert!(!state.busy);
+    assert_eq!(state.alerts.len(), 1);
+    assert_eq!(state.alerts[0], "Connection failed");
+    assert_eq!(state.unseen_alerts, 1);
+}
+
+#[test]
+fn test_record_alert_bounds_history() {
+    let mut state = AppState::new();
+    for i in 0..(crate::state::MAX_ALERT_HISTORY + 10) {
+        state.record_alert(format!("alert {i}"));
+    }
+    assert_eq!(state.alerts.len(), crate::state::MAX_ALERT_HISTORY);
+    // Oldest entries are dropped first.
+    assert_eq!(state.alerts[0], "alert 10");
+    assert_eq!(state.unseen_alerts, crate::state::MAX_ALERT_HISTORY + 10);
+
+    state.mark_alerts_seen();
+    assert_eq!(state.unseen_alerts, 0);
 }
 
 #[test]
@@ -1187,4 +1205,122 @@ fn interaction_mode_cycles() {
         InteractionMode::Plan.approval_mode(),
         ApprovalMode::Selective
     );
+}
+
+// ============================================================
+// Paste Folding Tests
+// ============================================================
+
+fn large_paste() -> String {
+    (1..=10)
+        .map(|i| format!("line{i}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn test_large_paste_folds_into_chip() {
+    let mut state = AppState::new();
+    let pasted = large_paste();
+    state.insert_paste(&pasted);
+
+    // Display is folded, full text is retained.
+    assert_eq!(state.input(), pasted);
+    assert_eq!(state.textarea.display_text(), "[Pasted: 10 lines]");
+    assert_eq!(state.textarea.folded_paste_lines(), Some(10));
+    // Cursor sits right after the pasted block (end of the chip).
+    assert_eq!(state.cursor(), pasted.len());
+}
+
+#[test]
+fn test_small_paste_does_not_fold() {
+    let mut state = AppState::new();
+    state.insert_paste("line1\nline2\nline3");
+
+    assert!(state.textarea.paste_folds().is_empty());
+    assert_eq!(state.textarea.display_text(), "line1\nline2\nline3");
+    assert_eq!(state.textarea.folded_paste_lines(), None);
+}
+
+#[test]
+fn test_large_single_line_paste_folds_by_char_count() {
+    let mut state = AppState::new();
+    let pasted = "x".repeat(500);
+    state.insert_paste(&pasted);
+
+    assert_eq!(state.input(), pasted);
+    assert_eq!(state.textarea.display_text(), "[Pasted: 1 line]");
+}
+
+#[test]
+fn test_paste_submission_is_byte_identical() {
+    let mut state = AppState::new();
+    state.insert_str("explain this:\n");
+    let pasted = large_paste();
+    state.insert_paste(&pasted);
+    state.insert_str("\nthanks");
+
+    // Typing after the paste unfolds the display...
+    assert!(state.textarea.paste_folds().is_empty());
+    // ...but the submitted content is exactly what was pasted/typed.
+    let expected = format!("explain this:\n{pasted}\nthanks");
+    assert_eq!(state.take_input(), expected);
+}
+
+#[test]
+fn test_paste_normalizes_carriage_returns() {
+    let mut state = AppState::new();
+    state.insert_paste("a\r\nb\r\nc");
+    assert_eq!(state.input(), "a\nb\nc");
+}
+
+#[test]
+fn test_backspace_after_large_paste_deletes_whole_block() {
+    let mut state = AppState::new();
+    state.insert_str("keep ");
+    let pasted = large_paste();
+    state.insert_paste(&pasted);
+
+    // Cursor is right after the folded paste: one Backspace removes it all.
+    state.backspace();
+    assert_eq!(state.input(), "keep ");
+    assert_eq!(state.cursor(), 5);
+    assert!(state.textarea.paste_folds().is_empty());
+}
+
+#[test]
+fn test_backspace_after_small_paste_deletes_one_char() {
+    let mut state = AppState::new();
+    state.insert_paste("short");
+
+    state.backspace();
+    assert_eq!(state.input(), "shor");
+}
+
+#[test]
+fn test_backspace_inside_folded_paste_unfolds_first() {
+    let mut state = AppState::new();
+    let pasted = large_paste();
+    state.insert_paste(&pasted);
+    // Move into the middle of the pasted block, then delete: the fold is
+    // dropped and a single character is removed.
+    state.move_home();
+    for _ in 0..3 {
+        state.move_right();
+    }
+    state.backspace();
+    assert!(state.textarea.paste_folds().is_empty());
+    assert_eq!(state.input().len(), pasted.len() - 1);
+}
+
+#[test]
+fn test_edit_after_paste_unfolds_display() {
+    let mut state = AppState::new();
+    let pasted = large_paste();
+    state.insert_paste(&pasted);
+    assert_eq!(state.textarea.paste_folds().len(), 1);
+
+    state.insert_char('!');
+    assert!(state.textarea.paste_folds().is_empty());
+    assert_eq!(state.textarea.display_text(), format!("{pasted}!"));
 }

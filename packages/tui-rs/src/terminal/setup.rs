@@ -399,6 +399,27 @@ pub fn calculate_viewport(height: u16) -> (u16, u16) {
     (viewport_top, viewport_height)
 }
 
+/// Recreate the terminal with a new inline viewport height.
+///
+/// ratatui's `Viewport::Inline(height)` fixes the height at construction, so
+/// the only way to grow or shrink the viewport after a terminal resize is to
+/// rebuild the `Terminal` around the same terminal device handle.
+pub fn recreate_with_viewport(viewport_height: u16) -> io::Result<Terminal> {
+    let tty = TTY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "terminal not initialized"))?
+        .try_clone()?;
+    let backend = CrosstermBackend::new(tty);
+    Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Inline(viewport_height),
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     // Note: Terminal tests are tricky because they require an actual TTY

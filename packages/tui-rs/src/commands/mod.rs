@@ -98,7 +98,8 @@ pub use matcher::{
     SlashCycleState,
 };
 pub use registry::{
-    build_command_registry, build_command_registry_with_extensions, CommandRegistry,
+    build_command_registry, build_command_registry_with_extensions, register_exec_commands,
+    CommandRegistry,
 };
 pub use types::{
     A2aAction, BackgroundMonitorAction, Command, CommandAction, CommandArgument,

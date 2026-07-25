@@ -1839,6 +1839,7 @@ pub struct StatusBarWidget<'a> {
     mcp_failed: usize,
     alert_count: usize,
     shortcut_hints: bool,
+    paste_note: Option<&'a str>,
 }
 
 impl<'a> StatusBarWidget<'a> {
@@ -1864,6 +1865,7 @@ impl<'a> StatusBarWidget<'a> {
             mcp_failed: 0,
             alert_count: 0,
             shortcut_hints: false,
+            paste_note: None,
         }
     }
 
@@ -1915,6 +1917,13 @@ impl<'a> StatusBarWidget<'a> {
     #[must_use]
     pub fn with_shortcut_hints(mut self) -> Self {
         self.shortcut_hints = true;
+        self
+    }
+
+    /// Note about folded pasted content, e.g. "pasted 42 lines (folded)".
+    #[must_use]
+    pub fn with_paste_note(mut self, note: Option<&'a str>) -> Self {
+        self.paste_note = note;
         self
     }
 }
@@ -1983,6 +1992,17 @@ impl Widget for StatusBarWidget<'_> {
                     Style::default().fg(Color::DarkGray),
                 ));
             }
+        }
+
+        // Folded-paste note
+        if let Some(note) = self.paste_note {
+            if !spans.is_empty() {
+                spans.push(Span::raw(" | "));
+            }
+            spans.push(Span::styled(
+                note.to_string(),
+                Style::default().fg(Color::DarkGray),
+            ));
         }
 
         let line = Line::from(spans);
@@ -2259,7 +2279,13 @@ impl Widget for ChatView<'_> {
                 }
             };
 
-            let alert_count = usize::from(self.state.error.is_some());
+            let alert_count = self.state.unseen_alerts;
+
+            let paste_note = self
+                .state
+                .textarea
+                .folded_paste_lines()
+                .map(|lines| format!("pasted {lines} lines (folded)"));
 
             let status_widget = StatusBarWidget::new(None, None, None, None)
                 .with_queue_badge(queue_badge.as_deref())
@@ -2271,6 +2297,7 @@ impl Widget for ChatView<'_> {
                     self.state.mcp_failed,
                 )
                 .with_alert_count(alert_count)
+                .with_paste_note(paste_note.as_deref())
                 .with_shortcut_hints();
             status_widget.render(chunks[4], buf);
         }

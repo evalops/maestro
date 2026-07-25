@@ -122,7 +122,7 @@ impl ConfigWatcher {
         use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 
         let path = path.as_ref().to_path_buf();
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        let canonical = dunce::canonicalize(&path).unwrap_or_else(|_| path.clone());
 
         if self.watched_paths.contains(&canonical) {
             return Ok(()); // Already watching
@@ -177,7 +177,7 @@ impl ConfigWatcher {
     pub fn unwatch(&mut self, path: impl AsRef<Path>) {
         let path = path.as_ref().to_path_buf();
         #[cfg(feature = "hot-reload")]
-        let path = path.canonicalize().unwrap_or(path);
+        let path = dunce::canonicalize(&path).unwrap_or(path);
         self.watched_paths.remove(&path);
         self.debounce_states.remove(&path);
     }

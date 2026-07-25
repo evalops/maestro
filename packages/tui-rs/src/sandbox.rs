@@ -788,7 +788,7 @@ mod macos {
         cstr.to_str()
             .ok()
             .map(PathBuf::from)
-            .and_then(|p| p.canonicalize().ok())
+            .and_then(|p| dunce::canonicalize(&p).ok())
     }
 
     /// Build Seatbelt command arguments
@@ -872,7 +872,8 @@ mod macos {
             let mut params = Vec::new();
 
             for (index, wr) in writable_roots.iter().enumerate() {
-                let canonical_root = wr.root.canonicalize().unwrap_or_else(|_| wr.root.clone());
+                let canonical_root =
+                    dunce::canonicalize(&wr.root).unwrap_or_else(|_| wr.root.clone());
                 let root_param = format!("WRITABLE_ROOT_{index}");
                 params.push((root_param.clone(), canonical_root));
 
@@ -882,7 +883,7 @@ mod macos {
                     // Build require-not clauses for read-only subpaths
                     let mut require_parts = vec![format!(r#"(subpath (param "{root_param}"))"#)];
                     for (subpath_index, ro) in wr.read_only_subpaths.iter().enumerate() {
-                        let canonical_ro = ro.canonicalize().unwrap_or_else(|_| ro.clone());
+                        let canonical_ro = dunce::canonicalize(&ro).unwrap_or_else(|_| ro.clone());
                         let ro_param = format!("WRITABLE_ROOT_{index}_RO_{subpath_index}");
                         require_parts
                             .push(format!(r#"(require-not (subpath (param "{ro_param}")))"#));
@@ -1803,5 +1804,128 @@ mod tests {
         assert!(!output.status.success());
         assert!(!probe.exists());
         let _ = std::fs::remove_file(probe);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_workspace_write_denies_writes_outside_writable_roots() {
+        if !is_sandbox_available() {
+            return;
+        }
+
+        let workspace = tempfile::tempdir().unwrap();
+        let writable = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+
+        let policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![writable.path().to_path_buf()],
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        };
+
+        // Writes inside a writable root succeed.
+        let allowed = writable.path().join("allowed.txt");
+        let child = match spawn_sandboxed_command(
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                format!("printf ok > {}", allowed.to_string_lossy()),
+            ],
+            workspace.path().to_path_buf(),
+            &policy,
+            HashMap::new(),
+        )
+        .await
+        {
+            Ok(child) => child,
+            // Enforcement unavailable on this runner (e.g. Landlock ABI
+            // missing despite the LSM listing): skip rather than fail CI.
+            Err(_) => return,
+        };
+        let output = child.wait_with_output().await.unwrap();
+        assert!(output.status.success());
+        assert_eq!(std::fs::read_to_string(&allowed).unwrap(), "ok");
+
+        // Writes outside every writable root are denied.
+        let denied = outside.path().join("denied.txt");
+        let child = match spawn_sandboxed_command(
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                format!("printf blocked > {}", denied.to_string_lossy()),
+            ],
+            workspace.path().to_path_buf(),
+            &policy,
+            HashMap::new(),
+        )
+        .await
+        {
+            Ok(child) => child,
+            Err(_) => return,
+        };
+        let output = child.wait_with_output().await.unwrap();
+        assert!(!output.status.success());
+        assert!(!denied.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_read_only_blocks_network_sockets() {
+        if !is_sandbox_available() {
+            return;
+        }
+
+        // The probe needs a program that can open a network socket; skip when
+        // no Python interpreter is available on this runner.
+        let python = ["python3", "python"].iter().find(|name| {
+            std::process::Command::new(name)
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false)
+        });
+        let Some(python) = python else {
+            return;
+        };
+
+        let workspace = tempfile::tempdir().unwrap();
+        let probe_args = vec![
+            (*python).to_string(),
+            "-c".to_string(),
+            "import socket; socket.socket(socket.AF_INET, socket.SOCK_STREAM)".to_string(),
+        ];
+
+        // Control: the probe works without a sandbox; otherwise it cannot
+        // prove enforcement and the test is inconclusive on this runner.
+        let control = spawn_unsandboxed_command(
+            probe_args.clone(),
+            workspace.path().to_path_buf(),
+            HashMap::new(),
+        )
+        .await
+        .unwrap();
+        if !control.wait_with_output().await.unwrap().status.success() {
+            return;
+        }
+
+        // Under ReadOnly the seccomp filter denies socket() for non-AF_UNIX
+        // domains, so the probe must fail.
+        let policy = SandboxPolicy::ReadOnly;
+        let child = match spawn_sandboxed_command(
+            probe_args,
+            workspace.path().to_path_buf(),
+            &policy,
+            HashMap::new(),
+        )
+        .await
+        {
+            Ok(child) => child,
+            Err(_) => return,
+        };
+        let output = child.wait_with_output().await.unwrap();
+        assert!(!output.status.success());
     }
 }

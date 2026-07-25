@@ -559,6 +559,7 @@ impl ToolExecutor {
         event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
         call_id: &str,
         generation: u64,
+        cancel: Option<CancellationToken>,
     ) -> ToolResult {
         if McpClient::is_mcp_tool(tool_name) {
             let client = match self.ensure_mcp_client().await {
@@ -632,7 +633,7 @@ impl ToolExecutor {
                 let result = vault_tool_result_credentials(
                     &self.credential_vault,
                     generation,
-                    self.bash.execute(bash_args).await,
+                    self.bash.execute_with_cancellation(bash_args, cancel).await,
                 );
 
                 // Send tool output event

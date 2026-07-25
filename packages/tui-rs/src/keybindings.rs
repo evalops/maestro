@@ -177,8 +177,8 @@ pub fn summarize_keybindings_config_issues() -> Option<String> {
 #[must_use]
 pub fn is_keybindings_config_path(path: &Path) -> bool {
     let expected = keybindings_config_path();
-    let canonical_expected = expected.canonicalize().unwrap_or(expected.clone());
-    let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let canonical_expected = dunce::canonicalize(&expected).unwrap_or(expected.clone());
+    let canonical_path = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     canonical_path == canonical_expected
         || path.file_name() == expected.file_name()
         || path.file_name() == canonical_expected.file_name()

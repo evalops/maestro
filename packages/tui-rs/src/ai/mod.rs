@@ -78,7 +78,9 @@
 mod anthropic;
 pub mod app_message;
 mod client;
+mod error;
 mod google;
+pub mod op_secret;
 mod openai;
 mod providers;
 pub mod sanitize;
@@ -92,6 +94,7 @@ pub use client::{
     create_client, create_client_for_model, provider_model_name, AiClient, AiProvider,
     UnifiedClient, DEFAULT_STREAM_IDLE_TIMEOUT, DEFAULT_STREAM_MAX_RETRIES,
 };
+pub use error::summarize_error_body;
 pub use google::GoogleClient;
 pub use openai::OpenAiClient;
 pub use providers::{ProviderDescriptor, ProviderProtocol, ProviderRegistry, ResolvedProvider};

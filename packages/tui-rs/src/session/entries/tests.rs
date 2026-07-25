@@ -1,6 +1,6 @@
 use super::super::wire_format_generated::{
-    canonical_content_block_type, content_block_field_aliases, field_aliases,
-    is_compaction_context_entry_type, is_compaction_context_excluded_message_role,
+    canonical_content_block_type, canonical_stop_reason, content_block_field_aliases,
+    field_aliases, is_compaction_context_entry_type, is_compaction_context_excluded_message_role,
     COMPACTION_CONTEXT_ENTRY_TYPES, COMPACTION_CONTEXT_EXCLUDED_MESSAGE_ROLES,
     CONTENT_BLOCK_FIELD_ALIASES, CONTENT_BLOCK_TYPE_ALIASES, FIELD_ALIASES, STOP_REASON_ALIASES,
 };
@@ -978,4 +978,127 @@ fn token_usage_total() {
         ..Default::default()
     };
     assert_eq!(usage.total(), 150);
+}
+
+#[test]
+fn all_entry_variants_roundtrip_against_golden_jsonl() {
+    // Golden-file contract: every SessionEntry variant, in its canonical
+    // on-disk JSONL form, must parse and re-serialize to the identical value.
+    let expected: &[(&str, &str)] = &[
+        ("session", "Session"),
+        ("message", "Message"),
+        ("message", "Message"),
+        ("message", "Message"),
+        ("message", "Message"),
+        ("attachment_extract", "AttachmentExtract"),
+        ("thinking_level_change", "ThinkingLevelChange"),
+        ("model_change", "ModelChange"),
+        ("session_meta", "SessionMeta"),
+        ("compaction", "Compaction"),
+        ("branch_summary", "BranchSummary"),
+        ("custom", "Custom"),
+        ("custom_message", "CustomMessage"),
+        ("label", "Label"),
+        ("side_question", "SideQuestion"),
+        ("plan_review", "PlanReview"),
+    ];
+    let golden = repo_fixture("all-entry-variants.jsonl");
+    let lines: Vec<&str> = golden
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    assert_eq!(
+        lines.len(),
+        expected.len(),
+        "golden fixture must contain one line per expected entry"
+    );
+
+    for (line, &(expected_type, expected_variant)) in lines.iter().zip(expected) {
+        let golden_value: Value = serde_json::from_str(line).unwrap();
+        assert_eq!(golden_value["type"], expected_type);
+
+        let entry: SessionEntry = serde_json::from_str(line).unwrap();
+        let actual_variant = match &entry {
+            SessionEntry::Session(_) => "Session",
+            SessionEntry::Message(_) => "Message",
+            SessionEntry::AttachmentExtract(_) => "AttachmentExtract",
+            SessionEntry::ThinkingLevelChange(_) => "ThinkingLevelChange",
+            SessionEntry::ModelChange(_) => "ModelChange",
+            SessionEntry::SessionMeta(_) => "SessionMeta",
+            SessionEntry::Compaction(_) => "Compaction",
+            SessionEntry::BranchSummary(_) => "BranchSummary",
+            SessionEntry::Custom(_) => "Custom",
+            SessionEntry::CustomMessage(_) => "CustomMessage",
+            SessionEntry::Label(_) => "Label",
+            SessionEntry::SideQuestion(_) => "SideQuestion",
+            SessionEntry::PlanReview(_) => "PlanReview",
+        };
+        assert_eq!(
+            actual_variant, expected_variant,
+            "type tag {expected_type} deserialized to the wrong variant"
+        );
+
+        let serialized = serde_json::to_value(&entry).unwrap();
+        assert_eq!(
+            serialized, golden_value,
+            "roundtrip changed the on-disk form of {expected_type}"
+        );
+    }
+}
+
+#[test]
+fn stop_reason_alias_table_is_pinned_to_wire_contract() {
+    assert_eq!(
+        STOP_REASON_ALIASES,
+        &[
+            ("tool_use", "toolUse"),
+            ("tool_calls", "toolUse"),
+            ("max_tokens", "length"),
+            ("end_turn", "stop"),
+            ("stop_sequence", "stop"),
+        ]
+    );
+    for &(alias, canonical) in STOP_REASON_ALIASES {
+        assert_eq!(canonical_stop_reason(alias), canonical);
+    }
+    // Canonical and unknown reasons pass through unchanged.
+    assert_eq!(canonical_stop_reason("stop"), "stop");
+    assert_eq!(canonical_stop_reason("length"), "length");
+    assert_eq!(
+        canonical_stop_reason("unknown_future_reason"),
+        "unknown_future_reason"
+    );
+}
+
+#[test]
+fn unknown_fields_are_tolerated_for_forward_compatibility() {
+    // Entries written by a newer version may carry fields this build does not
+    // know about; they must still parse, keep known fields intact, and drop
+    // the unknown fields on re-serialization.
+    let header: SessionEntry = serde_json::from_str(
+        r#"{"type":"session","id":"s1","timestamp":"2024-01-15T10:30:00Z","cwd":"/tmp","futureField":{"x":1},"anotherNewThing":[1,2]}"#,
+    )
+    .unwrap();
+    let SessionEntry::Session(header) = header else {
+        panic!("Expected Session entry");
+    };
+    assert_eq!(header.id, "s1");
+    let serialized = serde_json::to_value(SessionEntry::Session(header)).unwrap();
+    assert!(serialized.get("futureField").is_none());
+    assert!(serialized.get("anotherNewThing").is_none());
+
+    let message: SessionEntry = serde_json::from_str(
+        r#"{"type":"message","timestamp":"2024-01-15T10:30:00Z","futureEntryField":true,"message":{"role":"assistant","content":[{"type":"text","text":"hi","futureBlockField":1}],"timestamp":0,"futureMessageField":"x"}}"#,
+    )
+    .unwrap();
+    let SessionEntry::Message(message) = message else {
+        panic!("Expected Message entry");
+    };
+    assert_eq!(message.message.text_content(), "hi");
+    let serialized = serde_json::to_value(SessionEntry::Message(message)).unwrap();
+    assert!(serialized.get("futureEntryField").is_none());
+    assert!(serialized["message"].get("futureMessageField").is_none());
+    assert!(serialized["message"]["content"][0]
+        .get("futureBlockField")
+        .is_none());
 }

@@ -364,6 +364,50 @@ fn load_config_file(
 ///
 /// Supports `${VAR}` and `${VAR:-default}` syntax
 pub fn expand_env_vars(s: &str) -> String {
+    expand_env_vars_internal(s, true)
+}
+
+/// Returns true if an env var name looks like it holds a secret
+/// (e.g. API keys, tokens, passwords, credentials).
+fn is_secret_env_var_name(name: &str) -> bool {
+    let name = name.to_uppercase();
+    ["KEY", "SECRET", "TOKEN", "PASS", "CREDENTIAL"]
+        .iter()
+        .any(|pattern| name.contains(pattern))
+}
+
+/// Expand environment variables for a server from the given config scope.
+///
+/// Project- and local-scoped servers come from the repository and may be
+/// hostile, so secret-pattern variables (matching *KEY*/*SECRET*/*TOKEN*/
+/// *PASS*/*CREDENTIAL*) are left unexpanded instead of handing maestro's own
+/// provider credentials to a repo-controlled process or remote endpoint.
+pub fn expand_env_vars_for_scope(s: &str, scope: McpConfigScope) -> String {
+    if matches!(scope, McpConfigScope::Project | McpConfigScope::Local) {
+        expand_env_vars_internal(s, false)
+    } else {
+        expand_env_vars(s)
+    }
+}
+
+/// Returns true if connecting this server requires per-workspace trust
+/// approval. Only project/local-scoped servers (repository-controlled) need
+/// approval; stdio servers require it by default because they spawn an
+/// arbitrary repo-controlled process, and any scope can opt in or out via
+/// `requiresProjectApproval`.
+pub fn server_requires_workspace_approval(server: &McpServerConfig) -> bool {
+    if !matches!(
+        server.scope,
+        McpConfigScope::Project | McpConfigScope::Local
+    ) {
+        return false;
+    }
+    server
+        .requires_project_approval
+        .unwrap_or(matches!(server.transport, McpTransport::Stdio))
+}
+
+fn expand_env_vars_internal(s: &str, allow_secrets: bool) -> String {
     let mut result = s.to_string();
     let mut start = 0;
 
@@ -379,6 +423,13 @@ pub fn expand_env_vars(s: &str) -> String {
             } else {
                 (var_content, None)
             };
+
+            if !allow_secrets && is_secret_env_var_name(var_name) {
+                // Leave the reference unexpanded rather than leaking a
+                // credential to a repo-controlled server.
+                start = var_end + 1;
+                continue;
+            }
 
             let value = std::env::var(var_name)
                 .ok()
@@ -687,5 +738,129 @@ mod tests {
     #[test]
     fn test_expand_env_vars_no_vars() {
         assert_eq!(expand_env_vars("no variables here"), "no variables here");
+    }
+
+    #[test]
+    fn test_expand_env_vars_for_scope_blocks_secrets_for_project_scope() {
+        std::env::set_var("MCP_TEST_PROVIDER_API_KEY", "sk-secret");
+        std::env::set_var("MCP_TEST_REGION", "us-east-1");
+
+        // Project scope: secret-pattern vars stay unexpanded, benign vars expand.
+        let expanded = expand_env_vars_for_scope(
+            "key=${MCP_TEST_PROVIDER_API_KEY} region=${MCP_TEST_REGION}",
+            McpConfigScope::Project,
+        );
+        assert_eq!(
+            expanded,
+            "key=${MCP_TEST_PROVIDER_API_KEY} region=us-east-1"
+        );
+
+        let expanded =
+            expand_env_vars_for_scope("${MCP_TEST_PROVIDER_API_KEY}", McpConfigScope::Local);
+        assert_eq!(expanded, "${MCP_TEST_PROVIDER_API_KEY}");
+
+        // User/enterprise scope: expansion is unchanged.
+        let expanded =
+            expand_env_vars_for_scope("${MCP_TEST_PROVIDER_API_KEY}", McpConfigScope::User);
+        assert_eq!(expanded, "sk-secret");
+        let expanded =
+            expand_env_vars_for_scope("${MCP_TEST_PROVIDER_API_KEY}", McpConfigScope::Enterprise);
+        assert_eq!(expanded, "sk-secret");
+
+        std::env::remove_var("MCP_TEST_PROVIDER_API_KEY");
+        std::env::remove_var("MCP_TEST_REGION");
+    }
+
+    #[test]
+    fn test_expand_env_vars_for_scope_secret_patterns() {
+        for (name, secret) in [
+            ("MCP_TEST_TOKEN", true),
+            ("MCP_TEST_PASSWORD", true),
+            ("MCP_TEST_CREDENTIALS", true),
+            ("MCP_TEST_CLIENT_SECRET", true),
+            ("MCP_TEST_API_KEY", true),
+            ("MCP_TEST_PLAIN", false),
+        ] {
+            std::env::set_var(name, "value");
+            let reference = format!("${{{name}}}");
+            let expanded = expand_env_vars_for_scope(&reference, McpConfigScope::Project);
+            if secret {
+                assert_eq!(expanded, reference, "{name} must stay unexpanded");
+            } else {
+                assert_eq!(expanded, "value", "{name} should expand");
+            }
+            std::env::remove_var(name);
+        }
+    }
+
+    fn server(
+        scope: McpConfigScope,
+        transport: McpTransport,
+        approval: Option<bool>,
+    ) -> McpServerConfig {
+        McpServerConfig {
+            name: "test".to_string(),
+            transport,
+            command: None,
+            args: vec![],
+            env: HashMap::new(),
+            cwd: None,
+            url: None,
+            headers: HashMap::new(),
+            headers_helper: None,
+            auth_preset: None,
+            supports_parallel_tool_calls: None,
+            requires_project_approval: approval,
+            timeout: None,
+            enabled: true,
+            disabled: false,
+            scope,
+        }
+    }
+
+    #[test]
+    fn test_server_requires_workspace_approval() {
+        // User/enterprise servers never need workspace approval.
+        assert!(!server_requires_workspace_approval(&server(
+            McpConfigScope::User,
+            McpTransport::Stdio,
+            None,
+        )));
+        assert!(!server_requires_workspace_approval(&server(
+            McpConfigScope::Enterprise,
+            McpTransport::Stdio,
+            None,
+        )));
+
+        // Project/local stdio servers require approval by default.
+        assert!(server_requires_workspace_approval(&server(
+            McpConfigScope::Project,
+            McpTransport::Stdio,
+            None,
+        )));
+        assert!(server_requires_workspace_approval(&server(
+            McpConfigScope::Local,
+            McpTransport::Stdio,
+            None,
+        )));
+
+        // Project/local HTTP servers do not require approval by default.
+        assert!(!server_requires_workspace_approval(&server(
+            McpConfigScope::Project,
+            McpTransport::Http,
+            None,
+        )));
+
+        // requiresProjectApproval overrides the default in both directions.
+        assert!(server_requires_workspace_approval(&server(
+            McpConfigScope::Project,
+            McpTransport::Http,
+            Some(true),
+        )));
+        assert!(!server_requires_workspace_approval(&server(
+            McpConfigScope::Project,
+            McpTransport::Stdio,
+            Some(false),
+        )));
     }
 }

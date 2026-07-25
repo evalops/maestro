@@ -136,7 +136,7 @@ fn normalize_path(cwd: &Path, raw: &str) -> PathBuf {
     } else {
         cwd.join(path)
     };
-    std::fs::canonicalize(&path).unwrap_or(path)
+    dunce::canonicalize(&path).unwrap_or(path)
 }
 
 #[derive(Debug, Clone)]

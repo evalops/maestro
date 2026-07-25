@@ -390,15 +390,14 @@ impl Executor {
             anyhow::bail!("Invalid path (contains null byte): {}", path);
         }
 
-        let working_dir = Path::new(&self.config.working_dir)
-            .canonicalize()
+        let working_dir = dunce::canonicalize(Path::new(&self.config.working_dir))
             .unwrap_or_else(|_| PathBuf::from(&self.config.working_dir));
 
         let full_path = working_dir.join(path);
 
         // For existing files, verify they're within working dir
         if full_path.exists() {
-            let canonical = full_path.canonicalize()?;
+            let canonical = dunce::canonicalize(&full_path)?;
             if !canonical.starts_with(&working_dir) {
                 anyhow::bail!(
                     "Path escapes working directory: {} -> {}",
@@ -431,6 +430,32 @@ impl Executor {
     /// Evaluate write permission for an executor-applied file path.
     pub fn evaluate_file_permission(&self, path: &str) -> FilePermissionEvaluation {
         self.file_permission_policy.evaluate(path)
+    }
+
+    /// Whether the executor has an API key configured for LLM calls.
+    pub fn has_api_key(&self) -> bool {
+        !self.config.api_key.is_empty()
+    }
+
+    /// Call the configured LLM with retry and return the raw text content.
+    ///
+    /// Used by auxiliary judges (e.g. the goal evaluator) that need a plain
+    /// completion rather than executor file changes.
+    pub async fn chat_completion_text(
+        &self,
+        model: &str,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> anyhow::Result<String> {
+        let response = self
+            .call_llm_with_retry(model, system_prompt, user_prompt)
+            .await?;
+        Ok(response
+            .content
+            .iter()
+            .filter_map(|c| c.text.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 
     /// Call the LLM with retry logic and exponential backoff
@@ -791,6 +816,7 @@ impl Executor {
             Command::new(parts[0])
                 .args(&parts[1..])
                 .current_dir(&self.config.working_dir)
+                .kill_on_drop(true)
                 .output(),
         )
         .await;

@@ -71,6 +71,13 @@ pub struct BashDetails {
     /// Description provided with the command
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+
+    /// Behavior contract version of the tool that produced this result
+    /// (e.g. "current", "legacy-1"). Recorded so session replay can pin the
+    /// same behavior; empty for receipts recorded before tool versioning
+    /// existed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub version: String,
 }
 
 impl BashDetails {
@@ -138,6 +145,13 @@ impl BashDetails {
     /// Add description
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
+        self
+    }
+
+    /// Record the behavior contract version that produced this result
+    #[must_use]
+    pub fn with_version(mut self, version: impl Into<String>) -> Self {
+        self.version = version.into();
         self
     }
 

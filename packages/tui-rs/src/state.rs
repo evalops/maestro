@@ -23,6 +23,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::time::{Instant, SystemTime};
 // `Instant` is for measuring elapsed time (monotonic clock - always goes forward)
 // `SystemTime` is wall-clock time (can go backwards if system time changes)
@@ -37,7 +38,7 @@ use crate::session::ThinkingLevel;
 // `FromAgent` is an enum of all messages the agent can send us
 
 use crate::components::message_layout::{MessageLayout, MessageLayoutCache, MessageLayoutKey};
-use crate::components::textarea::TextArea;
+use crate::components::textarea::{TextArea, PASTE_FOLD_MIN_CHARS, PASTE_FOLD_MIN_LINES};
 // Our multi-line text input component
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -416,6 +417,11 @@ impl QueueMode {
 
 /// Main application state.
 ///
+/// Maximum number of alerts retained in [`AppState::alerts`].
+/// Older alerts are dropped first so a flaky provider cannot grow memory
+/// unbounded during a long session.
+pub const MAX_ALERT_HISTORY: usize = 50;
+
 /// This struct holds ALL mutable state for the application. Everything that
 /// can change during program execution lives here. This centralized approach
 /// makes it easy to understand what data exists and how it can change.
@@ -502,6 +508,16 @@ pub struct AppState {
     /// Error message to display.
     /// Shown prominently in the UI when set.
     pub error: Option<String>,
+
+    /// History of alerts (agent/API errors) recorded this session.
+    /// Backs the status-bar `alerts:N` badge and the `/alerts` command so an
+    /// alert is inspectable after it scrolls off or is replaced.
+    /// Bounded to [`MAX_ALERT_HISTORY`] entries (oldest dropped first).
+    pub alerts: VecDeque<String>,
+
+    /// Number of recorded alerts not yet viewed via `/alerts`.
+    /// Drives the status-bar `alerts:N` badge.
+    pub unseen_alerts: usize,
 
     /// Current thinking header (extracted from **Header** in thinking text).
     /// Shown while the model is thinking to indicate what it's working on.
@@ -629,7 +645,9 @@ impl AppState {
             status: None,     // No status message
             scroll_offset: 0, // At bottom of messages
             expanded_tool_calls: std::collections::HashSet::new(),
-            error: None,           // No error
+            error: None, // No error
+            alerts: VecDeque::new(),
+            unseen_alerts: 0,
             thinking_header: None, // No thinking in progress
             thinking_level: ThinkingLevel::Off,
             thinking_buffer: String::new(),
@@ -656,6 +674,24 @@ impl AppState {
     /// Update cached input width (inner width of the input box).
     pub fn set_input_width(&mut self, width: u16) {
         self.input_width = width.max(1);
+    }
+
+    /// Record an alert (e.g. an agent/API error) for later inspection.
+    ///
+    /// The full message is retained so `/alerts` can show what the status-bar
+    /// `alerts:N` badge is counting. Bumps `unseen_alerts` until the user
+    /// views the list.
+    pub fn record_alert(&mut self, message: String) {
+        if self.alerts.len() >= MAX_ALERT_HISTORY {
+            self.alerts.pop_front();
+        }
+        self.alerts.push_back(message);
+        self.unseen_alerts = self.unseen_alerts.saturating_add(1);
+    }
+
+    /// Mark all recorded alerts as seen (after `/alerts` lists them).
+    pub fn mark_alerts_seen(&mut self) {
+        self.unseen_alerts = 0;
     }
 
     pub(crate) fn prepare_message_layout<F>(
@@ -880,6 +916,7 @@ impl AppState {
 
             // Error occurred
             FromAgent::Error { message, fatal: _ } => {
+                self.record_alert(message.clone());
                 self.error = Some(message);
                 self.busy = false;
                 self.busy_since = None;
@@ -1078,13 +1115,51 @@ impl AppState {
         self.input_preferred_col = None;
     }
 
+    /// Insert pasted text at the cursor position.
+    ///
+    /// Carriage returns are stripped to normalize line endings. The full
+    /// pasted content is always stored (submission stays byte-identical);
+    /// when the paste is large (more than `PASTE_FOLD_MIN_LINES` lines or
+    /// `PASTE_FOLD_MIN_CHARS` bytes) it is folded into a `[Pasted: N lines]`
+    /// chip in the display only.
+    pub fn insert_paste(&mut self, raw: &str) {
+        let pasted: String = raw.chars().filter(|c| *c != '\r').collect();
+        if pasted.is_empty() {
+            return;
+        }
+        self.kill_chain_active = false;
+        self.kill_ring.reset_rotation();
+        let start = self.textarea.cursor();
+        let mut text = self.textarea.text().to_string();
+        text.insert_str(start, &pasted);
+        self.textarea.set_text(&text);
+        let end = start + pasted.len();
+        self.textarea.set_cursor(end);
+        self.input_preferred_col = None;
+        let lines = pasted.matches('\n').count() + 1;
+        if lines > PASTE_FOLD_MIN_LINES || pasted.len() > PASTE_FOLD_MIN_CHARS {
+            self.textarea.add_paste_fold(start..end, lines);
+        }
+    }
+
     /// Delete the character before the cursor (Backspace key).
     ///
-    /// Handles multi-byte UTF-8 characters correctly.
+    /// Handles multi-byte UTF-8 characters correctly. When the cursor is
+    /// right at the end of a folded paste, the whole pasted block is
+    /// deleted as a unit.
     pub fn backspace(&mut self) {
         self.reset_kill_state();
         let cursor = self.textarea.cursor();
         if cursor > 0 {
+            // Unit-delete a folded paste sitting right before the cursor.
+            if let Some(range) = self.textarea.fold_ending_at(cursor) {
+                let mut new_text = self.textarea.text().to_string();
+                new_text.replace_range(range.clone(), "");
+                self.textarea.set_text(&new_text);
+                self.textarea.set_cursor(range.start);
+                self.input_preferred_col = None;
+                return;
+            }
             let text = self.textarea.text();
             // Find the byte length of the previous character
             let prev = text[..cursor]

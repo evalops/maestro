@@ -1,0 +1,12 @@
+{
+  "harness": "execpolicy",
+  "name": "synthetic_execpolicy_destructive_fs",
+  "description": "Filesystem destruction is forbidden, bare rm prompts, and an unmatched command with no rules falls back to allow with no rule match.",
+  "policy_source": "prefix_rule(\n    pattern=[\"rm\", \"-rf\"],\n    decision=\"forbidden\",\n)\n\nprefix_rule(\n    pattern=[\"rm\"],\n    decision=\"prompt\",\n)\n",
+  "cases": [
+    { "command": "rm -rf /", "expected": "forbidden" },
+    { "command": "rm -rf target/debug", "expected": "forbidden" },
+    { "command": "rm notes.txt", "expected": "prompt" },
+    { "command": "ls -la", "expected": "allow" }
+  ]
+}

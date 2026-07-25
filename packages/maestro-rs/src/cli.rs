@@ -27,6 +27,7 @@ const UTILITY_COMMANDS: &[&str] = &[
     "remote",
     "run",
     "scenario",
+    "search",
     "sessions",
     "skill",
     "stats",

@@ -1,0 +1,15 @@
+{
+  "harness": "execpolicy",
+  "name": "synthetic_execpolicy_git_workflow",
+  "description": "Read-only git commands auto-approve, mutating remotes prompt, and a force-push is forbidden outright; the most severe matching decision wins.",
+  "policy_source": "prefix_rule(\n    pattern=[\"git\", \"status\"],\n    decision=\"allow\",\n)\n\nprefix_rule(\n    pattern=[\"git\", \"diff\"],\n    decision=\"allow\",\n)\n\nprefix_rule(\n    pattern=[\"git\", \"push\"],\n    decision=\"prompt\",\n)\n\nprefix_rule(\n    pattern=[\"git\", \"fetch\"],\n    decision=\"prompt\",\n)\n\nprefix_rule(\n    pattern=[\"git\", \"push\", \"--force\"],\n    decision=\"forbidden\",\n)\n",
+  "cases": [
+    { "command": "git status", "expected": "allow" },
+    { "command": "git status --short", "expected": "allow" },
+    { "command": "git diff HEAD~1 -- src/lib.rs", "expected": "allow" },
+    { "command": "git fetch origin", "expected": "prompt" },
+    { "command": "git push origin main", "expected": "prompt" },
+    { "command": "git push --force origin main", "expected": "forbidden" },
+    { "command": "git commit -m wip", "expected": "allow" }
+  ]
+}

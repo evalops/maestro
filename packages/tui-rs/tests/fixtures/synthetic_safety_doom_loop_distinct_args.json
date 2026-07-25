@@ -1,0 +1,23 @@
+{
+  "harness": "safety",
+  "name": "synthetic_safety_doom_loop_distinct_args",
+  "description": "Varied arguments and varied tools never trip the doom-loop gate; key order in equivalent args is canonicalized, so reordered identical objects still count as identical.",
+  "steps": [
+    { "kind": "record", "tool": "bash", "args": { "command": "ls" } },
+    { "kind": "record", "tool": "bash", "args": { "command": "pwd" } },
+    { "kind": "record", "tool": "bash", "args": { "command": "whoami" } },
+    { "kind": "check", "tool": "bash", "args": { "command": "date" }, "expected": "allow" },
+    { "kind": "record", "tool": "read", "args": { "path": "/tmp" } },
+    { "kind": "record", "tool": "read", "args": { "path": "/tmp" } },
+    { "kind": "check", "tool": "glob", "args": { "path": "/tmp" }, "expected": "allow" },
+    { "kind": "record", "tool": "edit", "args": { "path": "a.rs", "old": "x", "new": "y" } },
+    { "kind": "record", "tool": "edit", "args": { "new": "y", "path": "a.rs", "old": "x" } },
+    {
+      "kind": "check",
+      "tool": "edit",
+      "args": { "old": "x", "new": "y", "path": "a.rs" },
+      "expected": "block_doom_loop",
+      "expected_reason_contains": ["doom loop"]
+    }
+  ]
+}

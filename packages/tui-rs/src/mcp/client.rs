@@ -12,7 +12,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, Mutex, RwLock};
 
-use super::config::{expand_env_vars, McpServerConfig, McpTransport};
+use super::config::{expand_env_vars_for_scope, McpServerConfig, McpTransport};
 use super::http::HttpConnection;
 use super::protocol::{
     ClientInfo, InitializeResult, McpIncomingMessage, McpNotification, McpPrompt, McpRequest,
@@ -187,12 +187,12 @@ impl McpConnection {
         })?;
 
         // Expand environment variables in command and args
-        let command = expand_env_vars(command);
+        let command = expand_env_vars_for_scope(command, self.config.scope);
         let args: Vec<String> = self
             .config
             .args
             .iter()
-            .map(|a| expand_env_vars(a))
+            .map(|a| expand_env_vars_for_scope(a, self.config.scope))
             .collect();
 
         // Build command
@@ -204,12 +204,12 @@ impl McpConnection {
 
         // Set working directory
         if let Some(cwd) = &self.config.cwd {
-            cmd.current_dir(expand_env_vars(cwd));
+            cmd.current_dir(expand_env_vars_for_scope(cwd, self.config.scope));
         }
 
         // Set environment variables (expand values)
         for (key, value) in &self.config.env {
-            cmd.env(key, expand_env_vars(value));
+            cmd.env(key, expand_env_vars_for_scope(value, self.config.scope));
         }
 
         // Don't inherit all env vars for security (only essential ones)
@@ -241,7 +241,7 @@ impl McpConnection {
         }
         // Re-add configured env vars after clearing
         for (key, value) in &self.config.env {
-            cmd.env(key, expand_env_vars(value));
+            cmd.env(key, expand_env_vars_for_scope(value, self.config.scope));
         }
 
         // Spawn the process

@@ -8,6 +8,8 @@ use std::collections::HashMap;
 
 use anyhow::{bail, Result};
 
+use super::op_secret;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderProtocol {
     Anthropic,
@@ -67,10 +69,13 @@ impl ProviderRegistry {
         } else {
             descriptor_for_bare_model(requested)
         };
-        let (auth_source, credential) = first_env(env, descriptor.auth_env)
-            .map_or((None, None), |(name, value)| {
-                (Some(name.to_string()), Some(value.to_string()))
-            });
+        let (auth_source, credential) = match first_env(env, descriptor.auth_env) {
+            Some((name, value)) => {
+                let credential = op_secret::resolve_credential(name, value)?;
+                (Some(name.to_string()), Some(credential))
+            }
+            None => (None, None),
+        };
         let base_url = first_env(env, descriptor.base_url_env)
             .map(|(_, value)| normalize_base_url(value))
             .or_else(|| descriptor.default_base_url.map(str::to_string));
@@ -324,6 +329,21 @@ mod tests {
         let env = HashMap::from([("OPENAI_API_KEY".to_string(), "secret".to_string())]);
         let resolved = ProviderRegistry::require("gpt-5.1-codex-max", &env).unwrap();
         assert_eq!(resolved.provider.id, "openai");
+        assert_eq!(resolved.auth_source.as_deref(), Some("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn op_reference_credentials_resolve_through_op_cli() {
+        let _fake = op_secret::test_support::FakeOp::install();
+        let env = HashMap::from([(
+            "OPENAI_API_KEY".to_string(),
+            "op://vault/item/registry".to_string(),
+        )]);
+        let resolved = ProviderRegistry::require("openai/gpt-4o", &env).unwrap();
+        assert_eq!(
+            resolved.credential.as_deref(),
+            Some("resolved-secret-value")
+        );
         assert_eq!(resolved.auth_source.as_deref(), Some("OPENAI_API_KEY"));
     }
 

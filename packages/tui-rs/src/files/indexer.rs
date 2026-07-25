@@ -396,7 +396,7 @@ impl FileIndexer {
             return None;
         }
 
-        let canonical = match root.canonicalize() {
+        let canonical = match dunce::canonicalize(root) {
             Ok(path) => path,
             Err(_) => return None,
         };
@@ -415,7 +415,7 @@ impl FileIndexer {
             return true;
         };
 
-        let canonical = match path.canonicalize() {
+        let canonical = match dunce::canonicalize(path) {
             Ok(p) => p,
             Err(_) => return false,
         };

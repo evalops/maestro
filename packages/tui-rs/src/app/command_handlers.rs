@@ -78,6 +78,12 @@ impl App {
                         self.active_modal = ActiveModal::ThemeSelector;
                     }
                     ModalType::ModelSelector => {
+                        let current = if self.current_model.is_empty() {
+                            self.state.model.clone()
+                        } else {
+                            Some(self.current_model.clone())
+                        };
+                        self.model_selector.set_current_model(current);
                         self.model_selector.show();
                         self.active_modal = ActiveModal::ModelSelector;
                     }
@@ -118,6 +124,45 @@ impl App {
     }
 
     /// Handle a command action that modifies state
+    /// Switch the session model, optionally persisting it as the user
+    /// default in `~/.maestro/config.toml` first.
+    pub(super) fn switch_model(&mut self, model_id: &str, persist_default: bool) {
+        let policy_model = policy_model_id(model_id);
+        if let Some(reason) = check_model_allowed(&policy_model) {
+            self.state.error = Some(reason);
+            return;
+        }
+        if persist_default {
+            match crate::config_cli::persist_user_model_default(model_id) {
+                Ok(path) => {
+                    self.state
+                        .add_system_message(format!("Default model saved to {}", path.display()));
+                }
+                Err(error) => {
+                    self.state.error = Some(format!("Failed to save default model: {error}"));
+                }
+            }
+        }
+        if let Some(agent) = &self.native_agent {
+            if let Err(e) = agent.set_model(model_id) {
+                self.state.error = Some(format!("Failed to set model: {e}"));
+            } else {
+                self.pending_model_change = Some(PendingModelChange {
+                    model: model_id.to_owned(),
+                });
+                self.state.status = Some(if persist_default {
+                    format!("Switching model: {model_id} (saved as default)")
+                } else {
+                    format!("Switching model: {model_id}")
+                });
+            }
+        } else if persist_default {
+            self.state.status = Some(format!("Default model saved: {model_id}"));
+        } else {
+            self.state.error = Some("No agent available to set model".to_string());
+        }
+    }
+
     pub(super) async fn handle_command_action(&mut self, action: CommandAction) {
         match action {
             CommandAction::ClearMessages => {
@@ -213,8 +258,11 @@ impl App {
                 self.should_quit = true;
             }
             CommandAction::RefreshWorkspace => {
-                self.load_workspace_files();
-                self.state.status = Some("Workspace files refreshed".to_string());
+                // Scan on a background thread like startup; the event loop
+                // applies the result (and confirms it) when it arrives.
+                self.spawn_workspace_scan();
+                self.workspace_refresh_pending = true;
+                self.state.status = Some("Refreshing workspace files...".to_string());
             }
             CommandAction::CopyLastMessage => {
                 if let Some(msg) = self
@@ -250,23 +298,10 @@ impl App {
                 }
             }
             CommandAction::SetModel(model_id) => {
-                if let Some(agent) = &self.native_agent {
-                    let policy_model = policy_model_id(&model_id);
-                    if let Some(reason) = check_model_allowed(&policy_model) {
-                        self.state.error = Some(reason);
-                        return;
-                    }
-                    if let Err(e) = agent.set_model(&model_id) {
-                        self.state.error = Some(format!("Failed to set model: {e}"));
-                    } else {
-                        self.pending_model_change = Some(PendingModelChange {
-                            model: model_id.clone(),
-                        });
-                        self.state.status = Some(format!("Switching model: {model_id}"));
-                    }
-                } else {
-                    self.state.error = Some("No agent available to set model".to_string());
-                }
+                self.switch_model(&model_id, false);
+            }
+            CommandAction::SetDefaultModel(model_id) => {
+                self.switch_model(&model_id, true);
             }
             CommandAction::BackgroundMonitor(action) => match action {
                 BackgroundMonitorAction::Add { task_id, pattern } => {
@@ -405,6 +440,9 @@ impl App {
             CommandAction::ShowUsage(usage_action) => {
                 self.handle_usage_action(usage_action);
             }
+            CommandAction::ShowContext => {
+                self.show_context_breakdown();
+            }
             CommandAction::ExportSession(export_action) => {
                 self.handle_export_action(export_action);
             }
@@ -426,6 +464,9 @@ impl App {
             CommandAction::InvokePromptTemplate { name, args } => {
                 self.handle_invoke_prompt_template(&name, &args).await;
             }
+            CommandAction::InvokeExecCommand { name, args } => {
+                self.handle_invoke_exec_command(&name, &args);
+            }
             CommandAction::Queue(action) => {
                 self.handle_queue_action(action);
             }
@@ -440,6 +481,9 @@ impl App {
             }
             CommandAction::ShowMemory => {
                 self.show_memory_status();
+            }
+            CommandAction::ShowAlerts => {
+                self.show_alerts();
             }
             CommandAction::ShowDiagnostics => {
                 let mut diag = String::new();
@@ -522,6 +566,29 @@ impl App {
                 self.state.status = Some("Usage tracking reset".to_string());
             }
         }
+    }
+
+    /// Show the `/context` breakdown: token usage of the current session by
+    /// category, measured with the same estimator the compactor uses.
+    pub(super) fn show_context_breakdown(&mut self) {
+        let system_prompt = self.build_system_prompt();
+        let breakdown = super::context_breakdown::ContextBreakdown::compute(
+            &system_prompt,
+            &self.state.messages,
+        );
+        // Prefer the configured window (matches the footer), falling back to
+        // the model catalog's `ModelCapabilities.context_tokens`.
+        let context_window = self.state.context_window.or_else(|| {
+            crate::model_catalog::find_model(&self.current_model)
+                .map(|info| u64::from(info.capabilities.context_tokens))
+        });
+        let model = if self.current_model.is_empty() {
+            None
+        } else {
+            Some(self.current_model.as_str())
+        };
+        let report = breakdown.render(model, context_window);
+        self.state.add_system_message(report);
     }
 
     /// Handle session export actions
@@ -660,6 +727,10 @@ impl App {
                 // Resuming a persisted transcript begins a new credential scope.
                 // Historical references intentionally cannot resolve after reload.
                 self.credential_vault.clear();
+                // Drop the previous session's error surface and force a full
+                // repaint so its frames cannot linger beneath the resumed
+                // transcript.
+                self.reset_rendered_viewport();
                 crate::plan_mode::set_active_session_id(None);
                 restore_visible_session_messages(&mut self.state, &session);
                 self.plan_review_comments =
@@ -718,6 +789,28 @@ impl App {
         }
     }
 
+    /// List recently recorded alerts in the transcript and mark them seen.
+    fn show_alerts(&mut self) {
+        const MAX_LISTED: usize = 10;
+        if self.state.alerts.is_empty() {
+            self.state
+                .add_system_message("No alerts recorded this session.".to_string());
+            return;
+        }
+        let total = self.state.alerts.len();
+        let skipped = total.saturating_sub(MAX_LISTED);
+        let mut text = if skipped > 0 {
+            format!("## Alerts ({total} recorded; latest {MAX_LISTED} shown)\n")
+        } else {
+            format!("## Alerts ({total} recorded)\n")
+        };
+        for (index, alert) in self.state.alerts.iter().enumerate().skip(skipped) {
+            text.push_str(&format!("\n{}. {alert}", index + 1));
+        }
+        self.state.add_system_message(text);
+        self.state.mark_alerts_seen();
+    }
+
     fn start_new_session(&mut self, status: &str) {
         if self.state.busy {
             self.state.status = Some(
@@ -729,6 +822,11 @@ impl App {
         self.state.messages.clear();
         self.plan_review_comments.clear();
         self.state.scroll_offset = 0;
+        self.state.alerts.clear();
+        self.state.unseen_alerts = 0;
+        // Drop any lingering error surface and force a full viewport repaint
+        // so the previous session's frames cannot linger on screen.
+        self.reset_rendered_viewport();
         self.session_manager.reset_session();
         self.state.session_id = None;
         crate::plan_mode::set_active_session_id(None);

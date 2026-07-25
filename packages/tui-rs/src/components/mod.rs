@@ -85,6 +85,7 @@
 //!
 //! ### Modal Dialogs
 //! - `ApprovalModal`: Tool approval confirmation dialog
+//! - `BatchedApprovalModal`: Batch approval dialog for parallel tool calls
 //! - `CommandPalette`: Fuzzy command search modal
 //! - `FileSearchModal`: File picker modal
 //! - `ModelSelector`: Model selection modal
@@ -119,6 +120,7 @@ mod ascii_animation;
 mod command_palette;
 mod config_selector;
 mod context_indicator;
+mod detail_view;
 mod file_search;
 mod input;
 mod layout;
@@ -139,11 +141,14 @@ mod thinking_indicator;
 mod welcome;
 
 pub use crate::model_catalog::{available_models, ModelInfo};
-pub use approval::{ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest};
+pub use approval::{
+    ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest, BatchedApprovalModal,
+};
 pub use ascii_animation::{logos, AsciiAnimation, ALL_VARIANTS, FRAME_TICK_DEFAULT};
 pub use command_palette::CommandPalette;
 pub use config_selector::{ConfigCategory, ConfigChangeEvent, ConfigOption, ConfigSelector};
 pub use context_indicator::{ContextIndicator, ContextIndicatorBuilder, UsageLevel};
+pub use detail_view::DetailView;
 pub use file_search::FileSearchModal;
 pub use input::{EditorWidget, InputWidget};
 pub use layout::{column_layout, row_layout, BoxWidget};

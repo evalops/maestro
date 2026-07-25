@@ -21,6 +21,17 @@ const EXA_API_BASE: &str = "https://api.exa.ai";
 const MAX_RESULT_TEXT_CHARS: usize = 800;
 const MAX_OUTPUT_CHARS: usize = 6000;
 
+/// Timeout for Exa API requests, matching `web_fetch`'s default.
+const REQUEST_TIMEOUT_SECS: u64 = 30;
+
+/// HTTP client with a bounded timeout so a stalled host cannot hang the turn.
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .build()
+        .expect("Failed to create HTTP client")
+}
+
 fn get_exa_api_key() -> Result<String, String> {
     std::env::var("EXA_API_KEY").map_err(|_| {
         "EXA_API_KEY environment variable is required. Get your key at https://dashboard.exa.ai/api-keys"
@@ -153,7 +164,7 @@ pub async fn websearch(args: Value) -> ToolResult {
         body.insert("contents".to_string(), Value::Object(contents));
     }
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let response = match client
         .post(format!("{EXA_API_BASE}/search"))
         .bearer_auth(api_key)
@@ -276,7 +287,7 @@ pub async fn codesearch(args: Value) -> ToolResult {
         "tokensNum": tokens
     });
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let response = match client
         .post(format!("{EXA_API_BASE}/context"))
         .bearer_auth(api_key)

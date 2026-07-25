@@ -10,7 +10,7 @@
 //! │                            AMBIENT DAEMON                                     │
 //! ├─────────────────────────────────────────────────────────────────────────────┤
 //! │                                                                               │
-//! │  WATCHERS ──▶ EVENT BUS ──▶ DECIDER ──▶ CASCADER ──▶ EXECUTOR ──▶ CRITIC   │
+//! │  WATCHERS ──▶ EVENT BUS ──▶ DECIDER ──▶ CASCADER ──▶ EXECUTOR ──▶ GOAL EVAL ──▶ CRITIC   │
 //! │                                │                           │         │       │
 //! │                                │                           ▼         ▼       │
 //! │                                │                      CHECKPOINT    PR       │
@@ -23,7 +23,7 @@
 //! │                                                           RETRAINER          │
 //! └─────────────────────────────────────────────────────────────────────────────┘
 //!
-//! Flow: WATCH → FILTER → DECIDE → PLAN → ROUTE → EXECUTE → CRITIQUE → PR → LEARN
+//! Flow: WATCH → FILTER → DECIDE → PLAN → ROUTE → EXECUTE → GOAL EVAL → CRITIQUE → PR → LEARN
 //! ```
 //!
 //! # Core Philosophy
@@ -43,6 +43,7 @@ mod execution_report;
 pub mod executor;
 pub mod file_permission;
 pub mod github_watcher;
+pub mod goal_evaluator;
 pub mod ipc;
 pub mod learner;
 pub mod platform_event_bus;
@@ -66,6 +67,10 @@ pub use file_permission::{
     FilePermissionPolicyError, FilePermissionRule,
 };
 pub use github_watcher::GitHubWatcher;
+pub use goal_evaluator::{
+    GoalEvaluationError, GoalEvaluator, GoalEvaluatorConfig, GoalEvaluatorDecision,
+    GoalEvaluatorVerdict, TranscriptItem,
+};
 pub use learner::Learner;
 pub use policy::{PolicyGate, PolicyGateConfig, PolicyGateResult};
 pub use pr_creator::PrCreator;
@@ -87,6 +92,10 @@ pub mod prelude {
         FilePermissionPolicyError, FilePermissionRule,
     };
     pub use crate::github_watcher::{GitHubWatcher, GitHubWatcherConfig};
+    pub use crate::goal_evaluator::{
+        GoalEvaluationError, GoalEvaluator, GoalEvaluatorConfig, GoalEvaluatorDecision,
+        GoalEvaluatorVerdict, TranscriptItem,
+    };
     pub use crate::learner::Learner;
     pub use crate::policy::{PolicyGate, PolicyGateConfig, PolicyGateResult};
     pub use crate::pr_creator::{PrCreator, PrCreatorConfig};

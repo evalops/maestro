@@ -281,6 +281,25 @@ fn run_set(args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
+/// Persist the default model in the user-scope `config.toml`, following the
+/// same load → set → atomic-write flow as `maestro config set`. Returns the
+/// path that was written.
+pub fn persist_user_model_default(model_id: &str) -> Result<PathBuf> {
+    let path = settings_path(Scope::User)?;
+    persist_model_default_to(&path, model_id)?;
+    Ok(path)
+}
+
+fn persist_model_default_to(path: &Path, model_id: &str) -> Result<()> {
+    let mut root = load_toml(path).unwrap_or_else(|| TomlValue::Table(toml::map::Map::new()));
+    set_dotted(&mut root, "model", TomlValue::String(model_id.to_owned()))?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let rendered = toml::to_string_pretty(&root).context("failed to serialize config.toml")?;
+    write_atomic(path, &rendered)
+}
+
 fn run_show(args: &[String]) -> Result<i32> {
     let json = args.iter().any(|arg| arg == "--json");
     let inspection = inspect_config()?;
@@ -1575,7 +1594,7 @@ fn provider_presets() -> Vec<ProviderPreset> {
             id: "google-gemini",
             name: "Google Gemini API",
             api: "google-generative-ai",
-            default_model: "gemini-2.0-flash",
+            default_model: "gemini-2.5-flash",
             base_url: Some("https://generativelanguage.googleapis.com/v1beta"),
             requires_api_key: true,
             api_key_env: Some("GEMINI_API_KEY"),
@@ -1991,6 +2010,38 @@ mod tests {
             keys,
             vec!["history.persistence".to_owned(), "model".to_owned()]
         );
+    }
+
+    #[test]
+    fn persist_user_model_default_round_trips_and_preserves_keys() {
+        let _guard = env_lock();
+        let temp = TempDir::new().unwrap();
+        let previous = env::var("MAESTRO_HOME").ok();
+        env::set_var("MAESTRO_HOME", temp.path());
+
+        fs::write(temp.path().join("config.toml"), "theme = \"dark\"\n").unwrap();
+        let path = persist_user_model_default("gpt-5.5").unwrap();
+        assert_eq!(path, temp.path().join("config.toml"));
+
+        let root = load_toml(&path).unwrap();
+        assert_eq!(
+            get_dotted(&root, "model"),
+            Some(TomlValue::String("gpt-5.5".into()))
+        );
+        assert_eq!(
+            get_dotted(&root, "theme"),
+            Some(TomlValue::String("dark".into())),
+            "existing keys must survive a default-model update"
+        );
+
+        persist_user_model_default("claude-sonnet-4-6").unwrap();
+        let root = load_toml(&path).unwrap();
+        assert_eq!(
+            get_dotted(&root, "model"),
+            Some(TomlValue::String("claude-sonnet-4-6".into()))
+        );
+
+        restore_env("MAESTRO_HOME", previous);
     }
 
     #[test]

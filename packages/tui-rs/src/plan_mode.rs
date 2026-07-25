@@ -75,7 +75,7 @@ pub fn workspace_plan_path(cwd: &str) -> PathBuf {
 /// True when `path` is the session plan file or the workspace `.maestro/plan.md` alias.
 #[must_use]
 pub fn is_plan_file_path(cwd: &str, path: &Path) -> bool {
-    let Ok(candidate) = path.canonicalize().or_else(|_| {
+    let Ok(candidate) = dunce::canonicalize(path).or_else(|_| {
         // File may not exist yet — canonicalize parent + file name.
         if let Some(parent) = path.parent() {
             let parent = if parent.as_os_str().is_empty() {
@@ -83,9 +83,7 @@ pub fn is_plan_file_path(cwd: &str, path: &Path) -> bool {
             } else {
                 parent
             };
-            parent
-                .canonicalize()
-                .map(|p| p.join(path.file_name().unwrap_or_default()))
+            dunce::canonicalize(parent).map(|p| p.join(path.file_name().unwrap_or_default()))
         } else {
             Err(std::io::Error::other("no parent"))
         }

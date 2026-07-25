@@ -1432,9 +1432,9 @@ fn manifest_workspace_file_exists(
     }
     let root_dir = base_dir.join(root_path);
     let full = root_dir.join(relative_path);
-    match full.canonicalize() {
+    match dunce::canonicalize(&full) {
         Ok(canon) => {
-            let Ok(root_canon) = root_dir.canonicalize() else {
+            let Ok(root_canon) = dunce::canonicalize(&root_dir) else {
                 return false;
             };
             canon.starts_with(&root_canon) && canon.is_file()

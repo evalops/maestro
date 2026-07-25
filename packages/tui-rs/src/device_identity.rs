@@ -335,10 +335,11 @@ mod tests {
         tokio::sync::Mutex::const_new(());
 
     fn fake_helper_path() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../scripts/fake-device-identity-helper.mjs")
-            .canonicalize()
-            .expect("fake device identity helper exists")
+        dunce::canonicalize(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../scripts/fake-device-identity-helper.mjs"),
+        )
+        .expect("fake device identity helper exists")
     }
 
     struct EnvGuard {

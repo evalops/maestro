@@ -1205,6 +1205,24 @@ impl NativeAgentRunner {
         cancelled
     }
 
+    /// Guarantee every assistant tool call in history has a matching tool result.
+    ///
+    /// A cancelled turn can leave an assistant `ToolUse` block without a
+    /// `ToolResult` (the turn aborted after the assistant message was recorded
+    /// but before its results were appended). Providers reject such histories
+    /// (OpenAI answers 400), which wedges the session: every subsequent prompt
+    /// fails the same way. Harvest any results that arrived late on the
+    /// tool-response channel and repair the history before giving up on a
+    /// turn and, defensively, before each API call.
+    fn repair_orphaned_tool_calls(&mut self) {
+        // Stash late results delivered after we stopped waiting (e.g. the app
+        // still reports the outcome of a tool it cancelled).
+        while let Ok((id, approved, result)) = self.tool_response_rx.try_recv() {
+            self.pending_tool_approvals.insert(id, (approved, result));
+        }
+        repair_orphaned_tool_calls(&mut self.messages, &mut self.pending_tool_approvals);
+    }
+
     fn drain_leading_pending_messages(
         &mut self,
         kind: PromptKind,
@@ -1946,6 +1964,12 @@ impl NativeAgentRunner {
                 response_id: response_id.clone(),
             });
 
+            // A previous turn may have been interrupted after recording
+            // assistant tool calls (the select on the cancellation token can
+            // drop this loop mid-await, skipping the cleanup below). Never
+            // send a history with orphaned tool calls to the provider.
+            self.repair_orphaned_tool_calls();
+
             // Make the API call
             let config = self.build_config();
             let mut rx = self.client.stream(&self.messages, &config).await?;
@@ -2177,6 +2201,7 @@ impl NativeAgentRunner {
             });
 
             if self.drain_pending_commands() {
+                self.repair_orphaned_tool_calls();
                 return Err(anyhow::anyhow!("Request cancelled"));
             }
 
@@ -2200,6 +2225,15 @@ impl NativeAgentRunner {
                 {
                     if processed_any_tool {
                         if self.drain_pending_commands() {
+                            if !tool_results.is_empty() {
+                                self.messages.push(Message {
+                                    role: Role::User,
+                                    content: MessageContent::Blocks(std::mem::take(
+                                        &mut tool_results,
+                                    )),
+                                });
+                            }
+                            self.repair_orphaned_tool_calls();
                             return Err(anyhow::anyhow!("Request cancelled"));
                         }
                         deferred_steering = self.dequeue_next_turn_messages(false);
@@ -2541,6 +2575,13 @@ impl NativeAgentRunner {
 
                 if deferred_steering.is_empty() {
                     if self.drain_pending_commands() {
+                        if !tool_results.is_empty() {
+                            self.messages.push(Message {
+                                role: Role::User,
+                                content: MessageContent::Blocks(std::mem::take(&mut tool_results)),
+                            });
+                        }
+                        self.repair_orphaned_tool_calls();
                         return Err(anyhow::anyhow!("Request cancelled"));
                     }
                     deferred_steering = self.dequeue_next_turn_messages(false);
@@ -2781,6 +2822,121 @@ async fn wait_for_tool_response(
     None
 }
 
+/// Append failure tool results for any assistant `ToolUse` block in `messages`
+/// that has no matching `ToolResult`, so an interrupted turn can never leave
+/// the history with orphaned tool calls.
+///
+/// Repairs are grouped into the user message that already carries results for
+/// the same assistant message when one exists, otherwise inserted immediately
+/// after it, keeping the `ToolUse`/`ToolResult` pairing both the OpenAI and
+/// Anthropic serializers require. A real result delivered late (stashed in
+/// `pending_tool_approvals`) is used when available; otherwise a
+/// "cancelled by user" failure is synthesized.
+fn repair_orphaned_tool_calls(
+    messages: &mut Vec<Message>,
+    pending_tool_approvals: &mut HashMap<String, (bool, Option<ToolResult>)>,
+) {
+    let mut answered: HashSet<String> = HashSet::new();
+    for message in messages.iter() {
+        if let MessageContent::Blocks(blocks) = &message.content {
+            for block in blocks {
+                if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                    answered.insert(tool_use_id.clone());
+                }
+            }
+        }
+    }
+
+    let mut index = 0;
+    while index < messages.len() {
+        let missing: Vec<(String, String)> = match &messages[index] {
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Blocks(blocks),
+            } => blocks
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::ToolUse { id, name, .. } if !answered.contains(id) => {
+                        Some((id.clone(), name.clone()))
+                    }
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+
+        if missing.is_empty() {
+            index += 1;
+            continue;
+        }
+
+        let repairs: Vec<ContentBlock> = missing
+            .into_iter()
+            .map(|(id, name)| {
+                let (content, is_error) = match pending_tool_approvals.remove(&id) {
+                    Some((true, Some(result))) => {
+                        let execution = ToolExecution::from_legacy(
+                            &id,
+                            &name,
+                            ExecutionSource::RemoteClient,
+                            result,
+                        );
+                        (execution.model_content(), execution.is_error())
+                    }
+                    Some((approved, result)) => {
+                        let execution = if approved {
+                            ToolExecution::from_legacy(
+                                &id,
+                                &name,
+                                ExecutionSource::Native,
+                                result.unwrap_or_else(|| {
+                                    ToolResult::failure("Tool task did not return a result")
+                                }),
+                            )
+                        } else {
+                            ToolExecution::denied(&id, &name, DenialReason::User)
+                        };
+                        (execution.model_content(), execution.is_error())
+                    }
+                    None => ("Tool execution cancelled by user.".to_string(), true),
+                };
+                answered.insert(id.clone());
+                ContentBlock::ToolResult {
+                    tool_use_id: id,
+                    content,
+                    is_error: Some(is_error),
+                }
+            })
+            .collect();
+
+        // Merge into the existing tool-result message when one already
+        // follows this assistant message; otherwise insert a new one.
+        let merge_target = match messages.get_mut(index + 1) {
+            Some(Message {
+                role: Role::User,
+                content: MessageContent::Blocks(blocks),
+            }) if blocks
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolResult { .. })) =>
+            {
+                Some(blocks)
+            }
+            _ => None,
+        };
+        match merge_target {
+            Some(blocks) => blocks.extend(repairs),
+            None => messages.insert(
+                index + 1,
+                Message {
+                    role: Role::User,
+                    content: MessageContent::Blocks(repairs),
+                },
+            ),
+        }
+        index += 2;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2978,5 +3134,196 @@ mod tests {
         let result = wait_for_tool_response("id-2", &mut rx, &mut pending).await;
         assert!(matches!(result, Some((true, None))));
         assert!(pending.is_empty());
+    }
+
+    /// Every assistant `ToolUse` id must have exactly one matching `ToolResult`
+    /// in a user message that follows it - the invariant the OpenAI and
+    /// Anthropic serializers (and providers) rely on.
+    fn assert_tool_call_pairing(messages: &[Message]) {
+        let mut tool_use_ids: Vec<String> = Vec::new();
+        let mut tool_result_ids: Vec<String> = Vec::new();
+        for (index, message) in messages.iter().enumerate() {
+            let MessageContent::Blocks(blocks) = &message.content else {
+                continue;
+            };
+            for block in blocks {
+                match block {
+                    ContentBlock::ToolUse { id, .. } => {
+                        assert_eq!(message.role, Role::Assistant);
+                        tool_use_ids.push(id.clone());
+                    }
+                    ContentBlock::ToolResult { tool_use_id, .. } => {
+                        assert_eq!(message.role, Role::User);
+                        assert!(index > 0, "tool result cannot lead the history");
+                        tool_result_ids.push(tool_use_id.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(
+            tool_use_ids, tool_result_ids,
+            "every tool call must have exactly one tool result, in order"
+        );
+    }
+
+    fn assistant_tool_use_message(calls: &[(&str, &str)]) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(
+                calls
+                    .iter()
+                    .map(|(id, name)| ContentBlock::ToolUse {
+                        id: (*id).to_string(),
+                        name: (*name).to_string(),
+                        input: serde_json::json!({}),
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    fn tool_result_blocks(message: &Message) -> Vec<(String, String, Option<bool>)> {
+        match &message.content {
+            MessageContent::Blocks(blocks) => blocks
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error,
+                    } => Some((tool_use_id.clone(), content.clone(), *is_error)),
+                    _ => None,
+                })
+                .collect(),
+            MessageContent::Text(_) => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_repair_orphaned_tool_calls_synthesizes_missing_results() {
+        // A turn cancelled after the assistant message was recorded but before
+        // any tool result was appended (the Ctrl+C-during-bash repro).
+        let mut messages = vec![
+            Message {
+                role: Role::User,
+                content: MessageContent::Text("run sleep 120 via bash".to_string()),
+            },
+            assistant_tool_use_message(&[("call_1", "bash"), ("call_2", "read")]),
+        ];
+        let mut pending = HashMap::new();
+
+        repair_orphaned_tool_calls(&mut messages, &mut pending);
+
+        assert_eq!(messages.len(), 3);
+        let repairs = tool_result_blocks(&messages[2]);
+        assert_eq!(repairs.len(), 2);
+        assert_eq!(repairs[0].0, "call_1");
+        assert_eq!(repairs[1].0, "call_2");
+        for (_, content, is_error) in &repairs {
+            assert_eq!(content, "Tool execution cancelled by user.");
+            assert_eq!(*is_error, Some(true));
+        }
+        assert_tool_call_pairing(&messages);
+
+        // A subsequent prompt must not leave the orphaned call in the middle
+        // of the history: the pairing still holds after it is appended.
+        messages.push(Message {
+            role: Role::User,
+            content: MessageContent::Text("next prompt".to_string()),
+        });
+        assert_tool_call_pairing(&messages);
+    }
+
+    #[test]
+    fn test_repair_orphaned_tool_calls_prefers_late_real_results() {
+        // The app still delivers the cancelled tool's real outcome on the
+        // tool-response channel; use it instead of a synthesized message.
+        let mut messages = vec![assistant_tool_use_message(&[("call_1", "bash")])];
+        let mut pending = HashMap::new();
+        pending.insert(
+            "call_1".to_string(),
+            (true, Some(ToolResult::failure("Command cancelled"))),
+        );
+
+        repair_orphaned_tool_calls(&mut messages, &mut pending);
+
+        assert_eq!(messages.len(), 2);
+        let repairs = tool_result_blocks(&messages[1]);
+        assert_eq!(repairs.len(), 1);
+        assert_eq!(repairs[0].0, "call_1");
+        assert!(repairs[0].1.contains("Command cancelled"));
+        assert_eq!(repairs[0].2, Some(true));
+        assert!(pending.is_empty());
+        assert_tool_call_pairing(&messages);
+    }
+
+    #[test]
+    fn test_repair_orphaned_tool_calls_records_denials() {
+        let mut messages = vec![assistant_tool_use_message(&[("call_1", "write")])];
+        let mut pending = HashMap::new();
+        pending.insert("call_1".to_string(), (false, None));
+
+        repair_orphaned_tool_calls(&mut messages, &mut pending);
+
+        let repairs = tool_result_blocks(&messages[1]);
+        assert_eq!(repairs.len(), 1);
+        assert_eq!(repairs[0].2, Some(true));
+        assert_tool_call_pairing(&messages);
+    }
+
+    #[test]
+    fn test_repair_orphaned_tool_calls_merges_into_existing_result_message() {
+        // Partial results were already recorded for call_1 when the turn was
+        // cancelled; call_2's result must join the same user message.
+        let mut messages = vec![
+            assistant_tool_use_message(&[("call_1", "read"), ("call_2", "bash")]),
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_1".to_string(),
+                    content: "file contents".to_string(),
+                    is_error: Some(false),
+                }]),
+            },
+        ];
+        let mut pending = HashMap::new();
+
+        repair_orphaned_tool_calls(&mut messages, &mut pending);
+
+        assert_eq!(messages.len(), 2);
+        let results = tool_result_blocks(&messages[1]);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, "call_1");
+        assert_eq!(results[0].1, "file contents");
+        assert_eq!(results[1].0, "call_2");
+        assert_eq!(results[1].1, "Tool execution cancelled by user.");
+        assert_tool_call_pairing(&messages);
+    }
+
+    #[test]
+    fn test_repair_orphaned_tool_calls_noop_on_paired_history() {
+        let mut messages = vec![
+            assistant_tool_use_message(&[("call_1", "read")]),
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_1".to_string(),
+                    content: "ok".to_string(),
+                    is_error: Some(false),
+                }]),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Text("done".to_string()),
+            },
+        ];
+        let original = messages.clone();
+        let mut pending = HashMap::new();
+
+        repair_orphaned_tool_calls(&mut messages, &mut pending);
+
+        assert_eq!(messages.len(), original.len());
+        assert_tool_call_pairing(&messages);
     }
 }

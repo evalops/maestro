@@ -1622,7 +1622,7 @@ fn resolve_real_through_parents(absolute: &Path) -> Option<PathBuf> {
     let mut current = absolute.to_path_buf();
     loop {
         if current.exists() {
-            let real = fs::canonicalize(&current).ok()?;
+            let real = dunce::canonicalize(&current).ok()?;
             if suffix.is_empty() {
                 return Some(real);
             }

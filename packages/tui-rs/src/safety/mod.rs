@@ -65,6 +65,7 @@ mod integration_tests;
 pub use bash_analyzer::{
     analyze_bash_command, is_dangerous, is_likely_safe, BashAnalysis, CommandRisk,
 };
+pub(crate) use bash_analyzer::{git_args_are_mutating, tokenize};
 pub use dangerous_patterns::{
     check_dangerous_patterns, has_high_severity_pattern, most_severe_match, DangerousPattern,
     PatternMatch, Severity,

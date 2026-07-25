@@ -60,6 +60,7 @@ use ratatui::prelude::*;
 // It provides widgets (Paragraph, Block, List) and layout primitives.
 
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 // `mpsc` = Multi-Producer, Single-Consumer channel.
 // Used for async message passing between tasks.
 // - `mpsc::unbounded_channel()` creates a channel with no size limit
@@ -68,7 +69,8 @@ use tokio::sync::mpsc;
 
 use crate::agent::MAX_PENDING_MESSAGES;
 use crate::agent::{
-    CredentialVault, FromAgent, NativeAgent, NativeAgentConfig, PromptKind, ToolResult,
+    CredentialVault, FromAgent, NativeAgent, NativeAgentConfig, PromptKind, ToolExecution,
+    ToolResult,
 };
 use crate::ai::AiProvider;
 use crate::clipboard::ClipboardManager;
@@ -79,8 +81,9 @@ use crate::commands::{
 };
 use crate::components::{
     calculate_input_height, ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest,
-    ChatInputWidget, ChatInputWidgetOptions, ChatView, CommandPalette, FileSearchModal,
-    ModelSelector, OperationsModal, RewindPicker, SessionSwitcher, ShortcutsHelp, ThemeSelector,
+    BatchedApprovalModal, ChatInputWidget, ChatInputWidgetOptions, ChatView, CommandPalette,
+    DetailView, FileSearchModal, ModelSelector, OperationsModal, RewindPicker, SessionSwitcher,
+    ShortcutsHelp, ThemeSelector,
 };
 use crate::config_watcher::{ConfigEvent, ConfigWatcher, ConfigWatcherBuilder};
 use crate::files::{get_workspace_files, WorkspaceFile};
@@ -138,6 +141,8 @@ pub enum ActiveModal {
     ShortcutsHelp,
     /// File checkpoint restore picker (double-Esc on empty input)
     RewindPicker,
+    /// Full-output detail view (Ctrl+E)
+    DetailView,
 }
 
 #[derive(Debug, Clone)]
@@ -490,7 +495,19 @@ pub struct App {
     tool_response_tx: Option<mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>>,
 
     /// Executes tools (bash commands, file reads, etc.) requested by the agent.
-    tool_executor: ToolExecutor,
+    ///
+    /// Shared via `Arc` so tool executions can run on spawned tasks instead of
+    /// blocking the event loop (a bash command may run for minutes).
+    tool_executor: Arc<ToolExecutor>,
+
+    /// Cancellation tokens for in-flight tool executions, keyed by call_id.
+    /// Ctrl+C cancels them, killing the tool's child process group.
+    running_tools: HashMap<String, CancellationToken>,
+
+    /// Completion channel for spawned tool executions; drained by the event
+    /// loop via `poll_tool_completions`.
+    tool_completion_tx: mpsc::UnboundedSender<(String, String, ToolExecution)>,
+    tool_completion_rx: mpsc::UnboundedReceiver<(String, String, ToolExecution)>,
 
     /// Shared credential vault for the active application session.
     credential_vault: CredentialVault,
@@ -522,6 +539,14 @@ pub struct App {
 
     /// Workspace files shared by file search and the unified palette.
     workspace_files: Vec<WorkspaceFile>,
+
+    /// Receiver for the background workspace file scan (startup and
+    /// `/refresh-workspace`); polled by the event loop.
+    workspace_scan_rx: Option<std::sync::mpsc::Receiver<Vec<WorkspaceFile>>>,
+
+    /// Set by `/refresh-workspace` so scan completion confirms in the status
+    /// line (the startup scan stays silent).
+    workspace_refresh_pending: bool,
 
     /// Session history browser modal.
     session_switcher: SessionSwitcher,
@@ -576,6 +601,15 @@ pub struct App {
 
     /// Flat markdown prompt/command templates.
     custom_prompts: Vec<PromptDefinition>,
+
+    /// Droid-style executable slash commands from `.composer/commands/`.
+    exec_commands: Vec<crate::exec_commands::ExecCommand>,
+
+    /// Sender side of the exec-command completion channel (cloned into workers).
+    exec_command_tx: std::sync::mpsc::Sender<exec_commands::ExecCommandOutcome>,
+
+    /// Receiver polled each frame for finished executable command runs.
+    exec_command_rx: std::sync::mpsc::Receiver<exec_commands::ExecCommandOutcome>,
 
     /// Optional initial prompt from CLI (Grok-style trailing args).
     initial_prompt: Option<String>,
@@ -663,6 +697,12 @@ pub struct App {
     /// Terminal-native turn notifications (OSC 9;4 tab progress, OSC 0 title,
     /// focus-gated desktop notifications).
     terminal_notifier: crate::notifications::TerminalStateNotifier,
+
+    /// Full-output detail view overlay (Ctrl+E), when open.
+    detail_view: Option<DetailView>,
+
+    /// Modal to restore when the detail view closes (e.g. back to Approval).
+    detail_return_modal: ActiveModal,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -729,6 +769,18 @@ impl App {
             .as_ref()
             .and_then(|tui| tui.slash_command_fallback)
             .unwrap_or(true);
+        // Live theme follow: `tui.theme_follow = true` starts in the `auto`
+        // theme and refines dark/light with a one-time OSC 11 probe, gated on
+        // an enhanced terminal. This must run before the event loop starts
+        // consuming input — see themes::osc11 for why polling is unsafe.
+        let theme_follow = config
+            .tui
+            .as_ref()
+            .and_then(|tui| tui.theme_follow)
+            .unwrap_or(false);
+        if theme_follow && capabilities.enhanced_keys {
+            crate::themes::osc11::apply_auto_theme_from_terminal();
+        }
         let mut app = Self::new_with_terminal_with_history(
             terminal,
             capabilities,
@@ -780,6 +832,7 @@ impl App {
             skill_registry.register(loaded.definition.clone());
         }
         let custom_prompts = load_prompts(&workspace_dir);
+        let exec_commands = crate::exec_commands::discover(&workspace_dir);
         let (model_monitor, model_verification_rx) = crate::model_monitor::spawn_model_monitor();
 
         let tui_settings = crate::config::load_config(&workspace_dir, None).tui;
@@ -792,18 +845,30 @@ impl App {
             std::env::var("TERM_PROGRAM").ok().as_deref(),
         );
 
-        let command_registry = Arc::new(build_command_registry_with_extensions(
-            &loaded_skills,
-            &custom_prompts,
-        ));
+        let mut command_registry =
+            build_command_registry_with_extensions(&loaded_skills, &custom_prompts);
+        let skipped_exec =
+            crate::commands::register_exec_commands(&mut command_registry, &exec_commands);
+        if !skipped_exec.is_empty() {
+            state.add_system_message(exec_commands::exec_collision_warning(&skipped_exec));
+        }
+        let command_registry = Arc::new(command_registry);
         let slash_matcher = SlashCommandMatcher::new(Arc::clone(&command_registry));
+        let (tool_completion_tx, tool_completion_rx) = mpsc::unbounded_channel();
+        let (exec_command_tx, exec_command_rx) = std::sync::mpsc::channel();
 
         Self {
             state,
             native_agent: None,
             native_event_rx: None,
             tool_response_tx: None,
-            tool_executor: ToolExecutor::with_credential_vault(&cwd, credential_vault.clone()),
+            tool_executor: Arc::new(ToolExecutor::with_credential_vault(
+                &cwd,
+                credential_vault.clone(),
+            )),
+            running_tools: HashMap::new(),
+            tool_completion_tx,
+            tool_completion_rx,
             credential_vault,
             terminal,
             should_quit: false,
@@ -815,6 +880,8 @@ impl App {
             active_modal: ActiveModal::None,
             file_search: FileSearchModal::new(),
             workspace_files: Vec::new(),
+            workspace_scan_rx: None,
+            workspace_refresh_pending: false,
             session_switcher: SessionSwitcher::new(&cwd),
             operations: OperationsModal::new(&cwd),
             approval_controller: ApprovalController::new(),
@@ -832,6 +899,9 @@ impl App {
             skill_registry,
             plugin_registry,
             custom_prompts,
+            exec_commands,
+            exec_command_tx,
+            exec_command_rx,
             initial_prompt: initial_prompt.filter(|p| !p.trim().is_empty()),
             queued_prompts: VecDeque::new(),
             queued_prompt_inflight: None,
@@ -861,6 +931,8 @@ impl App {
             restore_queued_prompts_after_interrupt: false,
             pending_checkpoint: None,
             terminal_notifier,
+            detail_view: None,
+            detail_return_modal: ActiveModal::None,
         }
     }
 
@@ -945,6 +1017,20 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     ///
     /// Exit code for the process (0 = success, non-zero = error).
     pub async fn run(mut self) -> Result<i32> {
+        let result = self.run_inner().await;
+        // Restore the terminal unconditionally: an error propagated out of
+        // the loop (event poll/read, render, agent poll, ...) must not leave
+        // raw mode, bracketed paste, and mouse capture enabled. The panic
+        // hook only covers panics, not `?` propagation.
+        let restore_result = terminal::restore();
+        match (result, restore_result) {
+            (Ok(code), Ok(())) => Ok(code),
+            (Err(e), _) => Err(e),
+            (Ok(_), Err(e)) => Err(e).context("Failed to restore terminal"),
+        }
+    }
+
+    async fn run_inner(&mut self) -> Result<i32> {
         // Optional Jane Street magic-trace slow-frame snapshots (Linux/Intel PT).
         if crate::magic_trace::init_from_env() {
             eprintln!(
@@ -968,15 +1054,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
         // Index @-mention files with a bounded, killable scan (see workspace.rs).
         // Kick it off on a background thread so agent spawn is not gated on it.
-        let (workspace_tx, workspace_rx) = std::sync::mpsc::channel();
-        std::thread::Builder::new()
-            .name("maestro-workspace-scan".into())
-            .spawn(move || {
-                let cwd = std::env::current_dir().unwrap_or_default();
-                let files = get_workspace_files(&cwd, 10_000);
-                let _ = workspace_tx.send(files);
-            })
-            .ok();
+        self.spawn_workspace_scan();
 
         // Spawn the agent (async operation).
         // This creates the channels and starts the agent task.
@@ -988,26 +1066,19 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         }
 
         // Main event loop - runs until should_quit is set to true.
-        let mut workspace_rx = Some(workspace_rx);
         // Only repaint when something changed (or while busy for spinners).
         // Idle 20Hz full-buffer diffs were the top cost after FS badge work
         // (perf on developer@dev-desktop → ratatui Buffer::diff / unicode_width).
         let mut needs_redraw = true;
         loop {
             // Apply workspace scan results as soon as they arrive (non-blocking).
-            if let Some(rx) = workspace_rx.as_ref() {
-                match rx.try_recv() {
-                    Ok(files) => {
-                        self.workspace_files.clone_from(&files);
-                        self.file_search.set_files(files);
-                        workspace_rx = None;
-                        needs_redraw = true;
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        workspace_rx = None;
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                }
+            if self.poll_workspace_scan() {
+                needs_redraw = true;
+            }
+
+            // Apply finished executable slash command runs (non-blocking).
+            if self.poll_exec_commands() {
+                needs_redraw = true;
             }
 
             // Poll for terminal events. Shorter timeout while busy (animations);
@@ -1015,13 +1086,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             let poll_ms = if self.state.busy { 33 } else { 100 };
             if event::poll(std::time::Duration::from_millis(poll_ms))? {
                 match event::read()? {
-                    Event::Key(key)
-                        // Only handle key press events (not release).
-                        // Some terminals send both press and release events.
-                        if key.kind == KeyEventKind::Press => {
-                            self.handle_key(key.code, key.modifiers).await?;
-                            needs_redraw = true;
-                        }
+                    Event::Key(key) if should_handle_key_event(key.kind) => {
+                        self.handle_key(key.code, key.modifiers).await?;
+                        needs_redraw = true;
+                    }
                     Event::Mouse(mouse) => {
                         // Handle mouse scroll wheel
                         match mouse.kind {
@@ -1060,7 +1128,15 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                             _ => {} // Ignore other mouse events
                         }
                     }
-                    Event::Resize(_, _) => {
+                    Event::Resize(_, height) => {
+                        self.handle_resize(height)?;
+                        needs_redraw = true;
+                    }
+                    // Bracketed paste: route to the open modal's text input,
+                    // or to the main input (large pastes fold into a
+                    // `[Pasted: N lines]` display chip).
+                    Event::Paste(text) => {
+                        self.handle_paste(&text);
                         needs_redraw = true;
                     }
                     Event::FocusGained => {
@@ -1069,7 +1145,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     Event::FocusLost => {
                         self.terminal_notifier.record_focus(false);
                     }
-                    _ => {} // Ignore other events (paste handled elsewhere)
+                    _ => {} // Ignore other events
                 }
             }
 
@@ -1077,6 +1153,12 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             // This handles streaming responses, tool calls, etc.
             let agent_activity = self.poll_agent().await?;
             if agent_activity {
+                needs_redraw = true;
+            }
+
+            // Apply finished tool executions (spawned per call so a long
+            // bash run does not freeze the loop).
+            if self.poll_tool_completions() {
                 needs_redraw = true;
             }
 
@@ -1154,18 +1236,77 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         let shutdown_seqs = self.terminal_notifier.session_ended();
         Self::write_terminal_sequences(&shutdown_seqs);
 
-        // Cleanup terminal
-        terminal::restore()?;
-
+        // Terminal restore happens in `run`, which wraps this inner loop so
+        // the terminal is restored even when the loop exits with an error.
         Ok(0)
     }
 
-    /// Load workspace files for file search
-    fn load_workspace_files(&mut self) {
-        let cwd = std::env::current_dir().unwrap_or_default();
-        let files = get_workspace_files(&cwd, 10000);
-        self.workspace_files.clone_from(&files);
-        self.file_search.set_files(files);
+    /// Handle a terminal resize: recompute viewport capabilities (PageUp/
+    /// PageDown step size) and resize the inline viewport itself.
+    fn handle_resize(&mut self, height: u16) -> Result<()> {
+        if self.update_viewport_capabilities(height) {
+            // ratatui's inline viewport height is fixed at construction, so
+            // growing/shrinking it requires rebuilding the Terminal around
+            // the same device handle. Width-only changes are handled by
+            // ratatui's autoresize on the next draw.
+            self.terminal = terminal::recreate_with_viewport(self.capabilities.viewport_height)?;
+        }
+        Ok(())
+    }
+
+    /// Recompute viewport capabilities for a new terminal height.
+    /// Returns true when they changed.
+    fn update_viewport_capabilities(&mut self, height: u16) -> bool {
+        let (viewport_top, viewport_height) = terminal::calculate_viewport(height);
+        let changed = viewport_top != self.capabilities.viewport_top
+            || viewport_height != self.capabilities.viewport_height;
+        self.capabilities.viewport_top = viewport_top;
+        self.capabilities.viewport_height = viewport_height;
+        changed
+    }
+
+    /// Scan workspace files on a background thread.
+    ///
+    /// The `rg --files --follow` scan of the whole cwd can take seconds, so
+    /// it must never run on the UI thread; the event loop polls the receiver
+    /// via `poll_workspace_scan` and applies the result when it arrives.
+    fn spawn_workspace_scan(&mut self) {
+        let (workspace_tx, workspace_rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("maestro-workspace-scan".into())
+            .spawn(move || {
+                let cwd = std::env::current_dir().unwrap_or_default();
+                let files = get_workspace_files(&cwd, 10_000);
+                let _ = workspace_tx.send(files);
+            })
+            .ok();
+        self.workspace_scan_rx = Some(workspace_rx);
+    }
+
+    /// Apply background workspace scan results as soon as they arrive
+    /// (non-blocking). Returns true when the file list changed.
+    fn poll_workspace_scan(&mut self) -> bool {
+        let Some(rx) = self.workspace_scan_rx.take() else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(files) => {
+                self.workspace_files.clone_from(&files);
+                self.file_search.set_files(files);
+                if std::mem::take(&mut self.workspace_refresh_pending) {
+                    self.state.status = Some("Workspace files refreshed".to_string());
+                }
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.workspace_refresh_pending = false;
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                self.workspace_scan_rx = Some(rx);
+                false
+            }
+        }
     }
 
     /// Spawn the native Rust agent
@@ -1278,14 +1419,20 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         let workspace_dir =
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         self.custom_prompts = load_prompts(&workspace_dir);
+        self.exec_commands = crate::exec_commands::discover(&workspace_dir);
         self.rebuild_slash_registry();
     }
 
     fn rebuild_slash_registry(&mut self) {
-        let registry = Arc::new(build_command_registry_with_extensions(
-            &self.loaded_skills,
-            &self.custom_prompts,
-        ));
+        let mut registry =
+            build_command_registry_with_extensions(&self.loaded_skills, &self.custom_prompts);
+        let skipped_exec =
+            crate::commands::register_exec_commands(&mut registry, &self.exec_commands);
+        if !skipped_exec.is_empty() {
+            self.state
+                .add_system_message(exec_commands::exec_collision_warning(&skipped_exec));
+        }
+        let registry = Arc::new(registry);
         self.command_registry = Arc::clone(&registry);
         self.slash_matcher = SlashCommandMatcher::new(Arc::clone(&registry));
         self.command_palette.update_registry(registry);
@@ -1870,8 +2017,7 @@ Retry with a supported tool (bash/read/write/glob/grep) and valid args."
                         call_id.clone(),
                         tool.clone(),
                         filled_args.clone(),
-                    )
-                    .await?;
+                    );
                     return Ok(());
                 }
 
@@ -1931,8 +2077,7 @@ Add the required fields and retry.",
                 } else {
                     // Auto-approve and execute
                     self.tool_history.record_approval(call_id, true);
-                    self.execute_tool_and_respond(call_id.clone(), tool.clone(), args.clone())
-                        .await?;
+                    self.execute_tool_and_respond(call_id.clone(), tool.clone(), args.clone());
                 }
             }
             _ => {}
@@ -1956,18 +2101,45 @@ Add the required fields and retry.",
         Ok(())
     }
 
-    /// Execute a tool and send the response back to the agent
-    async fn execute_tool_and_respond(
-        &mut self,
-        call_id: String,
-        tool: String,
-        args: serde_json::Value,
-    ) -> Result<()> {
-        let resolved_args = self.credential_vault.resolve_in_json(&args);
-        let execution = self
-            .tool_executor
-            .execute_with_receipt(&tool, &resolved_args, None, &call_id)
-            .await;
+    /// Execute a tool on a spawned task and send the response back to the
+    /// agent when it finishes.
+    ///
+    /// Tool execution (notably bash, which may run for minutes) must not block
+    /// the event loop: while it runs the loop keeps polling terminal events
+    /// and spinner frames, and Ctrl+C cancels the per-call token, which kills
+    /// the tool's child process group (see `BashTool::execute_with_cancellation`).
+    fn execute_tool_and_respond(&mut self, call_id: String, tool: String, args: serde_json::Value) {
+        let cancel = CancellationToken::new();
+        self.running_tools.insert(call_id.clone(), cancel.clone());
+        let executor = Arc::clone(&self.tool_executor);
+        let vault = self.credential_vault.clone();
+        let completion_tx = self.tool_completion_tx.clone();
+        tokio::spawn(async move {
+            let resolved_args = vault.resolve_in_json(&args);
+            let execution = executor
+                .execute_with_receipt_cancellable(&tool, &resolved_args, None, &call_id, cancel)
+                .await;
+            let _ = completion_tx.send((call_id, tool, execution));
+        });
+    }
+
+    /// Apply finished tool executions (non-blocking). Returns true when any
+    /// completion was applied.
+    fn poll_tool_completions(&mut self) -> bool {
+        let mut completions = Vec::new();
+        while let Ok(completion) = self.tool_completion_rx.try_recv() {
+            completions.push(completion);
+        }
+        let had_completions = !completions.is_empty();
+        for (call_id, tool, execution) in completions {
+            self.running_tools.remove(&call_id);
+            self.finish_tool_execution(call_id, tool, execution);
+        }
+        had_completions
+    }
+
+    /// Record a finished tool execution and respond to the agent.
+    fn finish_tool_execution(&mut self, call_id: String, tool: String, execution: ToolExecution) {
         let result = execution.to_legacy();
 
         self.record_tool_result(&call_id, &tool, &result, Some(&execution));
@@ -1989,8 +2161,13 @@ Add the required fields and retry.",
         if let Some(tx) = &self.tool_response_tx {
             let _ = tx.send((call_id, true, Some(result)));
         }
+    }
 
-        Ok(())
+    /// Cancel all in-flight tool executions (Ctrl+C interrupt).
+    pub(super) fn cancel_running_tools(&mut self) {
+        for (_, token) in self.running_tools.drain() {
+            token.cancel();
+        }
     }
 
     /// Show help message
@@ -2019,6 +2196,7 @@ Input:
 Toggle:
   Tab           Toggle thinking expansion (when input empty)
   {}        Toggle tool call expansion
+  Ctrl+E        Open detail view (full output / error / message)
 
 Modals:
   {}        Open command palette
@@ -2036,6 +2214,7 @@ Clipboard:
 Slash Commands:
   /help         Show this help
   /clear        Clear messages
+  /alerts       List recorded alerts
   /copy         Copy last response
   /theme        Change theme
   /queue        Manage queued prompts (list/cancel/modes)
@@ -2078,22 +2257,49 @@ Slash Commands:
         let theme_selector = &mut self.theme_selector;
         let shortcuts_help = &self.shortcuts_help;
         let rewind_picker = &mut self.rewind_picker;
+        let detail_view = &self.detail_view;
 
         self.terminal.draw(|frame| {
             let area = frame.area();
             let view = ChatView::new(state);
             frame.render_widget(view, area);
 
-            // Show error if any
-            if let Some(error) = &state.error {
+            // Show error if any. Wrap the full provider message across lines
+            // (extracted upstream from the error body) instead of clipping a
+            // fixed two-line slice of it. Hidden while a modal/overlay is
+            // active so the error text cannot mix with the overlay's cells;
+            // the status-bar alert badge and `/alerts` still surface it.
+            let visible_error = if active_modal == ActiveModal::None {
+                state.error.as_deref()
+            } else {
+                None
+            };
+            if let Some(error) = visible_error {
+                let error_width = area.width.saturating_sub(2).max(1);
+                let wrapped_lines = crate::wrapping::wrapped_line_count(
+                    &ratatui::text::Text::raw(error),
+                    error_width as usize,
+                ) as u16;
+                let error_height = wrapped_lines.clamp(1, 8);
+                let status_height = u16::from(!state.zen_mode);
+                let input_height = calculate_input_height(state, area);
+                let error_y = area
+                    .height
+                    .saturating_sub(status_height)
+                    .saturating_sub(input_height)
+                    .saturating_sub(error_height);
                 let error_area = Rect {
                     x: area.x + 1,
-                    y: area.height.saturating_sub(5),
-                    width: area.width.saturating_sub(2),
-                    height: 2,
+                    y: area.y + error_y,
+                    width: error_width,
+                    height: error_height,
                 };
-                let error_widget = ratatui::widgets::Paragraph::new(error.as_str())
-                    .style(Style::default().fg(Color::Red));
+                // Blank the covered cells first so no older frame content
+                // shows through the wrapped paragraph.
+                frame.render_widget(ratatui::widgets::Clear, error_area);
+                let error_widget = ratatui::widgets::Paragraph::new(error)
+                    .style(Style::default().fg(Color::Red))
+                    .wrap(ratatui::widgets::Wrap { trim: false });
                 frame.render_widget(error_widget, error_area);
             }
 
@@ -2117,7 +2323,14 @@ Slash Commands:
                     command_palette.render(frame, area);
                 }
                 ActiveModal::Approval => {
-                    if let Some(request) = approval_controller.current() {
+                    // Parallel tool calls queue several approvals at once; show
+                    // them together in one batch modal instead of N sequential
+                    // single-call modals.
+                    if approval_controller.total_count() > 1 {
+                        let modal = BatchedApprovalModal::new(approval_controller.pending())
+                            .selected(approval_controller.selected_index());
+                        frame.render_widget(modal, area);
+                    } else if let Some(request) = approval_controller.current() {
                         let modal = ApprovalModal::new(request);
                         frame.render_widget(modal, area);
                     }
@@ -2133,6 +2346,11 @@ Slash Commands:
                 }
                 ActiveModal::RewindPicker => {
                     rewind_picker.render(frame, area);
+                }
+                ActiveModal::DetailView => {
+                    if let Some(detail) = detail_view {
+                        frame.render_widget(detail, area);
+                    }
                 }
                 ActiveModal::None => {}
             }
@@ -2170,6 +2388,20 @@ Slash Commands:
         })?;
 
         Ok(())
+    }
+
+    /// Clear the on-screen error surface and force a full repaint of the
+    /// inline viewport.
+    ///
+    /// ratatui's diff renderer only repaints cells that changed between the
+    /// two most recent frames; when the transcript shrinks drastically (new
+    /// session, session switch), cells that are blank in both buffers keep
+    /// showing the previous frame's content on screen. `Terminal::clear`
+    /// blanks the terminal from the viewport top down and resets the back
+    /// buffer so the next frame redraws everything.
+    fn reset_rendered_viewport(&mut self) {
+        self.state.error = None;
+        let _ = self.terminal.clear();
     }
 
     /// Toggle expansion for the most recent tool call
@@ -2417,12 +2649,23 @@ fn policy_model_id(model: &str) -> String {
     }
 }
 
+/// Whether a crossterm key event should be dispatched to `handle_key`.
+///
+/// Terminals using the kitty keyboard protocol (enabled via
+/// `REPORT_EVENT_TYPES`) report `Press`, `Repeat`, and `Release` events.
+/// Handle presses and repeats (so held keys auto-repeat); ignore releases.
+fn should_handle_key_event(kind: KeyEventKind) -> bool {
+    matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TESTS
 // ─────────────────────────────────────────────────────────────────────────────
 
 mod checkpoints;
 mod command_handlers;
+mod context_breakdown;
+mod exec_commands;
 mod input_handlers;
 mod prompt_queue;
 mod session_recording;

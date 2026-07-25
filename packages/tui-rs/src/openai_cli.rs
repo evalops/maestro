@@ -450,6 +450,12 @@ fn env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Whether a complete stored OpenAI OAuth credential is present on disk.
+#[must_use]
+pub fn has_stored_oauth_credential() -> bool {
+    load_credential().is_some()
+}
+
 fn load_credential() -> Option<OpenAiOAuthCredential> {
     let contents = fs::read_to_string(auth_file()).ok()?;
     let credential = serde_json::from_str::<OpenAiOAuthCredential>(&contents).ok()?;

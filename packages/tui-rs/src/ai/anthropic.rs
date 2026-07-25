@@ -83,6 +83,7 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use super::client::{provider_model_name, AiClient, AiProvider};
+use super::op_secret;
 use super::types::{ContentBlock, Message, RequestConfig, StopReason, StreamEvent};
 
 /// Parser state for accumulating data across SSE events within a single stream.
@@ -142,8 +143,7 @@ impl AnthropicClient {
 
     /// Create a new client from environment variable
     pub fn from_env() -> Result<Self> {
-        let api_key = std::env::var("ANTHROPIC_API_KEY")
-            .context("ANTHROPIC_API_KEY environment variable not set")?;
+        let api_key = op_secret::env_credential(&["ANTHROPIC_API_KEY"])?;
         Self::new(api_key)
     }
 
@@ -222,7 +222,10 @@ impl AnthropicClient {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             let _ = tx.send(StreamEvent::Error {
-                message: format!("API error {status}: {error_text}"),
+                message: format!(
+                    "API error {status}: {}",
+                    super::summarize_error_body(&error_text)
+                ),
             });
             return Ok(rx);
         }

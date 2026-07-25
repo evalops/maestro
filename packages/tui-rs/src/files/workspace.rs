@@ -151,7 +151,7 @@ fn detach_std_command(_cmd: &mut Command) {}
 /// following symlinks from `$HOME` can hang interactive startup indefinitely.
 /// Child is TTY-detached (see [`detach_std_command`]) so it cannot fight the TUI.
 fn try_ripgrep(root: &Path, max_files: usize) -> Option<Vec<WorkspaceFile>> {
-    let root_canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let root_canonical = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let mut cmd = Command::new("rg");
     cmd.args(["--files", "--hidden"])
         .args(["--glob", "!.git"])
@@ -187,7 +187,7 @@ fn try_ripgrep(root: &Path, max_files: usize) -> Option<Vec<WorkspaceFile>> {
             continue;
         }
         let path = root.join(&line);
-        let canonical = match path.canonicalize() {
+        let canonical = match dunce::canonicalize(&path) {
             Ok(p) => p,
             Err(_) => continue,
         };
@@ -263,7 +263,7 @@ fn try_find(root: &Path, max_files: usize) -> Option<Vec<WorkspaceFile>> {
 fn manual_traverse(root: &Path, max_files: usize) -> Vec<WorkspaceFile> {
     let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
-    let root_canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let root_canonical = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let mut visited: HashSet<PathBuf> = HashSet::new();
     visited.insert(root_canonical.clone());
 
@@ -302,7 +302,7 @@ fn manual_traverse(root: &Path, max_files: usize) -> Vec<WorkspaceFile> {
 
             if is_dir {
                 if !skip_dirs.contains(&name.as_str()) && !name.starts_with('.') {
-                    let canonical = match path.canonicalize() {
+                    let canonical = match dunce::canonicalize(&path) {
                         Ok(p) => p,
                         Err(_) => continue,
                     };
@@ -316,7 +316,7 @@ fn manual_traverse(root: &Path, max_files: usize) -> Vec<WorkspaceFile> {
                 }
             } else if file_type.is_file() || file_type.is_symlink() {
                 if file_type.is_symlink() {
-                    let canonical = match path.canonicalize() {
+                    let canonical = match dunce::canonicalize(&path) {
                         Ok(p) => p,
                         Err(_) => continue,
                     };

@@ -189,6 +189,8 @@ pub mod config_cli;
 pub mod context_cli;
 pub mod device_identity;
 pub mod evalops_cli;
+/// Droid-style executable slash commands from `.composer/commands/`.
+pub mod exec_commands;
 pub mod import_claude_cli;
 pub mod init_cli;
 pub mod memory_cli;
@@ -199,18 +201,22 @@ pub mod operating_plane_cli;
 pub mod operating_plane_client;
 pub mod operating_plane_summary;
 pub mod painter_cli;
-/// Custom prompt templates.
-/// User-defined prompts with argument substitution.
 pub mod plan_mode;
 pub mod plugins_cli;
 pub mod print_mode;
+/// Custom prompt templates.
+/// User-defined prompts with argument substitution.
 pub mod prompts;
 pub mod remote_attach;
 pub mod remote_cli;
 pub mod run_cli;
 pub mod scenario_cli;
+pub mod search_cli;
 pub mod update_cli;
 pub mod value_cli;
+
+/// Droid-style session worktrees (`-w` / `--worktree`).
+pub mod worktree;
 
 /// Jane Street magic-trace stop indicator + slow-frame hooks.
 /// Linux/Intel PT only; see module docs and `scripts/magic-trace-tui.sh`.

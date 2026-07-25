@@ -301,6 +301,13 @@ impl CommandPalette {
         self.search();
     }
 
+    /// Insert a string at the cursor position (e.g. pasted text).
+    pub fn insert_str(&mut self, s: &str) {
+        self.query.insert_str(self.cursor, s);
+        self.cursor += s.len();
+        self.search();
+    }
+
     /// Delete character before cursor
     pub fn backspace(&mut self) {
         if self.cursor > 0 {
@@ -587,6 +594,19 @@ mod tests {
 
         palette.hide();
         assert!(!palette.is_visible());
+    }
+
+    #[test]
+    fn insert_str_inserts_at_cursor() {
+        let registry = Arc::new(build_command_registry());
+        let mut palette = CommandPalette::new(registry);
+        palette.show();
+        palette.insert_str("help");
+        palette.move_left();
+        palette.move_left();
+        palette.insert_str("--");
+        assert_eq!(palette.query, "he--lp");
+        assert_eq!(palette.cursor, 4);
     }
 
     #[test]

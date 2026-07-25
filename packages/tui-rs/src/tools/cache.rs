@@ -323,7 +323,7 @@ impl ToolResultCache {
     /// Call this when a file is modified to ensure stale cache entries are removed.
     /// Returns the number of entries invalidated.
     pub fn invalidate_for_file(&mut self, path: &Path) -> usize {
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let canonical = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
         // Find all keys that depend on this file
         let keys_to_remove: Vec<CacheKey> =
@@ -356,7 +356,7 @@ impl ToolResultCache {
     /// Useful when a directory or its contents are modified.
     /// Returns the number of entries invalidated.
     pub fn invalidate_for_directory(&mut self, dir: &Path) -> usize {
-        let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        let canonical_dir = dunce::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
 
         // Find all files that start with this directory path
         let files_to_invalidate: Vec<PathBuf> = self

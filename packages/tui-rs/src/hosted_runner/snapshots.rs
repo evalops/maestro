@@ -22,7 +22,10 @@ pub(super) async fn write_snapshot_manifest(
     );
     let path = root.join(filename);
     let (maestro_session_id, snapshot) = {
-        let state = shared.state.lock().expect("hosted runner state poisoned");
+        let state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         (state.session_id.clone(), shared.snapshot(&state))
     };
     let has_runtime_activity = snapshot.cursor > 0;
@@ -146,7 +149,7 @@ pub(super) fn parse_snapshot_manifest_bytes(
             format!("invalid snapshot manifest json: {error}"),
         )
     })?;
-    let workspace_root = workspace_root.canonicalize().map_err(|error| {
+    let workspace_root = dunce::canonicalize(workspace_root).map_err(|error| {
         HostedError::new(
             HostedRunnerErrorCode::InvalidSnapshotManifest,
             format!("invalid restore workspace root: {error}"),

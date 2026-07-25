@@ -51,6 +51,7 @@ hex = "0.4"
 regex.workspace = true
 glob.workspace = true
 dirs.workspace = true
+dunce.workspace = true
 
 # GitHub
 octocrab = "0.41"

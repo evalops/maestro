@@ -520,7 +520,7 @@ fn workspace_trusted_in_config(value: &toml::Value, cwd: &Path, profile: Option<
             .and_then(toml::Value::as_str)
     }
 
-    let canonical = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let canonical = dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let project_key = canonical.to_string_lossy();
     profile
         .and_then(|profile| {
@@ -568,7 +568,7 @@ fn cli_workspace_trust_override_from(
     cwd: &Path,
     profile: Option<&str>,
 ) -> Option<bool> {
-    let canonical = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let canonical = dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let project_key = canonical.to_string_lossy();
     overrides
         .split('\u{1f}')
@@ -1034,7 +1034,7 @@ mod tests {
     #[test]
     fn profile_scoped_workspace_trust_is_honored() {
         let temp = tempfile::tempdir().expect("temporary workspace");
-        let workspace = fs::canonicalize(temp.path()).expect("canonical workspace");
+        let workspace = dunce::canonicalize(temp.path()).expect("canonical workspace");
         let config = format!(
             "[profiles.work.projects.\"{}\"]\ntrust_level = \"trusted\"\n",
             workspace.display()
@@ -1057,7 +1057,7 @@ mod tests {
     #[test]
     fn cli_workspace_trust_override_honors_quoted_project_keys_and_profiles() {
         let temp = tempfile::tempdir().expect("temporary workspace");
-        let workspace = fs::canonicalize(temp.path()).expect("canonical workspace");
+        let workspace = dunce::canonicalize(temp.path()).expect("canonical workspace");
         let top_level = format!("projects.\"{}\".trust_level=trusted", workspace.display());
         assert_eq!(
             cli_workspace_trust_override_from(&top_level, &workspace, None),

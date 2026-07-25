@@ -14,7 +14,7 @@ use reqwest::{header, Client};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use super::client::McpError;
-use super::config::{expand_env_vars, McpServerConfig, McpTransport};
+use super::config::{expand_env_vars_for_scope, McpServerConfig, McpTransport};
 use super::protocol::{
     ClientInfo, InitializeResult, McpIncomingMessage, McpNotification, McpPrompt, McpRequest,
     McpResource, McpResponse, McpTool, McpToolResult, PromptGetResult, PromptsListResult,
@@ -106,6 +106,7 @@ impl HttpConnection {
         let pending = self.pending_sse.clone();
         let client = self.client.clone();
         let headers = self.config.headers.clone();
+        let scope = self.config.scope;
 
         // Spawn SSE reader task
         let task = tokio::spawn(async move {
@@ -113,7 +114,7 @@ impl HttpConnection {
 
             // Add custom headers
             for (key, value) in &headers {
-                request = request.header(key, expand_env_vars(value));
+                request = request.header(key, expand_env_vars_for_scope(value, scope));
             }
 
             let response = match request.send().await {
@@ -338,7 +339,7 @@ impl HttpConnection {
 
         // Add custom headers
         for (key, value) in &self.config.headers {
-            req = req.header(key, expand_env_vars(value));
+            req = req.header(key, expand_env_vars_for_scope(value, self.config.scope));
         }
 
         let response = req
@@ -383,7 +384,7 @@ impl HttpConnection {
 
         // Add custom headers
         for (key, value) in &self.config.headers {
-            req = req.header(key, expand_env_vars(value));
+            req = req.header(key, expand_env_vars_for_scope(value, self.config.scope));
         }
 
         let response = match req.send().await {
@@ -436,7 +437,7 @@ impl HttpConnection {
 
         // Add custom headers
         for (key, value) in &self.config.headers {
-            req = req.header(key, expand_env_vars(value));
+            req = req.header(key, expand_env_vars_for_scope(value, self.config.scope));
         }
 
         req.send()
