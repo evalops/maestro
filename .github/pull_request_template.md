@@ -12,4 +12,4 @@
 
 - [ ] Add the `run-evals` label to run evals on this PR (otherwise evals are skipped on PRs).
 - [ ] Add the `skip-integration` label to skip integration tests when appropriate (include justification in the PR body).
-- [ ] If skipping CI validators (`[skip ci]`, `[skip nix]`), explain why below.
+- [ ] If skipping CI validators (`[skip ci]`), explain why below.

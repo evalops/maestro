@@ -1,6 +1,0 @@
-module(
-    name = "evalops_maestro",
-    version = "0.0.0",
-)
-
-bazel_dep(name = "rules_shell", version = "0.6.1")

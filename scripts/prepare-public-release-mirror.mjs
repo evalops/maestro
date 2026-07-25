@@ -62,8 +62,6 @@ const STALE_PUBLIC_TARGET_DELETES = [
 	".github/release-mirror-manifest.json",
 ];
 
-const PUBLIC_BAZEL_MODULE_NAME = "evalops_maestro";
-
 function parseArgs(argv) {
 	const args = {
 		check: false,
@@ -300,20 +298,6 @@ function resolvePublicPackageJson(
 	};
 }
 
-function resolvePublicFileContent(sourceRoot, relativePath) {
-	const sourcePath = resolve(sourceRoot, relativePath);
-	if (relativePath === "MODULE.bazel") {
-		return Buffer.from(
-			readFileSync(sourcePath, "utf8").replace(
-				/(\bmodule\s*\(\s*name\s*=\s*")[^"]*(")/,
-				`$1${PUBLIC_BAZEL_MODULE_NAME}$2`,
-			),
-			"utf8",
-		);
-	}
-	return readFileSync(sourcePath);
-}
-
 function buildMirrorPlan(sourceRoot, targetRoot, shouldExclude, packageName) {
 	const sourceFiles = new Set(walkFiles(sourceRoot, shouldExclude));
 	const targetFiles = new Set(walkFiles(targetRoot, shouldExclude));
@@ -326,7 +310,7 @@ function buildMirrorPlan(sourceRoot, targetRoot, shouldExclude, packageName) {
 		const sourceContent =
 			relativePath === "package.json"
 				? Buffer.from(packageJsonContent, "utf8")
-				: resolvePublicFileContent(sourceRoot, relativePath);
+				: readFileSync(resolve(sourceRoot, relativePath));
 		const targetPath = resolve(targetRoot, relativePath);
 		const targetContent = existsSync(targetPath) ? readFileSync(targetPath) : null;
 		if (!targetContent || !sourceContent.equals(targetContent)) {
@@ -367,8 +351,6 @@ function applyMirrorPlan(sourceRoot, targetRoot, plan) {
 		mkdirSync(dirname(targetPath), { recursive: true });
 		if (relativePath === "package.json") {
 			writeFileSync(targetPath, plan.packageJsonContent);
-		} else if (relativePath === "MODULE.bazel") {
-			writeFileSync(targetPath, resolvePublicFileContent(sourceRoot, relativePath));
 		} else {
 			copyFileSync(sourcePath, targetPath);
 		}

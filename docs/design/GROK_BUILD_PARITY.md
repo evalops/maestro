@@ -99,7 +99,7 @@ Statuses mirror [NATIVE_TUI_PARITY.md](../NATIVE_TUI_PARITY.md):
 | Config story | JSON + TOML mix (`~/.maestro/*`, legacy composer) | **Partial** | Native reads `config.toml` in places; public story still multi-format |
 | Plugins + marketplace | Skills + MCP + hooks separately | **Open** | No installable plugin unit, no marketplace tab, no trust-scoped plugin dir |
 | ACP (Agent Client Protocol) | IDE extensions own their protocols | **Open** | No first-class ACP server for arbitrary editors |
-| One-liner install | Release binaries + npm + Nix | **Partial** | Manual curl-to-binary; no polished `install.sh` PATH installer UX |
+| One-liner install | Release binaries + npm | **Partial** | Manual curl-to-binary; no polished `install.sh` PATH installer UX |
 | First-run auth UX | Multi-provider login (Codex, keys, EvalOps) | **Partial** | Powerful but not a single guided browser-first path |
 | Numbered user guide | Docs index + FEATURES + QUICKSTART | **Partial** | Excellent contributor docs; not a 01–N progressive user guide |
 | In-product dashboard / usage | Cost/status/value commands | **Partial** | Operator value reports exist; not a Grok-like usage dashboard product |
@@ -114,7 +114,7 @@ Statuses mirror [NATIVE_TUI_PARITY.md](../NATIVE_TUI_PARITY.md):
 | Hosted remote runner | (product-specific) | `maestro-hosted-runner` + contracts | **Present** (Maestro-shaped) |
 | CLI utilities in Rust | Single binary surface | skill, modes, agents, painter, anthropic, memory, init, openai, update, sessions, cost, status, hooks, export/import, hosted runner | **Partial** |
 | Remaining TS CLI | n/a | `a2a`, `codex`, `config`, `context`, `evalops`, `mission`, `operating-plane`, `remote`, `run`, `scenario`, `value` | **Open** (migrate or deliberately keep) |
-| Packaging | `install.sh` / `install.ps1` → `grok` | GitHub release assets, npm, Nix | **Partial** |
+| Packaging | `install.sh` / `install.ps1` → `grok` | GitHub release assets, npm | **Partial** |
 | Multi-surface web/IDE | ACP-focused | Web + VS Code + JetBrains + Slack + GitHub | **Present** (broader than Grok) |
 | Platform attach | n/a (xAI cloud) | EvalOps Platform optional | **Present** (keep) |
 
