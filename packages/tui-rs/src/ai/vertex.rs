@@ -62,7 +62,10 @@ impl VertexAiClient {
             access_token,
             project_id: project_id.into(),
             region: region.into(),
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_mins(5))
+                .build()
+                .expect("Failed to create HTTP client"),
         }
     }
 
@@ -261,7 +264,10 @@ async fn stream_vertex_response(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Vertex AI error ({status}): {body}");
+        anyhow::bail!(
+            "Vertex AI error ({status}): {}",
+            super::summarize_error_body(&body)
+        );
     }
 
     // Parse SSE stream

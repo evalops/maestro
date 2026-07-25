@@ -793,7 +793,10 @@ async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult
 
     let drained_messages = shared.message_executor.drain().map_err(HostedError::from)?;
     {
-        let mut state = shared.state.lock().expect("hosted runner state poisoned");
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.cursor > 0 || !state.connections.is_empty() || !drained_messages.is_empty() {
             let reason = input
                 .reason
@@ -813,7 +816,10 @@ async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult
 
     let (manifest_path, manifest) = write_snapshot_manifest(&shared, &input).await?;
     {
-        let mut state = shared.state.lock().expect("hosted runner state poisoned");
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.draining = true;
         state.ready = false;
         state.last_status = Some("Drained".to_string());
@@ -837,7 +843,10 @@ fn handle_connection_create(
     shared: SharedRunner,
     input: ConnectionCreateRequest,
 ) -> HostedResult<ResponseBody> {
-    let mut state = shared.state.lock().expect("hosted runner state poisoned");
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     ensure_session_id(&state, input.session_id.as_deref())?;
     let connection_id = input
         .connection_id
@@ -880,7 +889,10 @@ fn handle_subscribe(
     session_id: &str,
     input: SubscribeRequest,
 ) -> HostedResult<ResponseBody> {
-    let mut state = shared.state.lock().expect("hosted runner state poisoned");
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     ensure_session_id(&state, Some(session_id))?;
     let role = input.role.unwrap_or(ConnectionRole::Controller);
     let connection_id = input
@@ -951,7 +963,10 @@ fn handle_subscribe(
 }
 
 fn handle_state(shared: SharedRunner, session_id: &str) -> HostedResult<ResponseBody> {
-    let state = shared.state.lock().expect("hosted runner state poisoned");
+    let state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     ensure_session_id(&state, Some(session_id))?;
     json_response(200, shared.snapshot(&state))
 }
@@ -961,7 +976,10 @@ fn handle_events(
     session_id: &str,
     query: HashMap<String, String>,
 ) -> HostedResult<ResponseBody> {
-    let state = shared.state.lock().expect("hosted runner state poisoned");
+    let state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     ensure_session_id(&state, Some(session_id))?;
     drop(state);
     if query
@@ -995,7 +1013,10 @@ async fn handle_message(
         "Rust hosted runner accepted the headless message; agent execution is not attached yet"
             .to_string();
     {
-        let mut state = shared.state.lock().expect("hosted runner state poisoned");
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         ensure_session_id(&state, Some(session_id))?;
         let resolved_connection_id = resolve_message_connection_id(
             &state,
@@ -1123,7 +1144,10 @@ async fn handle_message(
         execution = result.execution;
         response_message = result.message;
 
-        let mut state = shared.state.lock().expect("hosted runner state poisoned");
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         ensure_session_id(&state, Some(session_id))?;
         assert_controller(&state, Some(context.connection_id.as_str()))?;
         if state.draining {
@@ -1200,7 +1224,10 @@ async fn handle_message(
     }
 
     let snapshot = {
-        let state = shared.state.lock().expect("hosted runner state poisoned");
+        let state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         shared.snapshot(&state)
     };
     let cursor = snapshot.cursor;
@@ -1224,7 +1251,10 @@ fn handle_heartbeat(
     session_id: &str,
     input: HeartbeatRequest,
 ) -> HostedResult<ResponseBody> {
-    let mut state = shared.state.lock().expect("hosted runner state poisoned");
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     ensure_session_id(&state, Some(session_id))?;
     let connection_id = resolve_connection_id(&state, input.connection_id, input.subscription_id)?;
     let controller_lease_granted =
@@ -1255,7 +1285,10 @@ fn handle_disconnect(
     session_id: &str,
     input: DisconnectRequest,
 ) -> HostedResult<ResponseBody> {
-    let mut state = shared.state.lock().expect("hosted runner state poisoned");
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     ensure_session_id(&state, Some(session_id))?;
     let connection_id = resolve_connection_id(&state, input.connection_id, input.subscription_id)?;
     let mut disconnected_subscription_ids = Vec::new();
@@ -1371,7 +1404,10 @@ async fn run_utility_command(
     } = invocation;
     let cwd_path = resolve_workspace_path(&shared.config.workspace_root, None, cwd.as_deref())?;
     {
-        let mut state = shared.state.lock().expect("hosted runner state poisoned");
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let snapshot = ActiveUtilityCommandSnapshot {
             command_id: command_id.clone(),
             command: command.clone(),
@@ -1405,7 +1441,10 @@ async fn run_utility_command(
 
     tokio::spawn(async move {
         let output = spawn_command(&command, &cwd_path, env, shell_mode).await;
-        let mut state = shared.state.lock().expect("hosted runner state poisoned");
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match output {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -1530,7 +1569,10 @@ async fn handle_file_read(
         .collect::<Vec<_>>();
     let rendered = selected.join("\n");
     let relative_path = relative_workspace_path(&shared.config.workspace_root, &full_path);
-    let mut state = shared.state.lock().expect("hosted runner state poisoned");
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     shared.publish_message(
         &mut state,
         FromAgentMessage::UtilityFileReadResult {
@@ -1566,7 +1608,10 @@ async fn handle_file_search(
         &query,
         limit.unwrap_or(50) as usize,
     );
-    let mut state = shared.state.lock().expect("hosted runner state poisoned");
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     shared.publish_message(
         &mut state,
         FromAgentMessage::UtilityFileSearchResults {
@@ -1595,7 +1640,10 @@ fn handle_file_watch_start(
         root_dir.as_deref().or(Some(".")),
     )?;
     let root_dir = root.to_string_lossy().to_string();
-    let mut state = shared.state.lock().expect("hosted runner state poisoned");
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     state.active_file_watches.insert(
         watch_id.clone(),
         ActiveFileWatchSnapshot {
@@ -1622,7 +1670,10 @@ fn handle_file_watch_start(
 }
 
 fn handle_file_watch_stop(shared: SharedRunner, watch_id: String) -> HostedResult<()> {
-    let mut state = shared.state.lock().expect("hosted runner state poisoned");
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     state.active_file_watches.remove(&watch_id);
     shared.publish_message(
         &mut state,
@@ -1839,7 +1890,7 @@ fn canonicalize_existing_prefix(path: &Path) -> HostedResult<PathBuf> {
     let mut current = path.to_path_buf();
     let mut missing_components = Vec::<OsString>::new();
     loop {
-        match current.canonicalize() {
+        match dunce::canonicalize(&current) {
             Ok(mut canonical) => {
                 for component in missing_components.iter().rev() {
                     canonical.push(component);

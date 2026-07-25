@@ -79,14 +79,20 @@ impl SharedRunner {
         };
         if restore_manifest.is_some() {
             let envelope = shared.reset_envelope("restored_from_snapshot");
-            let mut state = shared.state.lock().expect("hosted runner state poisoned");
+            let mut state = shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.envelopes.push_back(envelope);
         }
         shared
     }
 
     pub(super) fn identity(&self) -> HostedRunnerIdentity {
-        let state = self.state.lock().expect("hosted runner state poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         HostedRunnerIdentity {
             protocol_version: HOSTED_RUNNER_IDENTITY_PROTOCOL_VERSION.to_string(),
             runner_session_id: self.config.runner_session_id.clone(),
@@ -97,7 +103,10 @@ impl SharedRunner {
     }
 
     pub(super) fn ensure_attachable(&self) -> HostedResult<()> {
-        let state = self.state.lock().expect("hosted runner state poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !state.ready || state.draining {
             return Err(HostedError::new(
                 HostedRunnerErrorCode::RuntimeNotReady,
@@ -363,7 +372,10 @@ impl SharedRunner {
     }
 
     pub(super) fn reset_envelope(&self, reason: impl Into<String>) -> StreamEnvelope {
-        let state = self.state.lock().expect("hosted runner state poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.reset_envelope_from_state(&state, reason)
     }
 
@@ -382,7 +394,10 @@ impl SharedRunner {
         &self,
         reason: impl Into<String>,
     ) -> (Vec<StreamEnvelope>, broadcast::Receiver<StreamEnvelope>) {
-        let state = self.state.lock().expect("hosted runner state poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let rx = self.events.subscribe();
         (vec![self.reset_envelope_from_state(&state, reason)], rx)
     }
@@ -391,7 +406,10 @@ impl SharedRunner {
         &self,
         cursor: u64,
     ) -> (Vec<StreamEnvelope>, broadcast::Receiver<StreamEnvelope>) {
-        let state = self.state.lock().expect("hosted runner state poisoned");
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let rx = self.events.subscribe();
         (self.replay_from_state(&state, cursor), rx)
     }

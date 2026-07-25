@@ -1,0 +1,25 @@
+{
+  "harness": "safety",
+  "name": "synthetic_safety_rate_limit",
+  "description": "Distinct bash calls (no doom loop) exhaust the per-tool rate limit; the call past the limit is blocked, other tools are unaffected, and reset clears the window.",
+  "config": {
+    "doom_loop_threshold": 5,
+    "rate_limit": 3,
+    "rate_window_secs": 60
+  },
+  "steps": [
+    { "kind": "record", "tool": "bash", "args": { "command": "ls" } },
+    { "kind": "record", "tool": "bash", "args": { "command": "pwd" } },
+    { "kind": "record", "tool": "bash", "args": { "command": "whoami" } },
+    {
+      "kind": "check",
+      "tool": "bash",
+      "args": { "command": "date" },
+      "expected": "block_rate_limit",
+      "expected_reason_contains": ["rate limit", "\"bash\""]
+    },
+    { "kind": "check", "tool": "read", "args": { "path": "/tmp" }, "expected": "allow" },
+    { "kind": "reset" },
+    { "kind": "check", "tool": "bash", "args": { "command": "date" }, "expected": "allow" }
+  ]
+}

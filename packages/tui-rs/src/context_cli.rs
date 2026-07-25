@@ -1647,11 +1647,11 @@ fn resolve_path(path: &str) -> PathBuf {
 fn resolve_path_buf(path: PathBuf) -> PathBuf {
     if path.is_absolute() {
         // Best-effort canonicalize without requiring existence
-        return fs::canonicalize(&path).unwrap_or(path);
+        return dunce::canonicalize(&path).unwrap_or(path);
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let joined = cwd.join(path);
-    fs::canonicalize(&joined).unwrap_or(joined)
+    dunce::canonicalize(&joined).unwrap_or(joined)
 }
 
 // ─────────────────────────────────────────────────────────────

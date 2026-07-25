@@ -51,7 +51,10 @@ impl GoogleClient {
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into().trim().to_string(),
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_mins(5))
+                .build()
+                .expect("Failed to create HTTP client"),
         }
     }
 
@@ -206,7 +209,10 @@ async fn stream_google_response(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Google API error ({status}): {body}");
+        anyhow::bail!(
+            "Google API error ({status}): {}",
+            super::summarize_error_body(&body)
+        );
     }
 
     // Parse SSE stream

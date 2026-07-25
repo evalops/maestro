@@ -316,7 +316,7 @@ fn discover_rules(
     target: Option<&Path>,
     include_target: bool,
 ) -> Result<Vec<RuleSource>> {
-    let canonical_root = fs::canonicalize(root)?;
+    let canonical_root = dunce::canonicalize(root)?;
     let mut found = BTreeMap::new();
     let mut add = |path: PathBuf, label| {
         if let Some(source) = read_rule(&canonical_root, &path, label) {
@@ -359,7 +359,7 @@ fn read_rule(root: &Path, path: &Path, label: &'static str) -> Option<RuleSource
     if !fs::symlink_metadata(path).ok()?.file_type().is_file() {
         return None;
     }
-    let real = fs::canonicalize(path).ok()?;
+    let real = dunce::canonicalize(path).ok()?;
     if !real.starts_with(root) {
         return None;
     }

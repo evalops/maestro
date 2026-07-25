@@ -2634,6 +2634,153 @@ async fn jwks_auth_check_does_not_panic_inside_tokio_runtime() {
     }
 }
 
+const JWKS_TEST_ENV_NAMES: &[&str] = &[
+    "MAESTRO_JWT_JWKS",
+    "MAESTRO_JWT_JWKS_URL",
+    "MAESTRO_JWT_ALG",
+    "MAESTRO_JWT_AUD",
+    "MAESTRO_JWT_ISS",
+    "MAESTRO_JWT_SECRET",
+];
+
+// Throwaway 2048-bit RSA key generated for these tests only; the private half
+// is intentionally checked in so tokens can be signed without a network or
+// key-generation dependency.
+const TEST_RSA_PRIVATE_KEY_PEM: &str = r"-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDSPe792Sabb2ly
+LMi7j5tRTebUUK5SL8AbgCu7osi5dl/zlJNtffBlJrMmBR6kIjEhvFsX5flMp0Nm
++SiLfxc80zkorOd1JTpYlEUPNjKnVkBfAvVQCnsLVZlXz3Wwpp1vCJwWD97kviMj
+zmijsX21vgANEA7vzlsP8kBP/wBLI2V6xFP8w/NbZDhPj3l4JIfGvo+0DIivO9fm
+H06en1orNjShu5T1zqAe+6gciqeHGfhe/3IWhrbctMlJR2kxHidmovDd4GpnXQfU
+HIJNlepc6W/LMuZWUj7H8O3oryx/JSGCCWlxUNpfHQWc9I62rpn3zhb1ggzQLbYy
+swgmVbfbAgMBAAECggEAZQizXdVpur+/PkmsS4p3OwrDV5vQMhnVacHeAmV3rbzn
+3pAziyY/DPUcmbRTJdByqQIyCpmPhRlKiGVLaUIxoh7ltJjnAEJcOC5Ew8spa4ZF
+GAO9bPIkcG157Bt8NODU/oN2Mxn8ZRPEolPysFu/DERbFOv3KaIS2+ZwpqDmfLSO
+BEQbfldIPG/CvgD67Y00s3rXDusxzLnroK+hiIQz/WoiLj2yCA2QTIY6Rr1X4AHp
+6Xx9jMq2hQ4bv4jq2WA1uCWwxPF27tYAAsNOCBL58zmvQu75XowsP5SENTbOfK7o
+a9a5lAcAvjCp/XpeDjYfvSmzDv2LQm+qWgnYxAvPeQKBgQD3TWX3yT7NH9dM6BvO
+8aEm0uXtg6C35QzRuAyIYkIib9r5ogJNjpNcOWRkuAzaEtyA+dQIhHD1q1ImBxTQ
+Vkc/dWOpkcjqjhAkH7QXXv76pHJwGQxUsAIU6ZeuUExrzLKNyGH0a0ohKMFH4AXV
+9zRejD1whOS6tLcWg1h+6TBckwKBgQDZotwOQRzVNgLP/Sm7D/rLjAFq4aJx3vlv
+TLgpRFo46usxHJrfVlw4Dp5n2k6+AuUyV1X47+eqASRmb8fHU5xeWZimpoOqQqlI
+PzKjRmaSfHOlXS67QTUomTTOczfwVF/VBMebCsbS68Coa41VwnaULABdeUdQ7cc+
+NR8FgbqMmQKBgQDz/yxtFuTck97kJVpSivq6CHkNJ8KpzdchEBtlcLTZr0z44cyt
+4s8nvgR8j0821kczBcsbADlHWlo55OC3UXkIdnT3eDwomDP6wED6kiK2/wtd6IjP
+Ab18DqE2Pkm4ToWY+C0Vb8n6/2/7z19SpY3I/0sbOjNGt0ixcLQeu0qY+wKBgGTc
+8ol0qc0yg+kq1j1IsZ3GHB4Rxjxp70Yi0zLk5797OFcBf9FD7+dW9xkAdv/ezaQg
+D8sYPFBwyRLkeT0qxcyAT5vkjh7JWDUQfQJorT70iJA5+F92YBGZt3x6r5ElOWi7
+F1sGipDUC+zCM7VsM5KGNgEcJO4f1PhCnEbsEa35AoGAf7zOMUB0nwrOwL2kqXXv
+TnOiAt4lnHRsmkMA5j1HOYHErNNHbiPchx1PPSCHn7+FuSdB776cIqKPU65NCcbE
+vrlKRUStRoNCN/cKeqCJyIYMrwZVsydX9UJrMfs871NlK40G/8Ec1gMNBr1B2CjN
+Tv5TrT/AZ3XKorUF90AEe/0=
+-----END PRIVATE KEY-----
+";
+
+const TEST_JWKS_JSON: &str = r#"{"keys":[{"kty":"RSA","use":"sig","alg":"RS256","kid":"test-key-1","n":"0j3u_dkmm29pcizIu4-bUU3m1FCuUi_AG4Aru6LIuXZf85STbX3wZSazJgUepCIxIbxbF-X5TKdDZvkoi38XPNM5KKzndSU6WJRFDzYyp1ZAXwL1UAp7C1WZV891sKadbwicFg_e5L4jI85oo7F9tb4ADRAO785bD_JAT_8ASyNlesRT_MPzW2Q4T495eCSHxr6PtAyIrzvX5h9Onp9aKzY0obuU9c6gHvuoHIqnhxn4Xv9yFoa23LTJSUdpMR4nZqLw3eBqZ10H1ByCTZXqXOlvyzLmVlI-x_Dt6K8sfyUhgglpcVDaXx0FnPSOtq6Z984W9YIM0C22MrMIJlW32w","e":"AQAB"}]}"#;
+
+fn set_jwks_test_env() {
+    env::set_var("MAESTRO_JWT_JWKS", TEST_JWKS_JSON);
+    env::set_var("MAESTRO_JWT_ALG", "RS256");
+    env::remove_var("MAESTRO_JWT_JWKS_URL");
+    env::remove_var("MAESTRO_JWT_AUD");
+    env::remove_var("MAESTRO_JWT_ISS");
+    env::remove_var("MAESTRO_JWT_SECRET");
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn rs256_signed_token(kid: &str, sub: &str, exp: u64) -> String {
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some(kid.to_string());
+    let claims = serde_json::json!({"sub": sub, "exp": exp});
+    jsonwebtoken::encode(
+        &header,
+        &claims,
+        &jsonwebtoken::EncodingKey::from_rsa_pem(TEST_RSA_PRIVATE_KEY_PEM.as_bytes())
+            .expect("test RSA key should parse"),
+    )
+    .expect("test token should sign")
+}
+
+#[test]
+fn jwks_rs256_accepts_valid_token() {
+    let _guard = ENV_LOCK.blocking_lock();
+    let snapshot = snapshot_env(JWKS_TEST_ENV_NAMES);
+    set_jwks_test_env();
+
+    let token = rs256_signed_token("test-key-1", "user-123", now_secs() + 3600);
+
+    assert_eq!(
+        jwks_jwt_subject(&token, jsonwebtoken::Algorithm::RS256).as_deref(),
+        Some("user-123")
+    );
+    assert_eq!(
+        jwt_subject(&token).as_deref(),
+        Some("user-123"),
+        "jwt_subject should route RS256 tokens through the JWKS path"
+    );
+    assert!(authorize(&bearer_head(&token), &auth_test_config()).is_ok());
+
+    restore_env(snapshot);
+}
+
+#[test]
+fn jwks_rs256_rejects_unknown_kid() {
+    let _guard = ENV_LOCK.blocking_lock();
+    let snapshot = snapshot_env(JWKS_TEST_ENV_NAMES);
+    set_jwks_test_env();
+
+    // Valid signature, but the kid does not match any key in the JWKS.
+    let token = rs256_signed_token("unknown-key", "user-123", now_secs() + 3600);
+
+    assert!(jwks_jwt_subject(&token, jsonwebtoken::Algorithm::RS256).is_none());
+    assert!(authorize(&bearer_head(&token), &auth_test_config()).is_err());
+
+    restore_env(snapshot);
+}
+
+#[test]
+fn jwks_rs256_rejects_expired_token() {
+    let _guard = ENV_LOCK.blocking_lock();
+    let snapshot = snapshot_env(JWKS_TEST_ENV_NAMES);
+    set_jwks_test_env();
+
+    let token = rs256_signed_token("test-key-1", "user-123", now_secs() - 3600);
+
+    assert!(jwks_jwt_subject(&token, jsonwebtoken::Algorithm::RS256).is_none());
+
+    restore_env(snapshot);
+}
+
+#[test]
+fn jwks_rs256_rejects_hs256_alg_confusion_token() {
+    let _guard = ENV_LOCK.blocking_lock();
+    let snapshot = snapshot_env(JWKS_TEST_ENV_NAMES);
+    set_jwks_test_env();
+
+    // Classic algorithm-confusion attack: HS256 token signed with the public
+    // JWKS material as the HMAC secret. Must be rejected on the RS256 path.
+    let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256","typ":"JWT"}"#);
+    let payload = URL_SAFE_NO_PAD.encode(format!(
+        r#"{{"sub":"user-123","exp":{}}}"#,
+        now_secs() + 3600
+    ));
+    let signing_input = format!("{header}.{payload}");
+    let signature = hmac_sha256_base64url(TEST_JWKS_JSON.as_bytes(), signing_input.as_bytes());
+    let token = format!("{signing_input}.{signature}");
+
+    assert!(jwks_jwt_subject(&token, jsonwebtoken::Algorithm::RS256).is_none());
+    assert!(jwt_subject(&token).is_none());
+    assert!(authorize(&bearer_head(&token), &auth_test_config()).is_err());
+
+    restore_env(snapshot);
+}
+
 #[test]
 fn detects_local_control_plane_routes() {
     let request = b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n";

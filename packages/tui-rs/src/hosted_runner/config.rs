@@ -295,7 +295,7 @@ fn resolve_config_workspace_root(path: Option<&str>) -> Result<PathBuf, HostedRu
         .ok_or_else(|| {
             HostedRunnerConfigError::new("maestro hosted-runner requires MAESTRO_WORKSPACE_ROOT")
         })?;
-    let workspace_root = fs::canonicalize(Path::new(path)).map_err(|error| {
+    let workspace_root = dunce::canonicalize(Path::new(path)).map_err(|error| {
         HostedRunnerConfigError::new(format!(
             "hosted runner workspace root is unavailable: {error}"
         ))

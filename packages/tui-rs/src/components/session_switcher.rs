@@ -92,6 +92,12 @@ impl SessionSwitcher {
         self.filter();
     }
 
+    /// Insert a string into the filter (e.g. pasted text).
+    pub fn insert_str(&mut self, s: &str) {
+        self.query.push_str(s);
+        self.filter();
+    }
+
     /// Delete character from filter
     pub fn backspace(&mut self) {
         self.query.pop();
@@ -394,6 +400,14 @@ mod tests {
         // Just ensure it doesn't panic
         let _ = format_relative_time("2024-01-15T10:30:00Z");
         let _ = format_relative_time("invalid");
+    }
+
+    #[test]
+    fn insert_str_appends_to_filter() {
+        let mut switcher = SessionSwitcher::new("/tmp");
+        switcher.insert_str("fix(tui)");
+        switcher.insert_char('!');
+        assert_eq!(switcher.query, "fix(tui)!");
     }
 
     #[test]

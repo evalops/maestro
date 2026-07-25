@@ -228,6 +228,7 @@ impl BatchExecutor {
                         },
                         &call.call_id,
                         generation,
+                        None,
                     )
                     .await;
 
@@ -290,6 +291,7 @@ impl BatchExecutor {
                         },
                         &call_id,
                         generation,
+                        None,
                     )
                     .await;
 
@@ -408,6 +410,7 @@ impl BatchExecutor {
                         None,
                         &call.call_id,
                         generation,
+                        None,
                     ) => execution,
                     () = cancel_token.cancelled() => {
                         cancelled = true;
@@ -492,7 +495,7 @@ impl BatchExecutor {
                 task_set.spawn(async move {
                     let execution = executor
                         .execute_with_receipt_at_generation(
-                            &tool_name, &args, None, &call_id, generation,
+                            &tool_name, &args, None, &call_id, generation, None,
                         )
                         .await;
 
@@ -636,6 +639,7 @@ impl BatchExecutor {
                         },
                         &call.call_id,
                         generation,
+                        None,
                     )
                     .await;
                 let duration_ms = tool_start.elapsed().as_millis() as u64;
@@ -710,6 +714,7 @@ impl BatchExecutor {
                         },
                         &call_id,
                         generation,
+                        None,
                     )
                     .await;
 
@@ -823,6 +828,7 @@ impl BatchExecutor {
                     event_tx.as_ref(),
                     &call.call_id,
                     generation,
+                    None,
                 )
                 .await;
 

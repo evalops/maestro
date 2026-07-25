@@ -136,6 +136,10 @@ pub(crate) struct PlanRunOutcome {
 
 impl PlanRunOutcome {
     pub(crate) fn cost_limited(failure_reason: String, costs: CostAccounting) -> Self {
+        Self::rejected(failure_reason, costs)
+    }
+
+    pub(crate) fn rejected(failure_reason: String, costs: CostAccounting) -> Self {
         Self {
             success: false,
             confidence_predicted: 0.0,

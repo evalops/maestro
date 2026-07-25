@@ -21,11 +21,12 @@ impl App {
             ActiveModal::CommandPalette => {
                 return self.handle_command_palette_key(code, ctrl).await
             }
-            ActiveModal::Approval => return self.handle_approval_key(code).await,
+            ActiveModal::Approval => return self.handle_approval_key(code, modifiers).await,
             ActiveModal::ModelSelector => return self.handle_model_selector_key(code, ctrl).await,
             ActiveModal::ThemeSelector => return self.handle_theme_selector_key(code, ctrl).await,
             ActiveModal::ShortcutsHelp => return self.handle_shortcuts_help_key(code).await,
             ActiveModal::RewindPicker => return self.handle_rewind_picker_key(code),
+            ActiveModal::DetailView => return self.handle_detail_view_key(code),
             ActiveModal::None => {}
         }
 
@@ -58,11 +59,23 @@ impl App {
             self.toggle_last_tool_call();
             return Ok(());
         }
+        // Ctrl+E: open the full-output detail view for the most recent
+        // expandable transcript item (Droid parity: Ctrl+O shows full
+        // accumulated output; Ctrl+O is file search in maestro's map).
+        if ctrl && !alt && matches!(code, KeyCode::Char('e')) {
+            self.open_detail_view();
+            return Ok(());
+        }
 
         match code {
             // Quit
             KeyCode::Char('c') if ctrl => {
                 if self.state.busy {
+                    // Interrupt in-flight tool executions first: their
+                    // cancellation tokens kill child process groups, so a
+                    // long bash run stops now instead of after its timeout.
+                    self.cancel_running_tools();
+
                     let has_queued_steering = self.state.queued_steering_count > 0;
                     self.submit_queued_steering_after_interrupt = has_queued_steering;
                     self.restore_queued_prompts_after_interrupt =
@@ -317,13 +330,9 @@ impl App {
             // Paste from clipboard
             KeyCode::Char('y') if ctrl => {
                 if let Ok(text) = self.clipboard.paste() {
-                    // Insert text including newlines for multi-line support
-                    // Skip carriage returns to normalize line endings
-                    for c in text.chars() {
-                        if c != '\r' {
-                            self.state.insert_char(c);
-                        }
-                    }
+                    // Insert text including newlines for multi-line support;
+                    // large pastes are folded into a display chip.
+                    self.state.insert_paste(&text);
                     self.update_slash_state();
                 }
             }
@@ -393,6 +402,26 @@ impl App {
         !input.trim().is_empty() && !trimmed.starts_with('/') && !trimmed.starts_with('!')
     }
 
+    /// Route a bracketed paste to the open modal's text input, or to the
+    /// main input when no modal is open.
+    pub(super) fn handle_paste(&mut self, raw: &str) {
+        // Normalize line endings like the main-input paste path does.
+        let text: String = raw.chars().filter(|c| *c != '\r').collect();
+        match self.active_modal {
+            ActiveModal::FileSearch => self.file_search.insert_str(&text),
+            ActiveModal::SessionSwitcher => self.session_switcher.insert_str(&text),
+            ActiveModal::CommandPalette => self.command_palette.insert_str(&text),
+            ActiveModal::ModelSelector => self.model_selector.insert_str(&text),
+            ActiveModal::ThemeSelector => self.theme_selector.insert_str(&text),
+            ActiveModal::None => {
+                self.state.insert_paste(raw);
+                self.update_slash_state();
+            }
+            // Modals without a text input have nothing to paste into.
+            _ => {}
+        }
+    }
+
     /// Handle keys in file search modal
     pub(super) async fn handle_file_search_key(&mut self, code: KeyCode, ctrl: bool) -> Result<()> {
         match code {
@@ -457,6 +486,10 @@ impl App {
                     match self.session_manager.load_session(&session_id) {
                         Ok(session) => {
                             self.credential_vault.clear();
+                            // Drop the old session's error surface and force a
+                            // full repaint so its frames cannot linger beneath
+                            // the restored transcript.
+                            self.reset_rendered_viewport();
                             crate::plan_mode::set_active_session_id(None);
                             if let Some(agent) = &self.native_agent {
                                 // Drop any active-session state before the new
@@ -758,8 +791,103 @@ impl App {
         Ok(())
     }
 
+    /// Handle keys in the full-output detail view overlay.
+    ///
+    /// Esc/q/Enter closes the overlay and restores the modal that was active
+    /// when it opened (the approval modal when expanded from there).
+    pub(super) fn handle_detail_view_key(&mut self, code: KeyCode) -> Result<()> {
+        let viewport_height = self.capabilities.viewport_height as usize;
+        let Some(detail) = &mut self.detail_view else {
+            self.active_modal = ActiveModal::None;
+            return Ok(());
+        };
+        if detail.handle_key(code, viewport_height) {
+            self.detail_view = None;
+            let mut return_modal = self.detail_return_modal;
+            self.detail_return_modal = ActiveModal::None;
+            // The approval queue may have drained while the overlay was open.
+            if return_modal == ActiveModal::Approval && !self.approval_controller.is_visible() {
+                return_modal = ActiveModal::None;
+            }
+            self.active_modal = return_modal;
+        }
+        Ok(())
+    }
+
+    /// Open the detail view for the most recent expandable transcript item:
+    /// full untruncated tool output, full thinking, or full message text,
+    /// falling back to the current error surface when the transcript is empty.
+    pub(super) fn open_detail_view(&mut self) {
+        match self.latest_detail_target() {
+            Some((title, content)) => {
+                self.detail_view = Some(DetailView::new(title, content));
+                self.detail_return_modal = ActiveModal::None;
+                self.active_modal = ActiveModal::DetailView;
+            }
+            None => {
+                self.state.status.replace("Nothing to expand".to_string());
+            }
+        }
+    }
+
+    /// Pick the most recent expandable item and build its full-content view.
+    fn latest_detail_target(&self) -> Option<(String, String)> {
+        for message in self.state.messages.iter().rev() {
+            if let Some(call) = message
+                .tool_calls
+                .iter()
+                .rev()
+                .find(|call| !call.output.trim().is_empty())
+            {
+                let args = serde_json::to_string_pretty(&call.args)
+                    .unwrap_or_else(|_| call.args.to_string());
+                let content = format!("Args:\n{args}\n\nOutput:\n{}", call.output);
+                return Some((format!("Tool: {}", call.tool), content));
+            }
+            if !message.thinking.trim().is_empty() {
+                return Some(("Thinking".to_string(), message.thinking.clone()));
+            }
+            if !message.content.trim().is_empty() {
+                let title = match message.kind {
+                    MessageKind::System => "System message",
+                    _ if message.role == MessageRole::User => "User message",
+                    _ => "Assistant message",
+                };
+                return Some((title.to_string(), message.content.clone()));
+            }
+        }
+        self.state
+            .error
+            .as_ref()
+            .map(|error| ("Error".to_string(), error.clone()))
+    }
+
     /// Handle keys in approval modal
-    pub(super) async fn handle_approval_key(&mut self, code: KeyCode) -> Result<()> {
+    pub(super) async fn handle_approval_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: CrosstermModifiers,
+    ) -> Result<()> {
+        // Ctrl+E: expand the command/diff being approved into the detail view
+        // (Droid parity: Ctrl+O on tool confirmation prompts). The approval
+        // modal clips the command to a few lines; the detail view shows the
+        // full command and arguments. Esc returns to the approval modal.
+        if modifiers.contains(CrosstermModifiers::CONTROL) && matches!(code, KeyCode::Char('e')) {
+            if let Some(request) = self.approval_controller.current() {
+                self.detail_view = Some(DetailView::new(
+                    format!("Approval: {}", request.tool),
+                    approval_detail_content(request),
+                ));
+                self.detail_return_modal = ActiveModal::Approval;
+                self.active_modal = ActiveModal::DetailView;
+            }
+            return Ok(());
+        }
+        // More than one pending approval means parallel tool calls landed in the
+        // same batch: use the batch interaction so the user answers one modal.
+        if self.approval_controller.total_count() > 1 {
+            return self.handle_batched_approval_key(code).await;
+        }
         match code {
             KeyCode::Char('y' | 'Y') | KeyCode::Enter => {
                 if let Some((request, _decision)) =
@@ -802,6 +930,65 @@ impl App {
         Ok(())
     }
 
+    /// Handle keys in the batched approval modal (multiple pending requests).
+    ///
+    /// `y`/`n` decide the selected request; `a`/`d` decide the whole batch at
+    /// once. Each decision flows through `handle_tool_approval`, so approval
+    /// recording and execution semantics are identical to the single-call path.
+    async fn handle_batched_approval_key(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Up => self.approval_controller.select_prev(),
+            KeyCode::Down => self.approval_controller.select_next(),
+            KeyCode::Char('y' | 'Y') | KeyCode::Enter => {
+                if let Some((request, _decision)) = self
+                    .approval_controller
+                    .decide_selected(ApprovalDecision::Approve)
+                {
+                    self.handle_tool_approval(request.call_id, request.tool, request.args, true)
+                        .await?;
+                }
+                if self.approval_controller.current().is_none() {
+                    self.active_modal = ActiveModal::None;
+                }
+            }
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+                if let Some((request, _decision)) = self
+                    .approval_controller
+                    .decide_selected(ApprovalDecision::Deny)
+                {
+                    self.handle_tool_approval(request.call_id, request.tool, request.args, false)
+                        .await?;
+                }
+                if self.approval_controller.current().is_none() {
+                    self.active_modal = ActiveModal::None;
+                }
+            }
+            KeyCode::Char('a' | 'A') => {
+                // Approve all pending calls in FIFO order
+                for (request, _decision) in self
+                    .approval_controller
+                    .decide_all(ApprovalDecision::Approve)
+                {
+                    self.handle_tool_approval(request.call_id, request.tool, request.args, true)
+                        .await?;
+                }
+                self.active_modal = ActiveModal::None;
+            }
+            KeyCode::Char('d' | 'D') => {
+                // Deny all pending calls in FIFO order
+                for (request, _decision) in
+                    self.approval_controller.decide_all(ApprovalDecision::Deny)
+                {
+                    self.handle_tool_approval(request.call_id, request.tool, request.args, false)
+                        .await?;
+                }
+                self.active_modal = ActiveModal::None;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Handle keys in model selector modal
     pub(super) async fn handle_model_selector_key(
         &mut self,
@@ -815,22 +1002,26 @@ impl App {
             }
             KeyCode::Enter => {
                 if let Some(model_id) = self.model_selector.confirm() {
-                    // Set the new model
-                    if let Some(agent) = &self.native_agent {
-                        let policy_model = policy_model_id(&model_id);
-                        if let Some(reason) = check_model_allowed(&policy_model) {
-                            self.state.error = Some(reason);
-                        } else if let Err(e) = agent.set_model(&model_id) {
-                            self.state.error = Some(format!("Failed to set model: {e}"));
-                        } else {
-                            self.pending_model_change = Some(PendingModelChange {
-                                model: model_id.clone(),
-                            });
-                            self.state.status = Some(format!("Switching model: {model_id}"));
-                        }
-                    }
+                    self.switch_model(&model_id, false);
                 }
-                self.active_modal = ActiveModal::None;
+                // Confirming the "show all models" row expands the list and
+                // keeps the modal open.
+                if !self.model_selector.is_visible() {
+                    self.active_modal = ActiveModal::None;
+                }
+            }
+            KeyCode::Char('d') if ctrl => {
+                // Ctrl+D: persist the highlighted model as the user default
+                // and switch to it.
+                let model_id = self.model_selector.selected_model().map(|m| m.id.clone());
+                if let Some(model_id) = model_id {
+                    self.model_selector.hide();
+                    self.switch_model(&model_id, true);
+                    self.active_modal = ActiveModal::None;
+                }
+            }
+            KeyCode::Tab => {
+                self.model_selector.toggle_show_all();
             }
             KeyCode::Up => {
                 self.model_selector.move_up();
@@ -935,7 +1126,7 @@ impl App {
         self.tool_history.record_approval(&call_id, approved);
         if approved {
             // Execute the tool (resolves vaulted credentials internally)
-            self.execute_tool_and_respond(call_id, tool, args).await?;
+            self.execute_tool_and_respond(call_id, tool, args);
         } else {
             self.tool_history.fail(&call_id, "Denied".to_string());
             // Send denial
@@ -945,4 +1136,18 @@ impl App {
         }
         Ok(())
     }
+}
+
+/// Build the full-content body for expanding an approval request: the reason,
+/// the complete (unclipped) command, and the pretty-printed arguments.
+fn approval_detail_content(request: &ApprovalRequest) -> String {
+    let mut sections = Vec::new();
+    if let Some(reason) = &request.reason {
+        sections.push(format!("Reason:\n{reason}"));
+    }
+    sections.push(format!("Command:\n{}", request.display_command()));
+    let args =
+        serde_json::to_string_pretty(&request.args).unwrap_or_else(|_| request.args.to_string());
+    sections.push(format!("Args:\n{args}"));
+    sections.join("\n\n")
 }

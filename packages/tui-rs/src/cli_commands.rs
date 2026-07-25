@@ -26,6 +26,7 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
 
     match cmd {
         "sessions" => run_sessions(&args[1..]),
+        "search" => crate::search_cli::run_search(&args[1..]),
         "cost" => run_cost(&args[1..]),
         "stats" => run_stats(&args[1..]),
         "models" => run_models(&args[1..]),

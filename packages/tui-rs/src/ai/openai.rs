@@ -109,6 +109,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::client::{provider_model_name, AiClient, AiProvider};
+use super::op_secret;
 use super::types::{
     ContentBlock, ImageSource, Message, MessageContent, RequestConfig, Role, StreamEvent, Tool,
 };
@@ -639,15 +640,13 @@ impl OpenAiClient {
 
     /// Create a new client from environment variable
     pub fn from_env() -> Result<Self> {
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .context("OPENAI_API_KEY environment variable not set")?;
+        let api_key = op_secret::env_credential(&["OPENAI_API_KEY"])?;
         Self::new(api_key)
     }
 
     /// Create a new Mistral client from environment variable
     pub fn mistral_from_env() -> Result<Self> {
-        let api_key = std::env::var("MISTRAL_API_KEY")
-            .context("MISTRAL_API_KEY environment variable not set")?;
+        let api_key = op_secret::env_credential(&["MISTRAL_API_KEY"])?;
         Self::with_base_url(api_key, "https://api.mistral.ai/v1")
     }
 
@@ -656,8 +655,7 @@ impl OpenAiClient {
     /// Groq provides fast inference for open models like Llama, Mixtral, and Gemma.
     /// Uses OpenAI-compatible API format.
     pub fn groq_from_env() -> Result<Self> {
-        let api_key =
-            std::env::var("GROQ_API_KEY").context("GROQ_API_KEY environment variable not set")?;
+        let api_key = op_secret::env_credential(&["GROQ_API_KEY"])?;
         Self::with_base_url(api_key, "https://api.groq.com/openai/v1")
     }
 
@@ -665,8 +663,7 @@ impl OpenAiClient {
     ///
     /// DeepSeek exposes an OpenAI-compatible API at `https://api.deepseek.com/v1`.
     pub fn deepseek_from_env() -> Result<Self> {
-        let api_key = std::env::var("DEEPSEEK_API_KEY")
-            .context("DEEPSEEK_API_KEY environment variable not set")?;
+        let api_key = op_secret::env_credential(&["DEEPSEEK_API_KEY"])?;
         Self::with_base_url(api_key, "https://api.deepseek.com/v1")
     }
 
@@ -675,9 +672,7 @@ impl OpenAiClient {
     /// Uses the international endpoint `https://api.moonshot.ai/v1`. Accepts
     /// `MOONSHOT_API_KEY` or, as a fallback, `KIMI_API_KEY`.
     pub fn moonshot_from_env() -> Result<Self> {
-        let api_key = std::env::var("MOONSHOT_API_KEY")
-            .or_else(|_| std::env::var("KIMI_API_KEY"))
-            .context("MOONSHOT_API_KEY (or KIMI_API_KEY) environment variable not set")?;
+        let api_key = op_secret::env_credential(&["MOONSHOT_API_KEY", "KIMI_API_KEY"])?;
         Self::with_base_url(api_key, "https://api.moonshot.ai/v1")
     }
 
@@ -686,9 +681,7 @@ impl OpenAiClient {
     /// Uses the international compatible-mode endpoint. Accepts
     /// `DASHSCOPE_API_KEY` or, as a fallback, `QWEN_API_KEY`.
     pub fn qwen_from_env() -> Result<Self> {
-        let api_key = std::env::var("DASHSCOPE_API_KEY")
-            .or_else(|_| std::env::var("QWEN_API_KEY"))
-            .context("DASHSCOPE_API_KEY (or QWEN_API_KEY) environment variable not set")?;
+        let api_key = op_secret::env_credential(&["DASHSCOPE_API_KEY", "QWEN_API_KEY"])?;
         Self::with_base_url(
             api_key,
             "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
@@ -699,8 +692,7 @@ impl OpenAiClient {
     ///
     /// Uses the international endpoint `https://api.minimax.io/v1`.
     pub fn minimax_from_env() -> Result<Self> {
-        let api_key = std::env::var("MINIMAX_API_KEY")
-            .context("MINIMAX_API_KEY environment variable not set")?;
+        let api_key = op_secret::env_credential(&["MINIMAX_API_KEY"])?;
         Self::with_base_url(api_key, "https://api.minimax.io/v1")
     }
 
@@ -708,8 +700,7 @@ impl OpenAiClient {
     ///
     /// Uses the international endpoint `https://api.z.ai/api/coding/paas/v4`.
     pub fn zai_from_env() -> Result<Self> {
-        let api_key =
-            std::env::var("ZAI_API_KEY").context("ZAI_API_KEY environment variable not set")?;
+        let api_key = op_secret::env_credential(&["ZAI_API_KEY"])?;
         Self::with_base_url(api_key, "https://api.z.ai/api/coding/paas/v4")
     }
 
@@ -1301,7 +1292,10 @@ impl AiClient for OpenAiClient {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             let _ = tx.send(StreamEvent::Error {
-                message: format!("API error {status}: {error_text}"),
+                message: format!(
+                    "API error {status}: {}",
+                    super::summarize_error_body(&error_text)
+                ),
             });
             return Ok(rx);
         }
@@ -2266,6 +2260,84 @@ mod tests {
                 assert_eq!(result["output"], *output);
             }
         }
+    }
+
+    #[test]
+    fn responses_history_pairs_synthesized_cancel_result_with_its_call() {
+        // History shape left by `repair_orphaned_tool_calls` after a turn is
+        // cancelled mid-tool-execution: the assistant tool call is immediately
+        // followed by a user message carrying only the synthesized failure
+        // result, then the next prompt. The Responses payload must pair every
+        // function_call with a function_call_output or OpenAI answers 400.
+        let client = OpenAiClient::new("test-key").unwrap();
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: MessageContent::Text("run sleep 120 via bash".to_string()),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                    id: "call_1".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({"command": "sleep 120"}),
+                }]),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_1".to_string(),
+                    content: "Tool execution cancelled by user.".to_string(),
+                    is_error: Some(true),
+                }]),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Text("next prompt".to_string()),
+            },
+        ];
+
+        let body = client.build_responses_request_body(
+            &messages,
+            &RequestConfig {
+                model: "gpt-5.1-codex-max".to_string(),
+                ..Default::default()
+            },
+        );
+        let input = body["input"].as_array().expect("Responses input");
+        let call_ids: Vec<&str> = input
+            .iter()
+            .filter(|item| item["type"] == "function_call")
+            .map(|item| item["call_id"].as_str().expect("function call id"))
+            .collect();
+        let output_ids: Vec<&str> = input
+            .iter()
+            .filter(|item| item["type"] == "function_call_output")
+            .map(|item| item["call_id"].as_str().expect("function output id"))
+            .collect();
+        assert_eq!(call_ids, vec!["call_1"]);
+        assert_eq!(call_ids, output_ids);
+
+        // The Chat Completions serializer must pair them too: an assistant
+        // tool_calls message immediately followed by a matching tool message.
+        let chat_body = client.build_request_body(
+            &messages,
+            &RequestConfig {
+                model: "gpt-4o".to_string(),
+                ..Default::default()
+            },
+        );
+        let chat_messages = chat_body["messages"].as_array().expect("chat messages");
+        let assistant_index = chat_messages
+            .iter()
+            .position(|msg| msg["tool_calls"].is_array())
+            .expect("assistant tool_calls message");
+        let tool_msg = &chat_messages[assistant_index + 1];
+        assert_eq!(tool_msg["role"], "tool");
+        assert_eq!(
+            tool_msg["tool_call_id"],
+            chat_messages[assistant_index]["tool_calls"][0]["id"]
+        );
     }
 
     #[test]

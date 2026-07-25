@@ -124,12 +124,18 @@ pub async fn record_staged_rollout_surface_usage(
     let encoded = payload.to_string();
 
     if let Some(endpoint) = endpoint.as_deref() {
-        let _ = reqwest::Client::new()
-            .post(endpoint)
-            .header("content-type", "application/json")
-            .body(encoded.clone())
-            .send()
-            .await;
+        // Best-effort telemetry must never hang the CLI on a dead host.
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build();
+        if let Ok(client) = client {
+            let _ = client
+                .post(endpoint)
+                .header("content-type", "application/json")
+                .body(encoded.clone())
+                .send()
+                .await;
+        }
     }
 
     if let Some(path) = file.or_else(|| endpoint.is_none().then(default_telemetry_file)) {

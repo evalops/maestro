@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::ai::{ProviderProtocol, ProviderRegistry, ResolvedProvider};
+use crate::ai::{op_secret, ProviderProtocol, ProviderRegistry, ResolvedProvider};
 use crate::model_catalog::{
     find_model, has_provider_mismatch, protocol_name, verify_model_offline, ModelInfo,
 };
@@ -362,13 +362,88 @@ async fn live_metadata_check(model: &SelectedModelReport) -> DoctorCheck {
     live_metadata_check_with_env(model, &env).await
 }
 
+/// Providers covered by the doctor auth health section.
+const AUTH_HEALTH_PROVIDERS: &[&str] = &["openai", "anthropic", "google", "xai"];
+
+/// Report credential availability for each well-known provider without ever
+/// printing secret values. `op://` references are actually resolved through
+/// the 1Password CLI so broken vault references surface here.
+fn auth_health_checks(env: &HashMap<String, String>) -> Vec<DoctorCheck> {
+    AUTH_HEALTH_PROVIDERS
+        .iter()
+        .map(|provider_id| auth_health_check(provider_id, env))
+        .collect()
+}
+
+fn auth_health_check(provider_id: &str, env: &HashMap<String, String>) -> DoctorCheck {
+    let Some(descriptor) = ProviderRegistry::descriptor(provider_id) else {
+        return check(
+            "auth_health",
+            CheckStatus::Skipped,
+            format!("{provider_id}: unknown provider"),
+            None,
+            false,
+        );
+    };
+    let configured = descriptor.auth_env.iter().find_map(|name| {
+        env.get(*name)
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| (*name, value))
+    });
+    if let Some((name, value)) = configured {
+        if op_secret::is_op_reference(value) {
+            return match op_secret::resolve_credential(name, value) {
+                Ok(_) => check(
+                    "auth_health",
+                    CheckStatus::Pass,
+                    format!("{provider_id}: {name} op:// reference resolves via 1Password CLI"),
+                    None,
+                    false,
+                ),
+                Err(error) => check(
+                    "auth_health",
+                    CheckStatus::Fail,
+                    format!("{provider_id}: {name} op:// reference could not be resolved"),
+                    Some(format!("{error:#}")),
+                    false,
+                ),
+            };
+        }
+        return check(
+            "auth_health",
+            CheckStatus::Pass,
+            format!("{provider_id}: {name} is set"),
+            None,
+            false,
+        );
+    }
+    if provider_id == "openai" && crate::openai_cli::has_stored_oauth_credential() {
+        return check(
+            "auth_health",
+            CheckStatus::Pass,
+            format!("{provider_id}: stored OAuth credential present"),
+            None,
+            false,
+        );
+    }
+    check(
+        "auth_health",
+        CheckStatus::Warning,
+        format!("{provider_id}: no credential found"),
+        Some(descriptor.auth_env.join(", ")),
+        false,
+    )
+}
+
 pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) -> DoctorReport {
     let config = crate::config::load_config(cwd, None);
     let requested = model_override
         .map(str::to_owned)
         .or_else(|| std::env::var("MAESTRO_MODEL").ok())
         .or(config.model)
-        .unwrap_or_else(|| "gpt-5.1-codex-max".to_owned());
+        .unwrap_or_else(|| "gpt-5.5".to_owned());
     let env = std::env::vars().collect();
     let resolved = ProviderRegistry::resolve(&requested, &env);
     let (provider, protocol) = resolved.as_ref().map_or_else(
@@ -414,6 +489,7 @@ pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) 
             false,
         ),
     });
+    checks.extend(auth_health_checks(&env));
     checks.push(if has_provider_mismatch(&requested) {
         check(
             "model_catalog",
@@ -748,5 +824,85 @@ mod tests {
         let check =
             live_metadata_check_with_env(&selected_model("azure-openai/gpt-4o"), &env).await;
         assert_eq!(check.status, CheckStatus::Skipped);
+    }
+
+    #[test]
+    fn auth_health_reports_env_key_without_printing_secret() {
+        let env = HashMap::from([(
+            "OPENAI_API_KEY".to_owned(),
+            "sk-plain-auth-health-secret".to_owned(),
+        )]);
+        let checks = auth_health_checks(&env);
+        let openai = checks
+            .iter()
+            .find(|item| item.summary.starts_with("openai:"))
+            .expect("openai auth health check");
+        assert_eq!(openai.status, CheckStatus::Pass);
+        assert!(openai.summary.contains("OPENAI_API_KEY is set"));
+        let serialized = serde_json::to_string(&checks).expect("serialize checks");
+        assert!(
+            !serialized.contains("sk-plain-auth-health-secret"),
+            "leaked secret: {serialized}"
+        );
+    }
+
+    #[test]
+    fn auth_health_resolves_op_reference() {
+        let _fake = crate::ai::op_secret::test_support::FakeOp::install();
+        let env = HashMap::from([(
+            "OPENAI_API_KEY".to_owned(),
+            "op://vault/item/doctor-health".to_owned(),
+        )]);
+        let checks = auth_health_checks(&env);
+        let openai = checks
+            .iter()
+            .find(|item| item.summary.starts_with("openai:"))
+            .expect("openai auth health check");
+        assert_eq!(openai.status, CheckStatus::Pass);
+        assert!(openai.summary.contains("op:// reference resolves"));
+        let serialized = serde_json::to_string(&checks).expect("serialize checks");
+        assert!(
+            !serialized.contains("resolved-secret-value"),
+            "leaked secret: {serialized}"
+        );
+    }
+
+    #[test]
+    fn auth_health_flags_unresolvable_op_reference() {
+        let _fake = crate::ai::op_secret::test_support::FakeOp::install();
+        let env = HashMap::from([(
+            "ANTHROPIC_API_KEY".to_owned(),
+            "op://vault/item/missing".to_owned(),
+        )]);
+        let checks = auth_health_checks(&env);
+        let anthropic = checks
+            .iter()
+            .find(|item| item.summary.starts_with("anthropic:"))
+            .expect("anthropic auth health check");
+        assert_eq!(anthropic.status, CheckStatus::Fail);
+        let detail = anthropic.detail.as_deref().expect("failure detail");
+        assert!(
+            detail.contains("1Password CLI"),
+            "detail should mention the op CLI: {detail}"
+        );
+    }
+
+    #[test]
+    fn auth_health_warns_when_no_credential() {
+        let checks = auth_health_checks(&HashMap::new());
+        assert_eq!(checks.len(), AUTH_HEALTH_PROVIDERS.len());
+        for provider in ["anthropic", "google", "xai"] {
+            let item = checks
+                .iter()
+                .find(|check| check.summary.starts_with(&format!("{provider}:")))
+                .expect("provider auth health check");
+            assert_eq!(item.status, CheckStatus::Warning, "{}", item.summary);
+            assert!(item.summary.contains("no credential found"));
+        }
+        // openai may additionally have a stored OAuth credential on disk; only
+        // assert that its check exists and never prints a secret.
+        assert!(checks
+            .iter()
+            .any(|check| check.summary.starts_with("openai:")));
     }
 }

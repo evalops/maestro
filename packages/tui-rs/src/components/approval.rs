@@ -37,6 +37,14 @@
 //! The modal uses `Clear` widget to render over the main UI and draw a bordered
 //! panel in the center of the screen.
 //!
+//! ## `BatchedApprovalModal`
+//!
+//! Rendered instead of `ApprovalModal` when more than one approval is queued
+//! (e.g. parallel tool calls from a single agent turn). Lists every pending
+//! call with its tool name and a one-line summary, with per-call approve/deny
+//! and approve-all / deny-all actions, so the user answers one modal instead
+//! of N sequential ones.
+//!
 //! ## `ApprovalController`
 //!
 //! Stateful controller managing the approval queue:
@@ -203,6 +211,29 @@ impl ApprovalRequest {
 
         // For other tools, show the tool name and action
         format!("{}: {}", self.tool, self.args)
+    }
+
+    /// One-line summary for batch list rows.
+    ///
+    /// Prefers the firewall reason when present, otherwise the display command.
+    /// Collapses to the first line and truncates to `max_chars`.
+    #[must_use]
+    pub fn summary(&self, max_chars: usize) -> String {
+        let text = self
+            .reason
+            .clone()
+            .unwrap_or_else(|| self.display_command());
+        let first_line = text.lines().next().unwrap_or("").trim();
+        if max_chars == 0 {
+            return String::new();
+        }
+        if first_line.chars().count() > max_chars {
+            let mut truncated: String = first_line.chars().take(max_chars - 1).collect();
+            truncated.push('…');
+            truncated
+        } else {
+            first_line.to_string()
+        }
     }
 }
 
@@ -421,6 +452,177 @@ impl Widget for ApprovalModal<'_> {
     }
 }
 
+/// A stateless modal widget for displaying a batch of pending approval requests.
+///
+/// Rendered instead of [`ApprovalModal`] when more than one approval is queued
+/// (e.g. parallel tool calls from a single agent turn), so the user answers one
+/// modal instead of N sequential ones. Lists every pending call with its tool
+/// name and a one-line summary, and supports per-call approve/deny plus
+/// approve-all / deny-all.
+pub struct BatchedApprovalModal<'a> {
+    /// All pending requests
+    requests: &'a [ApprovalRequest],
+    /// Index of the selected request
+    selected: usize,
+    /// Whether the modal is focused
+    focused: bool,
+}
+
+impl<'a> BatchedApprovalModal<'a> {
+    #[must_use]
+    pub fn new(requests: &'a [ApprovalRequest]) -> Self {
+        Self {
+            requests,
+            selected: 0,
+            focused: true,
+        }
+    }
+
+    #[must_use]
+    pub fn selected(mut self, selected: usize) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    #[must_use]
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+}
+
+impl Widget for BatchedApprovalModal<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let modal_width = area.width.clamp(50, 90);
+        // Height: borders (2) + status (1) + list rows + hints (2)
+        let wanted_height = self.requests.len() as u16 + 5;
+        let modal_height = wanted_height.clamp(10, area.height.clamp(10, 24));
+
+        let x = (area.width.saturating_sub(modal_width)) / 2 + area.x;
+        let y = (area.height.saturating_sub(modal_height)) / 2 + area.y;
+
+        let modal_area = Rect::new(x, y, modal_width, modal_height);
+
+        Clear.render(modal_area, buf);
+
+        let border_color = Color::Rgb(251, 191, 36); // amber-400
+        let bg_color = Color::Rgb(30, 30, 30);
+
+        let title = format!(" {} Actions Require Approval ", self.requests.len());
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color))
+            .title(title)
+            .title_style(
+                Style::default()
+                    .fg(border_color)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .style(Style::default().bg(bg_color));
+
+        let inner = block.inner(modal_area);
+        block.render(modal_area, buf);
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // Status line
+                Constraint::Min(1),    // Request list
+                Constraint::Length(2), // Key hints
+            ])
+            .split(inner);
+
+        // Status line
+        let status = Line::from(vec![Span::styled(
+            format!(
+                "Selected {} of {}",
+                (self.selected + 1).min(self.requests.len().max(1)),
+                self.requests.len()
+            ),
+            Style::default().fg(Color::DarkGray),
+        )]);
+        Paragraph::new(status).render(chunks[0], buf);
+
+        // Request list with a simple scroll window keeping the selection visible
+        let list_area = chunks[1];
+        let visible_rows = list_area.height as usize;
+        let selected = self.selected.min(self.requests.len().saturating_sub(1));
+        let start = if selected >= visible_rows {
+            selected + 1 - visible_rows
+        } else {
+            0
+        };
+
+        // Row budget: marker (2) + tool column (14) + separator (3)
+        let summary_width = (list_area.width as usize).saturating_sub(19);
+
+        let rows: Vec<Line> = self
+            .requests
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(visible_rows)
+            .map(|(i, request)| {
+                let is_selected = i == selected;
+                let marker = if is_selected { ">" } else { " " };
+                let mut tool = request.tool.clone();
+                if request.is_shell {
+                    tool.push_str(" (shell)");
+                }
+                let tool_display = format!("{tool:<14.14}");
+                let summary = request.summary(summary_width);
+                let row_style = if is_selected {
+                    Style::default()
+                        .bg(Color::Rgb(60, 50, 20))
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                Line::from(vec![
+                    Span::styled(format!("{marker} "), row_style),
+                    Span::styled(tool_display, row_style.fg(theme::syntax_function())),
+                    Span::styled(" — ", row_style.fg(Color::DarkGray)),
+                    Span::styled(summary, row_style.fg(theme::syntax_string())),
+                ])
+            })
+            .collect();
+        Paragraph::new(rows).render(list_area, buf);
+
+        // Key hints
+        let hints = Line::from(vec![
+            Span::styled(
+                "[y]",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" approve  "),
+            Span::styled(
+                "[n]",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" deny  "),
+            Span::styled(
+                "[a]",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" approve all  "),
+            Span::styled(
+                "[d]",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" deny all  "),
+            Span::styled("[↑/↓]", Style::default().fg(Color::DarkGray)),
+            Span::raw(" select"),
+        ]);
+        Paragraph::new(hints)
+            .alignment(Alignment::Center)
+            .render(chunks[2], buf);
+    }
+}
+
 /// Stateful controller for managing the approval queue.
 ///
 /// Maintains a FIFO queue of pending approval requests and tracks modal visibility.
@@ -449,6 +651,8 @@ pub struct ApprovalController {
     queue: Vec<ApprovalRequest>,
     /// Whether the modal is currently shown
     visible: bool,
+    /// Index of the selected request in batch mode
+    selected: usize,
 }
 
 impl ApprovalController {
@@ -457,6 +661,7 @@ impl ApprovalController {
         Self {
             queue: Vec::new(),
             visible: false,
+            selected: 0,
         }
     }
 
@@ -474,10 +679,34 @@ impl ApprovalController {
         self.queue.first()
     }
 
+    /// Get all pending requests (for batch rendering)
+    #[must_use]
+    pub fn pending(&self) -> &[ApprovalRequest] {
+        &self.queue
+    }
+
     /// Get the number of pending approvals (excluding current)
     #[must_use]
     pub fn pending_count(&self) -> usize {
         self.queue.len().saturating_sub(1)
+    }
+
+    /// Index of the currently selected request in batch mode
+    #[must_use]
+    pub fn selected_index(&self) -> usize {
+        self.selected.min(self.queue.len().saturating_sub(1))
+    }
+
+    /// Move the batch selection to the next request
+    pub fn select_next(&mut self) {
+        if !self.queue.is_empty() {
+            self.selected = (self.selected_index() + 1).min(self.queue.len() - 1);
+        }
+    }
+
+    /// Move the batch selection to the previous request
+    pub fn select_prev(&mut self) {
+        self.selected = self.selected_index().saturating_sub(1);
     }
 
     /// Handle a decision for the current request
@@ -490,12 +719,47 @@ impl ApprovalController {
         }
 
         let request = self.queue.remove(0);
-
-        if self.queue.is_empty() {
-            self.visible = false;
-        }
+        self.after_removal();
 
         Some((request, decision))
+    }
+
+    /// Handle a decision for the selected request (batch mode)
+    pub fn decide_selected(
+        &mut self,
+        decision: ApprovalDecision,
+    ) -> Option<(ApprovalRequest, ApprovalDecision)> {
+        if self.queue.is_empty() {
+            return None;
+        }
+
+        let index = self.selected_index();
+        let request = self.queue.remove(index);
+        self.after_removal();
+
+        Some((request, decision))
+    }
+
+    /// Handle a decision for every pending request, in FIFO order.
+    ///
+    /// Drains the queue and hides the modal. Used by the batch modal's
+    /// approve-all / deny-all actions.
+    pub fn decide_all(
+        &mut self,
+        decision: ApprovalDecision,
+    ) -> Vec<(ApprovalRequest, ApprovalDecision)> {
+        let requests: Vec<ApprovalRequest> = self.queue.drain(..).collect();
+        self.after_removal();
+        requests.into_iter().map(|r| (r, decision)).collect()
+    }
+
+    /// Shared bookkeeping after requests leave the queue.
+    fn after_removal(&mut self) {
+        self.selected = self.selected_index();
+        if self.queue.is_empty() {
+            self.visible = false;
+            self.selected = 0;
+        }
     }
 
     /// Check if the modal should be visible
@@ -508,6 +772,7 @@ impl ApprovalController {
     pub fn clear(&mut self) {
         self.queue.clear();
         self.visible = false;
+        self.selected = 0;
     }
 
     /// Get total queue size
@@ -587,5 +852,204 @@ mod tests {
             Some(ApprovalDecision::Cancel)
         );
         assert_eq!(ApprovalModal::handle_key(KeyCode::Enter), None);
+    }
+
+    fn batch_controller() -> ApprovalController {
+        let mut controller = ApprovalController::new();
+        controller.enqueue(
+            ApprovalRequest::new(
+                "call-1",
+                "bash",
+                serde_json::json!({ "command": "cargo test" }),
+            )
+            .shell(),
+        );
+        controller.enqueue(ApprovalRequest::new(
+            "call-2",
+            "write",
+            serde_json::json!({ "path": "/tmp/out.txt" }),
+        ));
+        controller.enqueue(
+            ApprovalRequest::new(
+                "call-3",
+                "bash",
+                serde_json::json!({ "command": "git status" }),
+            )
+            .with_reason("Inspect repository state")
+            .shell(),
+        );
+        controller
+    }
+
+    #[test]
+    fn approval_request_summary_prefers_reason_and_truncates() {
+        let request = ApprovalRequest::new(
+            "1",
+            "bash",
+            serde_json::json!({ "command": "rm -rf /tmp/x" }),
+        )
+        .with_reason("Clean up temp files\nsecond line");
+        assert_eq!(request.summary(80), "Clean up temp files");
+
+        let long = ApprovalRequest::new(
+            "2",
+            "bash",
+            serde_json::json!({ "command": "a".repeat(100) }),
+        );
+        let summary = long.summary(10);
+        assert_eq!(summary.chars().count(), 10);
+        assert!(summary.ends_with('…'));
+    }
+
+    #[test]
+    fn approval_controller_pending_lists_all_queued() {
+        let controller = batch_controller();
+        let ids: Vec<&str> = controller
+            .pending()
+            .iter()
+            .map(|r| r.call_id.as_str())
+            .collect();
+        assert_eq!(ids, ["call-1", "call-2", "call-3"]);
+        assert_eq!(controller.total_count(), 3);
+    }
+
+    #[test]
+    fn approval_controller_selection_clamps_and_navigates() {
+        let mut controller = batch_controller();
+        assert_eq!(controller.selected_index(), 0);
+
+        controller.select_next();
+        controller.select_next();
+        controller.select_next(); // past the end clamps to last
+        assert_eq!(controller.selected_index(), 2);
+
+        controller.select_prev();
+        assert_eq!(controller.selected_index(), 1);
+    }
+
+    #[test]
+    fn approval_controller_decide_selected_removes_selected() {
+        let mut controller = batch_controller();
+        controller.select_next(); // select call-2
+
+        let (request, decision) = controller
+            .decide_selected(ApprovalDecision::Deny)
+            .expect("selected request");
+        assert_eq!(request.call_id, "call-2");
+        assert_eq!(decision, ApprovalDecision::Deny);
+
+        // Remaining queue keeps FIFO order and selection stays in bounds
+        let ids: Vec<&str> = controller
+            .pending()
+            .iter()
+            .map(|r| r.call_id.as_str())
+            .collect();
+        assert_eq!(ids, ["call-1", "call-3"]);
+        assert!(controller.is_visible());
+        assert!(controller.selected_index() < controller.total_count());
+    }
+
+    #[test]
+    fn approval_controller_decide_all_approve_records_each_approval() {
+        // Mirror the app's approve-all handler: every decided request flows
+        // through tool_history.record_approval with approved = true.
+        let mut controller = batch_controller();
+        let mut history = crate::tools::ToolHistory::new(16);
+        for request in controller.pending() {
+            history.start_with_approval(
+                request.call_id.clone(),
+                request.tool.clone(),
+                request.args.clone(),
+                true,
+            );
+        }
+
+        let decided = controller.decide_all(ApprovalDecision::Approve);
+        assert_eq!(decided.len(), 3);
+        assert!(!controller.is_visible());
+        assert_eq!(controller.total_count(), 0);
+
+        for (request, decision) in decided {
+            assert_eq!(decision, ApprovalDecision::Approve);
+            history.record_approval(&request.call_id, true);
+        }
+
+        for call_id in ["call-1", "call-2", "call-3"] {
+            let exec = history.get(call_id).expect("execution recorded");
+            assert_eq!(exec.approved, Some(true), "{call_id} must be approved");
+        }
+    }
+
+    #[test]
+    fn approval_controller_decide_all_deny_records_each_denial() {
+        let mut controller = batch_controller();
+        let mut history = crate::tools::ToolHistory::new(16);
+        for request in controller.pending() {
+            history.start_with_approval(
+                request.call_id.clone(),
+                request.tool.clone(),
+                request.args.clone(),
+                true,
+            );
+        }
+
+        let decided = controller.decide_all(ApprovalDecision::Deny);
+        let ids: Vec<&str> = decided.iter().map(|(r, _)| r.call_id.as_str()).collect();
+        assert_eq!(ids, ["call-1", "call-2", "call-3"]); // FIFO order preserved
+
+        for (request, decision) in decided {
+            assert_eq!(decision, ApprovalDecision::Deny);
+            history.record_approval(&request.call_id, false);
+            history.fail(&request.call_id, "Denied".to_string());
+        }
+
+        for call_id in ["call-1", "call-2", "call-3"] {
+            let exec = history.get(call_id).expect("execution recorded");
+            assert_eq!(exec.approved, Some(false), "{call_id} must be denied");
+        }
+    }
+
+    #[test]
+    fn approval_controller_single_call_path_unchanged() {
+        // A single queued approval keeps the original decide semantics.
+        let mut controller = ApprovalController::new();
+        controller.enqueue(ApprovalRequest::new("only", "bash", serde_json::json!({})));
+        assert_eq!(controller.total_count(), 1);
+        assert!(controller.is_visible());
+
+        let (request, decision) = controller.decide(ApprovalDecision::Approve).unwrap();
+        assert_eq!(request.call_id, "only");
+        assert_eq!(decision, ApprovalDecision::Approve);
+        assert!(!controller.is_visible());
+        assert!(controller.decide(ApprovalDecision::Approve).is_none());
+        assert!(controller.decide_all(ApprovalDecision::Deny).is_empty());
+    }
+
+    #[test]
+    fn batched_modal_renders_all_pending_calls_in_one_modal() {
+        let controller = batch_controller();
+        let modal = BatchedApprovalModal::new(controller.pending()).selected(1);
+
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buf = Buffer::empty(area);
+        modal.render(area, &mut buf);
+
+        let text: String = buf
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+
+        // One modal, one title with the batch count
+        assert!(text.contains("3 Actions Require Approval"));
+        // Every pending call is listed with tool name and summary
+        assert!(text.contains("bash"));
+        assert!(text.contains("write"));
+        assert!(text.contains("cargo test"));
+        assert!(text.contains("Inspect repository state"));
+        // Batch actions are advertised
+        assert!(text.contains("approve all"));
+        assert!(text.contains("deny all"));
+        assert!(text.contains("Selected 2 of 3"));
     }
 }

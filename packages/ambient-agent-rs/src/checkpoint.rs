@@ -8,6 +8,7 @@ use chrono::Utc;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
+use tracing::warn;
 use uuid::Uuid;
 
 /// Checkpoint manager for transaction-like operations
@@ -253,7 +254,12 @@ impl CheckpointManager {
 
         let file_path = self.storage_dir.join(format!("{}.json", checkpoint.id));
         let json = serde_json::to_string_pretty(checkpoint)?;
-        fs::write(file_path, json).await?;
+
+        // Write to a temp file and rename so a crash mid-write cannot leave a
+        // truncated checkpoint at the final path.
+        let temp_path = self.storage_dir.join(format!("{}.json.tmp", checkpoint.id));
+        fs::write(&temp_path, json).await?;
+        fs::rename(&temp_path, &file_path).await?;
 
         Ok(())
     }
@@ -271,10 +277,19 @@ impl CheckpointManager {
             let path = entry.path();
             if path.extension().is_some_and(|e| e == "json") {
                 let content = fs::read_to_string(&path).await?;
-                if let Ok(checkpoint) = serde_json::from_str::<Checkpoint>(&content) {
-                    self.active_checkpoints
-                        .insert(checkpoint.id.clone(), checkpoint);
-                    count += 1;
+                match serde_json::from_str::<Checkpoint>(&content) {
+                    Ok(checkpoint) => {
+                        self.active_checkpoints
+                            .insert(checkpoint.id.clone(), checkpoint);
+                        count += 1;
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Skipping unparseable checkpoint file {}: {}",
+                            path.display(),
+                            e
+                        );
+                    }
                 }
             }
         }
@@ -381,5 +396,203 @@ mod tests {
         // Verify rollback
         let content = fs::read_to_string(&test_file).await.unwrap();
         assert_eq!(content, "original content");
+    }
+
+    #[tokio::test]
+    async fn test_load_skips_corrupt_checkpoint_files() {
+        let temp = TempDir::new().unwrap();
+        let storage_dir = temp.path().join("checkpoints");
+        let mut manager = CheckpointManager::new(storage_dir.clone());
+
+        let cp_id = manager.create("task-1", "Test checkpoint").await.unwrap();
+
+        // A corrupt file must not fail the load or be counted.
+        fs::write(storage_dir.join("corrupt.json"), "{not valid json")
+            .await
+            .unwrap();
+
+        let mut manager = CheckpointManager::new(storage_dir);
+        let count = manager.load_checkpoints().await.unwrap();
+        assert_eq!(count, 1);
+        assert!(manager.get(&cp_id).is_some());
+    }
+
+    /// Run a git command in `repo`; returns false when git is unavailable or
+    /// the command fails.
+    async fn git(repo: &Path, args: &[&str]) -> bool {
+        tokio::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .await
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+
+    async fn git_head(repo: &Path) -> Option<String> {
+        let output = tokio::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo)
+            .output()
+            .await
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    #[tokio::test]
+    async fn test_rollback_git_restores_captured_head() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).await.unwrap();
+        if !git(&repo, &["init"]).await {
+            // git is unavailable on this runner; nothing to assert.
+            return;
+        }
+
+        let tracked = repo.join("tracked.txt");
+        fs::write(&tracked, "original content").await.unwrap();
+        assert!(git(&repo, &["add", "."]).await);
+        assert!(
+            git(
+                &repo,
+                &[
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "user.name=Test",
+                    "commit",
+                    "-m",
+                    "initial",
+                ],
+            )
+            .await
+        );
+
+        let mut manager = CheckpointManager::new(temp.path().join("checkpoints"));
+        let cp_id = manager.create("task-1", "git test").await.unwrap();
+        manager.capture_git_state(&cp_id, &repo).await.unwrap();
+        let original_head = git_head(&repo).await.unwrap();
+
+        // Advance the repo past the captured state.
+        fs::write(&tracked, "modified content").await.unwrap();
+        assert!(
+            git(
+                &repo,
+                &[
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "user.name=Test",
+                    "commit",
+                    "-am",
+                    "second",
+                ],
+            )
+            .await
+        );
+        assert_ne!(git_head(&repo).await.unwrap(), original_head);
+
+        manager.rollback_git(&cp_id, &repo).await.unwrap();
+
+        assert_eq!(git_head(&repo).await.unwrap(), original_head);
+        let content = fs::read_to_string(&tracked).await.unwrap();
+        assert_eq!(content, "original content");
+    }
+
+    #[tokio::test]
+    async fn test_rollback_git_without_captured_state_is_noop() {
+        let temp = TempDir::new().unwrap();
+        let mut manager = CheckpointManager::new(temp.path().join("checkpoints"));
+        let cp_id = manager.create("task-1", "no git").await.unwrap();
+
+        // No capture_git_state call: rollback_git succeeds without doing work.
+        manager.rollback_git(&cp_id, temp.path()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_load_checkpoints_recovers_after_crash() {
+        let temp = TempDir::new().unwrap();
+        let storage = temp.path().join("checkpoints");
+
+        let first_id;
+        let second_id;
+        {
+            let mut manager = CheckpointManager::new(storage.clone());
+            first_id = manager.create("task-1", "first").await.unwrap();
+            second_id = manager.create("task-2", "second").await.unwrap();
+        }
+
+        // Simulate a crash mid-persist: a truncated JSON file, plus a non-JSON
+        // neighbor that must be ignored entirely.
+        fs::write(
+            storage.join("partial.json"),
+            "{\"id\":\"partial\",\"task_id\":\"task-3\",\"desc",
+        )
+        .await
+        .unwrap();
+        fs::write(storage.join("notes.txt"), "not a checkpoint")
+            .await
+            .unwrap();
+
+        let mut recovered = CheckpointManager::new(storage);
+        let count = recovered.load_checkpoints().await.unwrap();
+
+        assert_eq!(count, 2);
+        assert!(recovered.get(&first_id).is_some());
+        assert!(recovered.get(&second_id).is_some());
+        assert!(recovered.get("partial").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_max_checkpoints_evicts_completed_checkpoints() {
+        let temp = TempDir::new().unwrap();
+        let storage = temp.path().join("checkpoints");
+        let mut manager = CheckpointManager::new(storage.clone());
+        manager.max_checkpoints = 2;
+
+        let cp1 = manager.create("task-1", "first").await.unwrap();
+        manager.commit(&cp1).await.unwrap();
+        let cp2 = manager.create("task-2", "second").await.unwrap();
+        manager.commit(&cp2).await.unwrap();
+
+        // Creating a third checkpoint pushes past the limit; only completed
+        // checkpoints are eligible for eviction, so the active one survives.
+        let cp3 = manager.create("task-3", "third").await.unwrap();
+
+        assert_eq!(manager.active_checkpoints.len(), 2);
+        assert!(
+            manager.get(&cp3).is_some(),
+            "active checkpoint must never be evicted"
+        );
+        let committed_survivors = [&cp1, &cp2]
+            .iter()
+            .filter(|id| manager.get(id).is_some())
+            .count();
+        assert_eq!(committed_survivors, 1);
+
+        // The evicted checkpoint is removed from disk; survivors stay.
+        for id in [&cp1, &cp2] {
+            let on_disk = storage.join(format!("{id}.json")).exists();
+            assert_eq!(on_disk, manager.get(id).is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_max_checkpoints_never_evicts_unfinished_checkpoints() {
+        let temp = TempDir::new().unwrap();
+        let mut manager = CheckpointManager::new(temp.path().join("checkpoints"));
+        manager.max_checkpoints = 1;
+
+        let cp1 = manager.create("task-1", "first").await.unwrap();
+        let cp2 = manager.create("task-2", "second").await.unwrap();
+
+        // Over the limit, but neither checkpoint is Committed or RolledBack,
+        // so cleanup must retain both.
+        assert!(manager.get(&cp1).is_some());
+        assert!(manager.get(&cp2).is_some());
+        assert_eq!(manager.active_checkpoints.len(), 2);
     }
 }

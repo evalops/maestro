@@ -47,8 +47,9 @@ use crate::sandbox::SandboxPolicy;
 // HELPER FUNCTIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NATIVE_UTILITY_COMMANDS: [&str; 32] = [
+const NATIVE_UTILITY_COMMANDS: [&str; 33] = [
     "sessions",
+    "search",
     "cost",
     "stats",
     "models",
@@ -157,7 +158,7 @@ fn native_utility_tokens(raw_args: &[std::ffi::OsString]) -> Option<Vec<String>>
             index += 1;
             continue;
         }
-        if token == "--worktree" {
+        if token == "--worktree" || token == "-w" {
             index += 1;
             if raw_args
                 .get(index)
@@ -256,7 +257,7 @@ fn native_config_overrides(raw_args: &[std::ffi::OsString]) -> Vec<String> {
 ///
 /// # Arguments
 ///
-/// * `model` - The model name to analyze (for example, "gpt-5.1-codex-max")
+/// * `model` - The model name to analyze (for example, "gpt-5.5")
 ///
 /// # Returns
 ///
@@ -408,7 +409,7 @@ struct Args {
     #[arg(long)]
     provider: Option<String>,
 
-    /// Model to use (for example, gpt-5.1-codex-max).
+    /// Model to use (for example, gpt-5.5).
     /// `-m` is the short flag, `--model` is the long flag.
     #[arg(short, long)]
     model: Option<String>,
@@ -427,12 +428,10 @@ struct Args {
     #[arg(short, long)]
     resume: bool,
 
-    /// Create or reuse a git worktree for this session (Grok-style isolation).
-    ///
-    /// - `--worktree` uses an auto name (`maestro-<timestamp>`)
-    /// - `--worktree=feat-x` uses/creates that worktree name under
-    ///   `<repo>/.maestro/worktrees/<name>`
-    #[arg(long, num_args = 0..=1, default_missing_value = "")]
+    /// Run the session in a new git worktree at `../<repo>-wt-<name>` on a new
+    /// branch named from <name> (Droid-style). On exit, a clean worktree is
+    /// removed with its branch; a dirty one is kept and reported.
+    #[arg(short = 'w', long, value_name = "NAME")]
     worktree: Option<String>,
 
     /// Non-interactive print mode (Grok-style single-shot). Prints the answer and exits.
@@ -545,6 +544,12 @@ fn parse_native_exec_options(raw_args: &[std::ffi::OsString]) -> NativeExecOptio
             }
         } else if let Some(value) = arg.strip_prefix("--api-key=") {
             options.api_key = Some(value.to_string());
+        } else if arg == "--worktree" || arg == "-w" {
+            // Session worktree is created before dispatch; consume its value
+            // so it never leaks into the prompt.
+            i += 1;
+        } else if arg.starts_with("--worktree=") || (arg.starts_with("-w") && arg.len() > 2) {
+            // Inline forms; handled before dispatch.
         } else if arg == "--session" || arg == "--config" || arg == "--profile" {
             // Compatibility option whose value must never leak into the prompt.
             i += 1;
@@ -605,9 +610,12 @@ fn native_exec_model(provider: Option<&str>, model: Option<&str>) -> Option<Stri
 }
 
 fn default_model_for_provider(provider: &str) -> &'static str {
+    if let Some(default) = crate::model_catalog::default_model_for_provider(provider) {
+        return default;
+    }
     match provider.to_ascii_lowercase().as_str() {
-        "anthropic" | "bedrock" | "aws-bedrock" => "claude-sonnet-4-5",
-        "google" | "gemini" | "google-gemini-cli" | "google-antigravity" => "gemini-2.5-pro",
+        "bedrock" | "aws-bedrock" => "claude-sonnet-4-6",
+        "google-gemini-cli" | "google-antigravity" => "gemini-2.5-pro",
         "groq" => "llama-3.3-70b-versatile",
         "deepseek" => "deepseek-chat",
         "moonshot" | "kimi" => "kimi-k2.6",
@@ -617,7 +625,7 @@ fn default_model_for_provider(provider: &str) -> &'static str {
         "mistral" => "mistral-large-latest",
         "openrouter" => "openai/gpt-4o-mini",
         "evalops" | "maestro-managed" => "gpt-4o-mini",
-        _ => "gpt-5.1-codex-max",
+        _ => "gpt-5.5",
     }
 }
 
@@ -753,10 +761,54 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
         }
     }
 
+    // Droid-style session worktree (`-w` / `--worktree`): set up before any
+    // agent surface so the interactive TUI, `exec`, and print mode all run
+    // with the worktree as their working directory. Utility commands above
+    // dispatch first and never create worktrees.
+    let worktree = match crate::worktree::requested_name(&raw_args[1..]) {
+        Some(Ok(name)) => {
+            let cwd = std::env::current_dir()?;
+            match crate::worktree::WorktreeSession::create_in(&cwd, &name) {
+                Ok(session) => {
+                    if let Err(err) = std::env::set_current_dir(session.path()) {
+                        eprintln!(
+                            "Failed to enter worktree {}: {err}",
+                            session.path().display()
+                        );
+                        std::process::exit(1);
+                    }
+                    eprintln!("Using worktree: {}", session.path().display());
+                    Some(session)
+                }
+                Err(err) => {
+                    eprintln!("Worktree setup failed: {err:#}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Err(message)) => {
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+        None => None,
+    };
+
+    let result = run_agent(raw_args).await;
+    if let Some(session) = worktree {
+        session.finish();
+    }
+    let exit_code = result?;
+    std::process::exit(exit_code);
+}
+
+/// Agent dispatch shared by the interactive TUI, exec, print, and headless
+/// modes. Returns the process exit code instead of exiting directly so the
+/// caller can run worktree teardown first.
+async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
     if let Some(cmd) = raw_args.get(1).and_then(|a| a.to_str()) {
         if cmd == "headless" || cmd == "rpc" {
             let code = crate::headless_server::run_headless_server().await?;
-            std::process::exit(code);
+            return Ok(code);
         }
         if cmd == "print" || cmd == "exec" {
             // maestro-tui print|exec [--json] [--model X] [--output-last-message P]
@@ -768,7 +820,7 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
                 Ok(policy) => policy,
                 Err(message) => {
                     eprintln!("{message}");
-                    std::process::exit(2);
+                    return Ok(2);
                 }
             };
             if let Some(api_key) = &options.api_key {
@@ -785,7 +837,7 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
                 eprintln!(
                     "Usage: maestro-tui {cmd} [--json] [--model <id>] [--output-last-message <path>] [--output-schema <path|json>] <prompt>"
                 );
-                std::process::exit(2);
+                return Ok(2);
             }
             let model = native_exec_model(options.provider.as_deref(), options.model.as_deref());
             let code = crate::print_mode::run_print_mode(crate::print_mode::PrintModeOptions {
@@ -798,7 +850,7 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
                 fail_on_approval: options.approval_mode.as_deref() == Some("fail"),
             })
             .await?;
-            std::process::exit(code);
+            return Ok(code);
         }
     }
 
@@ -814,7 +866,7 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
             ) =>
         {
             error.print()?;
-            return Ok(());
+            return Ok(0);
         }
         Err(error) => return Err(error.into()),
     };
@@ -856,22 +908,9 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
         std::env::set_var("MAESTRO_MODEL", model);
     }
 
-    // Optional git worktree isolation before the TUI starts.
-    if let Some(name) = args.worktree.as_ref() {
-        match setup_worktree(name) {
-            Ok(path) => {
-                if let Err(err) = std::env::set_current_dir(&path) {
-                    eprintln!("Failed to enter worktree {}: {err}", path.display());
-                    std::process::exit(1);
-                }
-                eprintln!("Using worktree: {}", path.display());
-            }
-            Err(err) => {
-                eprintln!("Worktree setup failed: {err}");
-                std::process::exit(1);
-            }
-        }
-    }
+    // Worktree setup already ran in run_cli before clap parsing; the field
+    // stays in Args so the flag validates and shows up in --help.
+    let _ = args.worktree.as_deref();
 
     // Trailing positional args become the initial prompt (Grok-style).
     let initial_prompt = if args.prompt.is_empty() {
@@ -883,7 +922,7 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
     // Native headless/RPC server (kills TS agent path for these modes)
     if args.headless || args.rpc {
         let code = crate::headless_server::run_headless_server().await?;
-        std::process::exit(code);
+        return Ok(code);
     }
 
     // Non-interactive print mode (single-shot / exec bridge)
@@ -891,7 +930,7 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
         let prompt = initial_prompt.unwrap_or_default();
         if prompt.is_empty() {
             eprintln!("--print requires a prompt");
-            std::process::exit(2);
+            return Ok(2);
         }
         let code = crate::print_mode::run_print_mode(crate::print_mode::PrintModeOptions {
             prompt,
@@ -906,7 +945,7 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
             fail_on_approval: false,
         })
         .await?;
-        std::process::exit(code);
+        return Ok(code);
     }
 
     let app = App::new_with_initial_prompt(initial_prompt)?;
@@ -924,12 +963,9 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
         eprintln!("[main] Final cleanup: {remaining} background process(es)");
     }
 
-    // Exit with the appropriate code.
-    //
-    // `std::process::exit` terminates the process immediately.
-    // We use this instead of returning because we need to pass the exit code
-    // to the shell. This function never returns (it's marked `-> !`).
-    std::process::exit(exit_code);
+    // Return the exit code to `run_cli`, which runs worktree teardown and
+    // then terminates the process with it via `std::process::exit`.
+    Ok(exit_code)
 }
 
 fn raw_option_value(raw_args: &[std::ffi::OsString], names: &[&str]) -> Option<String> {
@@ -973,74 +1009,6 @@ fn configure_agents_api_key(raw_args: &[std::ffi::OsString]) {
     std::env::set_var(variable, api_key);
 }
 
-/// Create or reuse a git worktree for isolated work.
-///
-/// Empty name → auto `maestro-<unix_secs>`.
-fn setup_worktree(name: &str) -> anyhow::Result<std::path::PathBuf> {
-    use std::process::Command;
-
-    let cwd = std::env::current_dir()?;
-    // Ensure we're inside a git repo
-    let root_out = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(&cwd)
-        .output()?;
-    if !root_out.status.success() {
-        anyhow::bail!("--worktree requires a git repository");
-    }
-    let repo_root = std::path::PathBuf::from(String::from_utf8_lossy(&root_out.stdout).trim());
-
-    let branch_name = if name.trim().is_empty() {
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        format!("maestro-{secs}")
-    } else {
-        name.trim().replace('/', "-")
-    };
-
-    let worktrees_root = repo_root.join(".maestro").join("worktrees");
-    std::fs::create_dir_all(&worktrees_root)?;
-    let worktree_path = worktrees_root.join(&branch_name);
-
-    if worktree_path.exists() {
-        return Ok(worktree_path);
-    }
-
-    // Prefer creating a new branch worktree from HEAD.
-    let status = Command::new("git")
-        .args([
-            "worktree",
-            "add",
-            "-b",
-            &branch_name,
-            worktree_path.to_str().unwrap_or("."),
-            "HEAD",
-        ])
-        .current_dir(&repo_root)
-        .status()?;
-    if !status.success() {
-        // Branch may already exist — try without -b
-        let status = Command::new("git")
-            .args([
-                "worktree",
-                "add",
-                worktree_path.to_str().unwrap_or("."),
-                &branch_name,
-            ])
-            .current_dir(&repo_root)
-            .status()?;
-        if !status.success() {
-            anyhow::bail!(
-                "git worktree add failed for '{branch_name}' (is git available? does the branch exist?)"
-            );
-        }
-    }
-
-    Ok(worktree_path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1074,9 +1042,15 @@ mod tests {
         assert_eq!(args.worktree.as_deref(), Some("feat-x"));
         assert_eq!(args.prompt, vec!["do", "it"]);
 
+        let args = Args::try_parse_from(["maestro-tui", "-w", "feat-x"]).expect("parse -w");
+        assert_eq!(args.worktree.as_deref(), Some("feat-x"));
+
         let args =
-            Args::try_parse_from(["maestro-tui", "--worktree"]).expect("parse bare worktree");
-        assert_eq!(args.worktree.as_deref(), Some(""));
+            Args::try_parse_from(["maestro-tui", "--worktree=feat-x"]).expect("parse inline");
+        assert_eq!(args.worktree.as_deref(), Some("feat-x"));
+
+        // Droid-style: the worktree name is required.
+        assert!(Args::try_parse_from(["maestro-tui", "--worktree"]).is_err());
     }
 
     #[test]
@@ -1221,6 +1195,30 @@ mod tests {
             native_utility_tokens(&args),
             Some(vec!["modes".into(), "describe".into(), "high".into(),])
         );
+
+        let short = ["-w", "feature-branch", "modes", "describe", "high"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            native_utility_tokens(&short),
+            Some(vec!["modes".into(), "describe".into(), "high".into(),])
+        );
+    }
+
+    #[test]
+    fn native_exec_options_consume_worktree_flag() {
+        let args = ["-w", "feat-x", "fix", "the", "bug"].map(std::ffi::OsString::from);
+        let options = parse_native_exec_options(&args);
+        assert_eq!(options.prompt, "fix the bug");
+
+        let inline = ["--worktree=feat-x", "fix", "the", "bug"].map(std::ffi::OsString::from);
+        let options = parse_native_exec_options(&inline);
+        assert_eq!(options.prompt, "fix the bug");
+
+        let attached = ["-wfeat-x", "fix", "the", "bug"].map(std::ffi::OsString::from);
+        let options = parse_native_exec_options(&attached);
+        assert_eq!(options.prompt, "fix the bug");
     }
 
     #[test]
@@ -1371,7 +1369,7 @@ mod tests {
         ));
         assert_eq!(
             native_exec_model(Some("anthropic"), None).as_deref(),
-            Some("anthropic/claude-sonnet-4-5")
+            Some("anthropic/claude-sonnet-4-6")
         );
         assert_eq!(
             native_exec_model(Some("evalops"), Some("gpt-4o-mini")).as_deref(),

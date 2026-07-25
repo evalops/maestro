@@ -60,6 +60,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 ## Deployment & Operations
 - [Enterprise](ENTERPRISE.md) — deployment, configuration, and hardening guidance for controlled environments.
 - [CI Version Pins](CI_VERSION_PINS.md) — where Node, Rust dependency, and action versions are pinned.
+- [Public Mirror CI Incident Chain](solutions/ci/public-mirror-drift-chain-2026-07-24.md) — postmortem and playbook for the 2026-07-23/24 public-mirror CI failure chain.
 
 - [Changelog](../CHANGELOG.md) — release history and notable changes.
 

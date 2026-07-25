@@ -253,7 +253,7 @@ pub fn is_path_contained(
     }
 
     // Check canonicalized temp_dir (e.g., /private/var/folders/...)
-    if let Ok(temp_canonical) = temp_dir.canonicalize() {
+    if let Ok(temp_canonical) = dunce::canonicalize(&temp_dir) {
         if path_starts_with(&resolved, &temp_canonical) {
             return PathContainment::Contained {
                 zone: "temp".to_string(),
@@ -280,9 +280,8 @@ pub fn is_path_contained(
     }
 
     // Resolve workspace path
-    let workspace_resolved = workspace
-        .canonicalize()
-        .unwrap_or_else(|_| workspace.to_path_buf());
+    let workspace_resolved =
+        dunce::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
 
     let target_in_workspace = path_starts_with(&resolved, &workspace_resolved);
 
@@ -314,7 +313,7 @@ pub fn is_path_contained(
 
     // Check additional safe zones
     for zone in additional_safe_zones {
-        if let Ok(zone_resolved) = zone.canonicalize() {
+        if let Ok(zone_resolved) = dunce::canonicalize(zone) {
             if path_starts_with(&resolved, &zone_resolved) {
                 return PathContainment::Contained {
                     zone: zone.display().to_string(),
@@ -325,7 +324,7 @@ pub fn is_path_contained(
 
     // Check user home directory (allowed for certain operations)
     if let Some(home) = dirs::home_dir() {
-        if let Ok(home_resolved) = home.canonicalize() {
+        if let Ok(home_resolved) = dunce::canonicalize(&home) {
             if path_starts_with(&resolved, &home_resolved) {
                 // Home is allowed but noted
                 return PathContainment::Contained {
@@ -359,7 +358,7 @@ fn resolve_path(path: &Path, base: &Path) -> std::io::Result<PathBuf> {
     };
 
     // Try to canonicalize (follows symlinks, fails if doesn't exist)
-    absolute.canonicalize().or_else(|_| {
+    dunce::canonicalize(&absolute).or_else(|_| {
         if let Some(resolved) = resolve_existing_parent(&absolute) {
             return Ok(resolved);
         }
@@ -374,7 +373,7 @@ fn resolve_existing_parent(path: &Path) -> Option<PathBuf> {
 
     loop {
         if current.exists() {
-            let resolved_parent = current.canonicalize().ok()?;
+            let resolved_parent = dunce::canonicalize(current).ok()?;
             let mut resolved = resolved_parent;
             for component in remainder.iter().rev() {
                 resolved.push(component);
@@ -488,7 +487,7 @@ pub fn is_system_path(path: &Path) -> bool {
     // First check if path is in temp directory (which may be under /var on macOS)
     // Temp should NOT be considered a system path
     let temp_dir = std::env::temp_dir();
-    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let resolved = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
     // Check raw temp path (e.g., /var/folders/...)
     if path_starts_with(&resolved, &temp_dir) {
@@ -496,7 +495,7 @@ pub fn is_system_path(path: &Path) -> bool {
     }
 
     // Check canonicalized temp path (e.g., /private/var/folders/...)
-    if let Ok(temp_canonical) = temp_dir.canonicalize() {
+    if let Ok(temp_canonical) = dunce::canonicalize(&temp_dir) {
         if path_starts_with(&resolved, &temp_canonical) {
             return false;
         }
@@ -1012,10 +1011,8 @@ mod tests {
 
         let target = link_path.join("missing.txt");
         let resolved = resolve_path(&target, workspace.path()).unwrap();
-        let expected = outside
-            .path()
-            .canonicalize()
-            .unwrap_or_else(|_| outside.path().to_path_buf());
+        let expected =
+            dunce::canonicalize(outside.path()).unwrap_or_else(|_| outside.path().to_path_buf());
         assert!(path_starts_with(&resolved, &expected));
     }
 

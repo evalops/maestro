@@ -865,7 +865,7 @@ fn validate_toolbox(directory: &Path, describe: bool, issues: &mut Vec<LintIssue
 }
 
 fn lint_directory(directory: &Path, describe: bool) -> LintResult {
-    let directory = fs::canonicalize(directory).unwrap_or_else(|_| directory.to_path_buf());
+    let directory = dunce::canonicalize(directory).unwrap_or_else(|_| directory.to_path_buf());
     let mut issues = Vec::new();
     let Some(skill_file) = find_skill_file(&directory) else {
         return LintResult {

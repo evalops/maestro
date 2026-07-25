@@ -101,10 +101,11 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::Value;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use super::ask_user;
 use super::background_tasks;
-use super::bash::{BashArgs, BashTool};
+use super::bash::{BashArgs, BashTool, BashVersion};
 use super::cache::{CacheConfig, CacheKey, CacheStats, CachedResult, ToolResultCache};
 use super::details::{
     DiffDetails, EditDetails, GlobDetails, GrepDetails, ListDetails, ReadDetails, WriteDetails,
@@ -117,6 +118,7 @@ use super::inline::{load_inline_tools, InlineTool, InlineToolExecutor};
 use super::notebook_edit;
 use super::status;
 use super::todo;
+use super::versions::ToolVersionOverrides;
 use super::web_fetch::{WebFetchArgs, WebFetchTool};
 use crate::agent::{
     CredentialVault, DenialReason, ExecutionSource, FromAgent, ToolDefinition, ToolExecution,
@@ -302,12 +304,10 @@ fn normalize_git_path(cwd: &str, input: &str) -> Result<(String, String), String
     };
 
     let cwd_path = Path::new(cwd);
-    let relative = cwd_path
-        .canonicalize()
+    let relative = dunce::canonicalize(cwd_path)
         .ok()
         .and_then(|cwd_canon| {
-            resolved
-                .canonicalize()
+            dunce::canonicalize(&resolved)
                 .ok()
                 .and_then(|path_canon| path_canon.strip_prefix(&cwd_canon).ok().map(PathBuf::from))
         })
@@ -397,6 +397,11 @@ pub struct ToolExecutor {
 
     /// Native sandbox requested for this executor, if any.
     sandbox_policy: Option<SandboxPolicy>,
+
+    /// Pinned behavior versions for version-managed tools (empty = all tools
+    /// run their current behavior). Session replay populates this from the
+    /// versions recorded in session-entry receipts.
+    tool_versions: ToolVersionOverrides,
 
     /// Web fetch tool for retrieving web content
     ///
@@ -511,6 +516,7 @@ impl ToolExecutor {
             credential_vault,
             bash: BashTool::new(&cwd),
             sandbox_policy: None,
+            tool_versions: ToolVersionOverrides::default(),
             web_fetch: WebFetchTool::new(),
             image: ImageTool::new(),
             inline_executor: InlineToolExecutor::new(&cwd),
@@ -567,6 +573,7 @@ impl ToolExecutor {
             credential_vault,
             bash: BashTool::new(&cwd),
             sandbox_policy: None,
+            tool_versions: ToolVersionOverrides::default(),
             web_fetch: WebFetchTool::new(),
             image: ImageTool::new(),
             inline_executor: InlineToolExecutor::new(&cwd),
@@ -584,9 +591,37 @@ impl ToolExecutor {
 
     /// Apply a native sandbox to subprocess-backed tools.
     pub fn with_sandbox_policy(mut self, policy: SandboxPolicy) -> Self {
-        self.bash = BashTool::new(&self.cwd).with_sandbox_policy(policy.clone());
         self.sandbox_policy = Some(policy);
+        self.bash = self.build_bash_tool();
         self
+    }
+
+    /// Build the bash tool honoring the pinned behavior version and sandbox.
+    fn build_bash_tool(&self) -> BashTool {
+        let tool = BashTool::new(&self.cwd).with_version(self.resolved_bash_version());
+        match &self.sandbox_policy {
+            Some(policy) => tool.with_sandbox_policy(policy.clone()),
+            None => tool,
+        }
+    }
+
+    /// The behavior version currently resolved for the bash tool.
+    fn resolved_bash_version(&self) -> BashVersion {
+        BashVersion::from_contract(Some(self.tool_versions.resolve("bash")))
+    }
+
+    /// Pin a version-managed tool to a specific behavior contract version.
+    ///
+    /// This is the registry hook for behavior version selection: session
+    /// replay reads the version recorded in a session entry's receipt details
+    /// (e.g. `BashDetails.version`) and pins it here so re-executed tool
+    /// calls reproduce the recorded behavior. Errors if the tool is not
+    /// version-managed or the version is unsupported — see
+    /// `tools::versions` for the catalog.
+    pub fn pin_tool_version(&mut self, tool_name: &str, version: &str) -> Result<(), String> {
+        self.tool_versions.pin(tool_name, version)?;
+        self.bash = self.build_bash_tool();
+        Ok(())
     }
 
     /// Return a clone of the vault used by this executor.
@@ -666,8 +701,31 @@ impl ToolExecutor {
             client.connected_servers().await.into_iter().collect();
         let now = Instant::now();
 
+        // Project/local-scoped servers come from the repository and may be
+        // hostile. Enforce the per-workspace trust approval recorded in
+        // requiresProjectApproval (default: required for stdio, which spawns
+        // a repo-controlled process). Trust is read from global config only,
+        // so a repository cannot grant itself trust.
+        let workspace_trusted =
+            crate::config::workspace_trusted_in_global_config(Path::new(&self.cwd));
+
         for server in &servers {
             let name = &server.name;
+            if crate::mcp::server_requires_workspace_approval(server) && !workspace_trusted {
+                if connected.contains(name) {
+                    let _ = client.disconnect(name).await;
+                }
+                last_errors.insert(
+                    name.clone(),
+                    format!(
+                        "MCP server \"{name}\" requires workspace trust approval; \
+                         set projects.\"<workspace>\".trust_level = \"trusted\" in global \
+                         config (~/.composer/config.toml) to enable it"
+                    ),
+                );
+                continue;
+            }
+
             let config_changed = previous_configs.get(name) != Some(server);
             let is_connected = connected.contains(name);
             let retry_allowed = match last_attempts.get(name) {
@@ -960,6 +1018,13 @@ impl ToolExecutor {
     /// assert!(executor.requires_approval("bash", &unsafe_cmd));
     /// ```
     pub fn requires_approval(&self, name: &str, args: &serde_json::Value) -> bool {
+        // Version-managed tools classify approval with their pinned behavior
+        // version so replayed sessions reproduce the recorded decisions.
+        if name.eq_ignore_ascii_case("bash") {
+            if let Some(command) = args.get("command").and_then(|v| v.as_str()) {
+                return self.resolved_bash_version().requires_approval(command);
+            }
+        }
         self.registry.requires_approval(name, args)
     }
 
@@ -1064,6 +1129,7 @@ impl ToolExecutor {
             event_tx,
             call_id,
             self.credential_generation(),
+            None,
         )
         .await
     }
@@ -1075,6 +1141,7 @@ impl ToolExecutor {
         event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
         call_id: &str,
         generation: u64,
+        cancel: Option<CancellationToken>,
     ) -> ToolResult {
         if self.sandbox_policy.is_some()
             && self.inline_tools.contains_key(&tool_name.to_lowercase())
@@ -1139,7 +1206,7 @@ impl ToolExecutor {
         let result = vault_tool_result_credentials(
             &self.credential_vault,
             generation,
-            self.execute_impl(tool_name, args, event_tx, call_id, generation)
+            self.execute_impl(tool_name, args, event_tx, call_id, generation, cancel)
                 .await,
         );
 
@@ -1179,6 +1246,29 @@ impl ToolExecutor {
             event_tx,
             call_id,
             self.credential_generation(),
+            None,
+        )
+        .await
+    }
+
+    /// Execute a tool like [`Self::execute_with_receipt`], aborting early when
+    /// `cancel` fires (the TUI wires this to Ctrl+C so long-running commands
+    /// are interrupted instead of blocking until their timeout).
+    pub async fn execute_with_receipt_cancellable(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+        call_id: &str,
+        cancel: CancellationToken,
+    ) -> ToolExecution {
+        self.execute_with_receipt_at_generation(
+            tool_name,
+            args,
+            event_tx,
+            call_id,
+            self.credential_generation(),
+            Some(cancel),
         )
         .await
     }
@@ -1190,6 +1280,7 @@ impl ToolExecutor {
         event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
         call_id: &str,
         generation: u64,
+        cancel: Option<CancellationToken>,
     ) -> ToolExecution {
         if self.sandbox_policy.is_some()
             && self.inline_tools.contains_key(&tool_name.to_lowercase())
@@ -1243,7 +1334,7 @@ impl ToolExecutor {
         // Execute without event forwarding so the receipt-bearing ToolEnd below is the
         // sole terminal event for this call.
         let result = self
-            .execute_at_generation(tool_name, args, None, call_id, generation)
+            .execute_at_generation(tool_name, args, None, call_id, generation, cancel)
             .await;
         let mut execution = ToolExecution::from_legacy(
             call_id,

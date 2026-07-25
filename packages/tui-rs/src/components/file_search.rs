@@ -78,6 +78,13 @@ impl FileSearchModal {
         self.search();
     }
 
+    /// Insert a string at the cursor position (e.g. pasted text).
+    pub fn insert_str(&mut self, s: &str) {
+        self.query.insert_str(self.cursor, s);
+        self.cursor += s.len();
+        self.search();
+    }
+
     /// Delete character before cursor
     pub fn backspace(&mut self) {
         if self.cursor > 0 {
@@ -351,6 +358,19 @@ mod tests {
     }
 
     #[test]
+    fn insert_str_inserts_at_cursor() {
+        let mut modal = FileSearchModal::new();
+        modal.show();
+        modal.insert_str("main");
+        assert_eq!(modal.query, "main");
+        assert_eq!(modal.cursor, 4);
+        modal.move_left();
+        modal.insert_str("-");
+        assert_eq!(modal.query, "mai-n");
+        assert_eq!(modal.cursor, 4);
+    }
+
+    #[test]
     fn navigation() {
         let mut modal = FileSearchModal::new();
         modal.set_files(vec![
@@ -369,5 +389,51 @@ mod tests {
         assert_eq!(modal.selected, 2);
         modal.move_up();
         assert_eq!(modal.selected, 1);
+    }
+
+    #[test]
+    fn render_blanks_cells_covered_by_modal() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+
+        let mut modal = FileSearchModal::new();
+        modal.set_files(vec![make_file("main.rs", "src/main.rs")]);
+        modal.show();
+
+        terminal
+            .draw(|frame| {
+                // Poison every cell with stale frame content; the modal must
+                // blank (Clear) the cells it covers before drawing.
+                let area = frame.area();
+                for y in area.top()..area.bottom() {
+                    for x in area.left()..area.right() {
+                        frame.buffer_mut()[(x, y)].set_symbol("X");
+                    }
+                }
+                modal.render(frame, area);
+            })
+            .expect("draw modal");
+
+        // Centered geometry: width 80.clamp(40, 60) = 60, height
+        // 24.clamp(10, 20) = 20, x = (80-60)/2 = 10, y = (24-20)/2 = 2.
+        let modal_area = Rect {
+            x: 10,
+            y: 2,
+            width: 60,
+            height: 20,
+        };
+        let buffer = terminal.backend().buffer();
+        for y in modal_area.top()..modal_area.bottom() {
+            for x in modal_area.left()..modal_area.right() {
+                assert_ne!(
+                    buffer[(x, y)].symbol(),
+                    "X",
+                    "stale frame content bled through modal at ({x}, {y})"
+                );
+            }
+        }
     }
 }

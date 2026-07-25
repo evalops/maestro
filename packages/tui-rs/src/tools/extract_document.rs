@@ -36,6 +36,8 @@ use crate::agent::ToolResult;
 
 const MAX_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
 const MARKITDOWN_EXTRACT_TIMEOUT: Duration = Duration::from_secs(20);
+/// Timeout for the document download request, matching `web_fetch`'s default.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 static MARKITDOWN_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Deserialize)]
@@ -604,7 +606,10 @@ pub async fn extract_document(args: Value) -> ToolResult {
         return ToolResult::failure("Only http(s) URLs are supported".to_string());
     }
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(DOWNLOAD_TIMEOUT)
+        .build()
+        .expect("Failed to create HTTP client");
     let response = match client.get(url.clone()).send().await {
         Ok(resp) => resp,
         Err(err) => {

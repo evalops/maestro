@@ -95,6 +95,53 @@ static SAFE_GIT_SUBCOMMANDS: std::sync::LazyLock<HashSet<&'static str>> =
         .collect()
     });
 
+/// Check whether arguments to a nominally read-only git subcommand actually
+/// mutate repository state (e.g. `git branch -D`, `git remote set-url`,
+/// `git tag -d`, `git stash drop`, `git config name value`).
+pub(crate) fn git_args_are_mutating(subcommand: &str, args: &[String]) -> bool {
+    // Tokens that turn a nominally read-only subcommand into a mutation.
+    const MUTATING_TOKENS: &[&str] = &[
+        "-d", "-D", "--delete", "add", "remove", "rm", "set-url", "prune", "drop", "clear",
+    ];
+    if args
+        .iter()
+        .any(|arg| MUTATING_TOKENS.contains(&arg.as_str()))
+    {
+        return true;
+    }
+
+    match subcommand {
+        // `git branch foo` creates a branch; `git tag v1` creates a tag.
+        // List mode (`-l`/`--list`) takes a pattern argument and stays read-only.
+        "branch" | "tag" => {
+            if args.iter().any(|arg| arg == "-l" || arg == "--list") {
+                return false;
+            }
+            args.iter().any(|arg| !arg.starts_with('-'))
+        }
+        "config" => {
+            const MUTATING_CONFIG_FLAGS: &[&str] = &[
+                "--add",
+                "--unset",
+                "--unset-all",
+                "--remove-section",
+                "--rename-section",
+                "--edit",
+                "-e",
+            ];
+            if args
+                .iter()
+                .any(|arg| MUTATING_CONFIG_FLAGS.contains(&arg.as_str()))
+            {
+                return true;
+            }
+            // `git config <name>` reads; `git config <name> <value>` writes.
+            args.iter().filter(|arg| !arg.starts_with('-')).count() > 1
+        }
+        _ => false,
+    }
+}
+
 /// Dangerous git subcommands that require approval
 static DANGEROUS_GIT_SUBCOMMANDS: std::sync::LazyLock<HashSet<&'static str>> =
     std::sync::LazyLock::new(|| {
@@ -274,7 +321,7 @@ fn parse_single_command(input: &str) -> Option<ParsedCommand> {
 }
 
 /// Tokenize a command string, respecting quotes
-fn tokenize(input: &str) -> Vec<String> {
+pub(crate) fn tokenize(input: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut in_single_quote = false;
@@ -433,9 +480,14 @@ fn determine_risk(
             if DANGEROUS_GIT_SUBCOMMANDS.contains(subcommand.as_str()) {
                 highest_risk = CommandRisk::RequiresApproval;
                 reason = format!("Git {subcommand} can modify repository");
-            } else if !SAFE_GIT_SUBCOMMANDS.contains(subcommand.as_str())
-                && highest_risk == CommandRisk::Safe
-            {
+            } else if SAFE_GIT_SUBCOMMANDS.contains(subcommand.as_str()) {
+                if git_args_are_mutating(&subcommand, &cmd.args[1..])
+                    && highest_risk == CommandRisk::Safe
+                {
+                    highest_risk = CommandRisk::RequiresApproval;
+                    reason = format!("Git {subcommand} arguments can modify repository");
+                }
+            } else if highest_risk == CommandRisk::Safe {
                 highest_risk = CommandRisk::RequiresApproval;
                 reason = format!("Unknown git subcommand: {subcommand}");
             }
@@ -466,7 +518,8 @@ fn determine_risk(
             SAFE_COMMANDS.contains(program.as_str())
                 || (program == "git"
                     && !cmd.args.is_empty()
-                    && SAFE_GIT_SUBCOMMANDS.contains(cmd.args[0].to_lowercase().as_str()))
+                    && SAFE_GIT_SUBCOMMANDS.contains(cmd.args[0].to_lowercase().as_str())
+                    && !git_args_are_mutating(&cmd.args[0].to_lowercase(), &cmd.args[1..]))
         });
 
         if !all_safe {
@@ -530,6 +583,12 @@ mod tests {
         assert!(is_likely_safe("git log"));
         assert!(is_likely_safe("git diff"));
         assert!(is_likely_safe("git branch"));
+        assert!(is_likely_safe("git branch -a"));
+        assert!(is_likely_safe("git tag"));
+        assert!(is_likely_safe("git tag -l 'v*'"));
+        assert!(is_likely_safe("git stash list"));
+        assert!(is_likely_safe("git config user.name"));
+        assert!(is_likely_safe("git config --get user.name"));
 
         // Dangerous git commands
         let analysis = analyze_bash_command("git reset --hard");
@@ -537,6 +596,33 @@ mod tests {
 
         let analysis = analyze_bash_command("git push --force");
         assert_eq!(analysis.risk, CommandRisk::RequiresApproval);
+    }
+
+    #[test]
+    fn test_git_mutating_args_require_approval() {
+        for cmd in [
+            "git branch -D feature",
+            "git branch -d feature",
+            "git branch --delete feature",
+            "git branch new-branch",
+            "git tag -d v1.0",
+            "git tag v1.0",
+            "git remote add origin https://example.com/repo.git",
+            "git remote set-url origin https://evil.example/repo.git",
+            "git remote remove origin",
+            "git remote prune origin",
+            "git stash drop",
+            "git stash clear",
+            "git config user.name evil",
+            "git config --unset user.name",
+        ] {
+            let analysis = analyze_bash_command(cmd);
+            assert_eq!(
+                analysis.risk,
+                CommandRisk::RequiresApproval,
+                "expected approval for: {cmd}"
+            );
+        }
     }
 
     #[test]

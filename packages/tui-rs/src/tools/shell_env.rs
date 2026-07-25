@@ -12,7 +12,16 @@ const CORE_ENV_VARS: [&str; 9] = [
     "HOME", "LOGNAME", "PATH", "SHELL", "USER", "USERNAME", "TMPDIR", "TEMP", "TMP",
 ];
 
-const DEFAULT_EXCLUDES: [&str; 3] = ["*KEY*", "*SECRET*", "*TOKEN*"];
+const DEFAULT_EXCLUDES: [&str; 8] = [
+    "*KEY*",
+    "*SECRET*",
+    "*TOKEN*",
+    "*PASS*",
+    "*PWD*",
+    "*CREDENTIAL*",
+    "*PAT",
+    "*AUTH*",
+];
 const PLATFORM_WORKER_SURFACE: &str = "platform-agent-runtime";
 const PLATFORM_TRUSTED_TOOL_ENV_FLAG: &str = "MAESTRO_PLATFORM_TRUSTED_TOOL_ENV";
 const PLATFORM_TRUSTED_TOOL_ENV_ALLOWLIST: [&str; 13] = [
@@ -248,6 +257,29 @@ mod tests {
         assert_eq!(env.get("PATH"), Some(&"/bin".to_string()));
         assert!(!env.contains_key("OPENAI_API_KEY"));
         assert!(!env.contains_key("GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn test_default_excludes_cover_common_secrets() {
+        let base = env(&[
+            ("PATH", "/bin"),
+            ("PGPASSWORD", "postgres-secret"),
+            ("DOCKER_PASSWORD", "docker-secret"),
+            ("GH_PAT", "github-pat"),
+            ("MYSQL_PWD", "mysql-secret"),
+            ("GOOGLE_APPLICATION_CREDENTIALS", "/tmp/creds.json"),
+            ("AWS_SESSION_TOKEN", "aws-session"),
+            ("OAUTH_CLIENT_SECRET", "oauth-secret"),
+        ]);
+        let env = build_shell_environment(base, None, None);
+        assert_eq!(env.get("PATH"), Some(&"/bin".to_string()));
+        assert!(!env.contains_key("PGPASSWORD"));
+        assert!(!env.contains_key("DOCKER_PASSWORD"));
+        assert!(!env.contains_key("GH_PAT"));
+        assert!(!env.contains_key("MYSQL_PWD"));
+        assert!(!env.contains_key("GOOGLE_APPLICATION_CREDENTIALS"));
+        assert!(!env.contains_key("AWS_SESSION_TOKEN"));
+        assert!(!env.contains_key("OAUTH_CLIENT_SECRET"));
     }
 
     #[test]

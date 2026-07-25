@@ -265,11 +265,14 @@ pub(crate) fn resolve_static_path(root: &Path, request_path: &str) -> Option<Pat
     }
 
     let candidate = root.join(&relative);
-    let Some(canonical_root) = root.canonicalize().ok() else {
+    let Some(canonical_root) = dunce::canonicalize(root).ok() else {
         return Some(candidate);
     };
     let existing = existing_static_ancestor(&candidate, root)?;
-    if !existing.canonicalize().ok()?.starts_with(&canonical_root) {
+    if !dunce::canonicalize(existing)
+        .ok()?
+        .starts_with(&canonical_root)
+    {
         return None;
     }
     Some(candidate)

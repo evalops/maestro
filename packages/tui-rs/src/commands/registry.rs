@@ -899,7 +899,7 @@ fn parse_plan_range(raw: &str) -> Result<(usize, usize), CommandError> {
 /// - **UI**: clear, theme, zen, copy, footer
 /// - **Session**: session, sessions, continue, resume
 /// - **Config**: model, thinking, approvals
-/// - **Context**: compact, memory, plan
+/// - **Context**: compact, context, memory, plan
 /// - **Tools**: tools, mcp
 /// - **Diagnostics**: status, diag, version
 /// - **Safety**: approvals
@@ -1293,18 +1293,24 @@ pub fn build_command_registry() -> CommandRegistry {
             "Change AI model",
             CommandCategory::Config,
             Box::new(|ctx| {
-                if ctx.raw_args.is_empty() {
-                    Ok(CommandOutput::OpenModal(ModalType::ModelSelector))
-                } else {
-                    Ok(CommandOutput::Action(CommandAction::SetModel(
+                let mut parts = ctx.raw_args.split_whitespace();
+                match (parts.next(), parts.next()) {
+                    (None, _) => Ok(CommandOutput::OpenModal(ModalType::ModelSelector)),
+                    (Some("default"), Some(model)) => Ok(CommandOutput::Action(
+                        CommandAction::SetDefaultModel(model.to_string()),
+                    )),
+                    (Some("default"), None) => {
+                        Err(CommandError::new("Usage: /model default <name>"))
+                    }
+                    _ => Ok(CommandOutput::Action(CommandAction::SetModel(
                         ctx.raw_args.clone(),
-                    )))
+                    ))),
                 }
             }),
         )
         .alias("m")
         .arg(CommandArgument::string("name", "Model name"))
-        .usage("/model [name]"),
+        .usage("/model [name | default <name>]"),
     );
 
     // Session commands
@@ -1559,9 +1565,9 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "context",
-            "Show context summary",
+            "Show token breakdown of the current session context",
             CommandCategory::Context,
-            Box::new(|ctx| Ok(CommandOutput::Message(build_diag_context(ctx)))),
+            Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowContext))),
         )
         .usage("/context"),
     );
@@ -1714,6 +1720,14 @@ pub fn build_command_registry() -> CommandRegistry {
         )
         .alias("health"),
     );
+
+    // Alerts command
+    registry.register(Command::new(
+        "alerts",
+        "List recorded alerts (agent/API errors)",
+        CommandCategory::Diagnostics,
+        Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowAlerts))),
+    ));
 
     // Stats command
     registry.register(Command::new(
@@ -2433,6 +2447,47 @@ pub fn build_command_registry_with_extensions(
     registry
 }
 
+/// Register Droid-style executable script commands as slash commands.
+///
+/// Scripts are registered with `register_if_absent`, so built-in commands and
+/// already-registered skill/prompt extensions always win name collisions.
+/// Returns the names that were skipped due to a collision so the caller can
+/// warn the user once.
+pub fn register_exec_commands(
+    registry: &mut CommandRegistry,
+    exec_commands: &[crate::exec_commands::ExecCommand],
+) -> Vec<String> {
+    let mut skipped = Vec::new();
+    for exec in exec_commands {
+        let name = exec.name.clone();
+        let description = format!(
+            "Executable command ({}, `{}`)",
+            exec.source.as_str(),
+            exec.path.display()
+        );
+        let usage = format!("/{name} [args...]");
+        let name_for_handler = name.clone();
+        let registered = registry.register_if_absent(
+            Command::new(
+                name.clone(),
+                description,
+                CommandCategory::Tools,
+                Box::new(move |ctx| {
+                    Ok(CommandOutput::Action(CommandAction::InvokeExecCommand {
+                        name: name_for_handler.clone(),
+                        args: ctx.raw_args.clone(),
+                    }))
+                }),
+            )
+            .usage(usage),
+        );
+        if !registered {
+            skipped.push(name);
+        }
+    }
+    skipped
+}
+
 fn build_diag_about(ctx: &CommandContext) -> String {
     let version = env!("CARGO_PKG_VERSION");
     let os = std::env::consts::OS;
@@ -2472,7 +2527,7 @@ fn build_diag_context(ctx: &CommandContext) -> String {
     lines.push(format!("**Session:** {session}"));
     lines.push(format!("**CWD:** {}", ctx.cwd));
     lines.push(String::new());
-    lines.push("Token usage details are not available in the Rust TUI yet.".to_string());
+    lines.push("Use /context for a token breakdown of the current session.".to_string());
     lines.join("\n")
 }
 

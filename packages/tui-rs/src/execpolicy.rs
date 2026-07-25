@@ -683,6 +683,204 @@ prefix_rule(
     }
 
     #[test]
+    fn test_evaluation_prefers_forbidden_over_prompt_over_allow() {
+        let eval = Evaluation::from_matches(vec![
+            RuleMatch::Prefix {
+                matched_prefix: vec!["git".to_string()],
+                decision: Decision::Allow,
+            },
+            RuleMatch::Prefix {
+                matched_prefix: vec!["git".to_string()],
+                decision: Decision::Forbidden,
+            },
+            RuleMatch::Prefix {
+                matched_prefix: vec!["git".to_string()],
+                decision: Decision::Prompt,
+            },
+        ]);
+        assert_eq!(eval.decision, Decision::Forbidden);
+
+        // No matches at all defaults to Allow.
+        let eval = Evaluation::from_matches(Vec::new());
+        assert_eq!(eval.decision, Decision::Allow);
+
+        // The same precedence holds when several policy rules match one command.
+        let mut policy = Policy::new();
+        policy
+            .add_prefix_rule(&["git".to_string(), "push".to_string()], Decision::Allow)
+            .unwrap();
+        policy
+            .add_prefix_rule(&["git".to_string()], Decision::Prompt)
+            .unwrap();
+        policy
+            .add_prefix_rule(
+                &["git".to_string(), "push".to_string(), "--force".to_string()],
+                Decision::Forbidden,
+            )
+            .unwrap();
+
+        let result = policy.check(
+            &["git".to_string(), "push".to_string(), "--force".to_string()],
+            None::<fn(&[String]) -> Decision>,
+        );
+        assert_eq!(result.decision, Decision::Forbidden);
+        assert_eq!(result.matched_rules.len(), 3);
+
+        let result = policy.check(
+            &["git".to_string(), "push".to_string(), "origin".to_string()],
+            None::<fn(&[String]) -> Decision>,
+        );
+        assert_eq!(result.decision, Decision::Prompt);
+        assert_eq!(result.matched_rules.len(), 2);
+    }
+
+    #[test]
+    fn test_load_policy_project_overrides_global() {
+        // `load_policy` caches its result in a process-wide `OnceLock`, so this
+        // must remain the only test in this binary that exercises it.
+        let home = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+
+        let global_dir = home.path().join(".composer");
+        fs::create_dir_all(&global_dir).unwrap();
+        fs::write(
+            global_dir.join("execpolicy"),
+            "prefix_rule(pattern=[\"git\", \"push\"], decision=\"allow\")\n\
+             prefix_rule(pattern=[\"cargo\", \"build\"], decision=\"allow\")\n",
+        )
+        .unwrap();
+
+        let project_dir = workspace.path().join(".composer");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(
+            project_dir.join("execpolicy"),
+            "prefix_rule(pattern=[\"git\", \"push\"], decision=\"forbidden\")\n",
+        )
+        .unwrap();
+
+        let previous_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", home.path());
+
+        let policy = load_policy(workspace.path());
+
+        let push = policy.check(
+            &["git".to_string(), "push".to_string()],
+            None::<fn(&[String]) -> Decision>,
+        );
+        assert_eq!(
+            push.decision,
+            Decision::Forbidden,
+            "project rule must override the global rule"
+        );
+        assert_eq!(
+            push.matched_rules.len(),
+            2,
+            "both global and project rules should be merged"
+        );
+
+        let build = policy.check(
+            &["cargo".to_string(), "build".to_string()],
+            None::<fn(&[String]) -> Decision>,
+        );
+        assert_eq!(
+            build.decision,
+            Decision::Allow,
+            "global-only rule still applies"
+        );
+
+        match previous_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn test_append_prefix_rule_parse_roundtrip() {
+        let temp = tempfile::tempdir().unwrap();
+        let policy_path = temp.path().join(".composer").join("execpolicy");
+
+        append_prefix_rule(
+            &policy_path,
+            &["git".to_string(), "status".to_string()],
+            Decision::Allow,
+        )
+        .unwrap();
+        append_prefix_rule(
+            &policy_path,
+            &["git".to_string(), "push".to_string()],
+            Decision::Prompt,
+        )
+        .unwrap();
+        append_prefix_rule(
+            &policy_path,
+            &["rm".to_string(), "-rf".to_string()],
+            Decision::Forbidden,
+        )
+        .unwrap();
+
+        let content = fs::read_to_string(&policy_path).unwrap();
+        let policy = parse_policy(&content, "roundtrip");
+
+        let check = |cmd: &[&str]| {
+            let tokens: Vec<String> = cmd.iter().map(|s| (*s).to_string()).collect();
+            policy
+                .check(&tokens, None::<fn(&[String]) -> Decision>)
+                .decision
+        };
+        assert_eq!(check(&["git", "status"]), Decision::Allow);
+        assert_eq!(check(&["git", "status", "--short"]), Decision::Allow);
+        assert_eq!(check(&["git", "push", "origin"]), Decision::Prompt);
+        assert_eq!(check(&["rm", "-rf", "/"]), Decision::Forbidden);
+
+        // Appending to a file without a trailing newline still produces
+        // parseable output.
+        fs::write(
+            &policy_path,
+            "prefix_rule(pattern=[\"git\", \"status\"], decision=\"allow\")",
+        )
+        .unwrap();
+        append_prefix_rule(
+            &policy_path,
+            &["git".to_string(), "push".to_string()],
+            Decision::Prompt,
+        )
+        .unwrap();
+        let content = fs::read_to_string(&policy_path).unwrap();
+        let policy = parse_policy(&content, "roundtrip-no-newline");
+        assert_eq!(check_decision(&policy, &["git", "status"]), Decision::Allow);
+        assert_eq!(check_decision(&policy, &["git", "push"]), Decision::Prompt);
+
+        assert!(append_prefix_rule(&policy_path, &[], Decision::Allow).is_err());
+    }
+
+    fn check_decision(policy: &Policy, cmd: &[&str]) -> Decision {
+        let tokens: Vec<String> = cmd.iter().map(|s| (*s).to_string()).collect();
+        policy
+            .check(&tokens, None::<fn(&[String]) -> Decision>)
+            .decision
+    }
+
+    #[test]
+    fn test_missing_or_invalid_decision_silently_defaults_to_allow() {
+        // Pins current behavior: a prefix_rule with a missing or unparseable
+        // `decision=` falls back to Decision::Allow in parse_prefix_rule_args
+        // instead of rejecting the rule. This is a dangerous silent default for
+        // a security policy; the test documents it so a future fix is explicit.
+        for content in [
+            r#"prefix_rule(pattern=["rm", "-rf"])"#,
+            r#"prefix_rule(pattern=["rm", "-rf"], decision="nonsense")"#,
+        ] {
+            let policy = parse_policy(content, "test");
+            let result = policy.check(
+                &["rm".to_string(), "-rf".to_string(), "/".to_string()],
+                None::<fn(&[String]) -> Decision>,
+            );
+            assert_eq!(result.decision, Decision::Allow);
+            assert_eq!(result.matched_rules.len(), 1);
+        }
+    }
+
+    #[test]
     fn test_parse_policy_with_alternatives() {
         let content = r#"
 prefix_rule(

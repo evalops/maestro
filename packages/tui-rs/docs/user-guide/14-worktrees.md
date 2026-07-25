@@ -1,40 +1,45 @@
 # Worktrees
 
-Maestro can create or reuse a git worktree under the repo for isolated agent work, then launch the native TUI inside that tree.
+Maestro can run a whole session inside a fresh git worktree, Droid-style: pass `-w <name>` (or `--worktree <name>`) and the agent works on a new branch in a sibling checkout, isolated from your main tree.
 
 ---
 
 ## Usage
 
 ```bash
-# Auto-named worktree (maestro-<timestamp> style)
-maestro --worktree "implement feature X"
-
-# Named worktree
-maestro --worktree=feat-x "implement feature X"
+# Interactive TUI in a worktree
+maestro -w feat-x "implement feature X"
 maestro --worktree feat-x "implement feature X"
+
+# Exec and print modes work the same way
+maestro exec -w feat-x "implement feature X"
+maestro -w feat-x -p "summarize this repo"
 ```
 
 Native binary equivalent:
 
 ```bash
-maestro-tui --worktree feat-x
+maestro-tui -w feat-x
 maestro-tui --worktree=feat-x "prompt"
 ```
 
+The name is required; it is sanitized into a valid git branch name (spaces, `/`, and other invalid characters become `-`).
+
 ---
 
-## Layout
+## Layout and lifecycle
 
-Worktrees live under the repository root:
+Worktrees are created next to the repository, not inside it:
 
 ```text
-<repo>/.maestro/worktrees/<name>/
+../<repo-name>-wt-<name>/   (branch: <sanitized name>, created from HEAD)
 ```
 
-- If the path already exists, Maestro reuses it.
-- Otherwise it runs `git worktree add` (new branch from HEAD when creating).
-- Requires a git repository; fails clearly if git is unavailable or the add fails.
+- Requires a git repository; fails cleanly outside one.
+- Fails with a clear message if the branch or target path already exists.
+- The entire session — agent tools, sessions, hooks, config — runs with the worktree as its working directory.
+- On exit, a clean worktree (no uncommitted changes, no untracked files) is removed and its branch deleted. If the branch picked up commits, the worktree is removed but the branch is kept.
+- A dirty worktree is kept, and Maestro prints its path and branch so you can find it.
 
 ---
 
@@ -44,13 +49,14 @@ Worktrees live under the repository root:
 |----------|-----|
 | Parallel experiments | Keep dirty trees out of your main checkout |
 | Long agent tasks | Isolate file writes and branch state |
-| Review / try a risky change | Easy to discard a worktree later |
+| Review / try a risky change | A clean tree disappears on exit; a dirty one is reported |
 
-Manual cleanup (standard git):
+Manual cleanup of a kept worktree (standard git):
 
 ```bash
 git worktree list
-git worktree remove .maestro/worktrees/feat-x
+git worktree remove ../<repo-name>-wt-<name>
+git branch -D <name>
 ```
 
 ---
@@ -58,7 +64,6 @@ git worktree remove .maestro/worktrees/feat-x
 ## Interaction with sessions and config
 
 - Sessions key off the worktree cwd, so transcripts stay per-worktree path.
-- Project config under `.maestro/` on the main repo is available once you are inside the worktree; the worktree itself sits under `.maestro/worktrees/`.
 - Hooks, MCP, and skills resolve from the active cwd’s project files plus user home config.
 
 ---

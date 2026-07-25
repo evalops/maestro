@@ -58,6 +58,7 @@ clap.workspace = true
 glob.workspace = true
 regex.workspace = true
 dirs.workspace = true
+dunce.workspace = true
 toml = "0.8"
 libc.workspace = true
 rayon = "1.10"

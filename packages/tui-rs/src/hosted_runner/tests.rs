@@ -217,15 +217,13 @@ fn resolves_env_config_with_hosted_runner_contract_names() {
     assert_eq!(config.owner_instance_id.as_deref(), Some("pod_1"));
     assert_eq!(
         config.workspace_root,
-        workspace.path().canonicalize().unwrap()
+        dunce::canonicalize(workspace.path()).unwrap()
     );
     assert_eq!(config.bind_addr, "127.0.0.1:9090".parse().unwrap());
     assert_eq!(
         config.snapshot_root.as_deref(),
         Some(
-            workspace
-                .path()
-                .canonicalize()
+            dunce::canonicalize(workspace.path())
                 .unwrap()
                 .join(".snapshots")
                 .as_path()
@@ -236,9 +234,7 @@ fn resolves_env_config_with_hosted_runner_contract_names() {
     assert_eq!(
         config.restore_manifest_path.as_deref(),
         Some(
-            workspace
-                .path()
-                .canonicalize()
+            dunce::canonicalize(workspace.path())
                 .unwrap()
                 .join(".snapshots/restore.json")
                 .as_path()

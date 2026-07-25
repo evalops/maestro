@@ -11,6 +11,10 @@ use crate::{
     event_bus::{EventBus, EventBusConfig},
     execution_report::ExecutionReport,
     executor::{Executor, ExecutorConfig},
+    goal_evaluator::{
+        GoalEvaluationError, GoalEvaluator, GoalEvaluatorConfig, GoalEvaluatorDecision,
+        GoalEvaluatorVerdict,
+    },
     ipc::{
         default_socket_path, verify_token_constant_time, IpcCommand, IpcResponse, IpcServer,
         StatusResponse,
@@ -87,6 +91,7 @@ pub struct AmbientDaemon {
     critic: Arc<Critic>,
     cascader: Arc<RwLock<Cascader>>,
     executor: Arc<Executor>,
+    goal_evaluator: Option<GoalEvaluator>,
     checkpoint_mgr: Arc<RwLock<CheckpointManager>>,
     learner: Arc<RwLock<Learner>>,
     pr_creator: Arc<PrCreator>,
@@ -142,7 +147,14 @@ impl AmbientDaemon {
 
         // Executor for real LLM calls
         let executor_config = ExecutorConfig::from_env(data_dir.to_string_lossy().to_string());
-        let executor = Executor::new(executor_config);
+        let executor = Arc::new(Executor::new(executor_config));
+
+        // Goal evaluator: an independent LLM judge that adversarially checks
+        // executor completion claims before the Critic verifies them. Disabled
+        // without an API key; judge model overridable via env.
+        let goal_evaluator = executor
+            .has_api_key()
+            .then(|| GoalEvaluator::new(GoalEvaluatorConfig::from_env(), executor.clone()));
 
         let checkpoint_mgr = CheckpointManager::new(data_dir.join("checkpoints"));
 
@@ -165,7 +177,8 @@ impl AmbientDaemon {
             decider: Arc::new(RwLock::new(decider)),
             critic: Arc::new(critic),
             cascader: Arc::new(RwLock::new(cascader)),
-            executor: Arc::new(executor),
+            executor,
+            goal_evaluator,
             checkpoint_mgr: Arc::new(RwLock::new(checkpoint_mgr)),
             learner: Arc::new(RwLock::new(learner)),
             pr_creator: Arc::new(pr_creator),
@@ -577,6 +590,40 @@ impl AmbientDaemon {
         }
 
         let result = self.executor.execute(&plan, &routing).await;
+
+        // Goal evaluation gate (grok-build pattern): an executor Success status
+        // is only the agent's own claim of completion. When a judge is
+        // configured, the claim must be confirmed as candidate_complete by an
+        // independent, adversarial evaluation before the Critic runs
+        // verification and a PR can be opened. Any rejection or judge failure
+        // is conservative: roll back and do not ship.
+        if result.status == ExecutionStatus::Success {
+            if let Some(evaluator) = &self.goal_evaluator {
+                let gate = evaluator
+                    .evaluate_execution(&event, &plan, &result, &routing.model)
+                    .await;
+                if let Some(reason) = goal_gate_rejection_reason(gate) {
+                    warn!("Event {} not shipped: {}", event.id, reason);
+                    let outcome = PlanRunOutcome::rejected(
+                        reason,
+                        CostAccounting::estimate_as_actual(routing.estimated_cost, 0),
+                    );
+                    self.record_plan_event(
+                        AmbientPlanEventKind::ExecutionCompleted,
+                        &run_context,
+                        &routing,
+                        Some(&outcome),
+                    )
+                    .await;
+                    self.record_plan_outcome(&run_context, &routing.model, start_time, &outcome)
+                        .await;
+                    self.rollback_checkpoint(&checkpoint_id, "goal-evaluator-rejected")
+                        .await;
+                    return;
+                }
+            }
+        }
+
         let critique = self.critic.critique(&plan, &result).await;
 
         info!(
@@ -832,6 +879,37 @@ impl AmbientDaemon {
     }
 }
 
+/// Map a goal-evaluation outcome to a rejection reason. `None` means the run
+/// is candidate_complete and may proceed to the Critic for adversarial
+/// verification; `Some(reason)` means do not ship. Judge failures are
+/// conservative: no PR is created without a completed evaluation.
+fn goal_gate_rejection_reason(
+    gate: Result<GoalEvaluatorVerdict, GoalEvaluationError>,
+) -> Option<String> {
+    match gate {
+        Ok(verdict) => match verdict.decision {
+            GoalEvaluatorDecision::CandidateComplete => {
+                info!(
+                    "Goal evaluator: candidate complete, routing to critic — {}",
+                    verdict.evidence
+                );
+                None
+            }
+            GoalEvaluatorDecision::Continue => Some(format!(
+                "goal evaluator: work remains — {} (next: {})",
+                verdict.evidence, verdict.next_step
+            )),
+            GoalEvaluatorDecision::Blocked => Some(format!(
+                "goal evaluator: blocked [{}] — {} (needs: {})",
+                verdict.blocker_key, verdict.evidence, verdict.next_step
+            )),
+        },
+        Err(error) => Some(format!(
+            "goal evaluator failed; refusing to ship without verification: {error}"
+        )),
+    }
+}
+
 /// Builder for AmbientDaemon
 pub struct DaemonBuilder {
     config: Option<AmbientConfig>,
@@ -903,10 +981,14 @@ impl Default for DaemonBuilder {
 mod tests {
     use super::*;
     use crate::cascader::TaskContext;
+    use crate::executor::LlmApiProvider;
     use crate::platform_event_bus::{PlatformEventBusConfig, PlatformEventBusTransport};
     use crate::task_run::{CostAccounting, PlanRunOutcome};
     use async_trait::async_trait;
     use serde_json::Value;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::path::Path;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
@@ -1254,6 +1336,200 @@ mod tests {
 
         assert!(!outcome.success);
         assert_eq!(daemon.stats.read().await.prs_created, 0);
+        assert!(daemon.checkpoint_mgr.read().await.list_active().is_empty());
+    }
+
+    fn verdict(decision: GoalEvaluatorDecision, blocker_key: &str) -> GoalEvaluatorVerdict {
+        GoalEvaluatorVerdict {
+            decision,
+            evidence: "evidence".to_string(),
+            next_step: "next step".to_string(),
+            blocker_key: blocker_key.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_goal_gate_only_passes_candidate_complete() {
+        assert!(goal_gate_rejection_reason(Ok(verdict(
+            GoalEvaluatorDecision::CandidateComplete,
+            ""
+        )))
+        .is_none());
+
+        let reason =
+            goal_gate_rejection_reason(Ok(verdict(GoalEvaluatorDecision::Continue, ""))).unwrap();
+        assert!(reason.contains("work remains"));
+
+        let reason = goal_gate_rejection_reason(Ok(verdict(
+            GoalEvaluatorDecision::Blocked,
+            "missing_github_access",
+        )))
+        .unwrap();
+        assert!(reason.contains("missing_github_access"));
+
+        // Judge failures are conservative: no ship without verification.
+        let reason = goal_gate_rejection_reason(Err(GoalEvaluationError::Timeout(
+            std::time::Duration::from_secs(30),
+        )))
+        .unwrap();
+        assert!(reason.contains("refusing to ship"));
+    }
+
+    fn mock_openrouter_server(body: String) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let read = stream.read(&mut chunk).unwrap();
+                if read == 0 {
+                    break;
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+                let Some(header_end) = buffer.windows(4).position(|w| w == b"\r\n\r\n") else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&buffer[..header_end]).to_ascii_lowercase();
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if buffer.len() >= header_end + 4 + content_length {
+                    break;
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        format!("http://{}", addr)
+    }
+
+    fn chat_completion_body(content: &str) -> String {
+        serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": content}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+        })
+        .to_string()
+    }
+
+    fn install_mock_llms(daemon: &mut AmbientDaemon, working_dir: &Path, judge_verdict: &str) {
+        let executor_url = mock_openrouter_server(chat_completion_body(
+            "<file_change><action>create</action><path>src/feature.rs</path><content>pub fn feature() {}\n</content></file_change>",
+        ));
+        daemon.executor = Arc::new(Executor::new(ExecutorConfig {
+            api_key: "test-key".to_string(),
+            api_base_url: executor_url,
+            api_provider: LlmApiProvider::OpenRouterChatCompletions,
+            run_tests: false,
+            working_dir: working_dir.to_string_lossy().to_string(),
+            ..ExecutorConfig::default()
+        }));
+        let judge_url = mock_openrouter_server(chat_completion_body(judge_verdict));
+        daemon.goal_evaluator = Some(GoalEvaluator::new(
+            GoalEvaluatorConfig {
+                model: Some("judge-model".to_string()),
+                timeout: std::time::Duration::from_secs(5),
+            },
+            Arc::new(Executor::new(ExecutorConfig {
+                api_key: "test-key".to_string(),
+                api_base_url: judge_url,
+                api_provider: LlmApiProvider::OpenRouterChatCompletions,
+                ..ExecutorConfig::default()
+            })),
+        ));
+    }
+
+    fn feature_plan(event: &NormalizedEvent) -> TaskPlan {
+        TaskPlan {
+            task_id: "plan_goal_eval".to_string(),
+            summary: "Handle issue: Add feature".to_string(),
+            estimated_complexity: Complexity::Simple,
+            event: event.clone(),
+            strategy: ExecutionStrategy::Solo,
+            estimated_duration_ms: 60_000,
+            tasks: vec![Task {
+                id: "plan_goal_eval_main".to_string(),
+                task_type: TaskType::Implement,
+                prompt: "Add feature".to_string(),
+                files: vec![],
+                depends_on: vec![],
+                priority: 100,
+                estimated_tokens: None,
+            }],
+            files: vec![],
+            risks: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_plan_goal_evaluator_continue_rolls_back() {
+        let temp = TempDir::new().unwrap();
+        let mut daemon = DaemonBuilder::new()
+            .config(test_config())
+            .data_dir(temp.path().to_path_buf())
+            .ipc_socket_path(temp.path().join("daemon-goal-continue.sock"))
+            .build()
+            .unwrap();
+        install_mock_llms(
+            &mut daemon,
+            temp.path(),
+            r#"{"decision":"continue","evidence":"no tests were run","next_step":"run the test suite","blocker_key":""}"#,
+        );
+        let event = test_event(
+            "Add feature",
+            "Add the feature with tests.",
+            EventType::Issue,
+        );
+        let plan = feature_plan(&event);
+
+        daemon.execute_plan(event, plan).await;
+
+        let stats = daemon.stats.read().await;
+        assert_eq!(stats.tasks_executed, 1);
+        assert_eq!(stats.tasks_succeeded, 0);
+        assert_eq!(stats.tasks_failed, 1);
+        assert_eq!(stats.prs_created, 0);
+        drop(stats);
+        assert!(daemon.checkpoint_mgr.read().await.list_active().is_empty());
+        let learner_stats = daemon.learner.read().await.get_stats();
+        assert_eq!(learner_stats.total_outcomes, 1);
+        assert_eq!(learner_stats.overall_success_rate, 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_execute_plan_candidate_complete_reaches_critic() {
+        let temp = TempDir::new().unwrap();
+        let mut daemon = DaemonBuilder::new()
+            .config(test_config())
+            .data_dir(temp.path().to_path_buf())
+            .ipc_socket_path(temp.path().join("daemon-goal-complete.sock"))
+            .build()
+            .unwrap();
+        install_mock_llms(
+            &mut daemon,
+            temp.path(),
+            r#"{"decision":"candidate_complete","evidence":"change applied to src/feature.rs","next_step":"open the PR","blocker_key":""}"#,
+        );
+        let event = test_event("Add feature", "Add the feature.", EventType::Issue);
+        let plan = feature_plan(&event);
+
+        daemon.execute_plan(event, plan).await;
+
+        // The run clears both the goal evaluator and the critic. No real
+        // GitHub repo/token exists in tests, so no PR is created.
+        let stats = daemon.stats.read().await;
+        assert_eq!(stats.tasks_executed, 1);
+        assert_eq!(stats.tasks_succeeded, 1);
+        assert_eq!(stats.tasks_failed, 0);
+        assert_eq!(stats.prs_created, 0);
+        drop(stats);
         assert!(daemon.checkpoint_mgr.read().await.list_active().is_empty());
     }
 

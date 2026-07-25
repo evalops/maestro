@@ -1,0 +1,24 @@
+# Workspace-wide Clippy configuration for the Maestro crates.
+#
+# NOTE: clippy uses the NEAREST clippy.toml (no merging), so if a crate ever
+# grows its own clippy.toml it must duplicate these settings.
+
+# Ban raw canonicalize: on Windows, std canonicalize returns verbatim
+# `\\?\C:\...` paths that break external tools (git rejects them as clone
+# destinations), leak into model prompt context, and poison path-equality
+# keys (sandbox containment zones, workspace roots, session paths). Use
+# `dunce::canonicalize` (identical to std on Unix/macOS; strips the verbatim
+# prefix on Windows when safely representable).
+#
+# Caveat: dunce keeps the verbatim form for paths it cannot safely simplify
+# (notably > 260 chars or reserved device names), so prefix checks between
+# two independently canonicalized paths can mismatch on Windows for very
+# long paths (containment checks then fail closed).
+#
+# Enforcement boundary: `tokio::fs::canonicalize` remains allowed — there is
+# no async dunce equivalent, and the handful of async call sites need an
+# explicit spawn_blocking design rather than a mechanical swap.
+disallowed-methods = [
+    { path = "std::fs::canonicalize", reason = "returns \\\\?\\ verbatim paths on Windows; use dunce::canonicalize" },
+    { path = "std::path::Path::canonicalize", reason = "returns \\\\?\\ verbatim paths on Windows; use dunce::canonicalize" },
+]

@@ -90,6 +90,12 @@
 //! - **16 Color**: Mapped to nearest basic ANSI color
 //!
 //! This ensures themes look reasonable even on limited terminals.
+//!
+//! # The `auto` Theme
+//!
+//! `auto` resolves to `dark` or `light` from the terminal's reported
+//! background: `COLORFGBG` always, refined by a one-time OSC 11 probe at
+//! startup when `tui.theme_follow = true` (see [`osc11`]).
 
 use ratatui::style::{Color, Style};
 use serde::{Deserialize, Serialize};
@@ -98,6 +104,8 @@ use std::path::Path;
 use std::sync::RwLock;
 
 use crate::palette;
+
+pub mod osc11;
 
 /// Global theme state
 static CURRENT_THEME: RwLock<Option<Theme>> = RwLock::new(None);

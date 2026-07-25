@@ -52,7 +52,27 @@ outputs:
 runs:
   using: composite
   steps:
+    # Callers pass vars/secrets.GCP_WORKLOAD_IDENTITY_PROVIDER, which may be
+    # unset in repos/environments without GCS access. google-github-actions/auth
+    # hard-fails with "must specify exactly one of workload_identity_provider or
+    # credentials_json" in that case; degrade to a warning + skip instead so
+    # best-effort uploads stay quiet and real misconfig stays loud.
+    - name: Preflight auth configuration
+      id: preflight
+      shell: bash
+      env:
+        WIF_PROVIDER: ${{ inputs.workload-identity-provider }}
+      run: |
+        set -euo pipefail
+        if [[ -z "${WIF_PROVIDER}" ]]; then
+          echo "::warning title=GCS artifacts skipped::workload-identity-provider is empty (set vars.GCP_WORKLOAD_IDENTITY_PROVIDER or secrets.GCP_WORKLOAD_IDENTITY_PROVIDER to enable); skipping GCS transfer."
+          echo "configured=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Authenticate to Google Cloud
+      if: steps.preflight.outputs.configured != 'false'
       uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
       with:
         workload_identity_provider: ${{ inputs.workload-identity-provider }}
@@ -61,9 +81,11 @@ runs:
         cleanup_credentials: true
 
     - name: Set up Cloud SDK
+      if: steps.preflight.outputs.configured != 'false'
       uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
     - name: Transfer artifacts
+      if: steps.preflight.outputs.configured != 'false'
       id: transfer
       shell: bash
       env:

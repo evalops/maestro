@@ -474,7 +474,7 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 fn canonicalish(path: &Path) -> PathBuf {
-    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 #[cfg(test)]

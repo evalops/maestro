@@ -87,6 +87,8 @@ impl SessionWriter {
             )));
         }
 
+        truncate_torn_tail(&path)?;
+
         Ok(Self {
             path,
             buffer: Vec::new(),
@@ -168,6 +170,45 @@ impl Drop for SessionWriter {
         // Flush remaining entries on drop
         let _ = self.flush();
     }
+}
+
+/// Truncate a torn trailing line left by a crash mid-write.
+///
+/// Complete entries are always written with a trailing newline, so a final
+/// line that is unterminated or fails to parse is a partial write. Removing
+/// it before appending keeps new entries from being concatenated onto the
+/// corrupt line, which would poison the session file permanently.
+fn truncate_torn_tail(path: &Path) -> Result<(), SessionWriteError> {
+    let contents = fs::read(path)?;
+    if contents.is_empty() {
+        return Ok(());
+    }
+
+    let ends_with_newline = contents.last() == Some(&b'\n');
+    let body = if ends_with_newline {
+        &contents[..contents.len() - 1]
+    } else {
+        &contents[..]
+    };
+    let line_start = body
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(0, |pos| pos + 1);
+    let last_line = &body[line_start..];
+
+    let torn = !ends_with_newline
+        || (!last_line.is_empty() && serde_json::from_slice::<SessionEntry>(last_line).is_err());
+    if torn {
+        eprintln!(
+            "Truncating torn trailing line in session file {} before appending",
+            path.display()
+        );
+        OpenOptions::new()
+            .write(true)
+            .open(path)?
+            .set_len(line_start as u64)?;
+    }
+    Ok(())
 }
 
 /// Generate a session filename
@@ -303,6 +344,58 @@ mod tests {
             assert!(dir.starts_with(&home));
         } else {
             assert!(dir.starts_with(std::env::temp_dir()));
+        }
+    }
+
+    #[test]
+    fn open_existing_truncates_torn_tail_before_appending() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.jsonl");
+
+        let header = SessionHeader {
+            version: Some(2),
+            id: "test123".to_string(),
+            timestamp: "2024-01-15T10:30:00Z".to_string(),
+            cwd: "/tmp".to_string(),
+            model: "anthropic/claude-3".to_string(),
+            subject: None,
+            model_metadata: None,
+            thinking_level: Default::default(),
+            system_prompt: None,
+            prompt_metadata: None,
+            prompt_context_manifest: None,
+            unified_context_manifest: None,
+            tools: vec![],
+            branched_from: None,
+            parent_session: None,
+        };
+
+        let mut writer = SessionWriter::create(&path, header).unwrap();
+        writer.flush().unwrap();
+
+        // Simulate a crash mid-`writeln!`: partial JSON with no trailing newline.
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        write!(file, r#"{{"type":"message","timestamp":"2024-01-15T10:30"#).unwrap();
+        drop(file);
+
+        let mut writer = SessionWriter::open_existing(&path).unwrap();
+        writer
+            .write_entry(SessionEntry::ThinkingLevelChange(
+                super::super::entries::ThinkingLevelChange {
+                    timestamp: "2024-01-15T10:31:00Z".to_string(),
+                    thinking_level: super::super::entries::ThinkingLevel::High,
+                },
+            ))
+            .unwrap();
+        writer.flush().unwrap();
+
+        // Every line must parse; the torn fragment must be gone.
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(!contents.contains("10:30\""));
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 2);
+        for line in lines {
+            serde_json::from_str::<SessionEntry>(line).unwrap();
         }
     }
 }

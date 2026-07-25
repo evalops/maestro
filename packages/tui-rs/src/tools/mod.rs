@@ -94,10 +94,11 @@ mod registry;
 mod shell_env;
 mod status;
 mod todo;
+pub mod versions;
 mod web_fetch;
 
 pub(crate) use bash::resolve_shell_config;
-pub use bash::BashTool;
+pub use bash::{BashTool, BashVersion};
 pub use batch::{BatchConfig, BatchExecutor, BatchToolCall, BatchToolResult};
 pub use cache::{CacheConfig, CacheKey, CacheStats, CachedResult, ToolResultCache};
 pub use details::{

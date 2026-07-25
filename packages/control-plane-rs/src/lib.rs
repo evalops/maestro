@@ -1371,7 +1371,7 @@ fn project_onboarding_path() -> PathBuf {
 }
 
 fn project_onboarding_key(cwd: &Path) -> String {
-    cwd.canonicalize()
+    dunce::canonicalize(cwd)
         .unwrap_or_else(|_| {
             if cwd.is_absolute() {
                 cwd.to_path_buf()

@@ -117,8 +117,7 @@ fn canonical_workspace_path(workspace: &Path, input: &str) -> Result<PathBuf> {
     } else {
         workspace.join(input)
     };
-    let canonical = candidate
-        .canonicalize()
+    let canonical = dunce::canonicalize(&candidate)
         .with_context(|| format!("canonicalize tool path {}", candidate.display()))?;
     if !canonical.starts_with(workspace) {
         bail!(
@@ -137,8 +136,7 @@ fn canonical_existing_ancestor(path: &Path) -> Result<PathBuf> {
             bail!("Tool path has no existing ancestor: {}", path.display());
         }
     }
-    ancestor
-        .canonicalize()
+    dunce::canonicalize(&ancestor)
         .with_context(|| format!("canonicalize tool path ancestor {}", ancestor.display()))
 }
 
@@ -215,12 +213,12 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
     let model = options
         .model
         .or_else(|| std::env::var("MAESTRO_MODEL").ok())
-        .unwrap_or_else(|| "gpt-5.1-codex-max".to_string());
+        .unwrap_or_else(|| "gpt-5.5".to_string());
 
-    let workspace = std::env::current_dir()
-        .context("resolve print-mode working directory")?
-        .canonicalize()
-        .context("canonicalize print-mode working directory")?;
+    let workspace = dunce::canonicalize(
+        &std::env::current_dir().context("resolve print-mode working directory")?,
+    )
+    .context("canonicalize print-mode working directory")?;
     let cwd = workspace.to_string_lossy().to_string();
 
     let system_prompt = format!(
@@ -805,6 +803,9 @@ mod tests {
             workspace.path(),
         )
         .unwrap();
-        assert_eq!(args["path"].as_str(), file.canonicalize().unwrap().to_str());
+        assert_eq!(
+            args["path"].as_str(),
+            dunce::canonicalize(&file).unwrap().to_str()
+        );
     }
 }

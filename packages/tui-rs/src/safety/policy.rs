@@ -233,11 +233,11 @@ fn resolve_absolute_path(path: &str) -> PathBuf {
 }
 
 fn resolve_real_path(path: &Path) -> PathBuf {
-    if let Ok(real) = path.canonicalize() {
+    if let Ok(real) = dunce::canonicalize(path) {
         return real;
     }
     if let Some(parent) = path.parent() {
-        if let Ok(real_parent) = parent.canonicalize() {
+        if let Ok(real_parent) = dunce::canonicalize(parent) {
             if let Some(name) = path.file_name() {
                 return real_parent.join(name);
             }

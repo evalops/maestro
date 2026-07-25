@@ -89,6 +89,13 @@ impl ThemeSelector {
         self.filter();
     }
 
+    /// Insert a string at the cursor position (e.g. pasted text).
+    pub fn insert_str(&mut self, s: &str) {
+        self.query.insert_str(self.cursor, s);
+        self.cursor += s.len();
+        self.filter();
+    }
+
     /// Delete character before cursor
     pub fn backspace(&mut self) {
         if self.cursor > 0 {
@@ -285,6 +292,18 @@ mod tests {
         assert!(selector.is_visible());
         selector.hide();
         assert!(!selector.is_visible());
+    }
+
+    #[test]
+    fn test_theme_selector_insert_str() {
+        let mut selector = ThemeSelector::new();
+        selector.show();
+        selector.insert_str("dark");
+        assert_eq!(selector.query, "dark");
+        assert_eq!(selector.cursor, 4);
+        selector.move_left();
+        selector.insert_str("-");
+        assert_eq!(selector.query, "dar-k");
     }
 
     #[test]

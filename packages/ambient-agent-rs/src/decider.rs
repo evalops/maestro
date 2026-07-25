@@ -712,4 +712,179 @@ mod tests {
         assert!(decision.auto_execute_blocked);
         assert!(decision.reason.contains("Complexity: Complex"));
     }
+
+    struct StubOutcomeStore {
+        outcomes: Vec<Outcome>,
+    }
+
+    #[async_trait::async_trait]
+    impl OutcomeStore for StubOutcomeStore {
+        async fn get_similar(&self, _event: &NormalizedEvent) -> Vec<Outcome> {
+            self.outcomes.clone()
+        }
+
+        async fn get_for_repo(&self, _repo: &str) -> Vec<Outcome> {
+            self.outcomes.clone()
+        }
+    }
+
+    fn merged_outcomes(count: usize) -> Vec<Outcome> {
+        (0..count)
+            .map(|i| Outcome {
+                id: format!("outcome-{i}"),
+                event_id: "evt_test".to_string(),
+                plan_id: "plan-1".to_string(),
+                pr_number: i as u64,
+                result: OutcomeResult::Merged,
+                feedback: None,
+                duration_ms: 1000,
+                cost_usd: 0.01,
+                created_at: Utc::now(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_determine_action_threshold_boundaries() {
+        let decider = Decider::new(DeciderConfig::default());
+        let thresholds = Thresholds {
+            auto_execute: 0.8,
+            ask_human: 0.5,
+            skip: 0.0,
+        };
+
+        // Exactly at auto_execute -> Execute; just below -> Ask.
+        assert_eq!(
+            decider.determine_action(0.8, &Complexity::Simple, &thresholds),
+            DecisionAction::Execute
+        );
+        assert_eq!(
+            decider.determine_action(0.8 - 1e-9, &Complexity::Simple, &thresholds),
+            DecisionAction::Ask
+        );
+
+        // Exactly at ask_human -> Ask; just below -> Skip.
+        assert_eq!(
+            decider.determine_action(0.5, &Complexity::Simple, &thresholds),
+            DecisionAction::Ask
+        );
+        assert_eq!(
+            decider.determine_action(0.5 - 1e-9, &Complexity::Simple, &thresholds),
+            DecisionAction::Skip
+        );
+
+        // High complexity never executes, regardless of confidence.
+        for complexity in [Complexity::Complex, Complexity::High] {
+            assert_eq!(
+                decider.determine_action(1.0, &complexity, &thresholds),
+                DecisionAction::Ask
+            );
+            assert_eq!(
+                decider.determine_action(0.4, &complexity, &thresholds),
+                DecisionAction::Skip
+            );
+        }
+    }
+
+    #[test]
+    fn test_confidence_weights_are_normalized() {
+        let config = DeciderConfig::default();
+        let weight_sum = config.pattern_weight
+            + config.complexity_weight
+            + config.history_weight
+            + config.maturity_weight;
+        assert!(
+            (weight_sum - 1.0).abs() < 1e-9,
+            "confidence weights must sum to 1, got {weight_sum}"
+        );
+
+        let decider = Decider::new(config);
+
+        // All factors maxed out saturate at 1.0.
+        let factors = ConfidenceFactors {
+            pattern_match: 1.0,
+            complexity: Complexity::Trivial,
+            history_score: 1.0,
+            repo_maturity: 1.0,
+        };
+        assert!((decider.compute_confidence(&factors) - 1.0).abs() < 1e-9);
+
+        // Zeroed factors leave only the complexity contribution.
+        let factors = ConfidenceFactors {
+            pattern_match: 0.0,
+            complexity: Complexity::Trivial,
+            history_score: 0.0,
+            repo_maturity: 0.0,
+        };
+        assert!((decider.compute_confidence(&factors) - 0.25).abs() < 1e-9);
+
+        // Complexity penalty scales the complexity contribution.
+        let factors = ConfidenceFactors {
+            pattern_match: 0.0,
+            complexity: Complexity::High,
+            history_score: 0.0,
+            repo_maturity: 0.0,
+        };
+        assert!((decider.compute_confidence(&factors) - 0.6 * 0.25).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn test_decision_matrix_over_representative_inputs() {
+        let mut config = DeciderConfig::default();
+        config.limits.max_complexity = Complexity::High;
+
+        // Trivial, auto-labelled task with a proven track record -> Execute.
+        let decider = Decider::new(config.clone()).with_outcome_store(Box::new(StubOutcomeStore {
+            outcomes: merged_outcomes(5),
+        }));
+        let mut event = test_event("Fix a typo in the README");
+        event.event_type = EventType::CiFailure;
+        event.payload.labels = vec!["composer-auto".to_string()];
+        let decision = decider.decide(&event).await;
+        assert_eq!(decision.action, DecisionAction::Execute);
+        assert!(decision.confidence >= 0.8);
+        assert!(decision.plan.is_some());
+        assert!(!decision.auto_execute_blocked);
+
+        // Same task without enough history evidence -> Ask.
+        let decider = Decider::new(config.clone());
+        let decision = decider.decide(&event).await;
+        assert_eq!(decision.action, DecisionAction::Ask);
+        assert!(decision.confidence >= 0.5);
+        assert!(decision.confidence < 0.8);
+        assert!(decision.question.is_some());
+
+        // Unlabelled, vague task in a repo with weak maturity signals -> Skip.
+        let decider = Decider::new(config.clone());
+        let mut event = test_event("Something vague happened");
+        event.repo.test_coverage = Some(30.0);
+        event.repo.agent_md = None;
+        event.repo.codeowners = vec![];
+        event.context.repo = event.repo.clone();
+        let decision = decider.decide(&event).await;
+        assert_eq!(decision.action, DecisionAction::Skip);
+        assert!(decision.confidence < 0.5);
+        assert!(decision.plan.is_none());
+
+        // Prompt-injection flag short-circuits to Skip with zero confidence.
+        let decider = Decider::new(config.clone());
+        let mut event = test_event("Fix a typo in the README");
+        event.flags.potential_injection = true;
+        let decision = decider.decide(&event).await;
+        assert_eq!(decision.action, DecisionAction::Skip);
+        assert_eq!(decision.confidence, 0.0);
+        assert!(decision.final_action);
+
+        // Approval-required label forces Ask even for high-confidence work.
+        let decider = Decider::new(config).with_outcome_store(Box::new(StubOutcomeStore {
+            outcomes: merged_outcomes(5),
+        }));
+        let mut event = test_event("Fix a typo in the README");
+        event.event_type = EventType::CiFailure;
+        event.payload.labels = vec!["composer-auto".to_string()];
+        event.flags.requires_approval = true;
+        let decision = decider.decide(&event).await;
+        assert_eq!(decision.action, DecisionAction::Ask);
+        assert!(decision.question.is_some());
+    }
 }
