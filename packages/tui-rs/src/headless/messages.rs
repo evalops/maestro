@@ -186,6 +186,9 @@ pub enum ToAgentMessage {
     /// Respond to a tool approval request
     ToolResponse {
         call_id: String,
+        /// Durable execution identifier allocated by a governing controller.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_execution_id: Option<String>,
         approved: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<ToolResult>,

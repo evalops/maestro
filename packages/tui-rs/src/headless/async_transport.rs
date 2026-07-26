@@ -415,6 +415,7 @@ impl AsyncAgentTransport {
     pub fn approve_tool(&self, call_id: impl Into<String>) -> Result<(), AsyncTransportError> {
         self.send(ToAgentMessage::ToolResponse {
             call_id: call_id.into(),
+            tool_execution_id: None,
             approved: true,
             result: None,
         })
@@ -424,6 +425,7 @@ impl AsyncAgentTransport {
     pub fn deny_tool(&self, call_id: impl Into<String>) -> Result<(), AsyncTransportError> {
         self.send(ToAgentMessage::ToolResponse {
             call_id: call_id.into(),
+            tool_execution_id: None,
             approved: false,
             result: None,
         })

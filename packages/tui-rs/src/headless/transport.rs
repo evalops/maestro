@@ -397,6 +397,7 @@ impl AgentTransport {
     pub fn approve_tool(&self, call_id: impl Into<String>) -> Result<(), TransportError> {
         self.send(ToAgentMessage::ToolResponse {
             call_id: call_id.into(),
+            tool_execution_id: None,
             approved: true,
             result: None,
         })
@@ -406,6 +407,7 @@ impl AgentTransport {
     pub fn deny_tool(&self, call_id: impl Into<String>) -> Result<(), TransportError> {
         self.send(ToAgentMessage::ToolResponse {
             call_id: call_id.into(),
+            tool_execution_id: None,
             approved: false,
             result: None,
         })

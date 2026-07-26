@@ -48,6 +48,8 @@ use crate::headless::HEADLESS_PROTOCOL_VERSION;
 struct RuntimeMeta {
     session_id: Option<String>,
     approval_mode: Option<ApprovalMode>,
+    /// Controller-owned execution ids awaiting a native terminal event.
+    tool_execution_ids: HashMap<String, String>,
 }
 
 struct HeadlessState {
@@ -105,6 +107,7 @@ impl HeadlessState {
             meta: Arc::new(Mutex::new(RuntimeMeta {
                 session_id,
                 approval_mode: None,
+                tool_execution_ids: HashMap::new(),
             })),
             agent: None,
             tool_tx: None,
@@ -127,6 +130,14 @@ impl HeadlessState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .approval_mode = mode;
+    }
+
+    fn bind_tool_execution_id(&self, call_id: String, tool_execution_id: String) {
+        self.meta
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .tool_execution_ids
+            .insert(call_id, tool_execution_id);
     }
 
     fn ensure_session_id(&self) -> String {
@@ -357,6 +368,7 @@ pub async fn run_headless_server() -> Result<i32> {
             }
             ToAgentMessage::ToolResponse {
                 call_id,
+                tool_execution_id,
                 approved,
                 result,
             } => {
@@ -367,9 +379,16 @@ pub async fn run_headless_server() -> Result<i32> {
                 // and emits ToolStart/ToolOutput/ToolEnd itself.
                 if approved {
                     if let Some(ref tool_result) = agent_result {
-                        for msg in tool_lifecycle_messages(&call_id, None, tool_result) {
+                        for msg in tool_lifecycle_messages(
+                            &call_id,
+                            tool_execution_id.as_deref(),
+                            None,
+                            tool_result,
+                        ) {
                             emit(&msg)?;
                         }
+                    } else if let Some(tool_execution_id) = tool_execution_id {
+                        state.bind_tool_execution_id(call_id.clone(), tool_execution_id);
                     }
                 }
                 if let Some(tool_tx) = state.tool_tx.as_ref() {
@@ -386,7 +405,7 @@ pub async fn run_headless_server() -> Result<i32> {
                 let result = client_content_to_agent_result(content, is_error);
                 if let Some(tool_tx) = state.tool_tx.as_ref() {
                     let _ = tool_tx.send((call_id.clone(), true, Some(result.clone())));
-                    for msg in tool_lifecycle_messages(&call_id, None, &result) {
+                    for msg in tool_lifecycle_messages(&call_id, None, None, &result) {
                         emit(&msg)?;
                     }
                 } else {
@@ -1087,6 +1106,10 @@ async fn handle_agent_event(
                 duration_ms: None,
                 ttft_ms: None,
             })?;
+            meta.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .tool_execution_ids
+                .clear();
         }
         FromAgent::ToolCall {
             call_id,
@@ -1127,9 +1150,14 @@ async fn handle_agent_event(
             success,
             receipt,
         } => {
+            let tool_execution_id = meta
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .tool_execution_ids
+                .remove(&call_id);
             emit(&FromAgentMessage::ToolEnd {
                 call_id,
-                tool_execution_id: None,
+                tool_execution_id,
                 success,
                 tool: None,
                 details: None,
@@ -1276,6 +1304,7 @@ fn tool_output_content(result: &ToolResult) -> Option<String> {
 /// Protocol messages for a completed tool run: start → output? → end.
 fn tool_lifecycle_messages(
     call_id: &str,
+    tool_execution_id: Option<&str>,
     tool: Option<String>,
     result: &ToolResult,
 ) -> Vec<FromAgentMessage> {
@@ -1291,7 +1320,7 @@ fn tool_lifecycle_messages(
     }
     msgs.push(FromAgentMessage::ToolEnd {
         call_id: call_id.to_string(),
-        tool_execution_id: None,
+        tool_execution_id: tool_execution_id.map(str::to_string),
         success: result.success,
         tool,
         details: result.details.clone(),
@@ -1411,7 +1440,12 @@ mod tests {
     #[test]
     fn tool_lifecycle_messages_include_tool_output() {
         let result = ToolResult::success("file contents");
-        let msgs = tool_lifecycle_messages("call-1", Some("read".into()), &result);
+        let msgs = tool_lifecycle_messages(
+            "call-1",
+            Some("tool-execution-1"),
+            Some("read".into()),
+            &result,
+        );
         assert_eq!(msgs.len(), 3);
         assert!(matches!(
             &msgs[0],
@@ -1426,17 +1460,20 @@ mod tests {
             &msgs[2],
             FromAgentMessage::ToolEnd {
                 call_id,
+                tool_execution_id: Some(tool_execution_id),
                 success: true,
                 tool: Some(t),
                 ..
-            } if call_id == "call-1" && t == "read"
+            } if call_id == "call-1"
+                && tool_execution_id == "tool-execution-1"
+                && t == "read"
         ));
     }
 
     #[test]
     fn tool_lifecycle_messages_omit_empty_success_output() {
         let result = ToolResult::success("");
-        let msgs = tool_lifecycle_messages("call-2", None, &result);
+        let msgs = tool_lifecycle_messages("call-2", None, None, &result);
         assert_eq!(msgs.len(), 2);
         assert!(matches!(msgs[0], FromAgentMessage::ToolStart { .. }));
         assert!(matches!(

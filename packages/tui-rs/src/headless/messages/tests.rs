@@ -45,6 +45,44 @@ fn tool_end_serializes_typed_receipt_additively() {
 }
 
 #[test]
+fn tool_response_round_trips_governed_execution_id() {
+    let message = ToAgentMessage::ToolResponse {
+        call_id: "call-1".to_string(),
+        tool_execution_id: Some("tool-execution-1".to_string()),
+        approved: true,
+        result: None,
+    };
+
+    let encoded = serde_json::to_value(&message).expect("serialize tool response");
+    assert_eq!(encoded["tool_execution_id"], "tool-execution-1");
+
+    let decoded: ToAgentMessage =
+        serde_json::from_value(encoded).expect("deserialize tool response");
+    assert!(matches!(
+        decoded,
+        ToAgentMessage::ToolResponse {
+            call_id,
+            tool_execution_id: Some(tool_execution_id),
+            approved: true,
+            result: None,
+        } if call_id == "call-1" && tool_execution_id == "tool-execution-1"
+    ));
+}
+
+#[test]
+fn tool_response_omits_absent_execution_id() {
+    let message = ToAgentMessage::ToolResponse {
+        call_id: "call-1".to_string(),
+        tool_execution_id: None,
+        approved: false,
+        result: None,
+    };
+
+    let encoded = serde_json::to_value(&message).expect("serialize tool response");
+    assert_eq!(encoded.get("tool_execution_id"), None);
+}
+
+#[test]
 fn parse_response_chunk() {
     let json =
         r#"{"type":"response_chunk","response_id":"abc","content":"Hello","is_thinking":false}"#;

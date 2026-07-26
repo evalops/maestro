@@ -753,6 +753,7 @@ fn send_approval_response(
             state,
             ToAgentMessage::ToolResponse {
                 call_id: request.call_id.clone(),
+                tool_execution_id: request.tool_execution_id.clone(),
                 approved,
                 result,
             },
