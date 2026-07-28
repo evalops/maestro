@@ -122,6 +122,21 @@ fn is_credential_key(key: &str) -> bool {
     {
         return true;
     }
+    if [
+        "databaseurl",
+        "dburl",
+        "redisurl",
+        "mongodburl",
+        "mongourl",
+        "postgresurl",
+        "postgresqlurl",
+        "mysqlurl",
+        "amqpurl",
+    ]
+    .contains(&normalized.as_str())
+    {
+        return true;
+    }
     normalized.ends_with("token")
         && ![
             "maxtoken",
@@ -158,37 +173,30 @@ pub(crate) fn redact_agent_message(
 }
 
 fn contains_credential_marker(content: &str) -> bool {
-    let normalized = content.to_ascii_lowercase();
-    [
-        "authorization",
-        "api_key",
-        "api-key",
-        "access_token",
-        "access-token",
-        "refresh_token",
-        "refresh-token",
-        "client_secret",
-        "client-secret",
-        "token",
-        "secret",
-        "password",
-        "private_key",
-    ]
-    .iter()
-    .any(|marker| {
-        normalized.match_indices(marker).any(|(index, marker)| {
-            let Some(remainder) = content.get(index + marker.len()..) else {
-                return false;
-            };
-            let remainder = remainder.lines().next().unwrap_or(remainder).trim_start();
-            if let Some(value) = remainder.strip_prefix('=') {
-                return !value.trim().is_empty();
-            }
-            remainder
-                .strip_prefix(':')
-                .is_some_and(looks_like_colon_credential_value)
-        })
-    })
+    content.lines().any(line_contains_credential)
+}
+
+fn line_contains_credential(line: &str) -> bool {
+    let line = line.trim();
+    let line = line.strip_prefix("export ").unwrap_or(line);
+    if let Some((key, value)) = line.split_once('=') {
+        return credential_assignment_key(key).is_some() && !value.trim().is_empty();
+    }
+    if let Some((key, value)) = line.split_once(':') {
+        return credential_assignment_key(key).is_some()
+            && looks_like_colon_credential_value(value);
+    }
+    false
+}
+
+fn credential_assignment_key(value: &str) -> Option<&str> {
+    let value = value.trim().trim_matches(['"', '\'']);
+    (!value.is_empty()
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+        && is_credential_key(value))
+    .then_some(value)
 }
 
 fn looks_like_colon_credential_value(value: &str) -> bool {
@@ -316,10 +324,25 @@ mod tests {
 
         let typed_source = redact_agent_message(FromAgentMessage::ToolOutput {
             call_id: "call".into(),
-            content: "token: Option<String>\npassword: String".into(),
+            content: "token: Option<String>\npassword: String\nlet token = parser.next();".into(),
         });
-        assert!(serde_json::to_string(&typed_source)
+        let typed_source = serde_json::to_string(&typed_source).unwrap();
+        assert!(typed_source.contains("Option<String>"));
+        assert!(typed_source.contains("let token = parser.next();"));
+
+        let connection_url = redact_agent_message(FromAgentMessage::UtilityFileReadResult {
+            read_id: "read".into(),
+            path: "/workspace/.env".into(),
+            relative_path: ".env".into(),
+            cwd: "/workspace".into(),
+            content: "DATABASE_URL=postgres://alice:s3cr3t@db/internal".into(),
+            start_line: 1,
+            end_line: 1,
+            total_lines: 1,
+            truncated: false,
+        });
+        assert!(!serde_json::to_string(&connection_url)
             .unwrap()
-            .contains("Option<String>"));
+            .contains("s3cr3t"));
     }
 }
