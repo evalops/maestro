@@ -153,13 +153,20 @@ fn contains_credential_marker(content: &str) -> bool {
         "refresh-token",
         "client_secret",
         "client-secret",
-        "token=",
-        "secret=",
-        "password=",
+        "token",
+        "secret",
+        "password",
         "private_key",
     ]
     .iter()
-    .any(|marker| normalized.contains(marker))
+    .any(|marker| {
+        normalized.match_indices(marker).any(|(index, marker)| {
+            normalized[index + marker.len()..]
+                .trim_start()
+                .strip_prefix(['=', ':'])
+                .is_some_and(|value| !value.trim().is_empty())
+        })
+    })
 }
 
 #[cfg(test)]
@@ -220,5 +227,13 @@ mod tests {
         assert!(!serde_json::to_string(&utility_output)
             .unwrap()
             .contains("OPENAI_API_KEY"));
+
+        let prose = redact_agent_message(FromAgentMessage::ToolOutput {
+            call_id: "call".into(),
+            content: "search results for authorization middleware".into(),
+        });
+        assert!(serde_json::to_string(&prose)
+            .unwrap()
+            .contains("authorization middleware"));
     }
 }

@@ -435,6 +435,12 @@ impl SharedRunner {
         {
             return (requested, rx);
         }
+        if !coarse_replay_has_complete_response_boundaries(&state.envelopes) {
+            return (
+                vec![self.reset_envelope_from_state(&state, "coarse_replay_incomplete")],
+                rx,
+            );
+        }
         (state.envelopes.iter().cloned().collect(), rx)
     }
 
@@ -469,6 +475,32 @@ impl SharedRunner {
             .cloned()
             .collect()
     }
+}
+
+fn coarse_replay_has_complete_response_boundaries(envelopes: &VecDeque<StreamEnvelope>) -> bool {
+    let mut active_responses = HashSet::new();
+    for envelope in envelopes {
+        let StreamEnvelope::Message { message, .. } = envelope else {
+            continue;
+        };
+        match message.as_ref() {
+            FromAgentMessage::ResponseStart { response_id } => {
+                active_responses.insert(response_id.as_str());
+            }
+            FromAgentMessage::ResponseChunk { response_id, .. }
+                if !active_responses.contains(response_id.as_str()) =>
+            {
+                return false;
+            }
+            FromAgentMessage::ResponseEnd { response_id, .. }
+                if !active_responses.remove(response_id.as_str()) =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    true
 }
 
 fn redacted_pending_snapshot(

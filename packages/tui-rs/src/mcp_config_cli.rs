@@ -187,6 +187,7 @@ fn is_secret_key(key: &str) -> bool {
         "apikey",
         "accesstoken",
         "refreshtoken",
+        "token",
         "password",
         "secret",
         "privatekey",
@@ -350,19 +351,7 @@ fn credential_flag(argument: &str) -> Option<bool> {
     let (name, inline_value) = value
         .split_once('=')
         .map_or((value, false), |(name, _)| (name, true));
-    let normalized = name.replace(['-', '_'], "");
-    matches!(
-        normalized.as_str(),
-        "apikey"
-            | "token"
-            | "secret"
-            | "clientsecret"
-            | "accesstoken"
-            | "refreshtoken"
-            | "bearertoken"
-            | "password"
-    )
-    .then_some(inline_value)
+    is_secret_key(name).then_some(inline_value)
 }
 
 fn mutate_server(path: &Path, name: &str, value: Option<Value>) -> Result<()> {
@@ -442,6 +431,8 @@ mod tests {
         assert!(reject_literal_secrets(&["--client-secret".into(), "secret".into()]).is_err());
         assert!(reject_literal_secrets(&["--access-token=secret".into()]).is_err());
         assert!(reject_literal_secrets(&["--refresh_token".into(), "secret".into()]).is_err());
+        assert!(reject_literal_secrets(&["--auth-token".into(), "secret".into()]).is_err());
+        assert!(reject_literal_secrets(&["--authorization=Bearer secret".into()]).is_err());
         assert!(reject_literal_secrets(&[
             "--token".into(),
             "${SERVICE_TOKEN:-literal-secret}".into()
