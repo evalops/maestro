@@ -132,6 +132,7 @@ pub(crate) fn redact_agent_message(
     match &mut redacted_message {
         crate::headless::messages::FromAgentMessage::ToolOutput { content, .. }
         | crate::headless::messages::FromAgentMessage::UtilityCommandOutput { content, .. }
+        | crate::headless::messages::FromAgentMessage::UtilityFileReadResult { content, .. }
             if contains_credential_marker(content) =>
         {
             *content = "[REDACTED]".to_string();
@@ -227,6 +228,21 @@ mod tests {
         assert!(!serde_json::to_string(&utility_output)
             .unwrap()
             .contains("OPENAI_API_KEY"));
+
+        let file_read = redact_agent_message(FromAgentMessage::UtilityFileReadResult {
+            read_id: "read".into(),
+            path: "/workspace/.env".into(),
+            relative_path: ".env".into(),
+            cwd: "/workspace".into(),
+            content: "SERVICE_TOKEN=file-secret".into(),
+            start_line: 1,
+            end_line: 1,
+            total_lines: 1,
+            truncated: false,
+        });
+        assert!(!serde_json::to_string(&file_read)
+            .unwrap()
+            .contains("file-secret"));
 
         let prose = redact_agent_message(FromAgentMessage::ToolOutput {
             call_id: "call".into(),
