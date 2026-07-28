@@ -130,7 +130,20 @@ impl PluginRegistry {
     /// Discover plugins from default Maestro/composer roots.
     #[must_use]
     pub fn discover() -> Self {
-        Self::discover_from(&default_search_roots())
+        let workspace_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Self::discover_for_workspace(&workspace_dir)
+    }
+
+    /// Discover plugins for an explicit workspace while preserving the
+    /// standard user roots.
+    #[must_use]
+    pub fn discover_for_workspace(workspace_dir: &Path) -> Self {
+        let roots = search_roots_for_workspace(
+            workspace_dir,
+            crate::path_utils::maestro_home_dir().as_deref(),
+            crate::path_utils::legacy_composer_home_dir().as_deref(),
+        );
+        Self::discover_from(&roots)
     }
 
     /// Discover plugins from explicit roots (low → high priority order).
@@ -173,6 +186,7 @@ impl PluginRegistry {
                         .get(&key)
                         .is_some_and(|plugin_state| !plugin_state.enabled)
                     {
+                        by_name.remove(&key);
                         continue;
                     }
                     if !state.capability_enabled(&key, PluginCapability::Skills) {
@@ -504,6 +518,32 @@ mod tests {
         assert_eq!(registry.command_dirs().len(), 1);
         assert_eq!(registry.mcp_paths().len(), 1);
         assert_eq!(registry.hook_configs().len(), 1);
+    }
+
+    #[test]
+    fn disabled_higher_priority_plugin_tombstones_lower_priority_copy() {
+        let tmp = TempDir::new().unwrap();
+        let legacy_root = tmp.path().join("legacy").join("plugins");
+        let native_root = tmp.path().join("native").join("plugins");
+        make_plugin(&legacy_root, "duplicate", true, false);
+        make_plugin(&native_root, "duplicate", true, false);
+        let mut state = manager::PluginState::default();
+        state.plugins.insert(
+            "duplicate".into(),
+            manager::PluginTrustState {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+        state
+            .save(&native_root.parent().unwrap().join("plugin-state.json"))
+            .unwrap();
+
+        let registry = PluginRegistry::discover_from(&[
+            (legacy_root, PluginOrigin::LegacyUser),
+            (native_root, PluginOrigin::User),
+        ]);
+        assert!(registry.get("duplicate").is_none());
     }
 
     #[test]

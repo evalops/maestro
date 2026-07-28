@@ -476,6 +476,7 @@ struct NativeExecOptions {
     approval_mode: Option<String>,
     provider: Option<String>,
     api_key: Option<String>,
+    prompt_stdin: bool,
     prompt: String,
 }
 
@@ -546,6 +547,8 @@ fn parse_native_exec_options(raw_args: &[std::ffi::OsString]) -> NativeExecOptio
             }
         } else if let Some(value) = arg.strip_prefix("--api-key=") {
             options.api_key = Some(value.to_string());
+        } else if arg == "--prompt-stdin" {
+            options.prompt_stdin = true;
         } else if arg == "--worktree" || arg == "-w" {
             // Session worktree is created before dispatch; consume its value
             // so it never leaks into the prompt.
@@ -815,7 +818,7 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
         if cmd == "print" || cmd == "exec" {
             // maestro-tui print|exec [--json] [--model X] [--output-last-message P]
             //   [--output-schema S] <prompt...>
-            let options = parse_native_exec_options(&raw_args[2..]);
+            let mut options = parse_native_exec_options(&raw_args[2..]);
             let env_sandbox = std::env::var("MAESTRO_SANDBOX_MODE").ok();
             let sandbox_value = options.sandbox.as_deref().or(env_sandbox.as_deref());
             let sandbox_policy = match native_exec_sandbox_policy(sandbox_value) {
@@ -834,6 +837,12 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
                         .unwrap_or("openai")
                 });
                 set_provider_api_key(provider, api_key);
+            }
+            if options.prompt_stdin {
+                use tokio::io::AsyncReadExt as _;
+                tokio::io::stdin()
+                    .read_to_string(&mut options.prompt)
+                    .await?;
             }
             if options.prompt.is_empty() {
                 eprintln!(
@@ -1221,6 +1230,14 @@ mod tests {
         let attached = ["-wfeat-x", "fix", "the", "bug"].map(std::ffi::OsString::from);
         let options = parse_native_exec_options(&attached);
         assert_eq!(options.prompt, "fix the bug");
+    }
+
+    #[test]
+    fn native_exec_options_accept_prompt_stdin() {
+        let args = ["--approval-mode", "fail", "--prompt-stdin"].map(std::ffi::OsString::from);
+        let options = parse_native_exec_options(&args);
+        assert!(options.prompt_stdin);
+        assert!(options.prompt.is_empty());
     }
 
     #[test]

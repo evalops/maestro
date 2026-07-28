@@ -200,6 +200,14 @@ pub enum HookSource {
 
 /// Load hook configuration from standard locations
 pub fn load_hook_config(cwd: &Path) -> Result<LoadedHookConfig> {
+    let plugin_paths = crate::plugins::PluginRegistry::discover_for_workspace(cwd).hook_configs();
+    load_hook_config_with_plugin_paths(cwd, &plugin_paths)
+}
+
+fn load_hook_config_with_plugin_paths(
+    cwd: &Path,
+    plugin_paths: &[PathBuf],
+) -> Result<LoadedHookConfig> {
     let mut config = HookConfig::default();
     let mut source_paths = Vec::new();
 
@@ -238,6 +246,22 @@ pub fn load_hook_config(cwd: &Path) -> Result<LoadedHookConfig> {
         source_paths.push(local_config);
     }
 
+    // Plugin discovery has already enforced workspace trust, install trust,
+    // the enabled bit, and the Hooks capability bit. Resolve file-backed hook
+    // payloads relative to the plugin config rather than the workspace.
+    for plugin_path in plugin_paths {
+        let mut plugin_config = match plugin_path.extension().and_then(|value| value.to_str()) {
+            Some("json") => load_json_config_file(plugin_path)?,
+            _ => load_config_file(plugin_path)?,
+        };
+        absolutize_hook_payload_paths(
+            &mut plugin_config,
+            plugin_path.parent().unwrap_or(Path::new(".")),
+        );
+        merge_config(&mut config, plugin_config);
+        source_paths.push(plugin_path.clone());
+    }
+
     // Convert to loaded hooks
     let hooks = config
         .hooks
@@ -257,6 +281,19 @@ pub fn load_hook_config(cwd: &Path) -> Result<LoadedHookConfig> {
         hooks,
         source_paths,
     })
+}
+
+fn absolutize_hook_payload_paths(config: &mut HookConfig, base_dir: &Path) {
+    for hook in &mut config.hooks {
+        for value in [&mut hook.lua_file, &mut hook.wasm] {
+            let Some(path) = value.as_deref() else {
+                continue;
+            };
+            if Path::new(path).is_relative() {
+                *value = Some(base_dir.join(path).to_string_lossy().into_owned());
+            }
+        }
+    }
 }
 
 /// Load a single config file
@@ -480,6 +517,36 @@ fn resolve_path(path: &str, cwd: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_hook_config_is_loaded_and_resolves_payloads_from_plugin() {
+        let temp = tempfile::tempdir().unwrap();
+        let plugin_dir = temp.path().join("plugin");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(plugin_dir.join("guard.lua"), "return {}").unwrap();
+        let plugin_config = plugin_dir.join("hooks.toml");
+        std::fs::write(
+            &plugin_config,
+            r#"
+[[hooks]]
+event = "PreToolUse"
+lua_file = "guard.lua"
+"#,
+        )
+        .unwrap();
+
+        let loaded =
+            load_hook_config_with_plugin_paths(temp.path(), std::slice::from_ref(&plugin_config))
+                .unwrap();
+        assert!(loaded.source_paths.contains(&plugin_config));
+        assert!(matches!(
+            loaded.hooks.as_slice(),
+            [LoadedHook {
+                source: HookSource::LuaFile(path),
+                ..
+            }] if path == &plugin_dir.join("guard.lua")
+        ));
+    }
 
     #[test]
     fn test_parse_config() {

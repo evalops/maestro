@@ -218,12 +218,30 @@ impl McpConfig {
 /// Merged configuration from all sources with proper precedence
 #[must_use]
 pub fn load_mcp_config(project_root: Option<&Path>) -> McpConfig {
+    let plugin_paths = project_root
+        .map(crate::plugins::PluginRegistry::discover_for_workspace)
+        .unwrap_or_else(crate::plugins::PluginRegistry::discover)
+        .mcp_paths();
+    load_mcp_config_with_plugin_paths(project_root, &plugin_paths)
+}
+
+fn load_mcp_config_with_plugin_paths(
+    project_root: Option<&Path>,
+    plugin_paths: &[PathBuf],
+) -> McpConfig {
     let mut merged: HashMap<String, McpServerConfig> = HashMap::new();
 
     // Load in precedence order (lowest first, highest last)
     // User config (lowest precedence)
     if let Some(user_path) = effective_user_config_path() {
         load_config_file(&user_path, McpConfigScope::User, &mut merged);
+    }
+
+    // Plugin discovery already enforces workspace trust, install trust, the
+    // enabled bit, and the MCP capability bit. Treat contributed servers as
+    // project-scoped so stdio transports retain the runtime approval gate.
+    for plugin_path in plugin_paths {
+        load_config_file(plugin_path, McpConfigScope::Project, &mut merged);
     }
 
     // Project configs
@@ -467,6 +485,23 @@ mod tests {
         let server = config.get_server("native-project").unwrap();
         assert_eq!(server.scope, McpConfigScope::Project);
         assert_eq!(server.command.as_deref(), Some("cargo"));
+    }
+
+    #[test]
+    fn plugin_mcp_config_is_loaded_with_project_safety_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let plugin_config = temp.path().join("plugin-mcp.json");
+        std::fs::write(
+            &plugin_config,
+            r#"{"mcpServers":{"plugin-server":{"command":"plugin-agent","args":[]}}}"#,
+        )
+        .unwrap();
+
+        let config = load_mcp_config_with_plugin_paths(None, &[plugin_config]);
+        let server = config.get_server("plugin-server").unwrap();
+        assert_eq!(server.scope, McpConfigScope::Project);
+        assert_eq!(server.command.as_deref(), Some("plugin-agent"));
+        assert!(server_requires_workspace_approval(server));
     }
 
     fn restore_env_var(name: &str, previous: Option<String>) {

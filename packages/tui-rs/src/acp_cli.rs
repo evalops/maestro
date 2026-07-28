@@ -283,13 +283,22 @@ async fn execute_prompt(
     let executable = std::env::current_exe()?;
     let mut command = Command::new(executable);
     command
-        .args(exec_arguments(prompt))
+        .args(exec_arguments())
         .current_dir(cwd)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     let mut child = command.spawn().context("failed to launch Maestro agent")?;
+    let mut child_stdin = child.stdin.take().context("missing Maestro stdin")?;
+    child_stdin
+        .write_all(prompt.as_bytes())
+        .await
+        .context("failed to send prompt to Maestro agent")?;
+    child_stdin
+        .shutdown()
+        .await
+        .context("failed to close Maestro agent stdin")?;
     let mut child_stdout = child.stdout.take().context("missing Maestro stdout")?;
     let mut child_stderr = child.stderr.take().context("missing Maestro stderr")?;
     let stderr_task = tokio::spawn(async move {
@@ -337,8 +346,8 @@ async fn execute_prompt(
     Ok(Some(String::from_utf8_lossy(&response).trim().to_string()))
 }
 
-fn exec_arguments(prompt: &str) -> [&str; 5] {
-    ["exec", "--approval-mode", "fail", "--", prompt]
+fn exec_arguments() -> [&'static str; 4] {
+    ["exec", "--approval-mode", "fail", "--prompt-stdin"]
 }
 
 async fn write_agent_chunk(stdout: &SharedStdout, session_id: &str, text: &str) -> Result<()> {
@@ -425,16 +434,10 @@ mod tests {
     }
 
     #[test]
-    fn exec_prompt_is_delimited_from_options() {
+    fn exec_prompt_is_transferred_over_stdin() {
         assert_eq!(
-            exec_arguments("--model explain-this"),
-            [
-                "exec",
-                "--approval-mode",
-                "fail",
-                "--",
-                "--model explain-this"
-            ]
+            exec_arguments(),
+            ["exec", "--approval-mode", "fail", "--prompt-stdin"]
         );
     }
 }
