@@ -129,6 +129,16 @@ pub fn install(
     if capabilities.is_empty() {
         bail!("plugin contains no supported components");
     }
+    let mut state = PluginState::load(state_path)?;
+    let previous_state = state.clone();
+    state.plugins.insert(
+        name.to_lowercase(),
+        PluginTrustState {
+            trusted_source: source.to_string(),
+            enabled: true,
+            capabilities: capabilities.iter().map(|value| (*value, true)).collect(),
+        },
+    );
 
     fs::create_dir_all(destination_root)?;
     let destination = destination_root.join(&name);
@@ -146,23 +156,32 @@ pub fn install(
     )?;
     fs::rename(&staging, &destination)?;
 
-    let mut state = PluginState::load(state_path)?;
-    state.plugins.insert(
-        name.to_lowercase(),
-        PluginTrustState {
-            trusted_source: source.to_string(),
-            enabled: true,
-            capabilities: capabilities.iter().map(|value| (*value, true)).collect(),
-        },
-    );
-    state.save(state_path)?;
-    fs::remove_file(destination.join(".maestro-untrusted"))
-        .context("trust state saved, but failed to activate installed plugin")?;
+    if let Err(error) = state.save(state_path) {
+        remove_failed_install(&destination)
+            .context("plugin state save failed and installation rollback also failed")?;
+        return Err(error.context("failed to save plugin trust state; installation rolled back"));
+    }
+    if let Err(error) = fs::remove_file(destination.join(".maestro-untrusted")) {
+        remove_failed_install(&destination)
+            .context("plugin activation failed and installation rollback also failed")?;
+        previous_state
+            .save(state_path)
+            .context("plugin activation failed and trust-state rollback also failed")?;
+        return Err(error).context("failed to activate plugin; installation rolled back");
+    }
     Ok(InstallPreview {
         name,
         source: source.to_string(),
         capabilities,
     })
+}
+
+fn remove_failed_install(destination: &Path) -> Result<()> {
+    match fs::remove_dir_all(destination) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub fn set_enabled(state_path: &Path, plugin: &str, enabled: bool) -> Result<()> {
@@ -306,6 +325,32 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("--trust"));
+    }
+
+    #[test]
+    fn malformed_trust_state_leaves_no_installed_plugin() {
+        let source = TempDir::new().unwrap();
+        fs::create_dir(source.path().join("skills")).unwrap();
+        fs::write(
+            source.path().join("plugin.json"),
+            r#"{"name":"retryable-plugin"}"#,
+        )
+        .unwrap();
+        let home = TempDir::new().unwrap();
+        let destination_root = home.path().join("plugins");
+        let state_path = home.path().join("plugin-state.json");
+        fs::write(&state_path, "{not-json").unwrap();
+
+        let error = install(
+            source.path().to_str().unwrap(),
+            &destination_root,
+            &state_path,
+            false,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("invalid plugin-state.json"));
+        assert!(!destination_root.join("retryable-plugin").exists());
     }
 
     #[test]

@@ -487,6 +487,7 @@ fn remote_connection_create_request_serializes_client_tool_flags() {
             server_requests: vec!["approval", "client_tool", "user_input", "tool_retry"],
             utility_operations: vec!["command_exec"],
             raw_agent_events: true,
+            transcript_grade: crate::transcript::TranscriptGrade::Delta,
         }),
         opt_out_notifications: vec!["status".to_string()],
         client: Some("vscode".to_string()),
@@ -509,10 +510,26 @@ fn remote_connection_create_request_serializes_client_tool_flags() {
     assert_eq!(json["capabilities"]["serverRequests"][2], "user_input");
     assert_eq!(json["capabilities"]["serverRequests"][3], "tool_retry");
     assert_eq!(json["capabilities"]["rawAgentEvents"], true);
+    assert_eq!(json["capabilities"]["transcriptGrade"], "delta");
     assert_eq!(json["optOutNotifications"][0], "status");
     assert_eq!(json["client"], "vscode");
     assert_eq!(json["role"], "controller");
     assert_eq!(json["takeControl"], true);
+}
+
+#[test]
+fn remote_http_bootstrap_carries_the_negotiated_transcript_grade() {
+    let request = build_remote_connection_create_request(
+        &RemoteTransportConfig {
+            role: Some("viewer".to_string()),
+            enable_raw_agent_events: false,
+            ..RemoteTransportConfig::default()
+        },
+        None,
+    );
+    let json = serde_json::to_value(request).expect("serialize request");
+
+    assert_eq!(json["capabilities"]["transcriptGrade"], "block");
 }
 
 #[test]
@@ -528,6 +545,7 @@ fn remote_session_subscribe_request_serializes_opt_out_notifications() {
             server_requests: vec!["approval", "client_tool", "user_input"],
             utility_operations: vec!["command_exec", "file_read", "file_watch"],
             raw_agent_events: true,
+            transcript_grade: crate::transcript::TranscriptGrade::Block,
         }),
         role: Some("viewer".to_string()),
         opt_out_notifications: vec!["status".to_string(), "heartbeat".to_string()],
@@ -538,6 +556,7 @@ fn remote_session_subscribe_request_serializes_opt_out_notifications() {
     assert_eq!(json["connectionId"], "conn_remote");
     assert_eq!(json["role"], "viewer");
     assert_eq!(json["capabilities"]["rawAgentEvents"], true);
+    assert_eq!(json["capabilities"]["transcriptGrade"], "block");
     assert_eq!(json["optOutNotifications"][0], "status");
     assert_eq!(json["optOutNotifications"][1], "heartbeat");
 }

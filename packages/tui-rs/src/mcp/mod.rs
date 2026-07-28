@@ -66,6 +66,7 @@ mod prompt_formatting;
 pub mod protocol;
 
 pub use client::{McpClient, McpConnection, McpError, McpRuntimeEvent};
+pub(crate) use config::effective_user_config_path;
 pub use config::{
     expand_env_vars_for_scope, load_mcp_config, server_requires_workspace_approval, McpConfig,
     McpConfigScope, McpServerConfig, McpTransport,

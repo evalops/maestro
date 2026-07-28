@@ -247,7 +247,7 @@ pub fn load_mcp_config(project_root: Option<&Path>) -> McpConfig {
     }
 }
 
-fn effective_user_config_path() -> Option<PathBuf> {
+pub(crate) fn effective_user_config_path() -> Option<PathBuf> {
     select_effective_config_path(user_config_paths())
 }
 
@@ -656,6 +656,20 @@ mod tests {
 
         restore_env_var("MAESTRO_USER_MCP_PATH", previous_override);
         restore_env_var("MAESTRO_HOME", previous_home);
+    }
+
+    #[test]
+    fn effective_path_prefers_an_existing_legacy_candidate() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let preferred = temp.path().join("new").join("mcp.json");
+        let legacy = temp.path().join("legacy").join("mcp.json");
+        std::fs::create_dir_all(legacy.parent().unwrap()).expect("legacy parent");
+        std::fs::write(&legacy, "{}").expect("legacy config");
+
+        assert_eq!(
+            select_effective_config_path(vec![preferred, legacy.clone()]),
+            Some(legacy)
+        );
     }
 
     #[test]

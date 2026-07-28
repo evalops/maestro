@@ -154,9 +154,9 @@ fn target_path(args: &[String], cwd: &Path) -> Result<(PathBuf, &'static str)> {
     }
     match option_value(args, "--scope").unwrap_or("user") {
         "user" => {
-            let home =
-                crate::path_utils::maestro_home_dir().context("could not resolve Maestro home")?;
-            Ok((home.join("mcp.json"), "user"))
+            let path = crate::mcp::effective_user_config_path()
+                .context("could not resolve user MCP configuration path")?;
+            Ok((path, "user"))
         }
         "project" => Ok((cwd.join(".maestro").join("mcp.json"), "project")),
         "local" => Ok((cwd.join(".maestro").join("mcp.local.json"), "local")),
