@@ -768,10 +768,10 @@ impl TranscriptStreamFilter {
                 if let Some((_chunk_cursor, content)) = self.response_chunks.remove(&response_id) {
                     if !content.is_empty() {
                         envelopes.push(StreamEnvelope::Message {
-                            // The aggregate becomes durable only at response
-                            // completion. Giving it the completion cursor keeps
-                            // replay cursors monotonic and resumable.
-                            cursor,
+                            // Response publication reserves this cursor for the
+                            // reconstructed aggregate, leaving the advancing
+                            // completion cursor independently resumable.
+                            cursor: cursor.saturating_sub(1),
                             message: Box::new(FromAgentMessage::ResponseChunk {
                                 response_id: response_id.clone(),
                                 content,

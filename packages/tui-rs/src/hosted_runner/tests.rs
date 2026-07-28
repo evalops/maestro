@@ -358,10 +358,51 @@ fn coarse_stream_resume_reconstructs_full_response_with_monotonic_cursor() {
 
     let output = serde_json::to_value(output).expect("serialize filtered events");
     assert_eq!(output.as_array().expect("events").len(), 2);
-    assert_eq!(output[0]["cursor"], 5);
+    assert_eq!(output[0]["cursor"], 4);
     assert_eq!(output[0]["message"]["content"], "before after");
     assert_eq!(output[1]["cursor"], 5);
     assert_eq!(output[1]["message"]["type"], "response_end");
+}
+
+#[test]
+fn response_completion_reserves_a_cursor_for_the_coarse_aggregate() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    shared.publish_message(
+        &mut state,
+        FromAgentMessage::ResponseStart {
+            response_id: "response".into(),
+        },
+    );
+    shared.publish_message(
+        &mut state,
+        FromAgentMessage::ResponseChunk {
+            response_id: "response".into(),
+            content: "complete".into(),
+            is_thinking: false,
+        },
+    );
+    shared.publish_message(
+        &mut state,
+        FromAgentMessage::ResponseEnd {
+            response_id: "response".into(),
+            usage: None,
+            tools_summary: None,
+            duration_ms: None,
+            ttft_ms: None,
+        },
+    );
+
+    assert_eq!(state.cursor, 4);
+    assert!(matches!(
+        state.envelopes.back(),
+        Some(StreamEnvelope::Message { cursor: 4, message })
+            if matches!(message.as_ref(), FromAgentMessage::ResponseEnd { .. })
+    ));
 }
 
 #[test]

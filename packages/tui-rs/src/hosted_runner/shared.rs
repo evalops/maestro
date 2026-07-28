@@ -359,7 +359,16 @@ impl SharedRunner {
             FromAgentMessage::Error { .. } => state.active_response_ids.clear(),
             _ => {}
         }
-        state.cursor += 1;
+        // Reserve the cursor immediately before a response completion for the
+        // coarse transcript's durable aggregate. This lets a reconnect resume
+        // between the aggregate and ResponseEnd without suppressing either.
+        state.cursor = state.cursor.saturating_add(
+            if matches!(&message, FromAgentMessage::ResponseEnd { .. }) {
+                2
+            } else {
+                1
+            },
+        );
         let envelope = StreamEnvelope::Message {
             cursor: state.cursor,
             message: Box::new(crate::transcript::redact_agent_message(message)),
