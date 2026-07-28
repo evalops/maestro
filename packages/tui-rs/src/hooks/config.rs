@@ -34,7 +34,7 @@
 //! ```
 
 use super::types::HookEventType;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -259,10 +259,11 @@ fn load_hook_config_with_plugin_paths(
             .iter()
             .any(|hook| hook.command.is_some())
         {
-            bail!(
-                "plugin command hooks are unsupported by the Rust runtime: {}",
+            eprintln!(
+                "[hooks] Skipping plugin config with command hooks unsupported by the Rust runtime: {}",
                 plugin_path.display()
             );
+            continue;
         }
         absolutize_hook_payload_paths(
             &mut plugin_config,
@@ -574,15 +575,14 @@ command = "./hooks/validate-tool.sh"
         )
         .unwrap();
 
-        let error = load_hook_config_with_trust_and_plugins(
+        let loaded = load_hook_config_with_trust_and_plugins(
             temp.path(),
             false,
             std::slice::from_ref(&plugin_config),
         )
-        .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("plugin command hooks are unsupported"));
+        .unwrap();
+        assert!(loaded.hooks.is_empty());
+        assert!(!loaded.source_paths.contains(&plugin_config));
     }
 
     #[test]

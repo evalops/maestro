@@ -137,6 +137,11 @@ fn redact_argument_array(values: &mut [Value]) {
             secret_value_follows = false;
             continue;
         };
+        if authorization_header_has_literal_credential(argument) {
+            *value = Value::String("[REDACTED]".to_string());
+            secret_value_follows = false;
+            continue;
+        }
         if secret_value_follows {
             if !is_plain_env_reference(argument) {
                 *value = Value::String("[REDACTED]".to_string());
@@ -286,6 +291,9 @@ fn stdio_options(args: &[String]) -> Result<(Vec<String>, Map<String, Value>)> {
 fn reject_literal_secrets(args: &[String]) -> Result<()> {
     let mut secret_value_follows = false;
     for argument in args {
+        if authorization_header_has_literal_credential(argument) {
+            bail!("literal secrets are not allowed; use --env VAR");
+        }
         if secret_value_follows && !is_plain_env_reference(argument) {
             bail!("literal secrets are not allowed; use --env VAR");
         }
@@ -303,6 +311,24 @@ fn reject_literal_secrets(args: &[String]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn authorization_header_has_literal_credential(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    let Some(index) = lower.find("authorization:") else {
+        return false;
+    };
+    let value = value[index + "authorization:".len()..].trim();
+    let lower_value = value.to_ascii_lowercase();
+    let credential = lower_value
+        .strip_prefix("bearer ")
+        .or_else(|| lower_value.strip_prefix("basic "))
+        .map_or(value, |_| {
+            value
+                .split_once(' ')
+                .map_or(value, |(_, credential)| credential)
+        });
+    !credential.is_empty() && !is_plain_env_reference(credential)
 }
 
 fn is_plain_env_reference(value: &str) -> bool {
@@ -401,6 +427,16 @@ mod tests {
         assert!(reject_literal_secrets(&["--auth-token".into(), "secret".into()]).is_err());
         assert!(reject_literal_secrets(&["--authorization=Bearer secret".into()]).is_err());
         assert!(reject_literal_secrets(&[
+            "--header".into(),
+            "Authorization: Bearer literal-secret".into()
+        ])
+        .is_err());
+        assert!(reject_literal_secrets(&[
+            "--header".into(),
+            "Authorization: Bearer ${SERVICE_TOKEN}".into()
+        ])
+        .is_ok());
+        assert!(reject_literal_secrets(&[
             "--token".into(),
             "${SERVICE_TOKEN:-literal-secret}".into()
         ])
@@ -430,6 +466,7 @@ mod tests {
                     "--token", "literal-arg-secret",
                     "--client-secret=${CLIENT_SECRET}",
                     "--auth-token", "${AUTH_TOKEN:-literal-fallback}",
+                    "--header", "Authorization: Bearer header-secret",
                     "--verbose"
                 ]
             },
@@ -461,6 +498,7 @@ mod tests {
         assert_eq!(listed[0]["args"][1], "[REDACTED]");
         assert_eq!(listed[0]["args"][2], "--client-secret=${CLIENT_SECRET}");
         assert_eq!(listed[0]["args"][4], "[REDACTED]");
+        assert!(!listed.to_string().contains("header-secret"));
         assert_eq!(listed[2]["name"], "private-key-service");
         assert_eq!(listed[2]["command"], "safe-command");
     }

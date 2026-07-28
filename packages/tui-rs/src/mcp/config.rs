@@ -253,10 +253,10 @@ fn load_mcp_config_with_plugin_paths(
     if let Some(root) = project_root {
         // Legacy Composer paths are loaded first; native Maestro paths win.
         for directory in [".composer", ".maestro"] {
-            let local_path = root.join(directory).join("mcp.local.json");
-            load_config_file(&local_path, McpConfigScope::Local, None, &mut merged);
             let project_path = root.join(directory).join("mcp.json");
             load_config_file(&project_path, McpConfigScope::Project, None, &mut merged);
+            let local_path = root.join(directory).join("mcp.local.json");
+            load_config_file(&local_path, McpConfigScope::Local, None, &mut merged);
         }
     }
 
@@ -519,6 +519,28 @@ mod tests {
         let server = config.get_server("native-project").unwrap();
         assert_eq!(server.scope, McpConfigScope::Project);
         assert_eq!(server.command.as_deref(), Some("cargo"));
+    }
+
+    #[test]
+    fn local_mcp_config_overrides_shared_project_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join(".maestro");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("mcp.json"),
+            r#"{"mcpServers":{"server":{"command":"shared"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("mcp.local.json"),
+            r#"{"mcpServers":{"server":{"command":"local"}}}"#,
+        )
+        .unwrap();
+
+        let config = load_mcp_config(Some(temp.path()));
+        let server = config.get_server("server").unwrap();
+        assert_eq!(server.scope, McpConfigScope::Local);
+        assert_eq!(server.command.as_deref(), Some("local"));
     }
 
     #[test]
