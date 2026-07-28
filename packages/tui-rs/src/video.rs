@@ -36,6 +36,7 @@ pub async fn extract_frames(path: &Path) -> Result<Vec<String>> {
     if metadata.len() > MAX_VIDEO_BYTES {
         bail!("video exceeds the 100 MiB input limit");
     }
+    let duration = probe_duration(path).await?;
     let temporary = tempfile::TempDir::new()?;
     let pattern = temporary.path().join("frame-%03d.jpg");
     let mut command = Command::new("ffmpeg");
@@ -46,7 +47,7 @@ pub async fn extract_frames(path: &Path) -> Result<Vec<String>> {
         .arg("-i")
         .arg(path)
         .arg("-vf")
-        .arg("select='eq(n,0)+gte(t-prev_selected_t,5)',scale='min(1280,iw)':-2,format=yuvj420p")
+        .arg(sampling_filter(duration))
         .args(["-fps_mode", "vfr"])
         .arg("-frames:v")
         .arg(MAX_FRAMES.to_string())
@@ -83,6 +84,48 @@ pub async fn extract_frames(path: &Path) -> Result<Vec<String>> {
         .collect()
 }
 
+async fn probe_duration(path: &Path) -> Result<f64> {
+    let mut command = Command::new("ffprobe");
+    command
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+        ])
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(10), command.output())
+        .await
+        .context("video duration probe exceeded 10 seconds")?
+        .context("ffprobe is required for video attachments")?;
+    if !output.status.success() {
+        bail!(
+            "video duration probe failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let duration = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<f64>()
+        .context("ffprobe returned an invalid video duration")?;
+    if !duration.is_finite() || duration <= 0.0 {
+        bail!("video duration must be positive");
+    }
+    Ok(duration)
+}
+
+fn sampling_filter(duration: f64) -> String {
+    let final_timestamp = duration * 0.999;
+    let frames_per_second = (MAX_FRAMES.saturating_sub(1) as f64) / final_timestamp;
+    format!("fps={frames_per_second:.9},scale='min(1280,iw)':-2,format=yuvj420p")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,15 +140,30 @@ mod tests {
         assert_eq!(detect_video_mime(Path::new("clip.txt")), None);
     }
 
+    #[test]
+    fn sampling_rate_spans_the_full_video() {
+        let filter = sampling_filter(80.0);
+        let rate = filter
+            .strip_prefix("fps=")
+            .and_then(|value| value.split(',').next())
+            .and_then(|value| value.parse::<f64>().ok())
+            .expect("sampling rate");
+        let last_timestamp = (MAX_FRAMES - 1) as f64 / rate;
+
+        assert!(last_timestamp > 79.0);
+        assert!(last_timestamp < 80.0);
+    }
+
     #[tokio::test]
     async fn extracts_bounded_frames_when_ffmpeg_is_available() {
-        if std::process::Command::new("ffmpeg")
-            .arg("-version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_err()
-        {
+        if ["ffmpeg", "ffprobe"].iter().any(|command| {
+            std::process::Command::new(command)
+                .arg("-version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_err()
+        }) {
             return;
         }
         let temporary = tempfile::tempdir().unwrap();

@@ -91,14 +91,16 @@ pub struct ResolvedModelInspection {
     pub protocol: String,
     pub base_url: Option<String>,
     pub auth_configured: bool,
-    pub capabilities: ModelCapabilities,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ModelCapabilities>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInspection {
     pub id: String,
-    pub catalog: ModelInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<ModelInfo>,
     pub resolved: ResolvedModelInspection,
     pub sources: BTreeMap<String, String>,
 }
@@ -183,7 +185,7 @@ fn inspect_model_with_env(
     id: &str,
     env: &HashMap<String, String>,
 ) -> anyhow::Result<ModelInspection> {
-    let catalog = find_model(id).ok_or_else(|| anyhow::anyhow!("unknown model: {id}"))?;
+    let catalog = find_model(id);
     let resolved = ProviderRegistry::resolve(id, env)?;
     let mut sources = BTreeMap::new();
     let cache_wins = catalog_cache_path()
@@ -193,7 +195,9 @@ fn inspect_model_with_env(
         });
     sources.insert(
         "catalog".to_string(),
-        if cache_wins {
+        if catalog.is_none() {
+            "uncataloged"
+        } else if cache_wins {
             "runtime-cache"
         } else {
             "bundled"
@@ -235,7 +239,15 @@ fn inspect_model_with_env(
             |name| format!("environment:{name}"),
         );
     sources.insert("baseUrl".to_string(), base_url_source);
-    sources.insert("capabilities".to_string(), "catalog".to_string());
+    sources.insert(
+        "capabilities".to_string(),
+        if catalog.is_some() {
+            "catalog"
+        } else {
+            "unavailable"
+        }
+        .to_string(),
+    );
 
     Ok(ModelInspection {
         id: id.to_string(),
@@ -244,7 +256,7 @@ fn inspect_model_with_env(
             protocol: protocol_name(resolved.provider.protocol).to_string(),
             base_url: resolved.base_url.as_deref().map(redact_endpoint),
             auth_configured: resolved.credential.is_some(),
-            capabilities: catalog.capabilities.clone(),
+            capabilities: catalog.as_ref().map(|catalog| catalog.capabilities.clone()),
         },
         catalog,
         sources,
@@ -649,6 +661,18 @@ mod tests {
         assert_eq!(inspection.sources["auth"], "environment:OPENAI_API_KEY");
         assert_eq!(inspection.sources["baseUrl"], "environment:OPENAI_BASE_URL");
         assert_eq!(inspection.resolved.provider, "openai");
+    }
+
+    #[test]
+    fn model_inspection_resolves_uncataloged_models() {
+        let inspection =
+            inspect_model_with_env("openai/future-custom-model", &HashMap::new()).unwrap();
+
+        assert!(inspection.catalog.is_none());
+        assert!(inspection.resolved.capabilities.is_none());
+        assert_eq!(inspection.resolved.provider, "openai");
+        assert_eq!(inspection.sources["catalog"], "uncataloged");
+        assert_eq!(inspection.sources["capabilities"], "unavailable");
     }
 
     #[test]
