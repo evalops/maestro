@@ -169,12 +169,16 @@ fn build_mcp_config_watcher() -> ConfigWatcher {
         builder = builder
             .watch(home.join(".composer").join("mcp.json"))
             .watch(home.join(".composer").join("enterprise").join("mcp.json"))
+            .watch(home.join(".maestro").join("mcp.json"))
+            .watch(home.join(".maestro").join("enterprise").join("mcp.json"))
             .watch(home.join(".maestro").join("keybindings.json"));
     }
 
     builder
         .watch(".composer/mcp.json")
         .watch(".composer/mcp.local.json")
+        .watch(".maestro/mcp.json")
+        .watch(".maestro/mcp.local.json")
         .watch(crate::keybindings::keybindings_config_path())
         .build()
         .unwrap_or_default()
@@ -183,8 +187,15 @@ fn build_mcp_config_watcher() -> ConfigWatcher {
 fn is_mcp_config_path(path: &std::path::Path) -> bool {
     path.ends_with(std::path::Path::new(".composer").join("mcp.json"))
         || path.ends_with(std::path::Path::new(".composer").join("mcp.local.json"))
+        || path.ends_with(std::path::Path::new(".maestro").join("mcp.json"))
+        || path.ends_with(std::path::Path::new(".maestro").join("mcp.local.json"))
         || path.ends_with(
             std::path::Path::new(".composer")
+                .join("enterprise")
+                .join("mcp.json"),
+        )
+        || path.ends_with(
+            std::path::Path::new(".maestro")
                 .join("enterprise")
                 .join("mcp.json"),
         )
@@ -369,7 +380,9 @@ fn render_mcp_status_lines(servers: &[crate::tools::McpServerStatus]) -> Vec<Str
     if servers.is_empty() {
         lines.push("No MCP servers configured.".to_string());
         lines.push(String::new());
-        lines.push("Add servers to ~/.composer/mcp.json or .composer/mcp.json:".to_string());
+        lines.push(
+            "Use `/mcp-config help`, or edit ~/.maestro/mcp.json or .maestro/mcp.json:".to_string(),
+        );
         lines.push(String::new());
         lines.push(
             "{ \"mcpServers\": { \"my-server\": { \"command\": \"npx\", \"args\": [\"-y\", \"@example/mcp-server\"] } } }"

@@ -26,10 +26,14 @@
 
 mod discovery;
 mod loader;
+mod manager;
 mod manifest;
 
 pub use discovery::{default_search_roots, search_roots_for_workspace, PluginOrigin};
 pub use loader::{load_manifest, resolve_components, PluginComponents};
+pub use manager::{
+    install, set_capability, set_enabled, InstallPreview, PluginCapability, PluginState,
+};
 pub use manifest::PluginManifest;
 
 use std::collections::HashMap;
@@ -140,6 +144,20 @@ impl PluginRegistry {
             if !root.is_dir() {
                 continue;
             }
+            let state = match root
+                .parent()
+                .map(|parent| PluginState::load(&parent.join("plugin-state.json")))
+                .transpose()
+            {
+                Ok(state) => state.unwrap_or_default(),
+                Err(error) => {
+                    eprintln!(
+                        "[plugins] refusing to load {}: invalid trust state: {error}",
+                        root.display()
+                    );
+                    continue;
+                }
+            };
             let Ok(entries) = fs::read_dir(root) else {
                 continue;
             };
@@ -148,8 +166,27 @@ impl PluginRegistry {
                 if !path.is_dir() {
                     continue;
                 }
-                if let Some(plugin) = load_plugin_dir(&path, *origin) {
+                if let Some(mut plugin) = load_plugin_dir(&path, *origin) {
                     let key = plugin.name.to_lowercase();
+                    if state
+                        .plugins
+                        .get(&key)
+                        .is_some_and(|plugin_state| !plugin_state.enabled)
+                    {
+                        continue;
+                    }
+                    if !state.capability_enabled(&key, PluginCapability::Skills) {
+                        plugin.components.skills_dir = None;
+                    }
+                    if !state.capability_enabled(&key, PluginCapability::Commands) {
+                        plugin.components.commands_dir = None;
+                    }
+                    if !state.capability_enabled(&key, PluginCapability::Hooks) {
+                        plugin.components.hooks_config = None;
+                    }
+                    if !state.capability_enabled(&key, PluginCapability::Mcp) {
+                        plugin.components.mcp_path = None;
+                    }
                     by_name.insert(key, plugin);
                 }
             }
@@ -269,6 +306,9 @@ impl PluginRegistry {
 }
 
 fn load_plugin_dir(path: &Path, origin: PluginOrigin) -> Option<DiscoveredPlugin> {
+    if path.join(".maestro-untrusted").exists() {
+        return None;
+    }
     let dir_name = path.file_name()?.to_str()?.to_string();
     // Skip hidden directories (e.g. .git under plugins root).
     if dir_name.starts_with('.') {
@@ -436,6 +476,17 @@ mod tests {
         assert_eq!(registry.len(), 1);
         assert!(registry.get("visible").is_some());
         assert!(registry.get(".hidden").is_none());
+    }
+
+    #[test]
+    fn skips_incomplete_untrusted_installs() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("plugins");
+        let plugin = root.join("incomplete");
+        fs::create_dir_all(plugin.join("skills")).unwrap();
+        write_file(&plugin.join(".maestro-untrusted"), "incomplete");
+        let registry = PluginRegistry::discover_from(&[(root, PluginOrigin::User)]);
+        assert!(registry.is_empty());
     }
 
     #[test]

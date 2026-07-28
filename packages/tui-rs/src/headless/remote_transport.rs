@@ -957,6 +957,11 @@ fn build_remote_hello_message(config: &RemoteTransportConfig) -> ToAgentMessage 
             server_requests: Some(build_remote_server_request_types(config)),
             utility_operations: Some(build_remote_utility_operation_types(config)),
             raw_agent_events: Some(config.enable_raw_agent_events),
+            transcript_grade: Some(if config.enable_raw_agent_events {
+                crate::transcript::TranscriptGrade::Delta
+            } else {
+                crate::transcript::TranscriptGrade::Block
+            }),
         }),
         role: build_remote_connection_role(config),
         opt_out_notifications: (!config.opt_out_notifications.is_empty())

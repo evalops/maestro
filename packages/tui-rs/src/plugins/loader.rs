@@ -2,7 +2,7 @@
 
 use super::manifest::PluginManifest;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Resolved component paths for a single plugin package.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -64,16 +64,14 @@ pub fn resolve_components(
 
 fn resolve_dir(root: &Path, explicit: Option<&str>, conventions: &[&str]) -> Option<PathBuf> {
     if let Some(rel) = explicit {
-        let path = root.join(rel);
-        if path.is_dir() {
+        if let Some(path) = contained_component(root, rel).filter(|path| path.is_dir()) {
             return Some(path);
         }
         // Explicit path missing: do not fall through to conventions.
         return None;
     }
     for rel in conventions {
-        let path = root.join(rel);
-        if path.is_dir() {
+        if let Some(path) = contained_component(root, rel).filter(|path| path.is_dir()) {
             return Some(path);
         }
     }
@@ -82,19 +80,37 @@ fn resolve_dir(root: &Path, explicit: Option<&str>, conventions: &[&str]) -> Opt
 
 fn resolve_file(root: &Path, explicit: Option<&str>, conventions: &[&str]) -> Option<PathBuf> {
     if let Some(rel) = explicit {
-        let path = root.join(rel);
-        if path.is_file() {
+        if let Some(path) = contained_component(root, rel).filter(|path| path.is_file()) {
             return Some(path);
         }
         return None;
     }
     for rel in conventions {
-        let path = root.join(rel);
-        if path.is_file() {
+        if let Some(path) = contained_component(root, rel).filter(|path| path.is_file()) {
             return Some(path);
         }
     }
     None
+}
+
+fn contained_component(root: &Path, relative: &str) -> Option<PathBuf> {
+    let relative = Path::new(relative);
+    if relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return None;
+    }
+    let canonical_root = dunce::canonicalize(root).ok()?;
+    let candidate = root.join(relative);
+    let canonical_candidate = dunce::canonicalize(&candidate).ok()?;
+    canonical_candidate
+        .starts_with(&canonical_root)
+        .then_some(candidate)
 }
 
 #[cfg(test)]
@@ -167,5 +183,20 @@ mod tests {
         };
         let components = resolve_components(tmp.path(), Some(&manifest));
         assert!(components.skills_dir.is_none());
+    }
+
+    #[test]
+    fn manifest_paths_cannot_escape_plugin_root() {
+        let tmp = TempDir::new().unwrap();
+        let plugin = tmp.path().join("plugin");
+        fs::create_dir_all(&plugin).unwrap();
+        write_file(&tmp.path().join("outside.json"), "{}");
+        let manifest = PluginManifest {
+            mcp: Some("../outside.json".into()),
+            ..Default::default()
+        };
+        assert!(resolve_components(&plugin, Some(&manifest))
+            .mcp_path
+            .is_none());
     }
 }

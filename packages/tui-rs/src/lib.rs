@@ -55,6 +55,7 @@
 /// Handles spawning, messaging, and coordinating with the AI agent subprocess.
 pub mod agent;
 
+pub mod acp_cli;
 pub mod agents_cli;
 /// AI provider clients (Anthropic, OpenAI, etc.).
 /// Provides unified interfaces for different AI APIs with streaming support.
@@ -214,6 +215,7 @@ pub mod scenario_cli;
 pub mod search_cli;
 pub mod update_cli;
 pub mod value_cli;
+pub mod video;
 
 /// Droid-style session worktrees (`-w` / `--worktree`).
 pub mod worktree;
@@ -249,6 +251,7 @@ pub mod wrapping;
 /// Model Context Protocol (MCP) client.
 /// Connects to external MCP servers for additional tools and capabilities.
 pub mod mcp;
+pub mod mcp_config_cli;
 
 /// LSP diagnostics bridge (optional Node-based CLI integration).
 pub mod lsp;
@@ -256,6 +259,7 @@ pub mod lsp;
 /// Telemetry and wide events.
 /// Canonical turn events with tail sampling for observability.
 pub mod telemetry;
+pub mod transcript;
 
 /// Usage and cost tracking.
 /// Tracks token consumption and estimates costs across sessions.

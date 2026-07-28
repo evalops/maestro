@@ -1424,12 +1424,47 @@ impl NativeAgentRunner {
                 continue;
             }
 
-            if meta.len() > Self::MAX_ATTACHMENT_BYTES {
+            let video_mime = crate::video::detect_video_mime(&path);
+            let attachment_limit = if video_mime.is_some() {
+                crate::video::MAX_VIDEO_BYTES
+            } else {
+                Self::MAX_ATTACHMENT_BYTES
+            };
+            if meta.len() > attachment_limit {
                 let size_mb = meta.len().div_ceil(1024 * 1024);
                 let _ = self.event_tx.send(FromAgent::Error {
                     message: format!("Attachment too large ({size_mb}MB): {raw}"),
                     fatal: false,
                 });
+                continue;
+            }
+
+            if let Some(mime) = video_mime {
+                match crate::video::extract_frames(&path).await {
+                    Ok(frames) => {
+                        blocks.push(ContentBlock::Text {
+                            text: format!(
+                                "\n\n[Video: {} ({mime}); {} sampled frames follow]",
+                                path.file_name()
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or(raw),
+                                frames.len()
+                            ),
+                        });
+                        blocks.extend(frames.into_iter().map(|data| ContentBlock::Image {
+                            source: ImageSource::Base64 {
+                                media_type: "image/jpeg".to_string(),
+                                data,
+                            },
+                        }));
+                    }
+                    Err(error) => {
+                        let _ = self.event_tx.send(FromAgent::Error {
+                            message: format!("Failed to process video attachment {raw}: {error}"),
+                            fatal: false,
+                        });
+                    }
+                }
                 continue;
             }
 

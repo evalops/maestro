@@ -77,6 +77,8 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
         "context" => crate::context_cli::run_context(&args[1..]).await,
         "run" => crate::run_cli::run_run(&args[1..]).await,
         "a2a" => crate::a2a_cli::run_a2a(&args[1..]).await,
+        "acp" => crate::acp_cli::run_acp(&args[1..]).await,
+        "mcp" => crate::mcp_config_cli::run_mcp_config(&args[1..]),
         "plugins" | "plugin" => crate::plugins_cli::run_plugins(&args[1..]),
         other => bail!("unknown command: {other}"),
     }
@@ -639,6 +641,36 @@ fn run_stats(args: &[String]) -> Result<i32> {
 }
 
 fn run_models(args: &[String]) -> Result<i32> {
+    if args.first().is_some_and(|arg| arg == "inspect") {
+        let model = args
+            .get(1)
+            .filter(|arg| !arg.starts_with('-'))
+            .context("Usage: maestro models inspect <model-id> [--json]")?;
+        let inspection = crate::model_catalog::inspect_model(model)?;
+        if args.iter().any(|arg| arg == "--json") {
+            println!("{}", serde_json::to_string_pretty(&inspection)?);
+        } else {
+            println!("Model: {}", inspection.id);
+            println!("Provider: {}", inspection.resolved.provider);
+            println!("Protocol: {}", inspection.resolved.protocol);
+            println!(
+                "Authentication: {} ({})",
+                if inspection.resolved.auth_configured {
+                    "configured"
+                } else {
+                    "not configured"
+                },
+                inspection.sources["auth"]
+            );
+            println!(
+                "Base URL: {} ({})",
+                inspection.resolved.base_url.as_deref().unwrap_or("(none)"),
+                inspection.sources["baseUrl"]
+            );
+            println!("Catalog: {}", inspection.sources["catalog"]);
+        }
+        return Ok(0);
+    }
     let mut sub = "list";
     let mut provider_filter: Option<String> = None;
     let mut i = 0usize;
@@ -648,7 +680,10 @@ fn run_models(args: &[String]) -> Result<i32> {
             "list" | "ls" => sub = "list",
             "providers" => sub = "providers",
             "help" | "--help" | "-h" => {
-                println!("Usage: maestro-tui models [list|providers] [--provider <name>]");
+                println!(
+                    "Usage: maestro-tui models [list|providers] [--provider <name>]\n\
+                     \x20      maestro-tui models inspect <model-id> [--json]"
+                );
                 return Ok(0);
             }
             "--provider" | "-p" => {

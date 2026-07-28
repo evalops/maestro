@@ -1496,6 +1496,12 @@ Manual snapshot: `/magic-trace stop`",
         use crate::commands::McpAction;
 
         match action {
+            McpAction::Configure { args } => match crate::mcp_config_cli::apply_mcp_config(&args) {
+                Ok(message) => self.state.add_system_message(message),
+                Err(error) => self
+                    .state
+                    .add_system_message(format!("MCP configuration failed: {error}")),
+            },
             McpAction::Status => match self.tool_executor.mcp_status().await {
                 Ok(servers) => {
                     self.update_mcp_badge_counts(&servers);

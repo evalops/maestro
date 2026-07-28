@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use crate::path_utils::{legacy_composer_home_dir, maestro_home_dir};
@@ -18,6 +18,7 @@ struct PluginArgs {
     positionals: Vec<String>,
     json: bool,
     workspace: Option<PathBuf>,
+    trust: bool,
     help: bool,
 }
 
@@ -94,6 +95,62 @@ pub fn run_plugins(args: &[String]) -> Result<i32> {
             };
             run_info(&registry, name, parsed.json)
         }
+        "install" => {
+            let source = parsed
+                .positionals
+                .first()
+                .context("Usage: maestro plugins install <path-or-git-url> [--trust]")?;
+            let home = maestro_home_dir().context("could not resolve ~/.maestro")?;
+            let preview = crate::plugins::install(
+                source,
+                &home.join("plugins"),
+                &home.join("plugin-state.json"),
+                parsed.trust,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&preview)?);
+            Ok(0)
+        }
+        "enable" | "disable" => {
+            let name = parsed
+                .positionals
+                .first()
+                .context("Usage: maestro plugins enable|disable <name>")?;
+            let home = maestro_home_dir().context("could not resolve ~/.maestro")?;
+            crate::plugins::set_enabled(
+                &home.join("plugin-state.json"),
+                name,
+                command == "enable",
+            )?;
+            println!("{name}: {command}d");
+            Ok(0)
+        }
+        "capability" => {
+            let name = parsed.positionals.first().context(
+                "Usage: maestro plugins capability <name> <skills|commands|hooks|mcp> <on|off>",
+            )?;
+            let capability = parsed
+                .positionals
+                .get(1)
+                .context("missing plugin capability")
+                .and_then(|value| crate::plugins::PluginCapability::parse(value))?;
+            let enabled = match parsed.positionals.get(2).map(String::as_str) {
+                Some("on" | "enable" | "enabled") => true,
+                Some("off" | "disable" | "disabled") => false,
+                _ => bail!("capability state must be on or off"),
+            };
+            let home = maestro_home_dir().context("could not resolve ~/.maestro")?;
+            crate::plugins::set_capability(
+                &home.join("plugin-state.json"),
+                name,
+                capability,
+                enabled,
+            )?;
+            println!(
+                "{name} {capability:?}: {}",
+                if enabled { "on" } else { "off" }
+            );
+            Ok(0)
+        }
         // Bare plugin name after `maestro plugins <name>` → info lookup.
         other if parsed.positionals.is_empty() && !other.starts_with('-') => {
             run_info(&registry, other, parsed.json)
@@ -113,6 +170,7 @@ fn parse_args(args: &[String]) -> Result<PluginArgs> {
         let arg = &args[index];
         match arg.as_str() {
             "--json" => parsed.json = true,
+            "--trust" => parsed.trust = true,
             "--help" | "-h" => parsed.help = true,
             "--workspace" | "--cwd" => {
                 let value = args
@@ -145,9 +203,13 @@ fn print_help() {
 Commands:\n\
   list                   List discovered plugins (default)\n\
   info <name>            Show one plugin's path, origin, and components\n\
+  install <path|git-url> Install a plugin; git URLs require --trust\n\
+  enable|disable <name>  Toggle the whole plugin\n\
+  capability <name> <skills|commands|hooks|mcp> <on|off>\n\
   <name>                 Alias for info <name>\n\n\
 Options:\n\
   --json                 Emit machine-readable JSON\n\
+  --trust                Explicitly trust and execute remote plugin code\n\
   --workspace <path>     Discover relative to this workspace (default: cwd)\n\
   --help, -h             Show this help\n\n\
 Discovery roots (high wins on name collision):\n\
@@ -155,7 +217,7 @@ Discovery roots (high wins on name collision):\n\
   ~/.maestro/plugins/<name>/ user\n\
   .composer/plugins/<name>/  legacy project\n\
   ~/.composer/plugins/<name>/ legacy user\n\n\
-Install is not yet implemented; place packages under a discovery root."
+Installed plugin code and each capability remain independently disableable."
     );
 }
 

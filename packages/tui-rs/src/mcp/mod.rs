@@ -18,9 +18,9 @@
 //! MCP servers are configured via JSON files with precedence:
 //!
 //! 1. Enterprise: `~/.composer/enterprise/mcp.json`
-//! 2. Project: `.composer/mcp.json`
-//! 3. Local: `.composer/mcp.local.json` (git-ignored)
-//! 4. User: `~/.composer/mcp.json`
+//! 2. Project: `.maestro/mcp.json` (legacy `.composer` also supported)
+//! 3. Local: `.maestro/mcp.local.json` (git-ignored)
+//! 4. User: `~/.maestro/mcp.json` (legacy `.composer` also supported)
 //!
 //! # Example Configuration
 //!

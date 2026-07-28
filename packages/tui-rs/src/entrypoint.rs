@@ -47,7 +47,8 @@ use crate::sandbox::SandboxPolicy;
 // HELPER FUNCTIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NATIVE_UTILITY_COMMANDS: [&str; 33] = [
+const NATIVE_UTILITY_COMMANDS: [&str; 35] = [
+    "acp",
     "sessions",
     "search",
     "cost",
@@ -65,6 +66,7 @@ const NATIVE_UTILITY_COMMANDS: [&str; 33] = [
     "painter",
     "anthropic",
     "memory",
+    "mcp",
     "init",
     "openai",
     "config",

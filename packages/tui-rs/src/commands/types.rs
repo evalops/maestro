@@ -434,6 +434,8 @@ pub enum ToolHistoryAction {
 pub enum McpAction {
     /// Show MCP server status
     Status,
+    /// Mutate MCP configuration through the native safe configurator.
+    Configure { args: Vec<String> },
     /// List or read MCP resources
     Resources {
         server: Option<String>,

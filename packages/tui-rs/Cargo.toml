@@ -63,6 +63,9 @@ toml = "0.8"
 libc.workspace = true
 rayon = "1.10"
 zip.workspace = true
+tempfile = "3"
+tree-sitter.workspace = true
+tree-sitter-bash.workspace = true
 pdf-extract = "0.7"
 urlencoding = "2"
 zeroize = "1"
@@ -131,7 +134,6 @@ hooks-full = ["lua", "wasm", "hot-reload"]
 
 [dev-dependencies]
 pretty_assertions = "1"
-tempfile = "3"
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [build-dependencies]

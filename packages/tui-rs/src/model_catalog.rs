@@ -14,6 +14,7 @@
 //! 3. Unknown model ids are not in the catalog at all and keep passing
 //!    through to the provider registry unchanged.
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
@@ -81,6 +82,25 @@ pub struct ModelInfo {
     pub description: String,
     pub capabilities: ModelCapabilities,
     pub verification: ModelVerification,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedModelInspection {
+    pub provider: String,
+    pub protocol: String,
+    pub base_url: Option<String>,
+    pub auth_configured: bool,
+    pub capabilities: ModelCapabilities,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInspection {
+    pub id: String,
+    pub catalog: ModelInfo,
+    pub resolved: ResolvedModelInspection,
+    pub sources: BTreeMap<String, String>,
 }
 
 /// Upstream community catalog (MIT-licensed) that feeds both the bundled
@@ -151,6 +171,103 @@ pub fn available_models() -> Vec<ModelInfo> {
     maybe_spawn_background_refresh();
     let cache = catalog_cache_path().and_then(|path| load_cache(&path));
     select_models(&BUNDLED_CATALOG, cache.as_ref()).to_vec()
+}
+
+/// Inspect the exact native model/provider resolution while retaining per-field
+/// provenance and never returning credential material.
+pub fn inspect_model(id: &str) -> anyhow::Result<ModelInspection> {
+    inspect_model_with_env(id, &std::env::vars().collect())
+}
+
+fn inspect_model_with_env(
+    id: &str,
+    env: &HashMap<String, String>,
+) -> anyhow::Result<ModelInspection> {
+    let catalog = find_model(id).ok_or_else(|| anyhow::anyhow!("unknown model: {id}"))?;
+    let resolved = ProviderRegistry::resolve(id, env)?;
+    let mut sources = BTreeMap::new();
+    let cache_wins = catalog_cache_path()
+        .and_then(|path| load_cache(&path))
+        .is_some_and(|cache| {
+            !cache.models.is_empty() && cache.fetched_at >= BUNDLED_CATALOG.generated_at
+        });
+    sources.insert(
+        "catalog".to_string(),
+        if cache_wins {
+            "runtime-cache"
+        } else {
+            "bundled"
+        }
+        .to_string(),
+    );
+    sources.insert(
+        "provider".to_string(),
+        if id.contains('/') {
+            "model-id-prefix"
+        } else {
+            "model-family-inference"
+        }
+        .to_string(),
+    );
+    sources.insert(
+        "auth".to_string(),
+        resolved
+            .auth_source
+            .as_ref()
+            .map_or_else(|| "none".to_string(), |name| format!("environment:{name}")),
+    );
+    let base_url_source = resolved
+        .provider
+        .base_url_env
+        .iter()
+        .find(|name| {
+            env.get(**name)
+                .is_some_and(|value| !value.trim().is_empty())
+        })
+        .map_or_else(
+            || {
+                if resolved.provider.default_base_url.is_some() {
+                    "builtin".to_string()
+                } else {
+                    "none".to_string()
+                }
+            },
+            |name| format!("environment:{name}"),
+        );
+    sources.insert("baseUrl".to_string(), base_url_source);
+    sources.insert("capabilities".to_string(), "catalog".to_string());
+
+    Ok(ModelInspection {
+        id: id.to_string(),
+        resolved: ResolvedModelInspection {
+            provider: resolved.provider.id.to_string(),
+            protocol: protocol_name(resolved.provider.protocol).to_string(),
+            base_url: resolved.base_url.as_deref().map(redact_endpoint),
+            auth_configured: resolved.credential.is_some(),
+            capabilities: catalog.capabilities.clone(),
+        },
+        catalog,
+        sources,
+    })
+}
+
+fn redact_endpoint(value: &str) -> String {
+    let Ok(mut url) = url::Url::parse(value) else {
+        return if value.contains(['@', '?', '#']) {
+            "[configured endpoint]".to_string()
+        } else {
+            value.to_string()
+        };
+    };
+    if !url.username().is_empty() {
+        let _ = url.set_username("[redacted]");
+    }
+    if url.password().is_some() {
+        let _ = url.set_password(Some("[redacted]"));
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
 }
 
 /// Bundled snapshot only; used where the runtime overlay must not leak in.
@@ -513,6 +630,27 @@ mod tests {
             assert_eq!(model.provider, provider);
         }
         assert_eq!(default_model_for_provider("nope"), None);
+    }
+
+    #[test]
+    fn model_inspection_reports_provenance_without_secret_values() {
+        let mut env = std::collections::HashMap::new();
+        env.insert(
+            "OPENAI_API_KEY".to_string(),
+            "super-secret-value".to_string(),
+        );
+        env.insert(
+            "OPENAI_BASE_URL".to_string(),
+            "https://user:password@gateway.example.test/v1?token=secret".to_string(),
+        );
+        let inspection = inspect_model_with_env("openai/gpt-5.5", &env).unwrap();
+        let json = serde_json::to_string(&inspection).unwrap();
+        assert!(!json.contains("super-secret-value"));
+        assert!(!json.contains("password"));
+        assert!(!json.contains("token=secret"));
+        assert_eq!(inspection.sources["auth"], "environment:OPENAI_API_KEY");
+        assert_eq!(inspection.sources["baseUrl"], "environment:OPENAI_BASE_URL");
+        assert_eq!(inspection.resolved.provider, "openai");
     }
 
     #[test]

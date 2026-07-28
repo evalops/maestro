@@ -228,13 +228,13 @@ pub fn load_mcp_config(project_root: Option<&Path>) -> McpConfig {
 
     // Project configs
     if let Some(root) = project_root {
-        // Local config (git-ignored)
-        let local_path = root.join(".composer").join("mcp.local.json");
-        load_config_file(&local_path, McpConfigScope::Local, &mut merged);
-
-        // Project config
-        let project_path = root.join(".composer").join("mcp.json");
-        load_config_file(&project_path, McpConfigScope::Project, &mut merged);
+        // Legacy Composer paths are loaded first; native Maestro paths win.
+        for directory in [".composer", ".maestro"] {
+            let local_path = root.join(directory).join("mcp.local.json");
+            load_config_file(&local_path, McpConfigScope::Local, &mut merged);
+            let project_path = root.join(directory).join("mcp.json");
+            load_config_file(&project_path, McpConfigScope::Project, &mut merged);
+        }
     }
 
     // Enterprise config (highest precedence)
@@ -452,6 +452,22 @@ mod tests {
     use std::sync::{LazyLock, Mutex};
 
     static ENV_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    #[test]
+    fn native_project_config_is_loaded() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join(".maestro");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("mcp.json"),
+            r#"{"mcpServers":{"native-project":{"command":"cargo","args":[]}}}"#,
+        )
+        .unwrap();
+        let config = load_mcp_config(Some(temp.path()));
+        let server = config.get_server("native-project").unwrap();
+        assert_eq!(server.scope, McpConfigScope::Project);
+        assert_eq!(server.command.as_deref(), Some("cargo"));
+    }
 
     fn restore_env_var(name: &str, previous: Option<String>) {
         if let Some(value) = previous {

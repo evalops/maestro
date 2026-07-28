@@ -193,6 +193,8 @@ struct HttpClientCapabilities {
     utility_operations: Option<Vec<UtilityOperation>>,
     #[serde(rename = "rawAgentEvents")]
     raw_agent_events: Option<bool>,
+    #[serde(rename = "transcriptGrade")]
+    transcript_grade: Option<crate::transcript::TranscriptGrade>,
 }
 
 impl From<HttpClientCapabilities> for ClientCapabilities {
@@ -201,6 +203,7 @@ impl From<HttpClientCapabilities> for ClientCapabilities {
             server_requests: value.server_requests,
             utility_operations: value.utility_operations,
             raw_agent_events: value.raw_agent_events,
+            transcript_grade: value.transcript_grade,
         }
     }
 }

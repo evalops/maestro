@@ -30,6 +30,8 @@ tokio = { version = "1" }
 tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4"] }
 zip = "2"
+tree-sitter = "0.25"
+tree-sitter-bash = "0.25.1"
 
 # Keep local release builds quick enough for iteration while still enabling
 # cross-crate optimization for the distributed binary.
