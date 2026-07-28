@@ -242,7 +242,7 @@ fn stream_message(cursor: u64, message: FromAgentMessage) -> StreamEnvelope {
 
 #[test]
 fn block_stream_filter_coalesces_text_and_omits_delta_events() {
-    let mut filter = TranscriptStreamFilter::new(crate::transcript::TranscriptGrade::Block);
+    let mut filter = TranscriptStreamFilter::new(crate::transcript::TranscriptGrade::Block, 0);
     let mut output = Vec::new();
     for envelope in [
         stream_message(
@@ -305,14 +305,63 @@ fn block_stream_filter_coalesces_text_and_omits_delta_events() {
     let output = serde_json::to_value(output).expect("serialize filtered events");
     assert_eq!(output.as_array().expect("events").len(), 4);
     assert_eq!(output[0]["message"]["type"], "response_start");
-    assert_eq!(output[1]["cursor"], 3);
-    assert_eq!(output[1]["message"]["type"], "response_chunk");
-    assert_eq!(output[1]["message"]["content"], "hello");
-    assert_eq!(output[2]["cursor"], 5);
-    assert_eq!(output[2]["message"]["type"], "tool_start");
+    assert_eq!(output[1]["cursor"], 5);
+    assert_eq!(output[1]["message"]["type"], "tool_start");
+    assert_eq!(output[2]["cursor"], 6);
+    assert_eq!(output[2]["message"]["type"], "response_chunk");
+    assert_eq!(output[2]["message"]["content"], "hello");
     assert_eq!(output[3]["message"]["type"], "response_end");
     assert!(!output.to_string().contains("hidden thought"));
     assert!(!output.to_string().contains("delta"));
+}
+
+#[test]
+fn coarse_stream_resume_reconstructs_full_response_with_monotonic_cursor() {
+    let mut filter = TranscriptStreamFilter::new(crate::transcript::TranscriptGrade::Turn, 3);
+    let mut output = Vec::new();
+    for envelope in [
+        stream_message(
+            1,
+            FromAgentMessage::ResponseStart {
+                response_id: "response".to_string(),
+            },
+        ),
+        stream_message(
+            2,
+            FromAgentMessage::ResponseChunk {
+                response_id: "response".to_string(),
+                content: "before".to_string(),
+                is_thinking: false,
+            },
+        ),
+        stream_message(
+            4,
+            FromAgentMessage::ResponseChunk {
+                response_id: "response".to_string(),
+                content: " after".to_string(),
+                is_thinking: false,
+            },
+        ),
+        stream_message(
+            5,
+            FromAgentMessage::ResponseEnd {
+                response_id: "response".to_string(),
+                usage: None,
+                tools_summary: None,
+                duration_ms: None,
+                ttft_ms: None,
+            },
+        ),
+    ] {
+        output.extend(filter.apply(envelope));
+    }
+
+    let output = serde_json::to_value(output).expect("serialize filtered events");
+    assert_eq!(output.as_array().expect("events").len(), 2);
+    assert_eq!(output[0]["cursor"], 5);
+    assert_eq!(output[0]["message"]["content"], "before after");
+    assert_eq!(output[1]["cursor"], 5);
+    assert_eq!(output[1]["message"]["type"], "response_end");
 }
 
 #[test]
@@ -327,8 +376,8 @@ fn transcript_filters_are_connection_local() {
             },
         )
     };
-    let mut delta = TranscriptStreamFilter::new(crate::transcript::TranscriptGrade::Delta);
-    let mut off = TranscriptStreamFilter::new(crate::transcript::TranscriptGrade::Off);
+    let mut delta = TranscriptStreamFilter::new(crate::transcript::TranscriptGrade::Delta, 0);
+    let mut off = TranscriptStreamFilter::new(crate::transcript::TranscriptGrade::Off, 0);
 
     assert_eq!(delta.apply(response_chunk()).len(), 1);
     assert!(off.apply(response_chunk()).is_empty());

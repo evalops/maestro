@@ -198,6 +198,7 @@ fn validate_http_url(value: &str) -> Result<()> {
             "token"
                 | "apikey"
                 | "secret"
+                | "clientsecret"
                 | "password"
                 | "accesstoken"
                 | "refreshtoken"
@@ -349,6 +350,7 @@ mod tests {
         assert!(validate_http_url("https://example.test/mcp?token=secret").is_err());
         assert!(validate_http_url("https://example.test/mcp?access_token=secret").is_err());
         assert!(validate_http_url("https://example.test/mcp?refresh-token=secret").is_err());
+        assert!(validate_http_url("https://example.test/mcp?client_secret=secret").is_err());
         assert!(validate_http_url("http://127.0.0.1:3000/mcp").is_ok());
     }
 

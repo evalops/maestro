@@ -414,6 +414,30 @@ impl SharedRunner {
         (self.replay_from_state(&state, cursor), rx)
     }
 
+    /// Coarse transcript filtering needs the retained response prefix to
+    /// reconstruct an aggregate after reconnect. Replay the full retained
+    /// window while the filter suppresses outputs at or before the requested
+    /// cursor. Preserve the normal reset behavior when the cursor has fallen
+    /// outside that window.
+    pub(super) fn subscribe_coarse_from(
+        &self,
+        cursor: u64,
+    ) -> (Vec<StreamEnvelope>, broadcast::Receiver<StreamEnvelope>) {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let rx = self.events.subscribe();
+        let requested = self.replay_from_state(&state, cursor);
+        if requested
+            .iter()
+            .any(|envelope| matches!(envelope, StreamEnvelope::Reset { .. }))
+        {
+            return (requested, rx);
+        }
+        (state.envelopes.iter().cloned().collect(), rx)
+    }
+
     fn replay_from_state(&self, state: &RunnerState, cursor: u64) -> Vec<StreamEnvelope> {
         let first_cursor = state.envelopes.iter().find_map(|envelope| match envelope {
             StreamEnvelope::Message { cursor, .. } | StreamEnvelope::Heartbeat { cursor } => {

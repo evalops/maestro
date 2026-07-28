@@ -676,15 +676,17 @@ enum ResponseBody {
 
 struct TranscriptStreamFilter {
     grade: crate::transcript::TranscriptGrade,
+    resume_cursor: u64,
     response_chunks: HashMap<String, (u64, String)>,
     active_responses: HashSet<String>,
     deferred_blocks: Vec<StreamEnvelope>,
 }
 
 impl TranscriptStreamFilter {
-    fn new(grade: crate::transcript::TranscriptGrade) -> Self {
+    fn new(grade: crate::transcript::TranscriptGrade, resume_cursor: u64) -> Self {
         Self {
             grade,
+            resume_cursor,
             response_chunks: HashMap::new(),
             active_responses: HashSet::new(),
             deferred_blocks: Vec::new(),
@@ -692,6 +694,18 @@ impl TranscriptStreamFilter {
     }
 
     fn apply(&mut self, envelope: StreamEnvelope) -> Vec<StreamEnvelope> {
+        self.apply_unfiltered(envelope)
+            .into_iter()
+            .filter(|envelope| match envelope {
+                StreamEnvelope::Message { cursor, .. } | StreamEnvelope::Heartbeat { cursor } => {
+                    self.resume_cursor == 0 || *cursor > self.resume_cursor
+                }
+                StreamEnvelope::Snapshot { .. } | StreamEnvelope::Reset { .. } => true,
+            })
+            .collect()
+    }
+
+    fn apply_unfiltered(&mut self, envelope: StreamEnvelope) -> Vec<StreamEnvelope> {
         let StreamEnvelope::Message { cursor, message } = envelope else {
             return vec![envelope];
         };
@@ -737,10 +751,14 @@ impl TranscriptStreamFilter {
             } => {
                 let mut envelopes = Vec::new();
                 self.active_responses.remove(&response_id);
-                if let Some((chunk_cursor, content)) = self.response_chunks.remove(&response_id) {
+                envelopes.append(&mut self.deferred_blocks);
+                if let Some((_chunk_cursor, content)) = self.response_chunks.remove(&response_id) {
                     if !content.is_empty() {
                         envelopes.push(StreamEnvelope::Message {
-                            cursor: chunk_cursor,
+                            // The aggregate becomes durable only at response
+                            // completion. Giving it the completion cursor keeps
+                            // replay cursors monotonic and resumable.
+                            cursor,
                             message: Box::new(FromAgentMessage::ResponseChunk {
                                 response_id: response_id.clone(),
                                 content,
@@ -749,7 +767,6 @@ impl TranscriptStreamFilter {
                         });
                     }
                 }
-                envelopes.append(&mut self.deferred_blocks);
                 envelopes.push(StreamEnvelope::Message {
                     cursor,
                     message: Box::new(FromAgentMessage::ResponseEnd {
@@ -1161,19 +1178,23 @@ fn handle_events(
             replay,
             rx,
             shared,
-            filter: TranscriptStreamFilter::new(grade),
+            filter: TranscriptStreamFilter::new(grade, 0),
         });
     }
     let cursor = query
         .get("cursor")
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0);
-    let (replay, rx) = shared.subscribe_from(cursor);
+    let (replay, rx) = if grade == crate::transcript::TranscriptGrade::Delta {
+        shared.subscribe_from(cursor)
+    } else {
+        shared.subscribe_coarse_from(cursor)
+    };
     Ok(ResponseBody::Sse {
         replay,
         rx,
         shared,
-        filter: TranscriptStreamFilter::new(grade),
+        filter: TranscriptStreamFilter::new(grade, cursor),
     })
 }
 

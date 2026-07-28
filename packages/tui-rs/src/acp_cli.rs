@@ -13,7 +13,7 @@ use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
 
 type SharedStdout = Arc<Mutex<tokio::io::Stdout>>;
-type ActivePrompts = Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>;
+type ActivePrompts = Arc<Mutex<HashMap<String, Option<oneshot::Sender<()>>>>>;
 type SharedSessions = Arc<Mutex<HashMap<String, AcpSession>>>;
 
 #[derive(Default)]
@@ -181,7 +181,7 @@ pub async fn run_acp(_args: &[String]) -> Result<i32> {
                 active_prompts
                     .lock()
                     .await
-                    .insert(session_id.to_string(), cancel_tx);
+                    .insert(session_id.to_string(), Some(cancel_tx));
                 let task_stdout = Arc::clone(&stdout);
                 let task_active = Arc::clone(&active_prompts);
                 let task_sessions = Arc::clone(&sessions);
@@ -220,7 +220,12 @@ pub async fn run_acp(_args: &[String]) -> Result<i32> {
             }
             "session/cancel" => {
                 if let Some(session_id) = params.get("sessionId").and_then(Value::as_str) {
-                    if let Some(sender) = active_prompts.lock().await.remove(session_id) {
+                    if let Some(sender) = active_prompts
+                        .lock()
+                        .await
+                        .get_mut(session_id)
+                        .and_then(Option::take)
+                    {
                         let _ = sender.send(());
                     }
                 }
@@ -439,5 +444,16 @@ mod tests {
             exec_arguments(),
             ["exec", "--approval-mode", "fail", "--prompt-stdin"]
         );
+    }
+
+    #[test]
+    fn cancelling_prompt_keeps_session_busy_until_task_cleanup() {
+        let (sender, _receiver) = oneshot::channel();
+        let mut active = HashMap::from([("session".to_string(), Some(sender))]);
+        let sender = active.get_mut("session").and_then(Option::take).unwrap();
+        let _ = sender.send(());
+
+        assert!(active.contains_key("session"));
+        assert!(active["session"].is_none());
     }
 }

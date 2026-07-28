@@ -123,7 +123,10 @@ async fn probe_duration(path: &Path) -> Result<f64> {
 fn sampling_filter(duration: f64) -> String {
     let final_timestamp = duration * 0.999;
     let frames_per_second = (MAX_FRAMES.saturating_sub(1) as f64) / final_timestamp;
-    format!("fps={frames_per_second:.9},scale='min(1280,iw)':-2,format=yuvj420p")
+    format!(
+        "fps={frames_per_second:.9},scale='min(1280,iw)':'min(1280,ih)':\
+         force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuvj420p"
+    )
 }
 
 #[cfg(test)]
@@ -152,6 +155,8 @@ mod tests {
 
         assert!(last_timestamp > 79.0);
         assert!(last_timestamp < 80.0);
+        assert!(filter.contains("'min(1280,iw)':'min(1280,ih)'"));
+        assert!(filter.contains("force_original_aspect_ratio=decrease"));
     }
 
     #[tokio::test]
