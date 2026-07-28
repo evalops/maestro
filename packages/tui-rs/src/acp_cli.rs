@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
@@ -15,6 +15,58 @@ use uuid::Uuid;
 type SharedStdout = Arc<Mutex<tokio::io::Stdout>>;
 type ActivePrompts = Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>;
 type SharedSessions = Arc<Mutex<HashMap<String, AcpSession>>>;
+
+#[derive(Default)]
+struct Utf8StreamDecoder {
+    pending: Vec<u8>,
+}
+
+impl Utf8StreamDecoder {
+    fn push(&mut self, bytes: &[u8]) -> String {
+        self.pending.extend_from_slice(bytes);
+        self.take_available(false)
+    }
+
+    fn finish(&mut self) -> String {
+        self.take_available(true)
+    }
+
+    fn take_available(&mut self, eof: bool) -> String {
+        let mut output = String::new();
+        loop {
+            match std::str::from_utf8(&self.pending) {
+                Ok(text) => {
+                    output.push_str(text);
+                    self.pending.clear();
+                    break;
+                }
+                Err(error) => {
+                    let valid = error.valid_up_to();
+                    if valid > 0 {
+                        output.push_str(
+                            std::str::from_utf8(&self.pending[..valid])
+                                .expect("validated UTF-8 prefix"),
+                        );
+                        self.pending.drain(..valid);
+                    }
+                    match error.error_len() {
+                        Some(length) => {
+                            output.push(char::REPLACEMENT_CHARACTER);
+                            self.pending.drain(..length);
+                        }
+                        None if eof => {
+                            output.push_str(&String::from_utf8_lossy(&self.pending));
+                            self.pending.clear();
+                            break;
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+        output
+    }
+}
 
 #[derive(Debug)]
 struct AcpSession {
@@ -135,7 +187,14 @@ pub async fn run_acp(_args: &[String]) -> Result<i32> {
                 let task_sessions = Arc::clone(&sessions);
                 let task_session_id = session_id.to_string();
                 tokio::spawn(async move {
-                    let result = execute_prompt(&cwd, &execution_prompt, cancel_rx).await;
+                    let result = execute_prompt(
+                        &cwd,
+                        &execution_prompt,
+                        cancel_rx,
+                        &task_stdout,
+                        &task_session_id,
+                    )
+                    .await;
                     task_active.lock().await.remove(&task_session_id);
                     match result {
                         Ok(Some(text)) => {
@@ -143,30 +202,6 @@ pub async fn run_acp(_args: &[String]) -> Result<i32> {
                                 task_sessions.lock().await.get_mut(&task_session_id)
                             {
                                 session.history.push((prompt, text.clone()));
-                            }
-                            let mut journal = crate::transcript::TranscriptJournal::new(16);
-                            journal.push(
-                                crate::transcript::TranscriptLevel::Block,
-                                "agent_message",
-                                json!({"text":text}),
-                            );
-                            for event in journal.after(0, crate::transcript::TranscriptGrade::Block)
-                            {
-                                let _ = write_message(
-                                    &task_stdout,
-                                    &json!({
-                                        "jsonrpc":"2.0",
-                                        "method":"session/update",
-                                        "params":{
-                                            "sessionId":task_session_id,
-                                            "update":{
-                                                "sessionUpdate":"agent_message_chunk",
-                                                "content":{"type":"text","text":event.payload["text"]}
-                                            }
-                                        }
-                                    }),
-                                )
-                                .await;
                             }
                             let _ =
                                 write_result(&task_stdout, id, json!({"stopReason":"end_turn"}))
@@ -242,6 +277,8 @@ async fn execute_prompt(
     cwd: &Path,
     prompt: &str,
     mut cancelled: oneshot::Receiver<()>,
+    acp_stdout: &SharedStdout,
+    session_id: &str,
 ) -> Result<Option<String>> {
     let executable = std::env::current_exe()?;
     let mut command = Command::new(executable);
@@ -252,20 +289,70 @@ async fn execute_prompt(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let output = tokio::select! {
-        output = command.output() => output.context("failed to launch Maestro agent")?,
-        _ = &mut cancelled => return Ok(None),
-    };
-    if !output.status.success() {
-        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let mut child = command.spawn().context("failed to launch Maestro agent")?;
+    let mut child_stdout = child.stdout.take().context("missing Maestro stdout")?;
+    let mut child_stderr = child.stderr.take().context("missing Maestro stderr")?;
+    let stderr_task = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        child_stderr.read_to_end(&mut bytes).await.map(|_| bytes)
+    });
+    let mut response = Vec::new();
+    let mut decoder = Utf8StreamDecoder::default();
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let read = tokio::select! {
+            read = child_stdout.read(&mut buffer) => read.context("failed to read Maestro output")?,
+            _ = &mut cancelled => {
+                let _ = child.kill().await;
+                return Ok(None);
+            },
+        };
+        if read == 0 {
+            break;
+        }
+        response.extend_from_slice(&buffer[..read]);
+        let chunk = decoder.push(&buffer[..read]);
+        if !chunk.is_empty() {
+            write_agent_chunk(acp_stdout, session_id, &chunk).await?;
+        }
+    }
+    let final_chunk = decoder.finish();
+    if !final_chunk.is_empty() {
+        write_agent_chunk(acp_stdout, session_id, &final_chunk).await?;
+    }
+    let status = child
+        .wait()
+        .await
+        .context("failed to wait for Maestro agent")?;
+    let stderr = stderr_task
+        .await
+        .context("failed to join Maestro stderr reader")??;
+    if !status.success() {
+        let message = String::from_utf8_lossy(&stderr).trim().to_string();
         anyhow::bail!(
             "Maestro agent exited with {}: {message}",
-            output.status.code().unwrap_or(1)
+            status.code().unwrap_or(1)
         );
     }
-    Ok(Some(
-        String::from_utf8_lossy(&output.stdout).trim().to_string(),
-    ))
+    Ok(Some(String::from_utf8_lossy(&response).trim().to_string()))
+}
+
+async fn write_agent_chunk(stdout: &SharedStdout, session_id: &str, text: &str) -> Result<()> {
+    write_message(
+        stdout,
+        &json!({
+            "jsonrpc":"2.0",
+            "method":"session/update",
+            "params":{
+                "sessionId":session_id,
+                "update":{
+                    "sessionUpdate":"agent_message_chunk",
+                    "content":{"type":"text","text":text}
+                }
+            }
+        }),
+    )
+    .await
 }
 
 async fn write_result(stdout: &SharedStdout, id: Value, result: Value) -> Result<()> {
@@ -320,5 +407,16 @@ mod tests {
         assert!(prompt.contains("<user>\nRemember the codename is Juniper.\n</user>"));
         assert!(prompt.contains("<assistant>\nI will remember Juniper.\n</assistant>"));
         assert!(prompt.ends_with("<user>\nWhat is the codename?\n</user>"));
+    }
+
+    #[test]
+    fn streaming_decoder_preserves_split_unicode() {
+        let mut decoder = Utf8StreamDecoder::default();
+        let bytes = "A€B".as_bytes();
+
+        assert_eq!(decoder.push(&bytes[..2]), "A");
+        assert_eq!(decoder.push(&bytes[2..3]), "");
+        assert_eq!(decoder.push(&bytes[3..]), "€B");
+        assert_eq!(decoder.finish(), "");
     }
 }
