@@ -253,18 +253,11 @@ fn inspect_model_with_env(
 
 fn redact_endpoint(value: &str) -> String {
     let Ok(mut url) = url::Url::parse(value) else {
-        return if value.contains(['@', '?', '#']) {
-            "[configured endpoint]".to_string()
-        } else {
-            value.to_string()
-        };
+        return "[configured endpoint]".to_string();
     };
-    if !url.username().is_empty() {
-        let _ = url.set_username("[redacted]");
-    }
-    if url.password().is_some() {
-        let _ = url.set_password(Some("[redacted]"));
-    }
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_path("/");
     url.set_query(None);
     url.set_fragment(None);
     url.to_string()
@@ -641,13 +634,18 @@ mod tests {
         );
         env.insert(
             "OPENAI_BASE_URL".to_string(),
-            "https://user:password@gateway.example.test/v1?token=secret".to_string(),
+            "https://user:password@gateway.example.test/v1/path-secret?token=secret".to_string(),
         );
         let inspection = inspect_model_with_env("openai/gpt-5.5", &env).unwrap();
         let json = serde_json::to_string(&inspection).unwrap();
         assert!(!json.contains("super-secret-value"));
         assert!(!json.contains("password"));
+        assert!(!json.contains("path-secret"));
         assert!(!json.contains("token=secret"));
+        assert_eq!(
+            inspection.resolved.base_url.as_deref(),
+            Some("https://gateway.example.test/")
+        );
         assert_eq!(inspection.sources["auth"], "environment:OPENAI_API_KEY");
         assert_eq!(inspection.sources["baseUrl"], "environment:OPENAI_BASE_URL");
         assert_eq!(inspection.resolved.provider, "openai");

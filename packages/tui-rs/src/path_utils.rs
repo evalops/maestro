@@ -57,33 +57,25 @@ pub(crate) fn atomic_private_write(path: &Path, bytes: &[u8]) -> anyhow::Result<
         .parent()
         .ok_or_else(|| anyhow::anyhow!("configuration path has no parent"))?;
     fs::create_dir_all(parent)?;
-    let temporary = parent.join(format!(
-        ".{}.tmp-{}",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("maestro"),
-        uuid::Uuid::new_v4()
-    ));
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
+    let mut temporary = tempfile::Builder::new()
+        .prefix(&format!(
+            ".{}.tmp-",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("maestro")
+        ))
+        .tempfile_in(parent)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        use std::os::unix::fs::PermissionsExt;
+        temporary
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600))?;
     }
-    let mut file = options.open(&temporary)?;
-    if let Err(error) = (|| -> std::io::Result<()> {
-        file.write_all(bytes)?;
-        file.write_all(b"\n")?;
-        file.sync_all()
-    })() {
-        let _ = fs::remove_file(&temporary);
-        return Err(error.into());
-    }
-    if let Err(error) = fs::rename(&temporary, path) {
-        let _ = fs::remove_file(&temporary);
-        return Err(error.into());
-    }
+    temporary.write_all(bytes)?;
+    temporary.write_all(b"\n")?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
     Ok(())
 }
 
@@ -143,5 +135,19 @@ mod tests {
         assert_eq!(maestro_home_dir(), Some(home.join(".maestro")));
 
         restore_env_var("MAESTRO_HOME", previous);
+    }
+
+    #[test]
+    fn atomic_private_write_replaces_existing_file() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let path = temporary.path().join("config.json");
+
+        atomic_private_write(&path, br#"{"value":1}"#).expect("initial write");
+        atomic_private_write(&path, br#"{"value":2}"#).expect("replacement write");
+
+        assert_eq!(
+            fs::read_to_string(path).expect("read replacement"),
+            "{\"value\":2}\n"
+        );
     }
 }

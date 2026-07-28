@@ -181,9 +181,12 @@ fn prompt_text(params: &Value) -> String {
         .into_iter()
         .flatten()
         .filter_map(|block| match block.get("type").and_then(Value::as_str) {
-            Some("text" | "resource_link" | "resource") => {
-                block.get("text").and_then(Value::as_str)
-            }
+            Some("text" | "resource_link") => block.get("text").and_then(Value::as_str),
+            Some("resource") => block
+                .get("resource")
+                .and_then(|resource| resource.get("text"))
+                .or_else(|| block.get("text"))
+                .and_then(Value::as_str),
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -252,9 +255,10 @@ mod tests {
             "prompt":[
                 {"type":"text","text":"hello"},
                 {"type":"image","data":"ignored"},
-                {"type":"resource","text":"context"}
+                {"type":"resource","resource":{"uri":"file:///context.md","text":"context"}},
+                {"type":"resource","text":"legacy context"}
             ]
         });
-        assert_eq!(prompt_text(&params), "hello\ncontext");
+        assert_eq!(prompt_text(&params), "hello\ncontext\nlegacy context");
     }
 }
