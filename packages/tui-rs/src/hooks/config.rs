@@ -34,7 +34,7 @@
 //! ```
 
 use super::types::HookEventType;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -254,6 +254,16 @@ fn load_hook_config_with_plugin_paths(
             Some("json") => load_json_config_file(plugin_path)?,
             _ => load_config_file(plugin_path)?,
         };
+        if plugin_config
+            .hooks
+            .iter()
+            .any(|hook| hook.command.is_some())
+        {
+            bail!(
+                "plugin command hooks are unsupported by the Rust runtime: {}",
+                plugin_path.display()
+            );
+        }
         absolutize_hook_payload_paths(
             &mut plugin_config,
             plugin_path.parent().unwrap_or(Path::new(".")),
@@ -546,6 +556,33 @@ lua_file = "guard.lua"
                 ..
             }] if path == &plugin_dir.join("guard.lua")
         ));
+    }
+
+    #[test]
+    fn plugin_command_hooks_are_rejected_as_unsupported() {
+        let temp = tempfile::tempdir().unwrap();
+        let plugin_dir = temp.path().join("plugin");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        let plugin_config = plugin_dir.join("hooks.toml");
+        std::fs::write(
+            &plugin_config,
+            r#"
+[[hooks]]
+event = "PreToolUse"
+command = "./hooks/validate-tool.sh"
+"#,
+        )
+        .unwrap();
+
+        let error = load_hook_config_with_trust_and_plugins(
+            temp.path(),
+            false,
+            std::slice::from_ref(&plugin_config),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("plugin command hooks are unsupported"));
     }
 
     #[test]

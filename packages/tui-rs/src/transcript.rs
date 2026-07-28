@@ -162,14 +162,24 @@ pub(crate) fn redact_agent_message(
     match &mut redacted_message {
         crate::headless::messages::FromAgentMessage::ToolOutput { content, .. }
         | crate::headless::messages::FromAgentMessage::UtilityCommandOutput { content, .. }
-        | crate::headless::messages::FromAgentMessage::UtilityFileReadResult { content, .. }
-            if contains_credential_marker(content) =>
-        {
-            *content = "[REDACTED]".to_string();
+        | crate::headless::messages::FromAgentMessage::UtilityFileReadResult { content, .. } => {
+            redact_output_content(content);
         }
         _ => {}
     }
     redacted_message
+}
+
+fn redact_output_content(content: &mut String) {
+    if let Ok(value) = serde_json::from_str::<Value>(content) {
+        let redacted_value = redact(value.clone());
+        if redacted_value != value {
+            *content =
+                serde_json::to_string(&redacted_value).unwrap_or_else(|_| "[REDACTED]".to_string());
+        }
+    } else if contains_credential_marker(content) {
+        *content = "[REDACTED]".to_string();
+    }
 }
 
 fn contains_credential_marker(content: &str) -> bool {
@@ -344,5 +354,13 @@ mod tests {
         assert!(!serde_json::to_string(&connection_url)
             .unwrap()
             .contains("s3cr3t"));
+
+        let compact_json = redact_agent_message(FromAgentMessage::ToolOutput {
+            call_id: "call".into(),
+            content: r#"{"api_key":"literal-secret","result":"ok"}"#.into(),
+        });
+        let compact_json = serde_json::to_string(&compact_json).unwrap();
+        assert!(!compact_json.contains("literal-secret"));
+        assert!(compact_json.contains("[REDACTED]"));
     }
 }
