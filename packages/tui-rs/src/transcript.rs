@@ -90,20 +90,7 @@ fn redact(mut value: Value) -> Value {
     match &mut value {
         Value::Object(map) => {
             for (key, child) in map {
-                let normalized_key = key.to_ascii_lowercase().replace(['-', '_'], "");
-                if matches!(
-                    normalized_key.as_str(),
-                    "authorization"
-                        | "apikey"
-                        | "token"
-                        | "accesstoken"
-                        | "refreshtoken"
-                        | "clientsecret"
-                        | "bearertoken"
-                        | "secret"
-                        | "password"
-                        | "privatekey"
-                ) {
+                if is_credential_key(key) {
                     *child = Value::String("[REDACTED]".to_string());
                 } else {
                     *child = redact(child.take());
@@ -118,6 +105,24 @@ fn redact(mut value: Value) -> Value {
         _ => {}
     }
     value
+}
+
+fn is_credential_key(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase().replace(['-', '_'], "");
+    [
+        "authorization",
+        "apikey",
+        "token",
+        "accesstoken",
+        "refreshtoken",
+        "clientsecret",
+        "bearertoken",
+        "secret",
+        "password",
+        "privatekey",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
 }
 
 pub(crate) fn redact_agent_message(
@@ -206,7 +211,12 @@ mod tests {
             call_id: "call".into(),
             tool_execution_id: None,
             tool: "http".into(),
-            args: serde_json::json!({"headers":{"authorization":"Bearer secret"}}),
+            args: serde_json::json!({
+                "headers": {
+                    "authorization": "Bearer secret",
+                    "X-API-Key": "prefixed-secret"
+                }
+            }),
             requires_approval: false,
         });
         let output = redact_agent_message(FromAgentMessage::ToolOutput {
@@ -216,6 +226,9 @@ mod tests {
         assert!(!serde_json::to_string(&call)
             .unwrap()
             .contains("Bearer secret"));
+        assert!(!serde_json::to_string(&call)
+            .unwrap()
+            .contains("prefixed-secret"));
         assert!(!serde_json::to_string(&output)
             .unwrap()
             .contains("access_token"));
