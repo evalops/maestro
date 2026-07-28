@@ -162,7 +162,7 @@ fn redact_argument_array(values: &mut [Value]) {
             continue;
         };
         if secret_value_follows {
-            if !argument.contains("${") {
+            if !is_plain_env_reference(argument) {
                 *value = Value::String("[REDACTED]".to_string());
             }
             secret_value_follows = false;
@@ -170,7 +170,10 @@ fn redact_argument_array(values: &mut [Value]) {
         }
         if let Some(inline_value) = credential_flag(argument) {
             if inline_value {
-                if !argument.contains("${") {
+                if !argument
+                    .split_once('=')
+                    .is_some_and(|(_, value)| is_plain_env_reference(value))
+                {
                     *value = Value::String("[REDACTED]".to_string());
                 }
             } else {
@@ -447,7 +450,12 @@ mod tests {
             {
                 "name": "stdio",
                 "env": {"SERVICE_TOKEN": "literal-secret", "SAFE": "${SAFE}"},
-                "args": ["--token", "literal-arg-secret", "--client-secret=${CLIENT_SECRET}", "--verbose"]
+                "args": [
+                    "--token", "literal-arg-secret",
+                    "--client-secret=${CLIENT_SECRET}",
+                    "--auth-token", "${AUTH_TOKEN:-literal-fallback}",
+                    "--verbose"
+                ]
             },
             {
                 "name": "http",
@@ -475,6 +483,7 @@ mod tests {
         assert!(listed_url.contains("safe=ok"));
         assert_eq!(listed[0]["args"][1], "[REDACTED]");
         assert_eq!(listed[0]["args"][2], "--client-secret=${CLIENT_SECRET}");
+        assert_eq!(listed[0]["args"][4], "[REDACTED]");
         assert_eq!(listed[2]["name"], "private-key-service");
         assert_eq!(listed[2]["command"], "safe-command");
     }

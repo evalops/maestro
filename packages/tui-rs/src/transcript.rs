@@ -109,20 +109,30 @@ fn redact(mut value: Value) -> Value {
 
 fn is_credential_key(key: &str) -> bool {
     let normalized = key.to_ascii_lowercase().replace(['-', '_'], "");
-    [
+    if [
         "authorization",
         "apikey",
-        "token",
-        "accesstoken",
-        "refreshtoken",
         "clientsecret",
-        "bearertoken",
         "secret",
         "password",
         "privatekey",
     ]
     .iter()
     .any(|marker| normalized.contains(marker))
+    {
+        return true;
+    }
+    normalized.ends_with("token")
+        && ![
+            "maxtoken",
+            "inputtoken",
+            "outputtoken",
+            "totaltoken",
+            "cachedtoken",
+            "tokencount",
+        ]
+        .iter()
+        .any(|metric| normalized.contains(metric))
 }
 
 pub(crate) fn redact_agent_message(
@@ -256,6 +266,18 @@ mod tests {
         assert!(!serde_json::to_string(&call)
             .unwrap()
             .contains("prefixed-secret"));
+
+        let noncredential = redact_agent_message(FromAgentMessage::ToolCall {
+            call_id: "call".into(),
+            tool_execution_id: None,
+            tool: "generate".into(),
+            args: serde_json::json!({"max_tokens": 1000}),
+            requires_approval: false,
+        });
+        assert_eq!(
+            serde_json::to_value(noncredential).unwrap()["args"]["max_tokens"],
+            1000
+        );
         assert!(!serde_json::to_string(&output)
             .unwrap()
             .contains("access_token"));
