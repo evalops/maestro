@@ -138,12 +138,24 @@ pub fn install(
     );
 
     fs::create_dir_all(destination_root)?;
-    if let Some(existing) = fs::read_dir(destination_root)?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.file_name())
-        .find(|entry| entry.to_string_lossy().eq_ignore_ascii_case(&name))
-    {
-        bail!("plugin already installed: {}", existing.to_string_lossy());
+    for entry in fs::read_dir(destination_root)?.filter_map(|entry| entry.ok()) {
+        let directory_name = entry.file_name();
+        let manifest_name = entry
+            .file_type()
+            .ok()
+            .filter(|file_type| file_type.is_dir())
+            .and_then(|_| load_manifest(&entry.path()))
+            .and_then(|manifest| manifest.name);
+        if directory_name.to_string_lossy().eq_ignore_ascii_case(&name)
+            || manifest_name
+                .as_deref()
+                .is_some_and(|identity| identity.eq_ignore_ascii_case(&name))
+        {
+            bail!(
+                "plugin already installed: {}",
+                directory_name.to_string_lossy()
+            );
+        }
     }
     let destination = destination_root.join(&name);
     let staging = destination_root.join(format!(".{name}.installing"));
@@ -439,6 +451,31 @@ mod tests {
         assert!(error.to_string().contains("plugin already installed: Demo"));
         let entries = fs::read_dir(&destination_root).unwrap().count();
         assert_eq!(entries, 1);
+    }
+
+    #[test]
+    fn install_rejects_duplicate_manifest_identity_under_alias_directory() {
+        let source = TempDir::new().unwrap();
+        fs::create_dir(source.path().join("skills")).unwrap();
+        fs::write(source.path().join("plugin.json"), r#"{"name":"demo"}"#).unwrap();
+        let home = TempDir::new().unwrap();
+        let destination_root = home.path().join("plugins");
+        let alias = destination_root.join("legacy-alias");
+        fs::create_dir_all(&alias).unwrap();
+        fs::write(alias.join("plugin.json"), r#"{"name":"Demo"}"#).unwrap();
+
+        let error = install(
+            source.path().to_str().unwrap(),
+            &destination_root,
+            &home.path().join("plugin-state.json"),
+            false,
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("plugin already installed: legacy-alias"));
+        assert_eq!(fs::read_dir(&destination_root).unwrap().count(), 1);
     }
 
     #[test]

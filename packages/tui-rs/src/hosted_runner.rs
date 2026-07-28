@@ -82,6 +82,7 @@ struct RunnerState {
     subscriptions: HashMap<String, SubscriptionRecord>,
     active_utility_commands: HashMap<String, ActiveUtilityCommandSnapshot>,
     active_file_watches: HashMap<String, ActiveFileWatchSnapshot>,
+    active_response_ids: HashSet<String>,
     envelopes: VecDeque<StreamEnvelope>,
 }
 

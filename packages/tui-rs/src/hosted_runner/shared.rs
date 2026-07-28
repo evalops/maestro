@@ -72,6 +72,7 @@ impl SharedRunner {
                 subscriptions: HashMap::new(),
                 active_utility_commands: HashMap::new(),
                 active_file_watches: HashMap::new(),
+                active_response_ids: HashSet::new(),
                 envelopes: VecDeque::new(),
             })),
             events,
@@ -348,6 +349,16 @@ impl SharedRunner {
     }
 
     pub(super) fn publish_message(&self, state: &mut RunnerState, message: FromAgentMessage) {
+        match &message {
+            FromAgentMessage::ResponseStart { response_id } => {
+                state.active_response_ids.insert(response_id.clone());
+            }
+            FromAgentMessage::ResponseEnd { response_id, .. } => {
+                state.active_response_ids.remove(response_id);
+            }
+            FromAgentMessage::Error { .. } => state.active_response_ids.clear(),
+            _ => {}
+        }
         state.cursor += 1;
         let envelope = StreamEnvelope::Message {
             cursor: state.cursor,
@@ -435,7 +446,10 @@ impl SharedRunner {
         {
             return (requested, rx);
         }
-        if !coarse_replay_has_complete_response_boundaries(&state.envelopes) {
+        if !coarse_replay_has_complete_response_boundaries(
+            &state.envelopes,
+            &state.active_response_ids,
+        ) {
             return (
                 vec![self.reset_envelope_from_state(&state, "coarse_replay_incomplete")],
                 rx,
@@ -477,7 +491,10 @@ impl SharedRunner {
     }
 }
 
-fn coarse_replay_has_complete_response_boundaries(envelopes: &VecDeque<StreamEnvelope>) -> bool {
+fn coarse_replay_has_complete_response_boundaries(
+    envelopes: &VecDeque<StreamEnvelope>,
+    live_active_responses: &HashSet<String>,
+) -> bool {
     let mut active_responses = HashSet::new();
     for envelope in envelopes {
         let StreamEnvelope::Message { message, .. } = envelope else {
@@ -500,7 +517,9 @@ fn coarse_replay_has_complete_response_boundaries(envelopes: &VecDeque<StreamEnv
             _ => {}
         }
     }
-    true
+    live_active_responses
+        .iter()
+        .all(|response_id| active_responses.contains(response_id.as_str()))
 }
 
 fn redacted_pending_snapshot(

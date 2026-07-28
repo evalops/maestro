@@ -167,12 +167,39 @@ fn contains_credential_marker(content: &str) -> bool {
     .iter()
     .any(|marker| {
         normalized.match_indices(marker).any(|(index, marker)| {
-            normalized[index + marker.len()..]
-                .trim_start()
-                .strip_prefix(['=', ':'])
-                .is_some_and(|value| !value.trim().is_empty())
+            let Some(remainder) = content.get(index + marker.len()..) else {
+                return false;
+            };
+            let remainder = remainder.lines().next().unwrap_or(remainder).trim_start();
+            if let Some(value) = remainder.strip_prefix('=') {
+                return !value.trim().is_empty();
+            }
+            remainder
+                .strip_prefix(':')
+                .is_some_and(looks_like_colon_credential_value)
         })
     })
+}
+
+fn looks_like_colon_credential_value(value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() {
+        return false;
+    }
+    let type_like = [
+        "string", "str", "&str", "bool", "usize", "isize", "u8", "u16", "u32", "u64", "u128", "i8",
+        "i16", "i32", "i64", "i128", "f32", "f64",
+    ]
+    .contains(&value)
+        || value.starts_with(['&', '[', '('])
+        || (value
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_uppercase())
+            && value.chars().all(|character| {
+                character.is_ascii_alphanumeric() || "<>&[](),_: ".contains(character)
+            }));
+    !type_like
 }
 
 #[cfg(test)]
@@ -264,5 +291,13 @@ mod tests {
         assert!(serde_json::to_string(&prose)
             .unwrap()
             .contains("authorization middleware"));
+
+        let typed_source = redact_agent_message(FromAgentMessage::ToolOutput {
+            call_id: "call".into(),
+            content: "token: Option<String>\npassword: String".into(),
+        });
+        assert!(serde_json::to_string(&typed_source)
+            .unwrap()
+            .contains("Option<String>"));
     }
 }

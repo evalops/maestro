@@ -402,6 +402,32 @@ fn coarse_stream_resume_resets_when_retained_response_start_was_evicted() {
 }
 
 #[test]
+fn coarse_stream_resume_resets_when_active_response_is_entirely_evicted() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.cursor = 10;
+        state.active_response_ids.insert("response".into());
+        state.envelopes.push_back(stream_message(
+            10,
+            FromAgentMessage::Status {
+                message: "still working".into(),
+            },
+        ));
+    }
+
+    let (replay, _rx) = shared.subscribe_coarse_from(9);
+    assert!(matches!(
+        replay.as_slice(),
+        [StreamEnvelope::Reset { reason, .. }] if reason == "coarse_replay_incomplete"
+    ));
+}
+
+#[test]
 fn coarse_stream_resume_suppresses_stale_snapshots_but_preserves_resets() {
     let workspace = tempdir().expect("workspace");
     let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));

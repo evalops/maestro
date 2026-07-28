@@ -258,19 +258,7 @@ fn validate_http_url(value: &str) -> Result<()> {
     if !url.username().is_empty() || url.password().is_some() {
         bail!("credentials may not be embedded in MCP URLs");
     }
-    if url.query_pairs().any(|(key, _)| {
-        matches!(
-            key.to_ascii_lowercase().replace(['-', '_'], "").as_str(),
-            "token"
-                | "apikey"
-                | "secret"
-                | "clientsecret"
-                | "password"
-                | "accesstoken"
-                | "refreshtoken"
-                | "bearertoken"
-        )
-    }) {
+    if url.query_pairs().any(|(key, _)| is_secret_key(&key)) {
         bail!("credential query parameters are not allowed; use --bearer-token-env");
     }
     Ok(())
@@ -449,6 +437,7 @@ mod tests {
         assert!(validate_http_url("https://example.test/mcp?access_token=secret").is_err());
         assert!(validate_http_url("https://example.test/mcp?refresh-token=secret").is_err());
         assert!(validate_http_url("https://example.test/mcp?client_secret=secret").is_err());
+        assert!(validate_http_url("https://example.test/mcp?auth_token=secret").is_err());
         assert!(validate_http_url("http://127.0.0.1:3000/mcp").is_ok());
     }
 
