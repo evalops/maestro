@@ -351,7 +351,7 @@ impl SharedRunner {
         state.cursor += 1;
         let envelope = StreamEnvelope::Message {
             cursor: state.cursor,
-            message: Box::new(message),
+            message: Box::new(crate::transcript::redact_agent_message(message)),
         };
         state.envelopes.push_back(envelope.clone());
         while state.envelopes.len() > MAX_EVENTS {

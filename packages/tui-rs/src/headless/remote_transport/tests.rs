@@ -1,4 +1,25 @@
 use super::*;
+
+#[test]
+fn accepts_coalesced_response_completion_once_at_shared_cursor() {
+    let mut pending = None;
+    let chunk = FromAgentMessage::ResponseChunk {
+        response_id: "response".into(),
+        content: "complete answer".into(),
+        is_thinking: false,
+    };
+    let end = FromAgentMessage::ResponseEnd {
+        response_id: "response".into(),
+        usage: None,
+        tools_summary: None,
+        duration_ms: None,
+        ttft_ms: None,
+    };
+
+    assert!(accepts_remote_message_cursor(4, 5, &chunk, &mut pending));
+    assert!(accepts_remote_message_cursor(5, 5, &end, &mut pending));
+    assert!(!accepts_remote_message_cursor(5, 5, &end, &mut pending));
+}
 use crate::headless::HEADLESS_PROTOCOL_VERSION;
 use std::collections::VecDeque;
 use std::sync::{

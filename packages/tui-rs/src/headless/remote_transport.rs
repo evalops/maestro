@@ -1339,6 +1339,7 @@ async fn reader_loop(
 
     let mut stream = response.bytes_stream().eventsource();
     let mut saw_event = false;
+    let mut coalesced_response_cursor = None;
 
     loop {
         tokio::select! {
@@ -1349,10 +1350,15 @@ async fn reader_loop(
                         saw_event = true;
                         match serde_json::from_str::<RemoteEnvelope>(&event.data) {
                             Ok(RemoteEnvelope::Message { cursor: next_cursor, message }) => {
-                                if !advances_remote_cursor(cursor, next_cursor) {
+                                if !accepts_remote_message_cursor(
+                                    cursor,
+                                    next_cursor,
+                                    &message,
+                                    &mut coalesced_response_cursor,
+                                ) {
                                     continue;
                                 }
-                                cursor = next_cursor;
+                                cursor = cursor.max(next_cursor);
                                 if event_tx
                                     .send(Ok(RemoteIncoming::Message(*message)))
                                     .is_err()
@@ -1436,6 +1442,38 @@ async fn reader_loop(
 
 fn advances_remote_cursor(current_cursor: u64, next_cursor: u64) -> bool {
     next_cursor > current_cursor
+}
+
+fn accepts_remote_message_cursor(
+    current_cursor: u64,
+    next_cursor: u64,
+    message: &FromAgentMessage,
+    coalesced_response_cursor: &mut Option<(u64, String)>,
+) -> bool {
+    if advances_remote_cursor(current_cursor, next_cursor) {
+        *coalesced_response_cursor = match message {
+            FromAgentMessage::ResponseChunk {
+                response_id,
+                is_thinking: false,
+                ..
+            } => Some((next_cursor, response_id.clone())),
+            _ => None,
+        };
+        return true;
+    }
+    let accepts_completion = matches!(
+        (message, coalesced_response_cursor.as_ref()),
+        (
+            FromAgentMessage::ResponseEnd { response_id, .. },
+            Some((chunk_cursor, chunk_response_id))
+        ) if next_cursor == current_cursor
+            && *chunk_cursor == next_cursor
+            && chunk_response_id == response_id
+    );
+    if accepts_completion {
+        *coalesced_response_cursor = None;
+    }
+    accepts_completion
 }
 
 fn accepts_remote_heartbeat_cursor(current_cursor: u64, next_cursor: u64) -> bool {

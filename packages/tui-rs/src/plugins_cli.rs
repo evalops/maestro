@@ -115,12 +115,8 @@ pub fn run_plugins(args: &[String]) -> Result<i32> {
                 .positionals
                 .first()
                 .context("Usage: maestro plugins enable|disable <name>")?;
-            let home = maestro_home_dir().context("could not resolve ~/.maestro")?;
-            crate::plugins::set_enabled(
-                &home.join("plugin-state.json"),
-                name,
-                command == "enable",
-            )?;
+            let state_path = state_path_for_plugin(&registry, name)?;
+            crate::plugins::set_enabled(&state_path, name, command == "enable")?;
             println!("{name}: {command}d");
             Ok(0)
         }
@@ -138,13 +134,8 @@ pub fn run_plugins(args: &[String]) -> Result<i32> {
                 Some("off" | "disable" | "disabled") => false,
                 _ => bail!("capability state must be on or off"),
             };
-            let home = maestro_home_dir().context("could not resolve ~/.maestro")?;
-            crate::plugins::set_capability(
-                &home.join("plugin-state.json"),
-                name,
-                capability,
-                enabled,
-            )?;
+            let state_path = state_path_for_plugin(&registry, name)?;
+            crate::plugins::set_capability(&state_path, name, capability, enabled)?;
             println!(
                 "{name} {capability:?}: {}",
                 if enabled { "on" } else { "off" }
@@ -161,6 +152,18 @@ pub fn run_plugins(args: &[String]) -> Result<i32> {
             Ok(1)
         }
     }
+}
+
+fn state_path_for_plugin(registry: &PluginRegistry, name: &str) -> Result<PathBuf> {
+    let plugin = registry
+        .get(name)
+        .with_context(|| format!("plugin not found: {name}"))?;
+    let base = plugin
+        .root
+        .parent()
+        .and_then(Path::parent)
+        .with_context(|| format!("plugin path has no state root: {}", plugin.root.display()))?;
+    Ok(base.join("plugin-state.json"))
 }
 
 fn parse_args(args: &[String]) -> Result<PluginArgs> {
@@ -480,5 +483,18 @@ mod tests {
         let entry = list_entry(&plugin);
         assert_eq!(entry.components, vec!["skills", "mcp"]);
         assert!(!entry.has_manifest);
+    }
+
+    #[test]
+    fn state_path_tracks_the_discovered_plugin_origin() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("workspace/.maestro/plugins");
+        make_plugin(&root, "shadowed");
+        let registry = PluginRegistry::discover_from(&[(root, PluginOrigin::Project)]);
+
+        assert_eq!(
+            state_path_for_plugin(&registry, "shadowed").unwrap(),
+            temp.path().join("workspace/.maestro/plugin-state.json")
+        );
     }
 }

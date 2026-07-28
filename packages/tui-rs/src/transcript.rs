@@ -90,17 +90,19 @@ fn redact(mut value: Value) -> Value {
     match &mut value {
         Value::Object(map) => {
             for (key, child) in map {
+                let normalized_key = key.to_ascii_lowercase().replace(['-', '_'], "");
                 if matches!(
-                    key.to_ascii_lowercase().as_str(),
+                    normalized_key.as_str(),
                     "authorization"
-                        | "api_key"
                         | "apikey"
                         | "token"
-                        | "access_token"
-                        | "refresh_token"
+                        | "accesstoken"
+                        | "refreshtoken"
+                        | "clientsecret"
+                        | "bearertoken"
                         | "secret"
                         | "password"
-                        | "private_key"
+                        | "privatekey"
                 ) {
                     *child = Value::String("[REDACTED]".to_string());
                 } else {
@@ -116,6 +118,43 @@ fn redact(mut value: Value) -> Value {
         _ => {}
     }
     value
+}
+
+pub(crate) fn redact_agent_message(
+    message: crate::headless::messages::FromAgentMessage,
+) -> crate::headless::messages::FromAgentMessage {
+    let Ok(value) = serde_json::to_value(&message) else {
+        return message;
+    };
+    let Ok(mut redacted_message) = serde_json::from_value(redact(value)) else {
+        return message;
+    };
+    if let crate::headless::messages::FromAgentMessage::ToolOutput { content, .. } =
+        &mut redacted_message
+    {
+        let normalized = content.to_ascii_lowercase();
+        if [
+            "authorization",
+            "api_key",
+            "api-key",
+            "access_token",
+            "access-token",
+            "refresh_token",
+            "refresh-token",
+            "client_secret",
+            "client-secret",
+            "token=",
+            "secret=",
+            "password=",
+            "private_key",
+        ]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+        {
+            *content = "[REDACTED]".to_string();
+        }
+    }
+    redacted_message
 }
 
 #[cfg(test)]
@@ -144,5 +183,28 @@ mod tests {
         );
         let event = &journal.after(0, TranscriptGrade::Delta)[0];
         assert_eq!(event.payload["nested"]["token"], "[REDACTED]");
+    }
+
+    #[test]
+    fn redacts_structured_tool_args_and_credential_shaped_output() {
+        use crate::headless::messages::FromAgentMessage;
+
+        let call = redact_agent_message(FromAgentMessage::ToolCall {
+            call_id: "call".into(),
+            tool_execution_id: None,
+            tool: "http".into(),
+            args: serde_json::json!({"headers":{"authorization":"Bearer secret"}}),
+            requires_approval: false,
+        });
+        let output = redact_agent_message(FromAgentMessage::ToolOutput {
+            call_id: "call".into(),
+            content: "access_token=secret".into(),
+        });
+        assert!(!serde_json::to_string(&call)
+            .unwrap()
+            .contains("Bearer secret"));
+        assert!(!serde_json::to_string(&output)
+            .unwrap()
+            .contains("access_token"));
     }
 }

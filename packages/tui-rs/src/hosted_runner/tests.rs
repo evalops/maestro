@@ -404,6 +404,38 @@ fn coarse_stream_resume_suppresses_stale_snapshots_but_preserves_resets() {
 }
 
 #[test]
+fn hosted_replay_journal_stores_redacted_tool_events() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    shared.publish_message(
+        &mut state,
+        FromAgentMessage::ToolCall {
+            call_id: "call".into(),
+            tool_execution_id: None,
+            tool: "http".into(),
+            args: serde_json::json!({"headers":{"authorization":"Bearer secret"}}),
+            requires_approval: false,
+        },
+    );
+    shared.publish_message(
+        &mut state,
+        FromAgentMessage::ToolOutput {
+            call_id: "call".into(),
+            content: "client_secret=secret".into(),
+        },
+    );
+
+    let stored = serde_json::to_string(&state.envelopes).expect("serialize replay journal");
+    assert!(!stored.contains("Bearer secret"));
+    assert!(!stored.contains("client_secret"));
+    assert!(stored.contains("[REDACTED]"));
+}
+
+#[test]
 fn transcript_filters_are_connection_local() {
     let response_chunk = || {
         stream_message(
