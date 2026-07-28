@@ -97,6 +97,7 @@ pub fn install(
         if !trust {
             bail!("remote plugin code requires explicit --trust");
         }
+        validate_remote_source(source)?;
         checkout = TempDir::new()?;
         clone_remote(source, checkout.path(), PLUGIN_CLONE_TIMEOUT)?;
         checkout.path()
@@ -170,6 +171,33 @@ pub fn install(
         source: source.to_string(),
         capabilities,
     })
+}
+
+fn validate_remote_source(source: &str) -> Result<()> {
+    let Ok(url) = url::Url::parse(source) else {
+        return Ok(());
+    };
+    if matches!(url.scheme(), "http" | "https")
+        && (!url.username().is_empty() || url.password().is_some())
+    {
+        bail!("plugin source URLs may not contain credentials");
+    }
+    if url.query_pairs().any(|(key, _)| {
+        matches!(
+            key.to_ascii_lowercase().replace(['-', '_'], "").as_str(),
+            "token"
+                | "apikey"
+                | "secret"
+                | "clientsecret"
+                | "accesstoken"
+                | "refreshtoken"
+                | "bearertoken"
+                | "password"
+        )
+    }) {
+        bail!("plugin source URLs may not contain credential query parameters");
+    }
+    Ok(())
 }
 
 fn clone_remote(source: &str, destination: &Path, timeout: Duration) -> Result<()> {
@@ -352,6 +380,24 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("--trust"));
+    }
+
+    #[test]
+    fn remote_sources_reject_embedded_credentials_before_clone() {
+        let home = TempDir::new().unwrap();
+        for source in [
+            "https://user:token@example.test/plugin.git",
+            "https://example.test/plugin.git?access_token=secret",
+        ] {
+            let error = install(
+                source,
+                &home.path().join("plugins"),
+                &home.path().join("state.json"),
+                true,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("plugin source URL"));
+        }
     }
 
     #[cfg(unix)]

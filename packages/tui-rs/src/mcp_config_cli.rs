@@ -107,11 +107,41 @@ fn redact_config_value(value: &mut Value, parent_key: Option<&str>) {
             }
         }
         Value::Array(values) => {
+            if parent_key == Some("args") {
+                redact_argument_array(values);
+                return;
+            }
             for child in values {
                 redact_config_value(child, parent_key);
             }
         }
         _ => {}
+    }
+}
+
+fn redact_argument_array(values: &mut [Value]) {
+    let mut secret_value_follows = false;
+    for value in values {
+        let Some(argument) = value.as_str() else {
+            secret_value_follows = false;
+            continue;
+        };
+        if secret_value_follows {
+            if !argument.contains("${") {
+                *value = Value::String("[REDACTED]".to_string());
+            }
+            secret_value_follows = false;
+            continue;
+        }
+        if let Some(inline_value) = credential_flag(argument) {
+            if inline_value {
+                if !argument.contains("${") {
+                    *value = Value::String("[REDACTED]".to_string());
+                }
+            } else {
+                secret_value_follows = true;
+            }
+        }
     }
 }
 
@@ -256,34 +286,37 @@ fn reject_literal_secrets(args: &[String]) -> Result<()> {
         if secret_value_follows && !argument.contains("${") {
             bail!("literal secrets are not allowed; use --env VAR");
         }
-        let lower = argument.to_ascii_lowercase();
-        let (flag, inline_value) = lower
-            .strip_prefix('-')
-            .map(|value| value.trim_start_matches('-'))
-            .and_then(|value| {
-                let (name, inline) = value
-                    .split_once('=')
-                    .map_or((value, false), |(name, _)| (name, true));
-                (!name.is_empty()).then_some((name.replace(['-', '_'], ""), inline))
-            })
-            .unwrap_or_default();
-        let secret_flag = matches!(
-            flag.as_str(),
-            "apikey"
-                | "token"
-                | "secret"
-                | "clientsecret"
-                | "accesstoken"
-                | "refreshtoken"
-                | "bearertoken"
-                | "password"
-        );
-        secret_value_follows = secret_flag && !inline_value;
-        if secret_flag && inline_value && !argument.contains("${") {
-            bail!("literal secrets are not allowed; use --env VAR");
+        if let Some(inline_value) = credential_flag(argument) {
+            secret_value_follows = !inline_value;
+            if inline_value && !argument.contains("${") {
+                bail!("literal secrets are not allowed; use --env VAR");
+            }
+        } else {
+            secret_value_follows = false;
         }
     }
     Ok(())
+}
+
+fn credential_flag(argument: &str) -> Option<bool> {
+    let lower = argument.to_ascii_lowercase();
+    let value = lower.strip_prefix('-')?.trim_start_matches('-');
+    let (name, inline_value) = value
+        .split_once('=')
+        .map_or((value, false), |(name, _)| (name, true));
+    let normalized = name.replace(['-', '_'], "");
+    matches!(
+        normalized.as_str(),
+        "apikey"
+            | "token"
+            | "secret"
+            | "clientsecret"
+            | "accesstoken"
+            | "refreshtoken"
+            | "bearertoken"
+            | "password"
+    )
+    .then_some(inline_value)
 }
 
 fn mutate_server(path: &Path, name: &str, value: Option<Value>) -> Result<()> {
@@ -377,7 +410,7 @@ mod tests {
             {
                 "name": "stdio",
                 "env": {"SERVICE_TOKEN": "literal-secret", "SAFE": "${SAFE}"},
-                "args": ["--verbose"]
+                "args": ["--token", "literal-arg-secret", "--client-secret=${CLIENT_SECRET}", "--verbose"]
             },
             {
                 "name": "http",
@@ -400,6 +433,8 @@ mod tests {
         assert_eq!(listed[1]["headers"]["X-Custom-Credential"], "[REDACTED]");
         assert_eq!(listed[1]["api_key"], "[REDACTED]");
         assert_eq!(listed[1]["url"], "https://example.test/mcp");
+        assert_eq!(listed[0]["args"][1], "[REDACTED]");
+        assert_eq!(listed[0]["args"][2], "--client-secret=${CLIENT_SECRET}");
         assert_eq!(listed[2]["name"], "private-key-service");
         assert_eq!(listed[2]["command"], "safe-command");
     }
