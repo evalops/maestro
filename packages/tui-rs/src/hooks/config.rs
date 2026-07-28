@@ -250,9 +250,19 @@ fn load_hook_config_with_plugin_paths(
     // the enabled bit, and the Hooks capability bit. Resolve file-backed hook
     // payloads relative to the plugin config rather than the workspace.
     for plugin_path in plugin_paths {
-        let mut plugin_config = match plugin_path.extension().and_then(|value| value.to_str()) {
-            Some("json") => load_json_config_file(plugin_path)?,
-            _ => load_config_file(plugin_path)?,
+        let loaded = match plugin_path.extension().and_then(|value| value.to_str()) {
+            Some("json") => load_json_config_file(plugin_path),
+            _ => load_config_file(plugin_path),
+        };
+        let mut plugin_config = match loaded {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!(
+                    "[hooks] Skipping invalid plugin hook config {}: {error}",
+                    plugin_path.display()
+                );
+                continue;
+            }
         };
         if plugin_config
             .hooks
@@ -269,6 +279,7 @@ fn load_hook_config_with_plugin_paths(
             &mut plugin_config,
             plugin_path.parent().unwrap_or(Path::new(".")),
         );
+        plugin_config.settings = HookSettings::default();
         merge_config(&mut config, plugin_config);
         source_paths.push(plugin_path.clone());
     }
@@ -583,6 +594,30 @@ command = "./hooks/validate-tool.sh"
         .unwrap();
         assert!(loaded.hooks.is_empty());
         assert!(!loaded.source_paths.contains(&plugin_config));
+    }
+
+    #[test]
+    fn invalid_plugin_and_plugin_settings_are_isolated() {
+        let temp = tempfile::tempdir().unwrap();
+        let invalid = temp.path().join("invalid.toml");
+        std::fs::write(&invalid, "not = [valid").unwrap();
+        let valid = temp.path().join("valid.toml");
+        std::fs::write(
+            &valid,
+            r#"
+[settings]
+enabled = false
+[[hooks]]
+event = "PreToolUse"
+lua = "return {}"
+"#,
+        )
+        .unwrap();
+
+        let loaded =
+            load_hook_config_with_trust_and_plugins(temp.path(), false, &[invalid, valid]).unwrap();
+        assert!(loaded.settings.enabled);
+        assert_eq!(loaded.hooks.len(), 1);
     }
 
     #[test]

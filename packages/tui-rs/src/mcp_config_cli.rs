@@ -314,11 +314,14 @@ fn reject_literal_secrets(args: &[String]) -> Result<()> {
 }
 
 fn authorization_header_has_literal_credential(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    let Some(index) = lower.find("authorization:") else {
+    let Some((header, value)) = value.split_once(':') else {
         return false;
     };
-    let value = value[index + "authorization:".len()..].trim();
+    let header = header.rsplit(['=', ' ']).next().unwrap_or(header).trim();
+    if !is_secret_key(header) {
+        return false;
+    }
+    let value = value.trim();
     let lower_value = value.to_ascii_lowercase();
     let credential = lower_value
         .strip_prefix("bearer ")
@@ -431,6 +434,10 @@ mod tests {
             "Authorization: Bearer literal-secret".into()
         ])
         .is_err());
+        assert!(
+            reject_literal_secrets(&["--header".into(), "X-API-Key: literal-secret".into()])
+                .is_err()
+        );
         assert!(reject_literal_secrets(&[
             "--header".into(),
             "Authorization: Bearer ${SERVICE_TOKEN}".into()
@@ -467,6 +474,7 @@ mod tests {
                     "--client-secret=${CLIENT_SECRET}",
                     "--auth-token", "${AUTH_TOKEN:-literal-fallback}",
                     "--header", "Authorization: Bearer header-secret",
+                    "--header", "X-API-Key: api-header-secret",
                     "--verbose"
                 ]
             },
@@ -499,6 +507,7 @@ mod tests {
         assert_eq!(listed[0]["args"][2], "--client-secret=${CLIENT_SECRET}");
         assert_eq!(listed[0]["args"][4], "[REDACTED]");
         assert!(!listed.to_string().contains("header-secret"));
+        assert!(!listed.to_string().contains("api-header-secret"));
         assert_eq!(listed[2]["name"], "private-key-service");
         assert_eq!(listed[2]["command"], "safe-command");
     }
