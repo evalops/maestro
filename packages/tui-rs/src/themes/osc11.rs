@@ -1,33 +1,11 @@
 //! OSC 11 terminal background-color probing for the `auto` theme.
 //!
-//! # Why a one-time startup probe instead of live polling
-//!
-//! The goal (grok-build parity) is for the `auto` theme to *follow* the
-//! terminal background live, re-querying with OSC 11 (`ESC ] 11 ; ? ESC \`)
-//! every few seconds. That is not safely implementable on this codebase's
-//! input stack:
-//!
-//! - The reply arrives on the same tty input stream as user keystrokes, and
-//!   crossterm 0.28 has no OSC event variant. Its parser
-//!   (`crossterm::event::sys::unix::parse::parse_event`) treats any
-//!   `ESC ] …` sequence as an Alt-modified key: an OSC 11 reply read by
-//!   crossterm first becomes `Alt+]` followed by the literal reply text
-//!   (`11;rgb:…`) typed into the composer.
-//! - Interposing our own stdin/`/dev/tty` reader races crossterm's internal
-//!   mio-based reader on the same file descriptor: whichever side reads
-//!   first keeps the bytes, and bytes we consume cannot be pushed back into
-//!   crossterm's buffer — so a peek reader would occasionally eat user
-//!   keystrokes.
-//!
-//! Until the input stack can surface OSC replies, `auto` therefore resolves
-//! from `COLORFGBG` and, when `tui.theme_follow = true` and the terminal
-//! supports the enhanced keyboard protocol, refines that choice with a
-//! single bounded OSC 11 probe at startup (before the event loop starts
-//! consuming input, so no reader race exists).
-//!
-//! The luminance threshold/hysteresis state machine ([`AutoThemeFollower`])
-//! is kept separate and fully tested so a future safe reply path can drive
-//! live following without re-deriving the policy.
+//! The interactive app uses uncurses as its sole tty reader, so OSC 11 and
+//! DEC light/dark replies arrive as typed events instead of being mistaken
+//! for Alt-modified input by crossterm 0.28. [`AutoThemeFollower`] applies
+//! hysteresis to those live readings. The bounded one-time probe remains as
+//! a compatibility fallback when the controlling tty cannot be opened by
+//! uncurses.
 
 use std::io::Write;
 use std::time::Duration;
@@ -112,8 +90,8 @@ pub fn theme_for_luminance(luminance: f64, current: &'static str) -> &'static st
 /// stream of luminance samples: a flip requires
 /// [`REQUIRED_CONSECUTIVE_READINGS`] consecutive samples past the threshold.
 ///
-/// Not wired to a live source yet — see the module docs for why. Kept pub
-/// (and tested) so a future OSC-reply-capable input stack can drive it.
+/// Driven by the uncurses terminal event reader when live theme following is
+/// enabled.
 pub struct AutoThemeFollower {
     current: &'static str,
     pending: Option<&'static str>,
@@ -233,8 +211,8 @@ pub fn probe_terminal_background(_timeout: Duration) -> Option<(u8, u8, u8)> {
 /// Resolve the initial `auto` theme: `COLORFGBG` first, refined by a
 /// one-time OSC 11 probe when the terminal answers in time.
 ///
-/// Intended to run once at startup, gated on `tui.theme_follow = true` and
-/// an enhanced terminal, before the event loop begins (see module docs).
+/// Compatibility fallback used when the protocol-aware terminal reader cannot
+/// be opened. It must run before the crossterm event loop begins.
 pub fn apply_auto_theme_from_terminal() {
     let seed = super::resolve_auto_theme_name();
     let resolved = probe_terminal_background(PROBE_TIMEOUT)

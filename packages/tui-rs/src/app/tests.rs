@@ -51,6 +51,96 @@ fn test_should_handle_key_event_press_and_repeat() {
 }
 
 #[test]
+fn uncurses_input_kill_switch_defaults_on_and_accepts_only_zero_as_off() {
+    assert!(uncurses_input_enabled(None));
+    assert!(uncurses_input_enabled(Some(std::ffi::OsStr::new("1"))));
+    assert!(!uncurses_input_enabled(Some(std::ffi::OsStr::new("0"))));
+}
+
+#[test]
+fn terminal_theme_query_requires_fallback_and_respects_throttle() {
+    assert!(!terminal_theme_query_due(
+        false,
+        true,
+        false,
+        Some(Duration::from_secs(3))
+    ));
+    assert!(!terminal_theme_query_due(
+        true,
+        false,
+        false,
+        Some(Duration::from_secs(3))
+    ));
+    assert!(!terminal_theme_query_due(
+        true,
+        true,
+        true,
+        Some(Duration::from_secs(3))
+    ));
+    assert!(!terminal_theme_query_due(
+        true,
+        true,
+        false,
+        Some(Duration::from_millis(1999))
+    ));
+    assert!(terminal_theme_query_due(
+        true,
+        true,
+        false,
+        Some(Duration::from_secs(2))
+    ));
+    assert!(terminal_theme_query_due(true, true, false, None));
+}
+
+#[test]
+fn terminal_theme_events_respect_theme_follow_opt_out() {
+    let mut app = new_test_app();
+    app.theme_follower = None;
+    let scheme = if crate::themes::current_theme_name() == "light" {
+        uncurses::event::ColorScheme::Light
+    } else {
+        uncurses::event::ColorScheme::Dark
+    };
+
+    assert!(!app.apply_terminal_theme_event(&AppTerminalEvent::ColorScheme(scheme)));
+    assert!(app.theme_follower.is_none());
+}
+
+#[test]
+fn terminal_theme_events_apply_typed_and_hysteretic_updates() {
+    let original = crate::themes::current_theme_name();
+    crate::themes::set_theme_by_name("dark").expect("built-in dark theme");
+    let mut app = new_test_app();
+    app.theme_follower = Some(crate::themes::osc11::AutoThemeFollower::new("dark"));
+
+    assert!(
+        app.apply_terminal_theme_event(&AppTerminalEvent::ColorScheme(
+            uncurses::event::ColorScheme::Light
+        ))
+    );
+    assert_eq!(crate::themes::current_theme_name(), "light");
+    assert_eq!(
+        app.theme_follower
+            .as_ref()
+            .map(|follower| follower.current()),
+        Some("light")
+    );
+
+    crate::themes::set_theme_by_name("dark").expect("built-in dark theme");
+    app.theme_follower = Some(crate::themes::osc11::AutoThemeFollower::new("dark"));
+    let light_background = AppTerminalEvent::BackgroundColor {
+        red: 255,
+        green: 255,
+        blue: 255,
+    };
+    assert!(!app.apply_terminal_theme_event(&light_background));
+    assert!(app.apply_terminal_theme_event(&light_background));
+    assert_eq!(crate::themes::current_theme_name(), "light");
+
+    crate::themes::set_theme_by_name(&original).expect("restore original theme");
+}
+
+#[test]
 fn test_active_modal_variants_exist() {
     // Ensure all modal variants are defined correctly
     let modals = [

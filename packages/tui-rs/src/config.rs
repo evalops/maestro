@@ -353,10 +353,9 @@ pub struct TuiConfig {
     /// Suppress desktop notifications while the terminal window is focused
     /// (only when the terminal reports focus in/out events). Defaults to true.
     pub focus_gated_notifications: Option<bool>,
-    /// When true (default false), start in the `auto` theme and refine its
-    /// dark/light choice with a one-time OSC 11 background-color probe at
-    /// startup (enhanced terminals only). Live polling is intentionally not
-    /// done — see `themes::osc11` for why.
+    /// When true (default false), follow live terminal light/dark and
+    /// background-color reports through the protocol-aware input reader.
+    /// Falls back to a one-time OSC 11 probe when that reader is unavailable.
     pub theme_follow: Option<bool>,
 }
 

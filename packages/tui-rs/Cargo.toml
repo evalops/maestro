@@ -23,6 +23,7 @@ path = "src/lib.rs"
 # Terminal handling
 crossterm = { version = "0.28", features = ["bracketed-paste", "event-stream"] }
 ratatui = { version = "0.29", features = ["unstable-widget-ref"] }
+uncurses = "0.0.1"
 
 # Async runtime
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "signal", "fs", "net", "process", "time"] }

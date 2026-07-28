@@ -69,6 +69,11 @@ use crossterm::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::{TerminalOptions, Viewport};
+use uncurses::ansi::color::REQUEST_BACKGROUND_COLOR;
+use uncurses::ansi::mode::{self, Mode};
+use uncurses::ansi::status::REQUEST_LIGHT_DARK_REPORT;
+
+use crate::sync_output::EndSynchronizedUpdate;
 
 /// Global terminal device handle for terminal output.
 ///
@@ -324,6 +329,54 @@ pub fn write_raw(data: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Enable live light/dark reports and request the terminal's current theme.
+pub(crate) fn enable_theme_reporting() -> io::Result<()> {
+    write_raw_bytes(&theme_reporting_enable_sequence()?)
+}
+
+/// Request the terminal's current light/dark preference and background color.
+pub(crate) fn query_theme() -> io::Result<()> {
+    write_raw_bytes(&theme_query_sequence())
+}
+
+/// Stop live light/dark reports.
+pub(crate) fn disable_theme_reporting() -> io::Result<()> {
+    write_raw_bytes(&theme_reporting_disable_sequence()?)
+}
+
+fn theme_reporting_enable_sequence() -> io::Result<Vec<u8>> {
+    let mut data = Vec::new();
+    mode::write_set_mode(&mut data, &[Mode::LIGHT_DARK])?;
+    mode::write_request_mode(&mut data, Mode::LIGHT_DARK)?;
+    data.extend_from_slice(&theme_query_sequence());
+    Ok(data)
+}
+
+fn theme_query_sequence() -> Vec<u8> {
+    let mut data =
+        Vec::with_capacity(REQUEST_LIGHT_DARK_REPORT.len() + REQUEST_BACKGROUND_COLOR.len());
+    data.extend_from_slice(REQUEST_LIGHT_DARK_REPORT);
+    data.extend_from_slice(REQUEST_BACKGROUND_COLOR);
+    data
+}
+
+fn theme_reporting_disable_sequence() -> io::Result<Vec<u8>> {
+    let mut data = Vec::new();
+    mode::write_reset_mode(&mut data, &[Mode::LIGHT_DARK])?;
+    Ok(data)
+}
+
+fn write_raw_bytes(data: &[u8]) -> io::Result<()> {
+    let mut guard = TTY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(ref mut tty) = *guard {
+        tty.write_all(data)?;
+        tty.flush()?;
+    }
+    Ok(())
+}
+
 fn restore_impl() -> io::Result<()> {
     // Get the TTY handle - recover from poisoned lock to ensure terminal cleanup
     let mut guard = TTY
@@ -331,6 +384,11 @@ fn restore_impl() -> io::Result<()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     if let Some(ref mut tty) = *guard {
+        // Never leave a terminal holding a synchronized frame or subscribed
+        // to live light/dark notifications, including from the panic hook.
+        let _ = execute!(tty, EndSynchronizedUpdate);
+        let _ = mode::write_reset_mode(tty, &[Mode::LIGHT_DARK]);
+
         // Pop keyboard enhancement flags
         let _ = execute!(tty, PopKeyboardEnhancementFlags);
 
@@ -422,6 +480,15 @@ pub fn recreate_with_viewport(viewport_height: u16) -> io::Result<Terminal> {
 
 #[cfg(test)]
 mod tests {
-    // Note: Terminal tests are tricky because they require an actual TTY
-    // These would typically be integration tests
+    use super::*;
+
+    #[test]
+    fn theme_reporting_sequences_are_balanced_and_query_both_signals() {
+        assert_eq!(
+            theme_reporting_enable_sequence().unwrap(),
+            b"\x1b[?2031h\x1b[?2031$p\x1b[?996n\x1b]11;?\x07"
+        );
+        assert_eq!(theme_query_sequence(), b"\x1b[?996n\x1b]11;?\x07");
+        assert_eq!(theme_reporting_disable_sequence().unwrap(), b"\x1b[?2031l");
+    }
 }

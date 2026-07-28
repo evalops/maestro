@@ -2575,6 +2575,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "toml",
+ "uncurses",
  "unicode-width 0.2.0",
  "url",
  "urlencoding",
@@ -4953,6 +4954,21 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "uncurses"
+version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "476f991ac4af37971265c23605f3cec4be568d3907268c153fd76d07a84c0466"
+dependencies = [
+ "bitflags 2.13.1",
+ "compact_str",
+ "libc",
+ "rustc-hash",
+ "unicode-segmentation",
+ "unicode-width 0.2.0",
  "windows-sys 0.61.2",
 ]
 

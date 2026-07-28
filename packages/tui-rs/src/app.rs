@@ -38,6 +38,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // `Arc` (Atomic Reference Counted) is a thread-safe reference-counted pointer.
@@ -50,7 +51,7 @@ use anyhow::{bail, Context, Result};
 // - `.context("msg")` adds context to errors for better debugging
 
 use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, KeyModifiers as CrosstermModifiers, MouseEventKind,
+    self, KeyCode, KeyEventKind, KeyModifiers as CrosstermModifiers, MouseEventKind,
 };
 // `crossterm` is a cross-platform terminal manipulation library.
 // It handles raw mode, events, and cursor control across Windows/Mac/Linux.
@@ -107,7 +108,8 @@ use crate::session::{
 };
 use crate::skills::{skills_to_prompt, LoadedSkill, SkillLoadError, SkillLoader, SkillRegistry};
 use crate::state::{AppState, ApprovalMode, Message, MessageKind, MessageRole, QueueMode};
-use crate::terminal::{self, TerminalCapabilities};
+use crate::sync_output::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+use crate::terminal::{self, AppTerminalEvent, TerminalCapabilities, TerminalEventReader};
 use crate::tools::{ToolExecutor, ToolRegistry};
 use chrono::{Datelike, Utc};
 
@@ -515,6 +517,14 @@ pub struct App {
     /// The ratatui terminal handle for rendering.
     terminal: terminal::Terminal,
 
+    /// Protocol-aware terminal input. Falls back to crossterm when unavailable.
+    terminal_events: Option<TerminalEventReader>,
+
+    /// Live terminal-theme state driven by typed OSC/DEC replies.
+    theme_follower: Option<crate::themes::osc11::AutoThemeFollower>,
+    last_theme_query: Option<Instant>,
+    theme_reporting_available: bool,
+
     /// Flag to exit the main loop.
     should_quit: bool,
 
@@ -736,11 +746,9 @@ impl App {
     /// Create an app, optionally submitting `initial_prompt` after the agent is ready.
     pub fn new_with_initial_prompt(initial_prompt: Option<String>) -> Result<Self> {
         let (terminal, capabilities) = terminal::init().context("Failed to initialize terminal")?;
-        Ok(Self::new_with_terminal(
-            terminal,
-            capabilities,
-            initial_prompt,
-        ))
+        let mut app = Self::new_with_terminal(terminal, capabilities, initial_prompt);
+        app.initialize_terminal_events();
+        Ok(app)
     }
 
     fn new_with_terminal(
@@ -769,18 +777,11 @@ impl App {
             .as_ref()
             .and_then(|tui| tui.slash_command_fallback)
             .unwrap_or(true);
-        // Live theme follow: `tui.theme_follow = true` starts in the `auto`
-        // theme and refines dark/light with a one-time OSC 11 probe, gated on
-        // an enhanced terminal. This must run before the event loop starts
-        // consuming input — see themes::osc11 for why polling is unsafe.
         let theme_follow = config
             .tui
             .as_ref()
             .and_then(|tui| tui.theme_follow)
             .unwrap_or(false);
-        if theme_follow && capabilities.enhanced_keys {
-            crate::themes::osc11::apply_auto_theme_from_terminal();
-        }
         let mut app = Self::new_with_terminal_with_history(
             terminal,
             capabilities,
@@ -789,6 +790,14 @@ impl App {
             context_window,
         );
         app.state.unknown_slash_command_fallback = slash_command_fallback;
+        if theme_follow {
+            let current = if crate::themes::current_theme_name() == "light" {
+                "light"
+            } else {
+                "dark"
+            };
+            app.theme_follower = Some(crate::themes::osc11::AutoThemeFollower::new(current));
+        }
         app
     }
 
@@ -871,6 +880,10 @@ impl App {
             tool_completion_rx,
             credential_vault,
             terminal,
+            terminal_events: None,
+            theme_follower: None,
+            last_theme_query: None,
+            theme_reporting_available: false,
             should_quit: false,
             capabilities,
             command_palette: CommandPalette::new(Arc::clone(&command_registry)),
@@ -999,6 +1012,84 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         sections.join("\n\n")
     }
 
+    fn initialize_terminal_events(&mut self) {
+        if uncurses_input_enabled(std::env::var_os("MAESTRO_UNCURSES_INPUT").as_deref()) {
+            self.terminal_events = TerminalEventReader::open().ok();
+        }
+
+        if self.theme_follower.is_some() {
+            if self.terminal_events.is_some() {
+                // Mode 2031 requests push notifications when the terminal's
+                // color scheme changes. OSC 11 covers terminals that only
+                // expose their actual background color.
+                let _ = terminal::enable_theme_reporting();
+                self.last_theme_query = Some(Instant::now());
+            } else if self.capabilities.enhanced_keys {
+                // Compatibility path for terminals where uncurses cannot open
+                // the controlling tty.
+                crate::themes::osc11::apply_auto_theme_from_terminal();
+            }
+        }
+    }
+
+    fn poll_terminal_event(&mut self, timeout: Duration) -> Result<Option<AppTerminalEvent>> {
+        if let Some(reader) = &mut self.terminal_events {
+            return reader.poll(timeout).map_err(Into::into);
+        }
+        if event::poll(timeout)? {
+            return Ok(AppTerminalEvent::from_crossterm(event::read()?));
+        }
+        Ok(None)
+    }
+
+    fn poll_terminal_theme(&mut self) {
+        if !terminal_theme_query_due(
+            self.terminal_events.is_some(),
+            self.theme_follower.is_some(),
+            self.theme_reporting_available,
+            self.last_theme_query.map(|last| last.elapsed()),
+        ) {
+            return;
+        }
+        let _ = terminal::query_theme();
+        self.last_theme_query = Some(Instant::now());
+    }
+
+    fn apply_terminal_theme_event(&mut self, event: &AppTerminalEvent) -> bool {
+        // Theme replies may be unsolicited or left in the input queue from a
+        // previous query. They must never override an explicit opt-out.
+        if self.theme_follower.is_none() {
+            return false;
+        }
+        let next = match event {
+            AppTerminalEvent::ColorScheme(scheme) => {
+                let next = match scheme {
+                    uncurses::event::ColorScheme::Light => "light",
+                    uncurses::event::ColorScheme::Dark => "dark",
+                };
+                self.theme_follower = Some(crate::themes::osc11::AutoThemeFollower::new(next));
+                Some(next)
+            }
+            AppTerminalEvent::BackgroundColor { red, green, blue } => {
+                let luminance = crate::themes::osc11::relative_luminance(*red, *green, *blue);
+                self.theme_follower
+                    .as_mut()
+                    .and_then(|follower| follower.observe_luminance(luminance))
+            }
+            _ => None,
+        };
+        let Some(next) = next else {
+            return false;
+        };
+        if crate::themes::current_theme_name() == next {
+            return false;
+        }
+        if crate::themes::set_theme_by_name(next).is_ok() {
+            return true;
+        }
+        false
+    }
+
     /// Run the main event loop.
     ///
     /// # Rust Concept: Async Main Loop
@@ -1018,6 +1109,11 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     /// Exit code for the process (0 = success, non-zero = error).
     pub async fn run(mut self) -> Result<i32> {
         let result = self.run_inner().await;
+        if self.terminal_events.is_some() && self.theme_follower.is_some() {
+            let _ = terminal::disable_theme_reporting();
+        }
+        // Stop reading from the tty before crossterm restores its modes.
+        self.terminal_events.take();
         // Restore the terminal unconditionally: an error propagated out of
         // the loop (event poll/read, render, agent poll, ...) must not leave
         // raw mode, bracketed paste, and mouse capture enabled. The panic
@@ -1084,13 +1180,16 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             // Poll for terminal events. Shorter timeout while busy (animations);
             // longer while idle to avoid burning CPU on empty frames.
             let poll_ms = if self.state.busy { 33 } else { 100 };
-            if event::poll(std::time::Duration::from_millis(poll_ms))? {
-                match event::read()? {
-                    Event::Key(key) if should_handle_key_event(key.kind) => {
+            self.poll_terminal_theme();
+            if let Some(event) =
+                self.poll_terminal_event(std::time::Duration::from_millis(poll_ms))?
+            {
+                match event {
+                    AppTerminalEvent::Key(key) if should_handle_key_event(key.kind) => {
                         self.handle_key(key.code, key.modifiers).await?;
                         needs_redraw = true;
                     }
-                    Event::Mouse(mouse) => {
+                    AppTerminalEvent::Mouse(mouse) => {
                         // Handle mouse scroll wheel
                         match mouse.kind {
                             MouseEventKind::ScrollUp => {
@@ -1128,24 +1227,31 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                             _ => {} // Ignore other mouse events
                         }
                     }
-                    Event::Resize(_, height) => {
+                    AppTerminalEvent::Resize { height } => {
                         self.handle_resize(height)?;
                         needs_redraw = true;
                     }
                     // Bracketed paste: route to the open modal's text input,
                     // or to the main input (large pastes fold into a
                     // `[Pasted: N lines]` display chip).
-                    Event::Paste(text) => {
+                    AppTerminalEvent::Paste(text) => {
                         self.handle_paste(&text);
                         needs_redraw = true;
                     }
-                    Event::FocusGained => {
+                    AppTerminalEvent::FocusGained => {
                         self.terminal_notifier.record_focus(true);
                     }
-                    Event::FocusLost => {
+                    AppTerminalEvent::FocusLost => {
                         self.terminal_notifier.record_focus(false);
                     }
-                    _ => {} // Ignore other events
+                    AppTerminalEvent::ThemeReportingAvailable(available) => {
+                        self.theme_reporting_available = available;
+                    }
+                    theme_event @ (AppTerminalEvent::BackgroundColor { .. }
+                    | AppTerminalEvent::ColorScheme(_)) => {
+                        needs_redraw |= self.apply_terminal_theme_event(&theme_event);
+                    }
+                    _ => {}
                 }
             }
 
@@ -2259,133 +2365,150 @@ Slash Commands:
         let rewind_picker = &mut self.rewind_picker;
         let detail_view = &self.detail_view;
 
-        self.terminal.draw(|frame| {
-            let area = frame.area();
-            let view = ChatView::new(state);
-            frame.render_widget(view, area);
+        // DEC mode 2026 lets capable terminals present a whole Ratatui diff
+        // atomically, eliminating visible partial-frame tearing. Unknown DEC
+        // modes are ignored, so this is safe on older terminals.
+        {
+            let writer = self.terminal.backend_mut();
+            crossterm::queue!(writer, BeginSynchronizedUpdate)?;
+            Write::flush(writer)?;
+        }
+        let draw_result = self
+            .terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let view = ChatView::new(state);
+                frame.render_widget(view, area);
 
-            // Show error if any. Wrap the full provider message across lines
-            // (extracted upstream from the error body) instead of clipping a
-            // fixed two-line slice of it. Hidden while a modal/overlay is
-            // active so the error text cannot mix with the overlay's cells;
-            // the status-bar alert badge and `/alerts` still surface it.
-            let visible_error = if active_modal == ActiveModal::None {
-                state.error.as_deref()
-            } else {
-                None
-            };
-            if let Some(error) = visible_error {
-                let error_width = area.width.saturating_sub(2).max(1);
-                let wrapped_lines = crate::wrapping::wrapped_line_count(
-                    &ratatui::text::Text::raw(error),
-                    error_width as usize,
-                ) as u16;
-                let error_height = wrapped_lines.clamp(1, 8);
-                let status_height = u16::from(!state.zen_mode);
-                let input_height = calculate_input_height(state, area);
-                let error_y = area
-                    .height
-                    .saturating_sub(status_height)
-                    .saturating_sub(input_height)
-                    .saturating_sub(error_height);
-                let error_area = Rect {
-                    x: area.x + 1,
-                    y: area.y + error_y,
-                    width: error_width,
-                    height: error_height,
+                // Show error if any. Wrap the full provider message across lines
+                // (extracted upstream from the error body) instead of clipping a
+                // fixed two-line slice of it. Hidden while a modal/overlay is
+                // active so the error text cannot mix with the overlay's cells;
+                // the status-bar alert badge and `/alerts` still surface it.
+                let visible_error = if active_modal == ActiveModal::None {
+                    state.error.as_deref()
+                } else {
+                    None
                 };
-                // Blank the covered cells first so no older frame content
-                // shows through the wrapped paragraph.
-                frame.render_widget(ratatui::widgets::Clear, error_area);
-                let error_widget = ratatui::widgets::Paragraph::new(error)
-                    .style(Style::default().fg(Color::Red))
-                    .wrap(ratatui::widgets::Wrap { trim: false });
-                frame.render_widget(error_widget, error_area);
-            }
+                if let Some(error) = visible_error {
+                    let error_width = area.width.saturating_sub(2).max(1);
+                    let wrapped_lines = crate::wrapping::wrapped_line_count(
+                        &ratatui::text::Text::raw(error),
+                        error_width as usize,
+                    ) as u16;
+                    let error_height = wrapped_lines.clamp(1, 8);
+                    let status_height = u16::from(!state.zen_mode);
+                    let input_height = calculate_input_height(state, area);
+                    let error_y = area
+                        .height
+                        .saturating_sub(status_height)
+                        .saturating_sub(input_height)
+                        .saturating_sub(error_height);
+                    let error_area = Rect {
+                        x: area.x + 1,
+                        y: area.y + error_y,
+                        width: error_width,
+                        height: error_height,
+                    };
+                    // Blank the covered cells first so no older frame content
+                    // shows through the wrapped paragraph.
+                    frame.render_widget(ratatui::widgets::Clear, error_area);
+                    let error_widget = ratatui::widgets::Paragraph::new(error)
+                        .style(Style::default().fg(Color::Red))
+                        .wrap(ratatui::widgets::Wrap { trim: false });
+                    frame.render_widget(error_widget, error_area);
+                }
 
-            // Render slash completions if active
-            if active_modal == ActiveModal::None && slash_state.has_completions() {
-                Self::render_slash_completions_static(slash_state, frame, area);
-            }
+                // Render slash completions if active
+                if active_modal == ActiveModal::None && slash_state.has_completions() {
+                    Self::render_slash_completions_static(slash_state, frame, area);
+                }
 
-            // Render modals
-            match active_modal {
-                ActiveModal::FileSearch => {
-                    file_search.render(frame, area);
+                // Render modals
+                match active_modal {
+                    ActiveModal::FileSearch => {
+                        file_search.render(frame, area);
+                    }
+                    ActiveModal::SessionSwitcher => {
+                        session_switcher.render(frame, area);
+                    }
+                    ActiveModal::Operations => {
+                        operations.render(frame, area);
+                    }
+                    ActiveModal::CommandPalette => {
+                        command_palette.render(frame, area);
+                    }
+                    ActiveModal::Approval => {
+                        // Parallel tool calls queue several approvals at once; show
+                        // them together in one batch modal instead of N sequential
+                        // single-call modals.
+                        if approval_controller.total_count() > 1 {
+                            let modal = BatchedApprovalModal::new(approval_controller.pending())
+                                .selected(approval_controller.selected_index());
+                            frame.render_widget(modal, area);
+                        } else if let Some(request) = approval_controller.current() {
+                            let modal = ApprovalModal::new(request);
+                            frame.render_widget(modal, area);
+                        }
+                    }
+                    ActiveModal::ModelSelector => {
+                        model_selector.render(frame, area);
+                    }
+                    ActiveModal::ThemeSelector => {
+                        theme_selector.render(frame, area);
+                    }
+                    ActiveModal::ShortcutsHelp => {
+                        frame.render_widget(shortcuts_help.clone(), area);
+                    }
+                    ActiveModal::RewindPicker => {
+                        rewind_picker.render(frame, area);
+                    }
+                    ActiveModal::DetailView => {
+                        if let Some(detail) = detail_view {
+                            frame.render_widget(detail, area);
+                        }
+                    }
+                    ActiveModal::None => {}
                 }
-                ActiveModal::SessionSwitcher => {
-                    session_switcher.render(frame, area);
-                }
-                ActiveModal::Operations => {
-                    operations.render(frame, area);
-                }
-                ActiveModal::CommandPalette => {
-                    command_palette.render(frame, area);
-                }
-                ActiveModal::Approval => {
-                    // Parallel tool calls queue several approvals at once; show
-                    // them together in one batch modal instead of N sequential
-                    // single-call modals.
-                    if approval_controller.total_count() > 1 {
-                        let modal = BatchedApprovalModal::new(approval_controller.pending())
-                            .selected(approval_controller.selected_index());
-                        frame.render_widget(modal, area);
-                    } else if let Some(request) = approval_controller.current() {
-                        let modal = ApprovalModal::new(request);
-                        frame.render_widget(modal, area);
+
+                // Position terminal cursor in the input area
+                // Layout: [Messages(Min), Input(auto), Status(1)]
+                if active_modal == ActiveModal::None {
+                    // Calculate input area position (same layout as ChatView)
+                    let status_height = u16::from(!state.zen_mode);
+                    let input_height = calculate_input_height(state, area);
+                    let input_area = Rect {
+                        x: area.x,
+                        y: area.y.saturating_add(
+                            area.height.saturating_sub(status_height + input_height),
+                        ),
+                        width: area.width,
+                        height: input_height,
+                    };
+
+                    // Create widget just to calculate cursor position
+                    let input_widget = ChatInputWidget::new(
+                        &state.textarea,
+                        "",
+                        ChatInputWidgetOptions {
+                            busy: state.busy,
+                            pending_input_preview: None,
+                            ghost_text: None,
+                        },
+                    );
+
+                    if let Some((cursor_x, cursor_y)) = input_widget.cursor_pos(input_area) {
+                        frame.set_cursor_position((cursor_x, cursor_y));
                     }
                 }
-                ActiveModal::ModelSelector => {
-                    model_selector.render(frame, area);
-                }
-                ActiveModal::ThemeSelector => {
-                    theme_selector.render(frame, area);
-                }
-                ActiveModal::ShortcutsHelp => {
-                    frame.render_widget(shortcuts_help.clone(), area);
-                }
-                ActiveModal::RewindPicker => {
-                    rewind_picker.render(frame, area);
-                }
-                ActiveModal::DetailView => {
-                    if let Some(detail) = detail_view {
-                        frame.render_widget(detail, area);
-                    }
-                }
-                ActiveModal::None => {}
-            }
-
-            // Position terminal cursor in the input area
-            // Layout: [Messages(Min), Input(auto), Status(1)]
-            if active_modal == ActiveModal::None {
-                // Calculate input area position (same layout as ChatView)
-                let status_height = u16::from(!state.zen_mode);
-                let input_height = calculate_input_height(state, area);
-                let input_area = Rect {
-                    x: area.x,
-                    y: area
-                        .y
-                        .saturating_add(area.height.saturating_sub(status_height + input_height)),
-                    width: area.width,
-                    height: input_height,
-                };
-
-                // Create widget just to calculate cursor position
-                let input_widget = ChatInputWidget::new(
-                    &state.textarea,
-                    "",
-                    ChatInputWidgetOptions {
-                        busy: state.busy,
-                        pending_input_preview: None,
-                        ghost_text: None,
-                    },
-                );
-
-                if let Some((cursor_x, cursor_y)) = input_widget.cursor_pos(input_area) {
-                    frame.set_cursor_position((cursor_x, cursor_y));
-                }
-            }
-        })?;
+            })
+            .map(|_| ());
+        let sync_end_result = {
+            let writer = self.terminal.backend_mut();
+            crossterm::queue!(writer, EndSynchronizedUpdate).and_then(|()| Write::flush(writer))
+        };
+        draw_result?;
+        sync_end_result?;
 
         Ok(())
     }
@@ -2656,6 +2779,22 @@ fn policy_model_id(model: &str) -> String {
 /// Handle presses and repeats (so held keys auto-repeat); ignore releases.
 fn should_handle_key_event(kind: KeyEventKind) -> bool {
     matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat)
+}
+
+fn uncurses_input_enabled(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_none_or(|value| value != "0")
+}
+
+fn terminal_theme_query_due(
+    has_terminal_events: bool,
+    has_theme_follower: bool,
+    reporting_available: bool,
+    elapsed_since_query: Option<Duration>,
+) -> bool {
+    has_terminal_events
+        && has_theme_follower
+        && !reporting_available
+        && elapsed_since_query.is_none_or(|elapsed| elapsed >= Duration::from_secs(2))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

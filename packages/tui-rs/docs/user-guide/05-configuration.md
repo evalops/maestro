@@ -66,6 +66,7 @@ Prefer `~/.maestro` for new setup; keep legacy paths only if you already depend 
 | `MAESTRO_NO_EGRESS_SHELL=1` | Require approval for network shell |
 | `MAESTRO_REDUCED_MOTION=1` | Reduce UI motion |
 | `MAESTRO_DISABLE_ANIMATIONS=1` | Disable TUI animations |
+| `MAESTRO_UNCURSES_INPUT=0` | Disable protocol-aware terminal input and use the crossterm fallback |
 | `MAESTRO_TUI_BIN` | Path to `maestro-tui` binary |
 | `MAESTRO_KEYBINDINGS_FILE` | Override keybindings path |
 | `MAESTRO_MODELS_FILE` | Custom models registry |
