@@ -710,15 +710,24 @@ impl TranscriptStreamFilter {
 
     fn apply_unfiltered(&mut self, envelope: StreamEnvelope) -> Vec<StreamEnvelope> {
         let StreamEnvelope::Message { cursor, message } = envelope else {
+            if matches!(envelope, StreamEnvelope::Reset { .. }) {
+                self.response_chunks.clear();
+                self.active_responses.clear();
+                self.deferred_blocks.clear();
+            }
             return vec![envelope];
         };
         match *message {
             FromAgentMessage::ResponseStart { response_id } => {
+                let mut envelopes = std::mem::take(&mut self.deferred_blocks);
+                self.response_chunks.clear();
+                self.active_responses.clear();
                 self.active_responses.insert(response_id.clone());
-                vec![StreamEnvelope::Message {
+                envelopes.push(StreamEnvelope::Message {
                     cursor,
                     message: Box::new(FromAgentMessage::ResponseStart { response_id }),
-                }]
+                });
+                envelopes
             }
             FromAgentMessage::ResponseChunk {
                 response_id,
@@ -753,7 +762,7 @@ impl TranscriptStreamFilter {
                 ttft_ms,
             } => {
                 let mut envelopes = Vec::new();
-                self.active_responses.remove(&response_id);
+                self.active_responses.clear();
                 envelopes.append(&mut self.deferred_blocks);
                 if let Some((_chunk_cursor, content)) = self.response_chunks.remove(&response_id) {
                     if !content.is_empty() {
@@ -770,6 +779,7 @@ impl TranscriptStreamFilter {
                         });
                     }
                 }
+                self.response_chunks.clear();
                 envelopes.push(StreamEnvelope::Message {
                     cursor,
                     message: Box::new(FromAgentMessage::ResponseEnd {
@@ -783,12 +793,20 @@ impl TranscriptStreamFilter {
                 envelopes
             }
             message => {
+                let terminal_error = matches!(&message, FromAgentMessage::Error { .. });
                 let level = transcript_level(&message);
                 if level.is_none_or(|level| self.grade.includes(level)) {
                     let envelope = StreamEnvelope::Message {
                         cursor,
                         message: Box::new(message),
                     };
+                    if terminal_error {
+                        self.response_chunks.clear();
+                        self.active_responses.clear();
+                        let mut envelopes = std::mem::take(&mut self.deferred_blocks);
+                        envelopes.push(envelope);
+                        return envelopes;
+                    }
                     if level.is_some()
                         && self.grade != crate::transcript::TranscriptGrade::Delta
                         && !self.active_responses.is_empty()

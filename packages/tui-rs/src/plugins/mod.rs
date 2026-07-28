@@ -186,7 +186,8 @@ impl PluginRegistry {
                         .get(&key)
                         .is_some_and(|plugin_state| !plugin_state.enabled)
                     {
-                        by_name.remove(&key);
+                        plugin.components = PluginComponents::default();
+                        by_name.insert(key, plugin);
                         continue;
                     }
                     if !state.capability_enabled(&key, PluginCapability::Skills) {
@@ -543,7 +544,12 @@ mod tests {
             (legacy_root, PluginOrigin::LegacyUser),
             (native_root, PluginOrigin::User),
         ]);
-        assert!(registry.get("duplicate").is_none());
+        let disabled = registry.get("duplicate").unwrap();
+        assert_eq!(disabled.origin, PluginOrigin::User);
+        assert!(disabled.components.skills_dir.is_none());
+        assert!(disabled.components.commands_dir.is_none());
+        assert!(disabled.components.hooks_config.is_none());
+        assert!(disabled.components.mcp_path.is_none());
     }
 
     #[test]

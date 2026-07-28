@@ -404,6 +404,108 @@ fn coarse_stream_resume_suppresses_stale_snapshots_but_preserves_resets() {
 }
 
 #[test]
+fn coarse_stream_reset_discards_partial_aggregation() {
+    let mut filter = TranscriptStreamFilter::new(crate::transcript::TranscriptGrade::Block, 0);
+    assert_eq!(
+        filter
+            .apply(stream_message(
+                1,
+                FromAgentMessage::ResponseStart {
+                    response_id: "response".into(),
+                },
+            ))
+            .len(),
+        1
+    );
+    assert!(filter
+        .apply(stream_message(
+            2,
+            FromAgentMessage::ResponseChunk {
+                response_id: "response".into(),
+                content: "partial".into(),
+                is_thinking: false,
+            },
+        ))
+        .is_empty());
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    let snapshot = {
+        let state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        shared.snapshot(&state)
+    };
+    assert_eq!(
+        filter
+            .apply(StreamEnvelope::Reset {
+                reason: "broadcast_lag".into(),
+                snapshot,
+            })
+            .len(),
+        1
+    );
+    let completion = filter.apply(stream_message(
+        3,
+        FromAgentMessage::ResponseEnd {
+            response_id: "response".into(),
+            usage: None,
+            tools_summary: None,
+            duration_ms: None,
+            ttft_ms: None,
+        },
+    ));
+    assert_eq!(completion.len(), 1);
+    assert!(matches!(
+        completion[0],
+        StreamEnvelope::Message {
+            message: ref value,
+            ..
+        } if matches!(**value, FromAgentMessage::ResponseEnd { .. })
+    ));
+}
+
+#[test]
+fn coarse_stream_new_response_retires_orphaned_response() {
+    let mut filter = TranscriptStreamFilter::new(crate::transcript::TranscriptGrade::Block, 0);
+    let _ = filter.apply(stream_message(
+        1,
+        FromAgentMessage::ResponseStart {
+            response_id: "orphan".into(),
+        },
+    ));
+    let _ = filter.apply(stream_message(
+        2,
+        FromAgentMessage::ResponseChunk {
+            response_id: "orphan".into(),
+            content: "partial".into(),
+            is_thinking: false,
+        },
+    ));
+    let restarted = filter.apply(stream_message(
+        3,
+        FromAgentMessage::ResponseStart {
+            response_id: "retry".into(),
+        },
+    ));
+    assert_eq!(restarted.len(), 1);
+    let completed = filter.apply(stream_message(
+        4,
+        FromAgentMessage::ResponseEnd {
+            response_id: "retry".into(),
+            usage: None,
+            tools_summary: None,
+            duration_ms: None,
+            ttft_ms: None,
+        },
+    ));
+    assert_eq!(completed.len(), 1);
+    assert!(!serde_json::to_string(&completed)
+        .unwrap()
+        .contains("partial"));
+}
+
+#[test]
 fn hosted_replay_journal_stores_redacted_tool_events() {
     let workspace = tempdir().expect("workspace");
     let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));

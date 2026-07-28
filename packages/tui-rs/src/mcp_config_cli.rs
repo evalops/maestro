@@ -101,6 +101,10 @@ fn redact_config_value(value: &mut Value, parent_key: Option<&str>) {
             for (key, child) in object {
                 if matches!(parent_key, Some("env" | "headers")) || is_secret_key(key) {
                     *child = Value::String("[REDACTED]".to_string());
+                } else if key.eq_ignore_ascii_case("url") {
+                    if let Some(url) = child.as_str() {
+                        *child = Value::String(redact_url_credentials(url));
+                    }
                 } else {
                     redact_config_value(child, Some(key));
                 }
@@ -117,6 +121,37 @@ fn redact_config_value(value: &mut Value, parent_key: Option<&str>) {
         }
         _ => {}
     }
+}
+
+fn redact_url_credentials(value: &str) -> String {
+    let Ok(mut url) = url::Url::parse(value) else {
+        return value.to_string();
+    };
+    if !url.username().is_empty() {
+        let _ = url.set_username("[REDACTED]");
+    }
+    if url.password().is_some() {
+        let _ = url.set_password(Some("[REDACTED]"));
+    }
+    let pairs = url
+        .query_pairs()
+        .map(|(key, value)| {
+            let redacted = if is_secret_key(&key) {
+                "[REDACTED]".to_string()
+            } else {
+                value.into_owned()
+            };
+            (key.into_owned(), redacted)
+        })
+        .collect::<Vec<_>>();
+    if url.query().is_some() {
+        url.set_query(None);
+        let mut query = url.query_pairs_mut();
+        for (key, value) in pairs {
+            query.append_pair(&key, &value);
+        }
+    }
+    url.to_string()
 }
 
 fn redact_argument_array(values: &mut [Value]) {
@@ -419,7 +454,7 @@ mod tests {
                     "X-Custom-Credential": "also-secret"
                 },
                 "api_key": "literal-secret",
-                "url": "https://example.test/mcp"
+                "url": "https://user:password@example.test/mcp?access_token=url-secret&safe=ok"
             },
             {
                 "name": "private-key-service",
@@ -432,7 +467,10 @@ mod tests {
         assert_eq!(listed[1]["headers"]["Authorization"], "[REDACTED]");
         assert_eq!(listed[1]["headers"]["X-Custom-Credential"], "[REDACTED]");
         assert_eq!(listed[1]["api_key"], "[REDACTED]");
-        assert_eq!(listed[1]["url"], "https://example.test/mcp");
+        let listed_url = listed[1]["url"].as_str().unwrap();
+        assert!(!listed_url.contains("password"));
+        assert!(!listed_url.contains("url-secret"));
+        assert!(listed_url.contains("safe=ok"));
         assert_eq!(listed[0]["args"][1], "[REDACTED]");
         assert_eq!(listed[0]["args"][2], "--client-secret=${CLIENT_SECRET}");
         assert_eq!(listed[2]["name"], "private-key-service");

@@ -243,8 +243,12 @@ pub fn set_enabled(state_path: &Path, plugin: &str, enabled: bool) -> Result<()>
     let mut state = PluginState::load(state_path)?;
     let entry = state
         .plugins
-        .get_mut(&plugin.to_lowercase())
-        .context("plugin has no trust record; reinstall it first")?;
+        .entry(plugin.to_lowercase())
+        .or_insert_with(|| PluginTrustState {
+            trusted_source: "adopted-existing-plugin".to_string(),
+            enabled: true,
+            capabilities: BTreeMap::new(),
+        });
     entry.enabled = enabled;
     state.save(state_path)
 }
@@ -258,8 +262,12 @@ pub fn set_capability(
     let mut state = PluginState::load(state_path)?;
     let entry = state
         .plugins
-        .get_mut(&plugin.to_lowercase())
-        .context("plugin has no trust record; reinstall it first")?;
+        .entry(plugin.to_lowercase())
+        .or_insert_with(|| PluginTrustState {
+            trusted_source: "adopted-existing-plugin".to_string(),
+            enabled: true,
+            capabilities: BTreeMap::new(),
+        });
     entry.capabilities.insert(capability, enabled);
     state.save(state_path)
 }
@@ -367,6 +375,31 @@ mod tests {
         set_capability(&state_path, "demo-plugin", PluginCapability::Skills, false).unwrap();
         let state = PluginState::load(&state_path).unwrap();
         assert!(!state.capability_enabled("demo-plugin", PluginCapability::Skills));
+    }
+
+    #[test]
+    fn toggles_adopt_plugins_without_existing_trust_state() {
+        let home = TempDir::new().unwrap();
+        let state_path = home.path().join("plugin-state.json");
+
+        set_enabled(&state_path, "legacy-plugin", false).unwrap();
+        set_enabled(&state_path, "legacy-plugin", true).unwrap();
+        set_capability(
+            &state_path,
+            "legacy-plugin",
+            PluginCapability::Commands,
+            false,
+        )
+        .unwrap();
+
+        let state = PluginState::load(&state_path).unwrap();
+        let adopted = &state.plugins["legacy-plugin"];
+        assert!(adopted.enabled);
+        assert_eq!(adopted.trusted_source, "adopted-existing-plugin");
+        assert_eq!(
+            adopted.capabilities.get(&PluginCapability::Commands),
+            Some(&false)
+        );
     }
 
     #[test]
