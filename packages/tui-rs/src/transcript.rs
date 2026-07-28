@@ -129,32 +129,37 @@ pub(crate) fn redact_agent_message(
     let Ok(mut redacted_message) = serde_json::from_value(redact(value)) else {
         return message;
     };
-    if let crate::headless::messages::FromAgentMessage::ToolOutput { content, .. } =
-        &mut redacted_message
-    {
-        let normalized = content.to_ascii_lowercase();
-        if [
-            "authorization",
-            "api_key",
-            "api-key",
-            "access_token",
-            "access-token",
-            "refresh_token",
-            "refresh-token",
-            "client_secret",
-            "client-secret",
-            "token=",
-            "secret=",
-            "password=",
-            "private_key",
-        ]
-        .iter()
-        .any(|marker| normalized.contains(marker))
+    match &mut redacted_message {
+        crate::headless::messages::FromAgentMessage::ToolOutput { content, .. }
+        | crate::headless::messages::FromAgentMessage::UtilityCommandOutput { content, .. }
+            if contains_credential_marker(content) =>
         {
             *content = "[REDACTED]".to_string();
         }
+        _ => {}
     }
     redacted_message
+}
+
+fn contains_credential_marker(content: &str) -> bool {
+    let normalized = content.to_ascii_lowercase();
+    [
+        "authorization",
+        "api_key",
+        "api-key",
+        "access_token",
+        "access-token",
+        "refresh_token",
+        "refresh-token",
+        "client_secret",
+        "client-secret",
+        "token=",
+        "secret=",
+        "password=",
+        "private_key",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
 }
 
 #[cfg(test)]
@@ -187,7 +192,7 @@ mod tests {
 
     #[test]
     fn redacts_structured_tool_args_and_credential_shaped_output() {
-        use crate::headless::messages::FromAgentMessage;
+        use crate::headless::messages::{FromAgentMessage, UtilityCommandStream};
 
         let call = redact_agent_message(FromAgentMessage::ToolCall {
             call_id: "call".into(),
@@ -206,5 +211,14 @@ mod tests {
         assert!(!serde_json::to_string(&output)
             .unwrap()
             .contains("access_token"));
+
+        let utility_output = redact_agent_message(FromAgentMessage::UtilityCommandOutput {
+            command_id: "command".into(),
+            stream: UtilityCommandStream::Stderr,
+            content: "OPENAI_API_KEY=secret".into(),
+        });
+        assert!(!serde_json::to_string(&utility_output)
+            .unwrap()
+            .contains("OPENAI_API_KEY"));
     }
 }

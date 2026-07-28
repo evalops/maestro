@@ -318,12 +318,16 @@ fn stdio_options(args: &[String]) -> Result<(Vec<String>, Map<String, Value>)> {
 fn reject_literal_secrets(args: &[String]) -> Result<()> {
     let mut secret_value_follows = false;
     for argument in args {
-        if secret_value_follows && !argument.contains("${") {
+        if secret_value_follows && !is_plain_env_reference(argument) {
             bail!("literal secrets are not allowed; use --env VAR");
         }
         if let Some(inline_value) = credential_flag(argument) {
             secret_value_follows = !inline_value;
-            if inline_value && !argument.contains("${") {
+            if inline_value
+                && !argument
+                    .split_once('=')
+                    .is_some_and(|(_, value)| is_plain_env_reference(value))
+            {
                 bail!("literal secrets are not allowed; use --env VAR");
             }
         } else {
@@ -331,6 +335,13 @@ fn reject_literal_secrets(args: &[String]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn is_plain_env_reference(value: &str) -> bool {
+    value
+        .strip_prefix("${")
+        .and_then(|value| value.strip_suffix('}'))
+        .is_some_and(|variable| validate_env_name(variable).is_ok())
 }
 
 fn credential_flag(argument: &str) -> Option<bool> {
@@ -431,6 +442,17 @@ mod tests {
         assert!(reject_literal_secrets(&["--client-secret".into(), "secret".into()]).is_err());
         assert!(reject_literal_secrets(&["--access-token=secret".into()]).is_err());
         assert!(reject_literal_secrets(&["--refresh_token".into(), "secret".into()]).is_err());
+        assert!(reject_literal_secrets(&[
+            "--token".into(),
+            "${SERVICE_TOKEN:-literal-secret}".into()
+        ])
+        .is_err());
+        assert!(reject_literal_secrets(&[
+            "--client-secret=${CLIENT_SECRET:-literal-secret}".into()
+        ])
+        .is_err());
+        assert!(reject_literal_secrets(&["--token".into(), "${SERVICE_TOKEN}".into()]).is_ok());
+        assert!(reject_literal_secrets(&["--access-token=${ACCESS_TOKEN}".into()]).is_ok());
         assert!(validate_http_url("http://localhost.evil.test/mcp").is_err());
         assert!(validate_http_url("https://example.test/mcp?token=secret").is_err());
         assert!(validate_http_url("https://example.test/mcp?access_token=secret").is_err());
