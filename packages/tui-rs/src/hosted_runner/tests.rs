@@ -184,6 +184,157 @@ fn supervisor_executor_reports_runtime_not_ready_until_connected() {
 }
 
 #[test]
+fn supervisor_executor_negotiates_hello_without_mutating_shared_runtime() {
+    let workspace = tempdir().expect("workspace");
+    let supervisor = Arc::new(Mutex::new(AgentSupervisor::new(
+        crate::headless::SupervisorConfig::default(),
+    )));
+    let executor = AgentSupervisorHostedRunnerMessageExecutor::new(supervisor);
+    let context = HostedRunnerHeadlessMessageContext {
+        session_id: "sess_test".to_string(),
+        connection_id: "conn_block".to_string(),
+        subscription_id: Some("sub_block".to_string()),
+        role: ConnectionRole::Viewer,
+        controller_connection_id: Some("conn_controller".to_string()),
+        client_protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
+        client_info: None,
+        capabilities: Some(ClientCapabilities {
+            transcript_grade: Some(crate::transcript::TranscriptGrade::Block),
+            ..ClientCapabilities::default()
+        }),
+        opt_out_notifications: None,
+        lease_expires_at: Utc::now().to_rfc3339(),
+        workspace_root: workspace.path().to_path_buf(),
+    };
+
+    let result = executor
+        .execute(
+            &context,
+            ToAgentMessage::Hello {
+                protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
+                client_info: None,
+                capabilities: context.capabilities.clone(),
+                role: Some(ConnectionRole::Viewer),
+                opt_out_notifications: None,
+            },
+        )
+        .expect("hosted hello");
+
+    assert!(matches!(
+        result.messages.as_slice(),
+        [FromAgentMessage::HelloOk {
+            connection_id: Some(connection_id),
+            capabilities: Some(ClientCapabilities {
+                transcript_grade: Some(crate::transcript::TranscriptGrade::Block),
+                ..
+            }),
+            ..
+        }] if connection_id == "conn_block"
+    ));
+}
+
+fn stream_message(cursor: u64, message: FromAgentMessage) -> StreamEnvelope {
+    StreamEnvelope::Message {
+        cursor,
+        message: Box::new(message),
+    }
+}
+
+#[test]
+fn block_stream_filter_coalesces_text_and_omits_delta_events() {
+    let mut filter = TranscriptStreamFilter::new(crate::transcript::TranscriptGrade::Block);
+    let mut output = Vec::new();
+    for envelope in [
+        stream_message(
+            0,
+            FromAgentMessage::ResponseStart {
+                response_id: "response".to_string(),
+            },
+        ),
+        stream_message(
+            1,
+            FromAgentMessage::ResponseChunk {
+                response_id: "response".to_string(),
+                content: "hel".to_string(),
+                is_thinking: false,
+            },
+        ),
+        stream_message(
+            2,
+            FromAgentMessage::ResponseChunk {
+                response_id: "response".to_string(),
+                content: "hidden thought".to_string(),
+                is_thinking: true,
+            },
+        ),
+        stream_message(
+            3,
+            FromAgentMessage::ResponseChunk {
+                response_id: "response".to_string(),
+                content: "lo".to_string(),
+                is_thinking: false,
+            },
+        ),
+        stream_message(
+            4,
+            FromAgentMessage::ToolOutput {
+                call_id: "call".to_string(),
+                content: "delta".to_string(),
+            },
+        ),
+        stream_message(
+            5,
+            FromAgentMessage::ToolStart {
+                call_id: "call".to_string(),
+            },
+        ),
+        stream_message(
+            6,
+            FromAgentMessage::ResponseEnd {
+                response_id: "response".to_string(),
+                usage: None,
+                tools_summary: None,
+                duration_ms: None,
+                ttft_ms: None,
+            },
+        ),
+    ] {
+        output.extend(filter.apply(envelope));
+    }
+
+    let output = serde_json::to_value(output).expect("serialize filtered events");
+    assert_eq!(output.as_array().expect("events").len(), 4);
+    assert_eq!(output[0]["message"]["type"], "response_start");
+    assert_eq!(output[1]["cursor"], 3);
+    assert_eq!(output[1]["message"]["type"], "response_chunk");
+    assert_eq!(output[1]["message"]["content"], "hello");
+    assert_eq!(output[2]["cursor"], 5);
+    assert_eq!(output[2]["message"]["type"], "tool_start");
+    assert_eq!(output[3]["message"]["type"], "response_end");
+    assert!(!output.to_string().contains("hidden thought"));
+    assert!(!output.to_string().contains("delta"));
+}
+
+#[test]
+fn transcript_filters_are_connection_local() {
+    let response_chunk = || {
+        stream_message(
+            7,
+            FromAgentMessage::ResponseChunk {
+                response_id: "response".to_string(),
+                content: "hello".to_string(),
+                is_thinking: false,
+            },
+        )
+    };
+    let mut delta = TranscriptStreamFilter::new(crate::transcript::TranscriptGrade::Delta);
+    let mut off = TranscriptStreamFilter::new(crate::transcript::TranscriptGrade::Off);
+
+    assert_eq!(delta.apply(response_chunk()).len(), 1);
+    assert!(off.apply(response_chunk()).is_empty());
+}
+
+#[test]
 fn resolves_env_config_with_hosted_runner_contract_names() {
     let workspace = tempdir().expect("workspace");
     let mut env = base_hosted_runner_env(workspace.path());
@@ -1931,6 +2082,41 @@ async fn message_executor_publishes_runtime_handled_events() {
         .as_str()
         .expect("subscription id")
         .to_string();
+    let viewer: serde_json::Value = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .json(&json!({
+            "sessionId": "sess_test",
+            "connectionId": "conn_off",
+            "role": "viewer",
+            "capabilities": {"transcriptGrade": "off"}
+        }))
+        .send()
+        .await
+        .expect("viewer connection response")
+        .json()
+        .await
+        .expect("viewer connection json");
+    assert_eq!(viewer["connection_id"], "conn_off");
+    let viewer_subscription: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": "conn_off",
+            "role": "viewer",
+            "capabilities": {"transcriptGrade": "off"}
+        }))
+        .send()
+        .await
+        .expect("viewer subscription response")
+        .json()
+        .await
+        .expect("viewer subscription json");
+    let viewer_subscription_id = viewer_subscription["subscription_id"]
+        .as_str()
+        .expect("viewer subscription id")
+        .to_string();
 
     let message: serde_json::Value = client
         .post(format!(
@@ -1938,7 +2124,7 @@ async fn message_executor_publishes_runtime_handled_events() {
             handle.base_url()
         ))
         .header("x-maestro-headless-connection-id", "conn_exec")
-        .header("x-maestro-headless-subscriber-id", subscription_id)
+        .header("x-maestro-headless-subscriber-id", &subscription_id)
         .json(&json!({"type": "prompt", "content": "hello"}))
         .send()
         .await
@@ -1952,8 +2138,8 @@ async fn message_executor_publishes_runtime_handled_events() {
 
     let mut events_response = client
         .get(format!(
-            "{}/api/headless/sessions/sess_test/events?cursor=0",
-            handle.base_url()
+            "{}/api/headless/sessions/sess_test/events?cursor=0&subscriptionId={subscription_id}",
+            handle.base_url(),
         ))
         .send()
         .await
@@ -1978,6 +2164,37 @@ async fn message_executor_publishes_runtime_handled_events() {
     assert!(event_text.contains("\"type\":\"response_chunk\""));
     assert!(event_text.contains("\"content\":\"runtime: hello\""));
     assert!(event_text.contains("\"type\":\"response_end\""));
+
+    let mut viewer_events_response = client
+        .get(format!(
+            "{}/api/headless/sessions/sess_test/events?cursor=0&subscriptionId={viewer_subscription_id}",
+            handle.base_url(),
+        ))
+        .send()
+        .await
+        .expect("viewer events response");
+    assert_eq!(viewer_events_response.status(), StatusCode::OK);
+    let mut viewer_event_text = String::new();
+    for _ in 0..8 {
+        let chunk = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            viewer_events_response.chunk(),
+        )
+        .await
+        .expect("viewer event chunk timeout")
+        .expect("viewer event chunk read");
+        let Some(chunk) = chunk else {
+            break;
+        };
+        viewer_event_text.push_str(&String::from_utf8_lossy(&chunk));
+        if viewer_event_text.contains("\"type\":\"response_end\"") {
+            break;
+        }
+    }
+    assert!(viewer_event_text.contains("\"type\":\"response_start\""));
+    assert!(viewer_event_text.contains("\"type\":\"response_end\""));
+    assert!(!viewer_event_text.contains("\"type\":\"response_chunk\""));
+    assert!(!viewer_event_text.contains("\"content\":\"runtime: hello\""));
 
     handle.shutdown().await;
 }

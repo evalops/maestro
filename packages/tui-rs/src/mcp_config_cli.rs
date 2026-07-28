@@ -18,7 +18,9 @@ pub fn apply_mcp_config(args: &[String]) -> Result<String> {
     match command {
         "list" => {
             let config = crate::mcp::load_mcp_config(Some(&cwd));
-            Ok(serde_json::to_string_pretty(&config.servers)?)
+            Ok(serde_json::to_string_pretty(&redact_server_configs(
+                serde_json::to_value(&config.servers)?,
+            ))?)
         }
         "add-stdio" => {
             let name = required(args, 1, "server name")?;
@@ -74,6 +76,50 @@ pub fn apply_mcp_config(args: &[String]) -> Result<String> {
         "help" | "--help" | "-h" => Ok(help_text().to_string()),
         other => bail!("unknown mcp command: {other}"),
     }
+}
+
+fn redact_server_configs(mut value: Value) -> Value {
+    if let Value::Object(servers) = &mut value {
+        for server in servers.values_mut() {
+            redact_config_value(server, Some("server"));
+        }
+    }
+    value
+}
+
+fn redact_config_value(value: &mut Value, parent_key: Option<&str>) {
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                if matches!(parent_key, Some("env" | "headers")) || is_secret_key(key) {
+                    *child = Value::String("[REDACTED]".to_string());
+                } else {
+                    redact_config_value(child, Some(key));
+                }
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                redact_config_value(child, parent_key);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_secret_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase().replace(['-', '_'], "");
+    [
+        "authorization",
+        "apikey",
+        "accesstoken",
+        "refreshtoken",
+        "password",
+        "secret",
+        "privatekey",
+    ]
+    .iter()
+    .any(|needle| key.contains(needle))
 }
 
 fn help_text() -> &'static str {
@@ -288,5 +334,37 @@ mod tests {
         assert!(validate_http_url("http://localhost.evil.test/mcp").is_err());
         assert!(validate_http_url("https://example.test/mcp?token=secret").is_err());
         assert!(validate_http_url("http://127.0.0.1:3000/mcp").is_ok());
+    }
+
+    #[test]
+    fn list_output_redacts_loaded_credentials() {
+        let listed = redact_server_configs(json!({
+            "stdio": {
+                "env": {"SERVICE_TOKEN": "literal-secret", "SAFE": "${SAFE}"},
+                "args": ["--verbose"]
+            },
+            "http": {
+                "headers": {
+                    "Authorization": "Bearer literal-secret",
+                    "X-Custom-Credential": "also-secret"
+                },
+                "api_key": "literal-secret",
+                "url": "https://example.test/mcp"
+            },
+            "private-key-service": {
+                "command": "safe-command"
+            }
+        }));
+
+        assert_eq!(listed["stdio"]["env"]["SERVICE_TOKEN"], "[REDACTED]");
+        assert_eq!(listed["stdio"]["env"]["SAFE"], "[REDACTED]");
+        assert_eq!(listed["http"]["headers"]["Authorization"], "[REDACTED]");
+        assert_eq!(
+            listed["http"]["headers"]["X-Custom-Credential"],
+            "[REDACTED]"
+        );
+        assert_eq!(listed["http"]["api_key"], "[REDACTED]");
+        assert_eq!(listed["http"]["url"], "https://example.test/mcp");
+        assert_eq!(listed["private-key-service"]["command"], "safe-command");
     }
 }
