@@ -4,15 +4,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
+use wait_timeout::ChildExt;
 
 use super::{load_manifest, resolve_components};
 
 const MAX_PLUGIN_FILES: usize = 10_000;
 const MAX_PLUGIN_BYTES: u64 = 100 * 1024 * 1024;
+const PLUGIN_CLONE_TIMEOUT: Duration = Duration::from_mins(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -95,14 +98,7 @@ pub fn install(
             bail!("remote plugin code requires explicit --trust");
         }
         checkout = TempDir::new()?;
-        let status = Command::new("git")
-            .args(["clone", "--depth", "1", "--", source])
-            .arg(checkout.path())
-            .status()
-            .context("failed to run git clone")?;
-        if !status.success() {
-            bail!("git clone failed for {source}");
-        }
+        clone_remote(source, checkout.path(), PLUGIN_CLONE_TIMEOUT)?;
         checkout.path()
     };
 
@@ -174,6 +170,37 @@ pub fn install(
         source: source.to_string(),
         capabilities,
     })
+}
+
+fn clone_remote(source: &str, destination: &Path, timeout: Duration) -> Result<()> {
+    let mut child = Command::new("git")
+        .args(["clone", "--depth", "1", "--", source])
+        .arg(destination)
+        .spawn()
+        .context("failed to run git clone")?;
+    let status = wait_for_clone(&mut child, source, timeout)?;
+    if !status.success() {
+        bail!("git clone failed for {source}");
+    }
+    Ok(())
+}
+
+fn wait_for_clone(
+    child: &mut std::process::Child,
+    source: &str,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus> {
+    match child
+        .wait_timeout(timeout)
+        .context("failed while waiting for git clone")?
+    {
+        Some(status) => Ok(status),
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("git clone timed out for {source}");
+        }
+    }
 }
 
 fn remove_failed_install(destination: &Path) -> Result<()> {
@@ -325,6 +352,20 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("--trust"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clone_wait_timeout_kills_stalled_child() {
+        let mut child = Command::new("sh").args(["-c", "sleep 5"]).spawn().unwrap();
+        let error = wait_for_clone(
+            &mut child,
+            "stalled.example/plugin.git",
+            Duration::from_millis(20),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("git clone timed out"));
+        assert!(child.try_wait().unwrap().is_some());
     }
 
     #[test]

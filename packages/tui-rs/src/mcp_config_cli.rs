@@ -257,15 +257,29 @@ fn reject_literal_secrets(args: &[String]) -> Result<()> {
             bail!("literal secrets are not allowed; use --env VAR");
         }
         let lower = argument.to_ascii_lowercase();
-        secret_value_follows = matches!(
-            lower.as_str(),
-            "--api-key" | "--apikey" | "--token" | "--secret" | "--password"
+        let (flag, inline_value) = lower
+            .strip_prefix('-')
+            .map(|value| value.trim_start_matches('-'))
+            .and_then(|value| {
+                let (name, inline) = value
+                    .split_once('=')
+                    .map_or((value, false), |(name, _)| (name, true));
+                (!name.is_empty()).then_some((name.replace(['-', '_'], ""), inline))
+            })
+            .unwrap_or_default();
+        let secret_flag = matches!(
+            flag.as_str(),
+            "apikey"
+                | "token"
+                | "secret"
+                | "clientsecret"
+                | "accesstoken"
+                | "refreshtoken"
+                | "bearertoken"
+                | "password"
         );
-        if ["api_key=", "apikey=", "token=", "secret=", "password="]
-            .iter()
-            .any(|needle| lower.contains(needle))
-            && !argument.contains("${")
-        {
+        secret_value_follows = secret_flag && !inline_value;
+        if secret_flag && inline_value && !argument.contains("${") {
             bail!("literal secrets are not allowed; use --env VAR");
         }
     }
@@ -346,6 +360,9 @@ mod tests {
         assert_eq!(command_args, ["-y", "@example/server"]);
         assert_eq!(env["SERVICE_TOKEN"], "${SERVICE_TOKEN}");
         assert!(reject_literal_secrets(&["--token".into(), "secret".into()]).is_err());
+        assert!(reject_literal_secrets(&["--client-secret".into(), "secret".into()]).is_err());
+        assert!(reject_literal_secrets(&["--access-token=secret".into()]).is_err());
+        assert!(reject_literal_secrets(&["--refresh_token".into(), "secret".into()]).is_err());
         assert!(validate_http_url("http://localhost.evil.test/mcp").is_err());
         assert!(validate_http_url("https://example.test/mcp?token=secret").is_err());
         assert!(validate_http_url("https://example.test/mcp?access_token=secret").is_err());

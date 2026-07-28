@@ -365,6 +365,45 @@ fn coarse_stream_resume_reconstructs_full_response_with_monotonic_cursor() {
 }
 
 #[test]
+fn coarse_stream_resume_suppresses_stale_snapshots_but_preserves_resets() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    let (stale, fresh) = {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.cursor = 2;
+        let stale = shared.snapshot(&state);
+        state.cursor = 4;
+        let fresh = shared.snapshot(&state);
+        (stale, fresh)
+    };
+    let mut filter = TranscriptStreamFilter::new(crate::transcript::TranscriptGrade::Turn, 3);
+
+    assert!(filter
+        .apply(StreamEnvelope::Snapshot {
+            snapshot: stale.clone(),
+        })
+        .is_empty());
+    assert_eq!(
+        filter
+            .apply(StreamEnvelope::Reset {
+                reason: "replay_gap".to_string(),
+                snapshot: stale,
+            })
+            .len(),
+        1
+    );
+    assert_eq!(
+        filter
+            .apply(StreamEnvelope::Snapshot { snapshot: fresh })
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn transcript_filters_are_connection_local() {
     let response_chunk = || {
         stream_message(

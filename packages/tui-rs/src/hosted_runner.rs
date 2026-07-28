@@ -700,7 +700,10 @@ impl TranscriptStreamFilter {
                 StreamEnvelope::Message { cursor, .. } | StreamEnvelope::Heartbeat { cursor } => {
                     self.resume_cursor == 0 || *cursor > self.resume_cursor
                 }
-                StreamEnvelope::Snapshot { .. } | StreamEnvelope::Reset { .. } => true,
+                StreamEnvelope::Snapshot { snapshot } => {
+                    self.resume_cursor == 0 || snapshot.cursor > self.resume_cursor
+                }
+                StreamEnvelope::Reset { .. } => true,
             })
             .collect()
     }
