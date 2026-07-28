@@ -39,6 +39,8 @@ const EXEC_COMMAND_TIMEOUT: Duration = Duration::from_mins(2);
 pub enum ExecCommandSource {
     /// `~/.composer/commands/`
     User,
+    /// A trusted plugin `commands/` directory.
+    Plugin,
     /// `.composer/commands/` in the workspace
     Project,
 }
@@ -48,6 +50,7 @@ impl ExecCommandSource {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::User => "user",
+            Self::Plugin => "plugin",
             Self::Project => "project",
         }
     }
@@ -84,10 +87,25 @@ pub struct ExecOutput {
 /// Later directories override earlier ones by name (project wins over user).
 #[must_use]
 pub fn discover(workspace_dir: &Path) -> Vec<ExecCommand> {
+    discover_with_plugin_dirs(workspace_dir, &[])
+}
+
+/// Discover executable commands while including trusted plugin directories.
+#[must_use]
+pub fn discover_with_plugin_dirs(
+    workspace_dir: &Path,
+    plugin_dirs: &[PathBuf],
+) -> Vec<ExecCommand> {
     let mut dirs: Vec<(PathBuf, ExecCommandSource)> = Vec::new();
     if let Some(home) = legacy_composer_home_dir() {
         dirs.push((home.join("commands"), ExecCommandSource::User));
     }
+    dirs.extend(
+        plugin_dirs
+            .iter()
+            .cloned()
+            .map(|path| (path, ExecCommandSource::Plugin)),
+    );
     dirs.push((
         workspace_dir.join(".composer").join("commands"),
         ExecCommandSource::Project,
@@ -360,6 +378,26 @@ mod tests {
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].source, ExecCommandSource::Project);
         assert!(cmds[0].path.starts_with(&project_dir));
+    }
+
+    #[test]
+    fn discovers_executable_plugin_commands() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let plugin_commands = tmp.path().join("plugin").join("commands");
+        write_script(
+            &plugin_commands,
+            "plugin-task",
+            "#!/bin/sh\necho plugin\n",
+            true,
+        );
+
+        let commands =
+            discover_with_plugin_dirs(&workspace, std::slice::from_ref(&plugin_commands));
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].source, ExecCommandSource::Plugin);
+        assert!(commands[0].path.starts_with(plugin_commands));
     }
 
     #[test]

@@ -79,10 +79,18 @@ pub fn apply_mcp_config(args: &[String]) -> Result<String> {
 }
 
 fn redact_server_configs(mut value: Value) -> Value {
-    if let Value::Object(servers) = &mut value {
-        for server in servers.values_mut() {
-            redact_config_value(server, Some("server"));
+    match &mut value {
+        Value::Object(servers) => {
+            for server in servers.values_mut() {
+                redact_config_value(server, Some("server"));
+            }
         }
+        Value::Array(servers) => {
+            for server in servers {
+                redact_config_value(server, Some("server"));
+            }
+        }
+        _ => {}
     }
     value
 }
@@ -346,12 +354,14 @@ mod tests {
 
     #[test]
     fn list_output_redacts_loaded_credentials() {
-        let listed = redact_server_configs(json!({
-            "stdio": {
+        let listed = redact_server_configs(json!([
+            {
+                "name": "stdio",
                 "env": {"SERVICE_TOKEN": "literal-secret", "SAFE": "${SAFE}"},
                 "args": ["--verbose"]
             },
-            "http": {
+            {
+                "name": "http",
                 "headers": {
                     "Authorization": "Bearer literal-secret",
                     "X-Custom-Credential": "also-secret"
@@ -359,20 +369,19 @@ mod tests {
                 "api_key": "literal-secret",
                 "url": "https://example.test/mcp"
             },
-            "private-key-service": {
+            {
+                "name": "private-key-service",
                 "command": "safe-command"
             }
-        }));
+        ]));
 
-        assert_eq!(listed["stdio"]["env"]["SERVICE_TOKEN"], "[REDACTED]");
-        assert_eq!(listed["stdio"]["env"]["SAFE"], "[REDACTED]");
-        assert_eq!(listed["http"]["headers"]["Authorization"], "[REDACTED]");
-        assert_eq!(
-            listed["http"]["headers"]["X-Custom-Credential"],
-            "[REDACTED]"
-        );
-        assert_eq!(listed["http"]["api_key"], "[REDACTED]");
-        assert_eq!(listed["http"]["url"], "https://example.test/mcp");
-        assert_eq!(listed["private-key-service"]["command"], "safe-command");
+        assert_eq!(listed[0]["env"]["SERVICE_TOKEN"], "[REDACTED]");
+        assert_eq!(listed[0]["env"]["SAFE"], "[REDACTED]");
+        assert_eq!(listed[1]["headers"]["Authorization"], "[REDACTED]");
+        assert_eq!(listed[1]["headers"]["X-Custom-Credential"], "[REDACTED]");
+        assert_eq!(listed[1]["api_key"], "[REDACTED]");
+        assert_eq!(listed[1]["url"], "https://example.test/mcp");
+        assert_eq!(listed[2]["name"], "private-key-service");
+        assert_eq!(listed[2]["command"], "safe-command");
     }
 }

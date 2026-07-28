@@ -283,7 +283,7 @@ async fn execute_prompt(
     let executable = std::env::current_exe()?;
     let mut command = Command::new(executable);
     command
-        .args(["exec", "--approval-mode", "fail", prompt])
+        .args(exec_arguments(prompt))
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -335,6 +335,10 @@ async fn execute_prompt(
         );
     }
     Ok(Some(String::from_utf8_lossy(&response).trim().to_string()))
+}
+
+fn exec_arguments(prompt: &str) -> [&str; 5] {
+    ["exec", "--approval-mode", "fail", "--", prompt]
 }
 
 async fn write_agent_chunk(stdout: &SharedStdout, session_id: &str, text: &str) -> Result<()> {
@@ -418,5 +422,19 @@ mod tests {
         assert_eq!(decoder.push(&bytes[2..3]), "");
         assert_eq!(decoder.push(&bytes[3..]), "€B");
         assert_eq!(decoder.finish(), "");
+    }
+
+    #[test]
+    fn exec_prompt_is_delimited_from_options() {
+        assert_eq!(
+            exec_arguments("--model explain-this"),
+            [
+                "exec",
+                "--approval-mode",
+                "fail",
+                "--",
+                "--model explain-this"
+            ]
+        );
     }
 }

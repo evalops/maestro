@@ -95,7 +95,7 @@ use crate::mcp::{
 };
 use crate::palette_resource::{PaletteResource, PaletteResourceKind};
 use crate::plugins::PluginRegistry;
-use crate::prompts::{load_prompts, parse_args, render_prompt, PromptDefinition};
+use crate::prompts::{parse_args, render_prompt, PromptDefinition};
 use crate::safety::{
     check_model_allowed, check_path_allowed, check_session_limits, FirewallVerdict,
 };
@@ -844,8 +844,11 @@ impl App {
         for loaded in &loaded_skills {
             skill_registry.register(loaded.definition.clone());
         }
-        let custom_prompts = load_prompts(&workspace_dir);
-        let exec_commands = crate::exec_commands::discover(&workspace_dir);
+        let plugin_command_dirs = plugin_registry.command_dirs();
+        let custom_prompts =
+            crate::prompts::load_prompts_with_plugin_dirs(&workspace_dir, &plugin_command_dirs);
+        let exec_commands =
+            crate::exec_commands::discover_with_plugin_dirs(&workspace_dir, &plugin_command_dirs);
         let (model_monitor, model_verification_rx) = crate::model_monitor::spawn_model_monitor();
 
         let tui_settings = crate::config::load_config(&workspace_dir, None).tui;
@@ -1431,8 +1434,11 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
         let workspace_dir =
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        self.custom_prompts = load_prompts(&workspace_dir);
-        self.exec_commands = crate::exec_commands::discover(&workspace_dir);
+        let plugin_command_dirs = self.plugin_registry.command_dirs();
+        self.custom_prompts =
+            crate::prompts::load_prompts_with_plugin_dirs(&workspace_dir, &plugin_command_dirs);
+        self.exec_commands =
+            crate::exec_commands::discover_with_plugin_dirs(&workspace_dir, &plugin_command_dirs);
         self.rebuild_slash_registry();
     }
 
