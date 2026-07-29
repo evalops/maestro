@@ -78,28 +78,69 @@ jobs:
           npm run check:rust-only-runtime
       - name: Publish to npm
         env:
+          NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}
+          PACKAGE_NAME: \${{ needs.prepare.outputs.package_name }}
+          PACKED_INTEGRITY: \${{ steps.pack.outputs.integrity }}
+          RELEASE_VERSION: \${{ needs.prepare.outputs.release_version }}
           NPM_CONFIG_FETCH_RETRIES: "1"
           NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
           NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
           NPM_CONFIG_FETCH_TIMEOUT: "30000"
           NPM_PUBLISH_AUTH_MODE: \${{ vars.NPM_PUBLISH_AUTH_MODE || 'auto' }}
         run: |
+          set -euo pipefail
           publish_with_token() {
             command npm publish "\${{ steps.pack.outputs.tarball }}" --access public --provenance
           }
           publish_with_trusted_publisher() {
             command npm publish "\${{ steps.pack.outputs.tarball }}" --access public
           }
+          verify_published_tarball() {
+            registry_integrity="\$(
+              command npm view "\${PACKAGE_NAME}@\${RELEASE_VERSION}" dist.integrity 2>/dev/null
+            )" || return 1
+            if [[ -z "\$registry_integrity" ]]; then
+              return 1
+            fi
+            if [[ "\$registry_integrity" != "\$PACKED_INTEGRITY" ]]; then
+              return 2
+            fi
+          }
+          publish_or_verify() {
+            local publisher="$1"
+            local publish_status=0
+            local registry_status=0
+            "\$1" || publish_status=\$?
+            if [[ "\$publish_status" -eq 0 ]]; then
+              return 0
+            fi
+            verify_published_tarball || registry_status=\$?
+            if [[ "\$registry_status" -eq 0 ]]; then
+              return 0
+            fi
+            if [[ "\$registry_status" -eq 2 ]]; then
+              return 2
+            fi
+            return "\$publish_status"
+          }
+          registry_status=0
+          verify_published_tarball || registry_status=\$?
+          if [[ "\$registry_status" -eq 0 ]]; then
+            exit 0
+          fi
+          if [[ "\$registry_status" -eq 2 ]]; then
+            exit 2
+          fi
           case "$NPM_PUBLISH_AUTH_MODE" in
-            auto)
-              publish_with_trusted_publisher || trusted_status=$?
-              publish_with_token
+            auto|"")
+              publish_or_verify publish_with_trusted_publisher || trusted_status=$?
+              publish_or_verify publish_with_token
               ;;
             trusted)
-              publish_with_trusted_publisher
+              publish_or_verify publish_with_trusted_publisher
               ;;
             token)
-              publish_with_token
+              publish_or_verify publish_with_token
               ;;
             *)
               echo "::error::Unsupported NPM_PUBLISH_AUTH_MODE '$NPM_PUBLISH_AUTH_MODE'. Use auto, trusted, or token."
@@ -189,11 +230,14 @@ test("accepts mapping-form environment and the complete release contract", () =>
 test("rejects dormant npm publish helpers", () => {
 	const dormant = completeWorkflow
 		.replace(
-			"              publish_with_trusted_publisher || trusted_status=$?\n",
+			"              publish_or_verify publish_with_trusted_publisher || trusted_status=$?\n",
 			"              true\n",
 		)
-		.replaceAll("              publish_with_token\n", "              true\n")
-		.replace("              publish_with_trusted_publisher\n", "              true\n");
+		.replaceAll("              publish_or_verify publish_with_token\n", "              true\n")
+		.replace(
+			"              publish_or_verify publish_with_trusted_publisher\n",
+			"              true\n",
+		);
 	assert.ok(
 		validateReleaseWorkflow(dormant).some((failure) =>
 			failure.includes("helpers must be invoked"),
@@ -487,7 +531,7 @@ test("rejects alternate publish failure swallowing", () => {
 	);
 });
 
-test("rejects early success or a shell function that shadows npm", () => {
+test("rejects unauthorized early success or a shell function that shadows npm", () => {
 	const earlyExit = completeWorkflow.replace(
 		'          case "$NPM_PUBLISH_AUTH_MODE" in\n',
 		'          exit 0\n          case "$NPM_PUBLISH_AUTH_MODE" in\n',
@@ -514,7 +558,39 @@ test("rejects early success or a shell function that shadows npm", () => {
 	);
 	assert.ok(
 		validateReleaseWorkflow(swallowedTrustedFailure).some((failure) =>
+			failure.includes("reconcile the exact registry tarball"),
+		),
+	);
+});
+
+test("requires exact registry reconciliation after errors and on reruns", () => {
+	const noPreflight = completeWorkflow.replace(
+		"          registry_status=0\n          verify_published_tarball || registry_status=$?\n",
+		"          registry_status=0\n          false || registry_status=$?\n",
+	);
+	assert.ok(
+		validateReleaseWorkflow(noPreflight).some((failure) =>
 			failure.includes("must not be bypassed"),
+		),
+	);
+
+	const noErrorRecovery = completeWorkflow.replace(
+		'            fi\n            verify_published_tarball || registry_status=$?\n            if [[ "$registry_status" -eq 0 ]]; then\n',
+		'            fi\n            false || registry_status=$?\n            if [[ "$registry_status" -eq 0 ]]; then\n',
+	);
+	assert.ok(
+		validateReleaseWorkflow(noErrorRecovery).some((failure) =>
+			failure.includes("reconcile the exact registry tarball"),
+		),
+	);
+
+	const noIntegrityBinding = completeWorkflow.replace(
+		"          PACKED_INTEGRITY: \${{ steps.pack.outputs.integrity }}\n",
+		"",
+	);
+	assert.ok(
+		validateReleaseWorkflow(noIntegrityBinding).some((failure) =>
+			failure.includes("exact package identity"),
 		),
 	);
 });

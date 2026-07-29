@@ -429,12 +429,40 @@ export function validateReleaseWorkflow(source) {
 	const authCaseIndex = topLevelPublishLines.indexOf(
 		'case "$NPM_PUBLISH_AUTH_MODE" in',
 	);
+	const registryPreflight = [
+		"registry_status=0",
+		"verify_published_tarball || registry_status=$?",
+		'if [[ "$registry_status" -eq 0 ]]; then',
+		"exit 0",
+		"fi",
+		'if [[ "$registry_status" -eq 2 ]]; then',
+		"exit 2",
+		"fi",
+	];
+	const preflightStart = publishLines.indexOf(registryPreflight[0]);
+	const hasExactRegistryPreflight =
+		preflightStart >= 0 &&
+		JSON.stringify(
+			publishLines.slice(
+				preflightStart,
+				preflightStart + registryPreflight.length,
+			),
+		) === JSON.stringify(registryPreflight);
+	const preAuthTerminations = topLevelPublishLines
+		.slice(0, authCaseIndex)
+		.filter((line) =>
+		/^(?:exit|return)(?:\s|$)/u.test(line),
+	);
 	if (
-		topLevelPublishLines
-			.slice(0, authCaseIndex)
-			.some((line) => /^(?:exit|return)(?:\s|$)/u.test(line)) ||
+		!hasExactRegistryPreflight ||
+		preAuthTerminations.length !== 0 ||
 		publishLines.some((line) => /^npm\s*\(\)\s*\{/u.test(line)) ||
-		publishLines.some((line) => line === "return 0")
+		!publishLines.includes(
+			'command npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" dist.integrity 2>/dev/null',
+		) ||
+		!publishLines.includes(
+			'if [[ "$registry_integrity" != "$PACKED_INTEGRITY" ]]; then',
+		)
 	) {
 		failures.push("npm auth-mode dispatch must not be bypassed before publication");
 	}
@@ -449,14 +477,14 @@ export function validateReleaseWorkflow(source) {
 		failures.push("unsupported npm auth modes must terminate with failure");
 	}
 	const trustedCalls = publishLines.filter(
-		(line) => line === "publish_with_trusted_publisher",
+		(line) => line === "publish_or_verify publish_with_trusted_publisher",
 	).length;
 	const guardedTrustedCalls = publishLines.filter(
 		(line) =>
-			line === "publish_with_trusted_publisher || trusted_status=$?",
+			line === "publish_or_verify publish_with_trusted_publisher || trusted_status=$?",
 	).length;
 	const tokenCalls = publishLines.filter(
-		(line) => line === "publish_with_token",
+		(line) => line === "publish_or_verify publish_with_token",
 	).length;
 	const npmPublishLines = publishLines.filter((line) =>
 		line.startsWith("command npm publish "),
@@ -473,6 +501,37 @@ export function validateReleaseWorkflow(source) {
 		npmPublishLines.some((line) => !expectedPublishLines.has(line))
 	) {
 		failures.push("trusted and token modes must execute exact unswallowed npm publish commands");
+	}
+	const swallowedPublish = npmPublishLines.some((line) => {
+		const index = publishLines.indexOf(line);
+		return publishLines[index + 1] === "return 0";
+	});
+	if (
+		swallowedPublish ||
+		publishLines.filter(
+			(line) => line === "verify_published_tarball || registry_status=$?",
+		).length !== 2 ||
+		publishLines.filter((line) => line === "return 0").length !== 2 ||
+		publishLines.filter((line) => line === "return 2").length !== 2
+	) {
+		failures.push(
+			"npm publication errors and reruns must reconcile the exact registry tarball",
+		);
+	}
+	if (
+		!hasExactRecord(publishStep?.env ?? {}, {
+			NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}",
+			PACKAGE_NAME: "${{ needs.prepare.outputs.package_name }}",
+			PACKED_INTEGRITY: "${{ steps.pack.outputs.integrity }}",
+			RELEASE_VERSION: "${{ needs.prepare.outputs.release_version }}",
+			NPM_CONFIG_FETCH_RETRIES: "1",
+			NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000",
+			NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000",
+			NPM_CONFIG_FETCH_TIMEOUT: "30000",
+			NPM_PUBLISH_AUTH_MODE: "${{ vars.NPM_PUBLISH_AUTH_MODE || 'auto' }}",
+		})
+	) {
+		failures.push("publish must bind exact package identity and tarball integrity");
 	}
 	if (
 		publishStep?.env.NPM_PUBLISH_AUTH_MODE !==

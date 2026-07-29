@@ -159,7 +159,10 @@ jobs:
         run: |
           PACK_JSON=$(npm pack --json)
           echo "$PACK_JSON"
-          echo "tarball=$(echo "$PACK_JSON" | jq -r '.[0].filename')" >> "$GITHUB_OUTPUT"
+          {
+            echo "tarball=$(echo "$PACK_JSON" | jq -r '.[0].filename')"
+            echo "integrity=$(echo "$PACK_JSON" | jq -r '.[0].integrity')"
+          } >> "$GITHUB_OUTPUT"
       - name: Smoke packed package without JS runtime
         env:
           MAESTRO_REQUIRE_PACKAGED_TUI: "1"
@@ -177,6 +180,9 @@ jobs:
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PACKAGE_NAME: ${{ needs.prepare.outputs.package_name }}
+          PACKED_INTEGRITY: ${{ steps.pack.outputs.integrity }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
           NPM_CONFIG_FETCH_RETRIES: "1"
           NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
           NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
@@ -203,10 +209,55 @@ jobs:
             command npm publish "${{ steps.pack.outputs.tarball }}" --access public
           }
 
+          verify_published_tarball() {
+            local registry_integrity
+            registry_integrity="$(
+              command npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" dist.integrity 2>/dev/null
+            )" || return 1
+
+            if [[ -z "$registry_integrity" ]]; then
+              return 1
+            fi
+            if [[ "$registry_integrity" != "$PACKED_INTEGRITY" ]]; then
+              echo "::error::npm already contains ${PACKAGE_NAME}@${RELEASE_VERSION} with integrity ${registry_integrity}, not ${PACKED_INTEGRITY}."
+              return 2
+            fi
+            echo "Verified ${PACKAGE_NAME}@${RELEASE_VERSION} already contains the packed tarball."
+          }
+
+          publish_or_verify() {
+            local publisher="$1"
+            local publish_status=0
+            local registry_status=0
+
+            "$publisher" || publish_status=$?
+            if [[ "$publish_status" -eq 0 ]]; then
+              return 0
+            fi
+
+            verify_published_tarball || registry_status=$?
+            if [[ "$registry_status" -eq 0 ]]; then
+              return 0
+            fi
+            if [[ "$registry_status" -eq 2 ]]; then
+              return 2
+            fi
+            return "$publish_status"
+          }
+
+          registry_status=0
+          verify_published_tarball || registry_status=$?
+          if [[ "$registry_status" -eq 0 ]]; then
+            exit 0
+          fi
+          if [[ "$registry_status" -eq 2 ]]; then
+            exit 2
+          fi
+
           case "$NPM_PUBLISH_AUTH_MODE" in
             auto|"")
               trusted_status=0
-              publish_with_trusted_publisher || trusted_status=$?
+              publish_or_verify publish_with_trusted_publisher || trusted_status=$?
               if [[ "$trusted_status" -eq 0 ]]; then
                 exit 0
               fi
@@ -215,13 +266,13 @@ jobs:
                 exit "$trusted_status"
               fi
               echo "::warning::Trusted publishing failed; using the npm-release NPM_TOKEN fallback."
-              publish_with_token
+              publish_or_verify publish_with_token
               ;;
             trusted)
-              publish_with_trusted_publisher
+              publish_or_verify publish_with_trusted_publisher
               ;;
             token)
-              publish_with_token
+              publish_or_verify publish_with_token
               ;;
             *)
               echo "::error::Unsupported NPM_PUBLISH_AUTH_MODE '$NPM_PUBLISH_AUTH_MODE'. Use auto, trusted, or token."
