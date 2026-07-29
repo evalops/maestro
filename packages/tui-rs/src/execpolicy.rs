@@ -17,8 +17,30 @@
 //! prefix_rule(
 //!     pattern=["git", ["push", "fetch"]],
 //!     decision="prompt",
+//!     justification="Pushes and fetches contact the remote.",
+//!     match=[["git", "push"], "git fetch origin"],
+//!     not_match=["git status"],
 //! )
 //! ```
+//!
+//! # Self-Testing Rules
+//!
+//! A rule may carry example invocations, validated when the policy loads:
+//!
+//! - `match`: examples that MUST match this rule
+//! - `not_match`: examples that MUST NOT match this rule
+//!
+//! Examples are token arrays or plain strings (strings are tokenized with the
+//! production [`parse_command`] tokenizer). A rule whose examples do not match
+//! as declared is a load error naming the rule and the failing example —
+//! think of them as unit tests for the rule. Rules without examples load as
+//! before.
+//!
+//! # Justification
+//!
+//! `justification` is an optional human-readable rationale for why a rule
+//! exists. It travels with the rule match and is surfaced in approval prompts
+//! and rejection messages when the rule fires (see [`Evaluation::justification`]).
 //!
 //! # Policy Locations
 //!
@@ -173,6 +195,9 @@ impl PrefixPattern {
 pub struct PrefixRule {
     pub pattern: PrefixPattern,
     pub decision: Decision,
+    /// Optional human-readable rationale for why the rule exists, surfaced
+    /// in approval prompts and rejection messages when the rule fires.
+    pub justification: Option<String>,
 }
 
 /// A rule match result.
@@ -183,6 +208,9 @@ pub enum RuleMatch {
     Prefix {
         matched_prefix: Vec<String>,
         decision: Decision,
+        /// Rationale carried from the fired rule, when it declared one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        justification: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     Heuristics {
@@ -229,6 +257,21 @@ impl Evaluation {
             matched_rules,
         }
     }
+
+    /// Justification declared by a matched prefix rule at the effective
+    /// decision — the rationale surfaced in the approval prompt (or
+    /// rejection message) when the rule fires. `None` when no fired rule
+    /// carries one.
+    #[must_use]
+    pub fn justification(&self) -> Option<&str> {
+        self.matched_rules
+            .iter()
+            .filter(|m| m.decision() == self.decision)
+            .find_map(|m| match m {
+                RuleMatch::Prefix { justification, .. } => justification.as_deref(),
+                RuleMatch::Heuristics { .. } => None,
+            })
+    }
 }
 
 /// Policy containing multiple rules indexed by program name.
@@ -261,7 +304,11 @@ impl Policy {
                 .map(|s| PatternToken::Single(s.clone()))
                 .collect(),
         };
-        let rule = PrefixRule { pattern, decision };
+        let rule = PrefixRule {
+            pattern,
+            decision,
+            justification: None,
+        };
         self.add_rule(rule);
         Ok(())
     }
@@ -291,6 +338,7 @@ impl Policy {
                         matched_rules.push(RuleMatch::Prefix {
                             matched_prefix,
                             decision: rule.decision,
+                            justification: rule.justification.clone(),
                         });
                     }
                 }
@@ -319,26 +367,36 @@ impl Policy {
 // Policy Parsing
 // ─────────────────────────────────────────────────────────────
 
-static PREFIX_RULE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    // Match prefix_rule(...) blocks, capturing the content inside parentheses
-    // Uses non-greedy match for content, followed by optional trailing comma
-    Regex::new(r"prefix_rule\s*\(\s*([\s\S]*?)\s*\)\s*,?").expect("valid regex")
-});
-
 static PATTERN_KEY_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"pattern\s*=\s*\[").expect("valid regex"));
 
 static DECISION_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"decision\s*=\s*"(\w+)""#).expect("valid regex"));
 
+static JUSTIFICATION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"justification\s*=\s*"((?:[^"\\]|\\.)*)""#).expect("valid regex")
+});
+
+// Word boundary keeps `match` from matching the tail of `not_match` (`_` is
+// a word character, so there is no boundary before "match" in "not_match").
+static MATCH_KEY_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bmatch\s*=\s*\[").expect("valid regex"));
+
+static NOT_MATCH_KEY_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bnot_match\s*=\s*\[").expect("valid regex"));
+
 /// Parse a Starlark-like policy file.
-pub fn parse_policy(content: &str, _identifier: &str) -> Policy {
+///
+/// Rules that fail to parse are skipped, as before. The one hard error is a
+/// rule whose declared `match` / `not_match` examples do not match as
+/// declared: those are unit tests for the rule, so a failure is a load error
+/// naming the rule and the failing example.
+pub fn parse_policy(content: &str, identifier: &str) -> Result<Policy, String> {
     let mut policy = Policy::new();
 
-    for cap in PREFIX_RULE_REGEX.captures_iter(content) {
-        let args = &cap[1];
-
-        if let Some(parsed) = parse_prefix_rule_args(args) {
+    for args in prefix_rule_args(content) {
+        if let Some(parsed) = parse_prefix_rule_args(args, identifier)? {
+            validate_examples(identifier, &parsed)?;
             for first_alt in &parsed.first_alternatives {
                 let pattern = PrefixPattern {
                     first: first_alt.clone(),
@@ -347,28 +405,165 @@ pub fn parse_policy(content: &str, _identifier: &str) -> Policy {
                 let rule = PrefixRule {
                     pattern,
                     decision: parsed.decision,
+                    justification: parsed.justification.clone(),
                 };
                 policy.add_rule(rule);
             }
         }
     }
 
-    policy
+    Ok(policy)
+}
+
+#[derive(Default)]
+struct StarlarkScanState {
+    quote: Option<u8>,
+    triple_quote: bool,
+    escaped: bool,
+    line_comment: bool,
+    quote_delimiter_tail: usize,
+}
+
+impl StarlarkScanState {
+    /// Return whether this byte is structural syntax and whether it is regular
+    /// unescaped content inside a quoted string.
+    fn consume(&mut self, bytes: &[u8], index: usize) -> (bool, bool) {
+        let byte = bytes[index];
+        if self.quote_delimiter_tail > 0 {
+            self.quote_delimiter_tail -= 1;
+        } else if self.line_comment {
+            if byte == b'\n' || byte == b'\r' {
+                self.line_comment = false;
+            }
+        } else if self.escaped {
+            self.escaped = false;
+        } else if let Some(active_quote) = self.quote {
+            if byte == b'\\' {
+                self.escaped = true;
+            } else if self.triple_quote && bytes[index..].starts_with(&[active_quote; 3]) {
+                self.quote = None;
+                self.triple_quote = false;
+                self.quote_delimiter_tail = 2;
+            } else if !self.triple_quote && byte == active_quote {
+                self.quote = None;
+            } else {
+                return (false, true);
+            }
+        } else if byte == b'#' {
+            self.line_comment = true;
+        } else if byte == b'"' || byte == b'\'' {
+            self.quote = Some(byte);
+            if bytes[index..].starts_with(&[byte; 3]) {
+                self.triple_quote = true;
+                self.quote_delimiter_tail = 2;
+            }
+        } else {
+            return (true, false);
+        }
+
+        (false, false)
+    }
+}
+
+/// Find balanced `prefix_rule(...)` calls, ignoring parentheses inside quoted
+/// strings and line comments. An unbalanced outer call is skipped, matching
+/// the prior parser's behavior of ignoring rules it could not capture.
+fn prefix_rule_args(content: &str) -> Vec<&str> {
+    const PREFIX_RULE: &str = "prefix_rule";
+
+    let bytes = content.as_bytes();
+    let mut args = Vec::new();
+    let mut cursor = 0usize;
+
+    while let Some(rule_start) = next_prefix_rule_start(content, cursor) {
+        let mut open = rule_start + PREFIX_RULE.len();
+        while bytes.get(open).is_some_and(u8::is_ascii_whitespace) {
+            open += 1;
+        }
+        if bytes.get(open) != Some(&b'(') {
+            cursor = rule_start + PREFIX_RULE.len();
+            continue;
+        }
+
+        let args_start = open + 1;
+        let mut depth = 1usize;
+        let mut scan = StarlarkScanState::default();
+        let mut close = None;
+        let mut close_inside_unterminated_quote = None;
+
+        for (index, &byte) in bytes.iter().enumerate().skip(args_start) {
+            let (structural, quoted_content) = scan.consume(bytes, index);
+            if quoted_content && byte == b')' && close_inside_unterminated_quote.is_none() {
+                close_inside_unterminated_quote = Some(index);
+            }
+            if !structural {
+                continue;
+            }
+            if byte == b'(' {
+                depth += 1;
+            } else if byte == b')' {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(index);
+                    break;
+                }
+            }
+        }
+
+        // The previous regex stopped at `)` even when a quoted example was
+        // unterminated, allowing `parse_declared_examples` to return its
+        // established malformed-list error. Preserve that behavior without
+        // using the fallback for any balanced quoted string.
+        let close = close.or_else(|| scan.quote.and(close_inside_unterminated_quote));
+        let Some(close) = close else {
+            break;
+        };
+        args.push(&content[args_start..close]);
+        cursor = close + 1;
+    }
+
+    args
+}
+
+fn next_prefix_rule_start(content: &str, mut cursor: usize) -> Option<usize> {
+    const PREFIX_RULE: &[u8] = b"prefix_rule";
+
+    let bytes = content.as_bytes();
+    let mut scan = StarlarkScanState::default();
+
+    while cursor < bytes.len() {
+        if scan.consume(bytes, cursor).0 && bytes[cursor..].starts_with(PREFIX_RULE) {
+            return Some(cursor);
+        }
+        cursor += 1;
+    }
+
+    None
 }
 
 struct ParsedPrefixRule {
     first_alternatives: Vec<String>,
     rest: Vec<PatternToken>,
     decision: Decision,
+    justification: Option<String>,
+    match_examples: Vec<Vec<String>>,
+    not_match_examples: Vec<Vec<String>>,
 }
 
-fn parse_prefix_rule_args(args: &str) -> Option<ParsedPrefixRule> {
+fn parse_prefix_rule_args(
+    args: &str,
+    identifier: &str,
+) -> Result<Option<ParsedPrefixRule>, String> {
     // Parse pattern
-    let pattern_str = extract_pattern_array(args)?;
-    let pattern_tokens = parse_pattern_array(pattern_str)?;
+    let Some(pattern_str) = extract_bracketed(args, &PATTERN_KEY_REGEX) else {
+        return Ok(None);
+    };
+    let Some(pattern_tokens) = parse_pattern_array(pattern_str) else {
+        return Ok(None);
+    };
 
     if pattern_tokens.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let (first, rest) = pattern_tokens.split_first().unwrap();
@@ -383,38 +578,153 @@ fn parse_prefix_rule_args(args: &str) -> Option<ParsedPrefixRule> {
         .and_then(|cap| Decision::parse(&cap[1]))
         .unwrap_or(Decision::Allow);
 
-    Some(ParsedPrefixRule {
+    // Optional justification and self-test examples.
+    let justification = parse_justification(args);
+    let match_examples = parse_declared_examples(args, &MATCH_KEY_REGEX, "match", identifier)?;
+    let not_match_examples =
+        parse_declared_examples(args, &NOT_MATCH_KEY_REGEX, "not_match", identifier)?;
+
+    Ok(Some(ParsedPrefixRule {
         first_alternatives,
         rest: rest.to_vec(),
         decision,
-    })
+        justification,
+        match_examples,
+        not_match_examples,
+    }))
 }
 
-/// Extract the full `pattern=[...]` array literal from a prefix_rule body.
+fn parse_declared_examples(
+    args: &str,
+    key_regex: &Regex,
+    key: &str,
+    identifier: &str,
+) -> Result<Vec<Vec<String>>, String> {
+    if find_structural_key(args, key_regex).is_none() {
+        return Ok(Vec::new());
+    }
+    let raw = extract_bracketed(args, key_regex)
+        .ok_or_else(|| format!("{identifier}: malformed {key} example list"))?;
+    parse_example_list(raw).ok_or_else(|| format!("{identifier}: malformed {key} example list"))
+}
+
+/// Validate a rule's declared examples against its pattern. Every `match`
+/// example must match (at least one expanded first-alternative), and no
+/// `not_match` example may match. A mismatch is a load error naming the rule
+/// and the failing example — this catches patterns that silently degrade to
+/// a broader prefix (see #3091) at load time instead of at prompt time.
+fn validate_examples(identifier: &str, parsed: &ParsedPrefixRule) -> Result<(), String> {
+    if parsed.match_examples.is_empty() && parsed.not_match_examples.is_empty() {
+        return Ok(());
+    }
+
+    let rule_desc = describe_rule(parsed);
+    let matches_rule = |example: &[String]| {
+        parsed.first_alternatives.iter().any(|first| {
+            let pattern = PrefixPattern {
+                first: first.clone(),
+                rest: parsed.rest.clone(),
+            };
+            pattern.matches_prefix(example).is_some()
+        })
+    };
+
+    for example in &parsed.match_examples {
+        if !matches_rule(example) {
+            return Err(format!(
+                "{identifier}: {rule_desc}: match example {} did not match the rule",
+                render_tokens(example),
+            ));
+        }
+    }
+    for example in &parsed.not_match_examples {
+        if matches_rule(example) {
+            return Err(format!(
+                "{identifier}: {rule_desc}: not_match example {} matched the rule",
+                render_tokens(example),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Render a parsed rule in policy-file syntax for error messages.
+fn describe_rule(parsed: &ParsedPrefixRule) -> String {
+    let mut tokens = Vec::with_capacity(parsed.rest.len() + 1);
+    tokens.push(render_token_alts(&parsed.first_alternatives));
+    for token in &parsed.rest {
+        tokens.push(render_token_alts(token.alternatives()));
+    }
+    format!(
+        "prefix_rule(pattern=[{}], decision=\"{}\")",
+        tokens.join(", "),
+        parsed.decision.as_str(),
+    )
+}
+
+fn render_token_alts(alts: &[String]) -> String {
+    if alts.len() == 1 {
+        quote_token(&alts[0])
+    } else {
+        format!(
+            "[{}]",
+            alts.iter()
+                .map(|s| quote_token(s))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+fn render_tokens(tokens: &[String]) -> String {
+    format!(
+        "[{}]",
+        tokens
+            .iter()
+            .map(|s| quote_token(s))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn quote_token(token: &str) -> String {
+    serde_json::to_string(token).unwrap_or_else(|_| format!("\"{token}\""))
+}
+
+fn parse_justification(args: &str) -> Option<String> {
+    let cap = JUSTIFICATION_REGEX.captures(args)?;
+    let mut value = String::new();
+    let mut chars = cap[1].chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(next) = chars.next() {
+                value.push(next);
+            }
+        } else {
+            value.push(ch);
+        }
+    }
+    Some(value)
+}
+
+/// Extract the full `[...]` array literal following a `key=[` regex match.
 ///
 /// A regex cannot express the balanced brackets of nested alternative
 /// groups (`["git", ["push", "fetch"]]`), so this scans from the opening
 /// `[` to its matching `]`, ignoring brackets inside quoted strings.
-/// Returns `None` (rule skipped) when the brackets never balance.
-fn extract_pattern_array(args: &str) -> Option<&str> {
-    let key = PATTERN_KEY_REGEX.find(args)?;
+/// Returns `None` when the key is absent or the brackets never balance.
+fn extract_bracketed<'a>(args: &'a str, key_regex: &Regex) -> Option<&'a str> {
+    let key = find_structural_key(args, key_regex)?;
     let start = key.end() - 1; // byte index of the opening '['
     let bytes = args.as_bytes();
     let mut depth = 0usize;
-    let mut quote: Option<u8> = None;
-    let mut escaped = false;
+    let mut scan = StarlarkScanState::default();
     for (i, &b) in bytes.iter().enumerate().skip(start) {
-        if escaped {
-            escaped = false;
-        } else if let Some(q) = quote {
-            if b == b'\\' {
-                escaped = true;
-            } else if b == q {
-                quote = None;
-            }
-        } else if b == b'"' || b == b'\'' {
-            quote = Some(b);
-        } else if b == b'[' {
+        if !scan.consume(bytes, i).0 {
+            continue;
+        }
+        if b == b'[' {
             depth += 1;
         } else if b == b']' {
             depth -= 1;
@@ -424,6 +734,115 @@ fn extract_pattern_array(args: &str) -> Option<&str> {
         }
     }
     None
+}
+
+/// Find a key assignment only when its identifier is structural Starlark
+/// syntax, not text inside a string or a line comment.
+fn find_structural_key<'a>(args: &'a str, key_regex: &Regex) -> Option<regex::Match<'a>> {
+    let bytes = args.as_bytes();
+    let mut scan = StarlarkScanState::default();
+    let mut scanned = 0usize;
+
+    for key in key_regex.find_iter(args) {
+        while scanned <= key.start() {
+            let structural = scan.consume(bytes, scanned).0;
+            if scanned == key.start() && structural {
+                return Some(key);
+            }
+            scanned += 1;
+        }
+    }
+
+    None
+}
+
+/// Return the index immediately after the balanced array beginning at
+/// `start`. Brackets inside quoted or escaped token text are not structural.
+fn matching_bracket_end(chars: &[char], start: usize) -> Option<usize> {
+    if chars.get(start) != Some(&'[') {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+
+    for (index, &ch) in chars.iter().enumerate().skip(start) {
+        if escaped {
+            escaped = false;
+        } else if quote.is_some() {
+            if ch == '\\' {
+                escaped = true;
+            } else if quote == Some(ch) {
+                quote = None;
+            }
+        } else if ch == '"' || ch == '\'' {
+            quote = Some(ch);
+        } else if ch == '[' {
+            depth += 1;
+        } else if ch == ']' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(index + 1);
+            }
+        }
+    }
+
+    None
+}
+
+/// Parse a `match=[...]` / `not_match=[...]` example list. Each element is
+/// either an array of token strings or a plain string, which is tokenized
+/// with the production [`parse_command`] tokenizer.
+fn parse_example_list(s: &str) -> Option<Vec<Vec<String>>> {
+    let content = s.strip_prefix('[')?.strip_suffix(']')?.trim();
+    if content.is_empty() {
+        return Some(Vec::new());
+    }
+
+    let mut examples = Vec::new();
+    let mut i = 0;
+    let chars: Vec<char> = content.chars().collect();
+
+    while i < chars.len() {
+        // Skip whitespace and commas
+        while i < chars.len() && (chars[i].is_whitespace() || chars[i] == ',') {
+            i += 1;
+        }
+        if i >= chars.len() {
+            break;
+        }
+
+        if chars[i] == '"' || chars[i] == '\'' {
+            let quote = chars[i];
+            i += 1;
+            let mut value = String::new();
+            while i < chars.len() && chars[i] != quote {
+                if chars[i] == '\\' && i + 1 < chars.len() {
+                    i += 1;
+                    value.push(chars[i]);
+                } else {
+                    value.push(chars[i]);
+                }
+                i += 1;
+            }
+            if i >= chars.len() {
+                return None;
+            }
+            i += 1; // skip closing quote
+            examples.push(parse_command(&value));
+        } else if chars[i] == '[' {
+            // Nested array (token list)
+            let start = i;
+            i = matching_bracket_end(&chars, start)?;
+            let nested_str: String = chars[start..i].iter().collect();
+            examples.push(parse_string_array(&nested_str)?);
+        } else {
+            return None;
+        }
+    }
+
+    Some(examples)
 }
 
 fn parse_pattern_array(s: &str) -> Option<Vec<PatternToken>> {
@@ -463,16 +882,7 @@ fn parse_pattern_array(s: &str) -> Option<Vec<PatternToken>> {
         } else if chars[i] == '[' {
             // Nested array (alternatives)
             let start = i;
-            let mut depth = 1;
-            i += 1;
-            while i < chars.len() && depth > 0 {
-                if chars[i] == '[' {
-                    depth += 1;
-                } else if chars[i] == ']' {
-                    depth -= 1;
-                }
-                i += 1;
-            }
+            i = matching_bracket_end(&chars, start)?;
             let nested_str: String = chars[start..i].iter().collect();
             if let Some(nested) = parse_string_array(&nested_str) {
                 if nested.len() == 1 {
@@ -518,8 +928,13 @@ fn parse_string_array(s: &str) -> Option<Vec<String>> {
                 }
                 i += 1;
             }
+            if i >= chars.len() {
+                return None;
+            }
             i += 1;
             strings.push(value);
+        } else {
+            return None;
         }
     }
 
@@ -543,26 +958,33 @@ pub fn load_policy(workspace_dir: &Path) -> &'static Policy {
 
         // Load global policy
         if let Ok(content) = fs::read_to_string(&global_path) {
-            let parsed = parse_policy(&content, global_path.to_string_lossy().as_ref());
-            for rules in parsed.rules().values() {
-                for rule in rules {
-                    policy.add_rule(rule.clone());
-                }
-            }
+            merge_policy_file(&mut policy, &content, &global_path);
         }
 
         // Load project policy
         if let Ok(content) = fs::read_to_string(&project_path) {
-            let parsed = parse_policy(&content, project_path.to_string_lossy().as_ref());
+            merge_policy_file(&mut policy, &content, &project_path);
+        }
+
+        policy
+    })
+}
+
+/// Parse one execpolicy file into `policy`. A file whose rules fail
+/// self-test validation is skipped with a stderr warning naming the
+/// offending rule and example, matching the existing behavior for
+/// unreadable files (fail visible, not wedged at startup).
+fn merge_policy_file(policy: &mut Policy, content: &str, path: &Path) {
+    match parse_policy(content, path.to_string_lossy().as_ref()) {
+        Ok(parsed) => {
             for rules in parsed.rules().values() {
                 for rule in rules {
                     policy.add_rule(rule.clone());
                 }
             }
         }
-
-        policy
-    })
+        Err(err) => eprintln!("execpolicy: ignoring {}: {err}", path.display()),
+    }
 }
 
 /// Render a prefix rule in the policy file syntax.
@@ -747,7 +1169,7 @@ prefix_rule(
     decision="allow",
 )
 "#;
-        let policy = parse_policy(content, "test");
+        let policy = parse_policy(content, "test").unwrap();
         let result = policy.check(
             &["git".to_string(), "status".to_string()],
             None::<fn(&[String]) -> Decision>,
@@ -761,14 +1183,17 @@ prefix_rule(
             RuleMatch::Prefix {
                 matched_prefix: vec!["git".to_string()],
                 decision: Decision::Allow,
+                justification: None,
             },
             RuleMatch::Prefix {
                 matched_prefix: vec!["git".to_string()],
                 decision: Decision::Forbidden,
+                justification: None,
             },
             RuleMatch::Prefix {
                 matched_prefix: vec!["git".to_string()],
                 decision: Decision::Prompt,
+                justification: None,
             },
         ]);
         assert_eq!(eval.decision, Decision::Forbidden);
@@ -892,7 +1317,7 @@ prefix_rule(
         .unwrap();
 
         let content = fs::read_to_string(&policy_path).unwrap();
-        let policy = parse_policy(&content, "roundtrip");
+        let policy = parse_policy(&content, "roundtrip").unwrap();
 
         let check = |cmd: &[&str]| {
             let tokens: Vec<String> = cmd.iter().map(|s| (*s).to_string()).collect();
@@ -919,7 +1344,7 @@ prefix_rule(
         )
         .unwrap();
         let content = fs::read_to_string(&policy_path).unwrap();
-        let policy = parse_policy(&content, "roundtrip-no-newline");
+        let policy = parse_policy(&content, "roundtrip-no-newline").unwrap();
         assert_eq!(check_decision(&policy, &["git", "status"]), Decision::Allow);
         assert_eq!(check_decision(&policy, &["git", "push"]), Decision::Prompt);
 
@@ -934,6 +1359,174 @@ prefix_rule(
     }
 
     #[test]
+    fn test_parse_policy_keeps_parentheses_inside_quoted_examples() {
+        let content = r#"
+prefix_rule(
+    pattern=["python", "-c"],
+    decision="prompt",
+    match=["python -c 'print(1)'"],
+    not_match=["python -m pytest '(slow or network)'"],
+)
+"#;
+
+        let policy = parse_policy(content, "quoted-parentheses.policy").unwrap();
+        assert_eq!(
+            check_decision(&policy, &["python", "-c", "print(1)"]),
+            Decision::Prompt
+        );
+    }
+
+    #[test]
+    fn test_parse_policy_keeps_quoted_subshell_parentheses_in_not_match() {
+        let content = r#"
+prefix_rule(
+    pattern=["sh", "-c", "deploy"],
+    decision="prompt",
+    match=["sh -c deploy"],
+    not_match=["sh -c 'echo $(date)'", "sh -c '(echo safe)'"],
+)
+"#;
+
+        let policy = parse_policy(content, "quoted-subshell.policy").unwrap();
+        assert_eq!(
+            check_decision(&policy, &["sh", "-c", "deploy"]),
+            Decision::Prompt
+        );
+    }
+
+    #[test]
+    fn test_parse_policy_keeps_parentheses_after_escaped_quotes() {
+        let content = r#"
+prefix_rule(
+    pattern=["python", "-c"],
+    decision="prompt",
+    match=["python -c \"print(1)\""],
+)
+"#;
+
+        let policy = parse_policy(content, "escaped-quotes.policy").unwrap();
+        assert_eq!(
+            check_decision(&policy, &["python", "-c", "print(1)"]),
+            Decision::Prompt
+        );
+    }
+
+    #[test]
+    fn test_parse_policy_resumes_at_adjacent_rule_after_quoted_parentheses() {
+        let content = r#"
+prefix_rule(
+    pattern=["python", "-c"],
+    decision="prompt",
+    match=["python -c 'print(1)'"],
+)
+prefix_rule(pattern=["git", "status"], decision="allow")
+"#;
+
+        let policy = parse_policy(content, "adjacent-rules.policy").unwrap();
+        assert_eq!(
+            check_decision(&policy, &["python", "-c", "print(1)"]),
+            Decision::Prompt
+        );
+        let git = policy.check(
+            &["git".to_string(), "status".to_string()],
+            None::<fn(&[String]) -> Decision>,
+        );
+        assert_eq!(git.decision, Decision::Allow);
+        assert_eq!(git.matched_rules.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_policy_ignores_parentheses_inside_line_comments() {
+        let content = r#"
+prefix_rule(
+    pattern=["git", "push"],
+    # Block destructive calls (tracked in the security backlog.
+    decision="forbidden",
+)
+"#;
+
+        let policy = parse_policy(content, "comment-parentheses.policy").unwrap();
+        assert_eq!(
+            check_decision(&policy, &["git", "push", "origin"]),
+            Decision::Forbidden
+        );
+    }
+
+    #[test]
+    fn test_parse_policy_ignores_prefix_rule_text_in_top_level_comments() {
+        let content = r#"
+# syntax: prefix_rule(
+prefix_rule(
+    pattern=["git", "push"],
+    decision="forbidden",
+)
+"#;
+
+        let policy = parse_policy(content, "top-level-comment.policy").unwrap();
+        assert_eq!(
+            check_decision(&policy, &["git", "push", "origin"]),
+            Decision::Forbidden
+        );
+    }
+
+    #[test]
+    fn test_parse_policy_ignores_triple_quoted_module_strings() {
+        let content = r#"
+"""A literal " character."""
+prefix_rule(
+    pattern=["git", "push"],
+    decision="forbidden",
+)
+"#;
+
+        let policy = parse_policy(content, "module-docstring.policy").unwrap();
+        assert_eq!(
+            check_decision(&policy, &["git", "push", "origin"]),
+            Decision::Forbidden
+        );
+    }
+
+    #[test]
+    fn test_parse_policy_keeps_parentheses_inside_triple_quoted_arguments() {
+        let content = r#"
+prefix_rule(
+    pattern=["git", "status"],
+    decision="allow",
+    justification="""A literal " character ) remains text.""",
+)
+prefix_rule(
+    pattern=["git", "push"],
+    decision="forbidden",
+)
+"#;
+
+        let policy = parse_policy(content, "triple-quoted-argument.policy").unwrap();
+        assert_eq!(
+            check_decision(&policy, &["git", "push", "origin"]),
+            Decision::Forbidden
+        );
+    }
+
+    #[test]
+    fn test_parse_policy_ignores_unbalanced_outer_rule_as_before() {
+        let content = r#"
+prefix_rule(
+    pattern=["git", "push"],
+    decision="forbidden",
+"#;
+
+        let policy = parse_policy(content, "unbalanced-outer.policy").unwrap();
+        let result = policy.check(
+            &["git".to_string(), "push".to_string()],
+            None::<fn(&[String]) -> Decision>,
+        );
+        assert!(
+            result.matched_rules.is_empty(),
+            "an outer prefix_rule call without a closing parenthesis stays ignored"
+        );
+    }
+
+    #[test]
     fn test_missing_or_invalid_decision_silently_defaults_to_allow() {
         // Pins current behavior: a prefix_rule with a missing or unparseable
         // `decision=` falls back to Decision::Allow in parse_prefix_rule_args
@@ -943,7 +1536,7 @@ prefix_rule(
             r#"prefix_rule(pattern=["rm", "-rf"])"#,
             r#"prefix_rule(pattern=["rm", "-rf"], decision="nonsense")"#,
         ] {
-            let policy = parse_policy(content, "test");
+            let policy = parse_policy(content, "test").unwrap();
             let result = policy.check(
                 &["rm".to_string(), "-rf".to_string(), "/".to_string()],
                 None::<fn(&[String]) -> Decision>,
@@ -961,7 +1554,7 @@ prefix_rule(
     decision="prompt",
 )
 "#;
-        let policy = parse_policy(content, "test");
+        let policy = parse_policy(content, "test").unwrap();
         let check = |cmd: &[&str]| {
             let tokens: Vec<String> = cmd.iter().map(|s| (*s).to_string()).collect();
             policy.check(&tokens, None::<fn(&[String]) -> Decision>)
@@ -1005,7 +1598,7 @@ prefix_rule(
     fn test_parse_policy_nested_alternatives_not_first_position() {
         // Alternatives as the first token expand into one rule per program.
         let content = r#"prefix_rule(pattern=[["git", "cargo"], "status"], decision="allow")"#;
-        let policy = parse_policy(content, "test");
+        let policy = parse_policy(content, "test").unwrap();
         assert_eq!(check_decision(&policy, &["git", "status"]), Decision::Allow);
         assert_eq!(
             check_decision(&policy, &["cargo", "status"]),
@@ -1020,7 +1613,7 @@ prefix_rule(
 
         // Several alternative groups in one pattern.
         let content = r#"prefix_rule(pattern=["git", ["push", "fetch"], ["--force", "--tags"]], decision="prompt")"#;
-        let policy = parse_policy(content, "test");
+        let policy = parse_policy(content, "test").unwrap();
         assert_eq!(
             check_decision(&policy, &["git", "push", "--force"]),
             Decision::Prompt
@@ -1044,11 +1637,234 @@ prefix_rule(
         // Fail closed-ish: a pattern whose brackets never balance is not
         // parsed as a truncated prefix; the rule is dropped entirely.
         let content = r#"prefix_rule(pattern=["git", ["push"], decision="forbidden")"#;
-        let policy = parse_policy(content, "test");
+        let policy = parse_policy(content, "test").unwrap();
         let result = policy.check(
             &["git".to_string(), "push".to_string()],
             None::<fn(&[String]) -> Decision>,
         );
         assert!(result.matched_rules.is_empty());
+    }
+
+    #[test]
+    fn test_valid_match_and_not_match_examples_load() {
+        let content = r#"
+prefix_rule(
+    pattern=["git", ["push", "fetch"]],
+    decision="prompt",
+    justification="Pushes and fetches contact the remote.",
+    match=[["git", "push"], "git fetch origin"],
+    not_match=["git status", ["git", "pull"]],
+)
+"#;
+        let policy = parse_policy(content, "test").unwrap();
+        assert_eq!(check_decision(&policy, &["git", "push"]), Decision::Prompt);
+        assert_eq!(
+            check_decision(&policy, &["git", "fetch", "origin"]),
+            Decision::Prompt
+        );
+        // not_match examples really do not match the narrowed pattern.
+        let status = policy.check(
+            &["git".to_string(), "status".to_string()],
+            None::<fn(&[String]) -> Decision>,
+        );
+        assert!(status.matched_rules.is_empty());
+        let pull = policy.check(
+            &["git".to_string(), "pull".to_string()],
+            None::<fn(&[String]) -> Decision>,
+        );
+        assert!(pull.matched_rules.is_empty());
+    }
+
+    #[test]
+    fn test_commented_examples_do_not_validate_the_rule() {
+        let content = r#"
+prefix_rule(
+    pattern=["git", "status"],
+    decision="allow",
+    # match=[42],
+    # not_match=[["git", "status"]],
+)
+"#;
+
+        let policy = parse_policy(content, "commented-examples.policy").unwrap();
+        assert_eq!(check_decision(&policy, &["git", "status"]), Decision::Allow);
+    }
+
+    #[test]
+    fn test_commented_example_before_real_example_does_not_shadow_it() {
+        let content = r#"
+prefix_rule(
+    pattern=["git", "status"],
+    decision="prompt",
+    # match=[["git", "push"]],
+    justification="The docs mention match=[[\"git\", \"push\"]] # literally.",
+    match=[["git", "status"]],
+)
+"#;
+
+        let policy = parse_policy(content, "commented-before-real.policy").unwrap();
+        assert_eq!(
+            check_decision(&policy, &["git", "status"]),
+            Decision::Prompt
+        );
+    }
+
+    #[test]
+    fn test_nested_example_brackets_inside_quoted_tokens_are_text() {
+        let content = r#"
+prefix_rule(
+    pattern=["python", "-c"],
+    decision="prompt",
+    match=[
+        ["python", "-c", "print(\"]\")"],
+        ["python", "-c", "print(\"[\")"],
+        ["python", "-c", 'single ] bracket'],
+        ["python", "-c", "escaped quote: \" ] still text"],
+        ["python", "-c", "following sibling"],
+    ],
+)
+"#;
+
+        let policy = parse_policy(content, "quoted-bracket-example.policy").unwrap();
+        for token in [
+            "print(\"]\")",
+            "print(\"[\")",
+            "single ] bracket",
+            "escaped quote: \" ] still text",
+            "following sibling",
+        ] {
+            assert_eq!(
+                check_decision(&policy, &["python", "-c", token]),
+                Decision::Prompt,
+                "example token {token:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_wrong_match_example_is_load_error() {
+        // A `match` example the pattern does not cover must fail at load,
+        // naming the rule and the failing example. A pattern degraded to a
+        // bare prefix (#3091) would fail this way.
+        let content = r#"
+prefix_rule(
+    pattern=["git", ["push", "fetch"]],
+    decision="prompt",
+    match=[["git", "push"], ["git", "pull"]],
+)
+"#;
+        let err = parse_policy(content, "test.policy").unwrap_err();
+        assert!(
+            err.contains("test.policy"),
+            "error must name the policy source: {err}"
+        );
+        assert!(
+            err.contains(r#"prefix_rule(pattern=["git", ["push", "fetch"]], decision="prompt")"#),
+            "error must name the rule: {err}"
+        );
+        assert!(
+            err.contains(r#"match example ["git", "pull"] did not match"#),
+            "error must name the failing example: {err}"
+        );
+    }
+
+    #[test]
+    fn test_wrong_not_match_example_is_load_error() {
+        let content = r#"
+prefix_rule(
+    pattern=["git", "push"],
+    decision="prompt",
+    not_match=["git push origin"],
+)
+"#;
+        let err = parse_policy(content, "test.policy").unwrap_err();
+        assert!(
+            err.contains(r#"prefix_rule(pattern=["git", "push"], decision="prompt")"#),
+            "error must name the rule: {err}"
+        );
+        assert!(
+            err.contains(r#"not_match example ["git", "push", "origin"] matched"#),
+            "error must name the failing example: {err}"
+        );
+    }
+
+    #[test]
+    fn test_rules_without_examples_load_as_before() {
+        // Backward compat: no match/not_match keys, no validation error.
+        let content = r#"prefix_rule(pattern=["git", "status"], decision="allow")"#;
+        let policy = parse_policy(content, "test").unwrap();
+        assert_eq!(check_decision(&policy, &["git", "status"]), Decision::Allow);
+    }
+
+    #[test]
+    fn test_malformed_example_scalar_is_load_error() {
+        let content = r#"prefix_rule(pattern=["git", "pull"], decision="prompt", match=[42])"#;
+        let err = parse_policy(content, "bad.policy").unwrap_err();
+        assert!(
+            err.contains("bad.policy: malformed match example list"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_unterminated_example_string_is_load_error() {
+        let content = r#"prefix_rule(
+            pattern=["git", "pull"],
+            decision="prompt",
+            match=["git pull],
+        )"#;
+        let err = parse_policy(content, "bad.policy").unwrap_err();
+        assert!(
+            err.contains("bad.policy: malformed match example list"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_malformed_nested_example_is_load_error_without_hanging() {
+        let content = r#"prefix_rule(
+            pattern=["git", "pull"],
+            decision="prompt",
+            match=[["git", 42]],
+        )"#;
+        let err = parse_policy(content, "bad.policy").unwrap_err();
+        assert!(
+            err.contains("bad.policy: malformed match example list"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_justification_surfaced_in_approval_reason() {
+        let content = r#"
+prefix_rule(
+    pattern=["git", "push"],
+    decision="prompt",
+    justification="Pushes rewrite shared history; confirm the remote first.",
+)
+prefix_rule(
+    pattern=["git", "status"],
+    decision="allow",
+)
+"#;
+        let policy = parse_policy(content, "test").unwrap();
+
+        let eval = policy.check(
+            &["git".to_string(), "push".to_string(), "origin".to_string()],
+            None::<fn(&[String]) -> Decision>,
+        );
+        assert_eq!(eval.decision, Decision::Prompt);
+        assert_eq!(
+            eval.justification(),
+            Some("Pushes rewrite shared history; confirm the remote first.")
+        );
+
+        // Rules without a justification surface nothing.
+        let eval = policy.check(
+            &["git".to_string(), "status".to_string()],
+            None::<fn(&[String]) -> Decision>,
+        );
+        assert_eq!(eval.decision, Decision::Allow);
+        assert_eq!(eval.justification(), None);
     }
 }

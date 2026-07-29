@@ -868,7 +868,7 @@ impl App {
         // modal clips the command to a few lines; the detail view shows the
         // full command and arguments. Esc returns to the approval modal.
         if modifiers.contains(CrosstermModifiers::CONTROL) && matches!(code, KeyCode::Char('e')) {
-            if let Some(request) = self.approval_controller.current() {
+            if let Some(request) = self.approval_controller.selected_request() {
                 self.detail_view = Some(DetailView::new(
                     format!("Approval: {}", request.tool),
                     approval_detail_content(request),
@@ -1149,8 +1149,9 @@ fn approval_detail_content(request: &ApprovalRequest) -> String {
         sections.push(format!("Reason:\n{reason}"));
     }
     sections.push(format!("Command:\n{}", request.display_command()));
-    let args =
-        serde_json::to_string_pretty(&request.args).unwrap_or_else(|_| request.args.to_string());
-    sections.push(format!("Args:\n{args}"));
+    if let Some(source) = &request.command_source {
+        sections.push(format!("Source and execution context:\n{source}"));
+    }
+    sections.push(format!("Args:\n{}", request.display_args_pretty()));
     sections.join("\n\n")
 }

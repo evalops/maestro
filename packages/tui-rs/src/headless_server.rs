@@ -1156,6 +1156,7 @@ async fn handle_agent_event(
             tool,
             args,
             requires_approval,
+            ..
         } => {
             let message = FromAgentMessage::ToolCall {
                 call_id: call_id.clone(),

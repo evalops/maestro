@@ -114,3 +114,9 @@ jobs:
           assert.match(publishGate, /github\.event\.pull_request\.head\.repo\.id != github\.event\.repository\.id && 'ubuntu-latest'/);
           assert.doesNotMatch(publishGate, /packages: write|docker\/login-action|docker\/build-push-action|repos\/evalops\/deploy\/dispatches/);
           NODE
+
+      - name: Run release workflow contract tests
+        run: |
+          set -euo pipefail
+          node --test .github/workflows/check-release-workflow-contract.test.mjs
+          node .github/workflows/check-release-workflow-contract.mjs

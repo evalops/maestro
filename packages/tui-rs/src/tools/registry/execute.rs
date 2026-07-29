@@ -567,8 +567,12 @@ impl ToolExecutor {
         event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
         call_id: &str,
         generation: u64,
-        cancel: Option<CancellationToken>,
+        execution_context: ToolExecutionContext<'_>,
     ) -> ToolResult {
+        let ToolExecutionContext {
+            cancel,
+            approved_inline_env,
+        } = execution_context;
         if McpClient::is_mcp_tool(tool_name) {
             let client = match cancel.as_ref() {
                 Some(token) => tokio::select! {
@@ -640,6 +644,12 @@ impl ToolExecutor {
             }
         }
 
+        // Every name (canonical or alias) matched below dispatches before
+        // the wildcard arm's inline-tool fallback ever runs. Adding a new
+        // arm/alias here also needs a matching entry in
+        // `registry::is_reserved_execute_dispatch_name`, or an inline tool
+        // registered under that name would silently never execute despite
+        // passing the collision check.
         match tool_name {
             "bash" | "Bash" => {
                 let bash_args: BashArgs = match serde_json::from_value(args.clone()) {
@@ -2470,8 +2480,7 @@ impl ToolExecutor {
             }
             _ => {
                 // Check if this is an inline tool
-                let tool_key = tool_name.to_lowercase();
-                if let Some(inline_tool) = self.inline_tools.get(&tool_key) {
+                if let Some(inline_tool) = self.get_inline_tool(tool_name) {
                     // Send tool start event
                     if let Some(tx) = event_tx {
                         let _ = tx.send(FromAgent::ToolStart {
@@ -2483,7 +2492,11 @@ impl ToolExecutor {
                         &self.credential_vault,
                         generation,
                         self.inline_executor
-                            .execute(inline_tool, args.clone())
+                            .execute_with_environment(
+                                inline_tool,
+                                args.clone(),
+                                approved_inline_env,
+                            )
                             .await,
                     );
 

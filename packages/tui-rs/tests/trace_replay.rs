@@ -110,6 +110,7 @@ const CANONICAL_FIXTURES: &[&str] = &[
     "synthetic_execpolicy_destructive_fs.json",
     "synthetic_execpolicy_git_workflow.json",
     "synthetic_execpolicy_nested_alts.json",
+    "synthetic_execpolicy_selftest_examples.json",
     "synthetic_safety_doom_loop_distinct_args.json",
     "synthetic_safety_doom_loop_identical_calls.json",
     "synthetic_safety_rate_limit.json",
@@ -282,7 +283,8 @@ struct ExecPolicyCase {
 /// Replay one execpolicy fixture: parse the inline policy source with the
 /// production parser and assert the decision for every command case.
 fn replay_execpolicy_fixture(fixture_name: &str, fixture: ExecPolicyFixture) {
-    let policy = parse_policy(&fixture.policy_source, fixture_name);
+    let policy = parse_policy(&fixture.policy_source, fixture_name)
+        .unwrap_or_else(|e| panic!("fixture {fixture_name}: policy failed to load: {e}"));
 
     assert!(
         !fixture.cases.is_empty(),

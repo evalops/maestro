@@ -16,6 +16,30 @@ pub(crate) fn normalize_slash_completion(cmd: &str) -> String {
     format!("/{name}")
 }
 
+/// The system message reported for a `/session cleanup` outcome.
+///
+/// `SessionManager::prune_sessions` returns `(removed, errors)`.
+/// `errors` counts real (non-contention) failures acquiring a session's
+/// lock -- permission or descriptor failures, not "another Maestro process
+/// has it open" -- so `removed == 0` does not mean nothing went wrong.
+/// Before this fix, `removed == 0` always reported "No sessions to prune."
+/// regardless of `errors`, discarding that count and reading as success
+/// even when every eligible session failed to prune.
+#[must_use]
+pub(crate) fn cleanup_result_message(removed: usize, errors: usize) -> String {
+    if removed == 0 && errors == 0 {
+        "No sessions to prune.".to_string()
+    } else if removed == 0 {
+        format!("Failed to prune sessions: {errors} error(s).")
+    } else {
+        let mut msg = format!("Pruned {removed} session(s).");
+        if errors > 0 {
+            msg.push_str(&format!(" {errors} error(s)."));
+        }
+        msg
+    }
+}
+
 impl App {
     /// Update slash state based on current input
     pub(super) fn update_slash_state(&mut self) {
@@ -610,16 +634,8 @@ impl App {
                 let (removed, errors) = self
                     .session_manager
                     .prune_sessions(max_sessions, max_age_days);
-                if removed == 0 {
-                    self.state
-                        .add_system_message("No sessions to prune.".to_string());
-                } else {
-                    let mut msg = format!("Pruned {removed} session(s).");
-                    if errors > 0 {
-                        msg.push_str(&format!(" {errors} error(s)."));
-                    }
-                    self.state.add_system_message(msg);
-                }
+                self.state
+                    .add_system_message(cleanup_result_message(removed, errors));
             }
             SessionAction::New => {
                 self.start_new_session("New session started.");

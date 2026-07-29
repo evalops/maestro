@@ -241,7 +241,11 @@ fn run_scenarios() -> Result<BTreeMap<String, u64>> {
         }),
     );
 
-    let policy = parse_policy(&bench_policy_source(), "perf-bench");
+    // Parse and run the policy's self-tests once during fixture setup, not
+    // inside the timed evaluation loop.
+    let policy = parse_policy(&bench_policy_source(), "perf-bench")
+        .map_err(anyhow::Error::msg)
+        .context("validate perf benchmark policy")?;
     let commands: Vec<Vec<String>> = (0..EXECPOLICY_EVALS_PER_ROUND)
         .map(|i| {
             let cmd = match i % 4 {

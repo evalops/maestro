@@ -296,7 +296,7 @@ use super::entries::{
     AttachmentExtract, SessionEntry, SessionHeader, SessionMeta, SessionStats, ThinkingLevel,
 };
 use super::reader::{ParsedSession, SessionReadError, SessionReader};
-use super::writer::{sessions_dir, SessionWriter};
+use super::writer::{lock_path_for, sessions_dir, SessionLock, SessionWriter};
 
 /// Lightweight session summary for listing operations.
 ///
@@ -436,6 +436,24 @@ pub struct SessionManager {
     /// Set by [`start_session`](SessionManager::start_session). None if no session is active.
     writer: Option<SessionWriter>,
 }
+
+/// Marker file dropped inside a staged checkpoint directory (see
+/// [`SessionManager::prune_staging_dir`]) when
+/// [`SessionManager::remove_session_and_checkpoints`]'s rollback rename
+/// itself fails after the session's `.jsonl` removal also failed.
+///
+/// That combination leaves the session's `.jsonl` -- and therefore the
+/// session itself -- still around and listed, but its checkpoints stuck in
+/// the staging namespace instead of restored to their normal
+/// `checkpoints/<session_id>/` location.
+/// [`SessionManager::sweep_stale_checkpoint_staging`] cannot tell that
+/// apart from an ordinary orphaned leftover (a crashed prune whose final
+/// `remove_dir_all` never got to run) using the lock alone, since neither
+/// process is holding it by the time the sweep runs; without this marker
+/// the sweep deletes still-owned, live rewind history outright. The sweep
+/// checks for this file and skips (rather than deletes) any staged
+/// directory containing it.
+const ROLLBACK_TOMBSTONE_FILE: &str = ".rollback-failed";
 
 impl SessionManager {
     /// Create a new session manager
@@ -633,6 +651,22 @@ impl SessionManager {
         session_id: impl Into<String>,
         path: impl AsRef<Path>,
     ) -> Result<(), super::writer::SessionWriteError> {
+        let path = path.as_ref();
+        // Resuming the session that's already active (e.g. `/continue`, or
+        // Ctrl+O re-selecting the current session -- normally the newest
+        // entry) must be a no-op: `self.writer`, if set, already holds this
+        // exact path's sidecar lock, so `SessionLock::acquire` below would
+        // always fail with `Locked` -- a process cannot flock its own
+        // already-open file a second time -- even though the session is
+        // perfectly valid and there is nothing to actually resume.
+        if self
+            .writer
+            .as_ref()
+            .is_some_and(|writer| writer.path() == path)
+        {
+            self.current_session_id = Some(session_id.into());
+            return Ok(());
+        }
         self.current_session_id = Some(session_id.into());
         self.writer = Some(SessionWriter::open_existing(path)?);
         Ok(())
@@ -688,9 +722,437 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Remove a session's `.jsonl` file and its sibling checkpoint directory.
+    ///
+    /// Checkpoints for a session live at
+    /// `<sessions_dir>/checkpoints/<session_id>/` (see
+    /// [`crate::checkpoints::CheckpointStore`]). Pruning only the `.jsonl`
+    /// orphans that directory forever, since nothing else ever revisits a
+    /// deleted session's id (issue #3151). The checkpoint directory is
+    /// removed *first* so that a transient failure there leaves the
+    /// `.jsonl` -- the session's only discoverability record -- in place for
+    /// a later cleanup run to retry, instead of orphaning the checkpoints
+    /// with the prune reported as failed. A session with no checkpoints at
+    /// all (the common case) hits a `NotFound` here, which is not an
+    /// error.
+    ///
+    /// Staging happens in a dedicated `checkpoints/.prune-staging~/`
+    /// namespace (see [`Self::prune_staging_dir`] for why it ends in `~`),
+    /// not as a `<session_id>.prune-staged` sibling of the real checkpoint
+    /// directory: a portable or hand-written session id ending in that
+    /// literal suffix would otherwise collide with (and, unrelated to any
+    /// prune of its own, get swept as if it were) another session's
+    /// staging directory. `sanitize_component` is applied to
+    /// every session id building a `CheckpointStore` root, so a real
+    /// session directory name can never collide with a fixed, dot-prefixed
+    /// namespace directory the way it could with a suffix appended to its
+    /// own name.
+    ///
+    /// Does not remove the session's sidecar `<file>.lock` (see
+    /// [`SessionLock`]); callers that hold the lock while pruning must drop
+    /// it first (see the comment at both call sites in [`Self::prune_sessions`]
+    /// for why removing it while still held would be unsafe).
+    fn remove_session_and_checkpoints(&self, session: &SessionInfo) -> std::io::Result<()> {
+        let store = crate::checkpoints::CheckpointStore::new(&self.sessions_dir, &session.id);
+        let checkpoint_root = store.root();
+        let staging_dir = Self::prune_staging_dir(&self.sessions_dir);
+        // `fs::rename`'s target parent must already exist; `create_dir_all`
+        // is a no-op (not an error) if another prune already created it.
+        fs::create_dir_all(&staging_dir)?;
+        let staged = staging_dir.join(
+            checkpoint_root
+                .file_name()
+                .map(std::ffi::OsStr::to_os_string)
+                .unwrap_or_default(),
+        );
+
+        // Hold a lock on the staging entry itself -- the same `SessionLock`
+        // mechanism used for a session's own sidecar lock, reused here
+        // against `staged` rather than `session.path` -- for the entire
+        // staged window. `sweep_stale_checkpoint_staging`, possibly running
+        // concurrently in another process's own `prune_sessions` call,
+        // skips any entry it cannot lock, so it can never delete this one
+        // out from under an in-progress prune (see that function's doc
+        // comment). This lock is required, not best-effort: the session
+        // lock prevents two transcript prunes, while this separate lock
+        // prevents a concurrent sweep from mutating the checkpoint
+        // transaction underneath this process.
+        let staging_lock = SessionLock::acquire(&Self::prune_staging_lock_key(&staged))
+            .map_err(|error| std::io::Error::other(format!("lock checkpoint staging: {error}")))?;
+
+        // A previous interrupted prune may have left older checkpoints in
+        // staging while a resumed session created newer checkpoints at the
+        // live root. Merge retained history back before staging this
+        // transaction; deleting it here would discard rewind points before
+        // transcript deletion commits.
+        if let Err(error) = Self::restore_retained_checkpoint_history(&staged, checkpoint_root) {
+            drop(staging_lock);
+            return Err(error);
+        }
+
+        // Stage the checkpoint directory aside (a same-filesystem rename,
+        // cheap and effectively atomic) instead of deleting it outright: if
+        // removing the session's `.jsonl` below fails (a read-only file on
+        // Windows, a transient sharing violation, ...), the staged
+        // directory is renamed back below, restoring the checkpoints --
+        // rather than leaving the session's rewind history permanently
+        // gone while the session itself (per its surviving `.jsonl`) stays
+        // listed.
+        let staged_exists = match fs::rename(checkpoint_root, &staged) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => {
+                drop(staging_lock);
+                return Err(e);
+            }
+        };
+
+        let result = match fs::remove_file(&session.path) {
+            Ok(()) => {
+                if staged_exists {
+                    // Best-effort: the session and its `.jsonl` are already
+                    // gone, so a failure here just leaves an orphaned
+                    // staged directory (swept by
+                    // `sweep_stale_checkpoint_staging` on the next
+                    // `prune_sessions` run) rather than an error the caller
+                    // could act on.
+                    let _ = fs::remove_dir_all(&staged);
+                }
+                Ok(())
+            }
+            Err(e) => {
+                if staged_exists {
+                    // Restore: the `.jsonl` (and therefore the session)
+                    // is still around, so its checkpoints must be too.
+                    if let Err(rollback_err) = fs::rename(&staged, checkpoint_root) {
+                        // The rollback itself failed (a transient sharing
+                        // violation, a permissions error, ...): `staged`
+                        // still holds this session's checkpoints, sitting
+                        // in the staging namespace where
+                        // `sweep_stale_checkpoint_staging` would otherwise
+                        // delete it outright as an ordinary orphaned
+                        // leftover. The session's `.jsonl` (per the `Err`
+                        // arm we're already in) is still around and still
+                        // listed, so this is live rewind history, not
+                        // orphaned staging -- leave a tombstone marker so
+                        // the sweep skips it instead, and log loudly since
+                        // recovering it needs an operator to look at the
+                        // underlying I/O error.
+                        eprintln!(
+                            "Failed to roll back staged checkpoints for session {} after failing to remove its session file ({e}): {rollback_err}; leaving them staged at {} for manual recovery",
+                            session.short_id(),
+                            staged.display()
+                        );
+                        let _ = fs::write(staged.join(ROLLBACK_TOMBSTONE_FILE), b"");
+                    }
+                }
+                Err(e)
+            }
+        };
+
+        // Staging entry names are reused across cleanup attempts, so their
+        // lock sidecars must remain linked permanently. Unlinking one after
+        // dropping this guard lets a process that already opened the old
+        // inode acquire it while a later cleanup recreates and locks a new
+        // inode at the same path, splitting mutual exclusion across two
+        // files. Empty sidecars are intentionally inert and are ignored by
+        // the staging sweep.
+        drop(staging_lock);
+
+        result
+    }
+
+    /// Restore checkpoint entries retained by an interrupted prune.
+    ///
+    /// If a resumed session already recreated its live checkpoint root,
+    /// move non-conflicting older entries into it. A collision fails closed:
+    /// both copies remain discoverable and the transcript is not pruned.
+    fn restore_retained_checkpoint_history(
+        staged: &Path,
+        checkpoint_root: &Path,
+    ) -> std::io::Result<()> {
+        if !staged.exists() {
+            return Ok(());
+        }
+
+        if !checkpoint_root.exists() {
+            fs::rename(staged, checkpoint_root)?;
+            let tombstone = checkpoint_root.join(ROLLBACK_TOMBSTONE_FILE);
+            if let Err(error) = fs::remove_file(&tombstone) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    return Err(error);
+                }
+            }
+            return Ok(());
+        }
+
+        for entry in fs::read_dir(staged)? {
+            let entry = entry?;
+            if entry.file_name() == ROLLBACK_TOMBSTONE_FILE {
+                continue;
+            }
+            let destination = checkpoint_root.join(entry.file_name());
+            if destination.exists() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!(
+                        "cannot merge retained checkpoint {} into occupied destination {}",
+                        entry.path().display(),
+                        destination.display()
+                    ),
+                ));
+            }
+            fs::rename(entry.path(), destination)?;
+        }
+
+        let tombstone = staged.join(ROLLBACK_TOMBSTONE_FILE);
+        if let Err(error) = fs::remove_file(&tombstone) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err(error);
+            }
+        }
+        fs::remove_dir(staged)
+    }
+
+    /// The dedicated namespace staged checkpoint directories are moved
+    /// into during a prune, kept separate from `checkpoints/<session_id>/`.
+    ///
+    /// A `<session_id>.prune-staged` sibling name (the original scheme)
+    /// could collide with a portable or hand-written session id that
+    /// itself ends in that literal suffix: its own, live checkpoint
+    /// directory would then share a name with -- and be swept alongside --
+    /// another session's staging data, deleting live rewind history that
+    /// was never actually part of any prune. A fixed, dot-prefixed
+    /// namespace directory cannot collide with a real session's checkpoint
+    /// directory name *the way appending a suffix to it can*, but a fixed
+    /// name built only from characters `sanitize_component` can itself
+    /// produce is not enough on its own: `sanitize_component` (see
+    /// `checkpoints.rs`) only maps characters *outside*
+    /// `[A-Za-z0-9_.-]` to `_` and otherwise passes everything else
+    /// through unchanged, so a portable or hand-written session literally
+    /// named `.prune-staging` sanitizes to itself and its checkpoint root
+    /// becomes *exactly* this directory. `~` is not in
+    /// `sanitize_component`'s pass-through set, so no session id, however
+    /// it sanitizes, can ever produce a directory name containing it --
+    /// this suffix makes the namespace collision-free by construction
+    /// rather than by coincidence of which literal name happened to be
+    /// picked.
+    fn prune_staging_dir(sessions_dir: &Path) -> PathBuf {
+        sessions_dir.join("checkpoints").join(".prune-staging~")
+    }
+
+    /// Return the stable advisory-lock key for one staging entry.
+    ///
+    /// `SessionLock` appends `.lock` to this path. The extra `~` keeps that
+    /// sidecar outside the namespace `sanitize_component` can produce for a
+    /// real checkpoint directory, so retaining the lock inode cannot collide
+    /// with a session whose sanitized id happens to end in `.lock`.
+    fn prune_staging_lock_key(staged: &Path) -> PathBuf {
+        let mut name = staged
+            .file_name()
+            .map(std::ffi::OsStr::to_os_string)
+            .unwrap_or_default();
+        name.push("~");
+        staged.with_file_name(name)
+    }
+
+    /// Best-effort removal of a pruned session's sidecar lock file.
+    ///
+    /// Must only be called after the caller's own [`SessionLock`] guard for
+    /// this session has already been dropped: unlinking the lock path while
+    /// this process still holds an open, locked file description on it and
+    /// a concurrent process races to recreate-and-lock a fresh file at the
+    /// same path would leave two processes each believing they hold
+    /// exclusive access. Session filenames embed a timestamp and a session
+    /// id and are never reused, so nothing can legitimately recreate this
+    /// exact path once the lock is released. Failure here is not reported
+    /// as a prune error: the session and its checkpoints are already gone,
+    /// and a leftover empty lock file is inert clutter, not a correctness
+    /// problem.
+    fn remove_session_lock_file(&self, session: &SessionInfo) {
+        if let Err(e) = fs::remove_file(lock_path_for(&session.path)) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "Failed to remove lock file for pruned session {}: {e}",
+                    session.short_id()
+                );
+            }
+        }
+    }
+
+    /// Discover live checkpoint names without silently dropping unreadable
+    /// session candidates.
+    ///
+    /// Ordinary UI listing intentionally skips malformed session files, but
+    /// recovery cannot interpret a skipped header as proof that the session
+    /// is gone: doing so could delete its only staged rewind history.
+    fn live_checkpoint_dir_names_strict(
+        &self,
+    ) -> Result<std::collections::HashSet<std::ffi::OsString>, SessionReadError> {
+        if !self.sessions_dir.exists() {
+            return Ok(std::collections::HashSet::new());
+        }
+
+        let mut names = std::collections::HashSet::new();
+        for entry in fs::read_dir(&self.sessions_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "jsonl")
+            {
+                let (header, _, _) = SessionReader::read_header(&path)?;
+                if let Some(name) =
+                    crate::checkpoints::CheckpointStore::new(&self.sessions_dir, &header.id)
+                        .root()
+                        .file_name()
+                {
+                    names.insert(name.to_os_string());
+                }
+            }
+        }
+        Ok(names)
+    }
+
+    /// Best-effort sweep of stale staged checkpoint directories (see
+    /// [`Self::prune_staging_dir`]) left behind by a previous
+    /// `remove_session_and_checkpoints` call whose final `remove_dir_all`
+    /// failed. Nothing else in this codebase ever revisits a pruned
+    /// session's checkpoint directory once it's staged aside, so this is
+    /// the only discoverable retry path for that narrow failure: called at
+    /// the start of every `prune_sessions` run, not just once, so a
+    /// failure that clears up later (a transient sharing violation, a
+    /// permissions fix) still eventually gets swept.
+    ///
+    /// Skips any entry it cannot lock, using the same `SessionLock`
+    /// mechanism `remove_session_and_checkpoints` holds for the duration of
+    /// its own staged window: a locked entry means another process's prune
+    /// is actively mid-flight on it right now, not a stale leftover from a
+    /// past crash. Deleting it out from under that process would
+    /// permanently destroy the session's rewind history if that process's
+    /// own final `.jsonl` removal then failed and it tried to roll back --
+    /// there would be nothing left to restore.
+    fn sweep_stale_checkpoint_staging(&self) {
+        let staging_dir = Self::prune_staging_dir(&self.sessions_dir);
+        let Ok(entries) = fs::read_dir(&staging_dir) else {
+            return;
+        };
+
+        // Cross-reference against currently listed sessions: a staged
+        // entry whose name matches a *live* session's own
+        // checkpoint-directory name did not finish being pruned -- most
+        // likely a process crash between `remove_session_and_checkpoints`'s
+        // initial stage-aside rename and whatever it does next, before it
+        // could even attempt (or fail, or tombstone) the session-file
+        // removal. That session's `.jsonl` is still around and still
+        // listed by `list_sessions`, so this is live rewind history, not
+        // an orphaned leftover from a *completed* (if partially failed)
+        // prune attempt; restore it to its normal location instead of
+        // deleting it. Computed once per sweep, not on every entry.
+        //
+        // If `list_sessions` itself fails (e.g. the sessions directory is
+        // temporarily unreadable), there is no way to tell a live session's
+        // interrupted staging apart from a genuine orphan; treating that
+        // failure as "no live sessions" would make every staged entry look
+        // orphaned and delete live rewind history out from under a session
+        // whose ownership this sweep simply failed to determine. Skip the
+        // whole sweep for this run instead -- the next `prune_sessions`
+        // call retries it.
+        let live_checkpoint_dir_names = match self.live_checkpoint_dir_names_strict() {
+            Ok(names) => names,
+            Err(_) => return,
+        };
+
+        self.sweep_stale_checkpoint_staging_entries(entries, &live_checkpoint_dir_names);
+    }
+
+    fn sweep_stale_checkpoint_staging_entries(
+        &self,
+        entries: fs::ReadDir,
+        live_checkpoint_dir_names: &std::collections::HashSet<std::ffi::OsString>,
+    ) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            // The lock mechanism's own sidecar `.lock` files live as
+            // siblings in this same directory; only staged directories
+            // themselves are sweep targets.
+            if !path.is_dir() {
+                continue;
+            }
+            // See `ROLLBACK_TOMBSTONE_FILE`: a directory carrying this
+            // marker is still owned by a live, listed session whose own
+            // rollback rename failed, not an ordinary orphaned leftover --
+            // skip it regardless of lock state so a future sweep (after
+            // whatever blocked the rename clears up) gets another chance,
+            // instead of destroying the only copy of that session's
+            // rewind history.
+            if path.join(ROLLBACK_TOMBSTONE_FILE).exists() {
+                continue;
+            }
+
+            // Acquire this entry's lock before *either* restoring or
+            // deleting it, not just before deleting: a concurrent
+            // process's own `remove_session_and_checkpoints` holds this
+            // same lock for its entire staged window, and taking it here
+            // first closes a race where this sweep could rename a live
+            // session's checkpoints out of staging (or delete them)
+            // while that other process is still mid-flight on the exact
+            // same entry.
+            let Ok(lock) = SessionLock::acquire(&Self::prune_staging_lock_key(&path)) else {
+                continue;
+            };
+
+            if let Some(name) = path.file_name() {
+                if live_checkpoint_dir_names.contains(name) {
+                    // The initial live-session set was captured before this
+                    // entry's staging lock was acquired. Another cleanup can
+                    // delete the owning transcript while we wait for that
+                    // lock, making the snapshot stale. Re-resolve ownership
+                    // under the lock before restoring; if discovery fails,
+                    // retain the staged history rather than guessing.
+                    let still_live = match self.live_checkpoint_dir_names_strict() {
+                        Ok(names) => names.contains(name),
+                        Err(_) => {
+                            drop(lock);
+                            continue;
+                        }
+                    };
+                    if !still_live {
+                        let _ = fs::remove_dir_all(&path);
+                        drop(lock);
+                        continue;
+                    }
+                    let restore_target = self.sessions_dir.join("checkpoints").join(name);
+                    // Best-effort restore. `CheckpointStore` normally
+                    // retains several checkpoints for rewind, so a
+                    // non-empty `restore_target` (the session resumed and
+                    // wrote new checkpoints since the crash) does not mean
+                    // this staged copy's older checkpoints are superseded
+                    // -- do not fall through to deleting them on a failed
+                    // rename; leave them staged so a future sweep (after
+                    // the destination clears, or once this is merged some
+                    // other way) can retry instead of permanently
+                    // discarding pre-crash rewind history.
+                    if fs::rename(&path, &restore_target).is_err() {
+                        drop(lock);
+                        continue;
+                    }
+                    drop(lock);
+                    continue;
+                }
+            }
+            let _ = fs::remove_dir_all(&path);
+            drop(lock);
+        }
+    }
+
     /// Prune old sessions that exceed count or age limits.
     ///
-    /// Respects favorites (never deletes them) and never deletes the current session.
+    /// Respects favorites (never deletes them) and never deletes the current
+    /// session or a session locked by another Maestro process.
+    /// Also removes each pruned session's checkpoint directory (see
+    /// [`Self::remove_session_and_checkpoints`]) so pruning doesn't leave
+    /// orphaned checkpoint data behind.
     /// Returns `(removed, errors)` counts.
     ///
     /// # Arguments
@@ -701,6 +1163,14 @@ impl SessionManager {
         if max_sessions == 0 && max_age_days == 0 {
             return (0, 0);
         }
+
+        // Sweep any stale staged directory a previous run's
+        // `remove_session_and_checkpoints` left behind because its final
+        // `fs::remove_dir_all(&staged)` failed (see that function): nothing
+        // else ever revisits a pruned session's checkpoint directory, so
+        // without this an orphan from that narrow failure path would
+        // otherwise persist forever with no discoverable retry.
+        self.sweep_stale_checkpoint_staging();
 
         let sessions = match self.list_sessions() {
             Ok(s) => s,
@@ -728,8 +1198,33 @@ impl SessionManager {
                 }
                 if let Some(modified) = session.modified {
                     if modified < cutoff {
-                        match fs::remove_file(&session.path) {
-                            Ok(()) => removed += 1,
+                        // Never prune a session another Maestro process has
+                        // open: its sidecar lock fails fast with `Locked`
+                        // (see `SessionLock`), so skip it rather than
+                        // deleting a live session's history and checkpoints.
+                        // The guard is held until the removal completes. Any
+                        // *other* acquisition failure (permissions, fd
+                        // exhaustion, ...) is not contention and must not be
+                        // silently treated the same as "another process has
+                        // this open" -- count it as a real prune error.
+                        let lock = match SessionLock::acquire(&session.path) {
+                            Ok(lock) => lock,
+                            Err(super::writer::SessionWriteError::Locked(_)) => continue,
+                            Err(e) => {
+                                eprintln!("Failed to prune session {}: {e}", session.short_id());
+                                errors += 1;
+                                continue;
+                            }
+                        };
+                        let outcome = self.remove_session_and_checkpoints(session);
+                        // Release our own lock before touching its sidecar
+                        // file; see `remove_session_lock_file`'s doc comment.
+                        drop(lock);
+                        match outcome {
+                            Ok(()) => {
+                                removed += 1;
+                                self.remove_session_lock_file(session);
+                            }
                             Err(e) => {
                                 eprintln!("Failed to prune session {}: {e}", session.short_id());
                                 errors += 1;
@@ -760,8 +1255,29 @@ impl SessionManager {
                 }
                 kept += 1;
                 if kept > max_sessions {
-                    match fs::remove_file(&session.path) {
-                        Ok(()) => removed += 1,
+                    // As in the age-based loop above, skip sessions locked
+                    // by another Maestro process. `kept` already counted
+                    // this session, so it still occupies a retention slot.
+                    // A non-contention acquisition failure is counted as a
+                    // real prune error rather than silently skipped.
+                    let lock = match SessionLock::acquire(&session.path) {
+                        Ok(lock) => lock,
+                        Err(super::writer::SessionWriteError::Locked(_)) => continue,
+                        Err(e) => {
+                            eprintln!("Failed to prune session {}: {e}", session.short_id());
+                            errors += 1;
+                            continue;
+                        }
+                    };
+                    let outcome = self.remove_session_and_checkpoints(session);
+                    // Release our own lock before touching its sidecar
+                    // file; see `remove_session_lock_file`'s doc comment.
+                    drop(lock);
+                    match outcome {
+                        Ok(()) => {
+                            removed += 1;
+                            self.remove_session_lock_file(session);
+                        }
                         Err(e) => {
                             eprintln!("Failed to prune session {}: {e}", session.short_id());
                             errors += 1;
@@ -834,6 +1350,60 @@ mod tests {
 
         let session = manager.load_session("abc123").unwrap();
         assert_eq!(session.id(), "abc123");
+    }
+
+    /// Regression test: resuming the session that's already active (e.g.
+    /// `/continue`, or Ctrl+O re-selecting the current session -- normally
+    /// the newest entry) must succeed, not fail with `Locked`.
+    /// `self.writer` already holds this exact path's sidecar lock, so a
+    /// naive re-`open_existing` would always self-collide: a process
+    /// cannot flock its own already-open file a second time.
+    #[test]
+    fn resume_session_by_path_is_a_no_op_for_the_already_active_session() {
+        let dir = TempDir::new().unwrap();
+        let mut manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        manager
+            .start_session(SessionHeader {
+                version: Some(2),
+                id: "active-session".to_string(),
+                timestamp: "2024-01-15T10:30:00Z".to_string(),
+                cwd: "/tmp".to_string(),
+                model: "test-model".to_string(),
+                subject: None,
+                model_metadata: None,
+                thinking_level: Default::default(),
+                system_prompt: None,
+                prompt_metadata: None,
+                prompt_context_manifest: None,
+                unified_context_manifest: None,
+                tools: vec![],
+                branched_from: None,
+                parent_session: None,
+            })
+            .expect("start_session");
+
+        let path = manager
+            .current_session_path()
+            .expect("session path after start_session");
+
+        manager
+            .resume_session_by_path("active-session", &path)
+            .expect("resuming the already-active session must not fail with Locked");
+
+        assert_eq!(
+            manager.current_session_id.as_deref(),
+            Some("active-session")
+        );
+        assert_eq!(
+            manager.current_session_path().as_deref(),
+            Some(path.as_path())
+        );
     }
 
     #[test]
@@ -1501,5 +2071,999 @@ mod tests {
         let (removed, errors) = manager.prune_sessions(10, 90);
         assert_eq!(removed, 0);
         assert_eq!(errors, 0);
+    }
+
+    /// Regression test for #3151: pruning a session must also remove its
+    /// checkpoint directory (`<sessions_dir>/checkpoints/<session_id>/`),
+    /// not just the `.jsonl`. Before this fix, `prune_sessions` only ever
+    /// called `fs::remove_file` on the session path, so a pruned session's
+    /// checkpoints were orphaned on disk forever with nothing left that
+    /// could ever reference them again.
+    ///
+    /// Exercises the count-based pruning loop specifically (age-based
+    /// pruning needs backdated mtimes, which isn't worth a new
+    /// dependency for a test); both loops share the same
+    /// `remove_session_and_checkpoints` helper, so this covers the shared
+    /// logic. Uses two non-current sessions so at least one is guaranteed
+    /// to be pruned regardless of mtime tie-breaking on the filesystem, and
+    /// checks every session's checkpoint directory against whether that
+    /// session actually survived rather than assuming which one did.
+    #[test]
+    fn test_prune_sessions_by_count_removes_checkpoint_directory() {
+        let dir = TempDir::new().unwrap();
+        let ids = ["session0", "session1", "session2"];
+        let mut checkpoint_roots = std::collections::HashMap::new();
+        for id in ids {
+            create_test_session_file(dir.path(), id);
+            let store = crate::checkpoints::CheckpointStore::new(dir.path(), id);
+            let checkpoint_dir = store.root().join("chk1");
+            fs::create_dir_all(&checkpoint_dir).unwrap();
+            fs::write(checkpoint_dir.join("checkpoint.json"), b"{}").unwrap();
+            checkpoint_roots.insert(id.to_string(), store.root().to_path_buf());
+        }
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        let (removed, errors) = manager.prune_sessions(1, 0);
+        assert_eq!(errors, 0);
+        assert!(
+            removed >= 2,
+            "expected at least 2 sessions pruned, got {removed}"
+        );
+
+        let remaining_ids: std::collections::HashSet<String> = manager
+            .list_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert!(remaining_ids.len() <= 1);
+
+        for (id, checkpoint_root) in &checkpoint_roots {
+            if remaining_ids.contains(id) {
+                assert!(
+                    checkpoint_root.exists(),
+                    "kept session {id}'s checkpoints must survive"
+                );
+            } else {
+                assert!(
+                    !checkpoint_root.exists(),
+                    "pruned session {id}'s checkpoints must be removed, not orphaned"
+                );
+            }
+        }
+    }
+
+    /// Regression test: if removing a pruned session's `.jsonl` fails
+    /// after its checkpoint directory has already been removed, the
+    /// checkpoints must be restored, not left permanently gone for a
+    /// session that (per its surviving `.jsonl`) is still listed. Forces
+    /// the failure by making the "session path" a directory, so
+    /// `fs::remove_file` on it fails with `EISDIR` instead of the real
+    /// session-file removal.
+    #[test]
+    fn test_remove_session_and_checkpoints_restores_checkpoints_on_jsonl_failure() {
+        let dir = TempDir::new().unwrap();
+        let id = "restore-me";
+        let store = crate::checkpoints::CheckpointStore::new(dir.path(), id);
+        let checkpoint_dir = store.root().join("chk1");
+        fs::create_dir_all(&checkpoint_dir).unwrap();
+        fs::write(checkpoint_dir.join("checkpoint.json"), b"{}").unwrap();
+
+        let session_path = dir.path().join("fake-session.jsonl");
+        fs::create_dir_all(&session_path).unwrap();
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+        let session = SessionInfo {
+            id: id.to_string(),
+            path: session_path.clone(),
+            cwd: "/tmp".to_string(),
+            model: "test-model".to_string(),
+            thinking_level: ThinkingLevel::Medium,
+            timestamp: "2024-01-15T10:30:00Z".to_string(),
+            stats: SessionStats::default(),
+            meta: None,
+            modified: None,
+        };
+
+        let result = manager.remove_session_and_checkpoints(&session);
+
+        assert!(
+            result.is_err(),
+            "removing a directory via remove_file must fail"
+        );
+        assert!(
+            store.root().exists(),
+            "checkpoints must be restored when jsonl removal fails"
+        );
+        assert!(checkpoint_dir.join("checkpoint.json").exists());
+        let staged =
+            SessionManager::prune_staging_dir(dir.path()).join(store.root().file_name().unwrap());
+        assert!(
+            !staged.exists(),
+            "rollback must move checkpoints out of staging"
+        );
+        assert!(
+            lock_path_for(&SessionManager::prune_staging_lock_key(&staged)).is_file(),
+            "the reusable staging lock sidecar must remain linked so later cleanup attempts lock the same inode"
+        );
+    }
+
+    #[test]
+    fn test_remove_session_aborts_when_checkpoint_staging_is_locked() {
+        let dir = TempDir::new().unwrap();
+        let id = "staging-locked";
+        let session_path = dir.path().join("staging-locked.jsonl");
+        fs::write(&session_path, "{}").unwrap();
+
+        let store = crate::checkpoints::CheckpointStore::new(dir.path(), id);
+        let checkpoint = store.root().join("chk1").join("checkpoint.json");
+        fs::create_dir_all(checkpoint.parent().unwrap()).unwrap();
+        fs::write(&checkpoint, b"{}").unwrap();
+
+        let staging_dir = SessionManager::prune_staging_dir(dir.path());
+        fs::create_dir_all(&staging_dir).unwrap();
+        let staged = staging_dir.join(store.root().file_name().unwrap());
+        let _held_lock =
+            SessionLock::acquire(&SessionManager::prune_staging_lock_key(&staged)).unwrap();
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+        let session = SessionInfo {
+            id: id.to_string(),
+            path: session_path.clone(),
+            cwd: "/tmp".to_string(),
+            model: "test-model".to_string(),
+            thinking_level: ThinkingLevel::Medium,
+            timestamp: "2024-01-15T10:30:00Z".to_string(),
+            stats: SessionStats::default(),
+            meta: None,
+            modified: None,
+        };
+
+        assert!(
+            manager.remove_session_and_checkpoints(&session).is_err(),
+            "pruning must fail closed while another process owns staging"
+        );
+        assert!(
+            session_path.exists(),
+            "the transcript must remain retryable"
+        );
+        assert!(
+            checkpoint.exists(),
+            "live checkpoints must remain untouched"
+        );
+    }
+
+    #[test]
+    fn test_failed_prune_restores_retained_and_new_checkpoint_history() {
+        let dir = TempDir::new().unwrap();
+        let id = "retained-and-new";
+        let store = crate::checkpoints::CheckpointStore::new(dir.path(), id);
+        let new_checkpoint = store.root().join("new").join("checkpoint.json");
+        fs::create_dir_all(new_checkpoint.parent().unwrap()).unwrap();
+        fs::write(&new_checkpoint, b"new").unwrap();
+
+        let staged =
+            SessionManager::prune_staging_dir(dir.path()).join(store.root().file_name().unwrap());
+        let old_checkpoint = staged.join("old").join("checkpoint.json");
+        fs::create_dir_all(old_checkpoint.parent().unwrap()).unwrap();
+        fs::write(&old_checkpoint, b"old").unwrap();
+
+        // A directory makes the transcript removal fail after the combined
+        // checkpoint history has been staged, exercising rollback.
+        let session_path = dir.path().join("retained-and-new.jsonl");
+        fs::create_dir_all(&session_path).unwrap();
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+        let session = SessionInfo {
+            id: id.to_string(),
+            path: session_path,
+            cwd: "/tmp".to_string(),
+            model: "test-model".to_string(),
+            thinking_level: ThinkingLevel::Medium,
+            timestamp: "2024-01-15T10:30:00Z".to_string(),
+            stats: SessionStats::default(),
+            meta: None,
+            modified: None,
+        };
+
+        assert!(manager.remove_session_and_checkpoints(&session).is_err());
+        assert!(
+            store.root().join("old").join("checkpoint.json").exists(),
+            "retained pre-crash history must roll back with the session"
+        );
+        assert!(
+            store.root().join("new").join("checkpoint.json").exists(),
+            "post-resume history must roll back with the session"
+        );
+        assert!(!staged.exists(), "rollback must empty the staging entry");
+    }
+
+    /// Regression test: pruning a session whose own checkpoint directory
+    /// name happens to be exactly what the *old* staging scheme would have
+    /// used for a *different* session's staging target (a
+    /// `<session_id>.prune-staged` sibling) must not touch that other,
+    /// unrelated, live session's checkpoints at all. Before this fix, a
+    /// portable or hand-written session id ending in `.prune-staged` would
+    /// share a literal path with another session's staging directory,
+    /// silently destroying its rewind history.
+    #[test]
+    fn test_prune_does_not_collide_with_a_session_named_like_the_old_staging_suffix() {
+        let dir = TempDir::new().unwrap();
+
+        // A live, unrelated session whose checkpoint directory name is
+        // exactly what the pre-fix scheme would stage session "victim"
+        // into: `checkpoints/victim.prune-staged/`.
+        let untouched_id = "victim.prune-staged";
+        let untouched_store = crate::checkpoints::CheckpointStore::new(dir.path(), untouched_id);
+        let untouched_checkpoint = untouched_store.root().join("chk1");
+        fs::create_dir_all(&untouched_checkpoint).unwrap();
+        fs::write(untouched_checkpoint.join("checkpoint.json"), b"{}").unwrap();
+
+        // The session actually being pruned.
+        let victim_path = dir.path().join("victim-session.jsonl");
+        fs::write(&victim_path, "").unwrap();
+        let victim_store = crate::checkpoints::CheckpointStore::new(dir.path(), "victim");
+        fs::create_dir_all(victim_store.root().join("chk1")).unwrap();
+        fs::write(
+            victim_store.root().join("chk1").join("checkpoint.json"),
+            b"{}",
+        )
+        .unwrap();
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+        let victim = SessionInfo {
+            id: "victim".to_string(),
+            path: victim_path,
+            cwd: "/tmp".to_string(),
+            model: "test-model".to_string(),
+            thinking_level: ThinkingLevel::Medium,
+            timestamp: "2024-01-15T10:30:00Z".to_string(),
+            stats: SessionStats::default(),
+            meta: None,
+            modified: None,
+        };
+
+        manager
+            .remove_session_and_checkpoints(&victim)
+            .expect("pruning the victim session must succeed");
+
+        assert!(
+            untouched_checkpoint.join("checkpoint.json").exists(),
+            "an unrelated live session named like the old staging suffix must survive pruning"
+        );
+        assert!(
+            !victim_store.root().exists(),
+            "the actually-pruned session's checkpoints must be gone"
+        );
+    }
+
+    /// Regression test: a stale staged directory left behind by a previous
+    /// run's failed final cleanup (see `remove_session_and_checkpoints`)
+    /// must be swept the next time `prune_sessions` runs -- otherwise it is
+    /// a permanent orphan, since nothing else ever revisits a pruned
+    /// session's checkpoint directory.
+    #[test]
+    fn test_prune_sessions_sweeps_stale_prune_staged_directory() {
+        let dir = TempDir::new().unwrap();
+        create_test_session_file(dir.path(), "unrelated-session");
+
+        let stale_staged =
+            SessionManager::prune_staging_dir(dir.path()).join("leftover-from-a-crash");
+        fs::create_dir_all(stale_staged.join("chk1")).unwrap();
+        fs::write(stale_staged.join("chk1").join("checkpoint.json"), b"{}").unwrap();
+        assert!(stale_staged.exists());
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        // max_age_days=1 with a just-created session prunes nothing, but
+        // the sweep must still run unconditionally at the start.
+        let (_removed, errors) = manager.prune_sessions(0, 1);
+        assert_eq!(errors, 0);
+        assert!(
+            !stale_staged.exists(),
+            "a stale staged directory must be swept"
+        );
+        assert!(
+            lock_path_for(&SessionManager::prune_staging_lock_key(&stale_staged)).is_file(),
+            "the reusable staging lock sidecar must survive the sweep"
+        );
+    }
+
+    /// Regression test: a staging entry another (simulated concurrent)
+    /// process is actively locked on must survive a sweep, not be deleted
+    /// out from under it -- otherwise a second `/session cleanup` racing
+    /// the first's rollback would have nothing left to restore if the
+    /// first's own final `.jsonl` removal then failed.
+    #[test]
+    fn test_sweep_skips_a_staging_entry_locked_by_another_process() {
+        let dir = TempDir::new().unwrap();
+        create_test_session_file(dir.path(), "unrelated-session");
+
+        let staged = SessionManager::prune_staging_dir(dir.path()).join("in-progress-elsewhere");
+        fs::create_dir_all(staged.join("chk1")).unwrap();
+        fs::write(staged.join("chk1").join("checkpoint.json"), b"{}").unwrap();
+
+        // Simulate another process's in-flight `remove_session_and_checkpoints`
+        // still holding this entry's staging lock.
+        let _held_lock =
+            SessionLock::acquire(&SessionManager::prune_staging_lock_key(&staged)).unwrap();
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        let (_removed, errors) = manager.prune_sessions(0, 1);
+        assert_eq!(errors, 0);
+        assert!(
+            staged.exists(),
+            "a locked staging entry must survive the sweep"
+        );
+    }
+
+    /// Regression test: a staged directory carrying `ROLLBACK_TOMBSTONE_FILE`
+    /// (left by `remove_session_and_checkpoints` when its rollback rename
+    /// itself fails after the session's `.jsonl` removal also failed) must
+    /// survive a sweep, exactly like a directory another process holds a
+    /// lock on. It is still owned by a live, listed session -- not an
+    /// ordinary orphaned leftover from a crashed prune's final
+    /// `remove_dir_all` -- and deleting it would permanently destroy that
+    /// session's only remaining rewind history with nothing left to retry
+    /// from.
+    #[test]
+    fn test_sweep_skips_a_tombstoned_staging_entry() {
+        let dir = TempDir::new().unwrap();
+        create_test_session_file(dir.path(), "unrelated-session");
+
+        let staged =
+            SessionManager::prune_staging_dir(dir.path()).join("rollback-failed-elsewhere");
+        fs::create_dir_all(staged.join("chk1")).unwrap();
+        fs::write(staged.join("chk1").join("checkpoint.json"), b"{}").unwrap();
+        fs::write(staged.join(ROLLBACK_TOMBSTONE_FILE), b"").unwrap();
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        let (_removed, errors) = manager.prune_sessions(0, 1);
+        assert_eq!(errors, 0);
+        assert!(
+            staged.join("chk1").join("checkpoint.json").exists(),
+            "a tombstoned staging entry must survive the sweep"
+        );
+    }
+
+    /// Regression test: a staged directory left behind by a crash between
+    /// `remove_session_and_checkpoints`'s initial stage-aside rename and
+    /// whatever it does next (before it could even attempt, let alone
+    /// tombstone a failed, session-file removal) has no lock held (the
+    /// crashed process's advisory lock is released by the OS on exit) and
+    /// no `ROLLBACK_TOMBSTONE_FILE` marker (that is only written on an
+    /// explicit rollback-rename failure). If its owning session is still
+    /// listed -- its `.jsonl` was never touched -- the sweep must restore
+    /// it to that session's normal checkpoint location, not delete it
+    /// outright as though it were an ordinary orphaned leftover from a
+    /// prune attempt that ran to completion.
+    #[test]
+    fn test_sweep_restores_interrupted_staging_for_a_still_listed_session() {
+        let dir = TempDir::new().unwrap();
+        let id = "interrupted-mid-prune";
+        create_test_session_file(dir.path(), id);
+
+        let store = crate::checkpoints::CheckpointStore::new(dir.path(), id);
+        let staged =
+            SessionManager::prune_staging_dir(dir.path()).join(store.root().file_name().unwrap());
+        fs::create_dir_all(staged.join("chk1")).unwrap();
+        fs::write(staged.join("chk1").join("checkpoint.json"), b"{}").unwrap();
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        let (_removed, errors) = manager.prune_sessions(0, 1);
+        assert_eq!(errors, 0);
+        assert!(
+            !staged.exists(),
+            "the staged directory must be restored, not left in staging"
+        );
+        assert!(
+            store.root().join("chk1").join("checkpoint.json").exists(),
+            "an interrupted staging entry for a still-listed session must be restored to its normal location"
+        );
+    }
+
+    /// Regression test for the A/B cleanup race: cleanup B snapshots a
+    /// session as live, cleanup A deletes that session while B is waiting
+    /// for the staging lock, and B must not restore A's now-orphaned
+    /// checkpoints from the stale snapshot after it acquires the lock.
+    #[test]
+    fn test_sweep_rechecks_live_session_after_staging_lock_acquisition() {
+        let dir = TempDir::new().unwrap();
+        let id = "deleted-after-live-snapshot";
+        create_test_session_file(dir.path(), id);
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+        let session = manager.list_sessions().unwrap().pop().unwrap();
+        let store = crate::checkpoints::CheckpointStore::new(dir.path(), id);
+        let checkpoint_name = store.root().file_name().unwrap().to_os_string();
+        let staged = SessionManager::prune_staging_dir(dir.path()).join(&checkpoint_name);
+        fs::create_dir_all(staged.join("chk1")).unwrap();
+        fs::write(staged.join("chk1").join("checkpoint.json"), b"{}").unwrap();
+
+        // Cleanup B's pre-lock snapshot still says this session is live.
+        let live_checkpoint_dir_names = std::collections::HashSet::from([checkpoint_name]);
+
+        // Cleanup A wins the staging lock and completes deletion before B
+        // acquires it. Invoke B's post-snapshot entry processing only after
+        // A's transcript deletion to deterministically model that boundary.
+        fs::remove_file(&session.path).unwrap();
+        let entries = fs::read_dir(SessionManager::prune_staging_dir(dir.path())).unwrap();
+        manager.sweep_stale_checkpoint_staging_entries(entries, &live_checkpoint_dir_names);
+
+        assert!(
+            !staged.exists(),
+            "a stale live-session snapshot must not restore orphaned checkpoints"
+        );
+        assert!(
+            !store.root().exists(),
+            "the deleted session's checkpoints must not be resurrected"
+        );
+    }
+
+    /// Regression test: if `list_sessions` itself fails, the sweep must not
+    /// treat that as "no live sessions" and delete anything -- there is no
+    /// way to tell a live session's interrupted staging apart from a
+    /// genuine orphan without it, so a failure that makes every staged
+    /// entry look orphaned must abort the whole sweep instead.
+    #[cfg(unix)]
+    #[test]
+    fn test_sweep_aborts_entirely_when_session_discovery_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        create_test_session_file(dir.path(), "unrelated-session");
+
+        // A genuinely orphaned staged directory (no matching live session)
+        // that would ordinarily be swept.
+        let orphan_staged =
+            SessionManager::prune_staging_dir(dir.path()).join("genuinely-orphaned");
+        fs::create_dir_all(orphan_staged.join("chk1")).unwrap();
+        fs::write(orphan_staged.join("chk1").join("checkpoint.json"), b"{}").unwrap();
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        // Deny read (but not execute/traversal) on the sessions directory
+        // itself, so `list_sessions`'s own `fs::read_dir` fails while the
+        // deeper `checkpoints/.prune-staging~` directory this sweep reads
+        // remains reachable.
+        let original_mode = fs::metadata(dir.path()).unwrap().permissions().mode();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o111)).unwrap();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            manager.prune_sessions(0, 1)
+        }));
+
+        // Restore permissions before any assertion (or the temp dir's own
+        // `Drop` cleanup) needs to touch the directory again.
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(original_mode)).unwrap();
+
+        let (_removed, errors) = result.expect("prune_sessions must not panic");
+        assert_eq!(errors, 0);
+        assert!(
+            orphan_staged.join("chk1").join("checkpoint.json").exists(),
+            "the sweep must not delete anything when it cannot determine live-session ownership"
+        );
+    }
+
+    /// Recovery must treat a JSONL candidate whose header cannot be read as
+    /// an ownership-discovery failure, not silently omit it and delete its
+    /// staged checkpoint history as though the transcript were gone.
+    #[test]
+    fn test_sweep_aborts_when_a_session_header_is_unreadable() {
+        let dir = TempDir::new().unwrap();
+        let id = "temporarily-unreadable-header";
+        create_test_session_file(dir.path(), id);
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+        let session = manager.list_sessions().unwrap().pop().unwrap();
+        let store = crate::checkpoints::CheckpointStore::new(dir.path(), id);
+        let staged =
+            SessionManager::prune_staging_dir(dir.path()).join(store.root().file_name().unwrap());
+        fs::create_dir_all(staged.join("chk1")).unwrap();
+        fs::write(staged.join("chk1").join("checkpoint.json"), b"{}").unwrap();
+
+        fs::write(&session.path, b"temporarily unreadable header\n").unwrap();
+        manager.sweep_stale_checkpoint_staging();
+
+        assert!(
+            staged.join("chk1").join("checkpoint.json").exists(),
+            "strict recovery discovery must retain all staged history when any candidate header is unreadable"
+        );
+        assert!(
+            !store.root().exists(),
+            "an ownership-discovery failure must neither restore nor delete staged history"
+        );
+    }
+
+    /// The post-lock ownership recheck uses the same strict discovery rule:
+    /// if a header becomes unreadable after the initial live snapshot, retain
+    /// the staged entry instead of treating the omission as a deletion.
+    #[test]
+    fn test_post_lock_recheck_retains_staging_when_a_header_is_unreadable() {
+        let dir = TempDir::new().unwrap();
+        let id = "unreadable-after-live-snapshot";
+        create_test_session_file(dir.path(), id);
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+        let session = manager.list_sessions().unwrap().pop().unwrap();
+        let store = crate::checkpoints::CheckpointStore::new(dir.path(), id);
+        let checkpoint_name = store.root().file_name().unwrap().to_os_string();
+        let staged = SessionManager::prune_staging_dir(dir.path()).join(&checkpoint_name);
+        fs::create_dir_all(staged.join("chk1")).unwrap();
+        fs::write(staged.join("chk1").join("checkpoint.json"), b"{}").unwrap();
+        let stale_live_names = std::collections::HashSet::from([checkpoint_name]);
+
+        fs::write(&session.path, b"temporarily unreadable header\n").unwrap();
+        let entries = fs::read_dir(SessionManager::prune_staging_dir(dir.path())).unwrap();
+        manager.sweep_stale_checkpoint_staging_entries(entries, &stale_live_names);
+
+        assert!(
+            staged.join("chk1").join("checkpoint.json").exists(),
+            "post-lock discovery failure must retain staged checkpoint history"
+        );
+        assert!(
+            !store.root().exists(),
+            "the staged entry must not be restored"
+        );
+    }
+
+    /// Regression test: a failed restore (the session's normal checkpoint
+    /// location is already occupied, e.g. it resumed and wrote new
+    /// checkpoints since the crash) must not fall through to deleting the
+    /// staged copy. `CheckpointStore` normally retains several checkpoints
+    /// for rewind, so the staged (older) checkpoints are not necessarily
+    /// superseded by whatever now occupies the destination.
+    #[test]
+    fn test_sweep_retains_staged_history_when_restore_destination_is_occupied() {
+        let dir = TempDir::new().unwrap();
+        let id = "resumed-after-interrupted-prune";
+        create_test_session_file(dir.path(), id);
+
+        let store = crate::checkpoints::CheckpointStore::new(dir.path(), id);
+        let staged =
+            SessionManager::prune_staging_dir(dir.path()).join(store.root().file_name().unwrap());
+        fs::create_dir_all(staged.join("pre-crash-chk")).unwrap();
+        fs::write(staged.join("pre-crash-chk").join("checkpoint.json"), b"{}").unwrap();
+
+        // The session resumed and wrote a new checkpoint at its normal
+        // location since the crash, so the restore destination is already
+        // a non-empty directory and the rename below cannot succeed.
+        fs::create_dir_all(store.root().join("post-resume-chk")).unwrap();
+        fs::write(
+            store.root().join("post-resume-chk").join("checkpoint.json"),
+            b"{}",
+        )
+        .unwrap();
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        let (_removed, errors) = manager.prune_sessions(0, 1);
+        assert_eq!(errors, 0);
+        assert!(
+            staged.join("pre-crash-chk").join("checkpoint.json").exists(),
+            "a failed restore must retain the staged (older) checkpoints, not delete them as though superseded"
+        );
+        assert!(
+            store
+                .root()
+                .join("post-resume-chk")
+                .join("checkpoint.json")
+                .exists(),
+            "the live post-resume checkpoint must be untouched"
+        );
+    }
+
+    /// Regression test: a staging entry matching a live session's
+    /// checkpoint-directory name, but currently locked by another
+    /// (simulated concurrent) process, must survive the sweep exactly like
+    /// an ordinary orphan candidate does -- the lock must be checked before
+    /// the restore path acts, not only before the delete path.
+    #[test]
+    fn test_sweep_does_not_restore_a_live_session_entry_locked_by_another_process() {
+        let dir = TempDir::new().unwrap();
+        let id = "interrupted-and-locked-elsewhere";
+        create_test_session_file(dir.path(), id);
+
+        let store = crate::checkpoints::CheckpointStore::new(dir.path(), id);
+        let staged =
+            SessionManager::prune_staging_dir(dir.path()).join(store.root().file_name().unwrap());
+        fs::create_dir_all(staged.join("chk1")).unwrap();
+        fs::write(staged.join("chk1").join("checkpoint.json"), b"{}").unwrap();
+
+        // Simulate another process's in-flight `remove_session_and_checkpoints`
+        // still holding this entry's staging lock.
+        let _held_lock =
+            SessionLock::acquire(&SessionManager::prune_staging_lock_key(&staged)).unwrap();
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        let (_removed, errors) = manager.prune_sessions(0, 1);
+        assert_eq!(errors, 0);
+        assert!(
+            staged.join("chk1").join("checkpoint.json").exists(),
+            "a locked live-session staging entry must survive the sweep, not be renamed out from under the other process"
+        );
+        assert!(
+            !store.root().exists(),
+            "the restore must not have happened while the entry was locked"
+        );
+    }
+
+    /// Regression test for the three-cleanup inode-split race: actor A
+    /// releases a reusable staging lock, actor B acquires the same inode,
+    /// and actor C must not be able to acquire a replacement inode at the
+    /// same logical lock path while B still owns it.
+    #[cfg(unix)]
+    #[test]
+    fn test_staging_lock_sidecar_keeps_one_inode_across_three_cleanup_actors() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = TempDir::new().unwrap();
+        let staged = SessionManager::prune_staging_dir(dir.path()).join("shared-entry");
+        fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        let lock_key = SessionManager::prune_staging_lock_key(&staged);
+        let sidecar = lock_path_for(&lock_key);
+
+        let actor_a = SessionLock::acquire(&lock_key).unwrap();
+        let original_inode = fs::metadata(&sidecar).unwrap().ino();
+        drop(actor_a);
+
+        let actor_b = SessionLock::acquire(&lock_key).unwrap();
+        assert_eq!(
+            fs::metadata(&sidecar).unwrap().ino(),
+            original_inode,
+            "actor B must reuse actor A's persistent lock inode"
+        );
+        assert!(
+            matches!(
+                SessionLock::acquire(&lock_key),
+                Err(crate::session::writer::SessionWriteError::Locked(_))
+            ),
+            "actor C must not acquire a replacement lock while actor B owns the stable inode"
+        );
+        assert_eq!(
+            fs::metadata(&sidecar).unwrap().ino(),
+            original_inode,
+            "the contended actor must not replace the reusable lock inode"
+        );
+        drop(actor_b);
+
+        let _actor_c = SessionLock::acquire(&lock_key).unwrap();
+        assert_eq!(
+            fs::metadata(&sidecar).unwrap().ino(),
+            original_inode,
+            "actor C must reuse the same inode after actor B releases it"
+        );
+    }
+
+    #[test]
+    fn test_staging_lock_sidecar_cannot_collide_with_a_session_entry() {
+        let dir = TempDir::new().unwrap();
+        let staged = SessionManager::prune_staging_dir(dir.path()).join("session");
+        fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        let _lock = SessionLock::acquire(&SessionManager::prune_staging_lock_key(&staged)).unwrap();
+        let colliding_name = staged.with_file_name("session.lock");
+        fs::create_dir_all(&colliding_name).unwrap();
+        assert!(
+            colliding_name.is_dir(),
+            "a valid staged session entry ending in .lock must not collide with the persistent sidecar"
+        );
+    }
+
+    /// Regression test: a portable or hand-written session literally named
+    /// `.prune-staging` must not collide with the staging namespace itself.
+    /// Before this fix, `prune_staging_dir` returned exactly
+    /// `checkpoints/.prune-staging`, and `sanitize_component` passes that
+    /// literal session id through unchanged (it isn't dot-only), so such a
+    /// session's own checkpoint root *was* the staging namespace directory:
+    /// any `/session cleanup` with a nonzero limit would sweep its
+    /// checkpoint subdirectories before ever checking whether the session
+    /// was current, favorited, locked, or even eligible for pruning.
+    #[test]
+    fn test_session_named_dot_prune_staging_does_not_collide_with_staging_namespace() {
+        let dir = TempDir::new().unwrap();
+
+        let collider_id = ".prune-staging";
+        let collider_store = crate::checkpoints::CheckpointStore::new(dir.path(), collider_id);
+        assert_ne!(
+            collider_store.root(),
+            SessionManager::prune_staging_dir(dir.path()),
+            "a session literally named .prune-staging must not resolve to the staging namespace"
+        );
+        let collider_checkpoint = collider_store.root().join("chk1");
+        fs::create_dir_all(&collider_checkpoint).unwrap();
+        fs::write(collider_checkpoint.join("checkpoint.json"), b"{}").unwrap();
+
+        // An unrelated session; the sweep this exercises runs unconditionally
+        // at the start of every `prune_sessions` call regardless of what (if
+        // anything) actually gets pruned.
+        create_test_session_file(dir.path(), "unrelated-session");
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+        let (_removed, errors) = manager.prune_sessions(0, 1);
+        assert_eq!(errors, 0);
+        assert!(
+            collider_checkpoint.join("checkpoint.json").exists(),
+            "a session named .prune-staging must keep its own checkpoints across an unrelated prune's sweep"
+        );
+    }
+
+    /// Pruning a session must also remove its sidecar `<file>.lock`, not
+    /// just the `.jsonl` and checkpoint directory. Before this fix, the
+    /// lock file (created by every `SessionWriter::create`/`open_existing`
+    /// via `SessionLock::acquire`) was never cleaned up anywhere, so it
+    /// piled up forever next to sessions that had themselves already been
+    /// pruned -- the same orphaning failure mode as issue #3151, just for
+    /// the lock sidecar instead of the checkpoint directory.
+    #[test]
+    fn test_prune_sessions_removes_sidecar_lock_file() {
+        let dir = TempDir::new().unwrap();
+        let ids = ["session0", "session1"];
+        for id in ids {
+            create_test_session_file(dir.path(), id);
+        }
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        let sessions_before = manager.list_sessions().unwrap();
+        let lock_paths: std::collections::HashMap<String, std::path::PathBuf> = sessions_before
+            .iter()
+            .map(|s| (s.id.clone(), lock_path_for(&s.path)))
+            .collect();
+        // Create the sidecar lock files the same way `SessionLock::acquire`
+        // does, standing in for a prior writer having already opened (and
+        // closed) each session once.
+        for lock_path in lock_paths.values() {
+            fs::write(lock_path, b"").unwrap();
+        }
+
+        let (removed, errors) = manager.prune_sessions(1, 0);
+        assert_eq!(errors, 0);
+        assert!(removed >= 1, "expected at least 1 session pruned");
+
+        let remaining_ids: std::collections::HashSet<String> = manager
+            .list_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+
+        for (id, lock_path) in &lock_paths {
+            if remaining_ids.contains(id) {
+                assert!(
+                    lock_path.exists(),
+                    "kept session {id}'s lock file must survive"
+                );
+            } else {
+                assert!(
+                    !lock_path.exists(),
+                    "pruned session {id}'s lock file must be removed, not orphaned"
+                );
+            }
+        }
+    }
+
+    /// A session with no checkpoints at all (the common case) must still
+    /// prune cleanly -- the missing checkpoint directory is not an error.
+    #[test]
+    fn test_prune_sessions_without_checkpoints_is_not_an_error() {
+        let dir = TempDir::new().unwrap();
+        create_test_session_file(dir.path(), "no-checkpoints");
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        let (removed, errors) = manager.prune_sessions(0, 1);
+        assert_eq!(errors, 0);
+        // `create_test_session_file` sets mtime to "now", not older than the
+        // 1-day cutoff, so age-based pruning correctly leaves it alone; this
+        // test only asserts the checkpoint-less path doesn't error.
+        let _ = removed;
+    }
+
+    /// Pruning must skip a session another Maestro process has open
+    /// (sidecar lock held) instead of deleting the live process's history
+    /// and rewind checkpoints out from under it. Only the caller's own
+    /// session is protected by the `current_session_id` check; the lock is
+    /// what protects sessions open elsewhere.
+    #[test]
+    fn test_prune_sessions_skips_locked_sessions() {
+        let dir = TempDir::new().unwrap();
+        create_test_session_file(dir.path(), "locked1");
+        create_test_session_file(dir.path(), "other2");
+
+        let locked_path = dir.path().join("2024-01-15T10-30-00-000Z_locked1.jsonl");
+        let locked_checkpoints = crate::checkpoints::CheckpointStore::new(dir.path(), "locked1")
+            .root()
+            .to_path_buf();
+        fs::create_dir_all(&locked_checkpoints).unwrap();
+
+        // Stand in for the other process: hold the session's sidecar lock
+        // for the rest of the test, exactly as a live `SessionWriter` would.
+        let _lock = SessionLock::acquire(&locked_path).unwrap();
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        let (_removed, errors) = manager.prune_sessions(1, 0);
+        assert_eq!(errors, 0);
+        assert!(
+            locked_path.exists(),
+            "a session locked by another process must survive pruning"
+        );
+        assert!(
+            locked_checkpoints.exists(),
+            "a locked session's checkpoints must survive pruning"
+        );
+    }
+
+    /// A lock-acquisition failure that is not contention (simulated here by
+    /// making the sidecar `.lock` path itself a directory, so opening it
+    /// fails with `EISDIR` rather than the `WouldBlock` that maps to
+    /// `SessionWriteError::Locked`) must be counted as a real prune error,
+    /// not silently treated the same as "another process has this session
+    /// open". Both candidate sessions get the same treatment so the test
+    /// doesn't depend on which one count-based pruning happens to pick.
+    #[test]
+    fn test_prune_sessions_counts_non_contention_lock_errors() {
+        let dir = TempDir::new().unwrap();
+        for id in ["session-a", "session-b"] {
+            create_test_session_file(dir.path(), id);
+            let path = dir
+                .path()
+                .join(format!("2024-01-15T10-30-00-000Z_{id}.jsonl"));
+            fs::create_dir_all(lock_path_for(&path)).unwrap();
+        }
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        let (removed, errors) = manager.prune_sessions(1, 0);
+        assert_eq!(removed, 0, "acquisition failed, nothing should be removed");
+        assert_eq!(
+            errors, 1,
+            "a non-contention lock-acquisition failure must be counted as a \
+             prune error, not silently skipped"
+        );
+        assert_eq!(
+            manager.list_sessions().unwrap().len(),
+            2,
+            "sessions must survive when their lock can't be checked for a \
+             non-contention reason"
+        );
+    }
+
+    /// Regression test: a hand-written or portable session whose accepted id
+    /// is `..` must not turn checkpoint cleanup into `remove_dir_all` on
+    /// `<sessions_dir>/checkpoints/..` -- i.e. on the sessions directory
+    /// itself. `CheckpointStore` sanitizes such ids, so pruning removes only
+    /// the session file and leaves every sibling untouched.
+    #[test]
+    fn test_remove_session_with_dot_only_id_does_not_escape_checkpoints_dir() {
+        let dir = TempDir::new().unwrap();
+        create_test_session_file(dir.path(), "..");
+        let decoy = dir.path().join("decoy.jsonl");
+        fs::write(&decoy, b"keep me").unwrap();
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        let session = manager
+            .list_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == "..")
+            .expect("dot-only session id should be listed");
+        manager.remove_session_and_checkpoints(&session).unwrap();
+
+        assert!(!session.path.exists());
+        assert!(
+            decoy.exists(),
+            "checkpoint cleanup must not escape the checkpoints directory"
+        );
     }
 }

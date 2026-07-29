@@ -230,6 +230,7 @@ mod tests {
             tool: "bash".to_string(),
             args: serde_json::json!({"command": "ls"}),
             requires_approval: false,
+            approval_inline_env: None,
         });
         assert!(event.is_none());
 

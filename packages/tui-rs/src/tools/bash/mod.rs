@@ -130,6 +130,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+use tokio::sync::OnceCell;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
@@ -438,19 +439,23 @@ pub(crate) fn resolve_shell_config() -> Result<(String, Vec<String>), String> {
 ///
 /// Kept under the maestro state dir (mode 0700 on unix) instead of the
 /// shared system temp dir so command output is not world-readable.
-fn bash_output_dir() -> PathBuf {
+fn prepare_bash_output_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+fn bash_output_dir() -> std::io::Result<PathBuf> {
     let dir = dirs::home_dir().map_or_else(
         || std::env::temp_dir().join("composer-bash-output"),
         |home| home.join(".composer").join("logs").join("bash-output"),
     );
-    if std::fs::create_dir_all(&dir).is_ok() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-        }
-    }
-    dir
+    prepare_bash_output_dir(&dir)?;
+    Ok(dir)
 }
 
 /// Delete stale full-output captures (older than a day) on a best-effort
@@ -492,6 +497,18 @@ async fn create_private_temp_file(path: &Path) -> std::io::Result<tokio::fs::Fil
     options.open(path).await
 }
 
+async fn repair_bash_output_dir(path: &Path) -> std::io::Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("bash output path has no parent"))?
+        .to_path_buf();
+    tokio::task::spawn_blocking(move || prepare_bash_output_dir(&dir))
+        .await
+        .map_err(|error| {
+            std::io::Error::other(format!("bash output directory repair panicked: {error}"))
+        })?
+}
+
 /// Create the full-output capture file using the semantics of the selected
 /// behavior version: private 0600 file for `Current`, default-permission
 /// file for `Legacy1`.
@@ -500,25 +517,73 @@ async fn create_capture_file(
     version: BashVersion,
 ) -> std::io::Result<tokio::fs::File> {
     match version {
-        BashVersion::Current => create_private_temp_file(path).await,
+        BashVersion::Current => match create_private_temp_file(path).await {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                repair_bash_output_dir(path).await?;
+                create_private_temp_file(path).await
+            }
+            result => result,
+        },
         BashVersion::Legacy1 => versions::legacy_1::create_capture_file(path).await,
     }
+}
+
+/// Process-lifetime cache of the ready (created + swept) bash-output directory.
+///
+/// `bash_output_dir()`'s `create_dir_all`/`set_permissions` and
+/// `sweep_old_temp_files()`'s `read_dir`/per-entry `metadata()`/`remove_file`
+/// are all synchronous syscalls. `get_temp_file_path` runs on the bash tool's
+/// hottest path (every time captured output crosses `MAX_OUTPUT_SIZE`/
+/// `MAX_OUTPUT_LINES`, from an async context), so doing this work inline would
+/// block a tokio worker thread and re-walk the output directory on every
+/// call. Instead we do it at most once per process: the first caller pays a
+/// `spawn_blocking` round-trip, every later caller gets the cached `PathBuf`
+/// back with zero syscalls.
+static BASH_OUTPUT_DIR_READY: OnceCell<PathBuf> = OnceCell::const_new();
+
+/// Ensure the private bash-output directory exists and has had its one-time
+/// stale-capture sweep, without blocking the calling async task.
+async fn bash_output_dir_ready_with<F>(
+    cell: &OnceCell<PathBuf>,
+    prepare: F,
+) -> std::io::Result<PathBuf>
+where
+    F: FnOnce() -> std::io::Result<PathBuf> + Send + 'static,
+{
+    cell.get_or_try_init(|| async move {
+        tokio::task::spawn_blocking(prepare)
+            .await
+            .map_err(|error| {
+                std::io::Error::other(format!("bash output setup panicked: {error}"))
+            })?
+    })
+    .await
+    .cloned()
+}
+
+async fn bash_output_dir_ready() -> std::io::Result<PathBuf> {
+    bash_output_dir_ready_with(&BASH_OUTPUT_DIR_READY, || {
+        let dir = bash_output_dir()?;
+        sweep_old_temp_files(&dir);
+        Ok(dir)
+    })
+    .await
 }
 
 /// Generate a unique temp file path for storing large bash output.
 ///
 /// For `Current`, creates a path under the private maestro state dir with a
-/// random ID to avoid conflicts, sweeping stale captures first. For
-/// `Legacy1`, delegates to the legacy behavior (shared system temp dir, no
-/// sweep). The file is prefixed with "composer-bash-" for easy
-/// identification and cleanup.
+/// random ID to avoid conflicts, sweeping stale captures first (once per
+/// process, see [`bash_output_dir_ready`]). For `Legacy1`, delegates to the
+/// legacy behavior (shared system temp dir, no sweep). The file is prefixed
+/// with "composer-bash-" for easy identification and cleanup.
 ///
 /// # Returns
 ///
 /// A `PathBuf` pointing to a unique temp file location.
-fn get_temp_file_path(version: BashVersion) -> PathBuf {
+async fn get_temp_file_path(version: BashVersion) -> std::io::Result<PathBuf> {
     if version == BashVersion::Legacy1 {
-        return versions::legacy_1::temp_capture_path();
+        return Ok(versions::legacy_1::temp_capture_path());
     }
 
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -529,9 +594,8 @@ fn get_temp_file_path(version: BashVersion) -> PathBuf {
         .as_nanos();
     let pid = std::process::id();
 
-    let dir = bash_output_dir();
-    sweep_old_temp_files(&dir);
-    dir.join(format!("composer-bash-{pid}-{timestamp}.log"))
+    let dir = bash_output_dir_ready().await?;
+    Ok(dir.join(format!("composer-bash-{pid}-{timestamp}.log")))
 }
 
 struct StreamCapture {
@@ -578,7 +642,14 @@ impl StreamCapture {
         if self.temp_file.is_none()
             && (self.total_bytes > MAX_OUTPUT_SIZE || self.total_lines > MAX_OUTPUT_LINES)
         {
-            let temp_path = get_temp_file_path(self.version);
+            let temp_path = match get_temp_file_path(self.version).await {
+                Ok(path) => path,
+                Err(error) => {
+                    eprintln!("Failed to prepare temp output directory: {error}");
+                    self.buffer.clear();
+                    return Ok(());
+                }
+            };
             match create_capture_file(&temp_path, self.version).await {
                 Ok(mut file) => {
                     file.write_all(&self.buffer).await?;
@@ -762,14 +833,23 @@ async fn build_combined_output(
     let mut saved_path = None;
     let mut combined_cleanup = None;
     if stdout.has_full_output() && stderr.has_full_output() {
-        let combined_path = get_temp_file_path(version);
-        combined_cleanup = Some(combined_path.clone());
-        let mut combined_file = match create_capture_file(&combined_path, version).await {
-            Ok(file) => Some(file),
-            Err(e) => {
-                eprintln!("Failed to write temp output file: {e}");
+        let combined_path = match get_temp_file_path(version).await {
+            Ok(path) => Some(path),
+            Err(error) => {
+                eprintln!("Failed to prepare temp output directory: {error}");
                 None
             }
+        };
+        combined_cleanup = combined_path.clone();
+        let mut combined_file = match combined_path.as_ref() {
+            Some(path) => match create_capture_file(path, version).await {
+                Ok(file) => Some(file),
+                Err(e) => {
+                    eprintln!("Failed to write temp output file: {e}");
+                    None
+                }
+            },
+            None => None,
         };
 
         if let Some(file) = &mut combined_file {
@@ -787,7 +867,7 @@ async fn build_combined_output(
                     .map_or_else(|| StreamSource::Memory(&stderr.buffer), StreamSource::File);
                 if append_stream(file, stderr_source).await.is_ok() {
                     let _ = file.flush().await;
-                    saved_path = Some(combined_path.display().to_string());
+                    saved_path = combined_path.map(|path| path.display().to_string());
                     combined_cleanup = None;
                 }
             }
@@ -1735,11 +1815,15 @@ mod tests {
         assert!(output.len() <= 50);
     }
 
-    #[test]
-    fn test_get_temp_file_path_unique() {
-        let path1 = super::get_temp_file_path(BashVersion::Current);
+    #[tokio::test]
+    async fn test_get_temp_file_path_unique() {
+        let path1 = super::get_temp_file_path(BashVersion::Current)
+            .await
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_nanos(100)); // Ensure different timestamp
-        let path2 = super::get_temp_file_path(BashVersion::Current);
+        let path2 = super::get_temp_file_path(BashVersion::Current)
+            .await
+            .unwrap();
 
         // Paths should be different
         assert_ne!(path1, path2);
@@ -1759,7 +1843,7 @@ mod tests {
     fn test_bash_output_dir_is_owner_only() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = super::bash_output_dir();
+        let dir = super::bash_output_dir().unwrap();
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
     }
@@ -1769,7 +1853,9 @@ mod tests {
     async fn test_temp_output_file_is_owner_only() {
         use std::os::unix::fs::PermissionsExt;
 
-        let path = super::get_temp_file_path(BashVersion::Current);
+        let path = super::get_temp_file_path(BashVersion::Current)
+            .await
+            .unwrap();
         let file = super::create_private_temp_file(&path).await.unwrap();
         drop(file);
 
@@ -1777,6 +1863,27 @@ mod tests {
         assert_eq!(mode, 0o600);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn current_capture_repairs_missing_cached_parent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let output_dir = root.path().join("missing-output-dir");
+        let path = output_dir.join("composer-bash-recovered.log");
+        assert!(!output_dir.exists());
+
+        let file = super::create_capture_file(&path, BashVersion::Current)
+            .await
+            .unwrap();
+        drop(file);
+
+        let dir_mode = std::fs::metadata(&output_dir).unwrap().permissions().mode() & 0o777;
+        let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(file_mode, 0o600);
     }
 
     // ============================================================
@@ -1816,10 +1923,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_capture_path_differs_by_version() {
-        let current = super::get_temp_file_path(BashVersion::Current);
-        let legacy = super::get_temp_file_path(BashVersion::Legacy1);
+    #[tokio::test]
+    async fn test_capture_path_differs_by_version() {
+        let current = super::get_temp_file_path(BashVersion::Current)
+            .await
+            .unwrap();
+        let legacy = super::get_temp_file_path(BashVersion::Legacy1)
+            .await
+            .unwrap();
         assert!(legacy.starts_with(std::env::temp_dir()));
         if dirs::home_dir().is_some() {
             assert!(!current.starts_with(std::env::temp_dir()));
@@ -1828,6 +1939,32 @@ mod tests {
                 .unwrap()
                 .ends_with(".composer/logs/bash-output"));
         }
+    }
+
+    #[tokio::test]
+    async fn failed_bash_output_setup_is_retried() {
+        let cell = tokio::sync::OnceCell::new();
+        let first = super::bash_output_dir_ready_with(&cell, || {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "transient setup failure",
+            ))
+        })
+        .await;
+        assert!(first.is_err());
+        assert!(
+            cell.get().is_none(),
+            "failed setup must not initialize the cache"
+        );
+
+        let expected = PathBuf::from("/tmp/recovered-bash-output");
+        let recovered = super::bash_output_dir_ready_with(&cell, {
+            let expected = expected.clone();
+            move || Ok(expected)
+        })
+        .await
+        .unwrap();
+        assert_eq!(recovered, expected);
     }
 
     #[tokio::test]
