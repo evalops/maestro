@@ -878,6 +878,7 @@ fn test_handle_tool_lifecycle() {
     state.handle_agent_message(FromAgent::ToolEnd {
         call_id: "call-1".to_string(),
         success: true,
+        result: None,
         receipt: None,
     });
     assert_eq!(
@@ -904,6 +905,7 @@ fn test_handle_tool_failure() {
     state.handle_agent_message(FromAgent::ToolEnd {
         call_id: "call-1".to_string(),
         success: false,
+        result: None,
         receipt: None,
     });
 

@@ -15,6 +15,11 @@ name = "maestro-hosted-runner"
 path = "src/bin/maestro_hosted_runner.rs"
 bench = false
 
+[[bin]]
+name = "maestro-perf-bench"
+path = "src/bin/maestro_perf_bench.rs"
+bench = false
+
 [lib]
 name = "maestro_tui"
 path = "src/lib.rs"
@@ -23,6 +28,7 @@ path = "src/lib.rs"
 # Terminal handling
 crossterm = { version = "0.28", features = ["bracketed-paste", "event-stream"] }
 ratatui = { version = "0.29", features = ["unstable-widget-ref"] }
+uncurses = "0.0.1"
 
 # Async runtime
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "signal", "fs", "net", "process", "time"] }
@@ -30,12 +36,15 @@ tokio-stream.workspace = true
 tokio-util = "0.7"
 futures.workspace = true
 
+# AI provider client layer (packages/ai-rs); re-exported at crate::ai
+maestro-ai.workspace = true
+
 # HTTP client for AI APIs
 reqwest = { workspace = true, features = ["json", "stream", "rustls-tls"] }
 semver = "1"
 sha2.workspace = true
 pathdiff = "0.2"
-wait-timeout = "0.2"
+wait-timeout.workspace = true
 
 # Serialization for IPC
 serde.workspace = true
@@ -44,7 +53,7 @@ prost = "0.14"
 prost-types = "0.14"
 
 # SSE streaming for OpenAI Responses API
-eventsource-stream = "0.2"
+eventsource-stream.workspace = true
 pin-project-lite = "0.2"
 
 # Utilities
@@ -63,7 +72,10 @@ toml = "0.8"
 libc.workspace = true
 rayon = "1.10"
 zip.workspace = true
-pdf-extract = "0.7"
+tempfile.workspace = true
+tree-sitter.workspace = true
+tree-sitter-bash.workspace = true
+pdf-extract.workspace = true
 urlencoding = "2"
 zeroize = "1"
 
@@ -131,8 +143,9 @@ hooks-full = ["lua", "wasm", "hot-reload"]
 
 [dev-dependencies]
 pretty_assertions = "1"
-tempfile = "3"
 criterion = { version = "0.5", features = ["html_reports"] }
+# doctor.rs auth-health tests reuse maestro-ai's FakeOp `op://` test fixture.
+maestro-ai = { workspace = true, features = ["test-support"] }
 
 [build-dependencies]
 prost-build = "0.14"

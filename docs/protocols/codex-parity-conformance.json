@@ -13,7 +13,7 @@
 		},
 		{
 			"area": "codex-auth-provider",
-			"path": "src/codex/app-server-client.ts",
+			"path": "packages/tui-rs/src/codex_app_server.rs",
 			"anchors": [
 				"account/read",
 				"account/login/start",

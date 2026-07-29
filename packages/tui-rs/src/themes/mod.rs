@@ -93,9 +93,9 @@
 //!
 //! # The `auto` Theme
 //!
-//! `auto` resolves to `dark` or `light` from the terminal's reported
-//! background: `COLORFGBG` always, refined by a one-time OSC 11 probe at
-//! startup when `tui.theme_follow = true` (see [`osc11`]).
+//! `auto` resolves to `dark` or `light` from `COLORFGBG`. With
+//! `tui.theme_follow = true`, typed OSC 11 and DEC light/dark events keep it
+//! synchronized with the terminal (see [`osc11`]).
 
 use ratatui::style::{Color, Style};
 use serde::{Deserialize, Serialize};

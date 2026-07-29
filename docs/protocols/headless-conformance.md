@@ -1,5 +1,8 @@
 # Headless Runtime Conformance
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. Headless runtime code now lives in `packages/tui-rs/src/headless/` and `packages/control-plane-rs`; the specific TS conformance test files referenced below have no confirmed Rust test replacement. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 Maestro's hosted runtime contract is protocol-first. The current TypeScript
 web/headless host and the target Rust runtime should both satisfy the same
 observable session behavior before Platform or deploy code depends on a runner

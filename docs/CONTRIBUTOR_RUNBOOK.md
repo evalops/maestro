@@ -31,8 +31,15 @@ The browser bundle under `packages/web/dist` is a versioned static input. Produc
 ## 3. Safety checks
 
 - Approvals/firewall: see `docs/SAFETY.md`; exposed web auto-approval should be paired with Docker or authentication.
-- Run `scripts/guardian.sh --staged` (or `/guardian` in the TUI) before commits.
 - The Rust-only guards run through `npm run check:rust-only-runtime`.
+
+<!--
+  Removed: "Run `scripts/guardian.sh --staged` (or `/guardian` in the TUI) before
+  commits." The script was deleted wholesale in the Rust-only runtime migration
+  (#3016, merged 2026-07-22) with no Rust replacement and no surviving `/guardian`
+  TUI command. Re-add once an owner decides whether guardian's pre-commit checks
+  get reimplemented natively or are superseded by `cargo clippy`/`cargo fmt --check`.
+-->
 
 ## 4. Docs and references
 

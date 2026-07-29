@@ -1,5 +1,8 @@
 # Rust-Only Maestro Runtime Cutover Design
 
+> **Historical:** This is a dated engineering record from before the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. Paths below reflect the TypeScript tree as it existed at the time and are kept as-written for historical accuracy; do not treat them as live code.
+
+
 **Date:** 2026-07-21
 
 **Status:** Approved for implementation planning

@@ -3,7 +3,7 @@ use base64::Engine;
 use hmac::{Hmac, Mac};
 use serde_json::{Map, Value};
 use sha2::Sha256;
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 use tokio::net::TcpStream;
 
@@ -817,24 +817,68 @@ pub(crate) fn a2a_push_select_pinned_addr(
     Ok(addresses[0])
 }
 
+/// Returns true if `addr` is private, reserved, or otherwise not a routable
+/// public target for an A2A push notification callback.
+///
+/// Kept in sync with `maestro_tui::tools::net_guard::is_blocked_ip` (the
+/// canonical implementation used by `web_fetch`/`extract_document`); this
+/// crate does not currently depend on that module path being public, so the
+/// range checks are duplicated here rather than shared. If you change one,
+/// change both.
 pub(crate) fn a2a_push_ip_is_private(addr: IpAddr) -> bool {
     match addr {
-        IpAddr::V4(addr) => {
-            addr.is_loopback()
-                || addr.is_private()
-                || addr.is_link_local()
-                || addr.is_unspecified()
-                || addr.octets()[0] == 169 && addr.octets()[1] == 254
-        }
+        IpAddr::V4(addr) => a2a_push_ipv4_is_private(addr),
         IpAddr::V6(addr) => {
             if let Some(mapped) = addr.to_ipv4_mapped() {
-                return a2a_push_ip_is_private(IpAddr::V4(mapped));
+                return a2a_push_ipv4_is_private(mapped);
+            }
+            if let Some(compat) = a2a_push_ipv4_compatible_addr(addr) {
+                return a2a_push_ipv4_is_private(compat);
             }
             addr.is_loopback()
                 || addr.is_unspecified()
-                || addr.segments()[0] & 0xfe00 == 0xfc00
-                || addr.segments()[0] & 0xffc0 == 0xfe80
+                || addr.is_multicast()
+                || addr.segments()[0] & 0xfe00 == 0xfc00 // fc00::/7 unique local
+                || addr.segments()[0] & 0xffc0 == 0xfe80 // fe80::/10 link-local
         }
+    }
+}
+
+fn a2a_push_ipv4_is_private(addr: Ipv4Addr) -> bool {
+    let octets = addr.octets();
+    addr.is_loopback()
+        || addr.is_private()
+        || addr.is_link_local()
+        || addr.is_multicast()
+        || addr.is_broadcast()
+        || addr.is_unspecified()
+        // 100.64.0.0/10 (RFC 6598 Shared Address Space / CGNAT). This
+        // fleet's Tailscale network lives in this range and
+        // `is_private()` does not cover it; Alibaba Cloud's instance
+        // metadata endpoint (100.100.100.200) sits inside it too.
+        || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+        // 0.0.0.0/8 ("this network"). `is_unspecified()` only matches
+        // the exact all-zero address.
+        || octets[0] == 0
+        // 192.0.0.0/24 (IETF protocol assignments, RFC 6890).
+        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+        // 198.18.0.0/15 (benchmarking, RFC 2544).
+        || (octets[0] == 198 && (octets[1] == 18 || octets[1] == 19))
+        // 240.0.0.0/4 (reserved for future use).
+        || octets[0] >= 240
+}
+
+/// Decode a deprecated "IPv4-compatible" IPv6 address (`::a.b.c.d`, distinct
+/// from the IPv4-mapped `::ffff:a.b.c.d` form already handled via
+/// `to_ipv4_mapped`).
+fn a2a_push_ipv4_compatible_addr(addr: Ipv6Addr) -> Option<Ipv4Addr> {
+    let octets = addr.octets();
+    if octets[..12].iter().all(|octet| *octet == 0) {
+        Some(Ipv4Addr::new(
+            octets[12], octets[13], octets[14], octets[15],
+        ))
+    } else {
+        None
     }
 }
 

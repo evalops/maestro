@@ -475,6 +475,11 @@ impl Learner {
             .collect()
     }
 
+    /// Recorded outcomes, oldest first.
+    pub fn outcomes(&self) -> &[LearnerOutcome] {
+        &self.outcomes
+    }
+
     /// Get summary statistics
     pub fn get_stats(&self) -> LearnerStats {
         let total_outcomes = self.outcomes.len();

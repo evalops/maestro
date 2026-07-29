@@ -371,7 +371,12 @@ mod tests {
             .parent()
             .expect("repo has a parent")
             .join("repo-wt-My-Feature");
-        assert_eq!(session.path(), expected.as_path());
+        assert_eq!(
+            session.path(),
+            dunce::canonicalize(expected.parent().expect("worktree has a parent"))
+                .expect("canonical worktree parent")
+                .join(expected.file_name().expect("worktree has a name"))
+        );
         assert!(expected.join("README.md").is_file());
         assert!(session.is_clean());
         assert_eq!(listed_branch(&repo, "My-Feature"), "My-Feature");

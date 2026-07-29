@@ -90,6 +90,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::Result;
@@ -115,7 +116,7 @@ use crate::safety::{
     apply_workflow_state_hooks, check_model_allowed, ActionFirewall, FirewallContext,
     FirewallVerdict, WorkflowStateTracker,
 };
-use crate::state::QueueMode;
+use crate::state::{ApprovalMode, QueueMode};
 use crate::tools::{ToolExecutor, ToolRegistry};
 
 mod read_only_tools;
@@ -201,6 +202,7 @@ fn emit_compaction_event(
 ///
 /// ```
 /// use maestro_tui::agent::NativeAgentConfig;
+/// use maestro_tui::state::ApprovalMode;
 ///
 /// // Default configuration (Codex on OpenAI)
 /// let config = NativeAgentConfig::default();
@@ -214,6 +216,7 @@ fn emit_compaction_event(
 ///     thinking_enabled: true,
 ///     thinking_budget: 20000,
 ///     cwd: "/path/to/project".to_string(),
+///     approval_mode: ApprovalMode::Selective,
 /// };
 /// ```
 #[derive(Debug, Clone)]
@@ -253,6 +256,17 @@ pub struct NativeAgentConfig {
     /// The directory where file operations and commands are executed. Tools like
     /// `bash`, `read`, and `write` use this as their base path.
     pub cwd: String,
+
+    /// Active approval mode for the tool-execution gate.
+    ///
+    /// This is the single source of truth for whether a tool call needs
+    /// human approval before the runner executes it inline (see
+    /// `NativeAgentRunner::run_loop`'s `requires_approval` computation).
+    /// Callers embedding a caller-owned approval UI (the interactive TUI,
+    /// headless server, etc.) must keep this in sync with their own mode
+    /// selector via `NativeAgent::set_approval_mode` so the runner's
+    /// auto-execute decision and the caller's approval UI never disagree.
+    pub approval_mode: ApprovalMode,
 }
 
 impl Default for NativeAgentConfig {
@@ -265,6 +279,7 @@ impl Default for NativeAgentConfig {
             thinking_budget: 10000,
             cwd: std::env::current_dir()
                 .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string()),
+            approval_mode: ApprovalMode::default(),
         }
     }
 }
@@ -349,6 +364,13 @@ enum AgentCommand {
     /// Enables or disables the extended thinking mode and sets the token budget.
     SetThinking { enabled: bool, budget: u32 },
 
+    /// Update the active approval mode
+    ///
+    /// Keeps the runner's tool-execution gate (`requires_approval`) in sync
+    /// with the caller's approval UI so the two never disagree about whether
+    /// a tool needs approval before it executes.
+    SetApprovalMode { mode: ApprovalMode },
+
     /// Update steering queue drain mode.
     SetSteeringMode { mode: QueueMode },
 
@@ -426,6 +448,9 @@ pub struct NativeAgent {
     /// via this channel. The agent waits for these responses before proceeding.
     tool_response_tx: mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>,
 
+    /// Direct cancellation path shared with the background runner.
+    active_cancellation: Arc<Mutex<ActiveCancellation>>,
+
     /// Channel to send events to the TUI (for `send_ready`)
     ///
     /// Used by helper methods like `send_ready()` and `send_session_info()` to
@@ -443,6 +468,66 @@ pub struct NativeAgent {
     /// Cached provider identifier (e.g., "Anthropic", "`OpenAI`"). Used for
     /// status displays and debugging.
     provider_name: String,
+}
+
+#[derive(Default)]
+struct ActiveCancellation {
+    request: Option<CancellationToken>,
+    tool: Option<CancellationToken>,
+    approval: Option<CancellationToken>,
+    tool_batch_active: bool,
+    operation_interrupted: bool,
+}
+
+impl ActiveCancellation {
+    fn activate_request(&mut self) -> CancellationToken {
+        let token = CancellationToken::new();
+        self.set_request(Some(token.clone()));
+        token
+    }
+
+    fn set_request(&mut self, token: Option<CancellationToken>) {
+        self.request = token;
+        if self.request.is_none() {
+            // An interruption marker is meaningful only within the request
+            // whose active operation observed it.
+            self.operation_interrupted = false;
+            self.tool_batch_active = false;
+        }
+    }
+
+    fn finish_tool_batch(&mut self) -> bool {
+        self.tool_batch_active = false;
+        std::mem::take(&mut self.operation_interrupted)
+    }
+}
+
+fn cancel_active_operation(active_cancellation: &Arc<Mutex<ActiveCancellation>>) {
+    let mut active = active_cancellation
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(token) = active.tool.as_ref() {
+        token.cancel();
+        active.operation_interrupted = true;
+    } else if let Some(token) = active.approval.as_ref() {
+        token.cancel();
+        active.operation_interrupted = true;
+    } else if active.tool_batch_active {
+        // The assistant ToolUse message is already in provider history.
+        // Let the runner reach a cleanup boundary and repair/close every call
+        // instead of dropping the request future from the outer selector.
+        active.operation_interrupted = true;
+    } else if let Some(token) = active.request.as_ref() {
+        token.cancel();
+    }
+}
+
+fn prompt_kind_starts_main_request(kind: PromptKind) -> bool {
+    kind != PromptKind::SideQuestion
+}
+
+fn should_defer_prompt_command(kind: PromptKind, cancellation_seen: bool) -> bool {
+    kind == PromptKind::Prompt || (cancellation_seen && prompt_kind_starts_main_request(kind))
 }
 
 impl NativeAgent {
@@ -597,6 +682,7 @@ impl NativeAgent {
 
         // Create message queue for pending prompts (bounded)
         let pending_messages = MessageQueue::with_max_size(MAX_PENDING_MESSAGES);
+        let active_cancellation = Arc::new(Mutex::new(ActiveCancellation::default()));
 
         // Create the background runner
         let runner = NativeAgentRunner {
@@ -612,6 +698,7 @@ impl NativeAgent {
             command_rx,
             busy: false,
             cancel_token: None,
+            active_cancellation: Arc::clone(&active_cancellation),
             clear_pending_on_cancel: true,
             hooks,
             safety,
@@ -634,6 +721,7 @@ impl NativeAgent {
         let agent = Self {
             command_tx,
             tool_response_tx,
+            active_cancellation,
             event_tx,
             model_name: config.model,
             provider_name: format!("{provider:?}"),
@@ -748,7 +836,10 @@ impl NativeAgent {
     }
 
     fn cancel_with_options(&self, clear_pending: bool) {
+        // Preserve channel order before synchronously waking the runner. The
+        // runner can then drain every prompt queued before this cancellation.
         let _ = self.command_tx.send(AgentCommand::Cancel { clear_pending });
+        cancel_active_operation(&self.active_cancellation);
     }
 
     /// Clear conversation history
@@ -777,6 +868,20 @@ impl NativeAgent {
         self.command_tx
             .send(AgentCommand::SetThinking { enabled, budget })
             .map_err(|e| anyhow::anyhow!("Failed to set thinking: {e}"))?;
+        Ok(())
+    }
+
+    /// Set the active approval mode.
+    ///
+    /// The runner is the sole owner of the tool-execution approval decision;
+    /// callers with their own approval UI (interactive TUI, headless server)
+    /// must call this whenever their user-facing mode selector changes so the
+    /// runner's inline auto-execute gate stays consistent with what the UI
+    /// tells the user will happen.
+    pub fn set_approval_mode(&self, mode: ApprovalMode) -> Result<()> {
+        self.command_tx
+            .send(AgentCommand::SetApprovalMode { mode })
+            .map_err(|e| anyhow::anyhow!("Failed to set approval mode: {e}"))?;
         Ok(())
     }
 
@@ -921,6 +1026,10 @@ struct NativeAgentRunner {
     /// Used with `tokio::select!` to support graceful cancellation.
     cancel_token: Option<CancellationToken>,
 
+    /// Token mirror reachable from the public agent handle while the runner is
+    /// blocked awaiting a tool.
+    active_cancellation: Arc<Mutex<ActiveCancellation>>,
+
     /// Whether a cancellation should also clear pending messages.
     clear_pending_on_cancel: bool,
 
@@ -976,6 +1085,114 @@ struct NativeAgentRunner {
 }
 
 impl NativeAgentRunner {
+    fn set_active_request_cancel_token(&mut self, token: Option<CancellationToken>) {
+        let mut active = self
+            .active_cancellation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        active.set_request(token.clone());
+        self.cancel_token = token;
+    }
+
+    fn set_active_tool_cancel_token(&self, token: Option<CancellationToken>) {
+        let mut active = self
+            .active_cancellation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(token) = token.as_ref() {
+            if active.operation_interrupted {
+                token.cancel();
+            }
+        }
+        active.tool = token;
+    }
+
+    fn set_active_approval_cancel_token(&self, token: Option<CancellationToken>) {
+        let mut active = self
+            .active_cancellation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(token) = token.as_ref() {
+            if active.operation_interrupted {
+                token.cancel();
+            }
+        }
+        active.approval = token;
+    }
+
+    fn set_tool_batch_active(&self, is_active: bool) {
+        self.active_cancellation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .tool_batch_active = is_active;
+    }
+
+    fn take_active_operation_interruption(&self) -> bool {
+        let mut active = self
+            .active_cancellation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut active.operation_interrupted)
+    }
+
+    fn finish_tool_batch(&self) -> bool {
+        self.active_cancellation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .finish_tool_batch()
+    }
+
+    fn take_deferred_command(&mut self) -> Option<(AgentCommand, Option<CancellationToken>)> {
+        if self.deferred_commands.is_empty() {
+            return None;
+        }
+
+        // Hold the same lock used by the synchronous cancellation path while
+        // draining the channel and activating a stashed prompt. A cancellation
+        // sent before this lock is acquired is consumed by the drain; one sent
+        // afterward blocks until the request token is installed, then cancels it.
+        let active_cancellation = Arc::clone(&self.active_cancellation);
+        let mut active = active_cancellation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = self.drain_pending_commands();
+        let command = self.deferred_commands.pop_front()?;
+        let request_token = match &command {
+            AgentCommand::Prompt { kind, .. } if prompt_kind_starts_main_request(*kind) => {
+                let token = active.activate_request();
+                self.cancel_token = Some(token.clone());
+                Some(token)
+            }
+            _ => None,
+        };
+        Some((command, request_token))
+    }
+
+    fn activate_received_command(
+        &mut self,
+        command: AgentCommand,
+    ) -> (AgentCommand, Option<CancellationToken>) {
+        let starts_main_request = matches!(
+            &command, AgentCommand::Prompt { kind, .. } if prompt_kind_starts_main_request(*kind)
+        );
+        if !starts_main_request {
+            return (command, None);
+        }
+
+        // The command has left the channel and is now the active request. Hold
+        // the cancellation mutex while installing its token and draining any
+        // commands that followed it. A concurrent cancel either lands in this
+        // drain or waits for the token and cancels it directly.
+        let active_cancellation = Arc::clone(&self.active_cancellation);
+        let mut active = active_cancellation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let token = active.activate_request();
+        self.cancel_token = Some(token.clone());
+        let _ = self.drain_pending_commands();
+        (command, Some(token))
+    }
+
     const MAX_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024; // 10MB
     const MAX_TEXT_ATTACHMENT_CHARS: usize = 100_000;
 
@@ -1133,7 +1350,7 @@ impl NativeAgentRunner {
                     kind,
                     queue_id,
                 } => {
-                    if kind == PromptKind::Prompt {
+                    if should_defer_prompt_command(kind, cancelled) {
                         self.deferred_commands.push_back(AgentCommand::Prompt {
                             content,
                             attachments,
@@ -1148,9 +1365,11 @@ impl NativeAgentRunner {
                     self.clear_pending_on_cancel = clear_pending;
                     if clear_pending {
                         let cleared = self.pending_messages.clear();
-                        if !cleared.is_empty() {
+                        let cleared_stashed = clear_stashed_prompts(&mut self.deferred_commands);
+                        let cleared_count = cleared.len() + cleared_stashed;
+                        if cleared_count != 0 {
                             let _ = self.event_tx.send(FromAgent::Status {
-                                message: format!("Cleared {} pending message(s)", cleared.len()),
+                                message: format!("Cleared {cleared_count} pending message(s)"),
                             });
                         }
                     }
@@ -1182,6 +1401,9 @@ impl NativeAgentRunner {
                 AgentCommand::SetThinking { enabled, budget } => {
                     self.config.thinking_enabled = enabled;
                     self.config.thinking_budget = budget;
+                }
+                AgentCommand::SetApprovalMode { mode } => {
+                    self.config.approval_mode = mode;
                 }
                 AgentCommand::SetSteeringMode { mode } => {
                     self.steering_mode = mode;
@@ -1424,12 +1646,47 @@ impl NativeAgentRunner {
                 continue;
             }
 
-            if meta.len() > Self::MAX_ATTACHMENT_BYTES {
+            let video_mime = crate::video::detect_video_mime(&path);
+            let attachment_limit = if video_mime.is_some() {
+                crate::video::MAX_VIDEO_BYTES
+            } else {
+                Self::MAX_ATTACHMENT_BYTES
+            };
+            if meta.len() > attachment_limit {
                 let size_mb = meta.len().div_ceil(1024 * 1024);
                 let _ = self.event_tx.send(FromAgent::Error {
                     message: format!("Attachment too large ({size_mb}MB): {raw}"),
                     fatal: false,
                 });
+                continue;
+            }
+
+            if let Some(mime) = video_mime {
+                match crate::video::extract_frames(&path).await {
+                    Ok(frames) => {
+                        blocks.push(ContentBlock::Text {
+                            text: format!(
+                                "\n\n[Video: {} ({mime}); {} sampled frames follow]",
+                                path.file_name()
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or(raw),
+                                frames.len()
+                            ),
+                        });
+                        blocks.extend(frames.into_iter().map(|data| ContentBlock::Image {
+                            source: ImageSource::Base64 {
+                                media_type: "image/jpeg".to_string(),
+                                data,
+                            },
+                        }));
+                    }
+                    Err(error) => {
+                        let _ = self.event_tx.send(FromAgent::Error {
+                            message: format!("Failed to process video attachment {raw}: {error}"),
+                            fatal: false,
+                        });
+                    }
+                }
                 continue;
             }
 
@@ -1480,13 +1737,13 @@ impl NativeAgentRunner {
     /// Run the background task loop
     async fn run(mut self) {
         loop {
-            let cmd = if let Some(cmd) = self.deferred_commands.pop_front() {
-                cmd
+            let (cmd, activated_request_token) = if let Some(command) = self.take_deferred_command()
+            {
+                command
+            } else if let Some(command) = self.command_rx.recv().await {
+                self.activate_received_command(command)
             } else {
-                let Some(cmd) = self.command_rx.recv().await else {
-                    break;
-                };
-                cmd
+                break;
             };
             match cmd {
                 AgentCommand::RequeueFollowUpFront {
@@ -1541,7 +1798,7 @@ impl NativeAgentRunner {
                                 usage: None,
                             });
                             self.busy = false;
-                            self.cancel_token = None;
+                            self.set_active_request_cancel_token(None);
                             self.prompt_context = None;
                             continue;
                         }
@@ -1575,7 +1832,7 @@ impl NativeAgentRunner {
                                 usage: None,
                             });
                             self.busy = false;
-                            self.cancel_token = None;
+                            self.set_active_request_cancel_token(None);
                             self.prompt_context = None;
                             continue;
                         }
@@ -1595,8 +1852,11 @@ impl NativeAgentRunner {
                     self.prompt_context = prompt_context;
 
                     // Create cancellation token for this request
-                    let cancel_token = CancellationToken::new();
-                    self.cancel_token = Some(cancel_token.clone());
+                    let cancel_token = activated_request_token.unwrap_or_else(|| {
+                        let token = CancellationToken::new();
+                        self.set_active_request_cancel_token(Some(token.clone()));
+                        token
+                    });
 
                     let mut blocks = Vec::new();
                     blocks.push(ContentBlock::Text { text: prompt });
@@ -1621,12 +1881,14 @@ impl NativeAgentRunner {
                     self.retry_policy.reset();
 
                     // Run the agent loop with cancellation and retry support
+                    let mut request_cancelled = false;
                     loop {
                         let result = tokio::select! {
-                            res = self.run_loop() => res,
+                            biased;
                             () = cancel_token.cancelled() => {
                                 Err(anyhow::anyhow!("Request cancelled"))
-                            }
+                            },
+                            res = self.run_loop() => res,
                         };
 
                         match result {
@@ -1634,6 +1896,7 @@ impl NativeAgentRunner {
                             Err(e) => {
                                 let msg = e.to_string();
                                 if msg == "Request cancelled" {
+                                    request_cancelled = true;
                                     break;
                                 }
 
@@ -1660,6 +1923,7 @@ impl NativeAgentRunner {
 
                                         // Check if cancelled during wait
                                         if cancel_token.is_cancelled() {
+                                            request_cancelled = true;
                                             break;
                                         }
                                     }
@@ -1676,8 +1940,17 @@ impl NativeAgentRunner {
                         }
                     }
 
+                    if request_cancelled {
+                        // The cancellation token is tripped synchronously, before the
+                        // queued Cancel command is observed. Drain the command channel
+                        // while this request still owns it so any prompts that preceded
+                        // Cancel are stashed instead of being started as a new request
+                        // ahead of that cancellation.
+                        let _ = self.drain_pending_commands();
+                    }
+
                     self.busy = false;
-                    self.cancel_token = None;
+                    self.set_active_request_cancel_token(None);
                     self.prompt_context = None;
 
                     // Signal that we're done (TUI can clear busy state)
@@ -1759,6 +2032,9 @@ impl NativeAgentRunner {
                     self.config.thinking_enabled = enabled;
                     self.config.thinking_budget = budget;
                 }
+                AgentCommand::SetApprovalMode { mode } => {
+                    self.config.approval_mode = mode;
+                }
                 AgentCommand::SetSteeringMode { mode } => {
                     self.steering_mode = mode;
                 }
@@ -1804,7 +2080,7 @@ impl NativeAgentRunner {
 
                     self.busy = true;
                     let cancel_token = CancellationToken::new();
-                    self.cancel_token = Some(cancel_token.clone());
+                    self.set_active_request_cancel_token(Some(cancel_token.clone()));
 
                     // Run the agent loop without adding a user message
                     let result = tokio::select! {
@@ -1825,7 +2101,7 @@ impl NativeAgentRunner {
                     }
 
                     self.busy = false;
-                    self.cancel_token = None;
+                    self.set_active_request_cancel_token(None);
                     self.prompt_context = None;
 
                     let _ = self.event_tx.send(FromAgent::ResponseEnd {
@@ -2166,6 +2442,10 @@ impl NativeAgentRunner {
             let mut pending_call_ids = std::collections::HashSet::new();
             pending_tool_calls
                 .retain(|(call_id, _, _, _)| pending_call_ids.insert(call_id.clone()));
+            // Mark the cleanup-sensitive interval before storing ToolUse
+            // history, closing the gap where outer request cancellation could
+            // otherwise leave an orphaned provider message.
+            self.set_tool_batch_active(!pending_tool_calls.is_empty());
 
             let response_text = assistant_content
                 .iter()
@@ -2210,6 +2490,7 @@ impl NativeAgentRunner {
                 let mut tool_results: Vec<ContentBlock> = Vec::new();
                 let firewall = ActionFirewall::new(&self.config.cwd);
                 let mut deferred_steering: Vec<PendingMessage> = Vec::new();
+                let mut deferred_tool_calls: Vec<DeferredToolCall> = Vec::new();
                 let mut remaining_tool_calls: Vec<(
                     String,
                     String,
@@ -2280,28 +2561,17 @@ impl NativeAgentRunner {
                         });
                         continue;
                     }
-                    // Validate required fields before surfacing to UI/agent
-                    let missing = self.tool_executor.missing_required(&tool_name, &args);
-                    if !missing.is_empty() {
-                        self.drain_read_only_tool_calls(
-                            &mut pending_read_only_tool_calls,
-                            &mut tool_results,
-                        )
-                        .await?;
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: call_id.clone(),
-                            content: format!(
-                                "Missing required fields for tool '{}': {}",
-                                tool_name,
-                                missing.join(", ")
-                            ),
-                            is_error: Some(true),
-                        });
-                        continue;
-                    }
+
+                    // Preserve the model-provided input so a call deferred
+                    // behind an approval boundary can rerun PreToolUse
+                    // against current state without applying an earlier hook
+                    // rewrite a second time.
+                    let pre_hook_args = args.clone();
 
                     // Execute PreToolUse hooks
-                    let hook_result = self.hooks.execute_pre_tool_use(&tool_name, &call_id, &args);
+                    let hook_result =
+                        self.hooks
+                            .execute_pre_tool_use(&tool_name, &call_id, &pre_hook_args);
 
                     // Handle hook results
                     let (args, extra_context) = match hook_result {
@@ -2337,6 +2607,36 @@ impl NativeAgentRunner {
                             (args.clone(), None)
                         }
                     };
+
+                    // Hooks may replace the complete input, so normalize and
+                    // validate only after applying their result.
+                    let (args, rewrote_empty_bash) =
+                        normalize_post_hook_tool_args(&tool_name, args);
+                    if rewrote_empty_bash {
+                        let _ = self.event_tx.send(FromAgent::Status {
+                            message:
+                                "Received empty bash tool call; auto-filled command as \"pwd\" to proceed."
+                                    .to_string(),
+                        });
+                    }
+                    let missing = self.tool_executor.missing_required(&tool_name, &args);
+                    if !missing.is_empty() {
+                        self.drain_read_only_tool_calls(
+                            &mut pending_read_only_tool_calls,
+                            &mut tool_results,
+                        )
+                        .await?;
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: call_id.clone(),
+                            content: format!(
+                                "Missing required fields for tool '{}': {}",
+                                tool_name,
+                                missing.join(", ")
+                            ),
+                            is_error: Some(true),
+                        });
+                        continue;
+                    }
 
                     let safe_args = self.credential_vault.vault_in_json(&args);
                     let resolved_args = self.credential_vault.resolve_in_json(&safe_args);
@@ -2420,10 +2720,17 @@ impl NativeAgentRunner {
                         continue;
                     }
 
-                    // Check if this tool requires approval (dynamic bash logic)
-                    let requires_approval = is_external_tool
-                        || matches!(&firewall_verdict, FirewallVerdict::RequireApproval { .. })
-                        || self.tool_executor.requires_approval(&tool_name, &args);
+                    // Check if this tool requires approval. This is the ONE
+                    // decision point for whether the runner executes inline
+                    // below -- see `tool_requires_approval`'s doc comment.
+                    let requires_approval = tool_requires_approval(
+                        self.config.approval_mode,
+                        is_external_tool,
+                        &firewall_verdict,
+                        &self.tool_executor,
+                        &tool_name,
+                        &args,
+                    );
                     let can_parallelize_read_only = is_native_parallel_read_only_tool_call(
                         &tool_key,
                         requires_approval,
@@ -2439,7 +2746,52 @@ impl NativeAgentRunner {
                         .await?;
                     }
 
-                    // Send tool call event
+                    let deferred_disposition = deferred_tool_call_disposition(
+                        requires_approval,
+                        !deferred_tool_calls.is_empty(),
+                    );
+                    if deferred_disposition == Some(DeferredToolCallDisposition::AwaitApproval) {
+                        // Defer the wait for the user's decision: emit every
+                        // ToolCall event in this batch first so the UI can
+                        // present all pending approvals in one batched modal
+                        // (#3085), then await the decisions below.
+                        let _ = self.event_tx.send(FromAgent::ToolCall {
+                            call_id: call_id.clone(),
+                            tool: tool_name.clone(),
+                            args: safe_args.clone(),
+                            requires_approval,
+                        });
+                        deferred_tool_calls.push(DeferredToolCall::AwaitApproval(
+                            ToolCallContext {
+                                call_id,
+                                tool_name,
+                                args,
+                                safe_args,
+                                extra_context,
+                                pre_hook_args,
+                                initial_firewall_verdict: firewall_verdict,
+                            },
+                        ));
+                        continue;
+                    }
+
+                    if deferred_disposition == Some(DeferredToolCallDisposition::Execute) {
+                        // Preserve the model's tool-call order after an
+                        // approval boundary. Delay this auto-approved call's
+                        // ToolCall event until its refreshed PreToolUse input
+                        // is known, so the emitted and executed inputs match.
+                        deferred_tool_calls.push(DeferredToolCall::Execute(ToolCallContext {
+                            call_id,
+                            tool_name,
+                            args,
+                            safe_args,
+                            extra_context,
+                            pre_hook_args,
+                            initial_firewall_verdict: firewall_verdict,
+                        }));
+                        continue;
+                    }
+
                     let _ = self.event_tx.send(FromAgent::ToolCall {
                         call_id: call_id.clone(),
                         tool: tool_name.clone(),
@@ -2459,112 +2811,30 @@ impl NativeAgentRunner {
                         continue;
                     }
 
-                    // If requires approval, wait for response
-                    let (approved, mut result): (bool, Option<ToolExecution>) = if requires_approval
-                    {
-                        match wait_for_tool_response(
-                            &call_id,
-                            &mut self.tool_response_rx,
-                            &mut self.pending_tool_approvals,
-                        )
-                        .await
-                        {
-                            Some((approved, result)) => (
-                                approved,
-                                if approved {
-                                    result.map(|result| {
-                                        ToolExecution::from_legacy(
-                                            &call_id,
-                                            &tool_name,
-                                            ExecutionSource::RemoteClient,
-                                            result,
-                                        )
-                                    })
-                                } else {
-                                    Some(ToolExecution::denied(
-                                        &call_id,
-                                        &tool_name,
-                                        DenialReason::User,
-                                    ))
-                                },
-                            ),
-                            None => {
-                                // Channel closed
-                                return Ok(());
-                            }
-                        }
-                    } else {
-                        // Auto-approved, execute immediately
-                        // Note: ToolExecutor sends ToolStart/ToolEnd events internally
-                        let result = {
-                            let resolved_args = self.credential_vault.resolve_in_json(&safe_args);
-                            self.execute_tool(&tool_name, &resolved_args, &call_id)
-                                .await
-                        };
-
-                        (true, Some(result))
-                    };
-                    if approved && result.is_none() {
+                    // Auto-approved, execute immediately
+                    // Note: ToolExecutor sends ToolStart/ToolEnd events internally
+                    let result = {
                         let resolved_args = self.credential_vault.resolve_in_json(&safe_args);
-                        result = Some(
-                            self.execute_tool(&tool_name, &resolved_args, &call_id)
-                                .await,
-                        );
-                    }
-
-                    let result = result.unwrap_or_else(|| {
-                        if approved {
-                            ToolExecution::from_legacy(
-                                &call_id,
-                                &tool_name,
-                                ExecutionSource::Native,
-                                ToolResult::failure("Tool task did not return a result"),
-                            )
-                        } else {
-                            ToolExecution::denied(&call_id, &tool_name, DenialReason::User)
-                        }
-                    });
-
-                    let content = result.model_content();
-                    let is_error = result.is_error();
-
-                    if approved {
-                        // Execute hooks only for tools that were allowed to run.
-                        let _post_result = self
-                            .hooks
-                            .execute_post_tool_use(&tool_name, &call_id, &args, &content, is_error);
-                    }
-
-                    // Append injected context if any
-                    let mut result_content = if let Some(ref ctx) = extra_context {
-                        format!("{content}\n\n{ctx}")
-                    } else {
-                        content
+                        self.execute_tool(&tool_name, &resolved_args, &call_id)
+                            .await
                     };
-
-                    if approved {
-                        if let Err(err) = apply_workflow_state_hooks(
-                            &tool_name,
-                            &call_id,
-                            &args,
-                            &mut self.workflow_state,
-                            is_error,
-                        ) {
-                            // Append workflow hook error to content instead of replacing it
-                            // to preserve successful tool output
-                            result_content =
-                                format!("{}\n\n[Workflow error: {}]", result_content, err.message);
-                        }
-                    }
-
-                    // Record tool call for safety tracking (doom loop / rate limit)
-                    self.safety.record_tool_call(&tool_name, &safe_args);
-
-                    tool_results.push(ContentBlock::ToolResult {
-                        tool_use_id: call_id,
-                        content: result_content,
-                        is_error: Some(is_error),
-                    });
+                    let call = ToolCallContext {
+                        call_id,
+                        tool_name,
+                        args,
+                        safe_args,
+                        extra_context,
+                        pre_hook_args,
+                        initial_firewall_verdict: firewall_verdict,
+                    };
+                    let result_block = self
+                        .finalize_tool_call_result(call, true, Some(result))
+                        .await;
+                    tool_results.push(result_block);
+                    // Serial tools may mutate state through bash, inline, MCP,
+                    // or external execution. Reads that follow in this model
+                    // batch must not reuse entries cached before that call.
+                    invalidate_cache_after_serial_tool(&self.tool_executor, true);
                 }
 
                 self.drain_read_only_tool_calls(
@@ -2572,6 +2842,405 @@ impl NativeAgentRunner {
                     &mut tool_results,
                 )
                 .await?;
+
+                // Every ToolCall event in this batch has been emitted. Now
+                // execute the deferred suffix in model order, awaiting gated
+                // decisions in FIFO order. Responses that arrive out of order
+                // are stashed by wait_for_tool_response until their turn.
+                let mut deferred_tool_calls_iter =
+                    std::mem::take(&mut deferred_tool_calls).into_iter();
+                if self.take_active_operation_interruption() {
+                    let cancelled_ids = cancel_deferred_suffix(
+                        &self.event_tx,
+                        deferred_tool_calls_iter.by_ref(),
+                        &mut tool_results,
+                    );
+                    discard_cancelled_tool_responses(
+                        &cancelled_ids,
+                        &mut self.tool_response_rx,
+                        &mut self.pending_tool_approvals,
+                    );
+                }
+                while let Some(deferred_call) = deferred_tool_calls_iter.next() {
+                    match deferred_call {
+                        DeferredToolCall::AwaitApproval(mut call) => {
+                            let approval_cancel = CancellationToken::new();
+                            self.set_active_approval_cancel_token(Some(approval_cancel.clone()));
+                            let response = wait_for_tool_response(
+                                &call.call_id,
+                                &mut self.tool_response_rx,
+                                &mut self.pending_tool_approvals,
+                                &approval_cancel,
+                            )
+                            .await;
+                            self.set_active_approval_cancel_token(None);
+                            let (approved, result) = match response {
+                                ToolResponseWait::Response(response) => response,
+                                ToolResponseWait::Cancelled => {
+                                    self.take_active_operation_interruption();
+                                    let skipped_message = "Skipped after request cancellation.";
+                                    let _ = self.event_tx.send(FromAgent::ToolOutput {
+                                        call_id: call.call_id.clone(),
+                                        content: skipped_message.to_string(),
+                                    });
+                                    let mut cancelled_ids = HashSet::from([call.call_id.clone()]);
+                                    let (event, result_block) =
+                                        cancelled_deferred_tool(&call, skipped_message);
+                                    let _ = self.event_tx.send(event);
+                                    tool_results.push(result_block);
+                                    cancelled_ids.extend(cancel_deferred_suffix(
+                                        &self.event_tx,
+                                        deferred_tool_calls_iter.by_ref(),
+                                        &mut tool_results,
+                                    ));
+                                    discard_cancelled_tool_responses(
+                                        &cancelled_ids,
+                                        &mut self.tool_response_rx,
+                                        &mut self.pending_tool_approvals,
+                                    );
+                                    break;
+                                }
+                                ToolResponseWait::Closed => return Ok(()),
+                            };
+                            if approved && result.is_none() {
+                                let (args, extra_context) =
+                                    match rerun_deferred_pre_tool_use(&mut self.hooks, &call) {
+                                        Ok(result) => result,
+                                        Err(reason) => {
+                                            let (events, result_block) =
+                                                deferred_hook_block(&call, reason, false);
+                                            for event in events {
+                                                let _ = self.event_tx.send(event);
+                                            }
+                                            tool_results.push(result_block);
+                                            if self.cancel_remaining_deferred_if_interrupted(
+                                                &mut deferred_tool_calls_iter,
+                                                &mut tool_results,
+                                            ) {
+                                                break;
+                                            }
+                                            continue;
+                                        }
+                                    };
+                                let (args, rewrote_empty_bash) =
+                                    normalize_post_hook_tool_args(&call.tool_name, args);
+                                if rewrote_empty_bash {
+                                    let _ = self.event_tx.send(FromAgent::Status {
+                                        message:
+                                            "Received empty bash tool call; auto-filled command as \"pwd\" to proceed."
+                                                .to_string(),
+                                    });
+                                }
+                                let missing =
+                                    self.tool_executor.missing_required(&call.tool_name, &args);
+                                if !missing.is_empty() {
+                                    let reason = format!(
+                                        "Missing required fields for tool '{}': {}",
+                                        call.tool_name,
+                                        missing.join(", ")
+                                    );
+                                    emit_deferred_failure(
+                                        &self.event_tx,
+                                        &call,
+                                        &reason,
+                                        &mut tool_results,
+                                    );
+                                    if self.cancel_remaining_deferred_if_interrupted(
+                                        &mut deferred_tool_calls_iter,
+                                        &mut tool_results,
+                                    ) {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                                if let Some(reason) =
+                                    approved_input_change_rejection(&call.args, &args)
+                                {
+                                    emit_deferred_failure(
+                                        &self.event_tx,
+                                        &call,
+                                        reason,
+                                        &mut tool_results,
+                                    );
+                                    if self.cancel_remaining_deferred_if_interrupted(
+                                        &mut deferred_tool_calls_iter,
+                                        &mut tool_results,
+                                    ) {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                                call.args = args;
+                                call.safe_args = self.credential_vault.vault_in_json(&call.args);
+                                call.extra_context = extra_context;
+
+                                let tool_key = call.tool_name.to_lowercase();
+                                if crate::mcp::McpClient::is_mcp_tool(&tool_key) {
+                                    let _ = self.tool_executor.ensure_mcp_annotations().await;
+                                }
+                                let is_external_tool = self.external_tools.contains(&tool_key);
+                                let annotations = self.tool_executor.tool_annotations(&tool_key);
+                                let workflow_snapshot = self.workflow_state.snapshot();
+                                let firewall_verdict = deferred_firewall_verdict(
+                                    &firewall,
+                                    &tool_key,
+                                    &call.args,
+                                    &workflow_snapshot,
+                                    annotations.as_ref(),
+                                    is_external_tool,
+                                );
+                                let policy_rejection = deferred_approved_policy_rejection(
+                                    &call.initial_firewall_verdict,
+                                    firewall_verdict,
+                                );
+                                if let Some(reason) = policy_rejection {
+                                    emit_deferred_policy_failure(
+                                        &self.event_tx,
+                                        &call,
+                                        &reason,
+                                        &mut tool_results,
+                                    );
+                                    if self.cancel_remaining_deferred_if_interrupted(
+                                        &mut deferred_tool_calls_iter,
+                                        &mut tool_results,
+                                    ) {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                                match deferred_execution_safety_verdict(&self.safety, &call) {
+                                    SafetyVerdict::Allow => {}
+                                    SafetyVerdict::BlockDoomLoop { reason }
+                                    | SafetyVerdict::BlockRateLimit { reason } => {
+                                        emit_deferred_failure(
+                                            &self.event_tx,
+                                            &call,
+                                            &reason,
+                                            &mut tool_results,
+                                        );
+                                        if self.cancel_remaining_deferred_if_interrupted(
+                                            &mut deferred_tool_calls_iter,
+                                            &mut tool_results,
+                                        ) {
+                                            break;
+                                        }
+                                        continue;
+                                    }
+                                }
+                            }
+                            let result = if approved {
+                                result.map(|result| {
+                                    ToolExecution::from_legacy(
+                                        &call.call_id,
+                                        &call.tool_name,
+                                        ExecutionSource::RemoteClient,
+                                        result,
+                                    )
+                                })
+                            } else {
+                                Some(ToolExecution::denied(
+                                    &call.call_id,
+                                    &call.tool_name,
+                                    DenialReason::User,
+                                ))
+                            };
+                            let result_block =
+                                self.finalize_tool_call_result(call, approved, result).await;
+                            tool_results.push(result_block);
+                            invalidate_cache_after_serial_tool(&self.tool_executor, approved);
+                        }
+                        DeferredToolCall::Execute(mut call) => {
+                            // PreToolUse may depend on filesystem or workflow
+                            // state changed by an earlier approved mutation.
+                            // Re-run it at the actual execution boundary using
+                            // the original model input, then rebuild every
+                            // derived argument form from that fresh decision.
+                            let (args, extra_context) =
+                                match rerun_deferred_pre_tool_use(&mut self.hooks, &call) {
+                                    Ok(result) => result,
+                                    Err(reason) => {
+                                        let (events, result_block) =
+                                            deferred_hook_block(&call, reason, true);
+                                        for event in events {
+                                            let _ = self.event_tx.send(event);
+                                        }
+                                        tool_results.push(result_block);
+                                        if self.cancel_remaining_deferred_if_interrupted(
+                                            &mut deferred_tool_calls_iter,
+                                            &mut tool_results,
+                                        ) {
+                                            break;
+                                        }
+                                        continue;
+                                    }
+                                };
+                            let (args, rewrote_empty_bash) =
+                                normalize_post_hook_tool_args(&call.tool_name, args);
+                            if rewrote_empty_bash {
+                                let _ = self.event_tx.send(FromAgent::Status {
+                                    message:
+                                        "Received empty bash tool call; auto-filled command as \"pwd\" to proceed."
+                                            .to_string(),
+                                });
+                            }
+                            let missing =
+                                self.tool_executor.missing_required(&call.tool_name, &args);
+                            if !missing.is_empty() {
+                                let reason = format!(
+                                    "Missing required fields for tool '{}': {}",
+                                    call.tool_name,
+                                    missing.join(", ")
+                                );
+                                let _ = self.event_tx.send(deferred_tool_call_event(&call, false));
+                                let _ = self
+                                    .event_tx
+                                    .send(deferred_rejection_output_event(&call, &reason));
+                                let _ = self
+                                    .event_tx
+                                    .send(deferred_safety_rejection_event(&call, &reason));
+                                tool_results.push(ContentBlock::ToolResult {
+                                    tool_use_id: call.call_id.clone(),
+                                    content: reason,
+                                    is_error: Some(true),
+                                });
+                                if self.cancel_remaining_deferred_if_interrupted(
+                                    &mut deferred_tool_calls_iter,
+                                    &mut tool_results,
+                                ) {
+                                    break;
+                                }
+                                continue;
+                            }
+                            call.args = args;
+                            call.safe_args = self.credential_vault.vault_in_json(&call.args);
+                            call.extra_context = extra_context;
+
+                            // Earlier calls may have changed workflow state
+                            // after this call's initial classification. Re-run
+                            // the full firewall/approval gate against the
+                            // current snapshot before allowing execution.
+                            let tool_key = call.tool_name.to_lowercase();
+                            if crate::mcp::McpClient::is_mcp_tool(&tool_key) {
+                                let _ = self.tool_executor.ensure_mcp_annotations().await;
+                            }
+                            let is_external_tool = self.external_tools.contains(&tool_key);
+                            let annotations = self.tool_executor.tool_annotations(&tool_key);
+                            let workflow_snapshot = self.workflow_state.snapshot();
+                            let firewall_verdict = deferred_firewall_verdict(
+                                &firewall,
+                                &tool_key,
+                                &call.args,
+                                &workflow_snapshot,
+                                annotations.as_ref(),
+                                is_external_tool,
+                            );
+                            let deferred_policy_rejection = match &firewall_verdict {
+                                FirewallVerdict::Block { reason } => Some(reason.clone()),
+                                FirewallVerdict::RequireApproval { reason } => Some(format!(
+                                    "Tool now requires approval after earlier tool execution: {reason}"
+                                )),
+                                FirewallVerdict::Allow => tool_requires_approval(
+                                    self.config.approval_mode,
+                                    is_external_tool,
+                                    &firewall_verdict,
+                                    &self.tool_executor,
+                                    &tool_key,
+                                    &call.args,
+                                )
+                                .then(|| {
+                                    "Tool now requires approval after earlier tool execution"
+                                        .to_string()
+                                }),
+                            };
+                            let deferred_requires_approval =
+                                matches!(firewall_verdict, FirewallVerdict::RequireApproval { .. })
+                                    || tool_requires_approval(
+                                        self.config.approval_mode,
+                                        is_external_tool,
+                                        &firewall_verdict,
+                                        &self.tool_executor,
+                                        &tool_key,
+                                        &call.args,
+                                    );
+                            let _ = self
+                                .event_tx
+                                .send(deferred_tool_call_event(&call, deferred_requires_approval));
+                            let mut rejected = false;
+                            if let Some(reason) = deferred_policy_rejection {
+                                let _ = self
+                                    .event_tx
+                                    .send(deferred_rejection_output_event(&call, &reason));
+                                let _ = self
+                                    .event_tx
+                                    .send(deferred_policy_rejection_event(&call, &reason));
+                                tool_results.push(ContentBlock::ToolResult {
+                                    tool_use_id: call.call_id.clone(),
+                                    content: reason,
+                                    is_error: Some(true),
+                                });
+                                rejected = true;
+                            }
+
+                            // Calls after an approval boundary were initially
+                            // checked before earlier calls were recorded.
+                            // Re-check against the now-current safety history
+                            // so a deferred suffix cannot bypass doom-loop or
+                            // rate-limit enforcement.
+                            let safety_verdict = (!rejected)
+                                .then(|| deferred_execution_safety_verdict(&self.safety, &call));
+                            match safety_verdict {
+                                None | Some(SafetyVerdict::Allow) => {}
+                                Some(
+                                    SafetyVerdict::BlockDoomLoop { reason }
+                                    | SafetyVerdict::BlockRateLimit { reason },
+                                ) => {
+                                    let _ = self
+                                        .event_tx
+                                        .send(deferred_rejection_output_event(&call, &reason));
+                                    let _ = self
+                                        .event_tx
+                                        .send(deferred_safety_rejection_event(&call, &reason));
+                                    tool_results.push(ContentBlock::ToolResult {
+                                        tool_use_id: call.call_id.clone(),
+                                        content: reason,
+                                        is_error: Some(true),
+                                    });
+                                    rejected = true;
+                                }
+                            }
+                            if !rejected {
+                                let resolved_args =
+                                    self.credential_vault.resolve_in_json(&call.safe_args);
+                                let result = self
+                                    .execute_tool(&call.tool_name, &resolved_args, &call.call_id)
+                                    .await;
+                                let result_block = self
+                                    .finalize_tool_call_result(call, true, Some(result))
+                                    .await;
+                                tool_results.push(result_block);
+                                invalidate_cache_after_serial_tool(&self.tool_executor, true);
+                            }
+                        }
+                    }
+
+                    // Ctrl+C during a deferred tool cancels that execution
+                    // directly so its subprocess can finish cleanup. Stop the
+                    // ordered suffix here; drain_pending_commands below will
+                    // consume the queued Cancel and close the turn.
+                    if self.take_active_operation_interruption() {
+                        let cancelled_ids = cancel_deferred_suffix(
+                            &self.event_tx,
+                            deferred_tool_calls_iter.by_ref(),
+                            &mut tool_results,
+                        );
+                        discard_cancelled_tool_responses(
+                            &cancelled_ids,
+                            &mut self.tool_response_rx,
+                            &mut self.pending_tool_approvals,
+                        );
+                        break;
+                    }
+                }
 
                 if deferred_steering.is_empty() {
                     if self.drain_pending_commands() {
@@ -2603,6 +3272,7 @@ impl NativeAgentRunner {
                         let _ = self.event_tx.send(FromAgent::ToolEnd {
                             call_id: call_id.clone(),
                             success: false,
+                            result: Some(ToolResult::failure(skipped_message.clone())),
                             receipt: Some(
                                 ToolExecution::cancelled(
                                     &call_id,
@@ -2626,6 +3296,10 @@ impl NativeAgentRunner {
                     role: Role::User,
                     content: MessageContent::Blocks(tool_results),
                 });
+                if self.finish_tool_batch() || self.drain_pending_commands() {
+                    self.repair_orphaned_tool_calls();
+                    return Err(anyhow::anyhow!("Request cancelled"));
+                }
 
                 if !deferred_steering.is_empty() {
                     self.workflow_state.reset();
@@ -2715,14 +3389,124 @@ impl NativeAgentRunner {
 
     /// Execute a tool using the `ToolExecutor`
     async fn execute_tool(
-        &self,
+        &mut self,
         tool_name: &str,
         args: &serde_json::Value,
         call_id: &str,
     ) -> ToolExecution {
-        self.tool_executor
-            .execute_with_receipt(tool_name, args, Some(&self.event_tx), call_id)
-            .await
+        let cancel = CancellationToken::new();
+        self.set_active_tool_cancel_token(Some(cancel.clone()));
+        let execution = self
+            .tool_executor
+            .execute_with_receipt_cancellable(
+                tool_name,
+                args,
+                Some(&self.event_tx),
+                call_id,
+                cancel,
+            )
+            .await;
+        self.set_active_tool_cancel_token(None);
+        execution
+    }
+
+    /// Shared tail for a decided tool call: execute locally when the
+    /// decision came back approved without a result, run post-execution
+    /// hooks and safety bookkeeping, and build the `ToolResult` block sent
+    /// back to the model.
+    async fn finalize_tool_call_result(
+        &mut self,
+        call: ToolCallContext,
+        approved: bool,
+        result: Option<ToolExecution>,
+    ) -> ContentBlock {
+        let ToolCallContext {
+            call_id,
+            tool_name,
+            args,
+            safe_args,
+            extra_context,
+            pre_hook_args: _,
+            initial_firewall_verdict: _,
+        } = call;
+        let mut result = result;
+        if approved && result.is_none() {
+            let resolved_args = self.credential_vault.resolve_in_json(&safe_args);
+            result = Some(
+                self.execute_tool(&tool_name, &resolved_args, &call_id)
+                    .await,
+            );
+        }
+
+        let result = result.unwrap_or_else(|| {
+            if approved {
+                ToolExecution::from_legacy(
+                    &call_id,
+                    &tool_name,
+                    ExecutionSource::Native,
+                    ToolResult::failure("Tool task did not return a result"),
+                )
+            } else {
+                ToolExecution::denied(&call_id, &tool_name, DenialReason::User)
+            }
+        });
+
+        let content = result.model_content();
+        let is_error = result.is_error();
+
+        if approved {
+            // Execute hooks only for tools that were allowed to run.
+            let _post_result = self
+                .hooks
+                .execute_post_tool_use(&tool_name, &call_id, &args, &content, is_error);
+        }
+
+        // Append injected context if any
+        let mut result_content = if let Some(ref ctx) = extra_context {
+            format!("{content}\n\n{ctx}")
+        } else {
+            content
+        };
+
+        if approved {
+            if let Err(err) = apply_workflow_state_hooks(
+                &tool_name,
+                &call_id,
+                &args,
+                &mut self.workflow_state,
+                is_error,
+            ) {
+                // Append workflow hook error to content instead of replacing it
+                // to preserve successful tool output
+                result_content = format!("{}\n\n[Workflow error: {}]", result_content, err.message);
+            }
+        }
+
+        // Record tool call for safety tracking (doom loop / rate limit)
+        self.safety.record_tool_call(&tool_name, &safe_args);
+
+        ContentBlock::ToolResult {
+            tool_use_id: call_id,
+            content: result_content,
+            is_error: Some(is_error),
+        }
+    }
+
+    fn cancel_remaining_deferred_if_interrupted(
+        &mut self,
+        deferred_calls: &mut impl Iterator<Item = DeferredToolCall>,
+        tool_results: &mut Vec<ContentBlock>,
+    ) -> bool {
+        if !self.take_active_operation_interruption() {
+            return false;
+        }
+        let cancelled_ids = cancel_deferred_suffix(&self.event_tx, deferred_calls, tool_results);
+        discard_cancelled_tool_responses(
+            &cancelled_ids,
+            &mut self.tool_response_rx,
+            &mut self.pending_tool_approvals,
+        );
+        true
     }
 
     async fn drain_read_only_tool_calls(
@@ -2735,15 +3519,17 @@ impl NativeAgentRunner {
         }
 
         let pending_calls = std::mem::take(pending);
-        let cancel_token = self.cancel_token.clone();
+        let cancel_token = CancellationToken::new();
+        self.set_active_tool_cancel_token(Some(cancel_token.clone()));
         let mut results_by_call_id = execute_native_read_only_tool_wave(
             &self.config.cwd,
             self.credential_vault.clone(),
             &self.event_tx,
             &pending_calls,
-            cancel_token,
+            Some(cancel_token),
         )
         .await;
+        self.set_active_tool_cancel_token(None);
 
         for call in pending_calls {
             let result = results_by_call_id.remove(&call.call_id).unwrap_or_else(|| {
@@ -2795,6 +3581,70 @@ impl NativeAgentRunner {
     }
 }
 
+/// Rewrite an empty native Bash call before validation, approval, and
+/// execution so every caller observes and acts on the same command.
+fn normalize_post_hook_tool_args(
+    tool_name: &str,
+    mut args: serde_json::Value,
+) -> (serde_json::Value, bool) {
+    if !tool_name.eq_ignore_ascii_case("bash") {
+        return (args, false);
+    }
+
+    let Some(object) = args.as_object_mut() else {
+        return (args, false);
+    };
+    let command_is_empty = object
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(|command| command.trim().is_empty());
+    if !command_is_empty {
+        return (args, false);
+    }
+
+    object.insert("command".to_string(), serde_json::json!("pwd"));
+    (args, true)
+}
+
+/// Decide whether a tool call must wait for caller approval before the
+/// runner executes it, given the active `ApprovalMode`.
+///
+/// This is the single decision point behind `requires_approval` in
+/// `run_loop`, and it is also the value reported on the `FromAgent::ToolCall`
+/// event. Callers with their own approval UI (the interactive TUI, the
+/// headless server) trust that field instead of recomputing their own
+/// verdict; keeping this logic in one pure function (rather than duplicated
+/// per-caller, as it used to be split between here and `app.rs`) is what
+/// prevents the two from disagreeing again -- see issues #3149 and #3156.
+///
+/// - `is_external_tool`: the caller owns execution and its own approval
+///   policy for this tool (see [`NativeAgentRunner`]'s external-tools doc);
+///   always requires approval regardless of mode.
+/// - [`ApprovalMode::Yolo`]: never require approval (including firewall soft
+///   holds; a hard [`FirewallVerdict::Block`] is handled separately and
+///   always denies regardless of mode).
+/// - [`ApprovalMode::Safe`]: always require approval.
+/// - [`ApprovalMode::Selective`]: defer to the tool executor's static/dynamic
+///   per-tool heuristic (e.g. `bash` inspects the command).
+fn tool_requires_approval(
+    approval_mode: ApprovalMode,
+    is_external_tool: bool,
+    firewall_verdict: &FirewallVerdict,
+    tool_executor: &ToolExecutor,
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> bool {
+    let mode_requires_approval = match approval_mode {
+        ApprovalMode::Yolo => false,
+        ApprovalMode::Safe => true,
+        ApprovalMode::Selective => tool_executor.requires_approval(tool_name, args),
+    };
+    let firewall_requires_approval =
+        matches!(firewall_verdict, FirewallVerdict::RequireApproval { .. })
+            && approval_mode != ApprovalMode::Yolo;
+    is_external_tool || mode_requires_approval || firewall_requires_approval
+}
+
 fn parse_tool_input(tool_name: &str, json: &str) -> Result<serde_json::Value, String> {
     if json.trim().is_empty() {
         return Ok(serde_json::json!({}));
@@ -2803,23 +3653,339 @@ fn parse_tool_input(tool_name: &str, json: &str) -> Result<serde_json::Value, St
         .map_err(|err| format!("Failed to parse tool input JSON for '{tool_name}': {err}"))
 }
 
+/// Everything needed to finish a tool call once its execution decision is
+/// known. Approval-needing calls capture their hook-adjusted arguments when
+/// their batched `ToolCall` event is emitted. Auto-approved calls behind that
+/// boundary also retain the original model input so PreToolUse and all
+/// argument derivations can be refreshed immediately before their event and
+/// execution.
+struct ToolCallContext {
+    call_id: String,
+    tool_name: String,
+    args: serde_json::Value,
+    safe_args: serde_json::Value,
+    extra_context: Option<String>,
+    pre_hook_args: serde_json::Value,
+    initial_firewall_verdict: FirewallVerdict,
+}
+
+enum DeferredToolCall {
+    AwaitApproval(ToolCallContext),
+    Execute(ToolCallContext),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeferredToolCallDisposition {
+    AwaitApproval,
+    Execute,
+}
+
+fn deferred_tool_call_disposition(
+    requires_approval: bool,
+    has_prior_deferred_call: bool,
+) -> Option<DeferredToolCallDisposition> {
+    if requires_approval {
+        Some(DeferredToolCallDisposition::AwaitApproval)
+    } else if has_prior_deferred_call {
+        Some(DeferredToolCallDisposition::Execute)
+    } else {
+        None
+    }
+}
+
+fn rerun_deferred_pre_tool_use(
+    hooks: &mut IntegratedHookSystem,
+    call: &ToolCallContext,
+) -> Result<(serde_json::Value, Option<String>), String> {
+    match hooks.execute_pre_tool_use(&call.tool_name, &call.call_id, &call.pre_hook_args) {
+        HookResult::Block { reason } => Err(reason),
+        HookResult::ModifyInput { new_input } => Ok((new_input, None)),
+        HookResult::InjectContext { context } => Ok((call.pre_hook_args.clone(), Some(context))),
+        HookResult::Continue => Ok((call.pre_hook_args.clone(), None)),
+    }
+}
+
+fn deferred_tool_call_event(call: &ToolCallContext, requires_approval: bool) -> FromAgent {
+    FromAgent::ToolCall {
+        call_id: call.call_id.clone(),
+        tool: call.tool_name.clone(),
+        args: call.safe_args.clone(),
+        requires_approval,
+    }
+}
+
+fn deferred_approved_policy_rejection(
+    initial_verdict: &FirewallVerdict,
+    current_verdict: FirewallVerdict,
+) -> Option<String> {
+    match current_verdict {
+        FirewallVerdict::Block { reason } => Some(reason),
+        FirewallVerdict::RequireApproval { reason }
+            if !matches!(
+                initial_verdict,
+                FirewallVerdict::RequireApproval {
+                    reason: initial_reason
+                } if initial_reason == &reason
+            ) =>
+        {
+            Some(format!(
+                "Tool requires fresh approval after earlier tool execution: {reason}"
+            ))
+        }
+        FirewallVerdict::RequireApproval { .. } | FirewallVerdict::Allow => None,
+    }
+}
+
+fn approved_input_change_rejection(
+    approved_args: &serde_json::Value,
+    refreshed_args: &serde_json::Value,
+) -> Option<&'static str> {
+    (approved_args != refreshed_args)
+        .then_some("Tool input changed after approval; retry to review refreshed input")
+}
+
+fn clear_stashed_prompts(deferred_commands: &mut VecDeque<AgentCommand>) -> usize {
+    let original_len = deferred_commands.len();
+    deferred_commands.retain(|command| {
+        !matches!(
+            command,
+            AgentCommand::Prompt {
+                kind,
+                ..
+            } if prompt_kind_starts_main_request(*kind)
+        )
+    });
+    original_len - deferred_commands.len()
+}
+
+fn deferred_hook_block(
+    call: &ToolCallContext,
+    reason: String,
+    emit_tool_call: bool,
+) -> (Vec<FromAgent>, ContentBlock) {
+    let message = format!("Tool blocked by hook: {reason}");
+    let mut events = Vec::with_capacity(4);
+    if emit_tool_call {
+        events.push(deferred_tool_call_event(call, false));
+    }
+    events.extend([
+        FromAgent::HookBlocked {
+            call_id: call.call_id.clone(),
+            tool: call.tool_name.clone(),
+            reason,
+        },
+        deferred_rejection_output_event(call, &message),
+        deferred_safety_rejection_event(call, &message),
+    ]);
+    (
+        events,
+        ContentBlock::ToolResult {
+            tool_use_id: call.call_id.clone(),
+            content: message,
+            is_error: Some(true),
+        },
+    )
+}
+
+fn emit_deferred_failure(
+    event_tx: &mpsc::UnboundedSender<FromAgent>,
+    call: &ToolCallContext,
+    reason: &str,
+    tool_results: &mut Vec<ContentBlock>,
+) {
+    let _ = event_tx.send(deferred_rejection_output_event(call, reason));
+    let _ = event_tx.send(deferred_safety_rejection_event(call, reason));
+    tool_results.push(ContentBlock::ToolResult {
+        tool_use_id: call.call_id.clone(),
+        content: reason.to_string(),
+        is_error: Some(true),
+    });
+}
+
+fn emit_deferred_policy_failure(
+    event_tx: &mpsc::UnboundedSender<FromAgent>,
+    call: &ToolCallContext,
+    reason: &str,
+    tool_results: &mut Vec<ContentBlock>,
+) {
+    let _ = event_tx.send(deferred_rejection_output_event(call, reason));
+    let _ = event_tx.send(deferred_policy_rejection_event(call, reason));
+    tool_results.push(ContentBlock::ToolResult {
+        tool_use_id: call.call_id.clone(),
+        content: reason.to_string(),
+        is_error: Some(true),
+    });
+}
+
+fn invalidate_cache_after_serial_tool(tool_executor: &ToolExecutor, executed: bool) {
+    if executed {
+        tool_executor.clear_cache();
+    }
+}
+
+fn deferred_firewall_verdict(
+    firewall: &ActionFirewall,
+    tool_name: &str,
+    args: &serde_json::Value,
+    workflow_snapshot: &crate::safety::WorkflowStateSnapshot,
+    annotations: Option<&crate::mcp::McpToolAnnotations>,
+    is_external_tool: bool,
+) -> FirewallVerdict {
+    if is_external_tool {
+        FirewallVerdict::Allow
+    } else {
+        firewall.check_tool_with_context(FirewallContext {
+            tool_name,
+            args,
+            workflow_state: Some(workflow_snapshot),
+            annotations,
+        })
+    }
+}
+
+fn deferred_execution_safety_verdict(
+    safety: &SafetyController,
+    call: &ToolCallContext,
+) -> SafetyVerdict {
+    safety.check_tool_call(&call.tool_name, &call.safe_args)
+}
+
+fn deferred_rejection_output_event(call: &ToolCallContext, reason: &str) -> FromAgent {
+    FromAgent::ToolOutput {
+        call_id: call.call_id.clone(),
+        content: reason.to_string(),
+    }
+}
+
+fn deferred_safety_rejection_event(call: &ToolCallContext, reason: &str) -> FromAgent {
+    let result = ToolResult::failure(reason);
+    let receipt = ToolExecution::from_legacy(
+        &call.call_id,
+        &call.tool_name,
+        ExecutionSource::Native,
+        result.clone(),
+    )
+    .receipt;
+    FromAgent::ToolEnd {
+        call_id: call.call_id.clone(),
+        success: false,
+        result: Some(result),
+        receipt: Some(receipt),
+    }
+}
+
+fn deferred_policy_rejection_event(call: &ToolCallContext, reason: &str) -> FromAgent {
+    let execution = ToolExecution::denied(
+        &call.call_id,
+        &call.tool_name,
+        DenialReason::ActionFirewall {
+            message: reason.to_string(),
+        },
+    );
+    FromAgent::ToolEnd {
+        call_id: call.call_id.clone(),
+        success: false,
+        result: Some(execution.to_legacy()),
+        receipt: Some(execution.receipt),
+    }
+}
+
+fn cancelled_deferred_tool(call: &ToolCallContext, reason: &str) -> (FromAgent, ContentBlock) {
+    let execution = ToolExecution::cancelled(
+        &call.call_id,
+        &call.tool_name,
+        ExecutionSource::Native,
+        ExecutionPhase::Queued,
+    );
+    let result = ToolResult::failure(reason);
+    (
+        FromAgent::ToolEnd {
+            call_id: call.call_id.clone(),
+            success: false,
+            result: Some(result),
+            receipt: Some(execution.receipt),
+        },
+        ContentBlock::ToolResult {
+            tool_use_id: call.call_id.clone(),
+            content: reason.to_string(),
+            is_error: Some(true),
+        },
+    )
+}
+
+fn cancel_deferred_suffix(
+    event_tx: &mpsc::UnboundedSender<FromAgent>,
+    deferred_calls: impl IntoIterator<Item = DeferredToolCall>,
+    tool_results: &mut Vec<ContentBlock>,
+) -> HashSet<String> {
+    let skipped_message = "Skipped after request cancellation.";
+    let mut cancelled_ids = HashSet::new();
+    for skipped_call in deferred_calls {
+        let (call, needs_tool_call) = match skipped_call {
+            DeferredToolCall::AwaitApproval(call) => (call, false),
+            DeferredToolCall::Execute(call) => (call, true),
+        };
+        cancelled_ids.insert(call.call_id.clone());
+        if needs_tool_call {
+            let _ = event_tx.send(deferred_tool_call_event(&call, false));
+        }
+        let _ = event_tx.send(FromAgent::ToolOutput {
+            call_id: call.call_id.clone(),
+            content: skipped_message.to_string(),
+        });
+        let (event, result_block) = cancelled_deferred_tool(&call, skipped_message);
+        let _ = event_tx.send(event);
+        tool_results.push(result_block);
+    }
+    cancelled_ids
+}
+
+fn discard_cancelled_tool_responses(
+    cancelled_ids: &HashSet<String>,
+    rx: &mut mpsc::UnboundedReceiver<(String, bool, Option<ToolResult>)>,
+    pending: &mut HashMap<String, (bool, Option<ToolResult>)>,
+) {
+    pending.retain(|call_id, _| !cancelled_ids.contains(call_id));
+    while let Ok((call_id, approved, result)) = rx.try_recv() {
+        if !cancelled_ids.contains(&call_id) {
+            pending.insert(call_id, (approved, result));
+        }
+    }
+}
+
+enum ToolResponseWait {
+    Response((bool, Option<ToolResult>)),
+    Cancelled,
+    Closed,
+}
+
 async fn wait_for_tool_response(
     call_id: &str,
     rx: &mut mpsc::UnboundedReceiver<(String, bool, Option<ToolResult>)>,
     pending: &mut HashMap<String, (bool, Option<ToolResult>)>,
-) -> Option<(bool, Option<ToolResult>)> {
+    cancel: &CancellationToken,
+) -> ToolResponseWait {
+    if cancel.is_cancelled() {
+        return ToolResponseWait::Cancelled;
+    }
     if let Some(result) = pending.remove(call_id) {
-        return Some(result);
+        return ToolResponseWait::Response(result);
     }
 
-    while let Some((id, approved, result)) = rx.recv().await {
+    loop {
+        let response = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return ToolResponseWait::Cancelled,
+            response = rx.recv() => response,
+        };
+        let Some((id, approved, result)) = response else {
+            return ToolResponseWait::Closed;
+        };
         if id == call_id {
-            return Some((approved, result));
+            return ToolResponseWait::Response((approved, result));
         }
         pending.insert(id, (approved, result));
     }
-
-    None
 }
 
 /// Append failure tool results for any assistant `ToolUse` block in `messages`
@@ -2940,6 +4106,61 @@ fn repair_orphaned_tool_calls(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    };
+
+    struct StateDependentPreToolUseHook {
+        block: Arc<AtomicBool>,
+    }
+
+    impl crate::hooks::PreToolUseHook for StateDependentPreToolUseHook {
+        fn on_pre_tool_use(&self, _input: &crate::hooks::PreToolUseInput) -> HookResult {
+            if self.block.load(Ordering::SeqCst) {
+                HookResult::Block {
+                    reason: "state changed".to_string(),
+                }
+            } else {
+                HookResult::Continue
+            }
+        }
+    }
+
+    struct SequencedModifyPreToolUseHook {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl crate::hooks::PreToolUseHook for SequencedModifyPreToolUseHook {
+        fn on_pre_tool_use(&self, _input: &crate::hooks::PreToolUseInput) -> HookResult {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            HookResult::ModifyInput {
+                new_input: serde_json::json!({"command": format!("rewrite-{call}")}),
+            }
+        }
+    }
+
+    struct FixedModifyPreToolUseHook {
+        new_input: serde_json::Value,
+    }
+
+    impl crate::hooks::PreToolUseHook for FixedModifyPreToolUseHook {
+        fn on_pre_tool_use(&self, _input: &crate::hooks::PreToolUseInput) -> HookResult {
+            HookResult::ModifyInput {
+                new_input: self.new_input.clone(),
+            }
+        }
+    }
+
+    struct InjectContextPreToolUseHook;
+
+    impl crate::hooks::PreToolUseHook for InjectContextPreToolUseHook {
+        fn on_pre_tool_use(&self, _input: &crate::hooks::PreToolUseInput) -> HookResult {
+            HookResult::InjectContext {
+                context: "fresh context".to_string(),
+            }
+        }
+    }
 
     #[test]
     fn test_config_default() {
@@ -2947,6 +4168,468 @@ mod tests {
         assert_eq!(config.model, "gpt-5.1-codex-max");
         assert_eq!(config.max_tokens, 16384);
         assert!(!config.thinking_enabled);
+        assert_eq!(config.approval_mode, ApprovalMode::Selective);
+    }
+
+    #[test]
+    fn agent_cancel_interrupts_a_blocked_runner_before_queue_processing() {
+        let request_token = CancellationToken::new();
+        let tool_token = CancellationToken::new();
+        let active = Arc::new(Mutex::new(ActiveCancellation {
+            request: Some(request_token.clone()),
+            tool: Some(tool_token.clone()),
+            approval: None,
+            tool_batch_active: true,
+            operation_interrupted: false,
+        }));
+        let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+        let (tool_response_tx, _tool_response_rx) = mpsc::unbounded_channel();
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let agent = NativeAgent {
+            command_tx,
+            tool_response_tx,
+            active_cancellation: active.clone(),
+            event_tx,
+            model_name: "test-model".to_string(),
+            provider_name: "test-provider".to_string(),
+        };
+
+        agent.cancel_keep_queue();
+
+        assert!(tool_token.is_cancelled());
+        assert!(
+            !request_token.is_cancelled(),
+            "the turn selector must not race tool cleanup"
+        );
+        assert!(
+            active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .operation_interrupted,
+            "the deferred suffix must observe the interruption"
+        );
+        {
+            let mut active = active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            active.set_request(None);
+            assert!(
+                !active.operation_interrupted,
+                "an interruption must not leak into a later request"
+            );
+        }
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(AgentCommand::Cancel {
+                clear_pending: false
+            })
+        ));
+    }
+
+    #[test]
+    fn agent_cancel_interrupts_an_approval_wait_without_dropping_the_request() {
+        let request_token = CancellationToken::new();
+        let approval_token = CancellationToken::new();
+        let active = Arc::new(Mutex::new(ActiveCancellation {
+            request: Some(request_token.clone()),
+            tool: None,
+            approval: Some(approval_token.clone()),
+            tool_batch_active: true,
+            operation_interrupted: false,
+        }));
+        let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+        let (tool_response_tx, _tool_response_rx) = mpsc::unbounded_channel();
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let agent = NativeAgent {
+            command_tx,
+            tool_response_tx,
+            active_cancellation: active.clone(),
+            event_tx,
+            model_name: "test-model".to_string(),
+            provider_name: "test-provider".to_string(),
+        };
+
+        agent.cancel_keep_queue();
+
+        assert!(approval_token.is_cancelled());
+        assert!(!request_token.is_cancelled());
+        assert!(
+            active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .operation_interrupted
+        );
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(AgentCommand::Cancel {
+                clear_pending: false
+            })
+        ));
+    }
+
+    #[test]
+    fn agent_cancel_keeps_tool_batch_cleanup_alive_between_operations() {
+        let request_token = CancellationToken::new();
+        let active = Arc::new(Mutex::new(ActiveCancellation {
+            request: Some(request_token.clone()),
+            tool: None,
+            approval: None,
+            tool_batch_active: true,
+            operation_interrupted: false,
+        }));
+        let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+        let (tool_response_tx, _tool_response_rx) = mpsc::unbounded_channel();
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let agent = NativeAgent {
+            command_tx,
+            tool_response_tx,
+            active_cancellation: active.clone(),
+            event_tx,
+            model_name: "test-model".to_string(),
+            provider_name: "test-provider".to_string(),
+        };
+
+        agent.cancel_keep_queue();
+
+        assert!(!request_token.is_cancelled());
+        assert!(
+            active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .operation_interrupted
+        );
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(AgentCommand::Cancel {
+                clear_pending: false
+            })
+        ));
+    }
+
+    #[test]
+    fn every_main_request_prompt_kind_uses_atomic_activation() {
+        assert!(prompt_kind_starts_main_request(PromptKind::Prompt));
+        assert!(prompt_kind_starts_main_request(PromptKind::Steer));
+        assert!(prompt_kind_starts_main_request(PromptKind::FollowUp));
+        assert!(!prompt_kind_starts_main_request(PromptKind::SideQuestion));
+    }
+
+    #[test]
+    fn cancellation_promotes_later_main_request_prompt_kinds() {
+        assert!(should_defer_prompt_command(PromptKind::Prompt, false));
+        assert!(!should_defer_prompt_command(PromptKind::Steer, false));
+        assert!(!should_defer_prompt_command(PromptKind::FollowUp, false));
+
+        assert!(should_defer_prompt_command(PromptKind::Prompt, true));
+        assert!(should_defer_prompt_command(PromptKind::Steer, true));
+        assert!(should_defer_prompt_command(PromptKind::FollowUp, true));
+        assert!(!should_defer_prompt_command(PromptKind::SideQuestion, true));
+    }
+
+    #[test]
+    fn cancellation_queued_after_receive_cancels_the_activated_request() {
+        let active = Arc::new(Mutex::new(ActiveCancellation::default()));
+        let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+        command_tx
+            .send(AgentCommand::Cancel {
+                clear_pending: true,
+            })
+            .expect("cancel command should queue");
+
+        let request_token = {
+            let mut activation = active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let request_token = activation.activate_request();
+            if matches!(command_rx.try_recv(), Ok(AgentCommand::Cancel { .. })) {
+                request_token.cancel();
+            }
+            request_token
+        };
+
+        assert!(
+            request_token.is_cancelled(),
+            "a cancel queued after direct receive must be consumed at activation"
+        );
+    }
+
+    #[test]
+    fn cancellation_waiting_on_prompt_activation_lock_cancels_new_request() {
+        let active = Arc::new(Mutex::new(ActiveCancellation::default()));
+        let mut activation = active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cancel_started = Arc::new(std::sync::Barrier::new(2));
+        let active_for_cancel = Arc::clone(&active);
+        let cancel_started_in_thread = Arc::clone(&cancel_started);
+        let cancel_thread = std::thread::spawn(move || {
+            cancel_started_in_thread.wait();
+            cancel_active_operation(&active_for_cancel);
+        });
+
+        cancel_started.wait();
+        let request_token = activation.activate_request();
+        drop(activation);
+        cancel_thread
+            .join()
+            .expect("cancellation thread must finish");
+
+        assert!(
+            request_token.is_cancelled(),
+            "cancellation racing prompt activation must cancel the installed request token"
+        );
+    }
+
+    #[test]
+    fn tool_batch_exit_consumes_a_late_interruption() {
+        let request_token = CancellationToken::new();
+        let active = Arc::new(Mutex::new(ActiveCancellation {
+            request: Some(request_token.clone()),
+            tool: None,
+            approval: None,
+            tool_batch_active: true,
+            operation_interrupted: false,
+        }));
+
+        cancel_active_operation(&active);
+        assert!(!request_token.is_cancelled());
+        let interrupted = active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .finish_tool_batch();
+
+        assert!(interrupted);
+        let active = active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(!active.tool_batch_active);
+        assert!(!active.operation_interrupted);
+    }
+
+    #[test]
+    fn clear_pending_cancel_drops_only_prompts_stashed_before_boundary() {
+        let mut deferred_commands = VecDeque::from([
+            AgentCommand::SetThinking {
+                enabled: true,
+                budget: 1024,
+            },
+            AgentCommand::Prompt {
+                content: "before cancel".to_string(),
+                attachments: Vec::new(),
+                kind: PromptKind::Prompt,
+                queue_id: Some(1),
+            },
+            AgentCommand::Prompt {
+                content: "steer before cancel".to_string(),
+                attachments: Vec::new(),
+                kind: PromptKind::Steer,
+                queue_id: Some(2),
+            },
+            AgentCommand::Prompt {
+                content: "follow-up before cancel".to_string(),
+                attachments: Vec::new(),
+                kind: PromptKind::FollowUp,
+                queue_id: Some(3),
+            },
+            AgentCommand::Prompt {
+                content: "side question before cancel".to_string(),
+                attachments: Vec::new(),
+                kind: PromptKind::SideQuestion,
+                queue_id: Some(4),
+            },
+        ]);
+
+        assert_eq!(clear_stashed_prompts(&mut deferred_commands), 3);
+
+        deferred_commands.push_back(AgentCommand::Prompt {
+            content: "after cancel".to_string(),
+            attachments: Vec::new(),
+            kind: PromptKind::Prompt,
+            queue_id: Some(5),
+        });
+        assert!(matches!(
+            deferred_commands.pop_front(),
+            Some(AgentCommand::SetThinking {
+                enabled: true,
+                budget: 1024
+            })
+        ));
+        assert!(matches!(
+            deferred_commands.pop_front(),
+            Some(AgentCommand::Prompt {
+                content,
+                kind: PromptKind::SideQuestion,
+                queue_id: Some(4),
+                ..
+            }) if content == "side question before cancel"
+        ));
+        assert!(matches!(
+            deferred_commands.pop_front(),
+            Some(AgentCommand::Prompt {
+                content,
+                queue_id: Some(5),
+                ..
+            }) if content == "after cancel"
+        ));
+        assert!(deferred_commands.is_empty());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // `tool_requires_approval` -- the single decision point behind the
+    // dual-executor fix (issues #3149, #3156). These exercise it directly
+    // as a pure function so the safety-critical gate has coverage that
+    // doesn't depend on spinning up a real provider/streaming loop.
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn safe_mode_requires_approval_even_for_a_selective_safe_command() {
+        // Regression test for #3149: before the fix, this gate ignored
+        // `ApprovalMode` entirely and used the Selective heuristic no
+        // matter what, so Safe mode never actually gated anything the
+        // Selective heuristic would have auto-approved (e.g. `ls`).
+        let executor = ToolExecutor::new(".");
+        let args = serde_json::json!({"command": "ls -la"});
+
+        // Sanity check: Selective mode alone would NOT require approval
+        // for this command (this is what made the old gate look correct
+        // in the default mode while being wrong in Safe mode).
+        assert!(!tool_requires_approval(
+            ApprovalMode::Selective,
+            false,
+            &FirewallVerdict::Allow,
+            &executor,
+            "bash",
+            &args,
+        ));
+
+        assert!(tool_requires_approval(
+            ApprovalMode::Safe,
+            false,
+            &FirewallVerdict::Allow,
+            &executor,
+            "bash",
+            &args,
+        ));
+    }
+
+    #[test]
+    fn yolo_mode_never_requires_approval_for_native_tools() {
+        let executor = ToolExecutor::new(".");
+        // Even a command the Selective heuristic would flag as risky must
+        // not require approval in Yolo mode -- "auto-approve ALL tool
+        // calls" is the documented contract of `ApprovalMode::Yolo`.
+        let risky_args = serde_json::json!({"command": "rm -rf /tmp/whatever"});
+        assert!(tool_requires_approval(
+            ApprovalMode::Selective,
+            false,
+            &FirewallVerdict::Allow,
+            &executor,
+            "bash",
+            &risky_args,
+        ));
+        assert!(!tool_requires_approval(
+            ApprovalMode::Yolo,
+            false,
+            &FirewallVerdict::Allow,
+            &executor,
+            "bash",
+            &risky_args,
+        ));
+    }
+
+    #[test]
+    fn empty_bash_is_rewritten_before_approval_and_execution() {
+        let (args, rewritten) =
+            normalize_post_hook_tool_args("BASH", serde_json::json!({"command": " \n\t"}));
+
+        assert!(rewritten);
+        assert_eq!(args, serde_json::json!({"command": "pwd"}));
+
+        let executor = ToolExecutor::new(".");
+        assert!(!tool_requires_approval(
+            ApprovalMode::Yolo,
+            false,
+            &FirewallVerdict::Allow,
+            &executor,
+            "bash",
+            &args,
+        ));
+    }
+
+    #[test]
+    fn hook_modified_empty_bash_is_normalized_before_approval_and_execution() {
+        let hook_result = HookResult::ModifyInput {
+            new_input: serde_json::json!({"command": " \n\t"}),
+        };
+        let HookResult::ModifyInput { new_input } = hook_result else {
+            unreachable!("test constructs a ModifyInput result");
+        };
+
+        let (args, rewritten) = normalize_post_hook_tool_args("bash", new_input);
+
+        assert!(rewritten);
+        assert_eq!(args, serde_json::json!({"command": "pwd"}));
+        assert!(
+            ToolExecutor::new(".")
+                .missing_required("bash", &args)
+                .is_empty(),
+            "hook-produced arguments must be normalized before validation"
+        );
+    }
+
+    #[test]
+    fn external_tool_always_requires_approval_regardless_of_mode() {
+        // Callers embedding external tools (the SDK / ambient-agent path)
+        // own execution and their own approval policy; even Yolo must not
+        // let this runner treat the call as pre-approved.
+        let executor = ToolExecutor::new(".");
+        let args = serde_json::json!({});
+        assert!(tool_requires_approval(
+            ApprovalMode::Yolo,
+            true,
+            &FirewallVerdict::Allow,
+            &executor,
+            "some_external_tool",
+            &args,
+        ));
+    }
+
+    #[test]
+    fn firewall_soft_hold_is_bypassed_only_in_yolo_mode() {
+        let executor = ToolExecutor::new(".");
+        let args = serde_json::json!({"command": "ls"});
+        let verdict = FirewallVerdict::RequireApproval {
+            reason: "test".to_string(),
+        };
+
+        // A firewall soft-hold forces approval in Safe and Selective mode
+        // even for a command the per-tool heuristic alone would allow.
+        assert!(tool_requires_approval(
+            ApprovalMode::Selective,
+            false,
+            &verdict,
+            &executor,
+            "bash",
+            &args,
+        ));
+        assert!(tool_requires_approval(
+            ApprovalMode::Safe,
+            false,
+            &verdict,
+            &executor,
+            "bash",
+            &args,
+        ));
+        // Yolo bypasses the soft hold too (matches the pre-existing
+        // `app.rs` semantics this logic was migrated from).
+        assert!(!tool_requires_approval(
+            ApprovalMode::Yolo,
+            false,
+            &verdict,
+            &executor,
+            "bash",
+            &args,
+        ));
     }
 
     #[test]
@@ -2958,6 +4641,7 @@ mod tests {
             thinking_enabled: true,
             thinking_budget: 5000,
             cwd: "/tmp".to_string(),
+            ..NativeAgentConfig::default()
         };
         assert_eq!(config.model, "gpt-5.1-codex-max");
         assert_eq!(config.max_tokens, 8192);
@@ -3013,6 +4697,7 @@ mod tests {
             thinking_enabled: false,
             thinking_budget: 0,
             cwd: ".".to_string(),
+            ..NativeAgentConfig::default()
         };
 
         // Build request config manually to verify structure
@@ -3047,6 +4732,7 @@ mod tests {
             thinking_enabled: true,
             thinking_budget: 15000,
             cwd: ".".to_string(),
+            ..NativeAgentConfig::default()
         };
 
         let thinking = if config.thinking_enabled {
@@ -3123,17 +4809,624 @@ mod tests {
     async fn test_wait_for_tool_response_buffers_out_of_order() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut pending = HashMap::new();
+        let cancel = CancellationToken::new();
 
         tx.send(("id-2".to_string(), true, None)).unwrap();
         tx.send(("id-1".to_string(), false, None)).unwrap();
 
-        let result = wait_for_tool_response("id-1", &mut rx, &mut pending).await;
-        assert!(matches!(result, Some((false, None))));
+        let result = wait_for_tool_response("id-1", &mut rx, &mut pending, &cancel).await;
+        assert!(matches!(result, ToolResponseWait::Response((false, None))));
         assert!(pending.contains_key("id-2"));
 
-        let result = wait_for_tool_response("id-2", &mut rx, &mut pending).await;
-        assert!(matches!(result, Some((true, None))));
+        let result = wait_for_tool_response("id-2", &mut rx, &mut pending, &cancel).await;
+        assert!(matches!(result, ToolResponseWait::Response((true, None))));
         assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn approval_wait_honors_cancellation_before_buffered_decisions() {
+        let (_tx, mut rx) = mpsc::unbounded_channel();
+        let mut pending = HashMap::from([("id-1".to_string(), (true, None))]);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result = wait_for_tool_response("id-1", &mut rx, &mut pending, &cancel).await;
+
+        assert!(matches!(result, ToolResponseWait::Cancelled));
+        assert!(pending.contains_key("id-1"));
+    }
+
+    #[test]
+    fn later_auto_approved_calls_defer_behind_an_approval_boundary() {
+        assert_eq!(
+            deferred_tool_call_disposition(true, false),
+            Some(DeferredToolCallDisposition::AwaitApproval)
+        );
+        assert_eq!(
+            deferred_tool_call_disposition(false, true),
+            Some(DeferredToolCallDisposition::Execute)
+        );
+        assert_eq!(deferred_tool_call_disposition(false, false), None);
+    }
+
+    #[test]
+    fn deferred_execution_reruns_state_dependent_pre_tool_use_hook() {
+        let block = Arc::new(AtomicBool::new(false));
+        let mut hooks = IntegratedHookSystem::new("/tmp");
+        hooks
+            .registry
+            .register_pre_tool_use(Arc::new(StateDependentPreToolUseHook {
+                block: Arc::clone(&block),
+            }));
+        let original_args = serde_json::json!({"command": "touch later"});
+        let call = ToolCallContext {
+            call_id: "call-later".to_string(),
+            tool_name: "bash".to_string(),
+            args: original_args.clone(),
+            safe_args: original_args.clone(),
+            extra_context: None,
+            pre_hook_args: original_args.clone(),
+            initial_firewall_verdict: FirewallVerdict::Allow,
+        };
+
+        assert!(matches!(
+            hooks.execute_pre_tool_use(&call.tool_name, &call.call_id, &original_args),
+            HookResult::Continue
+        ));
+        block.store(true, Ordering::SeqCst);
+
+        assert_eq!(
+            rerun_deferred_pre_tool_use(&mut hooks, &call),
+            Err("state changed".to_string())
+        );
+    }
+
+    #[test]
+    fn deferred_execution_uses_second_modify_input_from_original_args() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut hooks = IntegratedHookSystem::new("/tmp");
+        hooks
+            .registry
+            .register_pre_tool_use(Arc::new(SequencedModifyPreToolUseHook {
+                calls: Arc::clone(&calls),
+            }));
+        let original_args = serde_json::json!({"command": "model-input"});
+        let initial_args = match hooks.execute_pre_tool_use("bash", "call-later", &original_args) {
+            HookResult::ModifyInput { new_input } => new_input,
+            result => panic!("expected initial ModifyInput, got {result:?}"),
+        };
+        let call = ToolCallContext {
+            call_id: "call-later".to_string(),
+            tool_name: "bash".to_string(),
+            args: initial_args.clone(),
+            safe_args: initial_args,
+            extra_context: None,
+            pre_hook_args: original_args,
+            initial_firewall_verdict: FirewallVerdict::Allow,
+        };
+
+        let (refreshed_args, refreshed_context) =
+            rerun_deferred_pre_tool_use(&mut hooks, &call).expect("second ModifyInput");
+        assert_eq!(refreshed_args, serde_json::json!({"command": "rewrite-2"}));
+        assert_eq!(refreshed_context, None);
+        assert_eq!(
+            approved_input_change_rejection(&call.args, &refreshed_args),
+            Some("Tool input changed after approval; retry to review refreshed input")
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn deferred_execution_handles_continue_and_inject_context() {
+        let original_args = serde_json::json!({"command": "model-input"});
+        let call = ToolCallContext {
+            call_id: "call-later".to_string(),
+            tool_name: "bash".to_string(),
+            args: original_args.clone(),
+            safe_args: original_args.clone(),
+            extra_context: Some("stale context".to_string()),
+            pre_hook_args: original_args.clone(),
+            initial_firewall_verdict: FirewallVerdict::Allow,
+        };
+        let mut continue_hooks = IntegratedHookSystem::new("/tmp");
+        assert_eq!(
+            rerun_deferred_pre_tool_use(&mut continue_hooks, &call),
+            Ok((original_args.clone(), None))
+        );
+        assert_eq!(
+            approved_input_change_rejection(&call.args, &original_args),
+            None
+        );
+
+        let mut context_hooks = IntegratedHookSystem::new("/tmp");
+        context_hooks
+            .registry
+            .register_pre_tool_use(Arc::new(InjectContextPreToolUseHook));
+        assert_eq!(
+            rerun_deferred_pre_tool_use(&mut context_hooks, &call),
+            Ok((original_args, Some("fresh context".to_string())))
+        );
+    }
+
+    #[test]
+    fn deferred_hook_refresh_normalizes_before_required_field_validation() {
+        let mut hooks = IntegratedHookSystem::new("/tmp");
+        let bash_args = serde_json::json!({"command": ""});
+        let bash_call = ToolCallContext {
+            call_id: "call-bash".to_string(),
+            tool_name: "bash".to_string(),
+            args: bash_args.clone(),
+            safe_args: bash_args.clone(),
+            extra_context: None,
+            pre_hook_args: bash_args,
+            initial_firewall_verdict: FirewallVerdict::Allow,
+        };
+        let (refreshed, _) =
+            rerun_deferred_pre_tool_use(&mut hooks, &bash_call).expect("continue hook");
+        let (normalized, rewrote) = normalize_post_hook_tool_args("bash", refreshed);
+        let executor = ToolExecutor::new("/tmp".to_string());
+        assert!(rewrote);
+        assert_eq!(normalized, serde_json::json!({"command": "pwd"}));
+        assert!(executor.missing_required("bash", &normalized).is_empty());
+
+        let read_args = serde_json::json!({});
+        let read_call = ToolCallContext {
+            call_id: "call-read".to_string(),
+            tool_name: "read".to_string(),
+            args: read_args.clone(),
+            safe_args: read_args.clone(),
+            extra_context: None,
+            pre_hook_args: read_args,
+            initial_firewall_verdict: FirewallVerdict::Allow,
+        };
+        let (refreshed, _) =
+            rerun_deferred_pre_tool_use(&mut hooks, &read_call).expect("continue hook");
+        let (normalized, rewrote) = normalize_post_hook_tool_args("read", refreshed);
+        assert!(!rewrote);
+        assert_eq!(executor.missing_required("read", &normalized), vec!["path"]);
+    }
+
+    #[test]
+    fn deferred_tool_call_event_matches_refreshed_vaulted_execution_input() {
+        let secret = ["sk", "-", "abc123def456ghi789jkl012mno345pqr678"].join("");
+        let refreshed_args = serde_json::json!({
+            "command": format!("curl -H 'Authorization: Bearer {secret}' example.test")
+        });
+        let mut hooks = IntegratedHookSystem::new("/tmp");
+        hooks
+            .registry
+            .register_pre_tool_use(Arc::new(FixedModifyPreToolUseHook {
+                new_input: refreshed_args.clone(),
+            }));
+        let original_args = serde_json::json!({"command": "echo stale"});
+        let mut call = ToolCallContext {
+            call_id: "call-later".to_string(),
+            tool_name: "bash".to_string(),
+            args: original_args.clone(),
+            safe_args: original_args.clone(),
+            extra_context: None,
+            pre_hook_args: original_args,
+            initial_firewall_verdict: FirewallVerdict::Allow,
+        };
+        let (args, extra_context) =
+            rerun_deferred_pre_tool_use(&mut hooks, &call).expect("modified input");
+        let (args, rewrote) = normalize_post_hook_tool_args(&call.tool_name, args);
+        let executor = ToolExecutor::new("/tmp".to_string());
+        assert!(!rewrote);
+        assert!(executor.missing_required(&call.tool_name, &args).is_empty());
+        let vault = CredentialVault::new();
+        call.args = args;
+        call.safe_args = vault.vault_in_json(&call.args);
+        call.extra_context = extra_context;
+
+        let event_args = match deferred_tool_call_event(&call, false) {
+            FromAgent::ToolCall { args, .. } => args,
+            event => panic!("expected ToolCall, got {event:?}"),
+        };
+        assert_eq!(event_args, call.safe_args);
+        assert!(!event_args.to_string().contains(&secret));
+        assert_eq!(vault.resolve_in_json(&event_args), refreshed_args);
+    }
+
+    #[test]
+    fn deferred_hook_block_emits_one_terminal_receipt() {
+        let args = serde_json::json!({"command": "touch later"});
+        let call = ToolCallContext {
+            call_id: "call-later".to_string(),
+            tool_name: "bash".to_string(),
+            args: args.clone(),
+            safe_args: args.clone(),
+            extra_context: None,
+            pre_hook_args: args,
+            initial_firewall_verdict: FirewallVerdict::Allow,
+        };
+        let (events, result) = deferred_hook_block(&call, "state changed".to_string(), true);
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, FromAgent::ToolCall { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, FromAgent::ToolEnd { .. }))
+                .count(),
+            1
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            FromAgent::ToolEnd {
+                success: false,
+                receipt: Some(_),
+                ..
+            }
+        )));
+        assert!(matches!(
+            result,
+            ContentBlock::ToolResult {
+                is_error: Some(true),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn approved_deferred_call_requires_fresh_consent_for_new_firewall_hold() {
+        let original_hold = FirewallVerdict::RequireApproval {
+            reason: "existing hold".to_string(),
+        };
+        assert_eq!(
+            deferred_approved_policy_rejection(
+                &original_hold,
+                FirewallVerdict::RequireApproval {
+                    reason: "existing hold".to_string(),
+                },
+            ),
+            None
+        );
+        assert_eq!(
+            deferred_approved_policy_rejection(
+                &FirewallVerdict::Allow,
+                FirewallVerdict::RequireApproval {
+                    reason: "new PII state".to_string(),
+                },
+            ),
+            Some(
+                "Tool requires fresh approval after earlier tool execution: new PII state"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            deferred_approved_policy_rejection(
+                &original_hold,
+                FirewallVerdict::RequireApproval {
+                    reason: "changed hold".to_string(),
+                },
+            ),
+            Some(
+                "Tool requires fresh approval after earlier tool execution: changed hold"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            deferred_approved_policy_rejection(
+                &FirewallVerdict::Allow,
+                FirewallVerdict::Block {
+                    reason: "blocked now".to_string(),
+                },
+            ),
+            Some("blocked now".to_string())
+        );
+    }
+
+    #[test]
+    fn deferred_execution_rechecks_updated_safety_history() {
+        let mut safety = SafetyController::new();
+        let args = serde_json::json!({"command": "printf test"});
+        let call = ToolCallContext {
+            call_id: "call-3".to_string(),
+            tool_name: "bash".to_string(),
+            args: args.clone(),
+            safe_args: args.clone(),
+            extra_context: None,
+            pre_hook_args: args.clone(),
+            initial_firewall_verdict: FirewallVerdict::Allow,
+        };
+
+        assert_eq!(
+            deferred_execution_safety_verdict(&safety, &call),
+            SafetyVerdict::Allow
+        );
+        safety.record_tool_call("bash", &args);
+        safety.record_tool_call("bash", &args);
+
+        assert!(matches!(
+            deferred_execution_safety_verdict(&safety, &call),
+            SafetyVerdict::BlockDoomLoop { .. }
+        ));
+
+        assert!(matches!(
+            deferred_rejection_output_event(&call, "doom loop"),
+            FromAgent::ToolOutput { call_id, content }
+                if call_id == "call-3" && content == "doom loop"
+        ));
+        match deferred_safety_rejection_event(&call, "doom loop") {
+            FromAgent::ToolEnd {
+                call_id,
+                success,
+                result,
+                receipt,
+            } => {
+                assert_eq!(call_id, "call-3");
+                assert!(!success);
+                assert!(result.is_some_and(|result| !result.success));
+                assert_eq!(
+                    receipt.map(|receipt| receipt.status),
+                    Some(crate::agent::ExecutionStatus::Failed)
+                );
+            }
+            event => panic!("expected terminal event, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn cancelled_deferred_calls_emit_terminal_queued_receipts() {
+        let call = ToolCallContext {
+            call_id: "call-later".to_string(),
+            tool_name: "bash".to_string(),
+            args: serde_json::json!({"command": "touch later"}),
+            safe_args: serde_json::json!({"command": "touch later"}),
+            extra_context: None,
+            pre_hook_args: serde_json::json!({"command": "touch later"}),
+            initial_firewall_verdict: FirewallVerdict::Allow,
+        };
+
+        let (event, result_block) =
+            cancelled_deferred_tool(&call, "Skipped after request cancellation.");
+
+        match event {
+            FromAgent::ToolEnd {
+                call_id,
+                success,
+                receipt: Some(receipt),
+                ..
+            } => {
+                assert_eq!(call_id, "call-later");
+                assert!(!success);
+                assert_eq!(
+                    receipt.status,
+                    crate::agent::ExecutionStatus::Cancelled {
+                        phase: ExecutionPhase::Queued
+                    }
+                );
+            }
+            other => panic!("expected ToolEnd, got {other:?}"),
+        }
+        assert!(matches!(
+            result_block,
+            ContentBlock::ToolResult {
+                tool_use_id,
+                is_error: Some(true),
+                ..
+            } if tool_use_id == "call-later"
+        ));
+    }
+
+    #[test]
+    fn interruption_before_deferred_suffix_closes_every_call() {
+        let deferred_calls = ["call-first", "call-second"].into_iter().map(|call_id| {
+            DeferredToolCall::Execute(ToolCallContext {
+                call_id: call_id.to_string(),
+                tool_name: "bash".to_string(),
+                args: serde_json::json!({"command": "touch later"}),
+                safe_args: serde_json::json!({"command": "touch later"}),
+                extra_context: None,
+                pre_hook_args: serde_json::json!({"command": "touch later"}),
+                initial_firewall_verdict: FirewallVerdict::Allow,
+            })
+        });
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let mut tool_results = Vec::new();
+
+        let cancelled_ids = cancel_deferred_suffix(&event_tx, deferred_calls, &mut tool_results);
+
+        assert_eq!(tool_results.len(), 2);
+        assert_eq!(
+            cancelled_ids,
+            HashSet::from(["call-first".to_string(), "call-second".to_string()])
+        );
+        let events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+        assert_eq!(events.len(), 6);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, FromAgent::ToolCall { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, FromAgent::ToolEnd { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn cancelled_suffix_announces_only_previously_unannounced_execute_calls() {
+        let args = serde_json::json!({"command": "touch later"});
+        let make_call = |call_id: &str| ToolCallContext {
+            call_id: call_id.to_string(),
+            tool_name: "bash".to_string(),
+            args: args.clone(),
+            safe_args: args.clone(),
+            extra_context: None,
+            pre_hook_args: args.clone(),
+            initial_firewall_verdict: FirewallVerdict::Allow,
+        };
+        let deferred_calls = [
+            DeferredToolCall::AwaitApproval(make_call("call-announced")),
+            DeferredToolCall::Execute(make_call("call-unannounced")),
+        ];
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let mut tool_results = Vec::new();
+
+        cancel_deferred_suffix(&event_tx, deferred_calls, &mut tool_results);
+
+        let events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+        let announced_ids: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                FromAgent::ToolCall { call_id, .. } => Some(call_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(announced_ids, vec!["call-unannounced"]);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, FromAgent::ToolEnd { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(tool_results.len(), 2);
+    }
+
+    #[test]
+    fn cancelled_suffix_discards_only_its_queued_approvals() {
+        let cancelled_ids = HashSet::from([
+            "call-cancelled-buffered".to_string(),
+            "call-cancelled-queued".to_string(),
+        ]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(("call-cancelled-queued".to_string(), true, None))
+            .expect("queue cancelled approval");
+        tx.send(("call-unrelated".to_string(), false, None))
+            .expect("queue unrelated approval");
+        let mut pending = HashMap::from([
+            ("call-cancelled-buffered".to_string(), (true, None)),
+            ("call-existing".to_string(), (false, None)),
+        ]);
+
+        discard_cancelled_tool_responses(&cancelled_ids, &mut rx, &mut pending);
+
+        assert!(!pending.contains_key("call-cancelled-buffered"));
+        assert!(!pending.contains_key("call-cancelled-queued"));
+        assert_eq!(
+            pending.get("call-existing").map(|(approved, _)| *approved),
+            Some(false)
+        );
+        assert_eq!(
+            pending.get("call-unrelated").map(|(approved, _)| *approved),
+            Some(false)
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn serial_tool_boundary_invalidates_cached_reads() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("ordered-cache.txt");
+        std::fs::write(&file_path, "before").expect("write initial file");
+        let executor = ToolExecutor::new(dir.path().display().to_string());
+        let args = serde_json::json!({
+            "file_path": file_path,
+            "lineNumbers": false,
+            "wrapInCodeFence": false,
+            "withDiagnostics": false,
+        });
+
+        let initial = executor.execute("read", &args, None, "read-before").await;
+        assert!(initial.output.contains("before"));
+        std::fs::write(&file_path, "after").expect("simulate serial mutation");
+        let stale = executor.execute("read", &args, None, "read-stale").await;
+        assert!(stale.output.contains("before"));
+
+        invalidate_cache_after_serial_tool(&executor, true);
+
+        let refreshed = executor.execute("read", &args, None, "read-after").await;
+        assert!(refreshed.output.contains("after"));
+        assert!(!refreshed.output.contains("before"));
+    }
+
+    #[test]
+    fn deferred_firewall_observes_workflow_state_from_prior_calls() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let firewall = ActionFirewall::new(dir.path());
+        let mut workflow = WorkflowStateTracker::default();
+        apply_workflow_state_hooks(
+            "collect_customer_context",
+            "call-capture",
+            &serde_json::json!({"subject": "customer email"}),
+            &mut workflow,
+            false,
+        )
+        .expect("record PII workflow state");
+
+        let verdict = deferred_firewall_verdict(
+            &firewall,
+            "send_notification",
+            &serde_json::json!({"message": "update"}),
+            &workflow.snapshot(),
+            None,
+            false,
+        );
+
+        assert!(matches!(
+            verdict,
+            FirewallVerdict::RequireApproval { reason }
+                if reason.contains("Unredacted PII")
+        ));
+
+        let call = ToolCallContext {
+            call_id: "call-notify".to_string(),
+            tool_name: "send_notification".to_string(),
+            args: serde_json::json!({"message": "update"}),
+            safe_args: serde_json::json!({"message": "update"}),
+            extra_context: None,
+            pre_hook_args: serde_json::json!({"message": "update"}),
+            initial_firewall_verdict: FirewallVerdict::Allow,
+        };
+        assert!(matches!(
+            deferred_policy_rejection_event(&call, "approval required"),
+            FromAgent::ToolEnd {
+                call_id,
+                success: false,
+                ..
+            } if call_id == "call-notify"
+        ));
+    }
+
+    /// Regression test for #3149: once a call is genuinely awaiting approval
+    /// (`requires_approval == true`, which after the fix now also holds in
+    /// Safe mode -- see `safe_mode_requires_approval_even_for_a_selective_safe_command`),
+    /// a `(call_id, false, None)` denial -- exactly what `handle_tool_approval`
+    /// sends on Deny -- must resolve `wait_for_tool_response` (covered by
+    /// `test_wait_for_tool_response_buffers_out_of_order` above) into a
+    /// denied `ToolExecution` that reads as an error to the model, and must
+    /// never reach `execute_tool`. `run_loop` only calls `execute_tool` when
+    /// `approved` is true (see the `if approved && result.is_none()` branch);
+    /// this asserts the denied-branch value it builds instead.
+    #[test]
+    fn denied_tool_response_is_an_error_result_and_never_executes() {
+        let (approved, result): (bool, Option<ToolResult>) = (false, None);
+        assert!(!approved, "run_loop must not call execute_tool when denied");
+
+        let execution = if approved {
+            unreachable!("this test only covers the denied branch");
+        } else {
+            ToolExecution::denied("call-1", "bash", DenialReason::User)
+        };
+        assert!(result.is_none());
+        assert!(execution.is_error());
+        assert!(execution
+            .model_content()
+            .to_lowercase()
+            .contains("denied by user"));
     }
 
     /// Every assistant `ToolUse` id must have exactly one matching `ToolResult`

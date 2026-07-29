@@ -88,6 +88,14 @@ async fn terminate_child(child: &mut tokio::process::Child) {
     if let Some(pid) = child.id() {
         let process_group = -(pid as libc::pid_t);
         // Kill the process group so shell children close inherited stdio promptly.
+        // SAFETY: `kill` only takes integer args (pid/signal); no memory-safety
+        // precondition crosses the FFI boundary. `pid` comes from
+        // `tokio::process::Child::id()` for a child we spawned and still hold a
+        // handle to, so the PID-reuse race is narrow: it would require the
+        // child to have already exited and the OS to have recycled its pid (and
+        // process-group id) to an unrelated process before this call runs.
+        // `child.kill().await` below still runs regardless, so this is
+        // best-effort early cleanup rather than the sole termination path.
         unsafe {
             libc::kill(process_group, libc::SIGKILL);
         }
@@ -562,15 +570,37 @@ impl ToolExecutor {
         cancel: Option<CancellationToken>,
     ) -> ToolResult {
         if McpClient::is_mcp_tool(tool_name) {
-            let client = match self.ensure_mcp_client().await {
+            let client = match cancel.as_ref() {
+                Some(token) => tokio::select! {
+                    biased;
+                    () = token.cancelled() => {
+                        return cancelled_tool_result("MCP tool cancelled");
+                    }
+                    client = self.ensure_mcp_client() => client,
+                },
+                None => self.ensure_mcp_client().await,
+            };
+            let client = match client {
                 Ok(client) => client,
                 Err(err) => return ToolResult::failure(err),
             };
 
-            match client
-                .call_tool_with_metadata(tool_name, args.clone())
-                .await
-            {
+            let call_result = match cancel.as_ref() {
+                Some(token) => tokio::select! {
+                    biased;
+                    () = token.cancelled() => {
+                        return cancelled_tool_result("MCP tool cancelled");
+                    }
+                    result = client.call_tool_with_metadata(tool_name, args.clone()) => result,
+                },
+                None => {
+                    client
+                        .call_tool_with_metadata(tool_name, args.clone())
+                        .await
+                }
+            };
+
+            match call_result {
                 Ok((server_name, tool_label, result)) => {
                     let text_output = result
                         .content
@@ -648,6 +678,7 @@ impl ToolExecutor {
                     let _ = tx.send(FromAgent::ToolEnd {
                         call_id: call_id.to_string(),
                         success: result.success,
+                        result: Some(result.clone()),
                         receipt: None,
                     });
                 }
@@ -2329,7 +2360,22 @@ impl ToolExecutor {
                     });
                 }
 
-                let result = self.web_fetch.execute(fetch_args).await;
+                // Race the fetch against per-turn cancellation (Ctrl+C) so a
+                // slow or hung request doesn't keep the turn alive until its
+                // own timeout. Unlike bash there is no child process tree to
+                // reap: dropping the losing `execute` future drops its
+                // in-flight HTTP request along with it.
+                let result = match cancel {
+                    Some(token) => {
+                        tokio::select! {
+                            result = self.web_fetch.execute(fetch_args) => result,
+                            () = token.cancelled() => {
+                                cancelled_tool_result("web_fetch cancelled")
+                            }
+                        }
+                    }
+                    None => self.web_fetch.execute(fetch_args).await,
+                };
 
                 // Send tool output event
                 if let Some(tx) = event_tx {
@@ -2343,6 +2389,7 @@ impl ToolExecutor {
                     let _ = tx.send(FromAgent::ToolEnd {
                         call_id: call_id.to_string(),
                         success: result.success,
+                        result: Some(result.clone()),
                         receipt: None,
                     });
                 }
@@ -2378,6 +2425,7 @@ impl ToolExecutor {
                     let _ = tx.send(FromAgent::ToolEnd {
                         call_id: call_id.to_string(),
                         success: result.success,
+                        result: Some(result.clone()),
                         receipt: None,
                     });
                 }
@@ -2413,6 +2461,7 @@ impl ToolExecutor {
                     let _ = tx.send(FromAgent::ToolEnd {
                         call_id: call_id.to_string(),
                         success: result.success,
+                        result: Some(result.clone()),
                         receipt: None,
                     });
                 }
@@ -2450,6 +2499,7 @@ impl ToolExecutor {
                         let _ = tx.send(FromAgent::ToolEnd {
                             call_id: call_id.to_string(),
                             success: result.success,
+                            result: Some(result.clone()),
                             receipt: None,
                         });
                     }
@@ -2461,4 +2511,8 @@ impl ToolExecutor {
             }
         }
     }
+}
+
+fn cancelled_tool_result(message: &str) -> ToolResult {
+    ToolResult::failure(message).with_details(serde_json::json!({"cancelled": true}))
 }

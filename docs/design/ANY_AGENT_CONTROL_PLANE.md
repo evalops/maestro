@@ -1,5 +1,8 @@
 # Any-Agent EvalOps Control Plane
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. No verified Rust equivalent was found in this repo for the paths below; several referenced docs may live in the separate `evalops/platform` repo rather than here. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 This document reviews how EvalOps can make the control plane, registry, and
 evidence loop work with any coding agent. It is intentionally broader than
 Maestro, but it is written from the Maestro repository because Maestro already

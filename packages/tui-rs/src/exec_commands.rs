@@ -34,11 +34,19 @@ pub const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 /// How long an executable command may run before it is killed.
 const EXEC_COMMAND_TIMEOUT: Duration = Duration::from_mins(2);
 
+#[cfg(target_os = "linux")]
+const EXECUTABLE_BUSY_RETRIES: usize = 10;
+
+#[cfg(target_os = "linux")]
+const EXECUTABLE_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
+
 /// Where an executable command was discovered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecCommandSource {
     /// `~/.composer/commands/`
     User,
+    /// A trusted plugin `commands/` directory.
+    Plugin,
     /// `.composer/commands/` in the workspace
     Project,
 }
@@ -48,6 +56,7 @@ impl ExecCommandSource {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::User => "user",
+            Self::Plugin => "plugin",
             Self::Project => "project",
         }
     }
@@ -84,10 +93,25 @@ pub struct ExecOutput {
 /// Later directories override earlier ones by name (project wins over user).
 #[must_use]
 pub fn discover(workspace_dir: &Path) -> Vec<ExecCommand> {
+    discover_with_plugin_dirs(workspace_dir, &[])
+}
+
+/// Discover executable commands while including trusted plugin directories.
+#[must_use]
+pub fn discover_with_plugin_dirs(
+    workspace_dir: &Path,
+    plugin_dirs: &[PathBuf],
+) -> Vec<ExecCommand> {
     let mut dirs: Vec<(PathBuf, ExecCommandSource)> = Vec::new();
     if let Some(home) = legacy_composer_home_dir() {
         dirs.push((home.join("commands"), ExecCommandSource::User));
     }
+    dirs.extend(
+        plugin_dirs
+            .iter()
+            .cloned()
+            .map(|path| (path, ExecCommandSource::Plugin)),
+    );
     dirs.push((
         workspace_dir.join(".composer").join("commands"),
         ExecCommandSource::Project,
@@ -226,13 +250,7 @@ pub fn read_source(path: &Path, max_bytes: usize) -> String {
 /// [`MAX_OUTPUT_BYTES`]). The process inherits the session environment and
 /// runs in `cwd`. Runs longer than the timeout are killed.
 pub fn run(path: &Path, args: &[String], cwd: &Path) -> std::io::Result<ExecOutput> {
-    let mut child = Command::new(path)
-        .args(args)
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+    let mut child = spawn_exec(path, args, cwd)?;
 
     let (Some(mut stdout), Some(mut stderr)) = (child.stdout.take(), child.stderr.take()) else {
         let _ = child.kill();
@@ -262,6 +280,41 @@ pub fn run(path: &Path, args: &[String], cwd: &Path) -> std::io::Result<ExecOutp
         timed_out,
         truncated: stdout_truncated || stderr_truncated,
     })
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_exec(path: &Path, args: &[String], cwd: &Path) -> std::io::Result<std::process::Child> {
+    for retries in 0..=EXECUTABLE_BUSY_RETRIES {
+        match Command::new(path)
+            .args(args)
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => return Ok(child),
+            Err(err)
+                if err.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && retries < EXECUTABLE_BUSY_RETRIES =>
+            {
+                std::thread::sleep(EXECUTABLE_BUSY_RETRY_DELAY);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    unreachable!("the final retry returns its error")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn spawn_exec(path: &Path, args: &[String], cwd: &Path) -> std::io::Result<std::process::Child> {
+    Command::new(path)
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
 }
 
 /// Read a stream to EOF, keeping at most [`MAX_OUTPUT_BYTES`] and discarding
@@ -363,6 +416,26 @@ mod tests {
     }
 
     #[test]
+    fn discovers_executable_plugin_commands() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let plugin_commands = tmp.path().join("plugin").join("commands");
+        write_script(
+            &plugin_commands,
+            "plugin-task",
+            "#!/bin/sh\necho plugin\n",
+            true,
+        );
+
+        let commands =
+            discover_with_plugin_dirs(&workspace, std::slice::from_ref(&plugin_commands));
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].source, ExecCommandSource::Plugin);
+        assert!(commands[0].path.starts_with(plugin_commands));
+    }
+
+    #[test]
     fn tokenize_args_handles_quotes_and_named_args() {
         assert_eq!(
             tokenize_args("foo bar baz"),
@@ -396,6 +469,25 @@ mod tests {
         assert_eq!(output.exit_code, Some(3));
         assert!(!output.timed_out);
         assert!(!output.truncated);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn run_retries_while_executable_is_temporarily_busy() {
+        use std::fs::OpenOptions;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let script = write_script(tmp.path(), "busy", "#!/bin/sh\necho ready\n", true);
+        let writer = OpenOptions::new().write(true).open(&script).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(25));
+            drop(writer);
+        });
+
+        let output = run(&script, &[], tmp.path()).unwrap();
+        release.join().unwrap();
+        assert_eq!(output.stdout.trim(), "ready");
+        assert_eq!(output.exit_code, Some(0));
     }
 
     #[cfg(unix)]

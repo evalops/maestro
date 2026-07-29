@@ -237,6 +237,7 @@ mod tests {
         let event = tracker.handle_event(&FromAgent::ToolEnd {
             call_id: "call-1".to_string(),
             success: true,
+            result: None,
             receipt: None,
         });
         assert!(event.is_none());

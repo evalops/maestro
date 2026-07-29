@@ -59,7 +59,36 @@ where
     for line in &textwrap::wrap(text, opts) {
         match line {
             std::borrow::Cow::Borrowed(slice) => {
-                let start = unsafe { slice.as_ptr().offset_from(text.as_ptr()) as usize };
+                // Recover `slice`'s byte offset within `text` without `unsafe`.
+                //
+                // `textwrap::wrap` (pinned to 0.16.2 in Cargo.lock) only returns a
+                // `Cow::Borrowed` line when it is a literal byte-range subslice of
+                // the exact `text` we passed in: `wrap_single_line`/
+                // `wrap_single_line_slow_path` build each line by indexing directly
+                // into the input (`&line[idx..idx + len]`) and only fall back to an
+                // owned `String` when textwrap's own `initial_indent`/
+                // `subsequent_indent` are non-empty or a word gets split with a
+                // hyphenation penalty. Every call site in this file leaves those
+                // textwrap-level indents at their default (empty) value -- the
+                // `RtOptions` initial/subsequent indents are ratatui `Line`s we
+                // splice in ourselves, never passed to `textwrap::Options` -- so a
+                // `Cow::Borrowed` result is guaranteed to alias `text`'s allocation.
+                //
+                // We therefore don't need pointer::offset_from (whose contract
+                // requires both pointers to derive from the same allocated object)
+                // and can subtract raw addresses instead: comparing/subtracting
+                // pointers cast `as usize` is always well-defined in Rust, so if this
+                // invariant is ever broken by a future refactor (e.g. someone sets
+                // a textwrap-level indent), the debug_assert below fails loudly in
+                // tests instead of the old code silently invoking UB in release.
+                let text_addr = text.as_ptr() as usize;
+                let slice_addr = slice.as_ptr() as usize;
+                debug_assert!(
+                    slice_addr >= text_addr && slice_addr + slice.len() <= text_addr + text.len(),
+                    "textwrap returned a Cow::Borrowed line that does not alias `text`; \
+                     the empty-indent invariant wrap_ranges_trim relies on no longer holds"
+                );
+                let start = slice_addr - text_addr;
                 let end = start + slice.len();
                 lines.push(start..end);
             }

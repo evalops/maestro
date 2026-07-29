@@ -82,7 +82,9 @@ fn failing_counter_server(server_name: &str, counter_path: &Path) -> serde_json:
         "name": server_name,
         "transport": "stdio",
         "command": "sh",
-        "timeout": 50,
+        // Leave enough headroom for a loaded parallel test process to
+        // schedule the child before the handshake timeout expires.
+        "timeout": 500,
         // These tests exercise retry/reload mechanics, not the workspace
         // trust gate, so opt the server out of the approval requirement.
         "requiresProjectApproval": false,
@@ -1505,6 +1507,7 @@ async fn typed_execution_emits_one_receipt_bearing_tool_end() {
             call_id,
             success: true,
             receipt: Some(receipt),
+            ..
         } if call_id == "receipt-call"
             && receipt.call_id == "receipt-call"
             && matches!(&receipt.details, ToolReceiptDetails::BuiltIn(_))
@@ -1891,5 +1894,81 @@ async fn pinned_bash_version_flows_into_receipt_and_session_json() {
     assert_eq!(
         crate::tools::BashVersion::from_contract(Some(&bash_details.version)),
         crate::tools::BashVersion::Legacy1
+    );
+}
+
+/// Partial coverage for issue #3154: before this, `cancel` (already threaded
+/// generically through `execute_impl`) was only ever consumed by the bash
+/// arm, so Ctrl+C during a `web_fetch` call looked responsive (the turn
+/// ended) while the request kept running to its own timeout, detached, in
+/// the background. A pre-cancelled token must short-circuit the fetch
+/// instead of ever awaiting the real request.
+///
+/// This does not cover every other affected tool (`extract_document`, `exa`,
+/// `gh`, `read`, `write`, `edit`, `grep`, `glob`) -- those still ignore
+/// `cancel` and are tracked as a follow-up.
+#[tokio::test]
+async fn web_fetch_is_cancelled_instead_of_making_the_request() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let executor = ToolExecutor::new(dir.path().display().to_string());
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+
+    let execution = executor
+        .execute_with_receipt_cancellable(
+            "web_fetch",
+            &serde_json::json!({"url": "https://example.invalid/should-not-be-fetched"}),
+            None,
+            "call-cancel-web-fetch",
+            cancel,
+        )
+        .await;
+
+    assert!(execution.is_error());
+    assert!(execution.model_content().to_lowercase().contains("cancel"));
+    assert!(matches!(
+        execution.receipt.status,
+        crate::agent::ExecutionStatus::Cancelled { .. }
+    ));
+}
+
+#[tokio::test]
+async fn mcp_call_honors_cancellation_before_client_setup() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let executor = ToolExecutor::new(dir.path().display().to_string());
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+
+    let execution = executor
+        .execute_with_receipt_cancellable(
+            "mcp__unavailable__slow_tool",
+            &serde_json::json!({}),
+            None,
+            "call-cancel-mcp",
+            cancel,
+        )
+        .await;
+
+    assert_eq!(
+        execution.receipt.status,
+        crate::agent::ExecutionStatus::Cancelled {
+            phase: crate::agent::ExecutionPhase::Running
+        }
+    );
+
+    let retry = executor
+        .execute_with_receipt(
+            "mcp__unavailable__slow_tool",
+            &serde_json::json!({}),
+            None,
+            "call-retry-mcp",
+        )
+        .await;
+    assert!(
+        !matches!(
+            retry.receipt.status,
+            crate::agent::ExecutionStatus::Cancelled { .. }
+        ),
+        "a later uncancelled attempt must not reuse the cancellation result"
     );
 }

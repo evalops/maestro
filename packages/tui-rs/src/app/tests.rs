@@ -3,7 +3,7 @@ use super::*;
 use crate::keybindings::{
     keybindings_test_env_lock, queued_follow_up_edit_binding_for_terminal_name,
 };
-use crate::state::QueueMode;
+use crate::state::{ApprovalMode, QueueMode};
 use tempfile::tempdir;
 
 fn acquire_keybindings_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
@@ -48,6 +48,97 @@ fn test_should_handle_key_event_press_and_repeat() {
     assert!(should_handle_key_event(KeyEventKind::Press));
     assert!(should_handle_key_event(KeyEventKind::Repeat));
     assert!(!should_handle_key_event(KeyEventKind::Release));
+}
+
+#[test]
+fn uncurses_input_kill_switch_defaults_on_and_accepts_only_zero_as_off() {
+    assert!(uncurses_input_enabled(None));
+    assert!(uncurses_input_enabled(Some(std::ffi::OsStr::new("1"))));
+    assert!(!uncurses_input_enabled(Some(std::ffi::OsStr::new("0"))));
+}
+
+#[test]
+fn terminal_theme_query_requires_fallback_and_respects_throttle() {
+    assert!(!terminal_theme_query_due(
+        false,
+        true,
+        false,
+        Some(Duration::from_secs(3))
+    ));
+    assert!(!terminal_theme_query_due(
+        true,
+        false,
+        false,
+        Some(Duration::from_secs(3))
+    ));
+    assert!(!terminal_theme_query_due(
+        true,
+        true,
+        true,
+        Some(Duration::from_secs(3))
+    ));
+    assert!(!terminal_theme_query_due(
+        true,
+        true,
+        false,
+        Some(Duration::from_millis(1999))
+    ));
+    assert!(terminal_theme_query_due(
+        true,
+        true,
+        false,
+        Some(Duration::from_secs(2))
+    ));
+    assert!(terminal_theme_query_due(true, true, false, None));
+}
+
+#[test]
+fn terminal_theme_events_respect_theme_follow_opt_out() {
+    let mut app = new_test_app();
+    app.state.theme_follower = None;
+    let scheme = if crate::themes::current_theme_name() == "light" {
+        uncurses::event::ColorScheme::Light
+    } else {
+        uncurses::event::ColorScheme::Dark
+    };
+
+    assert!(!app.apply_terminal_theme_event(&AppTerminalEvent::ColorScheme(scheme)));
+    assert!(app.state.theme_follower.is_none());
+}
+
+#[test]
+fn terminal_theme_events_apply_typed_and_hysteretic_updates() {
+    let original = crate::themes::current_theme_name();
+    crate::themes::set_theme_by_name("dark").expect("built-in dark theme");
+    let mut app = new_test_app();
+    app.state.theme_follower = Some(crate::themes::osc11::AutoThemeFollower::new("dark"));
+
+    assert!(
+        app.apply_terminal_theme_event(&AppTerminalEvent::ColorScheme(
+            uncurses::event::ColorScheme::Light
+        ))
+    );
+    assert_eq!(crate::themes::current_theme_name(), "light");
+    assert_eq!(
+        app.state
+            .theme_follower
+            .as_ref()
+            .map(|follower| follower.current()),
+        Some("light")
+    );
+
+    crate::themes::set_theme_by_name("dark").expect("built-in dark theme");
+    app.state.theme_follower = Some(crate::themes::osc11::AutoThemeFollower::new("dark"));
+    let light_background = AppTerminalEvent::BackgroundColor {
+        red: 255,
+        green: 255,
+        blue: 255,
+    };
+    assert!(!app.apply_terminal_theme_event(&light_background));
+    assert!(app.apply_terminal_theme_event(&light_background));
+    assert_eq!(crate::themes::current_theme_name(), "light");
+
+    crate::themes::set_theme_by_name(&original).expect("restore original theme");
 }
 
 #[test]
@@ -896,74 +987,6 @@ fn test_poll_workspace_scan_applies_results_and_confirms_refresh() {
 // ─────────────────────────────────────────────────────────────────────────
 
 /// Poll until a spawned tool completion lands, failing after `secs`.
-async fn await_tool_completion(app: &mut App, secs: u64) {
-    let completed = tokio::time::timeout(Duration::from_secs(secs), async {
-        loop {
-            if app.poll_tool_completions() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
-    assert!(completed.is_ok(), "tool completion timed out");
-}
-
-#[tokio::test]
-async fn test_tool_execution_runs_on_spawned_task_and_responds() {
-    let mut app = new_test_app();
-    // Skip session-file writes from record_tool_result in the test.
-    app.session_resume_failed = true;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    app.tool_response_tx = Some(tx);
-
-    app.execute_tool_and_respond(
-        "call-1".to_string(),
-        "bash".to_string(),
-        serde_json::json!({"command": "echo hello-from-tool"}),
-    );
-    // The call returns immediately; execution is in flight, not awaited inline.
-    assert!(app.running_tools.contains_key("call-1"));
-
-    await_tool_completion(&mut app, 10).await;
-    assert!(app.running_tools.is_empty());
-
-    let (call_id, success, result) = rx.try_recv().expect("tool response sent");
-    assert_eq!(call_id, "call-1");
-    assert!(success);
-    assert!(result.unwrap().output.contains("hello-from-tool"));
-}
-
-#[tokio::test]
-async fn test_cancel_running_tools_kills_long_command() {
-    let mut app = new_test_app();
-    app.session_resume_failed = true;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    app.tool_response_tx = Some(tx);
-
-    app.execute_tool_and_respond(
-        "call-2".to_string(),
-        "bash".to_string(),
-        serde_json::json!({"command": "sleep 60", "timeout": 60_000}),
-    );
-    // Let the task spawn the child, then interrupt (the Ctrl+C path).
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    app.cancel_running_tools();
-    assert!(app.running_tools.is_empty());
-
-    // The 60s command must finish promptly once cancelled.
-    await_tool_completion(&mut app, 10).await;
-
-    // The tuple bool is the "executed (not denied)" flag; the tool result
-    // itself must report the cancellation failure.
-    let (call_id, answered, result) = rx.try_recv().expect("tool response sent");
-    assert_eq!(call_id, "call-2");
-    assert!(answered);
-    let result = result.unwrap();
-    assert!(!result.success);
-    assert_eq!(result.error.as_deref(), Some("Command cancelled"));
-}
-
 #[test]
 fn test_update_viewport_capabilities_on_resize() {
     let mut app = new_test_app();
@@ -2921,4 +2944,398 @@ async fn test_detail_view_from_approval_modal_expands_and_restores() {
     assert_eq!(app.active_modal, ActiveModal::Approval);
     assert!(app.detail_view.is_none());
     assert!(app.approval_controller.current().is_some());
+}
+
+#[tokio::test]
+async fn test_second_approval_upgrades_open_modal_to_batched() {
+    // Regression for #3085: the agent emits one ToolCall event per
+    // approval-needing call; when a second approval arrives while the
+    // single-call modal is open, the visible modal must upgrade to the
+    // batched variant without losing the first request.
+    let mut app = new_test_app();
+    app.state.approval_mode = ApprovalMode::Safe;
+
+    let tool_call = |call_id: &str, command: &str| FromAgent::ToolCall {
+        call_id: call_id.to_string(),
+        tool: "bash".to_string(),
+        args: serde_json::json!({ "command": command }),
+        requires_approval: true,
+    };
+
+    // First approval opens the modal in the single-call variant.
+    app.handle_agent_message(tool_call("call-1", "git status"))
+        .await
+        .expect("first tool call");
+    assert_eq!(app.active_modal, ActiveModal::Approval);
+    assert_eq!(
+        approval_modal_kind(&app.approval_controller),
+        ApprovalModalKind::Single
+    );
+
+    // Second approval arrives while the modal is open: it enqueues and the
+    // render path now selects the batched variant.
+    app.handle_agent_message(tool_call("call-2", "cargo test"))
+        .await
+        .expect("second tool call");
+    assert_eq!(app.active_modal, ActiveModal::Approval);
+    assert_eq!(app.approval_controller.total_count(), 2);
+    assert_eq!(
+        approval_modal_kind(&app.approval_controller),
+        ApprovalModalKind::Batched
+    );
+
+    // The first request is still the head of the queue.
+    assert_eq!(
+        app.approval_controller
+            .current()
+            .map(|r| r.call_id.as_str()),
+        Some("call-1")
+    );
+
+    // The batched modal the render path builds shows both calls at once.
+    let modal = BatchedApprovalModal::new(app.approval_controller.pending())
+        .selected(app.approval_controller.selected_index());
+    let area = ratatui::layout::Rect::new(0, 0, 100, 30);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    ratatui::widgets::Widget::render(modal, area, &mut buf);
+    let text: String = buf
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
+    assert!(text.contains("2 Actions Require Approval"));
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Dual-executor fix (issues #3149, #3156): the native agent is the sole
+// owner of the approve/execute decision. `app.rs` must trust
+// `FromAgent::ToolCall`'s `requires_approval` field instead of recomputing
+// its own verdict, and must never execute a tool the native agent has
+// already auto-executed inline.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Regression test for #3156: before the fix, receiving a `ToolCall` with
+/// `requires_approval: false` (the native agent's own auto-approve
+/// decision, which had already executed the tool inline) made `app.rs`
+/// recompute its own verdict and, agreeing it needed no approval, execute
+/// the tool a second time. The app now owns no tool-execution path: it only
+/// records the event and leaves execution to the native agent.
+#[tokio::test]
+async fn auto_approved_tool_call_does_not_execute_a_second_time() {
+    let mut app = new_test_app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.tool_response_tx = Some(tx);
+
+    app.handle_agent_message(FromAgent::ToolCall {
+        call_id: "call-1".to_string(),
+        tool: "bash".to_string(),
+        args: serde_json::json!({"command": "ls -la"}),
+        requires_approval: false,
+    })
+    .await
+    .expect("handle auto-approved tool call");
+
+    assert!(rx.try_recv().is_err());
+    assert_ne!(
+        app.active_modal,
+        ActiveModal::Approval,
+        "an auto-approved call must never pop the approval modal"
+    );
+}
+
+/// Approval-gated native execution reports completion through ToolOutput/
+/// ToolEnd after the agent runs it in order. Those events must complete the
+/// durable history and persisted session just like auto-approved calls.
+#[tokio::test]
+async fn approved_native_tool_events_complete_tool_history() {
+    let mut app = new_test_app();
+    let temp = tempdir().expect("temp session directory");
+    app.session_manager =
+        SessionManager::with_sessions_dir("native-tool-test", temp.path().to_path_buf());
+
+    app.handle_agent_message(FromAgent::ResponseStart {
+        response_id: "response-native-tool".to_string(),
+    })
+    .await
+    .expect("handle response start");
+    app.handle_agent_message(FromAgent::ToolCall {
+        call_id: "call-native".to_string(),
+        tool: "bash".to_string(),
+        args: serde_json::json!({"command": "printf native-output"}),
+        requires_approval: true,
+    })
+    .await
+    .expect("handle approval-gated tool call");
+    app.handle_agent_message(FromAgent::ToolOutput {
+        call_id: "call-native".to_string(),
+        content: "native-output".to_string(),
+    })
+    .await
+    .expect("handle native tool output");
+    app.handle_agent_message(FromAgent::ToolEnd {
+        call_id: "call-native".to_string(),
+        success: true,
+        result: None,
+        receipt: None,
+    })
+    .await
+    .expect("handle native tool end");
+
+    let execution = app
+        .tool_history
+        .get("call-native")
+        .expect("native execution should remain in tool history");
+    assert!(execution.success, "native execution should be completed");
+    assert_eq!(execution.output.as_deref(), Some("native-output"));
+    assert!(
+        execution.duration.is_some(),
+        "completion must stop the running timer"
+    );
+    assert_eq!(app.tool_history.global_stats().successes, 1);
+
+    let session_path = std::fs::read_dir(temp.path())
+        .expect("read temp session directory")
+        .next()
+        .expect("native completion should create a session file")
+        .expect("read session entry")
+        .path();
+    let session = std::fs::read_to_string(session_path).expect("read persisted session");
+    assert!(session.contains(r#""role":"toolResult""#));
+    assert!(session.contains(r#""toolCallId":"call-native""#));
+    assert!(session.contains("native-output"));
+}
+
+#[tokio::test]
+async fn cancelled_native_tool_stays_cancelled_without_failure_stats() {
+    let mut app = new_test_app();
+    let temp = tempdir().expect("temp session directory");
+    app.session_manager =
+        SessionManager::with_sessions_dir("native-cancel-test", temp.path().to_path_buf());
+    app.handle_agent_message(FromAgent::ResponseStart {
+        response_id: "response-native-cancel".to_string(),
+    })
+    .await
+    .expect("handle response start");
+    app.handle_agent_message(FromAgent::ToolCall {
+        call_id: "call-cancelled".to_string(),
+        tool: "bash".to_string(),
+        args: serde_json::json!({"command": "sleep 30"}),
+        requires_approval: true,
+    })
+    .await
+    .expect("handle approval-gated tool call");
+    app.handle_agent_message(FromAgent::ToolEnd {
+        call_id: "call-cancelled".to_string(),
+        success: false,
+        result: Some(ToolResult::failure(
+            "Tool execution cancelled during Running",
+        )),
+        receipt: Some(
+            ToolExecution::cancelled(
+                "call-cancelled",
+                "bash",
+                crate::agent::ExecutionSource::Native,
+                crate::agent::ExecutionPhase::Running,
+            )
+            .receipt,
+        ),
+    })
+    .await
+    .expect("handle cancelled native tool");
+
+    let row = app
+        .state
+        .messages
+        .iter()
+        .flat_map(|message| &message.tool_calls)
+        .find(|call| call.call_id == "call-cancelled")
+        .expect("cancelled tool row");
+    assert_eq!(row.status, crate::state::ToolCallStatus::Cancelled);
+
+    let execution = app
+        .tool_history
+        .get("call-cancelled")
+        .expect("cancelled execution should leave tool history");
+    assert!(execution.duration.is_some());
+    assert_eq!(app.tool_history.global_stats().failures, 0);
+}
+
+#[tokio::test]
+async fn auto_approved_extract_document_persists_attachment_text() {
+    let mut app = new_test_app();
+    let temp = tempdir().expect("temp session directory");
+    app.session_manager =
+        SessionManager::with_sessions_dir("native-extract-test", temp.path().to_path_buf());
+
+    app.handle_agent_message(FromAgent::ResponseStart {
+        response_id: "response-native-extract".to_string(),
+    })
+    .await
+    .expect("handle response start");
+    app.handle_agent_message(FromAgent::ToolCall {
+        call_id: "call-document".to_string(),
+        tool: "extract_document".to_string(),
+        args: serde_json::json!({"url": "https://example.com/document.pdf"}),
+        requires_approval: false,
+    })
+    .await
+    .expect("handle auto-approved document extraction");
+    app.handle_agent_message(FromAgent::ToolOutput {
+        call_id: "call-document".to_string(),
+        content: "extracted document text".to_string(),
+    })
+    .await
+    .expect("handle extracted text");
+    app.handle_agent_message(FromAgent::ToolEnd {
+        call_id: "call-document".to_string(),
+        success: true,
+        result: Some(ToolResult {
+            success: true,
+            output: "extracted document text".to_string(),
+            error: None,
+            details: Some(serde_json::json!({"url": "attachment-document"})),
+        }),
+        receipt: None,
+    })
+    .await
+    .expect("handle document extraction end");
+
+    let session_path = std::fs::read_dir(temp.path())
+        .expect("read temp session directory")
+        .next()
+        .expect("document extraction should create a session file")
+        .expect("read session entry")
+        .path();
+    let session = std::fs::read_to_string(session_path).expect("read persisted session");
+    assert!(session.contains(r#""type":"attachment_extract""#));
+    assert!(session.contains(r#""attachmentId":"attachment-document""#));
+    assert!(session.contains(r#""extractedText":"extracted document text""#));
+}
+
+#[tokio::test]
+async fn auto_approved_native_tool_failure_preserves_the_exact_error() {
+    let mut app = new_test_app();
+    let temp = tempdir().expect("temp session directory");
+    app.session_manager =
+        SessionManager::with_sessions_dir("native-failure-test", temp.path().to_path_buf());
+
+    app.handle_agent_message(FromAgent::ResponseStart {
+        response_id: "response-native-failure".to_string(),
+    })
+    .await
+    .expect("handle response start");
+    app.handle_agent_message(FromAgent::ToolCall {
+        call_id: "call-failure".to_string(),
+        tool: "web_fetch".to_string(),
+        args: serde_json::json!({"url": "not-a-url"}),
+        requires_approval: false,
+    })
+    .await
+    .expect("handle auto-approved tool call");
+    app.handle_agent_message(FromAgent::ToolEnd {
+        call_id: "call-failure".to_string(),
+        success: false,
+        result: Some(ToolResult::failure("Invalid URL: not-a-url")),
+        receipt: None,
+    })
+    .await
+    .expect("handle native tool failure");
+
+    let execution = app
+        .tool_history
+        .get("call-failure")
+        .expect("failed native execution should remain in tool history");
+    assert_eq!(execution.error.as_deref(), Some("Invalid URL: not-a-url"));
+
+    let session_path = std::fs::read_dir(temp.path())
+        .expect("read temp session directory")
+        .next()
+        .expect("native failure should create a session file")
+        .expect("read session entry")
+        .path();
+    let session = std::fs::read_to_string(session_path).expect("read persisted session");
+    assert!(session.contains("Invalid URL: not-a-url"));
+}
+
+/// Regression test for #3149: before the fix, `app.rs` recomputed its own
+/// `needs_approval` from `state.approval_mode` instead of trusting the
+/// agent's decision. Now that the native agent's gate is mode-aware (see
+/// `tool_requires_approval` in `agent/native.rs`), Safe mode's `ToolCall`
+/// events arrive with `requires_approval: true`; `app.rs` must show the
+/// approval modal and must not execute before the user decides.
+#[tokio::test]
+async fn requires_approval_tool_call_waits_for_the_modal_before_executing() {
+    let mut app = new_test_app();
+
+    app.handle_agent_message(FromAgent::ToolCall {
+        call_id: "call-2".to_string(),
+        tool: "bash".to_string(),
+        args: serde_json::json!({"command": "ls"}),
+        requires_approval: true,
+    })
+    .await
+    .expect("handle approval-required tool call");
+
+    assert_eq!(app.active_modal, ActiveModal::Approval);
+    assert!(app.approval_controller.current().is_some());
+}
+
+#[tokio::test]
+async fn batched_approvals_relay_fifo_decisions_without_starting_parallel_tools() {
+    let mut app = new_test_app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.tool_response_tx = Some(tx);
+
+    for (call_id, command) in [("call-a", "printf a"), ("call-b", "printf b")] {
+        app.handle_agent_message(FromAgent::ToolCall {
+            call_id: call_id.to_string(),
+            tool: "bash".to_string(),
+            args: serde_json::json!({"command": command}),
+            requires_approval: true,
+        })
+        .await
+        .expect("queue approval-required tool call");
+    }
+
+    app.handle_key(KeyCode::Char('a'), CrosstermModifiers::NONE)
+        .await
+        .expect("approve batch");
+
+    let decisions = [rx.try_recv().unwrap(), rx.try_recv().unwrap()];
+    assert_eq!(decisions[0].0, "call-a");
+    assert!(decisions[0].1);
+    assert!(decisions[0].2.is_none());
+    assert_eq!(decisions[1].0, "call-b");
+    assert!(decisions[1].1);
+    assert!(decisions[1].2.is_none());
+    assert!(rx.try_recv().is_err());
+}
+
+/// Regression test for #3149: Deny must not execute the tool, and must
+/// relay `(call_id, false, None)` back to the native agent so its
+/// `wait_for_tool_response` resolves to a denial instead of hanging (see
+/// `denied_tool_response_is_an_error_result_and_never_executes` in
+/// `agent/native.rs`, which proves that tuple becomes an error result for
+/// the model).
+#[tokio::test]
+async fn deny_never_executes_and_relays_the_denial_to_the_agent() {
+    let mut app = new_test_app();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.tool_response_tx = Some(tx);
+
+    app.handle_tool_approval(
+        "call-3".to_string(),
+        "bash".to_string(),
+        serde_json::json!({"command": "rm -rf /"}),
+        false,
+    )
+    .await
+    .expect("handle deny");
+
+    let (call_id, approved, result) = rx
+        .try_recv()
+        .expect("deny must send a response back to the native agent");
+    assert_eq!(call_id, "call-3");
+    assert!(!approved);
+    assert!(result.is_none());
 }

@@ -1,9 +1,12 @@
 //! Bash Command Analyzer
 //!
-//! Analyzes shell commands for safety without tree-sitter dependency.
-//! Uses regex-based parsing to extract command structure and determine risk.
+//! Analyzes shell commands with a bounded tree-sitter Bash parse and determines risk.
 
 use std::collections::HashSet;
+use tree_sitter::{Node, Parser};
+
+const MAX_BASH_SOURCE_BYTES: usize = 1_048_576;
+const MAX_BASH_NODES: usize = 50_000;
 
 /// Risk level for a bash command
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,66 +238,128 @@ static CONDITIONALLY_DANGEROUS: std::sync::LazyLock<HashSet<&'static str>> =
 #[must_use]
 pub fn analyze_bash_command(command: &str) -> BashAnalysis {
     let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return BashAnalysis {
+            risk: CommandRisk::Safe,
+            reason: "Empty command".to_string(),
+            commands: Vec::new(),
+            has_pipes: false,
+            has_redirects: false,
+            has_subshell: false,
+            has_background: false,
+            has_command_substitution: false,
+        };
+    }
 
-    // Check for shell features
-    let has_pipes = trimmed.contains('|');
-    let has_redirects = trimmed.contains('>') || trimmed.contains('<');
-    let has_subshell = trimmed.contains('(') && trimmed.contains(')');
-    let has_background = trimmed.contains('&') && !trimmed.contains("&&");
-    let has_command_substitution = trimmed.contains("$(") || trimmed.contains('`');
-
-    // Try to parse commands
-    let commands = parse_commands(trimmed);
+    let Ok(parsed) = parse_commands(trimmed) else {
+        return BashAnalysis {
+            risk: CommandRisk::RequiresApproval,
+            reason: "Bash command could not be parsed safely".to_string(),
+            commands: Vec::new(),
+            has_pipes: false,
+            has_redirects: false,
+            has_subshell: false,
+            has_background: false,
+            has_command_substitution: false,
+        };
+    };
 
     // Determine overall risk
     let (risk, reason) = determine_risk(
-        &commands,
-        has_pipes,
-        has_redirects,
-        has_command_substitution,
+        &parsed.commands,
+        parsed.has_pipes,
+        parsed.has_redirects,
+        parsed.has_command_substitution,
     );
 
     BashAnalysis {
         risk,
         reason,
-        commands,
-        has_pipes,
-        has_redirects,
-        has_subshell,
-        has_background,
-        has_command_substitution,
+        commands: parsed.commands,
+        has_pipes: parsed.has_pipes,
+        has_redirects: parsed.has_redirects,
+        has_subshell: parsed.has_subshell,
+        has_background: parsed.has_background,
+        has_command_substitution: parsed.has_command_substitution,
     }
 }
 
-/// Parse a command string into individual commands
-fn parse_commands(input: &str) -> Vec<ParsedCommand> {
-    let mut commands = Vec::new();
+struct ParsedShell {
+    commands: Vec<ParsedCommand>,
+    has_pipes: bool,
+    has_redirects: bool,
+    has_subshell: bool,
+    has_background: bool,
+    has_command_substitution: bool,
+}
 
-    // Split by common separators (simplified parsing)
-    // Note: This is a simplified parser - a full parser would use tree-sitter
-    let parts: Vec<&str> = input
-        .split(['|', ';', '\n'].as_ref())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect();
+/// Parse a command string into individual commands.
+fn parse_commands(input: &str) -> Result<ParsedShell, ()> {
+    if input.len() > MAX_BASH_SOURCE_BYTES {
+        return Err(());
+    }
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_bash::LANGUAGE.into())
+        .map_err(|_| ())?;
+    #[allow(deprecated)]
+    parser.set_timeout_micros(50_000);
+    let tree = parser.parse(input, None).ok_or(())?;
+    if tree.root_node().has_error() {
+        return Err(());
+    }
 
-    for part in parts {
-        // Handle && and ||
-        let subparts: Vec<&str> = part
-            .split("&&")
-            .flat_map(|s| s.split("||"))
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .collect();
+    let mut parsed = ParsedShell {
+        commands: Vec::new(),
+        has_pipes: false,
+        has_redirects: false,
+        has_subshell: false,
+        has_background: false,
+        has_command_substitution: false,
+    };
+    let mut stack = vec![tree.root_node()];
+    let mut visited = 0usize;
+    while let Some(node) = stack.pop() {
+        visited += 1;
+        if visited > MAX_BASH_NODES {
+            return Err(());
+        }
+        classify_syntax_node(node, input, &mut parsed);
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+    Ok(parsed)
+}
 
-        for subpart in subparts {
-            if let Some(cmd) = parse_single_command(subpart) {
-                commands.push(cmd);
+fn classify_syntax_node(node: Node<'_>, source: &str, parsed: &mut ParsedShell) {
+    match node.kind() {
+        "command" => {
+            if let Ok(raw) = node.utf8_text(source.as_bytes()) {
+                if let Some(command) = parse_single_command(raw) {
+                    parsed.commands.push(command);
+                }
+            }
+        }
+        "pipeline" => parsed.has_pipes = true,
+        "redirected_statement" | "file_redirect" | "heredoc_redirect" => {
+            parsed.has_redirects = true;
+        }
+        "subshell" => parsed.has_subshell = true,
+        "command_substitution" | "process_substitution" => {
+            parsed.has_command_substitution = true;
+        }
+        _ => {
+            if !node.is_named() {
+                if let Ok(text) = node.utf8_text(source.as_bytes()) {
+                    if text == "&" {
+                        parsed.has_background = true;
+                    }
+                }
             }
         }
     }
-
-    commands
 }
 
 /// Parse a single command into program and arguments
@@ -634,6 +699,21 @@ mod tests {
         // Unsafe pipe (unknown command)
         let analysis = analyze_bash_command("cat file | custom_cmd");
         assert_eq!(analysis.risk, CommandRisk::RequiresApproval);
+    }
+
+    #[test]
+    fn quoted_shell_operators_are_not_parsed_as_commands() {
+        let analysis = analyze_bash_command("printf '%s|%s;still-one-command' left right");
+        assert_eq!(analysis.commands.len(), 1);
+        assert_eq!(analysis.commands[0].program, "printf");
+        assert!(!analysis.has_pipes);
+    }
+
+    #[test]
+    fn malformed_bash_requires_approval() {
+        let analysis = analyze_bash_command("echo $(unterminated");
+        assert_eq!(analysis.risk, CommandRisk::RequiresApproval);
+        assert!(analysis.reason.contains("could not be parsed"));
     }
 
     #[test]

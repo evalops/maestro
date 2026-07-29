@@ -5,6 +5,7 @@ COPY packages/tui-rs ./packages/tui-rs
 COPY packages/control-plane-rs ./packages/control-plane-rs
 COPY packages/maestro-rs ./packages/maestro-rs
 COPY packages/ambient-agent-rs ./packages/ambient-agent-rs
+COPY packages/ai-rs ./packages/ai-rs
 COPY proto ./proto
 COPY test/fixtures/codex/coding-tools-doctor-v1.json ./test/fixtures/codex/coding-tools-doctor-v1.json
 RUN cargo build --release --locked -p maestro
@@ -20,7 +21,12 @@ WORKDIR /app
 COPY --from=native /app/target/release/maestro /usr/local/bin/maestro
 COPY packages/web/dist ./packages/web/dist
 COPY skills ./skills
-ENV MAESTRO_CONTROL_HOST=0.0.0.0 MAESTRO_WEB_REQUIRE_KEY=0 PORT=3000
+# The image binds to every interface, so the control plane requires API-key
+# auth. Supply a key at run time, for example:
+#   docker run -p 3000:3000 -e MAESTRO_WEB_API_KEY="$(openssl rand -hex 32)" ghcr.io/evalops/maestro
+# Do not add MAESTRO_WEB_REQUIRE_KEY=0 here: it is only honored for loopback
+# binds and the server refuses to start when it is combined with 0.0.0.0.
+ENV MAESTRO_CONTROL_HOST=0.0.0.0 PORT=3000
 EXPOSE 3000
 ENTRYPOINT ["maestro"]
 CMD ["web"]

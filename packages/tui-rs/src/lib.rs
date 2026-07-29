@@ -55,10 +55,14 @@
 /// Handles spawning, messaging, and coordinating with the AI agent subprocess.
 pub mod agent;
 
+pub mod acp_cli;
 pub mod agents_cli;
 /// AI provider clients (Anthropic, OpenAI, etc.).
 /// Provides unified interfaces for different AI APIs with streaming support.
-pub mod ai;
+/// Lives in the `maestro-ai` crate (packages/ai-rs); re-exported here under
+/// its historical module path so existing `crate::ai::...` call sites are
+/// unaffected.
+pub use maestro_ai as ai;
 /// File-level checkpoints for `/rewind files` (restore files an agent turn modified).
 pub mod checkpoints;
 pub mod doctor;
@@ -77,6 +81,10 @@ pub mod components;
 /// Configuration loading and management.
 /// Reads from config files, environment variables, and CLI overrides.
 pub mod config;
+
+/// Async-signal-safe crash handler for SIGSEGV/SIGBUS.
+/// Complements the panic hook: records hard crashes and restores the terminal.
+pub mod crash_handler;
 
 /// Visual effects (spinners, shimmers, animations).
 /// Terminal-based animations for loading states and visual feedback.
@@ -214,6 +222,7 @@ pub mod scenario_cli;
 pub mod search_cli;
 pub mod update_cli;
 pub mod value_cli;
+pub mod video;
 
 /// Droid-style session worktrees (`-w` / `--worktree`).
 pub mod worktree;
@@ -249,6 +258,7 @@ pub mod wrapping;
 /// Model Context Protocol (MCP) client.
 /// Connects to external MCP servers for additional tools and capabilities.
 pub mod mcp;
+pub mod mcp_config_cli;
 
 /// LSP diagnostics bridge (optional Node-based CLI integration).
 pub mod lsp;
@@ -256,6 +266,7 @@ pub mod lsp;
 /// Telemetry and wide events.
 /// Canonical turn events with tail sampling for observability.
 pub mod telemetry;
+pub mod transcript;
 
 /// Usage and cost tracking.
 /// Tracks token consumption and estimates costs across sessions.
@@ -314,6 +325,11 @@ pub mod key_binding;
 /// ANSI terminal commands for scroll regions and terminal control.
 /// Essential for proper scrolling over SSH.
 pub mod ansi_commands;
+
+/// Control-character sanitization for content that reaches a real terminal
+/// outside ratatui's `Buffer` (which filters it for the TUI chat pane).
+/// Use this at every raw `print!`/`write!`/`queue!(Print(_))` boundary.
+pub mod output_sanitize;
 
 /// Synchronized output for flicker-free terminal updates.
 /// Buffers output for atomic display.

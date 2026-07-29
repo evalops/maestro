@@ -367,6 +367,9 @@ pub struct ClientCapabilities {
     pub utility_operations: Option<Vec<UtilityOperation>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_agent_events: Option<bool>,
+    /// Desired transcript granularity for replay and live subscriptions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_grade: Option<crate::transcript::TranscriptGrade>,
 }
 
 /// Snapshot of a live headless connection attached to a runtime.

@@ -18,9 +18,9 @@
 //! MCP servers are configured via JSON files with precedence:
 //!
 //! 1. Enterprise: `~/.composer/enterprise/mcp.json`
-//! 2. Project: `.composer/mcp.json`
-//! 3. Local: `.composer/mcp.local.json` (git-ignored)
-//! 4. User: `~/.composer/mcp.json`
+//! 2. Project: `.maestro/mcp.json` (legacy `.composer` also supported)
+//! 3. Local: `.maestro/mcp.local.json` (git-ignored)
+//! 4. User: `~/.maestro/mcp.json` (legacy `.composer` also supported)
 //!
 //! # Example Configuration
 //!
@@ -66,6 +66,7 @@ mod prompt_formatting;
 pub mod protocol;
 
 pub use client::{McpClient, McpConnection, McpError, McpRuntimeEvent};
+pub(crate) use config::effective_user_config_path;
 pub use config::{
     expand_env_vars_for_scope, load_mcp_config, server_requires_workspace_approval, McpConfig,
     McpConfigScope, McpServerConfig, McpTransport,

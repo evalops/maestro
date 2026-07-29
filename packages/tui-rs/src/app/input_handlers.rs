@@ -71,11 +71,6 @@ impl App {
             // Quit
             KeyCode::Char('c') if ctrl => {
                 if self.state.busy {
-                    // Interrupt in-flight tool executions first: their
-                    // cancellation tokens kill child process groups, so a
-                    // long bash run stops now instead of after its timeout.
-                    self.cancel_running_tools();
-
                     let has_queued_steering = self.state.queued_steering_count > 0;
                     self.submit_queued_steering_after_interrupt = has_queued_steering;
                     self.restore_queued_prompts_after_interrupt =
@@ -885,7 +880,7 @@ impl App {
         }
         // More than one pending approval means parallel tool calls landed in the
         // same batch: use the batch interaction so the user answers one modal.
-        if self.approval_controller.total_count() > 1 {
+        if approval_modal_kind(&self.approval_controller) == ApprovalModalKind::Batched {
             return self.handle_batched_approval_key(code).await;
         }
         match code {
@@ -934,7 +929,8 @@ impl App {
     ///
     /// `y`/`n` decide the selected request; `a`/`d` decide the whole batch at
     /// once. Each decision flows through `handle_tool_approval`, so approval
-    /// recording and execution semantics are identical to the single-call path.
+    /// recording and agent-owned execution semantics are identical to the
+    /// single-call path.
     async fn handle_batched_approval_key(&mut self, code: KeyCode) -> Result<()> {
         match code {
             KeyCode::Up => self.approval_controller.select_prev(),
@@ -1119,16 +1115,23 @@ impl App {
     pub(super) async fn handle_tool_approval(
         &mut self,
         call_id: String,
-        tool: String,
-        args: serde_json::Value,
+        _tool: String,
+        _args: serde_json::Value,
         approved: bool,
     ) -> Result<()> {
         self.tool_history.record_approval(&call_id, approved);
         if approved {
-            // Execute the tool (resolves vaulted credentials internally)
-            self.execute_tool_and_respond(call_id, tool, args);
+            // Relay only the decision. The native agent executes approved
+            // calls in model order and emits their lifecycle events. Starting
+            // execution here would let batched approvals run concurrently and
+            // reorder a gated write/edit relative to later calls.
+            if let Some(tx) = &self.tool_response_tx {
+                let _ = tx.send((call_id, true, None));
+            }
         } else {
             self.tool_history.fail(&call_id, "Denied".to_string());
+            // Move the transcript row out of `Pending` on denial.
+            self.state.fail_tool_call(&call_id, "Denied");
             // Send denial
             if let Some(tx) = &self.tool_response_tx {
                 let _ = tx.send((call_id, false, None));

@@ -1,5 +1,8 @@
 # Codex Operating Layer
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. See `docs/protocols/codex-operating-layer.json`, the machine-readable evidence map this document narrates: redundant TypeScript entries with a surviving Rust equivalent in the same area were removed in this PR; entries with no verified Rust equivalent are tracked in a follow-up issue (see PR description). Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 This protocol keeps the long-horizon Codex work honest. Maestro should not only
 route to Codex app-server; it should behave like an audited operating layer for
 durable EvalOps agents across TypeScript, Rust, web, headless, and live

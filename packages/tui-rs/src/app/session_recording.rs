@@ -1,5 +1,5 @@
 use super::*;
-use crate::agent::ToolExecution;
+use crate::agent::{ExecutionStatus, ToolExecution};
 
 impl App {
     pub(super) fn active_session_count(&self) -> Option<usize> {
@@ -203,7 +203,16 @@ impl App {
         result: &ToolResult,
         execution: Option<&ToolExecution>,
     ) {
-        if result.success {
+        if execution.is_some_and(|execution| {
+            matches!(execution.receipt.status, ExecutionStatus::Cancelled { .. })
+        }) {
+            let note = result
+                .error
+                .clone()
+                .unwrap_or_else(|| result.output.clone());
+            self.tool_history
+                .cancel_with_details(call_id, note, result.details.clone());
+        } else if result.success {
             self.tool_history.complete_with_details(
                 call_id,
                 result.output.clone(),

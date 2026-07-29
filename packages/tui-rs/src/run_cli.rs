@@ -3,6 +3,12 @@
 //! Reconstructs a saved session into a human-readable or JSON report covering
 //! timeline, trajectory, and AgentRuntime ledger / replay / promotion slices.
 //!
+//! Replay pins the tool behavior versions recorded in tool-result receipts
+//! (e.g. `BashDetails.version`) before classifying replayed commands, so
+//! historical sessions replay with the tool behavior they were recorded
+//! under; entries without a supported recorded version replay under current
+//! behavior.
+//!
 //! Legacy entries and structured tool details are normalized into derived
 //! timeline events, and every ledger entry expands to native dry-run Platform
 //! step/work-item/wait promotion operations.
@@ -24,9 +30,13 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::{json, Map, Value as JsonValue};
 
+use crate::agent::ToolReceiptDetails;
 use crate::session::{
     AppMessage, ContentBlock, ParsedSession, SessionHeader, SessionManager, ThinkingLevel,
 };
+use crate::tools::details::ToolDetails;
+use crate::tools::versions::is_supported_version;
+use crate::tools::ToolExecutor;
 
 const RUN_RECONSTRUCTION_SCHEMA: &str = "evalops.maestro.run-reconstruction.v1";
 const AGENT_TRAJECTORY_SCHEMA: &str = "evalops.maestro.agent-trajectory.v1";
@@ -2069,6 +2079,59 @@ fn build_trajectory_inspection(
     JsonValue::Object(report)
 }
 
+/// Behavior-version pins recorded in a session's tool-result receipts.
+///
+/// The bash tool stamps its contract version into `BashDetails.version` on
+/// every result (#3089); replay reads it back here so the replay executor
+/// can be pinned to the behavior each command was recorded under. Entries
+/// without a receipt, with an empty version, or with a version the catalog
+/// no longer supports contribute no pin, so they replay under current
+/// behavior. When a session recorded more than one version over its
+/// lifetime, the most recent receipt wins.
+fn recorded_tool_version_pins(session: &ParsedSession) -> BTreeMap<String, String> {
+    let mut pins = BTreeMap::new();
+    for message in &session.messages {
+        let AppMessage::ToolResult {
+            receipt: Some(receipt),
+            ..
+        } = message
+        else {
+            continue;
+        };
+        let ToolReceiptDetails::BuiltIn(ToolDetails::Bash(bash)) = &receipt.details else {
+            continue;
+        };
+        let version = bash.version.trim();
+        // "current" is the default resolution, so pinning it is a no-op.
+        if version.is_empty() || version == "current" || !is_supported_version("bash", version) {
+            continue;
+        }
+        pins.insert("bash".to_string(), version.to_string());
+    }
+    pins
+}
+
+/// Build the executor session replay runs under: same construction as a
+/// live run, then pinned to the recorded behavior versions so replayed
+/// tool calls reproduce the approval and execution behavior the session
+/// was recorded with.
+fn replay_tool_executor(session: &ParsedSession, pins: &BTreeMap<String, String>) -> ToolExecutor {
+    let cwd = if session.header.cwd.is_empty() {
+        "."
+    } else {
+        session.header.cwd.as_str()
+    };
+    let mut executor = ToolExecutor::new(cwd);
+    for (tool, version) in pins {
+        // Pins come from `recorded_tool_version_pins`, which validates
+        // against the version catalog, so pinning cannot fail here.
+        executor
+            .pin_tool_version(tool, version)
+            .expect("recorded tool-version pins are catalog-validated");
+    }
+    executor
+}
+
 fn build_agent_runtime_ledger(
     session: &ParsedSession,
     timeline: &ComposerRunTimeline,
@@ -2217,6 +2280,27 @@ fn build_agent_runtime_ledger(
         }));
     }
 
+    let tool_version_pins = recorded_tool_version_pins(session);
+    let replay_executor = replay_tool_executor(session, &tool_version_pins);
+    let mut replayed_bash_commands = 0_u64;
+    let mut replayed_bash_requires_approval = 0_u64;
+    for message in &session.messages {
+        let AppMessage::ToolResult {
+            receipt: Some(receipt),
+            ..
+        } = message
+        else {
+            continue;
+        };
+        let ToolReceiptDetails::BuiltIn(ToolDetails::Bash(bash)) = &receipt.details else {
+            continue;
+        };
+        replayed_bash_commands += 1;
+        if replay_executor.requires_approval("bash", &json!({ "command": bash.command })) {
+            replayed_bash_requires_approval += 1;
+        }
+    }
+
     let replay = json!({
         "schemaVersion": AGENT_RUNTIME_REPLAY_SUMMARY_SCHEMA,
         "deterministic": true,
@@ -2224,6 +2308,11 @@ fn build_agent_runtime_ledger(
         "deltas": 0,
         "errors": 0,
         "warnings": 0,
+        "toolVersionPins": tool_version_pins,
+        "replayedBashCommands": {
+            "total": replayed_bash_commands,
+            "requiringApproval": replayed_bash_requires_approval,
+        },
         "cursor": {
             "startSequence": entries.first().and_then(|e| e.get("sequence")).cloned(),
             "endSequence": entries.last().and_then(|e| e.get("sequence")).cloned(),
@@ -3016,5 +3105,98 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(rt.block_on(run_run(&["inspect".into()])).unwrap(), 1);
+    }
+
+    fn bash_receipt_message(version: &str, command: &str) -> AppMessage {
+        let details = crate::tools::details::BashDetails {
+            command: command.into(),
+            exit_code: 0,
+            version: version.into(),
+            ..Default::default()
+        };
+        AppMessage::ToolResult {
+            tool_call_id: "call-bash".into(),
+            tool_name: "bash".into(),
+            content: "ok".into(),
+            details: None,
+            receipt: Some(crate::agent::ExecutionReceipt {
+                call_id: "call-bash".into(),
+                tool_name: "bash".into(),
+                source: crate::agent::ExecutionSource::Native,
+                status: crate::agent::ExecutionStatus::Succeeded,
+                duration_ms: Some(1),
+                details: ToolReceiptDetails::BuiltIn(ToolDetails::Bash(details)),
+            }),
+            is_error: false,
+            timestamp: 1_715_247_604_000,
+        }
+    }
+
+    fn session_with_bash_receipt(dir: &TempDir, version: &str) -> ParsedSession {
+        let mut session = sample_session(dir);
+        session
+            .messages
+            .push(bash_receipt_message(version, "cargo check"));
+        session
+    }
+
+    #[test]
+    fn replay_pins_bash_version_recorded_in_session_receipt() {
+        let dir = TempDir::new().unwrap();
+        let session = session_with_bash_receipt(&dir, "legacy-1");
+
+        let pins = recorded_tool_version_pins(&session);
+        assert_eq!(pins.get("bash").map(String::as_str), Some("legacy-1"));
+
+        // The replay executor replays under legacy approval semantics:
+        // `cargo check` was auto-approved under legacy-1 but requires
+        // approval under current behavior.
+        let executor = replay_tool_executor(&session, &pins);
+        assert!(!executor.requires_approval("bash", &json!({ "command": "cargo check" })));
+
+        let report = build_report_from_session(&session, "2026-05-09T10:06:00.000Z");
+        let replay = &report.agent_runtime_ledger["replay"];
+        assert_eq!(replay["toolVersionPins"]["bash"], json!("legacy-1"));
+        assert_eq!(replay["replayedBashCommands"]["total"], json!(1));
+        assert_eq!(
+            replay["replayedBashCommands"]["requiringApproval"],
+            json!(0)
+        );
+    }
+
+    #[test]
+    fn replay_without_recorded_version_uses_current_behavior() {
+        let dir = TempDir::new().unwrap();
+
+        // Absent, default, and unknown recorded versions must not pin, so
+        // replay falls back to current behavior.
+        for version in ["", "current", "legacy-99"] {
+            let session = session_with_bash_receipt(&dir, version);
+            let pins = recorded_tool_version_pins(&session);
+            assert!(pins.is_empty(), "recorded version {version:?} must not pin");
+
+            let executor = replay_tool_executor(&session, &pins);
+            assert!(
+                executor.requires_approval("bash", &json!({ "command": "cargo check" })),
+                "recorded version {version:?} must replay under current approval semantics"
+            );
+
+            let report = build_report_from_session(&session, "2026-05-09T10:06:00.000Z");
+            let replay = &report.agent_runtime_ledger["replay"];
+            assert_eq!(replay["toolVersionPins"], json!({}));
+            assert_eq!(
+                replay["replayedBashCommands"]["requiringApproval"],
+                json!(1)
+            );
+        }
+
+        // Sessions recorded before tool versioning have no bash receipts
+        // at all; nothing is pinned and nothing is reclassified.
+        let session = sample_session(&dir);
+        assert!(recorded_tool_version_pins(&session).is_empty());
+        let report = build_report_from_session(&session, "2026-05-09T10:06:00.000Z");
+        let replay = &report.agent_runtime_ledger["replay"];
+        assert_eq!(replay["toolVersionPins"], json!({}));
+        assert_eq!(replay["replayedBashCommands"]["total"], json!(0));
     }
 }

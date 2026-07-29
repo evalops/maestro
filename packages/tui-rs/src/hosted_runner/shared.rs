@@ -72,6 +72,7 @@ impl SharedRunner {
                 subscriptions: HashMap::new(),
                 active_utility_commands: HashMap::new(),
                 active_file_watches: HashMap::new(),
+                active_response_ids: HashSet::new(),
                 envelopes: VecDeque::new(),
             })),
             events,
@@ -348,10 +349,29 @@ impl SharedRunner {
     }
 
     pub(super) fn publish_message(&self, state: &mut RunnerState, message: FromAgentMessage) {
-        state.cursor += 1;
+        match &message {
+            FromAgentMessage::ResponseStart { response_id } => {
+                state.active_response_ids.insert(response_id.clone());
+            }
+            FromAgentMessage::ResponseEnd { response_id, .. } => {
+                state.active_response_ids.remove(response_id);
+            }
+            FromAgentMessage::Error { .. } => state.active_response_ids.clear(),
+            _ => {}
+        }
+        // Reserve the cursor immediately before a response completion for the
+        // coarse transcript's durable aggregate. This lets a reconnect resume
+        // between the aggregate and ResponseEnd without suppressing either.
+        state.cursor = state.cursor.saturating_add(
+            if matches!(&message, FromAgentMessage::ResponseEnd { .. }) {
+                2
+            } else {
+                1
+            },
+        );
         let envelope = StreamEnvelope::Message {
             cursor: state.cursor,
-            message: Box::new(message),
+            message: Box::new(crate::transcript::redact_agent_message(message)),
         };
         state.envelopes.push_back(envelope.clone());
         while state.envelopes.len() > MAX_EVENTS {
@@ -414,6 +434,39 @@ impl SharedRunner {
         (self.replay_from_state(&state, cursor), rx)
     }
 
+    /// Coarse transcript filtering needs the retained response prefix to
+    /// reconstruct an aggregate after reconnect. Replay the full retained
+    /// window while the filter suppresses outputs at or before the requested
+    /// cursor. Preserve the normal reset behavior when the cursor has fallen
+    /// outside that window.
+    pub(super) fn subscribe_coarse_from(
+        &self,
+        cursor: u64,
+    ) -> (Vec<StreamEnvelope>, broadcast::Receiver<StreamEnvelope>) {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let rx = self.events.subscribe();
+        let requested = self.replay_from_state(&state, cursor);
+        if requested
+            .iter()
+            .any(|envelope| matches!(envelope, StreamEnvelope::Reset { .. }))
+        {
+            return (requested, rx);
+        }
+        if !coarse_replay_has_complete_response_boundaries(
+            &state.envelopes,
+            &state.active_response_ids,
+        ) {
+            return (
+                vec![self.reset_envelope_from_state(&state, "coarse_replay_incomplete")],
+                rx,
+            );
+        }
+        (state.envelopes.iter().cloned().collect(), rx)
+    }
+
     fn replay_from_state(&self, state: &RunnerState, cursor: u64) -> Vec<StreamEnvelope> {
         let first_cursor = state.envelopes.iter().find_map(|envelope| match envelope {
             StreamEnvelope::Message { cursor, .. } | StreamEnvelope::Heartbeat { cursor } => {
@@ -445,6 +498,43 @@ impl SharedRunner {
             .cloned()
             .collect()
     }
+}
+
+fn coarse_replay_has_complete_response_boundaries(
+    envelopes: &VecDeque<StreamEnvelope>,
+    live_active_responses: &HashSet<String>,
+) -> bool {
+    let mut active_responses = HashSet::new();
+    for envelope in envelopes {
+        let StreamEnvelope::Message { message, .. } = envelope else {
+            continue;
+        };
+        match message.as_ref() {
+            FromAgentMessage::ResponseStart { response_id } => {
+                active_responses.insert(response_id.as_str());
+            }
+            FromAgentMessage::ResponseChunk { response_id, .. }
+                if !active_responses.contains(response_id.as_str()) =>
+            {
+                return false;
+            }
+            FromAgentMessage::ResponseEnd { response_id, .. }
+                if response_id == "done" && !active_responses.contains(response_id.as_str()) =>
+            {
+                // The native agent emits `done` as a turn-lifecycle sentinel,
+                // not as the completion of a streamed model response.
+            }
+            FromAgentMessage::ResponseEnd { response_id, .. }
+                if !active_responses.remove(response_id.as_str()) =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    live_active_responses
+        .iter()
+        .all(|response_id| active_responses.contains(response_id.as_str()))
 }
 
 fn redacted_pending_snapshot(
@@ -583,4 +673,68 @@ fn redacted_active_tools(tools: &[serde_json::Value]) -> Vec<serde_json::Value> 
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod coarse_replay_tests {
+    use super::*;
+
+    fn response_end(response_id: &str) -> StreamEnvelope {
+        StreamEnvelope::Message {
+            cursor: 1,
+            message: Box::new(FromAgentMessage::ResponseEnd {
+                response_id: response_id.to_string(),
+                usage: None,
+                tools_summary: None,
+                duration_ms: None,
+                ttft_ms: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn lifecycle_done_does_not_require_a_response_start() {
+        let envelopes = VecDeque::from([response_end("done")]);
+
+        assert!(coarse_replay_has_complete_response_boundaries(
+            &envelopes,
+            &HashSet::new(),
+        ));
+    }
+
+    #[test]
+    fn unmatched_model_response_end_remains_incomplete() {
+        let envelopes = VecDeque::from([response_end("response-1")]);
+
+        assert!(!coarse_replay_has_complete_response_boundaries(
+            &envelopes,
+            &HashSet::new(),
+        ));
+    }
+
+    #[test]
+    fn matched_done_closes_its_response_boundary() {
+        let envelopes = VecDeque::from([
+            StreamEnvelope::Message {
+                cursor: 1,
+                message: Box::new(FromAgentMessage::ResponseStart {
+                    response_id: "done".to_string(),
+                }),
+            },
+            response_end("done"),
+            StreamEnvelope::Message {
+                cursor: 3,
+                message: Box::new(FromAgentMessage::ResponseChunk {
+                    response_id: "done".to_string(),
+                    content: "after completion".to_string(),
+                    is_thinking: false,
+                }),
+            },
+        ]);
+
+        assert!(!coarse_replay_has_complete_response_boundaries(
+            &envelopes,
+            &HashSet::new(),
+        ));
+    }
 }

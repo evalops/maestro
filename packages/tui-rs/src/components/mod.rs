@@ -142,7 +142,8 @@ mod welcome;
 
 pub use crate::model_catalog::{available_models, ModelInfo};
 pub use approval::{
-    ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest, BatchedApprovalModal,
+    approval_modal_kind, ApprovalController, ApprovalDecision, ApprovalModal, ApprovalModalKind,
+    ApprovalRequest, BatchedApprovalModal,
 };
 pub use ascii_animation::{logos, AsciiAnimation, ALL_VARIANTS, FRAME_TICK_DEFAULT};
 pub use command_palette::CommandPalette;

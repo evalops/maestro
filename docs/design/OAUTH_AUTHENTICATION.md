@@ -1,5 +1,8 @@
 # OAuth & Authentication Design
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. No verified Rust equivalent was found for the OAuth provider flows described below. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 The authentication system supports multiple providers and methods, including API keys, OAuth flows, and enterprise SSO integration.
 
 ## Overview

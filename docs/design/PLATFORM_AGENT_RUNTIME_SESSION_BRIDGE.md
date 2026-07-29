@@ -1,5 +1,8 @@
 # Platform AgentRuntime Session Bridge
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. The Platform bridge now lives in `packages/control-plane-rs`; individual TS paths below were not re-verified against the Rust port. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 This document explains how Maestro records hosted session starts in Platform
 AgentRuntime and why the bridge is shaped as a small adapter instead of a new
 runtime owner.

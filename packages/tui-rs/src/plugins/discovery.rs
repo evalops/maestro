@@ -35,6 +35,18 @@ impl PluginOrigin {
     pub fn priority(self) -> u8 {
         self as u8
     }
+
+    /// Returns `true` for origins rooted under the workspace (repository)
+    /// rather than the user's home directory.
+    ///
+    /// Project-scoped roots are repository-controlled: a plugin found there
+    /// can contribute skills (and, once wired, hooks/MCP configs) that run
+    /// automatically. Callers must gate these on workspace trust; see
+    /// `PluginRegistry::discover`.
+    #[must_use]
+    pub fn is_project_scoped(self) -> bool {
+        matches!(self, Self::LegacyProject | Self::Project)
+    }
 }
 
 /// Default discovery roots ordered low → high priority.

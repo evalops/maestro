@@ -1,5 +1,8 @@
 # Web UI Architecture Design
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. The web UI is now a prebuilt static bundle at `packages/web/dist` (no committed source) served by `packages/control-plane-rs`; there is no React source in this repo anymore. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 The Web UI provides a browser-based interface for Maestro, offering real-time chat, session management, and model selection through WebSocket communication.
 
 ## Overview

@@ -26,9 +26,19 @@
 //! to work with in the application layer and can be serialized for IPC communication.
 
 use crossterm::event::{
-    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind,
+    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyEventState,
+    KeyModifiers as CrosstermKeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use std::collections::VecDeque;
+use std::io;
+use std::time::Duration;
 use tokio_stream::StreamExt;
+use uncurses::event::{
+    ColorScheme, Event as UncursesEvent, EventSource, Key as UncursesKey,
+    KeyCode as UncursesKeyCode, KeyModifiers as UncursesKeyModifiers, Mouse as UncursesMouse,
+    MouseButton as UncursesMouseButton,
+};
+use uncurses::terminal::TtyInput;
 
 use crate::protocol::KeyModifiers;
 
@@ -144,6 +154,250 @@ impl Default for TerminalEventStream {
     }
 }
 
+/// Rich terminal events used by the interactive app.
+///
+/// Unlike crossterm 0.28, uncurses decodes terminal query replies as typed
+/// events. That lets the app query color-scheme capabilities without leaking
+/// reply bytes into the composer.
+#[derive(Debug)]
+pub(crate) enum AppTerminalEvent {
+    Key(KeyEvent),
+    Mouse(MouseEvent),
+    Paste(String),
+    Resize { height: u16 },
+    FocusGained,
+    FocusLost,
+    BackgroundColor { red: u8, green: u8, blue: u8 },
+    ColorScheme(ColorScheme),
+    ThemeReportingStatus(uncurses::ansi::mode::ModeSetting),
+}
+
+impl AppTerminalEvent {
+    /// Preserve the legacy crossterm path as a fallback when the controlling
+    /// terminal cannot be opened by uncurses.
+    pub(crate) fn from_crossterm(event: Event) -> Option<Self> {
+        match event {
+            Event::Key(key) => Some(Self::Key(key)),
+            Event::Mouse(mouse) => Some(Self::Mouse(mouse)),
+            Event::Paste(text) => Some(Self::Paste(text)),
+            Event::Resize(_, height) => Some(Self::Resize { height }),
+            Event::FocusGained => Some(Self::FocusGained),
+            Event::FocusLost => Some(Self::FocusLost),
+        }
+    }
+}
+
+/// Synchronous uncurses event reader for the main render loop.
+pub(crate) struct TerminalEventReader {
+    source: EventSource<TtyInput>,
+    state: EventConversionState,
+}
+
+#[derive(Default)]
+struct EventConversionState {
+    pending: VecDeque<UncursesEvent>,
+    paste: Option<Vec<u8>>,
+}
+
+impl TerminalEventReader {
+    /// Open the controlling terminal and create a protocol-aware event source.
+    pub(crate) fn open() -> io::Result<Self> {
+        let terminal = uncurses::terminal::Terminal::open()?;
+        Ok(Self {
+            source: EventSource::new(terminal.input())?,
+            state: EventConversionState::default(),
+        })
+    }
+
+    /// Poll for one application event.
+    ///
+    /// Query replies unsupported by the application are deliberately consumed
+    /// here rather than reinterpreted as user input.
+    pub(crate) fn poll(&mut self, timeout: Duration) -> io::Result<Option<AppTerminalEvent>> {
+        if self.state.pending.is_empty() && !self.source.poll(Some(timeout))? {
+            return Ok(None);
+        }
+
+        while let Some(event) = self
+            .state
+            .pending
+            .pop_front()
+            .or_else(|| self.source.try_read())
+        {
+            if let Some(event) = self.state.convert_event(event) {
+                return Ok(Some(event));
+            }
+        }
+        Ok(None)
+    }
+}
+
+impl EventConversionState {
+    fn convert_event(&mut self, event: UncursesEvent) -> Option<AppTerminalEvent> {
+        match event {
+            UncursesEvent::KeyPress(key) => {
+                convert_uncurses_key(key, KeyEventKind::Press).map(AppTerminalEvent::Key)
+            }
+            UncursesEvent::KeyRepeat(key) => {
+                convert_uncurses_key(key, KeyEventKind::Repeat).map(AppTerminalEvent::Key)
+            }
+            UncursesEvent::KeyRelease(_) => None,
+            UncursesEvent::MouseClick(mouse) => {
+                convert_uncurses_mouse(mouse, false).map(AppTerminalEvent::Mouse)
+            }
+            UncursesEvent::MouseRelease(mouse) => {
+                convert_uncurses_mouse(mouse, true).map(AppTerminalEvent::Mouse)
+            }
+            UncursesEvent::MouseWheel(mouse) => {
+                convert_uncurses_mouse(mouse, false).map(AppTerminalEvent::Mouse)
+            }
+            UncursesEvent::MouseMove(_) => None,
+            UncursesEvent::Resize(size) => Some(AppTerminalEvent::Resize { height: size.row }),
+            UncursesEvent::FocusIn => Some(AppTerminalEvent::FocusGained),
+            UncursesEvent::FocusOut => Some(AppTerminalEvent::FocusLost),
+            UncursesEvent::PasteStart => {
+                self.paste = Some(Vec::new());
+                None
+            }
+            UncursesEvent::PasteChunk(chunk) => {
+                self.paste.get_or_insert_with(Vec::new).extend(chunk);
+                None
+            }
+            UncursesEvent::PasteEnd => self
+                .paste
+                .take()
+                .map(|bytes| AppTerminalEvent::Paste(String::from_utf8_lossy(&bytes).into_owned())),
+            UncursesEvent::BackgroundColor(color) => {
+                let (red, green, blue) = color.to_rgb();
+                Some(AppTerminalEvent::BackgroundColor { red, green, blue })
+            }
+            UncursesEvent::ColorScheme(scheme) => Some(AppTerminalEvent::ColorScheme(scheme)),
+            UncursesEvent::ModeReport { mode, setting }
+                if mode == uncurses::ansi::mode::Mode::LIGHT_DARK =>
+            {
+                Some(AppTerminalEvent::ThemeReportingStatus(setting))
+            }
+            UncursesEvent::Multi(events) => {
+                self.pending.extend(events);
+                None
+            }
+            _ => None,
+        }
+    }
+}
+
+fn convert_uncurses_key(key: UncursesKey, kind: KeyEventKind) -> Option<KeyEvent> {
+    let code = if key.code == UncursesKeyCode::Tab
+        && key.modifiers.contains(UncursesKeyModifiers::SHIFT)
+    {
+        KeyCode::BackTab
+    } else if matches!(key.code, UncursesKeyCode::Char(_)) {
+        match key.text.as_deref() {
+            Some(text) => {
+                let mut chars = text.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(character), None) if !character.is_control() => KeyCode::Char(character),
+                    _ => convert_uncurses_key_code(key.code)?,
+                }
+            }
+            None => convert_uncurses_key_code(key.code)?,
+        }
+    } else {
+        convert_uncurses_key_code(key.code)?
+    };
+    Some(KeyEvent {
+        code,
+        modifiers: convert_uncurses_modifiers(key.modifiers),
+        kind,
+        state: KeyEventState::NONE,
+    })
+}
+
+fn convert_uncurses_key_code(code: UncursesKeyCode) -> Option<KeyCode> {
+    Some(match code {
+        UncursesKeyCode::Char(character) => KeyCode::Char(character),
+        UncursesKeyCode::F(number) => KeyCode::F(number),
+        UncursesKeyCode::Up | UncursesKeyCode::KpUp => KeyCode::Up,
+        UncursesKeyCode::Down | UncursesKeyCode::KpDown => KeyCode::Down,
+        UncursesKeyCode::Left | UncursesKeyCode::KpLeft => KeyCode::Left,
+        UncursesKeyCode::Right | UncursesKeyCode::KpRight => KeyCode::Right,
+        UncursesKeyCode::Home | UncursesKeyCode::KpHome => KeyCode::Home,
+        UncursesKeyCode::End | UncursesKeyCode::KpEnd => KeyCode::End,
+        UncursesKeyCode::PageUp | UncursesKeyCode::KpPageUp => KeyCode::PageUp,
+        UncursesKeyCode::PageDown | UncursesKeyCode::KpPageDown => KeyCode::PageDown,
+        UncursesKeyCode::Backspace => KeyCode::Backspace,
+        UncursesKeyCode::Delete | UncursesKeyCode::KpDelete => KeyCode::Delete,
+        UncursesKeyCode::Insert | UncursesKeyCode::KpInsert => KeyCode::Insert,
+        UncursesKeyCode::Tab => KeyCode::Tab,
+        UncursesKeyCode::Enter | UncursesKeyCode::KpEnter => KeyCode::Enter,
+        UncursesKeyCode::Space => KeyCode::Char(' '),
+        UncursesKeyCode::Escape => KeyCode::Esc,
+        UncursesKeyCode::KpAdd => KeyCode::Char('+'),
+        UncursesKeyCode::KpSubtract => KeyCode::Char('-'),
+        UncursesKeyCode::KpMultiply => KeyCode::Char('*'),
+        UncursesKeyCode::KpDivide => KeyCode::Char('/'),
+        UncursesKeyCode::KpDecimal => KeyCode::Char('.'),
+        UncursesKeyCode::KpEqual => KeyCode::Char('='),
+        UncursesKeyCode::KpSeparator => KeyCode::Char(','),
+        UncursesKeyCode::Kp0 => KeyCode::Char('0'),
+        UncursesKeyCode::Kp1 => KeyCode::Char('1'),
+        UncursesKeyCode::Kp2 => KeyCode::Char('2'),
+        UncursesKeyCode::Kp3 => KeyCode::Char('3'),
+        UncursesKeyCode::Kp4 => KeyCode::Char('4'),
+        UncursesKeyCode::Kp5 => KeyCode::Char('5'),
+        UncursesKeyCode::Kp6 => KeyCode::Char('6'),
+        UncursesKeyCode::Kp7 => KeyCode::Char('7'),
+        UncursesKeyCode::Kp8 => KeyCode::Char('8'),
+        UncursesKeyCode::Kp9 => KeyCode::Char('9'),
+        _ => return None,
+    })
+}
+
+fn convert_uncurses_modifiers(modifiers: UncursesKeyModifiers) -> CrosstermKeyModifiers {
+    let mut converted = CrosstermKeyModifiers::empty();
+    for (source, target) in [
+        (UncursesKeyModifiers::SHIFT, CrosstermKeyModifiers::SHIFT),
+        (UncursesKeyModifiers::ALT, CrosstermKeyModifiers::ALT),
+        (UncursesKeyModifiers::CTRL, CrosstermKeyModifiers::CONTROL),
+        (UncursesKeyModifiers::META, CrosstermKeyModifiers::META),
+        (UncursesKeyModifiers::SUPER, CrosstermKeyModifiers::SUPER),
+        (UncursesKeyModifiers::HYPER, CrosstermKeyModifiers::HYPER),
+    ] {
+        if modifiers.contains(source) {
+            converted.insert(target);
+        }
+    }
+    converted
+}
+
+fn convert_uncurses_mouse(mouse: UncursesMouse, release: bool) -> Option<MouseEvent> {
+    let kind = match mouse.button {
+        UncursesMouseButton::WheelUp => MouseEventKind::ScrollUp,
+        UncursesMouseButton::WheelDown => MouseEventKind::ScrollDown,
+        UncursesMouseButton::WheelLeft => MouseEventKind::ScrollLeft,
+        UncursesMouseButton::WheelRight => MouseEventKind::ScrollRight,
+        UncursesMouseButton::Left => button_event(MouseButton::Left, release),
+        UncursesMouseButton::Middle => button_event(MouseButton::Middle, release),
+        UncursesMouseButton::Right => button_event(MouseButton::Right, release),
+        UncursesMouseButton::None => MouseEventKind::Moved,
+        _ => return None,
+    };
+    Some(MouseEvent {
+        kind,
+        column: mouse.x,
+        row: mouse.y,
+        modifiers: convert_uncurses_modifiers(mouse.modifiers),
+    })
+}
+
+fn button_event(button: MouseButton, release: bool) -> MouseEventKind {
+    if release {
+        MouseEventKind::Up(button)
+    } else {
+        MouseEventKind::Down(button)
+    }
+}
+
 /// Convert crossterm event to our normalized event type.
 ///
 /// This function maps crossterm's raw events to our simplified `TerminalEvent` enum,
@@ -239,6 +493,9 @@ fn key_code_to_string(code: KeyCode) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uncurses::event::{
+        Key as UncursesKey, KeyCode as UncursesKeyCode, KeyModifiers as UncursesKeyModifiers,
+    };
 
     #[test]
     fn test_key_code_to_string() {
@@ -252,5 +509,147 @@ mod tests {
         );
         assert_eq!(key_code_to_string(KeyCode::F(1)), Some("F1".to_string()));
         assert_eq!(key_code_to_string(KeyCode::Null), None);
+    }
+
+    #[test]
+    fn uncurses_shifted_text_preserves_the_typed_character() {
+        let mut key = UncursesKey::new(UncursesKeyCode::Char('/'), UncursesKeyModifiers::SHIFT);
+        key.text = Some("?".to_string());
+
+        let converted = convert_uncurses_key(key, crossterm::event::KeyEventKind::Press)
+            .expect("printable key should convert");
+
+        assert_eq!(converted.code, KeyCode::Char('?'));
+        assert!(converted
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::SHIFT));
+    }
+
+    #[test]
+    fn uncurses_named_keys_ignore_protocol_text() {
+        let mut key = UncursesKey::new(UncursesKeyCode::Enter, UncursesKeyModifiers::empty());
+        key.text = Some("\r".to_string());
+
+        let converted = convert_uncurses_key(key, crossterm::event::KeyEventKind::Press)
+            .expect("named key should convert");
+
+        assert_eq!(converted.code, KeyCode::Enter);
+    }
+
+    #[test]
+    fn uncurses_control_characters_keep_their_logical_key() {
+        let mut key = UncursesKey::new(UncursesKeyCode::Char('c'), UncursesKeyModifiers::CTRL);
+        key.text = Some("\u{3}".to_string());
+
+        let converted = convert_uncurses_key(key, crossterm::event::KeyEventKind::Press)
+            .expect("control key should convert");
+
+        assert_eq!(converted.code, KeyCode::Char('c'));
+        assert!(converted
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL));
+    }
+
+    #[test]
+    fn uncurses_modifier_mapping_keeps_modern_modifier_bits() {
+        let key = UncursesKey::new(
+            UncursesKeyCode::Char('x'),
+            UncursesKeyModifiers::CTRL
+                | UncursesKeyModifiers::ALT
+                | UncursesKeyModifiers::META
+                | UncursesKeyModifiers::SUPER
+                | UncursesKeyModifiers::HYPER,
+        );
+
+        let converted = convert_uncurses_key(key, crossterm::event::KeyEventKind::Press)
+            .expect("character key should convert");
+
+        let modifiers = converted.modifiers;
+        assert!(modifiers.contains(crossterm::event::KeyModifiers::CONTROL));
+        assert!(modifiers.contains(crossterm::event::KeyModifiers::ALT));
+        assert!(modifiers.contains(crossterm::event::KeyModifiers::META));
+        assert!(modifiers.contains(crossterm::event::KeyModifiers::SUPER));
+        assert!(modifiers.contains(crossterm::event::KeyModifiers::HYPER));
+    }
+
+    #[test]
+    fn uncurses_paste_chunks_are_reassembled_lossily() {
+        let mut state = EventConversionState::default();
+        assert!(state.convert_event(UncursesEvent::PasteStart).is_none());
+        assert!(state
+            .convert_event(UncursesEvent::PasteChunk(vec![b'a', 0xff]))
+            .is_none());
+
+        let event = state
+            .convert_event(UncursesEvent::PasteEnd)
+            .expect("paste end should emit the assembled paste");
+        assert!(matches!(event, AppTerminalEvent::Paste(text) if text == "a\u{fffd}"));
+    }
+
+    #[test]
+    fn uncurses_multi_events_preserve_fifo_order() {
+        let mut state = EventConversionState::default();
+        assert!(state
+            .convert_event(UncursesEvent::Multi(vec![
+                UncursesEvent::FocusIn,
+                UncursesEvent::Resize(uncurses::terminal::Winsize {
+                    row: 42,
+                    col: 120,
+                    xpixel: 0,
+                    ypixel: 0,
+                }),
+            ]))
+            .is_none());
+
+        let first = state.pending.pop_front().expect("first nested event");
+        let second = state.pending.pop_front().expect("second nested event");
+        assert!(matches!(
+            state.convert_event(first),
+            Some(AppTerminalEvent::FocusGained)
+        ));
+        assert!(matches!(
+            state.convert_event(second),
+            Some(AppTerminalEvent::Resize { height: 42 })
+        ));
+    }
+
+    #[test]
+    fn uncurses_theme_replies_stay_typed() {
+        let mut state = EventConversionState::default();
+        assert!(matches!(
+            state.convert_event(UncursesEvent::BackgroundColor(uncurses::color::Color::Rgb(
+                1, 2, 3
+            ))),
+            Some(AppTerminalEvent::BackgroundColor {
+                red: 1,
+                green: 2,
+                blue: 3
+            })
+        ));
+        assert!(matches!(
+            state.convert_event(UncursesEvent::ColorScheme(ColorScheme::Light)),
+            Some(AppTerminalEvent::ColorScheme(ColorScheme::Light))
+        ));
+        assert!(matches!(
+            state.convert_event(UncursesEvent::ModeReport {
+                mode: uncurses::ansi::mode::Mode::LIGHT_DARK,
+                setting: uncurses::ansi::mode::ModeSetting::Set,
+            }),
+            Some(AppTerminalEvent::ThemeReportingStatus(
+                uncurses::ansi::mode::ModeSetting::Set
+            ))
+        ));
+    }
+
+    #[test]
+    fn crossterm_fallback_keeps_resize_and_focus_events() {
+        assert!(matches!(
+            AppTerminalEvent::from_crossterm(Event::Resize(120, 42)),
+            Some(AppTerminalEvent::Resize { height: 42 })
+        ));
+        assert!(matches!(
+            AppTerminalEvent::from_crossterm(Event::FocusLost),
+            Some(AppTerminalEvent::FocusLost)
+        ));
     }
 }

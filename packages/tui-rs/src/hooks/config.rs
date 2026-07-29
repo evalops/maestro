@@ -174,6 +174,9 @@ pub struct LoadedHookConfig {
     pub settings: HookSettings,
     pub hooks: Vec<LoadedHook>,
     pub source_paths: Vec<PathBuf>,
+    /// Project-local hook config files that existed but were skipped
+    /// because the workspace isn't trusted (see [`load_hook_config`]).
+    pub skipped_untrusted_paths: Vec<PathBuf>,
 }
 
 /// A loaded hook ready for execution
@@ -198,10 +201,49 @@ pub enum HookSource {
     Wasm(PathBuf),
 }
 
-/// Load hook configuration from standard locations
+/// Returns `true` when a project-local `.composer/hooks.toml` or
+/// `.composer/hooks.json` exists under `cwd`.
+///
+/// Used to decide whether an "untrusted workspace" notice is worth
+/// showing; does not itself gate loading (see [`load_hook_config`]).
+#[must_use]
+pub fn has_project_hook_config(cwd: &Path) -> bool {
+    cwd.join(".composer").join("hooks.json").exists()
+        || cwd.join(".composer").join("hooks.toml").exists()
+}
+
+/// Load hook configuration from standard locations.
+///
+/// Project-local `.composer/hooks.{toml,json}` is repository-controlled and
+/// can define Lua/WASM/prompt hooks that run on every prompt and tool call.
+/// It is only merged in when the workspace is marked trusted in *global*
+/// config, so a repository cannot grant itself trust (see
+/// `crate::config::workspace_trusted_in_global_config`). User-level
+/// `~/.composer/hooks.{toml,json}` is always trusted since it isn't
+/// repository-controlled.
 pub fn load_hook_config(cwd: &Path) -> Result<LoadedHookConfig> {
+    let workspace_trusted = crate::config::workspace_trusted_in_global_config(cwd);
+    let plugin_paths = crate::plugins::PluginRegistry::discover_for_workspace(cwd).hook_configs();
+    load_hook_config_with_trust_and_plugins(cwd, workspace_trusted, &plugin_paths)
+}
+
+/// Core of [`load_hook_config`] with the trust decision injected.
+///
+/// Split out so tests can exercise both the trusted and untrusted paths
+/// deterministically without mutating the real process `$HOME`.
+#[cfg(test)]
+fn load_hook_config_with_trust(cwd: &Path, workspace_trusted: bool) -> Result<LoadedHookConfig> {
+    load_hook_config_with_trust_and_plugins(cwd, workspace_trusted, &[])
+}
+
+fn load_hook_config_with_trust_and_plugins(
+    cwd: &Path,
+    workspace_trusted: bool,
+    plugin_paths: &[PathBuf],
+) -> Result<LoadedHookConfig> {
     let mut config = HookConfig::default();
     let mut source_paths = Vec::new();
+    let mut skipped_untrusted_paths = Vec::new();
 
     // Load JSON config files
     if let Some(home) = dirs::home_dir() {
@@ -215,9 +257,13 @@ pub fn load_hook_config(cwd: &Path) -> Result<LoadedHookConfig> {
 
     let local_json = cwd.join(".composer").join("hooks.json");
     if local_json.exists() {
-        let json_config = load_json_config_file(&local_json)?;
-        merge_config(&mut config, json_config);
-        source_paths.push(local_json);
+        if workspace_trusted {
+            let json_config = load_json_config_file(&local_json)?;
+            merge_config(&mut config, json_config);
+            source_paths.push(local_json);
+        } else {
+            skipped_untrusted_paths.push(local_json);
+        }
     }
 
     // Load global config
@@ -233,9 +279,64 @@ pub fn load_hook_config(cwd: &Path) -> Result<LoadedHookConfig> {
     // Load project-local config
     let local_config = cwd.join(".composer").join("hooks.toml");
     if local_config.exists() {
-        let local = load_config_file(&local_config)?;
-        merge_config(&mut config, local);
-        source_paths.push(local_config);
+        if workspace_trusted {
+            let local = load_config_file(&local_config)?;
+            merge_config(&mut config, local);
+            source_paths.push(local_config);
+        } else {
+            skipped_untrusted_paths.push(local_config);
+        }
+    }
+
+    if !skipped_untrusted_paths.is_empty() {
+        eprintln!(
+            "[hooks] Skipped untrusted project hook config(s) {}: set \
+             projects.\"<workspace>\".trust_level = \"trusted\" in global config \
+             (~/.composer/config.toml) to enable them",
+            skipped_untrusted_paths
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    // Plugin discovery has already enforced workspace trust, install trust,
+    // the enabled bit, and the Hooks capability bit. Resolve file-backed hook
+    // payloads relative to the plugin config rather than the workspace.
+    for plugin_path in plugin_paths {
+        let loaded = match plugin_path.extension().and_then(|value| value.to_str()) {
+            Some("json") => load_json_config_file(plugin_path),
+            _ => load_config_file(plugin_path),
+        };
+        let mut plugin_config = match loaded {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!(
+                    "[hooks] Skipping invalid plugin hook config {}: {error}",
+                    plugin_path.display()
+                );
+                continue;
+            }
+        };
+        if plugin_config
+            .hooks
+            .iter()
+            .any(|hook| hook.command.is_some())
+        {
+            eprintln!(
+                "[hooks] Skipping plugin config with command hooks unsupported by the Rust runtime: {}",
+                plugin_path.display()
+            );
+            continue;
+        }
+        absolutize_hook_payload_paths(
+            &mut plugin_config,
+            plugin_path.parent().unwrap_or(Path::new(".")),
+        );
+        plugin_config.settings = HookSettings::default();
+        merge_config(&mut config, plugin_config);
+        source_paths.push(plugin_path.clone());
     }
 
     // Convert to loaded hooks
@@ -256,7 +357,21 @@ pub fn load_hook_config(cwd: &Path) -> Result<LoadedHookConfig> {
         settings: config.settings,
         hooks,
         source_paths,
+        skipped_untrusted_paths,
     })
+}
+
+fn absolutize_hook_payload_paths(config: &mut HookConfig, base_dir: &Path) {
+    for hook in &mut config.hooks {
+        for value in [&mut hook.lua_file, &mut hook.wasm] {
+            let Some(path) = value.as_deref() else {
+                continue;
+            };
+            if Path::new(path).is_relative() {
+                *value = Some(base_dir.join(path).to_string_lossy().into_owned());
+            }
+        }
+    }
 }
 
 /// Load a single config file
@@ -482,6 +597,89 @@ mod tests {
     use super::*;
 
     #[test]
+    fn plugin_hook_config_is_loaded_and_resolves_payloads_from_plugin() {
+        let temp = tempfile::tempdir().unwrap();
+        let plugin_dir = temp.path().join("plugin");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(plugin_dir.join("guard.lua"), "return {}").unwrap();
+        let plugin_config = plugin_dir.join("hooks.toml");
+        std::fs::write(
+            &plugin_config,
+            r#"
+[[hooks]]
+event = "PreToolUse"
+lua_file = "guard.lua"
+"#,
+        )
+        .unwrap();
+
+        let loaded = load_hook_config_with_trust_and_plugins(
+            temp.path(),
+            false,
+            std::slice::from_ref(&plugin_config),
+        )
+        .unwrap();
+        assert!(loaded.source_paths.contains(&plugin_config));
+        assert!(matches!(
+            loaded.hooks.as_slice(),
+            [LoadedHook {
+                source: HookSource::LuaFile(path),
+                ..
+            }] if path == &plugin_dir.join("guard.lua")
+        ));
+    }
+
+    #[test]
+    fn plugin_command_hooks_are_rejected_as_unsupported() {
+        let temp = tempfile::tempdir().unwrap();
+        let plugin_dir = temp.path().join("plugin");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        let plugin_config = plugin_dir.join("hooks.toml");
+        std::fs::write(
+            &plugin_config,
+            r#"
+[[hooks]]
+event = "PreToolUse"
+command = "./hooks/validate-tool.sh"
+"#,
+        )
+        .unwrap();
+
+        let loaded = load_hook_config_with_trust_and_plugins(
+            temp.path(),
+            false,
+            std::slice::from_ref(&plugin_config),
+        )
+        .unwrap();
+        assert!(loaded.hooks.is_empty());
+        assert!(!loaded.source_paths.contains(&plugin_config));
+    }
+
+    #[test]
+    fn invalid_plugin_and_plugin_settings_are_isolated() {
+        let temp = tempfile::tempdir().unwrap();
+        let invalid = temp.path().join("invalid.toml");
+        std::fs::write(&invalid, "not = [valid").unwrap();
+        let valid = temp.path().join("valid.toml");
+        std::fs::write(
+            &valid,
+            r#"
+[settings]
+enabled = false
+[[hooks]]
+event = "PreToolUse"
+lua = "return {}"
+"#,
+        )
+        .unwrap();
+
+        let loaded =
+            load_hook_config_with_trust_and_plugins(temp.path(), false, &[invalid, valid]).unwrap();
+        assert!(loaded.settings.enabled);
+        assert_eq!(loaded.hooks.len(), 1);
+    }
+
+    #[test]
     fn test_parse_config() {
         let toml = r#"
 [settings]
@@ -536,5 +734,63 @@ end
         };
         let resolved = resolve_path("~\\composer-test", cwd);
         assert_eq!(resolved, home.join("composer-test"));
+    }
+
+    // ── Trust gate (repo-controlled `.composer/hooks.{toml,json}`) ───────
+
+    fn write_project_hooks_toml(cwd: &Path, body: &str) {
+        std::fs::create_dir_all(cwd.join(".composer")).unwrap();
+        std::fs::write(cwd.join(".composer").join("hooks.toml"), body).unwrap();
+    }
+
+    /// Regression test for the trust-gate fix: an untrusted workspace's
+    /// project-level `hooks.toml` must not be merged in (and therefore must
+    /// not run its Lua/command hooks on every prompt and tool call). Before
+    /// the fix, `load_hook_config` had no trust check at all.
+    #[test]
+    fn test_untrusted_workspace_does_not_load_project_hooks() {
+        let temp = tempfile::TempDir::new().unwrap();
+        write_project_hooks_toml(
+            temp.path(),
+            r#"
+[[hooks]]
+event = "PreToolUse"
+command = "echo pwned"
+"#,
+        );
+
+        let loaded = load_hook_config_with_trust(temp.path(), false).unwrap();
+        assert!(
+            loaded.hooks.is_empty(),
+            "untrusted workspace must not load repo-controlled hooks"
+        );
+        assert_eq!(loaded.skipped_untrusted_paths.len(), 1);
+        assert!(loaded.source_paths.is_empty());
+    }
+
+    #[test]
+    fn test_trusted_workspace_loads_project_hooks() {
+        let temp = tempfile::TempDir::new().unwrap();
+        write_project_hooks_toml(
+            temp.path(),
+            r#"
+[[hooks]]
+event = "PreToolUse"
+command = "echo trusted"
+"#,
+        );
+
+        let loaded = load_hook_config_with_trust(temp.path(), true).unwrap();
+        assert_eq!(loaded.hooks.len(), 1);
+        assert!(loaded.skipped_untrusted_paths.is_empty());
+        assert_eq!(loaded.source_paths.len(), 1);
+    }
+
+    #[test]
+    fn test_has_project_hook_config() {
+        let temp = tempfile::TempDir::new().unwrap();
+        assert!(!has_project_hook_config(temp.path()));
+        write_project_hooks_toml(temp.path(), "[settings]\nenabled = true\n");
+        assert!(has_project_hook_config(temp.path()));
     }
 }

@@ -52,6 +52,7 @@ pub struct PromptDefinition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptSource {
     User,
+    Plugin,
     Project,
 }
 
@@ -60,6 +61,7 @@ impl PromptSource {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::User => "user",
+            Self::Plugin => "plugin",
             Self::Project => "project",
         }
     }
@@ -214,6 +216,15 @@ fn scan_prompts_directory(dir: &Path, source_type: PromptSource) -> Vec<PromptDe
 /// Later paths override earlier ones by name (project maestro wins).
 #[must_use]
 pub fn load_prompts(workspace_dir: &Path) -> Vec<PromptDefinition> {
+    load_prompts_with_plugin_dirs(workspace_dir, &[])
+}
+
+/// Load prompts while including trusted plugin command directories.
+#[must_use]
+pub fn load_prompts_with_plugin_dirs(
+    workspace_dir: &Path,
+    plugin_dirs: &[PathBuf],
+) -> Vec<PromptDefinition> {
     let mut dirs: Vec<(PathBuf, PromptSource)> = Vec::new();
 
     if let Some(home) = legacy_composer_home_dir() {
@@ -224,6 +235,12 @@ pub fn load_prompts(workspace_dir: &Path) -> Vec<PromptDefinition> {
         dirs.push((home.join("commands"), PromptSource::User));
         dirs.push((home.join("prompts"), PromptSource::User));
     }
+    dirs.extend(
+        plugin_dirs
+            .iter()
+            .cloned()
+            .map(|path| (path, PromptSource::Plugin)),
+    );
 
     dirs.push((
         workspace_dir.join(".composer").join("commands"),
@@ -401,6 +418,7 @@ pub fn render_prompt(prompt: &PromptDefinition, args: &ParsedArgs) -> String {
 pub fn format_prompt_list_item(prompt: &PromptDefinition) -> String {
     let source = match prompt.source_type {
         PromptSource::User => "(user)",
+        PromptSource::Plugin => "(plugin)",
         PromptSource::Project => "(project)",
     };
     let desc = prompt.description.as_deref().unwrap_or("(no description)");
@@ -475,6 +493,25 @@ Ship $ARGUMENTS
             "maestro body"
         );
         assert!(find_prompt(&prompts, "ship").is_some());
+    }
+
+    #[test]
+    fn loads_markdown_commands_from_plugins() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let commands = temp.path().join("plugin").join("commands");
+        fs::create_dir_all(&commands).unwrap();
+        fs::write(
+            commands.join("plugin-review.md"),
+            "---\ndescription: Review from plugin\n---\nReview $ARGUMENTS",
+        )
+        .unwrap();
+
+        let prompts = load_prompts_with_plugin_dirs(&workspace, &[commands]);
+        let prompt = find_prompt(&prompts, "plugin-review").expect("plugin prompt");
+
+        assert_eq!(prompt.source_type, PromptSource::Plugin);
+        assert_eq!(prompt.description.as_deref(), Some("Review from plugin"));
     }
 
     #[test]

@@ -1,4 +1,25 @@
 use super::*;
+
+#[test]
+fn accepts_coalesced_response_completion_once_at_shared_cursor() {
+    let mut pending = None;
+    let chunk = FromAgentMessage::ResponseChunk {
+        response_id: "response".into(),
+        content: "complete answer".into(),
+        is_thinking: false,
+    };
+    let end = FromAgentMessage::ResponseEnd {
+        response_id: "response".into(),
+        usage: None,
+        tools_summary: None,
+        duration_ms: None,
+        ttft_ms: None,
+    };
+
+    assert!(accepts_remote_message_cursor(4, 5, &chunk, &mut pending));
+    assert!(accepts_remote_message_cursor(5, 5, &end, &mut pending));
+    assert!(!accepts_remote_message_cursor(5, 5, &end, &mut pending));
+}
 use crate::headless::HEADLESS_PROTOCOL_VERSION;
 use std::collections::VecDeque;
 use std::sync::{
@@ -274,6 +295,7 @@ fn remote_runtime_state_snapshot_maps_into_agent_state() {
             ]),
             utility_operations: Some(vec![crate::headless::UtilityOperation::CommandExec]),
             raw_agent_events: Some(true),
+            transcript_grade: None,
         }),
         opt_out_notifications: Some(vec!["status".to_string()]),
         connection_role: Some(ConnectionRole::Controller),
@@ -298,6 +320,7 @@ fn remote_runtime_state_snapshot_maps_into_agent_state() {
                 ]),
                 utility_operations: Some(vec![crate::headless::UtilityOperation::CommandExec]),
                 raw_agent_events: Some(true),
+                transcript_grade: None,
             }),
             opt_out_notifications: Some(vec!["status".to_string()]),
             subscription_count: 1,
@@ -485,6 +508,7 @@ fn remote_connection_create_request_serializes_client_tool_flags() {
             server_requests: vec!["approval", "client_tool", "user_input", "tool_retry"],
             utility_operations: vec!["command_exec"],
             raw_agent_events: true,
+            transcript_grade: crate::transcript::TranscriptGrade::Delta,
         }),
         opt_out_notifications: vec!["status".to_string()],
         client: Some("vscode".to_string()),
@@ -507,10 +531,26 @@ fn remote_connection_create_request_serializes_client_tool_flags() {
     assert_eq!(json["capabilities"]["serverRequests"][2], "user_input");
     assert_eq!(json["capabilities"]["serverRequests"][3], "tool_retry");
     assert_eq!(json["capabilities"]["rawAgentEvents"], true);
+    assert_eq!(json["capabilities"]["transcriptGrade"], "delta");
     assert_eq!(json["optOutNotifications"][0], "status");
     assert_eq!(json["client"], "vscode");
     assert_eq!(json["role"], "controller");
     assert_eq!(json["takeControl"], true);
+}
+
+#[test]
+fn remote_http_bootstrap_carries_the_negotiated_transcript_grade() {
+    let request = build_remote_connection_create_request(
+        &RemoteTransportConfig {
+            role: Some("viewer".to_string()),
+            enable_raw_agent_events: false,
+            ..RemoteTransportConfig::default()
+        },
+        None,
+    );
+    let json = serde_json::to_value(request).expect("serialize request");
+
+    assert_eq!(json["capabilities"]["transcriptGrade"], "block");
 }
 
 #[test]
@@ -526,6 +566,7 @@ fn remote_session_subscribe_request_serializes_opt_out_notifications() {
             server_requests: vec!["approval", "client_tool", "user_input"],
             utility_operations: vec!["command_exec", "file_read", "file_watch"],
             raw_agent_events: true,
+            transcript_grade: crate::transcript::TranscriptGrade::Block,
         }),
         role: Some("viewer".to_string()),
         opt_out_notifications: vec!["status".to_string(), "heartbeat".to_string()],
@@ -536,6 +577,7 @@ fn remote_session_subscribe_request_serializes_opt_out_notifications() {
     assert_eq!(json["connectionId"], "conn_remote");
     assert_eq!(json["role"], "viewer");
     assert_eq!(json["capabilities"]["rawAgentEvents"], true);
+    assert_eq!(json["capabilities"]["transcriptGrade"], "block");
     assert_eq!(json["optOutNotifications"][0], "status");
     assert_eq!(json["optOutNotifications"][1], "heartbeat");
 }

@@ -6,11 +6,18 @@ that can launch and monitor Maestro automatically.
 
 ## Quick Start (HTTP Bridge)
 
-1. Start Maestro's web server:
+1. Start Maestro's web server, allowing your Conductor extension's origin:
 
 ```bash
-MAESTRO_WEB_REQUIRE_KEY=0 MAESTRO_WEB_REQUIRE_REDIS=0 MAESTRO_WEB_ORIGIN="*" maestro web
+MAESTRO_WEB_REQUIRE_REDIS=0 \
+  MAESTRO_WEB_ORIGIN="chrome-extension://<CONDUCTOR_EXTENSION_ID>" \
+  maestro web
 ```
+
+`maestro web` binds to `127.0.0.1` and runs without an API key by default, so
+`MAESTRO_WEB_REQUIRE_KEY=0` is unnecessary here. Never set
+`MAESTRO_WEB_ORIGIN="*"`: it tells the server to accept every origin, so any
+page you visit while the server is running can call the local agent runtime.
 
 2. In Conductor settings, enable "Maestro Bridge" and set:
 
@@ -117,15 +124,22 @@ Place the manifest in the standard Chrome location (if you did not use the scrip
 | `MAESTRO_BRIDGE_PLATFORM_RUN_ID` | Fallback Platform run ID when the Conductor receipt does not include one | empty |
 | `MAESTRO_BRIDGE_PLATFORM_RUNTIME_TIMEOUT_MS` | Agent Runtime event write timeout (ms) | `2000` |
 
-When the host launches Maestro, it sets:
+When the host launches Maestro, and unless the variable is already set, it
+sets:
 
 ```
-MAESTRO_WEB_REQUIRE_KEY=0
 MAESTRO_WEB_REQUIRE_REDIS=0
-MAESTRO_WEB_ORIGIN="*"
+MAESTRO_WEB_ORIGIN="chrome-extension://<calling-extension-id>"
 ```
 
-Unless those variables are already set.
+The extension ID comes from the origin argument Chrome passes to the native
+messaging host, or from `CONDUCTOR_EXTENSION_ID`. When neither is available the
+host leaves `MAESTRO_WEB_ORIGIN` unset so the server keeps its built-in
+localhost allowlist; it never falls back to `*`.
+
+The host does not set `MAESTRO_WEB_REQUIRE_KEY`. Maestro's default loopback bind
+already runs without an API key, and forcing the kill switch on would strip auth
+from a non-loopback bind an operator configured deliberately.
 
 When `onBrowserControlDecision` includes `platformRunId`, the native host writes
 a channel-safe `RUNTIME_EVENT_TYPE_AGENT_PROGRESS_RECORDED` event with
@@ -137,15 +151,27 @@ invalid Platform receipts.
 
 - The HTTP bridge supports Conductor client tools (browser automation) because
   the Maestro web server exposes the client tool API.
-- For production, use explicit API keys and locked CORS origins instead of `*`.
+- Never use `MAESTRO_WEB_ORIGIN="*"`, in development or production.
 
 ## Security & CORS Guidance
 
-For local development, the quick-start command disables API keys and allows all
-origins. For shared or production deployments, tighten these settings:
+The bridge exposes tool execution, so treat its CORS configuration as an
+authorization boundary:
 
-- Set `MAESTRO_WEB_REQUIRE_KEY=1` and configure an API key.
-- Lock CORS to your extension origin (and any other approved origins):
-  - `MAESTRO_WEB_ORIGIN="chrome-extension://<extension-id>"`
-  - Add any additional allowed origins as needed.
-- Keep the bridge on localhost unless you explicitly need remote access.
+- Lock CORS to your extension origin:
+  `MAESTRO_WEB_ORIGIN="chrome-extension://<extension-id>"`. The server also
+  accepts the built-in `localhost`/`127.0.0.1` development origins so the web UI
+  keeps working.
+- `MAESTRO_WEB_ORIGIN="*"` means "this is a public API". The server answers with
+  a literal `Access-Control-Allow-Origin: *` and withholds
+  `Access-Control-Allow-Credentials`, but it still accepts WebSocket upgrades
+  from any origin, so a wildcard is never appropriate for a local bridge.
+- Keep the bridge on localhost unless you explicitly need remote access. On a
+  non-loopback bind the server requires auth and refuses to start with
+  `MAESTRO_WEB_REQUIRE_KEY=0`.
+- On a loopback bind the server also validates the `Host` header and answers
+  `421 Misdirected Request` for names that do not resolve to that interface, so
+  a DNS-rebinding page cannot reach the bridge. Use `MAESTRO_WEB_ALLOWED_HOSTS`
+  if you front the bridge with a tunnel that rewrites `Host`.
+- For shared deployments set `MAESTRO_WEB_REQUIRE_KEY=1` and configure
+  `MAESTRO_WEB_API_KEY`.

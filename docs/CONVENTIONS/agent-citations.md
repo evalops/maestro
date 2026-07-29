@@ -1,5 +1,8 @@
 # Agent File Citations
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. System prompt assembly and auth now live in `packages/tui-rs`; the specific TS paths below no longer exist. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 Agent-authored responses should make file references clickable across Maestro
 surfaces. When an agent mentions a workspace file in user-facing text, it must
 link the displayed path with a Markdown `file:///` URI.

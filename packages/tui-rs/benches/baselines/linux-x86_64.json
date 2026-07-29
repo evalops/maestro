@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "platform": "linux-x86_64",
+  "scenarios": {
+    "execpolicy_eval": 23627,
+    "session_read_full": 1888359,
+    "session_read_header": 189492,
+    "session_wire_roundtrip": 1663782
+  }
+}

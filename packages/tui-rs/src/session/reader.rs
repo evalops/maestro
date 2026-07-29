@@ -745,14 +745,18 @@ impl SessionReader {
     ) -> Result<(SessionHeader, SessionStats, Option<SessionMeta>), SessionReadError> {
         let path = path.as_ref();
         let file = File::open(path)?;
-        let reader = BufReader::new(file);
+        let mut reader = BufReader::new(file);
 
         let mut header: Option<SessionHeader> = None;
         let mut meta: Option<SessionMeta> = None;
         let mut stats = SessionStats::default();
+        let mut line = String::new();
 
-        for line in reader.lines() {
-            let line = line?;
+        loop {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
             if line.trim().is_empty() {
                 continue;
             }
@@ -819,6 +823,25 @@ mod tests {
 
         assert_eq!(header.id, "test123");
         assert_eq!(stats.user_messages, 1);
+    }
+
+    #[test]
+    fn read_header_scans_varying_line_lengths_and_trailing_metadata() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"{{"type":"session","id":"test123","timestamp":"2024-01-15T10:30:00Z","cwd":"/tmp","model":"anthropic/claude-3","thinking_level":"medium"}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","timestamp":"2024-01-15T10:30:01Z","message":{{"role":"assistant","content":[{{"type":"text","text":"{}"}}],"timestamp":1}}}}"#, "long response ".repeat(200)).unwrap();
+        writeln!(file, r#"{{"type":"message","timestamp":"2024-01-15T10:30:02Z","message":{{"role":"toolResult","toolCallId":"call-1","toolName":"read","content":"ok","isError":false,"timestamp":2}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"session_meta","timestamp":"2024-01-15T10:30:03Z","title":"Trailing metadata","favorite":true}}"#).unwrap();
+
+        let (header, stats, meta) = SessionReader::read_header(file.path()).unwrap();
+
+        assert_eq!(header.id, "test123");
+        assert_eq!(stats.assistant_messages, 1);
+        assert_eq!(stats.tool_results, 1);
+        assert_eq!(
+            meta.and_then(|entry| entry.title),
+            Some("Trailing metadata".to_string())
+        );
     }
 
     #[test]

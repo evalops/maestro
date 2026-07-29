@@ -31,7 +31,7 @@ use std::time::{Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{FromAgent, TokenUsage};
+use crate::agent::{ExecutionStatus, FromAgent, TokenUsage};
 use crate::kill_ring::{next_word_start, previous_word_start, KillRing};
 use crate::session::ThinkingLevel;
 // Import from our own crate using `crate::` prefix
@@ -195,6 +195,7 @@ pub struct ToolCallState {
 ///    |          |
 ///    v          v
 ///  (rejected)  Failed
+///               Cancelled (Ctrl+C / SIGINT, exit 130)
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCallStatus {
@@ -213,6 +214,10 @@ pub enum ToolCallStatus {
     /// Tool execution failed.
     /// Output contains error information.
     Failed,
+
+    /// Tool was cancelled mid-execution (Ctrl+C interrupt).
+    /// Bash reports this as exit code 130 (SIGINT).
+    Cancelled,
 
     /// Tool was blocked by a hook.
     /// A `PreToolUse` hook prevented execution (e.g., safety check).
@@ -496,6 +501,13 @@ pub struct AppState {
     /// Transient messages like "Copied to clipboard".
     pub status: Option<String>,
 
+    /// Live terminal-theme state driven by typed OSC/DEC replies.
+    pub theme_follower: Option<crate::themes::osc11::AutoThemeFollower>,
+    /// Last time the app requested the terminal's current theme.
+    pub last_theme_query: Option<Instant>,
+    /// Whether DEC light/dark reporting is supported by this terminal.
+    pub theme_reporting_available: bool,
+
     /// Scroll offset for the message list.
     /// Higher values scroll further up (show older messages).
     pub scroll_offset: usize,
@@ -643,6 +655,9 @@ impl AppState {
             busy: false,      // Not processing
             busy_since: None, // No timer running
             status: None,     // No status message
+            theme_follower: None,
+            last_theme_query: None,
+            theme_reporting_available: false,
             scroll_offset: 0, // At bottom of messages
             expanded_tool_calls: std::collections::HashSet::new(),
             error: None, // No error
@@ -884,11 +899,19 @@ impl AppState {
 
             // Tool finished
             FromAgent::ToolEnd {
-                call_id, success, ..
+                call_id,
+                success,
+                receipt,
+                ..
             } => {
                 self.update_tool_status(
                     &call_id,
-                    if success {
+                    if matches!(
+                        receipt.as_ref().map(|receipt| receipt.status),
+                        Some(ExecutionStatus::Cancelled { .. })
+                    ) {
+                        ToolCallStatus::Cancelled
+                    } else if success {
                         ToolCallStatus::Completed
                     } else {
                         ToolCallStatus::Failed
@@ -966,6 +989,51 @@ impl AppState {
                 if tc.call_id == call_id {
                     tc.status = status;
                     return; // Found it, done
+                }
+            }
+        }
+    }
+
+    /// Mark a tool call as started (executing).
+    ///
+    /// Used when the TUI executes the tool itself on a spawned task: the
+    /// agent never emits `ToolStart` for these calls, so without this the
+    /// transcript row would sit at `Pending` for the whole execution.
+    pub fn start_tool_call(&mut self, call_id: &str) {
+        self.update_tool_status(call_id, ToolCallStatus::Running);
+    }
+
+    /// Mark a tool call as completed and attach its output.
+    pub fn complete_tool_call(&mut self, call_id: &str, output: &str) {
+        for msg in self.messages.iter_mut().rev() {
+            for tc in &mut msg.tool_calls {
+                if tc.call_id == call_id {
+                    tc.status = ToolCallStatus::Completed;
+                    if !output.is_empty() {
+                        if !tc.output.is_empty() {
+                            tc.output.push('\n');
+                        }
+                        tc.output.push_str(output);
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Mark a tool call as cancelled (Ctrl+C interrupt, exit code 130).
+    pub fn cancel_tool_call(&mut self, call_id: &str, note: &str) {
+        for msg in self.messages.iter_mut().rev() {
+            for tc in &mut msg.tool_calls {
+                if tc.call_id == call_id {
+                    tc.status = ToolCallStatus::Cancelled;
+                    if !note.is_empty() {
+                        if !tc.output.is_empty() {
+                            tc.output.push('\n');
+                        }
+                        tc.output.push_str(note);
+                    }
+                    return;
                 }
             }
         }

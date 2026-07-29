@@ -82,6 +82,7 @@ struct RunnerState {
     subscriptions: HashMap<String, SubscriptionRecord>,
     active_utility_commands: HashMap<String, ActiveUtilityCommandSnapshot>,
     active_file_watches: HashMap<String, ActiveFileWatchSnapshot>,
+    active_response_ids: HashSet<String>,
     envelopes: VecDeque<StreamEnvelope>,
 }
 
@@ -193,6 +194,8 @@ struct HttpClientCapabilities {
     utility_operations: Option<Vec<UtilityOperation>>,
     #[serde(rename = "rawAgentEvents")]
     raw_agent_events: Option<bool>,
+    #[serde(rename = "transcriptGrade")]
+    transcript_grade: Option<crate::transcript::TranscriptGrade>,
 }
 
 impl From<HttpClientCapabilities> for ClientCapabilities {
@@ -201,6 +204,7 @@ impl From<HttpClientCapabilities> for ClientCapabilities {
             server_requests: value.server_requests,
             utility_operations: value.utility_operations,
             raw_agent_events: value.raw_agent_events,
+            transcript_grade: value.transcript_grade,
         }
     }
 }
@@ -298,17 +302,19 @@ impl HostedRunnerHeadlessMessageExecutor for AgentSupervisorHostedRunnerMessageE
         context: &HostedRunnerHeadlessMessageContext,
         message: ToAgentMessage,
     ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
-        let include_hosted_hello = matches!(message, ToAgentMessage::Hello { .. });
+        if matches!(message, ToAgentMessage::Hello { .. }) {
+            return Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+                vec![hosted_hello_ok_for_context(context)],
+                "Rust hosted runner negotiated the connection at the hosted boundary",
+            ));
+        }
         let mut supervisor = self
             .supervisor
             .lock()
             .map_err(|_| HostedRunnerError::internal("agent supervisor mutex poisoned"))?;
-        let mut messages = supervisor
+        let messages = supervisor
             .send_and_drain_agent_messages(message)
             .map_err(hosted_runner_error_from_async_transport)?;
-        if include_hosted_hello {
-            messages.insert(0, hosted_hello_ok_for_context(context));
-        }
         Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
             messages,
             "Rust hosted runner forwarded the headless message to AgentSupervisor",
@@ -626,17 +632,26 @@ async fn handle_socket(
             replay,
             mut rx,
             shared,
+            mut filter,
         }) => {
             write_sse_headers(&mut socket).await?;
             for envelope in replay {
-                write_sse_event(&mut socket, &envelope).await?;
+                for envelope in filter.apply(envelope) {
+                    write_sse_event(&mut socket, &envelope).await?;
+                }
             }
             loop {
                 match rx.recv().await {
-                    Ok(envelope) => write_sse_event(&mut socket, &envelope).await?,
+                    Ok(envelope) => {
+                        for envelope in filter.apply(envelope) {
+                            write_sse_event(&mut socket, &envelope).await?;
+                        }
+                    }
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
                         let envelope = shared.reset_envelope(format!("broadcast_lag:{skipped}"));
-                        write_sse_event(&mut socket, &envelope).await?;
+                        for envelope in filter.apply(envelope) {
+                            write_sse_event(&mut socket, &envelope).await?;
+                        }
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
@@ -656,7 +671,175 @@ enum ResponseBody {
         replay: Vec<StreamEnvelope>,
         rx: broadcast::Receiver<StreamEnvelope>,
         shared: SharedRunner,
+        filter: TranscriptStreamFilter,
     },
+}
+
+struct TranscriptStreamFilter {
+    grade: crate::transcript::TranscriptGrade,
+    resume_cursor: u64,
+    response_chunks: HashMap<String, (u64, String)>,
+    active_responses: HashSet<String>,
+    deferred_blocks: Vec<StreamEnvelope>,
+}
+
+impl TranscriptStreamFilter {
+    fn new(grade: crate::transcript::TranscriptGrade, resume_cursor: u64) -> Self {
+        Self {
+            grade,
+            resume_cursor,
+            response_chunks: HashMap::new(),
+            active_responses: HashSet::new(),
+            deferred_blocks: Vec::new(),
+        }
+    }
+
+    fn apply(&mut self, envelope: StreamEnvelope) -> Vec<StreamEnvelope> {
+        self.apply_unfiltered(envelope)
+            .into_iter()
+            .filter(|envelope| match envelope {
+                StreamEnvelope::Message { cursor, .. } | StreamEnvelope::Heartbeat { cursor } => {
+                    self.resume_cursor == 0 || *cursor > self.resume_cursor
+                }
+                StreamEnvelope::Snapshot { snapshot } => {
+                    self.resume_cursor == 0 || snapshot.cursor > self.resume_cursor
+                }
+                StreamEnvelope::Reset { .. } => true,
+            })
+            .collect()
+    }
+
+    fn apply_unfiltered(&mut self, envelope: StreamEnvelope) -> Vec<StreamEnvelope> {
+        let StreamEnvelope::Message { cursor, message } = envelope else {
+            if matches!(envelope, StreamEnvelope::Reset { .. }) {
+                self.response_chunks.clear();
+                self.active_responses.clear();
+                self.deferred_blocks.clear();
+            }
+            return vec![envelope];
+        };
+        match *message {
+            FromAgentMessage::ResponseStart { response_id } => {
+                let mut envelopes = std::mem::take(&mut self.deferred_blocks);
+                self.response_chunks.clear();
+                self.active_responses.clear();
+                self.active_responses.insert(response_id.clone());
+                envelopes.push(StreamEnvelope::Message {
+                    cursor,
+                    message: Box::new(FromAgentMessage::ResponseStart { response_id }),
+                });
+                envelopes
+            }
+            FromAgentMessage::ResponseChunk {
+                response_id,
+                content,
+                is_thinking,
+            } => {
+                if self.grade == crate::transcript::TranscriptGrade::Delta {
+                    return vec![StreamEnvelope::Message {
+                        cursor,
+                        message: Box::new(FromAgentMessage::ResponseChunk {
+                            response_id,
+                            content,
+                            is_thinking,
+                        }),
+                    }];
+                }
+                if self.grade != crate::transcript::TranscriptGrade::Off && !is_thinking {
+                    let buffered = self
+                        .response_chunks
+                        .entry(response_id)
+                        .or_insert_with(|| (cursor, String::new()));
+                    buffered.0 = cursor;
+                    buffered.1.push_str(&content);
+                }
+                Vec::new()
+            }
+            FromAgentMessage::ResponseEnd {
+                response_id,
+                usage,
+                tools_summary,
+                duration_ms,
+                ttft_ms,
+            } => {
+                let mut envelopes = Vec::new();
+                self.active_responses.clear();
+                envelopes.append(&mut self.deferred_blocks);
+                if let Some((_chunk_cursor, content)) = self.response_chunks.remove(&response_id) {
+                    if !content.is_empty() {
+                        envelopes.push(StreamEnvelope::Message {
+                            // Response publication reserves this cursor for the
+                            // reconstructed aggregate, leaving the advancing
+                            // completion cursor independently resumable.
+                            cursor: cursor.saturating_sub(1),
+                            message: Box::new(FromAgentMessage::ResponseChunk {
+                                response_id: response_id.clone(),
+                                content,
+                                is_thinking: false,
+                            }),
+                        });
+                    }
+                }
+                self.response_chunks.clear();
+                envelopes.push(StreamEnvelope::Message {
+                    cursor,
+                    message: Box::new(FromAgentMessage::ResponseEnd {
+                        response_id,
+                        usage,
+                        tools_summary,
+                        duration_ms,
+                        ttft_ms,
+                    }),
+                });
+                envelopes
+            }
+            message => {
+                let terminal_error = matches!(&message, FromAgentMessage::Error { .. });
+                let level = transcript_level(&message);
+                if level.is_none_or(|level| self.grade.includes(level)) {
+                    let envelope = StreamEnvelope::Message {
+                        cursor,
+                        message: Box::new(message),
+                    };
+                    if terminal_error {
+                        self.response_chunks.clear();
+                        self.active_responses.clear();
+                        let mut envelopes = std::mem::take(&mut self.deferred_blocks);
+                        envelopes.push(envelope);
+                        return envelopes;
+                    }
+                    if level.is_some()
+                        && self.grade != crate::transcript::TranscriptGrade::Delta
+                        && !self.active_responses.is_empty()
+                    {
+                        self.deferred_blocks.push(envelope);
+                        Vec::new()
+                    } else {
+                        vec![envelope]
+                    }
+                } else {
+                    Vec::new()
+                }
+            }
+        }
+    }
+}
+
+fn transcript_level(message: &FromAgentMessage) -> Option<crate::transcript::TranscriptLevel> {
+    use crate::transcript::TranscriptLevel;
+    match message {
+        FromAgentMessage::ToolCall {
+            requires_approval: false,
+            ..
+        }
+        | FromAgentMessage::ToolStart { .. }
+        | FromAgentMessage::ToolEnd { .. }
+        | FromAgentMessage::Compaction { .. } => Some(TranscriptLevel::Block),
+        FromAgentMessage::ToolOutput { .. } | FromAgentMessage::Status { .. } => {
+            Some(TranscriptLevel::Delta)
+        }
+        _ => None,
+    }
 }
 
 async fn route_request(
@@ -981,6 +1164,31 @@ fn handle_events(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     ensure_session_id(&state, Some(session_id))?;
+    let grade = match query.get("subscriptionId") {
+        Some(subscription_id) => {
+            let subscription = state.subscriptions.get(subscription_id).ok_or_else(|| {
+                HostedError::new(
+                    HostedRunnerErrorCode::StaleConnection,
+                    "Headless subscription not found",
+                )
+            })?;
+            let connection = state
+                .connections
+                .get(&subscription.connection_id)
+                .ok_or_else(|| {
+                    HostedError::new(
+                        HostedRunnerErrorCode::StaleConnection,
+                        "Headless connection not found",
+                    )
+                })?;
+            connection
+                .capabilities
+                .as_ref()
+                .and_then(|capabilities| capabilities.transcript_grade)
+                .unwrap_or_default()
+        }
+        None => crate::transcript::TranscriptGrade::default(),
+    };
     drop(state);
     if query
         .get("cursor")
@@ -988,14 +1196,28 @@ fn handle_events(
         .unwrap_or(false)
     {
         let (replay, rx) = shared.reset_and_subscribe("replay_gap");
-        return Ok(ResponseBody::Sse { replay, rx, shared });
+        return Ok(ResponseBody::Sse {
+            replay,
+            rx,
+            shared,
+            filter: TranscriptStreamFilter::new(grade, 0),
+        });
     }
     let cursor = query
         .get("cursor")
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0);
-    let (replay, rx) = shared.subscribe_from(cursor);
-    Ok(ResponseBody::Sse { replay, rx, shared })
+    let (replay, rx) = if grade == crate::transcript::TranscriptGrade::Delta {
+        shared.subscribe_from(cursor)
+    } else {
+        shared.subscribe_coarse_from(cursor)
+    };
+    Ok(ResponseBody::Sse {
+        replay,
+        rx,
+        shared,
+        filter: TranscriptStreamFilter::new(grade, cursor),
+    })
 }
 
 async fn handle_message(

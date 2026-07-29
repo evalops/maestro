@@ -1,0 +1,39 @@
+[package]
+name = "maestro-ai"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "AI provider client layer for Maestro (Anthropic, OpenAI, Google, Vertex)"
+
+[lib]
+name = "maestro_ai"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+reqwest = { workspace = true, features = ["json", "stream", "rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+uuid.workspace = true
+
+# SSE streaming for OpenAI Responses / Anthropic / Google APIs
+eventsource-stream.workspace = true
+
+# 1Password `op://` credential resolution (op_secret.rs)
+wait-timeout.workspace = true
+
+# Backs `op_secret::test_support::FakeOp`, gated by `#[cfg(any(test, feature
+# = "test-support"))]`. Optional so non-test builds of this crate (and of
+# downstream crates that depend on it without the feature) don't carry it.
+tempfile = { workspace = true, optional = true }
+
+[features]
+# Exposes `op_secret::test_support` to downstream crates' own test builds
+# (e.g. maestro-tui's `doctor.rs` auth-health tests), which can no longer
+# reach a `#[cfg(test)]`-only item across a crate boundary.
+test-support = ["dep:tempfile"]
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,5 +1,8 @@
 # AgentRuntime Task Mapping
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. The Platform AgentRuntime bridge now lives in `packages/control-plane-rs`; see [PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md](PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md). Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 This note is the next adoption-phase ADR for the Platform AgentRuntime bridge.
 It follows the hosted progress projection in
 [`PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md`](PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md)

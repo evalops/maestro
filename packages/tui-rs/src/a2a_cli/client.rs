@@ -425,3 +425,6 @@ fn insert_optional_header(headers: &mut HeaderMap, name: &str, value: Option<&st
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

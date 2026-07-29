@@ -32,6 +32,7 @@ session.txt
 .cache/
 coverage
 packages/control-plane-rs/sessions.json
+gha-creds-*.json
 
 # Local env (API keys)
 .env

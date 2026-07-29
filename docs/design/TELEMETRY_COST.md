@@ -1,5 +1,8 @@
 # Telemetry & Cost Tracking Design
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. Telemetry/cost tracking now lives in `packages/tui-rs/src/telemetry/`. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 The telemetry system tracks usage metrics, calculates costs, and provides analytics for understanding LLM utilization patterns.
 
 ## Overview

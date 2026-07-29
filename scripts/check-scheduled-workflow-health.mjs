@@ -14,6 +14,7 @@ const EXCERPT_LINE_LIMIT = 10;
 
 function parseArgs(argv) {
 	const args = {
+		branch: "",
 		dryRun: false,
 		repo: process.env.GITHUB_REPOSITORY ?? "",
 		runs: DEFAULT_RUNS,
@@ -23,6 +24,9 @@ function parseArgs(argv) {
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index];
 		switch (arg) {
+			case "--branch":
+				args.branch = argv[++index] ?? args.branch;
+				break;
 			case "--dry-run":
 				args.dryRun = true;
 				break;
@@ -60,8 +64,25 @@ function warn(message) {
 	console.error(`warning: ${message}`);
 }
 
+/**
+ * A monitored workflow could not be observed at all.
+ *
+ * The watchdog exists to notice that a workflow is broken. If it cannot read
+ * the workflow list, the run list, or the watchdog issues, it knows nothing --
+ * and a green watchdog run then actively hides the outage it was built to
+ * catch. Every such condition raises this and fails the job.
+ */
+class BlindSpotError extends Error {}
+
+// spawnSync's 1 MiB default silently becomes an ENOBUFS crash on a large run
+// page or a long job log, both of which this script fetches routinely.
+const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+
 function gh(args) {
-	const result = spawnSync("gh", ["api", ...args], { encoding: "utf8" });
+	const result = spawnSync("gh", ["api", ...args], {
+		encoding: "utf8",
+		maxBuffer: MAX_BUFFER_BYTES,
+	});
 	if (result.error) {
 		throw result.error;
 	}
@@ -76,6 +97,21 @@ function gh(args) {
 }
 
 function ghJson(args) {
+	const result = gh(args);
+	if (!result.ok) {
+		throw new BlindSpotError(
+			`gh api ${args[0]} failed: ${result.stderr || "unknown error"}`,
+		);
+	}
+	try {
+		return JSON.parse(result.stdout);
+	} catch {
+		throw new BlindSpotError(`gh api ${args[0]} returned invalid JSON`);
+	}
+}
+
+/** Best-effort JSON read for cosmetic data (log excerpts). Never fatal. */
+function ghJsonOptional(args) {
 	const result = gh(args);
 	if (!result.ok) {
 		warn(`gh api ${args[0]} failed: ${result.stderr || "unknown error"}`);
@@ -106,11 +142,17 @@ function resolveRepo(repo) {
 	return result.stdout.trim();
 }
 
+function resolveDefaultBranch(repo) {
+	const data = ghJson([`repos/${repo}`]);
+	const branch = typeof data?.default_branch === "string" ? data.default_branch : "";
+	if (!branch) {
+		throw new BlindSpotError(`unable to read default branch for ${repo}`);
+	}
+	return branch;
+}
+
 function resolveWorkflow(repo, workflow) {
 	const data = ghJson([`repos/${repo}/actions/workflows?per_page=100`]);
-	if (!data) {
-		return null;
-	}
 	const workflows = Array.isArray(data.workflows) ? data.workflows : [];
 	const match = workflows.find(
 		(entry) =>
@@ -118,22 +160,55 @@ function resolveWorkflow(repo, workflow) {
 			(typeof entry.path === "string" && entry.path.endsWith(`/${workflow}.yml`)),
 	);
 	if (!match) {
-		warn(`workflow not found in ${repo}: ${workflow}`);
-		return null;
+		throw new BlindSpotError(`workflow not found in ${repo}: ${workflow}`);
+	}
+	// A schedule-triggered workflow is auto-disabled after 60 days of repo
+	// inactivity, and a disabled workflow stops producing runs entirely. Left
+	// unreported that also reads as "nothing failing".
+	if (match.state && match.state !== "active") {
+		throw new BlindSpotError(
+			`workflow ${workflow} is not active in ${repo} (state: ${match.state})`,
+		);
 	}
 	return match;
 }
 
-function scheduledRuns(repo, workflowId, count) {
+/**
+ * Recent completed automatic runs of `workflowId` on `branch`, newest first.
+ *
+ * The monitored workflows do not share a trigger: `public-mirror-drift-audit`
+ * is schedule + dispatch, `sync-public-release-mirror` is push-to-main +
+ * dispatch. A hardcoded `event=schedule` filter therefore matched zero runs of
+ * the push-triggered one, and the watchdog skipped it -- which is how a 29-run
+ * outage went unreported. So the event filter is per-trigger-class rather than
+ * per-event-name:
+ *
+ * - default branch only, and `exclude_pull_requests`, so PR-branch runs of the
+ *   same workflow cannot enter the streak
+ * - `workflow_dispatch` runs are dropped. A streak is meant to describe the
+ *   workflow's own automatic cadence. Manual dispatches are humans poking it,
+ *   usually to test a fix, so counting them lets one green re-run erase an
+ *   ongoing outage and lets one bad-input dispatch invent an outage.
+ *
+ * What remains is "the last N times this workflow fired on its own on the
+ * default branch", which means the same thing for a schedule and for a push.
+ */
+const IGNORED_RUN_EVENTS = new Set(["workflow_dispatch"]);
+const RUN_PAGE_OVERFETCH = 3;
+const MAX_RUN_PAGE = 100;
+
+function recentRuns(repo, workflowId, count, branch) {
+	// Over-fetch: the dispatch/incomplete filtering below happens client-side,
+	// so a page of exactly `count` can shrink to fewer than `count` runs.
+	const perPage = Math.min(count * RUN_PAGE_OVERFETCH, MAX_RUN_PAGE);
 	const data = ghJson([
-		`repos/${repo}/actions/workflows/${workflowId}/runs?event=schedule&per_page=${count}`,
+		`repos/${repo}/actions/workflows/${workflowId}/runs?branch=${encodeURIComponent(branch)}&exclude_pull_requests=true&per_page=${perPage}`,
 	]);
-	if (!data) {
-		return null;
-	}
-	return (Array.isArray(data.workflow_runs) ? data.workflow_runs : []).filter(
-		(run) => run.status === "completed",
-	);
+	return (Array.isArray(data.workflow_runs) ? data.workflow_runs : [])
+		.filter(
+			(run) => run.status === "completed" && !IGNORED_RUN_EVENTS.has(run.event),
+		)
+		.slice(0, count);
 }
 
 function countConsecutiveFailures(runs) {
@@ -152,7 +227,9 @@ function findWatchdogIssue(repo, workflow) {
 		`repos/${repo}/issues?state=open&labels=${LABEL}&per_page=100`,
 	]);
 	if (!Array.isArray(issues)) {
-		return null;
+		throw new BlindSpotError(
+			`unexpected issue list payload for ${repo}; cannot tell whether a watchdog issue is already open`,
+		);
 	}
 	const prefix = `[watchdog] ${workflow} `;
 	return (
@@ -170,7 +247,7 @@ function failureExcerpt(repo, run) {
 	if (!jobsUrl) {
 		return "";
 	}
-	const jobs = ghJson([jobsUrl.replace("https://api.github.com/", "")]);
+	const jobs = ghJsonOptional([jobsUrl.replace("https://api.github.com/", "")]);
 	const failedJob = (jobs?.jobs ?? []).find(
 		(job) => job.conclusion === "failure",
 	);
@@ -191,15 +268,18 @@ function failureExcerpt(repo, run) {
 	return excerpt.join("\n").slice(0, 4000);
 }
 
-function buildFailureBody(workflow, runs, excerpt) {
+function buildFailureBody(workflow, runs, excerpt, branch) {
 	const runLinks = runs
-		.map((run) => `- ${run.html_url} (${run.created_at ?? "unknown time"})`)
+		.map(
+			(run) =>
+				`- ${run.html_url} (${run.event ?? "unknown event"}, ${run.created_at ?? "unknown time"})`,
+		)
 		.join("\n");
 	const excerptBlock = excerpt
 		? `\n\nFailure excerpt (latest failing run):\n\n\`\`\`\n${excerpt}\n\`\`\``
 		: "";
 	return [
-		`Scheduled workflow \`${workflow}\` has failed ${runs.length} consecutive scheduled runs.`,
+		`Workflow \`${workflow}\` has failed ${runs.length} consecutive runs on \`${branch}\`.`,
 		"",
 		"Failing runs:",
 		runLinks,
@@ -251,8 +331,9 @@ function createIssue(repo, title, body, dryRun) {
 		`labels[]=${LABEL}`,
 	]);
 	if (!result.ok) {
-		warn(`failed to create issue "${title}": ${result.stderr}`);
-		return;
+		throw new BlindSpotError(
+			`failed to create issue "${title}": ${result.stderr}`,
+		);
 	}
 	console.log(`created issue: ${title}`);
 }
@@ -270,7 +351,9 @@ function commentIssue(repo, issueNumber, body, dryRun) {
 		`body=${body}`,
 	]);
 	if (!result.ok) {
-		warn(`failed to comment on issue #${issueNumber}: ${result.stderr}`);
+		throw new BlindSpotError(
+			`failed to comment on issue #${issueNumber}: ${result.stderr}`,
+		);
 	}
 }
 
@@ -293,18 +376,15 @@ function closeIssue(repo, issueNumber, dryRun) {
 
 function checkWorkflow(repo, workflow, options) {
 	const entry = resolveWorkflow(repo, workflow);
-	if (!entry) {
-		warn(`skipping ${workflow}: unable to resolve workflow`);
-		return;
-	}
-	const runs = scheduledRuns(repo, entry.id, options.runs);
-	if (!runs) {
-		warn(`skipping ${workflow}: unable to query scheduled runs`);
-		return;
-	}
+	const branch = options.branch;
+	const runs = recentRuns(repo, entry.id, options.runs, branch);
 	if (runs.length === 0) {
-		console.log(`${workflow}: no scheduled runs found; skipping`);
-		return;
+		// Not "nothing to report": a monitored workflow with no completed runs
+		// on the default branch is unobservable, which is the same blind spot
+		// as a failed query.
+		throw new BlindSpotError(
+			`no completed non-dispatch runs of ${workflow} on ${branch}; the watchdog cannot observe it`,
+		);
 	}
 
 	const consecutiveFailures = countConsecutiveFailures(runs);
@@ -312,11 +392,12 @@ function checkWorkflow(repo, workflow, options) {
 
 	if (consecutiveFailures >= MIN_CONSECUTIVE_FAILURES) {
 		const failingRuns = runs.slice(0, consecutiveFailures);
-		const title = `[watchdog] ${workflow} failing ${consecutiveFailures} consecutive scheduled runs`;
+		const title = `[watchdog] ${workflow} failing ${consecutiveFailures} consecutive runs on ${branch}`;
 		const body = buildFailureBody(
 			workflow,
 			failingRuns,
 			failureExcerpt(repo, failingRuns[0]),
+			branch,
 		);
 		if (issue) {
 			console.log(
@@ -333,12 +414,12 @@ function checkWorkflow(repo, workflow, options) {
 
 	if (runs[0].conclusion === "success" && issue) {
 		console.log(
-			`${workflow}: recovered (latest scheduled run succeeded); closing #${issue.number}`,
+			`${workflow}: recovered (latest run on ${branch} succeeded); closing #${issue.number}`,
 		);
 		commentIssue(
 			repo,
 			issue.number,
-			`Latest scheduled run succeeded: ${runs[0].html_url}\n\nClosing this watchdog issue.`,
+			`Latest run on \`${branch}\` succeeded: ${runs[0].html_url}\n\nClosing this watchdog issue.`,
 			options.dryRun,
 		);
 		closeIssue(repo, issue.number, options.dryRun);
@@ -350,11 +431,53 @@ function checkWorkflow(repo, workflow, options) {
 	);
 }
 
-const options = parseArgs(process.argv.slice(2));
-const repo = resolveRepo(options.repo);
-console.log(
-	`Monitoring ${options.workflows.length} workflow(s) in ${repo}${options.dryRun ? " (dry-run)" : ""}`,
-);
-for (const workflow of options.workflows) {
-	checkWorkflow(repo, workflow, options);
+function reportBlindSpots(count, total) {
+	console.error(
+		`::error::The failure watchdog could not observe ${count} of ${total} monitored workflow(s), so it is failing instead of reporting success. A green watchdog run here would hide exactly the outages this job exists to catch. Check the job's \`permissions:\` block first -- listing workflows and reading their runs needs \`actions: read\`.`,
+	);
+}
+
+function main() {
+	const options = parseArgs(process.argv.slice(2));
+	const repo = resolveRepo(options.repo);
+	options.branch = options.branch || resolveDefaultBranch(repo);
+	console.log(
+		`Monitoring ${options.workflows.length} workflow(s) in ${repo} on ${options.branch}${options.dryRun ? " (dry-run)" : ""}`,
+	);
+
+	// Check every workflow before deciding the exit code so one blind spot
+	// does not hide the state of the others.
+	let blindSpots = 0;
+	for (const workflow of options.workflows) {
+		try {
+			checkWorkflow(repo, workflow, options);
+		} catch (error) {
+			if (!(error instanceof BlindSpotError)) {
+				throw error;
+			}
+			blindSpots += 1;
+			console.error(
+				`::error::watchdog blind spot -- ${workflow}: ${error.message}`,
+			);
+		}
+	}
+
+	if (blindSpots > 0) {
+		reportBlindSpots(blindSpots, options.workflows.length);
+		return 1;
+	}
+	return 0;
+}
+
+try {
+	process.exitCode = main();
+} catch (error) {
+	if (error instanceof BlindSpotError) {
+		// Raised before per-workflow iteration could start (repo lookup, auth).
+		console.error(`::error::watchdog blind spot -- ${error.message}`);
+		reportBlindSpots(1, 1);
+		process.exitCode = 1;
+	} else {
+		throw error;
+	}
 }

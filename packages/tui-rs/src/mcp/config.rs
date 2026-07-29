@@ -218,28 +218,56 @@ impl McpConfig {
 /// Merged configuration from all sources with proper precedence
 #[must_use]
 pub fn load_mcp_config(project_root: Option<&Path>) -> McpConfig {
+    let plugin_paths = project_root
+        .map(crate::plugins::PluginRegistry::discover_for_workspace)
+        .unwrap_or_else(crate::plugins::PluginRegistry::discover)
+        .mcp_paths();
+    load_mcp_config_with_plugin_paths(project_root, &plugin_paths)
+}
+
+fn load_mcp_config_with_plugin_paths(
+    project_root: Option<&Path>,
+    plugin_paths: &[PathBuf],
+) -> McpConfig {
     let mut merged: HashMap<String, McpServerConfig> = HashMap::new();
 
     // Load in precedence order (lowest first, highest last)
     // User config (lowest precedence)
     if let Some(user_path) = effective_user_config_path() {
-        load_config_file(&user_path, McpConfigScope::User, &mut merged);
+        load_config_file(&user_path, McpConfigScope::User, None, &mut merged);
+    }
+
+    // Plugin discovery already enforces workspace trust, install trust, the
+    // enabled bit, and the MCP capability bit. Treat contributed servers as
+    // project-scoped so stdio transports retain the runtime approval gate.
+    for plugin_path in plugin_paths {
+        load_config_file(
+            plugin_path,
+            McpConfigScope::Project,
+            plugin_path.parent(),
+            &mut merged,
+        );
     }
 
     // Project configs
     if let Some(root) = project_root {
-        // Local config (git-ignored)
-        let local_path = root.join(".composer").join("mcp.local.json");
-        load_config_file(&local_path, McpConfigScope::Local, &mut merged);
-
-        // Project config
-        let project_path = root.join(".composer").join("mcp.json");
-        load_config_file(&project_path, McpConfigScope::Project, &mut merged);
+        // Legacy Composer paths are loaded first; native Maestro paths win.
+        for directory in [".composer", ".maestro"] {
+            let project_path = root.join(directory).join("mcp.json");
+            load_config_file(&project_path, McpConfigScope::Project, None, &mut merged);
+            let local_path = root.join(directory).join("mcp.local.json");
+            load_config_file(&local_path, McpConfigScope::Local, None, &mut merged);
+        }
     }
 
     // Enterprise config (highest precedence)
     if let Some(enterprise_path) = effective_enterprise_config_path() {
-        load_config_file(&enterprise_path, McpConfigScope::Enterprise, &mut merged);
+        load_config_file(
+            &enterprise_path,
+            McpConfigScope::Enterprise,
+            None,
+            &mut merged,
+        );
     }
 
     McpConfig {
@@ -247,7 +275,7 @@ pub fn load_mcp_config(project_root: Option<&Path>) -> McpConfig {
     }
 }
 
-fn effective_user_config_path() -> Option<PathBuf> {
+pub(crate) fn effective_user_config_path() -> Option<PathBuf> {
     select_effective_config_path(user_config_paths())
 }
 
@@ -295,6 +323,7 @@ fn enterprise_config_paths() -> Vec<PathBuf> {
 fn load_config_file(
     path: &Path,
     scope: McpConfigScope,
+    plugin_base: Option<&Path>,
     merged: &mut HashMap<String, McpServerConfig>,
 ) {
     if !path.exists() {
@@ -320,6 +349,7 @@ fn load_config_file(
     // Process array-style servers
     for mut server in raw.servers {
         server.scope = scope;
+        anchor_plugin_stdio_paths(&mut server, plugin_base);
         if server.disabled || !server.enabled {
             merged.remove(&server.name);
         } else if server.validate().is_ok() {
@@ -335,7 +365,7 @@ fn load_config_file(
             McpTransport::Stdio
         };
 
-        let server = McpServerConfig {
+        let mut server = McpServerConfig {
             name: name.clone(),
             transport,
             command: entry.command,
@@ -353,11 +383,33 @@ fn load_config_file(
             disabled: false,
             scope,
         };
+        anchor_plugin_stdio_paths(&mut server, plugin_base);
 
         if server.validate().is_ok() {
             merged.insert(name, server);
         }
     }
+}
+
+fn anchor_plugin_stdio_paths(server: &mut McpServerConfig, plugin_base: Option<&Path>) {
+    let Some(base) = plugin_base else {
+        return;
+    };
+    if server.transport != McpTransport::Stdio {
+        return;
+    }
+    if let Some(command) = server.command.as_mut() {
+        let command_path = Path::new(command);
+        if command_path.is_relative() && command_path.components().count() > 1 {
+            let command_path = command_path.strip_prefix(".").unwrap_or(command_path);
+            *command = base.join(command_path).to_string_lossy().into_owned();
+        }
+    }
+    server.cwd = Some(match server.cwd.as_deref() {
+        Some(cwd) if Path::new(cwd).is_absolute() => cwd.to_string(),
+        Some(cwd) => base.join(cwd).to_string_lossy().into_owned(),
+        None => base.to_string_lossy().into_owned(),
+    });
 }
 
 /// Expand environment variables in a string
@@ -452,6 +504,68 @@ mod tests {
     use std::sync::{LazyLock, Mutex};
 
     static ENV_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    #[test]
+    fn native_project_config_is_loaded() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join(".maestro");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("mcp.json"),
+            r#"{"mcpServers":{"native-project":{"command":"cargo","args":[]}}}"#,
+        )
+        .unwrap();
+        let config = load_mcp_config(Some(temp.path()));
+        let server = config.get_server("native-project").unwrap();
+        assert_eq!(server.scope, McpConfigScope::Project);
+        assert_eq!(server.command.as_deref(), Some("cargo"));
+    }
+
+    #[test]
+    fn local_mcp_config_overrides_shared_project_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join(".maestro");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("mcp.json"),
+            r#"{"mcpServers":{"server":{"command":"shared"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("mcp.local.json"),
+            r#"{"mcpServers":{"server":{"command":"local"}}}"#,
+        )
+        .unwrap();
+
+        let config = load_mcp_config(Some(temp.path()));
+        let server = config.get_server("server").unwrap();
+        assert_eq!(server.scope, McpConfigScope::Local);
+        assert_eq!(server.command.as_deref(), Some("local"));
+    }
+
+    #[test]
+    fn plugin_mcp_config_is_loaded_with_project_safety_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let plugin_config = temp.path().join("plugin-mcp.json");
+        std::fs::write(
+            &plugin_config,
+            r#"{"mcpServers":{"plugin-server":{"command":"./bin/plugin-agent","args":[],"cwd":"runtime"}}}"#,
+        )
+        .unwrap();
+
+        let config = load_mcp_config_with_plugin_paths(None, &[plugin_config]);
+        let server = config.get_server("plugin-server").unwrap();
+        assert_eq!(server.scope, McpConfigScope::Project);
+        assert_eq!(
+            server.command.as_deref(),
+            Some(temp.path().join("bin/plugin-agent").to_str().unwrap())
+        );
+        assert_eq!(
+            server.cwd.as_deref(),
+            Some(temp.path().join("runtime").to_str().unwrap())
+        );
+        assert!(server_requires_workspace_approval(server));
+    }
 
     fn restore_env_var(name: &str, previous: Option<String>) {
         if let Some(value) = previous {
@@ -617,7 +731,7 @@ mod tests {
         .expect("write mcp config");
 
         let mut merged = HashMap::new();
-        load_config_file(&path, McpConfigScope::Project, &mut merged);
+        load_config_file(&path, McpConfigScope::Project, None, &mut merged);
 
         let server = merged.get("scope-test").expect("server");
         assert_eq!(server.scope, McpConfigScope::Project);
@@ -640,6 +754,20 @@ mod tests {
 
         restore_env_var("MAESTRO_USER_MCP_PATH", previous_override);
         restore_env_var("MAESTRO_HOME", previous_home);
+    }
+
+    #[test]
+    fn effective_path_prefers_an_existing_legacy_candidate() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let preferred = temp.path().join("new").join("mcp.json");
+        let legacy = temp.path().join("legacy").join("mcp.json");
+        std::fs::create_dir_all(legacy.parent().unwrap()).expect("legacy parent");
+        std::fs::write(&legacy, "{}").expect("legacy config");
+
+        assert_eq!(
+            select_effective_config_path(vec![preferred, legacy.clone()]),
+            Some(legacy)
+        );
     }
 
     #[test]

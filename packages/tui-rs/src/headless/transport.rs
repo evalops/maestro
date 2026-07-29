@@ -576,6 +576,10 @@ mod tests {
                 ServerRequestType::ToolRetry,
             ])
         );
+        assert_eq!(
+            local_controller_capabilities().transcript_grade,
+            Some(crate::transcript::TranscriptGrade::Delta)
+        );
     }
 
     #[test]

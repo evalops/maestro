@@ -15,6 +15,14 @@
  *
  * Required contexts are read live from the GitHub branch protection API, so
  * protection-rule drift fails the check without a code change.
+ *
+ * --strict flips the credential/permission failure modes from "warn and
+ * skip" to "fail the job": a missing EVALOPS_PR_LENS_TOKEN or a 403/404 from
+ * the protection API no longer produces a silent pass. This workflow's sole
+ * purpose is proving required checks report; on its home repository it must
+ * not be able to go green without actually running. Callers should reserve
+ * the soft skip (no --strict) for forks/other repos that can't hold the
+ * token or the Administration-read grant it needs.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -31,6 +39,7 @@ function parseArgs(argv) {
 		branch: "main",
 		repo: process.env.GITHUB_REPOSITORY || "evalops/maestro-internal",
 		root: process.cwd(),
+		strict: false,
 	};
 
 	for (let index = 0; index < argv.length; index += 1) {
@@ -45,6 +54,9 @@ function parseArgs(argv) {
 			case "--root":
 				args.root = argv[++index] ?? args.root;
 				break;
+			case "--strict":
+				args.strict = true;
+				break;
 			default:
 				throw new Error(`Unknown argument: ${arg}`);
 		}
@@ -53,7 +65,7 @@ function parseArgs(argv) {
 	return args;
 }
 
-function fetchRequiredContexts(repo, branch) {
+function fetchRequiredContexts(repo, branch, { strict = false } = {}) {
 	const endpoint = `repos/${repo}/branches/${encodeURIComponent(branch)}/protection`;
 	const result = spawnSync(
 		"gh",
@@ -66,14 +78,26 @@ function fetchRequiredContexts(repo, branch) {
 	if (result.status !== 0) {
 		const detail = (result.stderr || "").trim() || "unknown error";
 		// A token without Administration read on branch protection gets 403/404.
-		// The invariant guards CI configuration; its own credential problems must
-		// never block PRs, so degrade to a warning + pass (fail-open on
-		// infrastructure, fail-closed on invariant violations).
+		// In strict mode (the repo whose invariant this is) that must fail the
+		// job: the whole point of this check is to prove required checks
+		// report, and a credential problem is exactly the kind of thing that
+		// must not let it go green silently. Non-strict callers (forks/other
+		// repos that can't hold the token or grant) still degrade to a
+		// warning + pass.
 		if (/HTTP (403|404)/.test(detail)) {
+			if (strict) {
+				throw new Error(
+					`gh api ${endpoint} failed: ${detail}. The token cannot read branch ` +
+						"protection (needs Administration read) on a repository where this " +
+						"invariant runs in --strict mode; it must fail closed rather than " +
+						"silently skip.",
+				);
+			}
 			console.warn(
-				`::warning::gh api ${endpoint} failed: ${detail}. ` +
-					"The token cannot read branch protection (needs Administration read); " +
-					"skipping the required status check invariant instead of blocking the PR.",
+				`::warning::INVARIANT NOT VERIFIED: gh api ${endpoint} failed: ${detail}. ` +
+					"The token cannot read branch protection (needs Administration read), so " +
+					"required contexts could not be enumerated. This job passing does NOT mean " +
+					"required checks are reportable.",
 			);
 			return null;
 		}
@@ -337,9 +361,30 @@ export function evaluateRequiredStatusChecks({ contexts, root = defaultRoot }) {
 
 function main() {
 	const options = parseArgs(process.argv.slice(2));
-	const contexts = fetchRequiredContexts(options.repo, options.branch);
+
+	if (!process.env.GH_TOKEN) {
+		if (options.strict) {
+			console.error(
+				"::error::EVALOPS_PR_LENS_TOKEN is empty for a --strict run of the " +
+					"required status check invariant. This check's sole purpose is " +
+					"proving required checks report; it must not be able to go green " +
+					"without a token to query branch protection. Set the secret or " +
+					"drop --strict for this caller.",
+			);
+			process.exitCode = 1;
+			return;
+		}
+		console.warn(
+			"::warning::EVALOPS_PR_LENS_TOKEN is unavailable; skipping required status check invariant (non-strict).",
+		);
+		return;
+	}
+
+	const contexts = fetchRequiredContexts(options.repo, options.branch, {
+		strict: options.strict,
+	});
 	if (contexts === null) {
-		// Protection endpoint unreadable with this token; warned already.
+		// Non-strict: protection endpoint unreadable with this token, warned already.
 		return;
 	}
 	if (contexts.length === 0) {
@@ -369,5 +414,12 @@ function main() {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-	main();
+	try {
+		main();
+	} catch (error) {
+		// Surface as a GitHub annotation, not a Node stack trace: this script's
+		// failures are operator-actionable configuration problems.
+		console.error(`::error::${error instanceof Error ? error.message : error}`);
+		process.exitCode = 1;
+	}
 }

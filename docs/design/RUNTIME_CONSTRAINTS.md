@@ -1,5 +1,8 @@
 # Runtime Constraints
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. System prompt assembly now lives in `packages/tui-rs`. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 Runtime constraint fragments are small system-prompt additions that tell the
 agent about execution limits the runtime already knows. They keep environment
 warnings close to prompt assembly instead of relying on every caller to restate

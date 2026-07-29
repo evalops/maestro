@@ -27,42 +27,50 @@ fn configure_web_static_root() {
     }
 }
 
-fn print_help() {
-    println!(
-		"Maestro\n\nUsage:\n  maestro [options] [prompt]\n  maestro exec <prompt>\n  maestro -w <name> [prompt]\n  maestro doctor [--json] [--live] [--model <provider/model>]\n  maestro --headless\n  maestro web [--port <port>]\n  maestro hosted-runner [options]\n\nOptions:\n  -w, --worktree <name>  Run the session in a new git worktree at ../<repo>-wt-<name>\n                         on a new branch; clean worktrees are removed on exit, dirty ones kept\n\nThe product runtime is native Rust; no Node.js or Bun runtime is required."
-	);
+const HELP: &str = "Maestro\n\nUsage:\n  maestro [options] [prompt]\n  maestro exec <prompt>\n  maestro -w <name> [prompt]\n  maestro doctor [--json] [--live] [--model <provider/model>]\n  maestro --headless\n  maestro web [--port <port>]\n  maestro hosted-runner [options]\n\nOptions:\n  -w, --worktree <name>  Run the session in a new git worktree at ../<repo>-wt-<name>\n                         on a new branch; clean worktrees are removed on exit, dirty ones kept\n\nThe product runtime is native Rust; no Node.js or Bun runtime is required.";
+const VERSION: &str = concat!("maestro ", env!("CARGO_PKG_VERSION"));
+
+fn sync_command_output(command: &Command) -> Option<&'static str> {
+    match command {
+        Command::Help => Some(HELP),
+        Command::Version => Some(VERSION),
+        _ => None,
+    }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let raw_args = std::env::args_os().collect::<Vec<_>>();
     let command = classify(raw_args.iter().skip(1).cloned()).map_err(anyhow::Error::msg)?;
 
-    match command {
-        Command::Help => {
-            print_help();
-            Ok(())
-        }
-        Command::Version => {
-            println!("maestro {}", env!("CARGO_PKG_VERSION"));
-            Ok(())
-        }
-        Command::Web { port } => {
-            configure_web_static_root();
-            if let Some(port) = port {
-                std::env::set_var("PORT", port.to_string());
-            }
-            serve(ControlPlaneConfig::from_env()).await
-        }
-        Command::Agent(_) | Command::HostedRunner(_) | Command::Utility(_) => {
-            maestro_tui::run_cli(raw_args).await
-        }
+    if let Some(output) = sync_command_output(&command) {
+        println!("{output}");
+        return Ok(());
     }
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async move {
+            match command {
+                Command::Web { port } => {
+                    configure_web_static_root();
+                    if let Some(port) = port {
+                        std::env::set_var("PORT", port.to_string());
+                    }
+                    serve(ControlPlaneConfig::from_env()).await
+                }
+                Command::Agent(_) | Command::HostedRunner(_) | Command::Utility(_) => {
+                    maestro_tui::run_cli(raw_args).await
+                }
+                Command::Help | Command::Version => unreachable!("handled before runtime startup"),
+            }
+        })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::web_static_root;
+    use super::{sync_command_output, web_static_root, HELP, VERSION};
+    use maestro::Command;
     use std::{fs, path::PathBuf};
 
     fn test_root(label: &str) -> PathBuf {
@@ -98,5 +106,11 @@ mod tests {
 
         assert_eq!(web_static_root(&executable), Some(assets));
         fs::remove_dir_all(root).expect("test directory should be removed");
+    }
+
+    #[test]
+    fn help_and_version_are_handled_without_async_runtime() {
+        assert_eq!(sync_command_output(&Command::Help), Some(HELP));
+        assert_eq!(sync_command_output(&Command::Version), Some(VERSION));
     }
 }

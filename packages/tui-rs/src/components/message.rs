@@ -324,6 +324,7 @@ fn format_tool_status_summary(status: ToolCallStatus, summary: &str) -> String {
         ToolCallStatus::Running => format!("Running · {summary}"),
         ToolCallStatus::Failed => format!("Failed · {summary}"),
         ToolCallStatus::Pending => format!("Pending · {summary}"),
+        ToolCallStatus::Cancelled => format!("Cancelled · {summary}"),
         ToolCallStatus::Blocked => format!("Blocked · {summary}"),
     }
 }
@@ -808,6 +809,7 @@ impl Widget for MessageWidget<'_> {
                 ToolCallStatus::Completed => ("●", Style::default().fg(Color::Green)),
                 ToolCallStatus::Failed => ("●", Style::default().fg(Color::Red)),
                 ToolCallStatus::Pending => ("○", Style::default().fg(Color::Yellow)),
+                ToolCallStatus::Cancelled => ("⊘", Style::default().fg(Color::Yellow)),
                 ToolCallStatus::Blocked => ("●", Style::default().fg(Color::Magenta)),
             };
             let summary_label = summarize_tool_use(&tool_call.tool, &tool_call.args);
@@ -1048,6 +1050,7 @@ fn get_tool_args_preview(tool: &str, args: &serde_json::Value, max_len: usize) -
 /// - `*` blue: Running
 /// - `+` green: Completed
 /// - `!` red: Failed
+/// - `x` yellow: Cancelled
 ///
 /// # Usage
 ///
@@ -1085,6 +1088,7 @@ impl Widget for ToolCallWidget<'_> {
             ToolCallStatus::Running => ("*", Color::Blue),
             ToolCallStatus::Completed => ("+", Color::Green),
             ToolCallStatus::Failed => ("!", Color::Red),
+            ToolCallStatus::Cancelled => ("x", Color::Yellow),
             ToolCallStatus::Blocked => ("X", Color::Magenta),
         };
 

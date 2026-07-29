@@ -1169,6 +1169,16 @@ impl ToolExecutor {
             if let Ok(mut cache) = self.cache.write() {
                 if let Some(cached) = cache.get(&cache_key) {
                     // Cache hit for tool execution
+                    let result = ToolResult {
+                        success: !cached.is_error,
+                        output: cached.output.clone(),
+                        error: if cached.is_error {
+                            Some(cached.output.clone())
+                        } else {
+                            None
+                        },
+                        details: None,
+                    };
 
                     // Send events for cached result
                     if let Some(tx) = event_tx {
@@ -1184,20 +1194,12 @@ impl ToolExecutor {
                         let _ = tx.send(FromAgent::ToolEnd {
                             call_id: call_id.to_string(),
                             success: !cached.is_error,
+                            result: Some(result.clone()),
                             receipt: None,
                         });
                     }
 
-                    return ToolResult {
-                        success: !cached.is_error,
-                        output: cached.output.clone(),
-                        error: if cached.is_error {
-                            Some(cached.output.clone())
-                        } else {
-                            None
-                        },
-                        details: None,
-                    };
+                    return result;
                 }
             }
         }
@@ -1211,7 +1213,7 @@ impl ToolExecutor {
         );
 
         // Store result in cache for cacheable tools
-        if is_cacheable {
+        if is_cacheable && !result.is_cancelled() {
             if let Ok(mut cache) = self.cache.write() {
                 let cached_result = CachedResult::new(
                     if result.success {
@@ -1368,12 +1370,13 @@ fn emit_typed_tool_end(
     if !result.output.is_empty() {
         let _ = tx.send(FromAgent::ToolOutput {
             call_id: call_id.to_string(),
-            content: result.output,
+            content: result.output.clone(),
         });
     }
     let _ = tx.send(FromAgent::ToolEnd {
         call_id: call_id.to_string(),
         success: result.success,
+        result: Some(result),
         receipt: Some(execution.receipt.clone()),
     });
 }

@@ -34,7 +34,7 @@ runs:
       shell: bash
       env:
         TOOLCHAIN_INPUT: ${{ inputs.toolchain }}
-      run: |
+      run: | # zizmor: ignore[github-env] every exported value is scrubbed to a safe charset by the safe_* substitutions below
         set -euo pipefail
         safe_repo="${GITHUB_REPOSITORY:-repo}"
         safe_repo="${safe_repo//[^A-Za-z0-9_.-]/-}"
@@ -42,17 +42,23 @@ runs:
         safe_job="${safe_job//[^A-Za-z0-9_.-]/-}"
         safe_toolchain="${TOOLCHAIN_INPUT:-stable}"
         safe_toolchain="${safe_toolchain//[^A-Za-z0-9_.-]/-}"
-        safe_run="${GITHUB_RUN_ID:-local}"
-        safe_run="${safe_run//[^A-Za-z0-9_.-]/-}"
-        safe_attempt="${GITHUB_RUN_ATTEMPT:-0}"
-        safe_attempt="${safe_attempt//[^A-Za-z0-9_.-]/-}"
+        # CARGO_HOME/RUSTUP_HOME must NOT vary per run. Swatinem/rust-cache
+        # hashes every CARGO_*/RUSTUP_* environment variable into its cache key
+        # ("Environment considered: ... CARGO_HOME ... RUSTUP_HOME" in the job
+        # log). Embedding GITHUB_RUN_ID here made that key unique on every run,
+        # so the restore key never matched a stored entry: each job logged
+        # "No cache found.", rebuilt every dependency from scratch, then
+        # uploaded a fresh multi-hundred-megabyte cache nobody could ever read.
+        # Keep the path stable per (repo, job, toolchain) instead; a self-hosted
+        # runner executes one job at a time, so that is still collision-free.
         base="${RUNNER_TEMP:-${GITHUB_WORKSPACE:-$PWD}/.tmp}/maestro-rust/${safe_repo}/${safe_job}/${safe_toolchain}"
-        root="$base/run-${safe_run}-attempt-${safe_attempt}"
+        root="$base/home"
         cargo_home="$root/cargo"
         rustup_home="$root/rustup"
         mkdir -p "$base"
-        find "$base" -mindepth 1 -maxdepth 1 -type d -mmin +360 -exec rm -rf {} + || true
-        if [[ "$root" == "$base"/run-* ]]; then
+        # Sweep per-run directories left behind by the previous layout.
+        find "$base" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -exec rm -rf {} + || true
+        if [[ "$root" == "$base"/home ]]; then
           rm -rf "$root"
         fi
         mkdir -p "$cargo_home/bin" "$rustup_home"
@@ -126,10 +132,27 @@ runs:
       if: ${{ inputs.ensure-ripgrep == 'true' }}
       uses: ./.github/actions/ensure-ripgrep
 
+    - name: Scope native cache to the host ABI
+      id: host-abi
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v ldd >/dev/null 2>&1; then
+          descriptor="$(ldd --version 2>&1 || true)"
+          descriptor="${descriptor%%$'\n'*}"
+        elif command -v sw_vers >/dev/null 2>&1; then
+          descriptor="$(sw_vers -productVersion)"
+        else
+          descriptor="$(uname -sr)"
+        fi
+        safe_abi="${descriptor//[^A-Za-z0-9_.-]/-}"
+        printf 'value=%s\n' "${safe_abi:0:80}" >> "$GITHUB_OUTPUT"
+
     - name: Cache Cargo
       uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
       with:
         workspaces: ${{ inputs.workspaces }}
+        shared-key: ${{ runner.os }}-${{ runner.arch }}-${{ steps.host-abi.outputs.value }}
 
     - name: Configure Cargo network resilience
       shell: bash

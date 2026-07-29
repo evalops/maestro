@@ -915,6 +915,17 @@ fn ensure_assistant_break(visible_response_open: &mut bool, response_ends_with_n
     }
 }
 
+/// Sanitize text that arrives over the network from the remote agent
+/// transport before it reaches the attaching user's real terminal.
+///
+/// There is no ratatui `Buffer` in this REPL to filter it (unlike the TUI
+/// chat pane), so a malicious or compromised remote peer could otherwise
+/// write ANSI/OSC/CSI escape sequences straight into the terminal via
+/// `Status`/`Error`/`Compaction` messages or assistant response chunks.
+fn sanitize_remote_text(s: &str) -> String {
+    crate::output_sanitize::sanitize_control_chars(s)
+}
+
 fn write_line(
     message: &str,
     visible_response_open: &mut bool,
@@ -922,7 +933,7 @@ fn write_line(
 ) {
     ensure_assistant_break(visible_response_open, response_ends_with_newline);
     clear_prompt_line();
-    println!("{message}");
+    println!("{}", sanitize_remote_text(message));
 }
 
 fn print_assistant_chunk(
@@ -939,7 +950,7 @@ fn print_assistant_chunk(
         *visible_response_open = true;
         *response_ends_with_newline = false;
     }
-    print!("{content}");
+    print!("{}", sanitize_remote_text(content));
     let _ = io::stdout().flush();
     *response_ends_with_newline = content.ends_with('\n');
 }
@@ -957,6 +968,24 @@ fn clear_prompt_line() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_remote_text_strips_osc_injection_from_a_malicious_peer() {
+        // A minimal OSC-0 (set title) sequence a compromised/malicious remote
+        // peer could send as a Status/Error/Compaction message or assistant
+        // response chunk.
+        let input = "before\x1b]0;evil\x07after";
+        let out = sanitize_remote_text(input);
+        assert_eq!(out, "before]0;evilafter");
+        assert!(!out.contains('\x1b'));
+        assert!(!out.contains('\x07'));
+    }
+
+    #[test]
+    fn sanitize_remote_text_preserves_ordinary_text_with_newlines_and_tabs() {
+        let input = "status: ok\nlatency:\t12ms";
+        assert_eq!(sanitize_remote_text(input), input);
+    }
 
     #[test]
     fn interactive_gate_requires_tty_without_json_or_print_env() {
