@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdtempSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -116,4 +122,15 @@ jobs:
 	const { failures } = withWorkflows({ "release.yml": workflow }, ["release"]);
 	assert.equal(failures.length, 1);
 	assert.match(failures[0], /never runs on pull_request/u);
+});
+
+test("required workflow gate runs the auto-update regression suite", () => {
+	const workflow = readFileSync(
+		new URL("../.github/workflows/actionlint.yml", import.meta.url),
+		"utf8",
+	);
+	assert.match(
+		workflow,
+		/node --test scripts\/update-behind-auto-merge-prs\.test\.mjs/u,
+	);
 });
