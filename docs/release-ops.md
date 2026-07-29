@@ -36,21 +36,13 @@
 - Keep README, JetBrains plugin docs, SDK docs, and release ops text in sync with `npm run metadata:sync`.
 - Run `npm run cutover:check` before changing package names or install instructions.
 - Use `.github/workflows/verify-published-package.yml` for a manual npm verification run against either the current package metadata or an override package/version during scope recovery.
-- npm publishing uses GitHub OIDC trusted publishing when npm has the
-  `evalops/maestro` release workflow configured; the EvalOps org `NPM_TOKEN`
-  secret remains a temporary fallback during the scope cutover.
-- `NPM_PUBLISH_AUTH_MODE` controls the release publish path:
-  - `auto` tries npm trusted publishing first, then falls back to `NPM_TOKEN`
-    if the npm-side trusted publisher is not configured yet.
-  - `trusted` ignores `NPM_TOKEN` and forces npm trusted publishing.
-  - `token` requires `NPM_TOKEN` and keeps the legacy fallback explicit.
-- Run `npm run release:trust` for a dry run of the npm trusted-publisher
-  configuration. Use `npm run release:trust -- --apply --otp=<code>` to write
-  the `@evalops/maestro` trusted publisher for `evalops/maestro`,
-  `.github/workflows/release.yml`, and the `npm-release` environment.
-- After the trusted-publisher write succeeds and one release verifies, set
-  `NPM_PUBLISH_AUTH_MODE=trusted` in the `npm-release` environment and remove
-  the release-scoped `NPM_TOKEN`.
+- npm publication runs on the internal confirmation lane and requires the
+  release-scoped `NPM_TOKEN` secret in the `npm-release` environment.
+- Keep `NPM_TOKEN` configured while this workflow uses the self-hosted
+  confirmation runner. npm trusted publishing requires a GitHub-hosted runner
+  and is not a supported authentication path for this release lane.
+- The workflow verifies an already-published immutable tarball before retrying,
+  so a rerun after a lost registry response does not republish the same version.
 
 ## Rollback And Deprecation
 
