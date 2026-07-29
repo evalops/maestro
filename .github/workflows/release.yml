@@ -10,13 +10,67 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # A tag push and a manual dispatch can target the same immutable release tag
+  # from different refs. Serialize releases so those paths cannot publish twice.
+  group: ${{ github.workflow }}
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      package_name: ${{ steps.release.outputs.package_name }}
+      release_sha: ${{ steps.release.outputs.release_sha }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      release_version: ${{ steps.release.outputs.release_version }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+      - id: release
+        name: Resolve immutable release tag
+        env:
+          REQUESTED: ${{ github.event.inputs.version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          release_version="${REQUESTED#v}"
+          if [[ ! "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Requested release version '$REQUESTED' is not semver."
+            exit 1
+          fi
+
+          release_tag="v${release_version}"
+          git fetch --force --no-tags origin "refs/tags/${release_tag}:refs/tags/${release_tag}"
+          release_sha="$(git rev-list -n 1 "$release_tag")"
+          if [[ -z "$release_sha" ]]; then
+            echo "::error::Release tag ${release_tag} does not resolve to a commit."
+            exit 1
+          fi
+
+          git checkout --detach "$release_sha"
+          package_version="$(node -p "require('./package.json').version")"
+          package_name="$(node -p "require('./package.json').name")"
+          if [[ "$package_version" != "$release_version" ]]; then
+            echo "::error::${release_tag} contains package version ${package_version}, not ${release_version}."
+            exit 1
+          fi
+
+          {
+            echo "package_name=$package_name"
+            echo "release_sha=$release_sha"
+            echo "release_tag=$release_tag"
+            echo "release_version=$release_version"
+          } >> "$GITHUB_OUTPUT"
+
   binaries:
+    needs: prepare
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -29,6 +83,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
       - uses: ./.github/actions/setup-rust
         with:
           toolchain: stable
@@ -45,29 +101,36 @@ jobs:
           path: dist/release/maestro-${{ matrix.platform }}
 
   publish:
-    needs: binaries
+    needs:
+      - prepare
+      - binaries
     runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
+    environment: npm-release
     permissions:
       contents: write
       id-token: write
+    outputs:
+      package_name: ${{ needs.prepare.outputs.package_name }}
+      release_tag: ${{ needs.prepare.outputs.release_tag }}
+      release_version: ${{ needs.prepare.outputs.release_version }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version: 22, registry-url: "https://registry.npmjs.org" }
+        with: { node-version: 24 }
       - uses: actions/download-artifact@v4
         with:
           pattern: maestro-*
           path: release-binaries
           merge-multiple: true
-      - name: Resolve release version
-        id: version
-        env:
-          REQUESTED: ${{ github.event.inputs.version || github.ref_name }}
-        run: echo "value=${REQUESTED#v}" >> "$GITHUB_OUTPUT"
       - name: Verify native package inputs
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
         run: |
-          test "$(node -p "require('./package.json').version")" = "${{ steps.version.outputs.value }}"
+          set -euo pipefail
+          test "$(node -p "require('./package.json').version")" = "$RELEASE_VERSION"
           test -f packages/web/dist/index.html
           npm run check:rust-only-runtime
       - name: Materialize native npm package
@@ -80,11 +143,68 @@ jobs:
           echo "$PACK_JSON"
           echo "tarball=$(echo "$PACK_JSON" | jq -r '.[0].filename')" >> "$GITHUB_OUTPUT"
       - name: Smoke packed package without JS runtime
-        run: node scripts/smoke-release-native-only.mjs bin/maestro
+        env:
+          MAESTRO_REQUIRE_PACKAGED_TUI: "1"
+        run: node scripts/smoke-packed-cli.js "${{ steps.pack.outputs.tarball }}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          retention-days: 14
+          name: npm-tarball-${{ needs.prepare.outputs.release_tag }}
+          path: ${{ steps.pack.outputs.tarball }}
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_PUBLISH_AUTH_MODE: ${{ vars.NPM_PUBLISH_AUTH_MODE || 'auto' }}
+        run: |
+          set -euo pipefail
+          npm_token_fallback="${NODE_AUTH_TOKEN:-}"
+
+          publish_with_token() {
+            if [[ -z "$npm_token_fallback" ]]; then
+              echo "::error::NPM_PUBLISH_AUTH_MODE=token requires the npm-release NPM_TOKEN secret."
+              return 1
+            fi
+
+            printf "//registry.npmjs.org/:_authToken=%s\n" "$npm_token_fallback" > "$RUNNER_TEMP/npmrc"
+            NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/npmrc" \
+              NODE_AUTH_TOKEN="$npm_token_fallback" \
+              command npm publish "${{ steps.pack.outputs.tarball }}" --access public --provenance
+          }
+
+          publish_with_trusted_publisher() {
+            unset NODE_AUTH_TOKEN NPM_CONFIG_USERCONFIG
+            command npm publish "${{ steps.pack.outputs.tarball }}" --access public
+          }
+
+          case "$NPM_PUBLISH_AUTH_MODE" in
+            auto|"")
+              trusted_status=0
+              publish_with_trusted_publisher || trusted_status=$?
+              if [[ "$trusted_status" -eq 0 ]]; then
+                exit 0
+              fi
+              if [[ -z "$npm_token_fallback" ]]; then
+                echo "::error::Trusted publishing failed and no NPM_TOKEN fallback is configured."
+                exit "$trusted_status"
+              fi
+              echo "::warning::Trusted publishing failed; using the npm-release NPM_TOKEN fallback."
+              publish_with_token
+              ;;
+            trusted)
+              publish_with_trusted_publisher
+              ;;
+            token)
+              publish_with_token
+              ;;
+            *)
+              echo "::error::Unsupported NPM_PUBLISH_AUTH_MODE '$NPM_PUBLISH_AUTH_MODE'. Use auto, trusted, or token."
+              exit 1
+              ;;
+          esac
       - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
-          tag_name: v${{ steps.version.outputs.value }}
-          name: Maestro ${{ steps.version.outputs.value }}
+          tag_name: ${{ needs.prepare.outputs.release_tag }}
+          name: Maestro ${{ needs.prepare.outputs.release_version }}
           generate_release_notes: true
           files: |
             ${{ steps.pack.outputs.tarball }}
@@ -93,3 +213,43 @@ jobs:
             release-binaries/maestro-linux-x64
             release-binaries/maestro-linux-arm64
             maestro-web-dist.tar.gz
+
+  post-publish-canary:
+    needs:
+      - prepare
+      - publish
+    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: { node-version: 24 }
+      - name: Verify published package from npm
+        env:
+          CLI_COMMAND: maestro
+          MAESTRO_INSTALL_AUDIT_LEVEL: critical
+          MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE: local
+          MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR: published-replay-evidence
+          MAESTRO_REGISTRY_POLL_ATTEMPTS: "120"
+          MAESTRO_REGISTRY_POLL_DELAY_MS: "5000"
+          PACKAGE_NAME: ${{ needs.prepare.outputs.package_name }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          node scripts/smoke-registry-install.js \
+            --package "$PACKAGE_NAME" \
+            --version "$RELEASE_VERSION" \
+            --cli-command "$CLI_COMMAND"
+      - name: Validate published replay evidence
+        run: node scripts/verify-published-replay-evidence.js --evidence-dir published-replay-evidence
+      - name: Upload published replay evidence
+        if: ${{ always() && hashFiles('published-replay-evidence/*.json') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          retention-days: 14
+          name: published-replay-evidence-${{ needs.prepare.outputs.release_tag }}
+          path: published-replay-evidence/*.json
