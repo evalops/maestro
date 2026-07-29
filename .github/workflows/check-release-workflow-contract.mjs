@@ -264,15 +264,8 @@ export function validateReleaseWorkflow(source) {
 			failures.push(`${name} permissions must be exactly contents: read`);
 		}
 	}
-	if (
-		!hasExactPermissions(publish.permissions, {
-			contents: "read",
-			"id-token": "write",
-		})
-	) {
-		failures.push(
-			"publish permissions must be exactly contents: read and id-token: write",
-		);
+	if (!hasExactPermissions(publish.permissions, { contents: "read" })) {
+		failures.push("publish permissions must be exactly contents: read");
 	}
 	if (!hasExactPermissions(release.permissions, { contents: "write" })) {
 		failures.push("github-release permissions must be exactly contents: write");
@@ -428,9 +421,6 @@ export function validateReleaseWorkflow(source) {
 	if (publish.environment !== "npm-release") {
 		failures.push("publish must use the npm-release environment");
 	}
-	if (publish.permissions["id-token"] !== "write") {
-		failures.push("publish must grant id-token: write for trusted publishing");
-	}
 	const assetStep = findStep(publish, "Verify native package inputs");
 	if (requiredStepCanBeSkippedOrIgnored(assetStep)) {
 		failures.push("native package input verification must not be conditional or ignored");
@@ -453,12 +443,6 @@ export function validateReleaseWorkflow(source) {
 	if (requiredStepCanBeSkippedOrIgnored(publishStep)) {
 		failures.push("npm publication must not be conditional or ignored");
 	}
-	if (!topLevelPublishLines.includes('case "$NPM_PUBLISH_AUTH_MODE" in')) {
-		failures.push("npm auth-mode dispatch must execute at the top shell level");
-	}
-	const authCaseIndex = topLevelPublishLines.indexOf(
-		'case "$NPM_PUBLISH_AUTH_MODE" in',
-	);
 	const registryPreflight = [
 		"registry_status=0",
 		"verify_published_tarball || registry_status=$?",
@@ -478,14 +462,16 @@ export function validateReleaseWorkflow(source) {
 				preflightStart + registryPreflight.length,
 			),
 		) === JSON.stringify(registryPreflight);
-	const preAuthTerminations = topLevelPublishLines
-		.slice(0, authCaseIndex)
-		.filter((line) =>
-		/^(?:exit|return)(?:\s|$)/u.test(line),
+	const tokenPublishIndex = topLevelPublishLines.indexOf(
+		"publish_or_verify publish_with_token",
 	);
+	const prePublishTerminations = topLevelPublishLines
+		.slice(0, tokenPublishIndex)
+		.filter((line) => /^(?:exit|return)(?:\s|$)/u.test(line));
 	if (
 		!hasExactRegistryPreflight ||
-		preAuthTerminations.length !== 0 ||
+		tokenPublishIndex < 0 ||
+		prePublishTerminations.length !== 0 ||
 		publishLines.some((line) => /^npm\s*\(\)\s*\{/u.test(line)) ||
 		!publishLines.includes(
 			'command npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" --registry "$NPM_CONFIG_REGISTRY" dist.integrity 2>/dev/null',
@@ -494,25 +480,8 @@ export function validateReleaseWorkflow(source) {
 			'if [[ "$registry_integrity" != "$PACKED_INTEGRITY" ]]; then',
 		)
 	) {
-		failures.push("npm auth-mode dispatch must not be bypassed before publication");
+		failures.push("token-backed npm publication must not be bypassed");
 	}
-	const unsupportedIndex = publishLines.indexOf("*)");
-	if (
-		unsupportedIndex < 0 ||
-		publishLines[unsupportedIndex + 1] !==
-			`echo "::error::Unsupported NPM_PUBLISH_AUTH_MODE '$NPM_PUBLISH_AUTH_MODE'. Use auto, trusted, or token."` ||
-		publishLines[unsupportedIndex + 2] !== "exit 1" ||
-		publishLines.filter((line) => line === "exit 1").length !== 1
-	) {
-		failures.push("unsupported npm auth modes must terminate with failure");
-	}
-	const trustedCalls = publishLines.filter(
-		(line) => line === "publish_or_verify publish_with_trusted_publisher",
-	).length;
-	const guardedTrustedCalls = publishLines.filter(
-		(line) =>
-			line === "publish_or_verify publish_with_trusted_publisher || trusted_status=$?",
-	).length;
 	const tokenCalls = publishLines.filter(
 		(line) => line === "publish_or_verify publish_with_token",
 	).length;
@@ -520,11 +489,18 @@ export function validateReleaseWorkflow(source) {
 		line.startsWith("command npm publish "),
 	);
 	const expectedPublishLines = new Set([
-		'command npm publish "${{ steps.pack.outputs.tarball }}" --access public --provenance --registry "$NPM_CONFIG_REGISTRY"',
 		'command npm publish "${{ steps.pack.outputs.tarball }}" --access public --registry "$NPM_CONFIG_REGISTRY"',
 	]);
-	if (guardedTrustedCalls !== 1 || trustedCalls < 1 || tokenCalls < 2) {
-		failures.push("npm publish helpers must be invoked in auto, trusted, and token modes");
+	if (
+		tokenCalls !== 1 ||
+		publishLines.some(
+			(line) =>
+				line.includes("trusted_publisher") ||
+				line.includes("NPM_PUBLISH_AUTH_MODE") ||
+				line.includes("--provenance"),
+		)
+	) {
+		failures.push("the self-hosted release lane must use token-backed npm publication only");
 	}
 	if (
 		npmPublishLines.length !== expectedPublishLines.size ||
@@ -559,16 +535,9 @@ export function validateReleaseWorkflow(source) {
 			NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000",
 			NPM_CONFIG_FETCH_TIMEOUT: "30000",
 			NPM_CONFIG_REGISTRY: "https://registry.npmjs.org",
-			NPM_PUBLISH_AUTH_MODE: "${{ vars.NPM_PUBLISH_AUTH_MODE || 'auto' }}",
 		})
 	) {
 		failures.push("publish must bind exact package identity and tarball integrity");
-	}
-	if (
-		publishStep?.env.NPM_PUBLISH_AUTH_MODE !==
-		"${{ vars.NPM_PUBLISH_AUTH_MODE || 'auto' }}"
-	) {
-		failures.push("publish must expose the governed NPM_PUBLISH_AUTH_MODE");
 	}
 	const boundedNpmEnv = {
 		NPM_CONFIG_FETCH_RETRIES: "1",

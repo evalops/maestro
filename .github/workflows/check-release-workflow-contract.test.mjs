@@ -74,7 +74,6 @@ jobs:
       name: npm-release
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@sha
         with:
@@ -100,13 +99,9 @@ jobs:
           NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
           NPM_CONFIG_FETCH_TIMEOUT: "30000"
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org
-          NPM_PUBLISH_AUTH_MODE: \${{ vars.NPM_PUBLISH_AUTH_MODE || 'auto' }}
         run: |
           set -euo pipefail
           publish_with_token() {
-            command npm publish "\${{ steps.pack.outputs.tarball }}" --access public --provenance --registry "$NPM_CONFIG_REGISTRY"
-          }
-          publish_with_trusted_publisher() {
             command npm publish "\${{ steps.pack.outputs.tarball }}" --access public --registry "$NPM_CONFIG_REGISTRY"
           }
           verify_published_tarball() {
@@ -145,22 +140,7 @@ jobs:
           if [[ "\$registry_status" -eq 2 ]]; then
             exit 2
           fi
-          case "$NPM_PUBLISH_AUTH_MODE" in
-            auto|"")
-              publish_or_verify publish_with_trusted_publisher || trusted_status=$?
-              publish_or_verify publish_with_token
-              ;;
-            trusted)
-              publish_or_verify publish_with_trusted_publisher
-              ;;
-            token)
-              publish_or_verify publish_with_token
-              ;;
-            *)
-              echo "::error::Unsupported NPM_PUBLISH_AUTH_MODE '$NPM_PUBLISH_AUTH_MODE'. Use auto, trusted, or token."
-              exit 1
-              ;;
-          esac
+          publish_or_verify publish_with_token
       - name: Smoke packed package without JS runtime
         env:
           NPM_CONFIG_FETCH_RETRIES: "1"
@@ -273,19 +253,13 @@ test("accepts mapping-form environment and the complete release contract", () =>
 });
 
 test("rejects dormant npm publish helpers", () => {
-	const dormant = completeWorkflow
-		.replace(
-			"              publish_or_verify publish_with_trusted_publisher || trusted_status=$?\n",
-			"              true\n",
-		)
-		.replaceAll("              publish_or_verify publish_with_token\n", "              true\n")
-		.replace(
-			"              publish_or_verify publish_with_trusted_publisher\n",
-			"              true\n",
-		);
+	const dormant = completeWorkflow.replace(
+		"          publish_or_verify publish_with_token\n",
+		"          true\n",
+	);
 	assert.ok(
 		validateReleaseWorkflow(dormant).some((failure) =>
-			failure.includes("helpers must be invoked"),
+			failure.includes("token-backed npm publication"),
 		),
 	);
 });
@@ -304,12 +278,15 @@ test("rejects swallowed npm publish failures", () => {
 
 test("comments cannot spoof environment, permissions, or dependencies", () => {
 	const spoofed = completeWorkflow
+		.replace(
+			"  publish:\n    needs: [prepare, binaries]\n    runs-on: ${{ vars.INTERNAL_CONFIRMATION_RUNNER }}\n    environment:\n      name: npm-release\n    permissions:\n      contents: read\n",
+			"  publish:\n    needs: [prepare, binaries]\n    runs-on: ${{ vars.INTERNAL_CONFIRMATION_RUNNER }}\n    environment:\n      name: npm-release\n    permissions:\n      # contents: read\n",
+		)
 		.replace("    environment:\n      name: npm-release\n", "    # environment: npm-release\n")
-		.replace("      id-token: write\n", "      # id-token: write\n")
 		.replace("      - publish\n", "      # - publish # needs: publish\n");
 	const failures = validateReleaseWorkflow(spoofed);
 	assert.ok(failures.some((failure) => failure.includes("npm-release environment")));
-	assert.ok(failures.some((failure) => failure.includes("id-token")));
+	assert.ok(failures.some((failure) => failure.includes("publish permissions")));
 	assert.ok(failures.some((failure) => failure.includes("must need prepare and publish")));
 });
 
@@ -344,8 +321,8 @@ test("rejects extra workflow or job write permissions", () => {
 
 test("rejects publish checkout without contents read", () => {
 	const unreadablePublish = completeWorkflow.replace(
-		"    permissions:\n      contents: read\n      id-token: write\n",
-		"    permissions:\n      id-token: write\n",
+		"  publish:\n    needs: [prepare, binaries]\n    runs-on: ${{ vars.INTERNAL_CONFIRMATION_RUNNER }}\n    environment:\n      name: npm-release\n    permissions:\n      contents: read\n",
+		"  publish:\n    needs: [prepare, binaries]\n    runs-on: ${{ vars.INTERNAL_CONFIRMATION_RUNNER }}\n    environment:\n      name: npm-release\n    permissions:\n",
 	);
 	assert.ok(
 		validateReleaseWorkflow(unreadablePublish).some((failure) =>
@@ -518,15 +495,13 @@ test("rejects disabled or shell-dormant npm publication", () => {
 		),
 	);
 
-	const dormantBranch = completeWorkflow
-		.replace(
-			'          case "$NPM_PUBLISH_AUTH_MODE" in\n',
-			'          if false; then\n            case "$NPM_PUBLISH_AUTH_MODE" in\n',
-		)
-		.replace("          esac\n", "            esac\n          fi\n");
+	const dormantBranch = completeWorkflow.replace(
+		"          publish_or_verify publish_with_token\n",
+		"          if false; then\n            publish_or_verify publish_with_token\n          fi\n",
+	);
 	assert.ok(
 		validateReleaseWorkflow(dormantBranch).some((failure) =>
-			failure.includes("top shell level"),
+			failure.includes("token-backed npm publication"),
 		),
 	);
 });
@@ -608,8 +583,8 @@ test("rejects alternate publish failure swallowing", () => {
 
 test("rejects unauthorized early success or a shell function that shadows npm", () => {
 	const earlyExit = completeWorkflow.replace(
-		'          case "$NPM_PUBLISH_AUTH_MODE" in\n',
-		'          exit 0\n          case "$NPM_PUBLISH_AUTH_MODE" in\n',
+		"          publish_or_verify publish_with_token\n",
+		"          exit 0\n          publish_or_verify publish_with_token\n",
 	);
 	assert.ok(
 		validateReleaseWorkflow(earlyExit).some((failure) =>
@@ -627,12 +602,12 @@ test("rejects unauthorized early success or a shell function that shadows npm", 
 		),
 	);
 
-	const swallowedTrustedFailure = completeWorkflow.replace(
+	const swallowedTokenFailure = completeWorkflow.replace(
 		'            command npm publish "${{ steps.pack.outputs.tarball }}" --access public --registry "$NPM_CONFIG_REGISTRY"\n',
 		'            command npm publish "${{ steps.pack.outputs.tarball }}" --access public --registry "$NPM_CONFIG_REGISTRY"\n            return 0\n',
 	);
 	assert.ok(
-		validateReleaseWorkflow(swallowedTrustedFailure).some((failure) =>
+		validateReleaseWorkflow(swallowedTokenFailure).some((failure) =>
 			failure.includes("reconcile the exact registry tarball"),
 		),
 	);
@@ -702,18 +677,14 @@ test("rejects npm publication or reconciliation without the public registry", ()
 	);
 });
 
-test("rejects successful completion for an unsupported npm auth mode", () => {
-	const acceptedTypo = completeWorkflow.replace(
-		`              echo "::error::Unsupported NPM_PUBLISH_AUTH_MODE '$NPM_PUBLISH_AUTH_MODE'. Use auto, trusted, or token."
-              exit 1
-`,
-		`              echo "::error::Unsupported NPM_PUBLISH_AUTH_MODE '$NPM_PUBLISH_AUTH_MODE'. Use auto, trusted, or token."
-              exit 0
-`,
+test("rejects trusted publishing on the self-hosted release lane", () => {
+	const trusted = completeWorkflow.replace(
+		"          publish_with_token() {\n",
+		"          publish_with_trusted_publisher() {\n",
 	);
 	assert.ok(
-		validateReleaseWorkflow(acceptedTypo).some((failure) =>
-			failure.includes("unsupported npm auth modes"),
+		validateReleaseWorkflow(trusted).some((failure) =>
+			failure.includes("token-backed npm publication only"),
 		),
 	);
 });
@@ -769,8 +740,8 @@ test("rejects release control jobs outside the internal confirmation runner", ()
 
 test("rejects unbounded npm registry calls in publish and canary", () => {
 	const unboundedPublish = completeWorkflow.replace(
-		'          NPM_CONFIG_FETCH_TIMEOUT: "30000"\n          NPM_CONFIG_REGISTRY: https://registry.npmjs.org\n          NPM_PUBLISH_AUTH_MODE:',
-		'          NPM_CONFIG_REGISTRY: https://registry.npmjs.org\n          NPM_PUBLISH_AUTH_MODE:',
+		'          NPM_CONFIG_FETCH_TIMEOUT: "30000"\n          NPM_CONFIG_REGISTRY: https://registry.npmjs.org\n',
+		'          NPM_CONFIG_REGISTRY: https://registry.npmjs.org\n',
 	);
 	assert.ok(
 		validateReleaseWorkflow(unboundedPublish).some((failure) =>
