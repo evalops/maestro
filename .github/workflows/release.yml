@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   prepare:
-    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.INTERNAL_CONFIRMATION_RUNNER }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -45,7 +45,19 @@ jobs:
           fi
 
           release_tag="v${release_version}"
-          git fetch --force --no-tags origin "refs/tags/${release_tag}:refs/tags/${release_tag}"
+          for attempt in 1 2 3; do
+            if timeout 60s git \
+              -c http.lowSpeedLimit=1000 \
+              -c http.lowSpeedTime=30 \
+              fetch --force --no-tags origin "refs/tags/${release_tag}:refs/tags/${release_tag}"; then
+              break
+            fi
+            if [[ "$attempt" -eq 3 ]]; then
+              echo "::error::Unable to fetch ${release_tag} after ${attempt} bounded attempts."
+              exit 1
+            fi
+            sleep 2
+          done
           release_sha="$(git rev-list -n 1 "$release_tag")"
           if [[ -z "$release_sha" ]]; then
             echo "::error::Release tag ${release_tag} does not resolve to a commit."
@@ -104,11 +116,10 @@ jobs:
     needs:
       - prepare
       - binaries
-    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.INTERNAL_CONFIRMATION_RUNNER }}
     timeout-minutes: 60
     environment: npm-release
     permissions:
-      contents: write
       id-token: write
     outputs:
       package_name: ${{ needs.prepare.outputs.package_name }}
@@ -137,6 +148,11 @@ jobs:
         run: node scripts/materialize-native-package.mjs --input-dir release-binaries
       - name: Package browser assets for native installs
         run: tar -czf maestro-web-dist.tar.gz -C packages/web/dist .
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          retention-days: 14
+          name: release-web-dist-${{ needs.prepare.outputs.release_tag }}
+          path: maestro-web-dist.tar.gz
       - id: pack
         run: |
           PACK_JSON=$(npm pack --json)
@@ -154,6 +170,10 @@ jobs:
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_FETCH_RETRIES: "1"
+          NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
+          NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
+          NPM_CONFIG_FETCH_TIMEOUT: "30000"
           NPM_PUBLISH_AUTH_MODE: ${{ vars.NPM_PUBLISH_AUTH_MODE || 'auto' }}
         run: |
           set -euo pipefail
@@ -201,24 +221,41 @@ jobs:
               exit 1
               ;;
           esac
+  github-release:
+    needs:
+      - prepare
+      - binaries
+      - publish
+    runs-on: ${{ vars.INTERNAL_CONFIRMATION_RUNNER }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-tarball-${{ needs.prepare.outputs.release_tag }}
+          path: release-assets
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: maestro-*
+          path: release-assets
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-web-dist-${{ needs.prepare.outputs.release_tag }}
+          path: release-assets
       - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
           tag_name: ${{ needs.prepare.outputs.release_tag }}
           name: Maestro ${{ needs.prepare.outputs.release_version }}
           generate_release_notes: true
-          files: |
-            ${{ steps.pack.outputs.tarball }}
-            release-binaries/maestro-darwin-arm64
-            release-binaries/maestro-darwin-x64
-            release-binaries/maestro-linux-x64
-            release-binaries/maestro-linux-arm64
-            maestro-web-dist.tar.gz
+          files: release-assets/*
 
   post-publish-canary:
     needs:
       - prepare
       - publish
-    runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.INTERNAL_CONFIRMATION_RUNNER }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -236,6 +273,10 @@ jobs:
           MAESTRO_REGISTRY_SMOKE_EVIDENCE_DIR: published-replay-evidence
           MAESTRO_REGISTRY_POLL_ATTEMPTS: "120"
           MAESTRO_REGISTRY_POLL_DELAY_MS: "5000"
+          NPM_CONFIG_FETCH_RETRIES: "1"
+          NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
+          NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
+          NPM_CONFIG_FETCH_TIMEOUT: "30000"
           PACKAGE_NAME: ${{ needs.prepare.outputs.package_name }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
         run: |

@@ -61,6 +61,7 @@ export function parseWorkflow(source) {
 				needs: [],
 				outputs: {},
 				permissions: {},
+				runsOn: "",
 				steps: [],
 			};
 			jobs[jobMatch[1]] = job;
@@ -79,6 +80,7 @@ export function parseWorkflow(source) {
 			if (key === "environment" && value) job.environment = value;
 			if (key === "if" && value) job.condition = value;
 			if (key === "continue-on-error" && value) job.continueOnError = value;
+			if (key === "runs-on" && value) job.runsOn = value;
 			if (key === "needs" && value) {
 				job.needs = value.startsWith("[")
 					? value
@@ -229,17 +231,19 @@ export function validateReleaseWorkflow(source) {
 	const prepare = jobs.prepare;
 	const binaries = jobs.binaries;
 	const publish = jobs.publish;
+	const release = jobs["github-release"];
 	const canary = jobs["post-publish-canary"];
 
 	for (const [name, job] of [
 		["prepare", prepare],
 		["binaries", binaries],
 		["publish", publish],
+		["github-release", release],
 		["post-publish-canary", canary],
 	]) {
 		if (!job) failures.push(`missing ${name} job`);
 	}
-	if (!prepare || !binaries || !publish || !canary) return failures;
+	if (!prepare || !binaries || !publish || !release || !canary) return failures;
 
 	if (!hasExactPermissions(permissions, { contents: "read" })) {
 		failures.push("workflow default permissions must be exactly contents: read");
@@ -258,18 +262,19 @@ export function validateReleaseWorkflow(source) {
 	}
 	if (
 		!hasExactPermissions(publish.permissions, {
-			contents: "write",
 			"id-token": "write",
 		})
 	) {
-		failures.push(
-			"publish permissions must be exactly contents: write and id-token: write",
-		);
+		failures.push("publish permissions must be exactly id-token: write");
+	}
+	if (!hasExactPermissions(release.permissions, { contents: "write" })) {
+		failures.push("github-release permissions must be exactly contents: write");
 	}
 	for (const [name, job] of [
 		["prepare", prepare],
 		["binaries", binaries],
 		["publish", publish],
+		["github-release", release],
 		["post-publish-canary", canary],
 	]) {
 		if (
@@ -277,6 +282,16 @@ export function validateReleaseWorkflow(source) {
 			(job.continueOnError && job.continueOnError !== "false")
 		) {
 			failures.push(`${name} job must not be conditional or ignored`);
+		}
+	}
+	for (const [name, job] of [
+		["prepare", prepare],
+		["publish", publish],
+		["github-release", release],
+		["post-publish-canary", canary],
+	]) {
+		if (job.runsOn !== "${{ vars.INTERNAL_CONFIRMATION_RUNNER }}") {
+			failures.push(`${name} must run on INTERNAL_CONFIRMATION_RUNNER`);
 		}
 	}
 
@@ -300,13 +315,25 @@ export function validateReleaseWorkflow(source) {
 		failures.push("immutable release resolution must not be conditional or ignored");
 	}
 	for (const command of [
-		'git fetch --force --no-tags origin "refs/tags/${release_tag}:refs/tags/${release_tag}"',
 		'release_sha="$(git rev-list -n 1 "$release_tag")"',
 		'git checkout --detach "$release_sha"',
 	]) {
 		if (!resolveLines.includes(command) || !topLevelResolveLines.includes(command)) {
 			failures.push(`immutable release resolution is missing: ${command}`);
 		}
+	}
+	const boundedFetch =
+		'fetch --force --no-tags origin "refs/tags/${release_tag}:refs/tags/${release_tag}"; then';
+	if (
+		!resolveLines.includes("for attempt in 1 2 3; do") ||
+		!resolveLines.includes("if timeout 60s git \\") ||
+		!resolveLines.includes("-c http.lowSpeedLimit=1000 \\") ||
+		!resolveLines.includes("-c http.lowSpeedTime=30 \\") ||
+		!resolveLines.includes(boundedFetch) ||
+		!resolveLines.includes('if [[ "$attempt" -eq 3 ]]; then') ||
+		!resolveLines.includes("sleep 2")
+	) {
+		failures.push("immutable tag fetch must use bounded retries and transport timeouts");
 	}
 	for (const output of [
 		"package_name",
@@ -332,6 +359,13 @@ export function validateReleaseWorkflow(source) {
 	if (!hasNeed(binaries, "prepare")) failures.push("binaries must need prepare");
 	if (!hasNeed(publish, "prepare") || !hasNeed(publish, "binaries")) {
 		failures.push("publish must need prepare and binaries");
+	}
+	if (
+		!hasNeed(release, "prepare") ||
+		!hasNeed(release, "binaries") ||
+		!hasNeed(release, "publish")
+	) {
+		failures.push("github-release must need prepare, binaries, and publish");
 	}
 	if (!hasNeed(canary, "prepare") || !hasNeed(canary, "publish")) {
 		failures.push("post-publish canary must need prepare and publish");
@@ -431,15 +465,35 @@ export function validateReleaseWorkflow(source) {
 	) {
 		failures.push("publish must expose the governed NPM_PUBLISH_AUTH_MODE");
 	}
+	const boundedNpmEnv = {
+		NPM_CONFIG_FETCH_RETRIES: "1",
+		NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000",
+		NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000",
+		NPM_CONFIG_FETCH_TIMEOUT: "30000",
+	};
+	for (const [name, step] of [
+		["publish", publishStep],
+		["post-publish canary", findStep(canary, "Verify published package from npm")],
+	]) {
+		for (const [key, value] of Object.entries(boundedNpmEnv)) {
+			if (step?.env[key] !== value) {
+				failures.push(`${name} must set bounded npm network configuration`);
+				break;
+			}
+		}
+	}
 
-	const publishStepIndex = publish.steps.indexOf(publishStep);
-	const releaseSteps = publish.steps.filter((step) =>
-		step.uses.startsWith("softprops/action-gh-release@"),
+	const releaseSteps = Object.values(jobs).flatMap((job) =>
+		job.steps.filter((step) =>
+			step.uses.startsWith("softprops/action-gh-release@"),
+		),
 	);
 	const releaseStep = releaseSteps[0];
-	const releaseStepIndex = publish.steps.indexOf(releaseStep);
 	if (releaseSteps.length !== 1) {
-		failures.push("publish must contain exactly one GitHub release action");
+		failures.push("workflow must contain exactly one GitHub release action");
+	}
+	if (!release.steps.includes(releaseStep)) {
+		failures.push("GitHub release action must run in the retryable github-release job");
 	}
 	if (requiredStepCanBeSkippedOrIgnored(releaseStep)) {
 		failures.push("GitHub release creation must not be conditional or ignored");
@@ -448,18 +502,50 @@ export function validateReleaseWorkflow(source) {
 		releaseStep?.with.tag_name !==
 			"${{ needs.prepare.outputs.release_tag }}" ||
 		releaseStep?.with.name !==
-			"Maestro ${{ needs.prepare.outputs.release_version }}"
+			"Maestro ${{ needs.prepare.outputs.release_version }}" ||
+		releaseStep?.with.files !== "release-assets/*"
 	) {
-		failures.push("GitHub release tag and name must bind to immutable prepare outputs");
+		failures.push(
+			"GitHub release metadata and files must bind to immutable prepare outputs",
+		);
 	}
+	const publishUploads = publish.steps.filter((step) =>
+		step.uses.startsWith("actions/upload-artifact@"),
+	);
+	for (const artifactName of [
+		"npm-tarball-${{ needs.prepare.outputs.release_tag }}",
+		"release-web-dist-${{ needs.prepare.outputs.release_tag }}",
+	]) {
+		if (!publishUploads.some((step) => step.with.name === artifactName)) {
+			failures.push(`publish must persist retryable artifact ${artifactName}`);
+		}
+	}
+	const releaseDownloads = release.steps.filter((step) =>
+		step.uses.startsWith("actions/download-artifact@"),
+	);
 	if (
-		publishStepIndex < 0 ||
-		releaseStepIndex < 0 ||
-		publishStepIndex > releaseStepIndex
+		releaseDownloads.length !== 3 ||
+		!releaseDownloads.some(
+			(step) =>
+				step.with.name ===
+					"npm-tarball-${{ needs.prepare.outputs.release_tag }}" &&
+				step.with.path === "release-assets",
+		) ||
+		!releaseDownloads.some(
+			(step) =>
+				step.with.pattern === "maestro-*" &&
+				step.with.path === "release-assets" &&
+				step.with["merge-multiple"] === "true",
+		) ||
+		!releaseDownloads.some(
+			(step) =>
+				step.with.name ===
+					"release-web-dist-${{ needs.prepare.outputs.release_tag }}" &&
+				step.with.path === "release-assets",
+		)
 	) {
-		failures.push("npm publication must complete before GitHub release creation");
+		failures.push("github-release must restore the exact immutable release artifacts");
 	}
-
 	const canaryStep = findStep(canary, "Verify published package from npm");
 	const canaryLines = executableLines(canaryStep?.run ?? "");
 	if (requiredStepCanBeSkippedOrIgnored(canaryStep)) {

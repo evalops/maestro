@@ -15,6 +15,7 @@ concurrency:
   group: \${{ github.workflow }}
 jobs:
   prepare:
+    runs-on: \${{ vars.INTERNAL_CONFIRMATION_RUNNER }}
     permissions:
       contents: read
     outputs:
@@ -27,7 +28,18 @@ jobs:
       - id: release
         name: Resolve immutable release tag
         run: |
-          git fetch --force --no-tags origin "refs/tags/\${release_tag}:refs/tags/\${release_tag}"
+          for attempt in 1 2 3; do
+            if timeout 60s git \\
+              -c http.lowSpeedLimit=1000 \\
+              -c http.lowSpeedTime=30 \\
+              fetch --force --no-tags origin "refs/tags/\${release_tag}:refs/tags/\${release_tag}"; then
+              break
+            fi
+            if [[ "$attempt" -eq 3 ]]; then
+              exit 1
+            fi
+            sleep 2
+          done
           release_sha="$(git rev-list -n 1 "$release_tag")"
           git checkout --detach "$release_sha"
           {
@@ -46,10 +58,10 @@ jobs:
           ref: ${releaseSha}
   publish:
     needs: [prepare, binaries]
+    runs-on: \${{ vars.INTERNAL_CONFIRMATION_RUNNER }}
     environment:
       name: npm-release
     permissions:
-      contents: write
       id-token: write
     steps:
       - uses: actions/checkout@sha
@@ -63,6 +75,10 @@ jobs:
           npm run check:rust-only-runtime
       - name: Publish to npm
         env:
+          NPM_CONFIG_FETCH_RETRIES: "1"
+          NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
+          NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
+          NPM_CONFIG_FETCH_TIMEOUT: "30000"
           NPM_PUBLISH_AUTH_MODE: \${{ vars.NPM_PUBLISH_AUTH_MODE || 'auto' }}
         run: |
           publish_with_token() {
@@ -87,14 +103,43 @@ jobs:
               exit 1
               ;;
           esac
+      - uses: actions/upload-artifact@sha
+        with:
+          name: npm-tarball-\${{ needs.prepare.outputs.release_tag }}
+          path: package.tgz
+      - uses: actions/upload-artifact@sha
+        with:
+          name: release-web-dist-\${{ needs.prepare.outputs.release_tag }}
+          path: maestro-web-dist.tar.gz
+  github-release:
+    needs: [prepare, binaries, publish]
+    runs-on: \${{ vars.INTERNAL_CONFIRMATION_RUNNER }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@sha
+        with:
+          name: npm-tarball-\${{ needs.prepare.outputs.release_tag }}
+          path: release-assets
+      - uses: actions/download-artifact@sha
+        with:
+          pattern: maestro-*
+          path: release-assets
+          merge-multiple: true
+      - uses: actions/download-artifact@sha
+        with:
+          name: release-web-dist-\${{ needs.prepare.outputs.release_tag }}
+          path: release-assets
       - uses: softprops/action-gh-release@sha
         with:
           tag_name: \${{ needs.prepare.outputs.release_tag }}
           name: Maestro \${{ needs.prepare.outputs.release_version }}
+          files: release-assets/*
   post-publish-canary:
     needs:
       - prepare
       - publish
+    runs-on: \${{ vars.INTERNAL_CONFIRMATION_RUNNER }}
     permissions:
       contents: read
     steps:
@@ -103,6 +148,10 @@ jobs:
           ref: ${releaseSha}
       - name: Verify published package from npm
         env:
+          NPM_CONFIG_FETCH_RETRIES: "1"
+          NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
+          NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
+          NPM_CONFIG_FETCH_TIMEOUT: "30000"
           PACKAGE_NAME: \${{ needs.prepare.outputs.package_name }}
           RELEASE_VERSION: \${{ needs.prepare.outputs.release_version }}
         run: |
@@ -427,8 +476,12 @@ test("rejects early success or a shell function that shadows npm", () => {
 
 test("rejects successful completion for an unsupported npm auth mode", () => {
 	const acceptedTypo = completeWorkflow.replace(
-		"              exit 1\n",
-		"              exit 0\n",
+		`              echo "::error::Unsupported NPM_PUBLISH_AUTH_MODE '$NPM_PUBLISH_AUTH_MODE'. Use auto, trusted, or token."
+              exit 1
+`,
+		`              echo "::error::Unsupported NPM_PUBLISH_AUTH_MODE '$NPM_PUBLISH_AUTH_MODE'. Use auto, trusted, or token."
+              exit 0
+`,
 	);
 	assert.ok(
 		validateReleaseWorkflow(acceptedTypo).some((failure) =>
@@ -437,14 +490,118 @@ test("rejects successful completion for an unsupported npm auth mode", () => {
 	);
 });
 
-test("rejects release creation before npm publication", () => {
-	const releaseStep = "      - uses: softprops/action-gh-release@sha\n";
-	const outOfOrder = completeWorkflow
-		.replace(releaseStep, "")
-		.replace("      - name: Publish to npm\n", `${releaseStep}      - name: Publish to npm\n`);
+test("rejects a GitHub release job without npm publication dependency", () => {
+	const outOfOrder = completeWorkflow.replace(
+		"    needs: [prepare, binaries, publish]\n",
+		"    needs: [prepare, binaries]\n",
+	);
 	assert.ok(
 		validateReleaseWorkflow(outOfOrder).some((failure) =>
-			failure.includes("before GitHub release"),
+			failure.includes("github-release must need"),
+		),
+	);
+});
+
+test("rejects an unbounded immutable tag fetch", () => {
+	const unbounded = completeWorkflow.replace(
+		`          for attempt in 1 2 3; do
+            if timeout 60s git \\
+              -c http.lowSpeedLimit=1000 \\
+              -c http.lowSpeedTime=30 \\
+              fetch --force --no-tags origin "refs/tags/\${release_tag}:refs/tags/\${release_tag}"; then
+              break
+            fi
+            if [[ "$attempt" -eq 3 ]]; then
+              exit 1
+            fi
+            sleep 2
+          done
+`,
+		`          git fetch --force --no-tags origin "refs/tags/\${release_tag}:refs/tags/\${release_tag}"
+`,
+	);
+	assert.ok(
+		validateReleaseWorkflow(unbounded).some((failure) =>
+			failure.includes("bounded retries"),
+		),
+	);
+});
+
+test("rejects release control jobs outside the internal confirmation runner", () => {
+	const wrongRunner = completeWorkflow.replace(
+		"    runs-on: ${{ vars.INTERNAL_CONFIRMATION_RUNNER }}",
+		"    runs-on: ubuntu-latest",
+	);
+	assert.ok(
+		validateReleaseWorkflow(wrongRunner).some((failure) =>
+			failure.includes("must run on INTERNAL_CONFIRMATION_RUNNER"),
+		),
+	);
+});
+
+test("rejects unbounded npm registry calls in publish and canary", () => {
+	const unboundedPublish = completeWorkflow.replace(
+		'          NPM_CONFIG_FETCH_TIMEOUT: "30000"\n          NPM_PUBLISH_AUTH_MODE:',
+		"          NPM_PUBLISH_AUTH_MODE:",
+	);
+	assert.ok(
+		validateReleaseWorkflow(unboundedPublish).some((failure) =>
+			failure.includes("publish must set bounded npm network configuration"),
+		),
+	);
+
+	const lastTimeout = completeWorkflow.lastIndexOf(
+		'          NPM_CONFIG_FETCH_TIMEOUT: "30000"\n',
+	);
+	const unboundedCanary =
+		completeWorkflow.slice(0, lastTimeout) +
+		completeWorkflow
+			.slice(lastTimeout)
+			.replace('          NPM_CONFIG_FETCH_TIMEOUT: "30000"\n', "");
+	assert.ok(
+		validateReleaseWorkflow(unboundedCanary).some((failure) =>
+			failure.includes(
+				"post-publish canary must set bounded npm network configuration",
+			),
+		),
+	);
+});
+
+test("rejects a non-retryable or incomplete GitHub release job", () => {
+	const inPublish = completeWorkflow
+		.replace(
+			`      - uses: softprops/action-gh-release@sha
+        with:
+          tag_name: \${{ needs.prepare.outputs.release_tag }}
+          name: Maestro \${{ needs.prepare.outputs.release_version }}
+          files: release-assets/*
+`,
+			"",
+		)
+		.replace(
+			"      - name: Publish to npm\n",
+			`      - uses: softprops/action-gh-release@sha
+        with:
+          tag_name: \${{ needs.prepare.outputs.release_tag }}
+          name: Maestro \${{ needs.prepare.outputs.release_version }}
+          files: release-assets/*
+      - name: Publish to npm
+`,
+		);
+	assert.ok(
+		validateReleaseWorkflow(inPublish).some((failure) =>
+			failure.includes("retryable github-release job"),
+		),
+	);
+
+	const missingArtifact = completeWorkflow.replace(
+		"          name: release-web-dist-${{ needs.prepare.outputs.release_tag }}",
+		"          name: wrong-web-artifact",
+	);
+	assert.ok(
+		validateReleaseWorkflow(missingArtifact).some((failure) =>
+			failure.includes("retryable artifact") ||
+			failure.includes("exact immutable release artifacts"),
 		),
 	);
 });
@@ -456,7 +613,7 @@ test("rejects a GitHub release detached from immutable prepare metadata", () => 
 	);
 	assert.ok(
 		validateReleaseWorkflow(wrongTag).some((failure) =>
-			failure.includes("tag and name must bind"),
+			failure.includes("metadata and files must bind"),
 		),
 	);
 });
