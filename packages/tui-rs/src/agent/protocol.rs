@@ -638,6 +638,22 @@ impl ToolResult {
 // Messages from Agent to Rust TUI
 // ============================================================================
 
+/// Approval-critical inline-tool context captured by the native runner.
+///
+/// This value crosses only the in-process runner/TUI channel. The containing
+/// [`FromAgent::ToolCall`] field is skipped by serde so raw environment values
+/// cannot leak into transcripts or protocol logs before display redaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineToolApprovalContext {
+    pub command: String,
+    pub source_path: String,
+    pub source_label: String,
+    pub cwd: String,
+    pub environment: std::collections::HashMap<String, String>,
+    pub shell: String,
+    pub shell_arg: String,
+}
+
 /// Messages sent from the agent to the TUI
 ///
 /// These events represent the agent's state, responses, and requests. The TUI
@@ -827,6 +843,15 @@ pub enum FromAgent {
         /// If true, the agent will wait for a `ToolResponse` before executing.
         /// If false, the tool is auto-approved and executes immediately.
         requires_approval: bool,
+
+        /// Exact inline-tool context captured before approval was published.
+        ///
+        /// This is an in-process handoff from the native runner to the TUI so
+        /// the approval renders the same environment later checked at the
+        /// execution boundary. It is deliberately excluded from serialization:
+        /// values are redacted only while building the approval surface.
+        #[serde(skip)]
+        approval_inline_env: Option<InlineToolApprovalContext>,
     },
 
     /// Tool execution started (auto-approved or after approval)

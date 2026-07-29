@@ -441,6 +441,33 @@ fn test_normalize_slash_completion_never_doubles() {
 }
 
 #[test]
+fn test_cleanup_result_message_surfaces_errors_even_when_nothing_was_removed() {
+    use super::command_handlers::cleanup_result_message;
+
+    // The common, happy-path case: nothing was eligible to prune.
+    assert_eq!(cleanup_result_message(0, 0), "No sessions to prune.");
+
+    // Regression case: every eligible session hit a real (non-contention)
+    // lock-acquisition error, so `removed == 0` but real work was
+    // attempted and failed. Before the fix this collapsed to the same
+    // "No sessions to prune." message as the happy-path case above,
+    // discarding the error count and reading as success.
+    assert_eq!(
+        cleanup_result_message(0, 3),
+        "Failed to prune sessions: 3 error(s)."
+    );
+
+    // Success with no errors.
+    assert_eq!(cleanup_result_message(5, 0), "Pruned 5 session(s).");
+
+    // Partial success: some pruned, some errored.
+    assert_eq!(
+        cleanup_result_message(5, 2),
+        "Pruned 5 session(s). 2 error(s)."
+    );
+}
+
+#[test]
 fn test_slash_cycle_apply_path_no_double_slash() {
     use super::command_handlers::normalize_slash_completion;
     use crate::commands::{build_command_registry, SlashCommandMatcher, SlashCycleState};
@@ -871,6 +898,23 @@ fn test_scroll_boundary_handling() {
 // ─────────────────────────────────────────────────────────────────────────
 // Queue State Tests
 // ─────────────────────────────────────────────────────────────────────────
+
+/// Find the session `.jsonl` file in `dir`, filtering out its sidecar
+/// `.lock` (created by every `SessionWriter::create`/`open_existing`, see
+/// `session::writer::SessionLock`). A bare `read_dir().next()` over a
+/// directory that now legitimately contains two files (the session
+/// transcript and its lock sidecar) picks whichever one the filesystem
+/// happens to list first -- not necessarily the transcript -- making a
+/// test that reads "the first entry" nondeterministically read an empty
+/// lock file instead.
+fn find_session_jsonl(dir: &std::path::Path) -> std::path::PathBuf {
+    std::fs::read_dir(dir)
+        .expect("read temp session directory")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .expect("directory should contain a session .jsonl file")
+}
 
 fn new_test_app() -> App {
     let fallback_path = if cfg!(windows) { "NUL" } else { "/dev/null" };
@@ -2947,6 +2991,80 @@ async fn test_detail_view_from_approval_modal_expands_and_restores() {
 }
 
 #[tokio::test]
+async fn test_detail_view_from_approval_sanitizes_format_controls_in_args() {
+    let mut app = new_test_app();
+    app.approval_controller.enqueue(
+        ApprovalRequest::new(
+            "call-inline",
+            "deploy",
+            serde_json::json!({"target": "safe\u{202e}txt\u{2066}\u{200b}"}),
+        )
+        .with_inline_tool_source(
+            "./deploy.sh",
+            ".composer/tools.json",
+            "project",
+            None,
+            &std::collections::HashMap::new(),
+        ),
+    );
+    app.active_modal = ActiveModal::Approval;
+
+    app.handle_key(KeyCode::Char('e'), CrosstermModifiers::CONTROL)
+        .await
+        .expect("expand approval");
+
+    let content = app
+        .detail_view
+        .as_ref()
+        .expect("detail view open")
+        .content();
+    assert!(content.contains(r#""safe\u{202e}txt\u{2066}\u{200b}""#));
+    assert!(
+        !content.contains(['\u{202e}', '\u{2066}', '\u{200b}']),
+        "{content:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_detail_view_from_batched_approval_shows_selected_inline_context() {
+    let mut app = new_test_app();
+    app.approval_controller.enqueue(ApprovalRequest::new(
+        "call-first",
+        "read",
+        serde_json::json!({}),
+    ));
+    let env = std::collections::HashMap::from([
+        ("A".to_string(), "/first/value".to_string()),
+        ("PATH".to_string(), "/tmp/attacker/evil".to_string()),
+        ("Z".to_string(), "/last/value".to_string()),
+    ]);
+    app.approval_controller.enqueue(
+        ApprovalRequest::new("call-inline", "deploy", serde_json::json!({}))
+            .with_inline_tool_source(
+                "./deploy.sh",
+                "/long/project/.composer/tools.json",
+                "project",
+                Some("/attacker/workdir"),
+                &env,
+            ),
+    );
+    app.approval_controller.select_next();
+    app.active_modal = ActiveModal::Approval;
+
+    app.handle_key(KeyCode::Char('e'), CrosstermModifiers::CONTROL)
+        .await
+        .expect("expand selected approval");
+
+    let detail = app.detail_view.as_ref().expect("detail view open");
+    assert_eq!(detail.title(), "Approval: deploy");
+    assert!(detail
+        .content()
+        .contains("/long/project/.composer/tools.json"));
+    assert!(detail.content().contains("/attacker/workdir"));
+    assert!(detail.content().contains("PATH=/tmp/attacker/evil"));
+}
+
+#[tokio::test]
 async fn test_second_approval_upgrades_open_modal_to_batched() {
     // Regression for #3085: the agent emits one ToolCall event per
     // approval-needing call; when a second approval arrives while the
@@ -2960,6 +3078,7 @@ async fn test_second_approval_upgrades_open_modal_to_batched() {
         tool: "bash".to_string(),
         args: serde_json::json!({ "command": command }),
         requires_approval: true,
+        approval_inline_env: None,
     };
 
     // First approval opens the modal in the single-call variant.
@@ -3031,6 +3150,7 @@ async fn auto_approved_tool_call_does_not_execute_a_second_time() {
         tool: "bash".to_string(),
         args: serde_json::json!({"command": "ls -la"}),
         requires_approval: false,
+        approval_inline_env: None,
     })
     .await
     .expect("handle auto-approved tool call");
@@ -3063,6 +3183,7 @@ async fn approved_native_tool_events_complete_tool_history() {
         tool: "bash".to_string(),
         args: serde_json::json!({"command": "printf native-output"}),
         requires_approval: true,
+        approval_inline_env: None,
     })
     .await
     .expect("handle approval-gated tool call");
@@ -3093,12 +3214,7 @@ async fn approved_native_tool_events_complete_tool_history() {
     );
     assert_eq!(app.tool_history.global_stats().successes, 1);
 
-    let session_path = std::fs::read_dir(temp.path())
-        .expect("read temp session directory")
-        .next()
-        .expect("native completion should create a session file")
-        .expect("read session entry")
-        .path();
+    let session_path = find_session_jsonl(temp.path());
     let session = std::fs::read_to_string(session_path).expect("read persisted session");
     assert!(session.contains(r#""role":"toolResult""#));
     assert!(session.contains(r#""toolCallId":"call-native""#));
@@ -3121,6 +3237,7 @@ async fn cancelled_native_tool_stays_cancelled_without_failure_stats() {
         tool: "bash".to_string(),
         args: serde_json::json!({"command": "sleep 30"}),
         requires_approval: true,
+        approval_inline_env: None,
     })
     .await
     .expect("handle approval-gated tool call");
@@ -3177,6 +3294,7 @@ async fn auto_approved_extract_document_persists_attachment_text() {
         tool: "extract_document".to_string(),
         args: serde_json::json!({"url": "https://example.com/document.pdf"}),
         requires_approval: false,
+        approval_inline_env: None,
     })
     .await
     .expect("handle auto-approved document extraction");
@@ -3200,12 +3318,7 @@ async fn auto_approved_extract_document_persists_attachment_text() {
     .await
     .expect("handle document extraction end");
 
-    let session_path = std::fs::read_dir(temp.path())
-        .expect("read temp session directory")
-        .next()
-        .expect("document extraction should create a session file")
-        .expect("read session entry")
-        .path();
+    let session_path = find_session_jsonl(temp.path());
     let session = std::fs::read_to_string(session_path).expect("read persisted session");
     assert!(session.contains(r#""type":"attachment_extract""#));
     assert!(session.contains(r#""attachmentId":"attachment-document""#));
@@ -3229,6 +3342,7 @@ async fn auto_approved_native_tool_failure_preserves_the_exact_error() {
         tool: "web_fetch".to_string(),
         args: serde_json::json!({"url": "not-a-url"}),
         requires_approval: false,
+        approval_inline_env: None,
     })
     .await
     .expect("handle auto-approved tool call");
@@ -3247,12 +3361,7 @@ async fn auto_approved_native_tool_failure_preserves_the_exact_error() {
         .expect("failed native execution should remain in tool history");
     assert_eq!(execution.error.as_deref(), Some("Invalid URL: not-a-url"));
 
-    let session_path = std::fs::read_dir(temp.path())
-        .expect("read temp session directory")
-        .next()
-        .expect("native failure should create a session file")
-        .expect("read session entry")
-        .path();
+    let session_path = find_session_jsonl(temp.path());
     let session = std::fs::read_to_string(session_path).expect("read persisted session");
     assert!(session.contains("Invalid URL: not-a-url"));
 }
@@ -3272,6 +3381,7 @@ async fn requires_approval_tool_call_waits_for_the_modal_before_executing() {
         tool: "bash".to_string(),
         args: serde_json::json!({"command": "ls"}),
         requires_approval: true,
+        approval_inline_env: None,
     })
     .await
     .expect("handle approval-required tool call");
@@ -3292,6 +3402,7 @@ async fn batched_approvals_relay_fifo_decisions_without_starting_parallel_tools(
             tool: "bash".to_string(),
             args: serde_json::json!({"command": command}),
             requires_approval: true,
+            approval_inline_env: None,
         })
         .await
         .expect("queue approval-required tool call");

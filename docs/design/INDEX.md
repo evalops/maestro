@@ -7,6 +7,7 @@ This directory contains detailed design documentation for each major feature and
 | Document | Description |
 |----------|-------------|
 | [Agent State Machine](AGENT_STATE_MACHINE.md) | Event-driven LLM interaction engine and orchestration |
+| [Crate Seam Roadmap](crate-seams.md) | Measured `tui-rs` module dependency graph, hot-file overlap, and the ordered crate-split extraction plan |
 | [Tool System Architecture](TOOL_SYSTEM.md) | Tool DSL, execution lifecycle, caching, and validation |
 | [Context Management](CONTEXT_MANAGEMENT.md) | Token budgeting, context sources, and auto-compaction |
 | [Session Recovery & Persistence](SESSION_PERSISTENCE.md) | JSONL storage, buffered writing, and crash recovery |

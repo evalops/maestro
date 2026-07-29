@@ -582,7 +582,7 @@ fn prune_empty_dirs(mut dir: Option<&Path>, repo_root: &Path) {
 }
 
 fn sanitize_component(value: &str) -> String {
-    value
+    let sanitized: String = value
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
@@ -591,7 +591,16 @@ fn sanitize_component(value: &str) -> String {
                 '_'
             }
         })
-        .collect()
+        .collect();
+    // An empty or dot-only component does not name a child directory at
+    // all: joining it is a no-op or resolves to the parent (".."), which
+    // would let `remove_dir_all` escape the checkpoints directory and
+    // delete unrelated session data. Map such components to a safe name.
+    if sanitized.chars().all(|c| c == '.') {
+        "_".repeat(sanitized.len().max(1))
+    } else {
+        sanitized
+    }
 }
 
 fn prompt_excerpt(prompt: &str) -> String {
@@ -652,6 +661,27 @@ mod tests {
 
     fn store(fx: &Fixture) -> CheckpointStore {
         CheckpointStore::new(&fx.sessions, "session-1")
+    }
+
+    #[test]
+    fn dot_only_and_empty_ids_sanitize_to_safe_components() {
+        // ".." joined onto the checkpoints dir resolves to the sessions dir
+        // itself, and "" joins as a no-op; `remove_dir_all` on either would
+        // delete unrelated session data instead of one session's
+        // checkpoints.
+        assert_eq!(sanitize_component(".."), "__");
+        assert_eq!(sanitize_component("."), "_");
+        assert_eq!(sanitize_component(""), "_");
+        assert_eq!(sanitize_component("..."), "___");
+        // Dots inside an otherwise normal component are unaffected.
+        assert_eq!(sanitize_component("v1.2.3"), "v1.2.3");
+    }
+
+    #[test]
+    fn store_root_for_dot_only_session_id_stays_under_checkpoints_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = CheckpointStore::new(tmp.path(), "..");
+        assert_eq!(store.root(), tmp.path().join("checkpoints").join("__"));
     }
 
     #[test]

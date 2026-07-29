@@ -1074,8 +1074,7 @@ impl ToolRegistry {
     #[must_use]
     pub fn missing_required(&self, name: &str, args: &serde_json::Value) -> Vec<String> {
         let mut missing = Vec::new();
-        let key = name.to_lowercase();
-        if let Some(def) = self.tools.get(&key) {
+        if let Some(def) = self.get(name) {
             if let Some(required) = def
                 .tool
                 .input_schema
@@ -1167,7 +1166,9 @@ impl ToolRegistry {
     /// ```
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&ToolDefinition> {
-        self.tools.get(&name.to_lowercase())
+        self.tools
+            .get(name)
+            .or_else(|| self.tools.get(&name.to_lowercase()))
     }
 
     /// Check if a tool requires user approval, considering dynamic logic
@@ -1228,10 +1229,7 @@ impl ToolRegistry {
                     true
                 }
             }
-            _ => self
-                .tools
-                .get(&name.to_lowercase())
-                .is_none_or(|d| d.requires_approval),
+            _ => self.get(name).is_none_or(|d| d.requires_approval),
         }
     }
 
@@ -1270,6 +1268,12 @@ impl ToolRegistry {
     /// ```
     pub fn register(&mut self, name: &str, definition: ToolDefinition) {
         self.tools.insert(name.to_lowercase(), definition);
+    }
+
+    /// Register an externally dispatched exact spelling without replacing a
+    /// case-folded built-in definition.
+    pub(crate) fn register_exact(&mut self, name: &str, definition: ToolDefinition) {
+        self.tools.insert(name.to_string(), definition);
     }
 
     /// Unregister a tool by name

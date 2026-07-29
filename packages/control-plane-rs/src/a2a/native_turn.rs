@@ -140,6 +140,7 @@ pub(crate) async fn run_a2a_native_turn(
                 tool,
                 args,
                 requires_approval,
+                ..
             } => {
                 response_end_deadline = None;
                 record_tool_call_metadata(&mut output.tools, &call_id, &tool, args);

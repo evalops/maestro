@@ -7858,6 +7858,8 @@ fn pending_resume_path_decodes_url_encoded_request_ids() {
 
 #[test]
 fn detects_api_options_preflight_as_local() {
+    let _guard = ENV_LOCK.blocking_lock();
+
     let head = parse_request_head(
             b"OPTIONS /api/chat HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost:4173\r\nAccess-Control-Request-Method: POST\r\n\r\n",
         )
@@ -8525,6 +8527,10 @@ fn shared_session_paths_do_not_parse_as_regular_sessions() {
 
 #[test]
 fn websocket_origin_check_allows_local_and_rejects_cross_site() {
+    let _guard = ENV_LOCK.blocking_lock();
+    let snapshot = snapshot_env(CORS_ENV_NAMES);
+    clear_env(CORS_ENV_NAMES);
+
     let allowed = parse_request_head(
         b"GET /api/chat/ws HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost:4173\r\n\r\n",
     )
@@ -8542,10 +8548,16 @@ fn websocket_origin_check_allows_local_and_rejects_cross_site() {
     )
     .expect("request should parse");
     assert!(!origin_allowed(&rejected));
+
+    restore_env(snapshot);
 }
 
 #[tokio::test]
 async fn allowed_request_origin_is_echoed_in_cors_response_headers() {
+    let _guard = ENV_LOCK.lock().await;
+    let snapshot = snapshot_env(CORS_ENV_NAMES);
+    clear_env(CORS_ENV_NAMES);
+
     let head = parse_request_head(
         b"GET /api/status HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost:3000\r\n\r\n",
     )
@@ -8559,10 +8571,14 @@ async fn allowed_request_origin_is_echoed_in_cors_response_headers() {
 
     assert!(response.contains("Access-Control-Allow-Origin: http://localhost:3000\r\n"));
     assert!(!response.contains("Access-Control-Allow-Origin: http://localhost:4173\r\n"));
+
+    restore_env(snapshot);
 }
 
 #[tokio::test]
 async fn cors_response_allows_platform_organization_header() {
+    let _guard = ENV_LOCK.lock().await;
+
     let response = with_response_cors_origin("http://localhost:3000".to_string(), async {
         response(204, "text/plain; charset=utf-8", &[])
     })
@@ -8898,6 +8914,8 @@ fn default_model_handles_empty_registry() {
 
 #[test]
 fn head_response_keeps_get_content_length_without_body() {
+    let _guard = ENV_LOCK.blocking_lock();
+
     let response =
         response_with_cache_and_length(200, "text/plain; charset=utf-8", &[], 60, "hello".len());
     let response = String::from_utf8(response).expect("response should be utf-8");
@@ -8927,6 +8945,8 @@ fn parse_git_status_counts_both_porcelain_columns() {
 
 #[test]
 fn json_response_has_header_body_separator() {
+    let _guard = ENV_LOCK.blocking_lock();
+
     let response = json_response(200, &serde_json::json!({ "ok": true }));
 
     assert!(response.windows(4).any(|window| window == b"\r\n\r\n"));
@@ -8937,6 +8957,8 @@ fn json_response_has_header_body_separator() {
 
 #[test]
 fn json_response_uses_conflict_reason_phrase() {
+    let _guard = ENV_LOCK.blocking_lock();
+
     let response = json_response(409, &serde_json::json!({ "error": "Conflict" }));
     let response = String::from_utf8(response).expect("response should be utf-8");
 
@@ -8945,6 +8967,10 @@ fn json_response_uses_conflict_reason_phrase() {
 
 #[tokio::test]
 async fn response_cors_origin_matches_allowed_request_origin() {
+    let _guard = ENV_LOCK.lock().await;
+    let snapshot = snapshot_env(CORS_ENV_NAMES);
+    clear_env(CORS_ENV_NAMES);
+
     let head = parse_request_head(
         b"GET /api/status HTTP/1.1\r\nHost: localhost\r\nOrigin: http://127.0.0.1:5173\r\n\r\n",
     )
@@ -8958,10 +8984,16 @@ async fn response_cors_origin_matches_allowed_request_origin() {
     assert!(response.contains("Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n"));
     assert!(response.contains("Access-Control-Allow-Credentials: true\r\n"));
     assert!(response.contains("Vary: Origin\r\n"));
+
+    restore_env(snapshot);
 }
 
 #[tokio::test]
 async fn sse_headers_vary_by_request_origin() {
+    let _guard = ENV_LOCK.lock().await;
+    let snapshot = snapshot_env(CORS_ENV_NAMES);
+    clear_env(CORS_ENV_NAMES);
+
     let head = parse_request_head(
         b"GET /api/chat HTTP/1.1\r\nHost: localhost\r\nOrigin: http://127.0.0.1:5173\r\n\r\n",
     )
@@ -8971,6 +9003,8 @@ async fn sse_headers_vary_by_request_origin() {
 
     assert!(response.contains("Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n"));
     assert!(response.contains("Vary: Origin\r\n"));
+
+    restore_env(snapshot);
 }
 
 #[tokio::test]
@@ -8988,7 +9022,8 @@ async fn wildcard_cors_origin_omits_credentials_header() {
 #[test]
 fn wildcard_web_origin_allows_websocket_origins() {
     let _guard = ENV_LOCK.blocking_lock();
-    let previous = env::var_os("MAESTRO_WEB_ORIGIN");
+    let snapshot = snapshot_env(CORS_ENV_NAMES);
+    clear_env(CORS_ENV_NAMES);
     env::set_var("MAESTRO_WEB_ORIGIN", "*");
     let head = parse_request_head(
         b"GET /api/chat/ws HTTP/1.1\r\nHost: localhost\r\nOrigin: https://app.example.com\r\n\r\n",
@@ -8997,11 +9032,7 @@ fn wildcard_web_origin_allows_websocket_origins() {
 
     assert!(origin_allowed(&head));
 
-    if let Some(previous) = previous {
-        env::set_var("MAESTRO_WEB_ORIGIN", previous);
-    } else {
-        env::remove_var("MAESTRO_WEB_ORIGIN");
-    }
+    restore_env(snapshot);
 }
 
 #[test]
@@ -9096,6 +9127,8 @@ fn chat_prompt_preserves_structured_history() {
 
 #[test]
 fn spa_entry_response_uses_no_store() {
+    let _guard = ENV_LOCK.blocking_lock();
+
     let response =
         response_with_no_store_and_length(200, "text/html; charset=utf-8", &[], "index".len());
     let response = String::from_utf8(response).expect("response should be utf-8");
