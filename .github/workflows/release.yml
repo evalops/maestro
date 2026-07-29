@@ -29,7 +29,7 @@ jobs:
       release_tag: ${{ steps.release.outputs.release_tag }}
       release_version: ${{ steps.release.outputs.release_version }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 1
       - id: release
@@ -102,7 +102,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.prepare.outputs.release_sha }}
       - uses: ./.github/actions/setup-rust
@@ -134,7 +134,7 @@ jobs:
       release_tag: ${{ needs.prepare.outputs.release_tag }}
       release_version: ${{ needs.prepare.outputs.release_version }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.prepare.outputs.release_sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -269,7 +269,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.prepare.outputs.release_sha }}
       - uses: actions/download-artifact@v8
@@ -326,7 +326,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.prepare.outputs.release_sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
