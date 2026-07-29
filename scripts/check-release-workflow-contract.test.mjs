@@ -461,6 +461,23 @@ test("rejects a GitHub release detached from immutable prepare metadata", () => 
 	);
 });
 
+test("rejects an additional GitHub release action with a different tag", () => {
+	const duplicate = completeWorkflow.replace(
+		"  post-publish-canary:\n",
+		`      - uses: softprops/action-gh-release@sha
+        with:
+          tag_name: v999.0.0
+          name: Wrong release
+  post-publish-canary:
+`,
+	);
+	assert.ok(
+		validateReleaseWorkflow(duplicate).some((failure) =>
+			failure.includes("exactly one GitHub release action"),
+		),
+	);
+});
+
 test("current release workflow satisfies the parsed contract", async () => {
 	assert.deepEqual(await checkReleaseWorkflow(), []);
 });

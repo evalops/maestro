@@ -433,10 +433,14 @@ export function validateReleaseWorkflow(source) {
 	}
 
 	const publishStepIndex = publish.steps.indexOf(publishStep);
-	const releaseStepIndex = publish.steps.findIndex((step) =>
+	const releaseSteps = publish.steps.filter((step) =>
 		step.uses.startsWith("softprops/action-gh-release@"),
 	);
-	const releaseStep = publish.steps[releaseStepIndex];
+	const releaseStep = releaseSteps[0];
+	const releaseStepIndex = publish.steps.indexOf(releaseStep);
+	if (releaseSteps.length !== 1) {
+		failures.push("publish must contain exactly one GitHub release action");
+	}
 	if (requiredStepCanBeSkippedOrIgnored(releaseStep)) {
 		failures.push("GitHub release creation must not be conditional or ignored");
 	}
