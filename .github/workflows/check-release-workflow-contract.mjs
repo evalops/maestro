@@ -417,6 +417,7 @@ export function validateReleaseWorkflow(source) {
 	for (const [name, job] of [
 		["binaries", binaries],
 		["publish", publish],
+		["github-release", release],
 		["post-publish-canary", canary],
 	]) {
 		if (!checkoutIsBound(job)) {
@@ -616,12 +617,48 @@ export function validateReleaseWorkflow(source) {
 	if (!release.steps.includes(releaseStep)) {
 		failures.push("GitHub release action must run in the retryable github-release job");
 	}
+	const releaseTagStep = findStep(release, "Verify release tag has not moved");
+	const releaseTagLines = executableLines(releaseTagStep?.run ?? "");
+	if (
+		requiredStepCanBeSkippedOrIgnored(releaseTagStep) ||
+		!hasExactRecord(releaseTagStep?.env ?? {}, {
+			EXPECTED_RELEASE_SHA: "${{ needs.prepare.outputs.release_sha }}",
+			RELEASE_TAG: "${{ needs.prepare.outputs.release_tag }}",
+		}) ||
+		release.steps.indexOf(releaseTagStep) < 0 ||
+		release.steps.indexOf(releaseTagStep) >= release.steps.indexOf(releaseStep)
+	) {
+		failures.push(
+			"GitHub release creation must verify the current tag immediately before release",
+		);
+	}
+	for (const line of [
+		"for attempt in 1 2 3; do",
+		"if timeout 60s git \\",
+		"-c http.lowSpeedLimit=1000 \\",
+		"-c http.lowSpeedTime=30 \\",
+		'fetch --force --no-tags origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"; then',
+		'if [[ "$attempt" -eq 3 ]]; then',
+		"sleep 2",
+		'current_release_sha="$(git rev-list -n 1 "$RELEASE_TAG")"',
+		'if [[ "$current_release_sha" != "$EXPECTED_RELEASE_SHA" ]]; then',
+		"exit 1",
+	]) {
+		if (!releaseTagLines.includes(line)) {
+			failures.push(
+				"GitHub release creation must fail closed if the release tag moved",
+			);
+			break;
+		}
+	}
 	if (requiredStepCanBeSkippedOrIgnored(releaseStep)) {
 		failures.push("GitHub release creation must not be conditional or ignored");
 	}
 	if (
 		releaseStep?.with.tag_name !==
 			"${{ needs.prepare.outputs.release_tag }}" ||
+		releaseStep?.with.target_commitish !==
+			"${{ needs.prepare.outputs.release_sha }}" ||
 		releaseStep?.with.name !==
 			"Maestro ${{ needs.prepare.outputs.release_version }}" ||
 		releaseStep?.with.files !== "release-assets/*"

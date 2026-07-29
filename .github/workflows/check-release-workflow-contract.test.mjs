@@ -185,6 +185,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@sha
+        with:
+          ref: ${releaseSha}
       - uses: actions/download-artifact@sha
         with:
           name: npm-tarball-\${{ needs.prepare.outputs.release_tag }}
@@ -198,9 +201,31 @@ jobs:
         with:
           name: release-web-dist-\${{ needs.prepare.outputs.release_tag }}
           path: release-assets
+      - name: Verify release tag has not moved
+        env:
+          EXPECTED_RELEASE_SHA: \${{ needs.prepare.outputs.release_sha }}
+          RELEASE_TAG: \${{ needs.prepare.outputs.release_tag }}
+        run: |
+          for attempt in 1 2 3; do
+            if timeout 60s git \\
+              -c http.lowSpeedLimit=1000 \\
+              -c http.lowSpeedTime=30 \\
+              fetch --force --no-tags origin "refs/tags/\${RELEASE_TAG}:refs/tags/\${RELEASE_TAG}"; then
+              break
+            fi
+            if [[ "$attempt" -eq 3 ]]; then
+              exit 1
+            fi
+            sleep 2
+          done
+          current_release_sha="$(git rev-list -n 1 "$RELEASE_TAG")"
+          if [[ "$current_release_sha" != "$EXPECTED_RELEASE_SHA" ]]; then
+            exit 1
+          fi
       - uses: softprops/action-gh-release@sha
         with:
           tag_name: \${{ needs.prepare.outputs.release_tag }}
+          target_commitish: \${{ needs.prepare.outputs.release_sha }}
           name: Maestro \${{ needs.prepare.outputs.release_version }}
           files: release-assets/*
   post-publish-canary:
@@ -791,6 +816,7 @@ test("rejects a non-retryable or incomplete GitHub release job", () => {
 			`      - uses: softprops/action-gh-release@sha
         with:
           tag_name: \${{ needs.prepare.outputs.release_tag }}
+          target_commitish: \${{ needs.prepare.outputs.release_sha }}
           name: Maestro \${{ needs.prepare.outputs.release_version }}
           files: release-assets/*
 `,
@@ -801,6 +827,7 @@ test("rejects a non-retryable or incomplete GitHub release job", () => {
 			`      - uses: softprops/action-gh-release@sha
         with:
           tag_name: \${{ needs.prepare.outputs.release_tag }}
+          target_commitish: \${{ needs.prepare.outputs.release_sha }}
           name: Maestro \${{ needs.prepare.outputs.release_version }}
           files: release-assets/*
       - name: Publish to npm
@@ -842,6 +869,28 @@ test("rejects a GitHub release detached from immutable prepare metadata", () => 
 	assert.ok(
 		validateReleaseWorkflow(wrongTag).some((failure) =>
 			failure.includes("metadata and files must bind"),
+		),
+	);
+});
+
+test("rejects GitHub release creation after a moved tag", () => {
+	const noTagCheck = completeWorkflow.replace(
+		'          if [[ "$current_release_sha" != "$EXPECTED_RELEASE_SHA" ]]; then\n',
+		'          if [[ "$current_release_sha" == "$EXPECTED_RELEASE_SHA" ]]; then\n',
+	);
+	assert.ok(
+		validateReleaseWorkflow(noTagCheck).some((failure) =>
+			failure.includes("fail closed if the release tag moved"),
+		),
+	);
+
+	const unboundTagCheck = completeWorkflow.replace(
+		"          EXPECTED_RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}",
+		"          EXPECTED_RELEASE_SHA: ${{ github.sha }}",
+	);
+	assert.ok(
+		validateReleaseWorkflow(unboundTagCheck).some((failure) =>
+			failure.includes("verify the current tag immediately"),
 		),
 	);
 });
