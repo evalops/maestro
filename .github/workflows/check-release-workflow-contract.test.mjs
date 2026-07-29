@@ -62,6 +62,7 @@ jobs:
     environment:
       name: npm-release
     permissions:
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@sha
@@ -171,6 +172,12 @@ jobs:
             --cli-command "$CLI_COMMAND"
       - name: Validate published replay evidence
         run: node scripts/verify-published-replay-evidence.js --evidence-dir published-replay-evidence
+      - name: Upload published replay evidence
+        uses: actions/upload-artifact@sha
+        with:
+          name: published-replay-evidence-\${{ needs.prepare.outputs.release_tag }}
+          overwrite: true
+          path: published-replay-evidence/*.json
 `;
 
 test("accepts mapping-form environment and the complete release contract", () => {
@@ -239,6 +246,18 @@ test("rejects extra workflow or job write permissions", () => {
 	const failures = validateReleaseWorkflow(broadened);
 	assert.ok(failures.some((failure) => failure.includes("default permissions")));
 	assert.ok(failures.some((failure) => failure.includes("binaries permissions")));
+});
+
+test("rejects publish checkout without contents read", () => {
+	const unreadablePublish = completeWorkflow.replace(
+		"    permissions:\n      contents: read\n      id-token: write\n",
+		"    permissions:\n      id-token: write\n",
+	);
+	assert.ok(
+		validateReleaseWorkflow(unreadablePublish).some((failure) =>
+			failure.includes("publish permissions"),
+		),
+	);
 });
 
 test("rejects workflow_dispatch work from an unbound ref", () => {
@@ -665,6 +684,18 @@ test("rejects an additional GitHub release action with a different tag", () => {
 	assert.ok(
 		validateReleaseWorkflow(duplicate).some((failure) =>
 			failure.includes("exactly one GitHub release action"),
+		),
+	);
+});
+
+test("rejects non-replaceable post-publish replay evidence", () => {
+	const nonReplaceable = completeWorkflow.replace(
+		"          name: published-replay-evidence-${{ needs.prepare.outputs.release_tag }}\n          overwrite: true\n",
+		"          name: published-replay-evidence-${{ needs.prepare.outputs.release_tag }}\n",
+	);
+	assert.ok(
+		validateReleaseWorkflow(nonReplaceable).some((failure) =>
+			failure.includes("replace exact-tag replay evidence"),
 		),
 	);
 });

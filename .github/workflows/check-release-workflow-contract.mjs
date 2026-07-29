@@ -262,10 +262,13 @@ export function validateReleaseWorkflow(source) {
 	}
 	if (
 		!hasExactPermissions(publish.permissions, {
+			contents: "read",
 			"id-token": "write",
 		})
 	) {
-		failures.push("publish permissions must be exactly id-token: write");
+		failures.push(
+			"publish permissions must be exactly contents: read and id-token: write",
+		);
 	}
 	if (!hasExactPermissions(release.permissions, { contents: "write" })) {
 		failures.push("github-release permissions must be exactly contents: write");
@@ -587,6 +590,18 @@ export function validateReleaseWorkflow(source) {
 		])
 	) {
 		failures.push("published replay validation must execute the exact evidence verifier");
+	}
+	const replayUpload = findStep(canary, "Upload published replay evidence");
+	if (
+		!replayUpload?.uses.startsWith("actions/upload-artifact@") ||
+		replayUpload.with.name !==
+			"published-replay-evidence-${{ needs.prepare.outputs.release_tag }}" ||
+		replayUpload.with.path !== "published-replay-evidence/*.json" ||
+		replayUpload.with.overwrite !== "true"
+	) {
+		failures.push(
+			"post-publish canary must replace exact-tag replay evidence on reruns",
+		);
 	}
 
 	return failures;

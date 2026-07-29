@@ -120,6 +120,7 @@ jobs:
     timeout-minutes: 60
     environment: npm-release
     permissions:
+      contents: read
       id-token: write
     outputs:
       package_name: ${{ needs.prepare.outputs.package_name }}
@@ -299,4 +300,5 @@ jobs:
         with:
           retention-days: 14
           name: published-replay-evidence-${{ needs.prepare.outputs.release_tag }}
+          overwrite: true
           path: published-replay-evidence/*.json
