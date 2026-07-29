@@ -65,7 +65,7 @@ use tokio::process::Command;
 
 use super::details::InlineToolDetails;
 use super::process_utils::{kill_process_tree, set_new_process_group};
-use super::shell_env::resolve_shell_environment;
+use super::shell_env::{resolve_shell_environment, resolve_shell_environment_approval_context};
 use crate::agent::ToolResult;
 use crate::ai::Tool;
 use crate::safety::expand_tilde;
@@ -244,6 +244,17 @@ pub enum InlineToolSource {
     User,
     /// Project-level tool from .composer/tools.json
     Project,
+}
+
+impl InlineToolSource {
+    /// Human-readable label for UI/approval surfaces.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Project => "project",
+        }
+    }
 }
 
 impl InlineTool {
@@ -501,12 +512,10 @@ impl InlineToolExecutor {
         }
     }
 
-    /// Execute an inline tool with the given arguments
-    pub async fn execute(&self, tool: &InlineTool, args: serde_json::Value) -> ToolResult {
-        let start_time = Instant::now();
-
-        // Determine working directory
-        let cwd = match &tool.definition.cwd {
+    /// Resolve the working directory used for an inline tool process.
+    #[must_use]
+    pub(crate) fn effective_cwd(&self, tool: &InlineTool) -> PathBuf {
+        match &tool.definition.cwd {
             Some(dir) => {
                 let path = Path::new(dir);
                 if let Some(expanded) = expand_tilde(path) {
@@ -518,7 +527,50 @@ impl InlineToolExecutor {
                 }
             }
             None => self.workspace_dir.clone(),
-        };
+        }
+    }
+
+    /// Resolve the configured values and inherited shell startup controls an
+    /// approver must see before this tool executes.
+    pub(crate) fn effective_env_approval_context(
+        &self,
+        tool: &InlineTool,
+    ) -> HashMap<String, String> {
+        resolve_shell_environment_approval_context(&self.workspace_dir, Some(&tool.definition.env))
+    }
+
+    /// Resolve the exact shell executable and command flag used for inline tools.
+    #[must_use]
+    pub(crate) fn effective_shell() -> (String, &'static str) {
+        if cfg!(windows) {
+            let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd".to_string());
+            (shell, "/C")
+        } else {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+            (shell, "-c")
+        }
+    }
+
+    /// Execute an inline tool with the given arguments
+    pub async fn execute(&self, tool: &InlineTool, args: serde_json::Value) -> ToolResult {
+        self.execute_with_environment(tool, args, None).await
+    }
+
+    /// Execute an inline tool using an already approved child environment.
+    ///
+    /// Approval-bound calls pass the exact snapshot rendered and validated by
+    /// the native runner. Other callers leave this unset and resolve the shell
+    /// environment at execution time as before.
+    pub(crate) async fn execute_with_environment(
+        &self,
+        tool: &InlineTool,
+        args: serde_json::Value,
+        approved_environment: Option<&HashMap<String, String>>,
+    ) -> ToolResult {
+        let start_time = Instant::now();
+
+        // Determine working directory
+        let cwd = self.effective_cwd(tool);
 
         // Build base details
         let mut details = InlineToolDetails::new(&tool.definition.name, &tool.definition.command)
@@ -539,14 +591,8 @@ impl InlineToolExecutor {
         };
 
         // Build the command
-        let (shell, shell_arg) = if cfg!(windows) {
-            let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd".to_string());
-            (shell, "/C")
-        } else {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-            (shell, "-c")
-        };
-        let mut cmd = Command::new(shell);
+        let (shell, shell_arg) = Self::effective_shell();
+        let mut cmd = Command::new(&shell);
         cmd.arg(shell_arg)
             .arg(&tool.definition.command)
             .current_dir(&cwd)
@@ -554,7 +600,9 @@ impl InlineToolExecutor {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         set_new_process_group(&mut cmd);
-        let env = resolve_shell_environment(&self.workspace_dir, Some(&tool.definition.env));
+        let env = approved_environment.cloned().unwrap_or_else(|| {
+            resolve_shell_environment(&self.workspace_dir, Some(&tool.definition.env))
+        });
         cmd.env_clear();
         cmd.envs(env);
 
@@ -1288,6 +1336,42 @@ mod tests {
         let result = executor.execute(&tool, serde_json::json!({})).await;
         assert!(result.success);
         assert_eq!(result.output, "test_value");
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn approved_environment_snapshot_wins_at_process_spawn() {
+        let temp = TempDir::new().unwrap();
+        let executor = InlineToolExecutor::new(temp.path());
+
+        let mut configured_env = HashMap::new();
+        configured_env.insert(
+            "APPROVAL_SNAPSHOT_TEST".to_string(),
+            "changed-after-approval".to_string(),
+        );
+        let tool = InlineTool {
+            definition: InlineToolDef {
+                name: "approved_env_test".to_string(),
+                description: "Approved environment test".to_string(),
+                command: "printf %s \"$APPROVAL_SNAPSHOT_TEST\"".to_string(),
+                parameters: HashMap::new(),
+                timeout: 5000,
+                cwd: None,
+                env: configured_env,
+                annotations: ToolAnnotations::default(),
+            },
+            source_path: PathBuf::new(),
+            source: InlineToolSource::Project,
+        };
+        let approved_env =
+            HashMap::from([("APPROVAL_SNAPSHOT_TEST".to_string(), "approved".to_string())]);
+
+        let result = executor
+            .execute_with_environment(&tool, serde_json::json!({}), Some(&approved_env))
+            .await;
+
+        assert!(result.success, "{result:?}");
+        assert_eq!(result.output, "approved");
     }
 
     #[tokio::test]

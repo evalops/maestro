@@ -457,6 +457,141 @@ pub struct ToolExecutor {
     mcp_last_connect_attempts: RwLock<HashMap<String, Instant>>,
 }
 
+/// Every exact name that `execute_impl`'s dispatch `match` (in
+/// `tools/registry/execute.rs`) handles *before* falling through to the
+/// inline-tool lookup in its
+/// wildcard arm.
+///
+/// Several of these -- `ls`, `readimage`, `webfetch` -- are pure dispatch
+/// aliases that are never separately present in `ToolRegistry`'s own name
+/// map, so `registry.get(&name)` alone does not catch them: an inline tool
+/// registered under one of these names would pass that check, display its
+/// configured command in the approval dialog, and then never actually run
+/// (the alias's built-in arm intercepts the call first).
+///
+/// Kept as an explicit mirror of `execute_impl`'s match arms rather than
+/// derived from the registry, since being alias-only is exactly what the
+/// registry-only check missed. Update this list alongside any new match arm
+/// added there.
+///
+/// This deliberately does NOT cover the `mcp_`/`mcp__` prefix rule --
+/// `execute_impl` checks `McpClient::is_mcp_tool` *before* this dispatch
+/// match is even reached (`tools/registry/execute.rs`), so callers of this
+/// function (currently just `register_inline_tools`) must also check
+/// `McpClient::is_mcp_tool` themselves rather than relying on it being
+/// folded in here.
+fn is_reserved_execute_dispatch_name(name: &str) -> bool {
+    // These spellings intentionally mirror execute_impl exactly. Inline
+    // lookup lower-cases its wildcard input, so an unmatched case variant
+    // such as `BASH` remains a valid inline name even though `bash` and
+    // `Bash` are intercepted by built-in dispatch.
+    matches!(
+        name,
+        "bash"
+            | "Bash"
+            | "read"
+            | "Read"
+            | "write"
+            | "Write"
+            | "glob"
+            | "Glob"
+            | "grep"
+            | "Grep"
+            | "edit"
+            | "Edit"
+            | "diff"
+            | "Diff"
+            | "list"
+            | "List"
+            | "ls"
+            | "find"
+            | "Find"
+            | "search"
+            | "Search"
+            | "parallel_ripgrep"
+            | "ParallelRipgrep"
+            | "status"
+            | "Status"
+            | "background_tasks"
+            | "todo"
+            | "ask_user"
+            | "extract_document"
+            | "notebook_edit"
+            | "websearch"
+            | "codesearch"
+            | "gh_pr"
+            | "gh_issue"
+            | "gh_repo"
+            | "mcp_list_resources"
+            | "mcp_list_prompts"
+            | "mcp_read_resource"
+            | "mcp_get_prompt"
+            | "vscode_get_diagnostics"
+            | "jetbrains_get_diagnostics"
+            | "vscode_get_definition"
+            | "jetbrains_get_definition"
+            | "vscode_find_references"
+            | "jetbrains_find_references"
+            | "vscode_read_file_range"
+            | "jetbrains_read_file_range"
+            | "web_fetch"
+            | "WebFetch"
+            | "webfetch"
+            | "read_image"
+            | "ReadImage"
+            | "readimage"
+            | "screenshot"
+            | "Screenshot"
+    )
+}
+
+/// Register `inline_tools_list` into `registry`, skipping any name that
+/// collides with an already-registered built-in tool (including its
+/// dispatch aliases -- see [`is_reserved_execute_dispatch_name`]) or with
+/// the `mcp_`/`mcp__` prefix `McpClient::is_mcp_tool` reserves.
+///
+/// Built-in and MCP tools both dispatch ahead of the inline fallback in
+/// `execute_impl`, so an inline tool reusing a built-in name, one of its
+/// aliases, or an MCP-reserved prefix would never actually run, while the
+/// approval dialog would still show its configured command -- approving a
+/// call that silently invokes something else (or fails against MCP)
+/// instead. Shared by every `ToolExecutor` constructor (and the test-only
+/// `with_inline_tools_for_test`) so the collision check can't drift between
+/// them.
+fn register_inline_tools(
+    registry: &mut ToolRegistry,
+    inline_tools_list: Vec<InlineTool>,
+) -> HashMap<String, InlineTool> {
+    let mut inline_tools = HashMap::new();
+    for tool in inline_tools_list {
+        let name = tool.definition.name.to_lowercase();
+        let dispatch_name = tool.definition.name.as_str();
+        if is_reserved_execute_dispatch_name(dispatch_name) || McpClient::is_mcp_tool(dispatch_name)
+        {
+            eprintln!(
+                "Warning: Skipping inline tool '{}': name collides with a built-in tool, \
+                 one of its dispatch aliases, or the mcp_/mcp__ prefix reserved for MCP tools",
+                tool.definition.name
+            );
+            continue;
+        }
+        registry.register_exact(
+            dispatch_name,
+            ToolDefinition {
+                tool: tool.to_tool(),
+                requires_approval: tool.requires_approval(),
+            },
+        );
+        inline_tools.insert(name, tool);
+    }
+    inline_tools
+}
+
+struct ToolExecutionContext<'a> {
+    cancel: Option<CancellationToken>,
+    approved_inline_env: Option<&'a HashMap<String, String>>,
+}
+
 impl ToolExecutor {
     /// Create a new tool executor with the given working directory
     ///
@@ -496,24 +631,51 @@ impl ToolExecutor {
 
         // Load inline tools from config files
         let inline_tools_list = load_inline_tools(cwd_path);
-        let mut inline_tools = HashMap::new();
         let mut registry = ToolRegistry::new();
-
-        // Register inline tools
-        for tool in inline_tools_list {
-            let name = tool.definition.name.to_lowercase();
-            registry.register(
-                &name,
-                ToolDefinition {
-                    tool: tool.to_tool(),
-                    requires_approval: tool.requires_approval(),
-                },
-            );
-            inline_tools.insert(name, tool);
-        }
+        let inline_tools = register_inline_tools(&mut registry, inline_tools_list);
 
         Self {
             credential_vault,
+            bash: BashTool::new(&cwd),
+            sandbox_policy: None,
+            tool_versions: ToolVersionOverrides::default(),
+            web_fetch: WebFetchTool::new(),
+            image: ImageTool::new(),
+            inline_executor: InlineToolExecutor::new(&cwd),
+            inline_tools,
+            cwd,
+            registry,
+            cache: RwLock::new(ToolResultCache::default()),
+            mcp_client: tokio::sync::Mutex::new(None),
+            mcp_tool_annotations: RwLock::new(HashMap::new()),
+            mcp_last_errors: RwLock::new(HashMap::new()),
+            mcp_synced_configs: RwLock::new(HashMap::new()),
+            mcp_last_connect_attempts: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Test-only constructor that registers a caller-supplied inline tool
+    /// list directly instead of loading `.composer/tools.json` from disk.
+    ///
+    /// The real constructors above go through `load_inline_tools`, which
+    /// gates project-level tools on `workspace_trusted_in_global_config` --
+    /// reading the *real* process `$HOME`. That can't be faked
+    /// deterministically in a test without mutating a process-global env
+    /// var, which would race every other test in this (parallel-by-default)
+    /// binary that also reads `$HOME`. This entry point exercises exactly
+    /// the same registration/collision logic (via [`register_inline_tools`])
+    /// as every other constructor, with the tool list supplied directly.
+    #[cfg(test)]
+    pub(crate) fn with_inline_tools_for_test(
+        cwd: impl Into<String>,
+        inline_tools_list: Vec<InlineTool>,
+    ) -> Self {
+        let cwd = cwd.into();
+        let mut registry = ToolRegistry::new();
+        let inline_tools = register_inline_tools(&mut registry, inline_tools_list);
+
+        Self {
+            credential_vault: CredentialVault::new(),
             bash: BashTool::new(&cwd),
             sandbox_policy: None,
             tool_versions: ToolVersionOverrides::default(),
@@ -553,21 +715,8 @@ impl ToolExecutor {
 
         // Load inline tools from config files
         let inline_tools_list = load_inline_tools(cwd_path);
-        let mut inline_tools = HashMap::new();
         let mut registry = ToolRegistry::new();
-
-        // Register inline tools
-        for tool in inline_tools_list {
-            let name = tool.definition.name.to_lowercase();
-            registry.register(
-                &name,
-                ToolDefinition {
-                    tool: tool.to_tool(),
-                    requires_approval: tool.requires_approval(),
-                },
-            );
-            inline_tools.insert(name, tool);
-        }
+        let inline_tools = register_inline_tools(&mut registry, inline_tools_list);
 
         Self {
             credential_vault,
@@ -644,6 +793,49 @@ impl ToolExecutor {
     /// Get the count of loaded inline tools
     pub fn inline_tool_count(&self) -> usize {
         self.inline_tools.len()
+    }
+
+    /// Look up the inline tool that this exact spelling will execute.
+    ///
+    /// Used to resolve the real command string (and its source config path)
+    /// for the approval dialog, since an inline tool call's JSON arguments
+    /// don't contain the command -- it lives in the tool's own definition.
+    /// Exact built-in and MCP spellings dispatch before the inline fallback,
+    /// so they must never inherit same-fold inline approval context.
+    #[must_use]
+    pub fn get_inline_tool(&self, name: &str) -> Option<&InlineTool> {
+        if is_reserved_execute_dispatch_name(name) || McpClient::is_mcp_tool(name) {
+            return None;
+        }
+        self.inline_tools.get(&name.to_lowercase())
+    }
+
+    /// Resolve the directory an inline tool will actually execute in.
+    ///
+    /// Approval rendering uses this same resolver as execution so an omitted
+    /// `cwd` cannot hide the implicit workspace directory from the approver.
+    #[must_use]
+    pub fn inline_tool_effective_cwd(&self, tool: &InlineTool) -> String {
+        self.inline_executor
+            .effective_cwd(tool)
+            .display()
+            .to_string()
+    }
+
+    /// Resolve the environment context an approver must see before an inline
+    /// tool executes, including inherited shell startup controls.
+    #[must_use]
+    pub fn inline_tool_effective_env(&self, tool: &InlineTool) -> HashMap<String, String> {
+        self.inline_executor.effective_env_approval_context(tool)
+    }
+
+    /// Resolve the exact shell executable and flag used for inline tools.
+    ///
+    /// Approval rendering uses the same resolver as execution so inherited
+    /// `SHELL`/`COMSPEC` values cannot hide the executable being approved.
+    #[must_use]
+    pub fn inline_tool_effective_shell(&self) -> (String, &'static str) {
+        InlineToolExecutor::effective_shell()
     }
 
     /// Get cache statistics
@@ -975,7 +1167,10 @@ impl ToolExecutor {
     /// assert!(missing.is_empty());
     /// ```
     pub fn missing_required(&self, name: &str, args: &serde_json::Value) -> Vec<String> {
-        self.registry.missing_required(name, args)
+        let registry_name = self
+            .get_inline_tool(name)
+            .map_or(name, |tool| tool.definition.name.as_str());
+        self.registry.missing_required(registry_name, args)
     }
 
     /// Check whether a tool requires user approval given its arguments
@@ -1020,19 +1215,27 @@ impl ToolExecutor {
     pub fn requires_approval(&self, name: &str, args: &serde_json::Value) -> bool {
         // Version-managed tools classify approval with their pinned behavior
         // version so replayed sessions reproduce the recorded decisions.
-        if name.eq_ignore_ascii_case("bash") {
+        if matches!(name, "bash" | "Bash") {
             if let Some(command) = args.get("command").and_then(|v| v.as_str()) {
                 return self.resolved_bash_version().requires_approval(command);
             }
         }
-        self.registry.requires_approval(name, args)
+        let registry_name = self
+            .get_inline_tool(name)
+            .map_or(name, |tool| tool.definition.name.as_str());
+        self.registry.requires_approval(registry_name, args)
     }
 
     /// Check a tool call against the action firewall.
     pub fn firewall_verdict(&self, name: &str, args: &serde_json::Value) -> FirewallVerdict {
         let firewall = ActionFirewall::new(&self.cwd);
-        let tool_name = name.to_lowercase();
-        firewall.check_tool(&tool_name, args)
+        if self.get_inline_tool(name).is_some() {
+            // Preserve a non-built-in spelling so a same-fold inline name
+            // cannot inherit the built-in tool's argument policy.
+            firewall.check_tool(name, args)
+        } else {
+            firewall.check_tool(&name.to_lowercase(), args)
+        }
     }
 
     /// Execute a tool by name with the given arguments
@@ -1143,9 +1346,30 @@ impl ToolExecutor {
         generation: u64,
         cancel: Option<CancellationToken>,
     ) -> ToolResult {
-        if self.sandbox_policy.is_some()
-            && self.inline_tools.contains_key(&tool_name.to_lowercase())
-        {
+        self.execute_at_generation_with_inline_env(
+            tool_name,
+            args,
+            event_tx,
+            call_id,
+            generation,
+            ToolExecutionContext {
+                cancel,
+                approved_inline_env: None,
+            },
+        )
+        .await
+    }
+
+    async fn execute_at_generation_with_inline_env(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+        call_id: &str,
+        generation: u64,
+        execution_context: ToolExecutionContext<'_>,
+    ) -> ToolResult {
+        if self.sandbox_policy.is_some() && self.get_inline_tool(tool_name).is_some() {
             return ToolResult::failure("Inline shell tools are disabled for sandboxed exec runs");
         }
         if matches!(self.sandbox_policy, Some(SandboxPolicy::ReadOnly))
@@ -1208,8 +1432,15 @@ impl ToolExecutor {
         let result = vault_tool_result_credentials(
             &self.credential_vault,
             generation,
-            self.execute_impl(tool_name, args, event_tx, call_id, generation, cancel)
-                .await,
+            self.execute_impl(
+                tool_name,
+                args,
+                event_tx,
+                call_id,
+                generation,
+                execution_context,
+            )
+            .await,
         );
 
         // Store result in cache for cacheable tools
@@ -1275,6 +1506,29 @@ impl ToolExecutor {
         .await
     }
 
+    pub(crate) async fn execute_with_receipt_cancellable_inline_env(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+        call_id: &str,
+        cancel: CancellationToken,
+        approved_inline_env: Option<&HashMap<String, String>>,
+    ) -> ToolExecution {
+        self.execute_with_receipt_at_generation_with_inline_env(
+            tool_name,
+            args,
+            event_tx,
+            call_id,
+            self.credential_generation(),
+            ToolExecutionContext {
+                cancel: Some(cancel),
+                approved_inline_env,
+            },
+        )
+        .await
+    }
+
     pub(crate) async fn execute_with_receipt_at_generation(
         &self,
         tool_name: &str,
@@ -1284,9 +1538,30 @@ impl ToolExecutor {
         generation: u64,
         cancel: Option<CancellationToken>,
     ) -> ToolExecution {
-        if self.sandbox_policy.is_some()
-            && self.inline_tools.contains_key(&tool_name.to_lowercase())
-        {
+        self.execute_with_receipt_at_generation_with_inline_env(
+            tool_name,
+            args,
+            event_tx,
+            call_id,
+            generation,
+            ToolExecutionContext {
+                cancel,
+                approved_inline_env: None,
+            },
+        )
+        .await
+    }
+
+    async fn execute_with_receipt_at_generation_with_inline_env(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+        call_id: &str,
+        generation: u64,
+        execution_context: ToolExecutionContext<'_>,
+    ) -> ToolExecution {
+        if self.sandbox_policy.is_some() && self.get_inline_tool(tool_name).is_some() {
             let execution = ToolExecution::denied(
                 call_id,
                 tool_name,
@@ -1336,7 +1611,14 @@ impl ToolExecutor {
         // Execute without event forwarding so the receipt-bearing ToolEnd below is the
         // sole terminal event for this call.
         let result = self
-            .execute_at_generation(tool_name, args, None, call_id, generation, cancel)
+            .execute_at_generation_with_inline_env(
+                tool_name,
+                args,
+                None,
+                call_id,
+                generation,
+                execution_context,
+            )
             .await;
         let mut execution = ToolExecution::from_legacy(
             call_id,

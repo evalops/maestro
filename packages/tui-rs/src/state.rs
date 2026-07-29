@@ -856,6 +856,7 @@ impl AppState {
                 tool,
                 args,
                 requires_approval,
+                ..
             } => {
                 // Add tool call to the most recent assistant message
                 // `.rev()` iterates in reverse order (newest first)

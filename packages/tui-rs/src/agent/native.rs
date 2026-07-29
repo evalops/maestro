@@ -102,6 +102,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::message_queue::{MessageQueue, PendingMessage, PromptKind, MAX_PENDING_MESSAGES};
+use super::protocol::InlineToolApprovalContext;
 use super::safety::{SafetyController, SafetyVerdict};
 use super::{
     CredentialVault, DenialReason, ExecutionPhase, ExecutionSource, FromAgent, TokenUsage,
@@ -2752,26 +2753,37 @@ impl NativeAgentRunner {
                     );
                     if deferred_disposition == Some(DeferredToolCallDisposition::AwaitApproval) {
                         // Defer the wait for the user's decision: emit every
-                        // ToolCall event in this batch first so the UI can
-                        // present all pending approvals in one batched modal
-                        // (#3085), then await the decisions below.
-                        let _ = self.event_tx.send(FromAgent::ToolCall {
-                            call_id: call_id.clone(),
-                            tool: tool_name.clone(),
-                            args: safe_args.clone(),
-                            requires_approval,
-                        });
-                        deferred_tool_calls.push(DeferredToolCall::AwaitApproval(
-                            ToolCallContext {
-                                call_id,
-                                tool_name,
-                                args,
-                                safe_args,
-                                extra_context,
-                                pre_hook_args,
-                                initial_firewall_verdict: firewall_verdict,
-                            },
-                        ));
+                        // ToolCall event in this batch before awaiting any
+                        // decisions so the UI can present one batched modal
+                        // (#3085). Capture execution context before publishing
+                        // it, then carry that same snapshot to both the UI and
+                        // the execution-boundary comparison.
+                        let approval_inline_env =
+                            self.tool_executor.get_inline_tool(&tool_name).map(|tool| {
+                                let (shell, shell_arg) =
+                                    self.tool_executor.inline_tool_effective_shell();
+                                InlineToolApprovalContext {
+                                    command: tool.definition.command.clone(),
+                                    source_path: tool.source_path.display().to_string(),
+                                    source_label: tool.source.label().to_string(),
+                                    cwd: self.tool_executor.inline_tool_effective_cwd(tool),
+                                    environment: self.tool_executor.inline_tool_effective_env(tool),
+                                    shell,
+                                    shell_arg: shell_arg.to_string(),
+                                }
+                            });
+                        let call = ToolCallContext {
+                            call_id,
+                            tool_name,
+                            args,
+                            safe_args,
+                            extra_context,
+                            pre_hook_args,
+                            initial_firewall_verdict: firewall_verdict,
+                            approval_inline_env,
+                        };
+                        let _ = self.event_tx.send(deferred_tool_call_event(&call, true));
+                        deferred_tool_calls.push(DeferredToolCall::AwaitApproval(call));
                         continue;
                     }
 
@@ -2788,6 +2800,7 @@ impl NativeAgentRunner {
                             extra_context,
                             pre_hook_args,
                             initial_firewall_verdict: firewall_verdict,
+                            approval_inline_env: None,
                         }));
                         continue;
                     }
@@ -2797,6 +2810,7 @@ impl NativeAgentRunner {
                         tool: tool_name.clone(),
                         args: safe_args.clone(),
                         requires_approval,
+                        approval_inline_env: None,
                     });
 
                     if can_parallelize_read_only {
@@ -2815,7 +2829,7 @@ impl NativeAgentRunner {
                     // Note: ToolExecutor sends ToolStart/ToolEnd events internally
                     let result = {
                         let resolved_args = self.credential_vault.resolve_in_json(&safe_args);
-                        self.execute_tool(&tool_name, &resolved_args, &call_id)
+                        self.execute_tool(&tool_name, &resolved_args, &call_id, None)
                             .await
                     };
                     let call = ToolCallContext {
@@ -2826,6 +2840,7 @@ impl NativeAgentRunner {
                         extra_context,
                         pre_hook_args,
                         initial_firewall_verdict: firewall_verdict,
+                        approval_inline_env: None,
                     };
                     let result_block = self
                         .finalize_tool_call_result(call, true, Some(result))
@@ -3007,6 +3022,30 @@ impl NativeAgentRunner {
                                         break;
                                     }
                                     continue;
+                                }
+                                if let Some(approved_context) = &call.approval_inline_env {
+                                    let current_env =
+                                        self.tool_executor.get_inline_tool(&tool_key).map(|tool| {
+                                            self.tool_executor.inline_tool_effective_env(tool)
+                                        });
+                                    if let Some(reason) = approved_inline_env_change_rejection(
+                                        Some(&approved_context.environment),
+                                        current_env.as_ref(),
+                                    ) {
+                                        emit_deferred_failure(
+                                            &self.event_tx,
+                                            &call,
+                                            reason,
+                                            &mut tool_results,
+                                        );
+                                        if self.cancel_remaining_deferred_if_interrupted(
+                                            &mut deferred_tool_calls_iter,
+                                            &mut tool_results,
+                                        ) {
+                                            break;
+                                        }
+                                        continue;
+                                    }
                                 }
                                 match deferred_execution_safety_verdict(&self.safety, &call) {
                                     SafetyVerdict::Allow => {}
@@ -3212,7 +3251,12 @@ impl NativeAgentRunner {
                                 let resolved_args =
                                     self.credential_vault.resolve_in_json(&call.safe_args);
                                 let result = self
-                                    .execute_tool(&call.tool_name, &resolved_args, &call.call_id)
+                                    .execute_tool(
+                                        &call.tool_name,
+                                        &resolved_args,
+                                        &call.call_id,
+                                        None,
+                                    )
                                     .await;
                                 let result_block = self
                                     .finalize_tool_call_result(call, true, Some(result))
@@ -3264,6 +3308,7 @@ impl NativeAgentRunner {
                             tool: tool_name.clone(),
                             args: self.credential_vault.vault_in_json(&args),
                             requires_approval: false,
+                            approval_inline_env: None,
                         });
                         let _ = self.event_tx.send(FromAgent::ToolOutput {
                             call_id: call_id.clone(),
@@ -3393,17 +3438,19 @@ impl NativeAgentRunner {
         tool_name: &str,
         args: &serde_json::Value,
         call_id: &str,
+        approved_inline_env: Option<&HashMap<String, String>>,
     ) -> ToolExecution {
         let cancel = CancellationToken::new();
         self.set_active_tool_cancel_token(Some(cancel.clone()));
         let execution = self
             .tool_executor
-            .execute_with_receipt_cancellable(
+            .execute_with_receipt_cancellable_inline_env(
                 tool_name,
                 args,
                 Some(&self.event_tx),
                 call_id,
                 cancel,
+                approved_inline_env,
             )
             .await;
         self.set_active_tool_cancel_token(None);
@@ -3428,12 +3475,16 @@ impl NativeAgentRunner {
             extra_context,
             pre_hook_args: _,
             initial_firewall_verdict: _,
+            approval_inline_env,
         } = call;
         let mut result = result;
         if approved && result.is_none() {
             let resolved_args = self.credential_vault.resolve_in_json(&safe_args);
+            let approved_environment = approval_inline_env
+                .as_ref()
+                .map(|context| &context.environment);
             result = Some(
-                self.execute_tool(&tool_name, &resolved_args, &call_id)
+                self.execute_tool(&tool_name, &resolved_args, &call_id, approved_environment)
                     .await,
             );
         }
@@ -3667,6 +3718,10 @@ struct ToolCallContext {
     extra_context: Option<String>,
     pre_hook_args: serde_json::Value,
     initial_firewall_verdict: FirewallVerdict,
+    /// Exact inline command and execution context captured before the approval
+    /// event was emitted. Approved calls must still match its environment at
+    /// execution time.
+    approval_inline_env: Option<InlineToolApprovalContext>,
 }
 
 enum DeferredToolCall {
@@ -3711,6 +3766,11 @@ fn deferred_tool_call_event(call: &ToolCallContext, requires_approval: bool) -> 
         tool: call.tool_name.clone(),
         args: call.safe_args.clone(),
         requires_approval,
+        approval_inline_env: if requires_approval {
+            call.approval_inline_env.clone()
+        } else {
+            None
+        },
     }
 }
 
@@ -3742,6 +3802,17 @@ fn approved_input_change_rejection(
 ) -> Option<&'static str> {
     (approved_args != refreshed_args)
         .then_some("Tool input changed after approval; retry to review refreshed input")
+}
+
+fn approved_inline_env_change_rejection(
+    approved_env: Option<&HashMap<String, String>>,
+    current_env: Option<&HashMap<String, String>>,
+) -> Option<&'static str> {
+    approved_env
+        .is_some_and(|approved| current_env != Some(approved))
+        .then_some(
+            "Inline tool environment changed after approval; retry to review refreshed environment",
+        )
 }
 
 fn clear_stashed_prompts(deferred_commands: &mut VecDeque<AgentCommand>) -> usize {
@@ -4867,6 +4938,7 @@ mod tests {
             extra_context: None,
             pre_hook_args: original_args.clone(),
             initial_firewall_verdict: FirewallVerdict::Allow,
+            approval_inline_env: None,
         };
 
         assert!(matches!(
@@ -4903,6 +4975,7 @@ mod tests {
             extra_context: None,
             pre_hook_args: original_args,
             initial_firewall_verdict: FirewallVerdict::Allow,
+            approval_inline_env: None,
         };
 
         let (refreshed_args, refreshed_context) =
@@ -4917,6 +4990,92 @@ mod tests {
     }
 
     #[test]
+    fn approved_inline_environment_must_match_at_execution_boundary() {
+        let approved = HashMap::from([
+            ("PATH".to_string(), "/usr/bin".to_string()),
+            ("GIT_ASKPASS".to_string(), "/approved/helper".to_string()),
+        ]);
+        let same = approved.clone();
+        let changed = HashMap::from([
+            ("PATH".to_string(), "/usr/bin".to_string()),
+            ("GIT_ASKPASS".to_string(), "/new/helper".to_string()),
+        ]);
+
+        assert_eq!(
+            approved_inline_env_change_rejection(Some(&approved), Some(&same)),
+            None,
+        );
+        assert_eq!(
+            approved_inline_env_change_rejection(Some(&approved), Some(&changed)),
+            Some(
+                "Inline tool environment changed after approval; retry to review refreshed environment"
+            ),
+        );
+        assert_eq!(
+            approved_inline_env_change_rejection(Some(&approved), None),
+            Some(
+                "Inline tool environment changed after approval; retry to review refreshed environment"
+            ),
+        );
+        assert_eq!(
+            approved_inline_env_change_rejection(None, Some(&changed)),
+            None,
+        );
+    }
+
+    #[test]
+    fn approval_event_carries_the_execution_snapshot_without_serializing_it() {
+        let args = serde_json::json!({});
+        let approved_env = HashMap::from([
+            ("PATH".to_string(), "/approved/bin".to_string()),
+            (
+                "DATABASE_URL".to_string(),
+                "postgres://user:password@example.test/db".to_string(),
+            ),
+        ]);
+        let call = ToolCallContext {
+            call_id: "call-inline".to_string(),
+            tool_name: "deploy".to_string(),
+            args: args.clone(),
+            safe_args: args.clone(),
+            extra_context: None,
+            pre_hook_args: args,
+            initial_firewall_verdict: FirewallVerdict::RequireApproval {
+                reason: "inline tool".to_string(),
+            },
+            approval_inline_env: Some(InlineToolApprovalContext {
+                command: "./deploy.sh".to_string(),
+                source_path: ".composer/tools.json".to_string(),
+                source_label: "project".to_string(),
+                cwd: "/workspace".to_string(),
+                environment: approved_env.clone(),
+                shell: "/bin/sh".to_string(),
+                shell_arg: "-c".to_string(),
+            }),
+        };
+
+        let event = deferred_tool_call_event(&call, true);
+        let carried_env = match &event {
+            FromAgent::ToolCall {
+                approval_inline_env,
+                ..
+            } => approval_inline_env.as_ref(),
+            event => panic!("expected ToolCall, got {event:?}"),
+        };
+        assert_eq!(
+            carried_env.map(|context| &context.environment),
+            Some(&approved_env)
+        );
+
+        // The raw snapshot exists only on the in-process handoff. Approval
+        // rendering applies its credential redactor before displaying values,
+        // and serialization must not leak the pre-redaction map.
+        let serialized = serde_json::to_string(&event).expect("serialize ToolCall");
+        assert!(!serialized.contains("approval_inline_env"));
+        assert!(!serialized.contains("password"));
+    }
+
+    #[test]
     fn deferred_execution_handles_continue_and_inject_context() {
         let original_args = serde_json::json!({"command": "model-input"});
         let call = ToolCallContext {
@@ -4927,6 +5086,7 @@ mod tests {
             extra_context: Some("stale context".to_string()),
             pre_hook_args: original_args.clone(),
             initial_firewall_verdict: FirewallVerdict::Allow,
+            approval_inline_env: None,
         };
         let mut continue_hooks = IntegratedHookSystem::new("/tmp");
         assert_eq!(
@@ -4960,6 +5120,7 @@ mod tests {
             extra_context: None,
             pre_hook_args: bash_args,
             initial_firewall_verdict: FirewallVerdict::Allow,
+            approval_inline_env: None,
         };
         let (refreshed, _) =
             rerun_deferred_pre_tool_use(&mut hooks, &bash_call).expect("continue hook");
@@ -4978,6 +5139,7 @@ mod tests {
             extra_context: None,
             pre_hook_args: read_args,
             initial_firewall_verdict: FirewallVerdict::Allow,
+            approval_inline_env: None,
         };
         let (refreshed, _) =
             rerun_deferred_pre_tool_use(&mut hooks, &read_call).expect("continue hook");
@@ -5007,6 +5169,7 @@ mod tests {
             extra_context: None,
             pre_hook_args: original_args,
             initial_firewall_verdict: FirewallVerdict::Allow,
+            approval_inline_env: None,
         };
         let (args, extra_context) =
             rerun_deferred_pre_tool_use(&mut hooks, &call).expect("modified input");
@@ -5039,6 +5202,7 @@ mod tests {
             extra_context: None,
             pre_hook_args: args,
             initial_firewall_verdict: FirewallVerdict::Allow,
+            approval_inline_env: None,
         };
         let (events, result) = deferred_hook_block(&call, "state changed".to_string(), true);
 
@@ -5134,6 +5298,7 @@ mod tests {
             extra_context: None,
             pre_hook_args: args.clone(),
             initial_firewall_verdict: FirewallVerdict::Allow,
+            approval_inline_env: None,
         };
 
         assert_eq!(
@@ -5182,6 +5347,7 @@ mod tests {
             extra_context: None,
             pre_hook_args: serde_json::json!({"command": "touch later"}),
             initial_firewall_verdict: FirewallVerdict::Allow,
+            approval_inline_env: None,
         };
 
         let (event, result_block) =
@@ -5226,6 +5392,7 @@ mod tests {
                 extra_context: None,
                 pre_hook_args: serde_json::json!({"command": "touch later"}),
                 initial_firewall_verdict: FirewallVerdict::Allow,
+                approval_inline_env: None,
             })
         });
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
@@ -5267,6 +5434,7 @@ mod tests {
             extra_context: None,
             pre_hook_args: args.clone(),
             initial_firewall_verdict: FirewallVerdict::Allow,
+            approval_inline_env: None,
         };
         let deferred_calls = [
             DeferredToolCall::AwaitApproval(make_call("call-announced")),
@@ -5390,6 +5558,7 @@ mod tests {
             extra_context: None,
             pre_hook_args: serde_json::json!({"message": "update"}),
             initial_firewall_verdict: FirewallVerdict::Allow,
+            approval_inline_env: None,
         };
         assert!(matches!(
             deferred_policy_rejection_event(&call, "approval required"),

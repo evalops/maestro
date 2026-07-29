@@ -815,6 +815,7 @@ fn test_handle_tool_call() {
         tool: "bash".to_string(),
         args: serde_json::json!({"command": "ls"}),
         requires_approval: true,
+        approval_inline_env: None,
     });
 
     assert_eq!(state.messages[0].tool_calls.len(), 1);
@@ -837,6 +838,7 @@ fn test_handle_tool_call_no_approval() {
         tool: "read".to_string(),
         args: serde_json::json!({}),
         requires_approval: false,
+        approval_inline_env: None,
     });
 
     let tc = &state.messages[0].tool_calls[0];
@@ -856,6 +858,7 @@ fn test_handle_tool_lifecycle() {
         tool: "bash".to_string(),
         args: serde_json::json!({}),
         requires_approval: false,
+        approval_inline_env: None,
     });
 
     // Tool started
@@ -900,6 +903,7 @@ fn test_handle_tool_failure() {
         tool: "bash".to_string(),
         args: serde_json::json!({}),
         requires_approval: false,
+        approval_inline_env: None,
     });
 
     state.handle_agent_message(FromAgent::ToolEnd {
@@ -1002,6 +1006,7 @@ fn test_handle_hook_blocked() {
         tool: "bash".to_string(),
         args: serde_json::json!({}),
         requires_approval: false,
+        approval_inline_env: None,
     });
 
     state.handle_agent_message(FromAgent::HookBlocked {

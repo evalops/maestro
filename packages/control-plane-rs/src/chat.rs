@@ -681,6 +681,7 @@ pub(crate) async fn handle_chat_endpoint(
                 tool,
                 args,
                 requires_approval,
+                ..
             } => {
                 tool_names.insert(call_id.clone(), tool.clone());
                 record_tool_call_metadata(&mut assistant_tools, &call_id, &tool, args.clone());
@@ -1316,6 +1317,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                 tool,
                 args,
                 requires_approval,
+                ..
             } => {
                 tool_names.insert(call_id.clone(), tool.clone());
                 record_tool_call_metadata(&mut assistant_tools, &call_id, &tool, args.clone());

@@ -58,6 +58,7 @@ pin-project-lite = "0.2"
 
 # Utilities
 unicode-width = "0.2"
+unicode-properties = "0.1"
 textwrap = "0.16"
 anyhow.workspace = true
 thiserror.workspace = true
@@ -68,6 +69,7 @@ glob.workspace = true
 regex.workspace = true
 dirs.workspace = true
 dunce.workspace = true
+fd-lock.workspace = true
 toml = "0.8"
 libc.workspace = true
 rayon = "1.10"
