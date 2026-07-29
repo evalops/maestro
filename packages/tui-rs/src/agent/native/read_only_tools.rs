@@ -207,9 +207,64 @@ mod tests {
         ));
     }
 
+    /// Serializes tests in this module that swap process-global `$HOME` to
+    /// mark a temp workspace trusted (see `mark_workspace_trusted`).
+    static ENV_MUTEX: std::sync::LazyLock<std::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
+    /// Mark `workspace` trusted the same way a real user would (global
+    /// config, keyed on the canonical workspace path), by pointing `$HOME`
+    /// at a throwaway directory containing only that trust grant.
+    ///
+    /// This test's inline tool is self-authored by the test itself (not
+    /// attacker-controlled), so simulating a trusted workspace is the
+    /// correct fixture -- this is a regression test for the read-only
+    /// batching classifier, not for the trust gate (see
+    /// `tools::inline::tests` for that). Returns a guard that restores the
+    /// previous `$HOME` on drop.
+    fn mark_workspace_trusted(workspace: &std::path::Path) -> impl Drop {
+        struct HomeGuard {
+            _lock: std::sync::MutexGuard<'static, ()>,
+            previous_home: Option<String>,
+            _fake_home: tempfile::TempDir,
+        }
+        impl Drop for HomeGuard {
+            fn drop(&mut self) {
+                match &self.previous_home {
+                    Some(home) => std::env::set_var("HOME", home),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
+
+        let lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let fake_home = tempfile::tempdir().unwrap();
+        let canonical = dunce::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+        let composer_dir = fake_home.path().join(".composer");
+        std::fs::create_dir_all(&composer_dir).unwrap();
+        std::fs::write(
+            composer_dir.join("config.toml"),
+            format!(
+                "[projects.\"{}\"]\ntrust_level = \"trusted\"\n",
+                canonical.display()
+            ),
+        )
+        .unwrap();
+
+        let previous_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", fake_home.path());
+
+        HomeGuard {
+            _lock: lock,
+            previous_home,
+            _fake_home: fake_home,
+        }
+    }
+
     #[tokio::test]
     async fn test_rust_client_read_only_wave_live_pre_post_conditions() {
         let temp = tempfile::tempdir().unwrap();
+        let _home_guard = mark_workspace_trusted(temp.path());
         let composer_dir = temp.path().join(".composer");
         std::fs::create_dir_all(&composer_dir).unwrap();
         std::fs::write(
@@ -352,6 +407,7 @@ mod tests {
                 call_id,
                 success: false,
                 receipt: Some(receipt),
+                ..
             } if call_id == "inspect-0" && receipt.call_id == "inspect-0"
         )));
     }

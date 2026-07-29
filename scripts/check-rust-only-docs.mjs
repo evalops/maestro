@@ -15,7 +15,6 @@ const files = [
 	"docs/CONTRIBUTOR_RUNBOOK.md",
 	"docs/TOOLS_REFERENCE.md",
 	"docs/CI_VERSION_PINS.md",
-	"docs/development/bazel.md",
 	"packages/tui-rs/docs/user-guide/01-getting-started.md",
 	"packages/tui-rs/docs/user-guide/12-sandbox-and-safety.md",
 	"packages/tui-rs/docs/user-guide/13-headless-mode.md",

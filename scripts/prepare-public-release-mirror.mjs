@@ -31,6 +31,14 @@ const DEFAULT_EXCLUDES = [
 	".husky/_/**",
 	"*.tsbuildinfo",
 	"**/*.tsbuildinfo",
+	// google-github-actions/auth writes its workload-identity credential
+	// config to $GITHUB_WORKSPACE as gha-creds-<hash>.json, and in this
+	// workflow it does so *before* the mirror tree is prepared. Without this
+	// exclusion the file is copied into the public tree and committed: it
+	// reached evalops/maestro on 2026-07-24 and had to be scrubbed by hand
+	// (evalops/maestro@3ea963ef).
+	"gha-creds-*.json",
+	"**/gha-creds-*.json",
 	"CLAUDE.md",
 	".github/workflows/**",
 	".github/workflows/public-release-mirror.yml",
@@ -61,8 +69,14 @@ const PUBLIC_INCLUDE_OVERRIDES = new Set([
 const STALE_PUBLIC_TARGET_DELETES = [
 	".github/release-mirror-manifest.json",
 ];
-
-const PUBLIC_BAZEL_MODULE_NAME = "evalops_maestro";
+const NON_MIRRORED_SCAN_DIRECTORIES = new Set([
+	".git",
+	"coverage",
+	"dist",
+	"node_modules",
+	"target",
+	"tmp",
+]);
 
 function parseArgs(argv) {
 	const args = {
@@ -237,6 +251,27 @@ function walkFiles(root, shouldExclude) {
 	return files.sort();
 }
 
+function findCredentialArtifacts(root) {
+	const matches = [];
+
+	function visit(dir) {
+		for (const entry of readdirSync(dir, { withFileTypes: true })) {
+			if (entry.isDirectory() && NON_MIRRORED_SCAN_DIRECTORIES.has(entry.name)) {
+				continue;
+			}
+			const absolute = join(dir, entry.name);
+			if (entry.isDirectory()) {
+				visit(absolute);
+			} else if (entry.isFile() && /^gha-creds-.*\.json$/u.test(entry.name)) {
+				matches.push(normalizePath(relative(root, absolute)));
+			}
+		}
+	}
+
+	visit(root);
+	return matches.sort();
+}
+
 function resolvePublicPackageJson(
 	sourceRoot,
 	packageName,
@@ -300,20 +335,6 @@ function resolvePublicPackageJson(
 	};
 }
 
-function resolvePublicFileContent(sourceRoot, relativePath) {
-	const sourcePath = resolve(sourceRoot, relativePath);
-	if (relativePath === "MODULE.bazel") {
-		return Buffer.from(
-			readFileSync(sourcePath, "utf8").replace(
-				/(\bmodule\s*\(\s*name\s*=\s*")[^"]*(")/,
-				`$1${PUBLIC_BAZEL_MODULE_NAME}$2`,
-			),
-			"utf8",
-		);
-	}
-	return readFileSync(sourcePath);
-}
-
 function buildMirrorPlan(sourceRoot, targetRoot, shouldExclude, packageName) {
 	const sourceFiles = new Set(walkFiles(sourceRoot, shouldExclude));
 	const targetFiles = new Set(walkFiles(targetRoot, shouldExclude));
@@ -326,7 +347,7 @@ function buildMirrorPlan(sourceRoot, targetRoot, shouldExclude, packageName) {
 		const sourceContent =
 			relativePath === "package.json"
 				? Buffer.from(packageJsonContent, "utf8")
-				: resolvePublicFileContent(sourceRoot, relativePath);
+				: readFileSync(resolve(sourceRoot, relativePath));
 		const targetPath = resolve(targetRoot, relativePath);
 		const targetContent = existsSync(targetPath) ? readFileSync(targetPath) : null;
 		if (!targetContent || !sourceContent.equals(targetContent)) {
@@ -344,6 +365,11 @@ function buildMirrorPlan(sourceRoot, targetRoot, shouldExclude, packageName) {
 	for (const relativePath of STALE_PUBLIC_TARGET_DELETES) {
 		const targetPath = resolve(targetRoot, relativePath);
 		if (existsSync(targetPath) && !deletedPaths.includes(relativePath)) {
+			deletedPaths.push(relativePath);
+		}
+	}
+	for (const relativePath of findCredentialArtifacts(targetRoot)) {
+		if (!deletedPaths.includes(relativePath)) {
 			deletedPaths.push(relativePath);
 		}
 	}
@@ -367,8 +393,6 @@ function applyMirrorPlan(sourceRoot, targetRoot, plan) {
 		mkdirSync(dirname(targetPath), { recursive: true });
 		if (relativePath === "package.json") {
 			writeFileSync(targetPath, plan.packageJsonContent);
-		} else if (relativePath === "MODULE.bazel") {
-			writeFileSync(targetPath, resolvePublicFileContent(sourceRoot, relativePath));
 		} else {
 			copyFileSync(sourcePath, targetPath);
 		}

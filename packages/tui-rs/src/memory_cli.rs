@@ -1,6 +1,7 @@
 //! Native `maestro memory` shared-memory inspection command.
 
 use std::collections::BTreeMap;
+use std::io::IsTerminal;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -130,7 +131,10 @@ pub async fn run_memory(args: &[String]) -> Result<i32> {
                 ),
             )
             .await?;
-            print!("{text}");
+            print!(
+                "{}",
+                export_text_for_stdout(&text, std::io::stdout().is_terminal())
+            );
             if !text.ends_with('\n') {
                 println!();
             }
@@ -245,6 +249,36 @@ async fn fetch_json<T: serde::de::DeserializeOwned>(
         .context("shared memory service returned invalid JSON")
 }
 
+/// Sanitize the raw shared-memory HTTP response body (`memory export`'s
+/// JSONL payload) before it reaches the real terminal, which has no
+/// ratatui `Buffer` in this CLI path to filter it.
+///
+/// This happens at the print boundary, not in `fetch_text` (which
+/// `fetch_json` also uses to feed `serde_json::from_str`): sanitizing
+/// there could strip bytes that are meaningful to the JSON parser.
+fn sanitize_export_text(text: &str) -> String {
+    crate::output_sanitize::sanitize_control_chars(text)
+}
+
+/// Decide whether `memory export`'s stdout write should sanitize `text`.
+///
+/// `export`'s whole point is byte-exact JSONL: a valid JSON string can
+/// legitimately contain C1 code points (e.g. `U+0085`), and
+/// `sanitize_export_text` would silently corrupt those when the output is
+/// redirected to a file or another process -- which also cannot execute a
+/// terminal escape sequence in the first place, so there is nothing to
+/// protect against there. Only sanitize when stdout is an actual terminal.
+/// Takes `stdout_is_terminal` as a parameter (mirroring
+/// `hyperlink::format_link_with_fallback`'s `is_tty` parameter) so this
+/// stays unit-testable without a real pty.
+fn export_text_for_stdout(text: &str, stdout_is_terminal: bool) -> String {
+    if stdout_is_terminal {
+        sanitize_export_text(text)
+    } else {
+        text.to_string()
+    }
+}
+
 async fn status_output(client: &Client, config: &SharedMemoryConfig) -> Result<String> {
     let metrics: ServiceMetricsResponse = fetch_json(client, config, "/metrics").await?;
     let mut lines = vec![
@@ -256,7 +290,13 @@ async fn status_output(client: &Client, config: &SharedMemoryConfig) -> Result<S
         lines.push(format!("Time: {now}"));
     }
     lines.push(capabilities_line(metrics.capabilities.as_ref()));
-    Ok(lines.join("\n"))
+    // `metrics.status` and `metrics.now` are server-controlled JSON string
+    // fields; this function's sole consumer is `print!`/`println!` to the
+    // real terminal (no ratatui `Buffer` in this CLI path), so sanitize the
+    // fully assembled output here rather than at ingestion.
+    Ok(crate::output_sanitize::sanitize_control_chars(
+        &lines.join("\n"),
+    ))
 }
 
 fn capabilities_line(capabilities: Option<&CapabilitiesResponse>) -> String {
@@ -326,7 +366,11 @@ async fn session_output(
             }
         }
     }
-    Ok(lines.join("\n"))
+    // `updated_at` and the sync-metrics keys/values are server-controlled;
+    // see the comment in `status_output` for why sanitization happens here.
+    Ok(crate::output_sanitize::sanitize_control_chars(
+        &lines.join("\n"),
+    ))
 }
 
 async fn audit_output(
@@ -357,7 +401,11 @@ async fn audit_output(
             display_value(entry.get("source"), "?")
         ));
     }
-    Ok(lines.join("\n"))
+    // Every `display_value` above can surface an arbitrary server-controlled
+    // JSON string (`at`/`mode`/`source`); see the comment in `status_output`.
+    Ok(crate::output_sanitize::sanitize_control_chars(
+        &lines.join("\n"),
+    ))
 }
 
 async fn watch(args: &[String], config: SharedMemoryConfig) -> Result<i32> {
@@ -474,5 +522,128 @@ mod tests {
     async fn missing_session_id_fails_before_reading_config() {
         let result = run_memory(&["session".to_owned()]).await.unwrap();
         assert_eq!(result, 1);
+    }
+
+    #[tokio::test]
+    async fn status_output_sanitizes_server_controlled_strings() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buffer = vec![0_u8; 4096];
+            let _ = stream.read(&mut buffer).await.unwrap();
+            // `\u001b` / `\u0007` are valid JSON string escapes that decode
+            // to a literal ESC/BEL byte in the parsed Rust `String` -- this
+            // is how a malicious/compromised shared-memory service could
+            // smuggle a minimal OSC-0 (set title) sequence through
+            // `metrics.status`.
+            let body = r#"{"status":"ok\u001b]0;evil\u0007","now":"safe","capabilities":null}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let config = SharedMemoryConfig {
+            base_url: format!("http://{address}"),
+            api_key: None,
+        };
+        let output = status_output(&http_client().unwrap(), &config)
+            .await
+            .unwrap();
+        server.await.unwrap();
+        assert!(!output.contains('\x1b'));
+        assert!(!output.contains('\x07'));
+        assert!(output.contains("Status: ok]0;evil"));
+    }
+
+    #[tokio::test]
+    async fn session_output_sanitizes_server_controlled_strings() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buffer = vec![0_u8; 4096];
+            let _ = stream.read(&mut buffer).await.unwrap();
+            let body = r#"{"meta":{"last_seq":1,"min_seq":0,"event_count":2,"updated_at":"bad\u001b]0;evil\u0007time"},"metrics":{"queue_depth":"12"}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let config = SharedMemoryConfig {
+            base_url: format!("http://{address}"),
+            api_key: None,
+        };
+        let output = session_output(&http_client().unwrap(), &config, "sess-1")
+            .await
+            .unwrap();
+        server.await.unwrap();
+        assert!(!output.contains('\x1b'));
+        assert!(!output.contains('\x07'));
+        assert!(output.contains("Updated: bad]0;eviltime"));
+    }
+
+    #[tokio::test]
+    async fn audit_output_sanitizes_server_controlled_strings() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buffer = vec![0_u8; 4096];
+            let _ = stream.read(&mut buffer).await.unwrap();
+            let body = r#"{"items":[{"at":"t0","mode":"m","event_count":1,"source":"peer\u001b]0;evil\u0007"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let config = SharedMemoryConfig {
+            base_url: format!("http://{address}"),
+            api_key: None,
+        };
+        let output = audit_output(&http_client().unwrap(), &config, "sess-1", None)
+            .await
+            .unwrap();
+        server.await.unwrap();
+        assert!(!output.contains('\x1b'));
+        assert!(!output.contains('\x07'));
+        assert!(output.contains("source: peer]0;evil"));
+    }
+
+    #[test]
+    fn sanitize_export_text_strips_osc_injection_preserves_visible_text() {
+        let input = "line one\nbefore\x1b]0;evil\x07after";
+        let out = sanitize_export_text(input);
+        assert_eq!(out, "line one\nbefore]0;evilafter");
+        assert!(!out.contains('\x1b'));
+        assert!(!out.contains('\x07'));
+    }
+
+    #[test]
+    fn sanitize_export_text_preserves_ordinary_jsonl_text() {
+        let input = "{\"seq\":1}\n{\"seq\":2}\n";
+        assert_eq!(sanitize_export_text(input), input);
+    }
+
+    #[test]
+    fn export_text_for_stdout_sanitizes_only_when_a_terminal() {
+        let input = "before\x1b]0;evil\x07after";
+        assert_eq!(export_text_for_stdout(input, true), "before]0;evilafter");
+        // Redirected output must be byte-exact, even for control bytes that
+        // would be dangerous on a real terminal.
+        assert_eq!(export_text_for_stdout(input, false), input);
+    }
+
+    #[test]
+    fn export_text_for_stdout_preserves_c1_jsonl_when_redirected() {
+        // A legitimate JSON string value containing U+0085 (NEL, a C1 code
+        // point `sanitize_control_chars` would otherwise strip) must survive
+        // byte-for-byte when stdout is not a terminal.
+        let input = "{\"note\":\"line one\u{0085}line two\"}\n";
+        assert_eq!(export_text_for_stdout(input, false), input);
+        assert_ne!(export_text_for_stdout(input, true), input);
     }
 }

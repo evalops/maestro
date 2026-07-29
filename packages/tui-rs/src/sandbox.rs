@@ -883,7 +883,7 @@ mod macos {
                     // Build require-not clauses for read-only subpaths
                     let mut require_parts = vec![format!(r#"(subpath (param "{root_param}"))"#)];
                     for (subpath_index, ro) in wr.read_only_subpaths.iter().enumerate() {
-                        let canonical_ro = dunce::canonicalize(&ro).unwrap_or_else(|_| ro.clone());
+                        let canonical_ro = dunce::canonicalize(ro).unwrap_or_else(|_| ro.clone());
                         let ro_param = format!("WRITABLE_ROOT_{index}_RO_{subpath_index}");
                         require_parts
                             .push(format!(r#"(require-not (subpath (param "{ro_param}")))"#));

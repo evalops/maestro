@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
 
 function parseArgs(argv) {
 	const args = {
@@ -29,6 +29,31 @@ function fail(message) {
 	process.exit(1);
 }
 
+const NON_MIRRORED_SCAN_DIRECTORIES = new Set([
+	".git",
+	"coverage",
+	"dist",
+	"node_modules",
+	"target",
+	"tmp",
+]);
+
+function findCredentialArtifacts(root, current = root) {
+	const matches = [];
+	for (const entry of readdirSync(current, { withFileTypes: true })) {
+		if (entry.isDirectory() && NON_MIRRORED_SCAN_DIRECTORIES.has(entry.name)) {
+			continue;
+		}
+		const path = join(current, entry.name);
+		if (entry.isDirectory()) {
+			matches.push(...findCredentialArtifacts(root, path));
+		} else if (entry.isFile() && /^gha-creds-.*\.json$/u.test(entry.name)) {
+			matches.push(relative(root, path));
+		}
+	}
+	return matches;
+}
+
 const options = parseArgs(process.argv.slice(2));
 const targetRoot = resolve(options.target);
 
@@ -38,6 +63,13 @@ if (!existsSync(targetRoot)) {
 
 if (existsSync(resolve(targetRoot, ".github/public-release-mirror.exclude"))) {
 	fail(".github/public-release-mirror.exclude must not exist in the prepared public mirror tree.");
+}
+
+const credentialArtifacts = findCredentialArtifacts(targetRoot);
+if (credentialArtifacts.length > 0) {
+	fail(
+		`Prepared public mirror contains GitHub Actions credential artifact(s): ${credentialArtifacts.join(", ")}`,
+	);
 }
 
 const browserEntry = resolve(targetRoot, "packages/web/dist/index.html");

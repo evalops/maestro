@@ -9,6 +9,7 @@ tokio::task_local! {
     static RESPONSE_CORS_ORIGIN: String;
 }
 
+pub(crate) const WILDCARD_ORIGIN: &str = "*";
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_JSON_BODY_BYTES: usize = 32 * 1024 * 1024;
 const CORS_ALLOW_HEADERS: &str = "authorization,content-type,a2a-version,a2a-extensions,traceparent,tracestate,x-a2a-notification-token,x-organization-id,x-evalops-agent-id,x-evalops-actor-id,x-evalops-session-id,x-evalops-workspace-id,x-composer-artifact-access,x-composer-api-key,x-composer-approval-mode,x-composer-client,x-composer-client-tools,x-composer-csrf,x-composer-agent-id,x-composer-slim-events,x-composer-workspace,x-composer-workspace-id,x-maestro-artifact-access,x-maestro-api-key,x-maestro-approval-mode,x-maestro-agent-id,x-maestro-client,x-maestro-client-tools,x-maestro-csrf,x-maestro-slim-events,x-maestro-workspace,x-maestro-workspace-id,x-csrf-token,x-xsrf-token";
@@ -268,6 +269,7 @@ pub(crate) fn response_with_extra_headers_and_length(
         409 => "Conflict",
         426 => "Upgrade Required",
         413 => "Payload Too Large",
+        421 => "Misdirected Request",
         429 => "Too Many Requests",
         500 => "Internal Server Error",
         501 => "Not Implemented",
@@ -301,12 +303,20 @@ where
 }
 
 pub(crate) fn requested_cors_origin(head: &RequestHead) -> String {
+    let configured = cors_origin();
+    if configured == WILDCARD_ORIGIN {
+        // A wildcard configuration means "public API". Answer with the literal
+        // wildcard rather than reflecting the caller's origin, so browsers
+        // refuse credentialed cross-origin requests instead of being handed an
+        // `Access-Control-Allow-Origin` that names the attacker's page.
+        return configured;
+    }
     head.headers
         .get("origin")
         .map(|origin| origin.trim())
         .filter(|origin| !origin.is_empty() && origin_allowed(head))
         .map(|origin| origin.to_string())
-        .unwrap_or_else(cors_origin)
+        .unwrap_or(configured)
 }
 
 pub(crate) fn response_cors_origin() -> String {
@@ -321,8 +331,12 @@ pub(crate) fn response_cors_credentials_header() -> &'static str {
         .unwrap_or_else(|_| cors_credentials_header(&cors_origin()))
 }
 
-fn cors_credentials_header(origin: &str) -> &'static str {
-    if origin == "*" {
+/// Credentials are decided from the *configured* origin, never from the value
+/// reflected back to the caller. A wildcard configuration can therefore never
+/// combine `Access-Control-Allow-Credentials: true` with a reflected attacker
+/// origin, which is what let any visited page drive the local agent runtime.
+fn cors_credentials_header(reflected_origin: &str) -> &'static str {
+    if reflected_origin == WILDCARD_ORIGIN || cors_origin() == WILDCARD_ORIGIN {
         ""
     } else {
         "Access-Control-Allow-Credentials: true\r\n"
@@ -342,7 +356,7 @@ pub(crate) fn origin_allowed(head: &RequestHead) -> bool {
 
 fn origin_allowed_value(origin: &str) -> bool {
     let configured_origin = cors_origin();
-    if configured_origin == "*" || origin == configured_origin {
+    if configured_origin == WILDCARD_ORIGIN || origin == configured_origin {
         return true;
     }
     matches!(

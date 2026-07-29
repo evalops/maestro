@@ -1,5 +1,8 @@
 # Context Management System Design
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. Context assembly now lives in `packages/tui-rs/src/agent/` (see `compaction.rs`, `message_queue.rs`). Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 The context management system provides dynamic, extensible system prompt augmentation. It collects context from multiple sources, applies timeouts, and injects relevant information into each LLM request.
 
 ## Overview

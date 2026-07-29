@@ -1,5 +1,8 @@
 # Prompt Queue & Loader Lifecycle
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. The prompt queue now lives in `packages/tui-rs/src/app/prompt_queue.rs`. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 When multiple prompts arrive faster than the agent can respond, Maestro queues
 them and surfaces progress in the native TUI. This doc explains how the queue
 works in the current interactive surface.

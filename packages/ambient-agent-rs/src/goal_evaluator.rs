@@ -247,6 +247,11 @@ pub struct GoalEvaluatorConfig {
     pub model: Option<String>,
     /// Hard bound on the judge call; defaults to [`GOAL_EVALUATOR_TIMEOUT`].
     pub timeout: Duration,
+    /// Maximum executor retries after a `continue` verdict. Each retry feeds
+    /// the judge's `next_step` back into the executor; the run still fails
+    /// closed if the judge does not confirm completion afterwards. Defaults
+    /// to 1 so the retry loop stays bounded.
+    pub max_continue_retries: u32,
 }
 
 impl Default for GoalEvaluatorConfig {
@@ -254,6 +259,7 @@ impl Default for GoalEvaluatorConfig {
         Self {
             model: None,
             timeout: GOAL_EVALUATOR_TIMEOUT,
+            max_continue_retries: 1,
         }
     }
 }
@@ -292,6 +298,11 @@ impl GoalEvaluator {
     /// Create a new goal evaluator backed by the daemon's executor.
     pub fn new(config: GoalEvaluatorConfig, executor: Arc<Executor>) -> Self {
         Self { config, executor }
+    }
+
+    /// Maximum executor retries allowed after a `continue` verdict.
+    pub fn max_continue_retries(&self) -> u32 {
+        self.config.max_continue_retries
     }
 
     /// Evaluate an arbitrary objective against transcript evidence.
@@ -521,6 +532,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn default_max_continue_retries_is_one() {
+        // The continue retry loop is bounded: one retry by default, and the
+        // env-derived config inherits that bound.
+        assert_eq!(GoalEvaluatorConfig::default().max_continue_retries, 1);
+        assert_eq!(GoalEvaluatorConfig::from_env().max_continue_retries, 1);
+    }
+
     fn openrouter_fixture(response_body: String) -> (String, mpsc::Receiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -559,6 +578,7 @@ mod tests {
             GoalEvaluatorConfig {
                 model: Some("judge-model".to_string()),
                 timeout,
+                ..Default::default()
             },
             Arc::new(executor),
         )

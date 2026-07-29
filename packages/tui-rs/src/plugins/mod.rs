@@ -26,10 +26,14 @@
 
 mod discovery;
 mod loader;
+mod manager;
 mod manifest;
 
 pub use discovery::{default_search_roots, search_roots_for_workspace, PluginOrigin};
 pub use loader::{load_manifest, resolve_components, PluginComponents};
+pub use manager::{
+    install, set_capability, set_enabled, InstallPreview, PluginCapability, PluginState,
+};
 pub use manifest::PluginManifest;
 
 use std::collections::HashMap;
@@ -120,16 +124,75 @@ impl DiscoveredPlugin {
 #[derive(Debug, Clone, Default)]
 pub struct PluginRegistry {
     plugins: Vec<DiscoveredPlugin>,
+    /// Project-scoped roots that existed but were skipped because the
+    /// workspace isn't trusted (see [`Self::discover`]).
+    skipped_untrusted_roots: Vec<PathBuf>,
 }
 
 impl PluginRegistry {
-    /// Discover plugins from default Maestro/composer roots.
+    /// Discover plugins from default Maestro/composer roots relative to the
+    /// current process working directory.
+    ///
+    /// Project-scoped roots (`.maestro/plugins`, legacy `.composer/plugins`)
+    /// are repository-controlled: a plugin found there contributes skill
+    /// directories (and, once wired, hooks/MCP configs) that run
+    /// automatically. They are only searched when the workspace is marked
+    /// trusted in *global* config, so a repository cannot grant itself
+    /// trust (see `crate::config::workspace_trusted_in_global_config`).
     #[must_use]
     pub fn discover() -> Self {
-        Self::discover_from(&default_search_roots())
+        let workspace_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Self::discover_for_workspace(&workspace_dir)
     }
 
-    /// Discover plugins from explicit roots (low → high priority order).
+    /// Discover plugins for an explicit workspace while preserving the
+    /// standard user roots and workspace trust gate.
+    #[must_use]
+    pub fn discover_for_workspace(workspace_dir: &Path) -> Self {
+        let workspace_trusted = crate::config::workspace_trusted_in_global_config(workspace_dir);
+        let roots = search_roots_for_workspace(
+            workspace_dir,
+            crate::path_utils::maestro_home_dir().as_deref(),
+            crate::path_utils::legacy_composer_home_dir().as_deref(),
+        );
+        Self::discover_gated(&roots, workspace_trusted)
+    }
+
+    /// Discover from explicit roots (low → high priority order), applying
+    /// the workspace-trust gate over project-scoped origins.
+    ///
+    /// Split out so tests can exercise both the trusted and untrusted paths
+    /// deterministically without mutating the real process `$HOME`.
+    #[must_use]
+    fn discover_gated(roots: &[(PathBuf, PluginOrigin)], workspace_trusted: bool) -> Self {
+        let skipped_untrusted_roots: Vec<PathBuf> = if workspace_trusted {
+            Vec::new()
+        } else {
+            roots
+                .iter()
+                .filter(|(root, origin)| origin.is_project_scoped() && root.is_dir())
+                .map(|(root, _)| root.clone())
+                .collect()
+        };
+
+        let filtered: Vec<(PathBuf, PluginOrigin)> = roots
+            .iter()
+            .filter(|(_, origin)| workspace_trusted || !origin.is_project_scoped())
+            .cloned()
+            .collect();
+
+        let mut registry = Self::discover_from(&filtered);
+        registry.skipped_untrusted_roots = skipped_untrusted_roots;
+        registry
+    }
+
+    /// Discover plugins from explicit roots (low → high priority order),
+    /// with **no** trust gating applied.
+    ///
+    /// This is a low-level primitive for callers that pre-filter roots
+    /// themselves (e.g. read-only CLI listing). Production code that feeds
+    /// plugin components into execution (skills today; hooks/MCP once
+    /// wired) must go through [`Self::discover`] instead.
     ///
     /// When multiple plugins share a name, the later (higher-priority) root wins.
     #[must_use]
@@ -140,6 +203,20 @@ impl PluginRegistry {
             if !root.is_dir() {
                 continue;
             }
+            let state = match root
+                .parent()
+                .map(|parent| PluginState::load(&parent.join("plugin-state.json")))
+                .transpose()
+            {
+                Ok(state) => state.unwrap_or_default(),
+                Err(error) => {
+                    eprintln!(
+                        "[plugins] refusing to load {}: invalid trust state: {error}",
+                        root.display()
+                    );
+                    continue;
+                }
+            };
             let Ok(entries) = fs::read_dir(root) else {
                 continue;
             };
@@ -148,8 +225,29 @@ impl PluginRegistry {
                 if !path.is_dir() {
                     continue;
                 }
-                if let Some(plugin) = load_plugin_dir(&path, *origin) {
+                if let Some(mut plugin) = load_plugin_dir(&path, *origin) {
                     let key = plugin.name.to_lowercase();
+                    if state
+                        .plugins
+                        .get(&key)
+                        .is_some_and(|plugin_state| !plugin_state.enabled)
+                    {
+                        plugin.components = PluginComponents::default();
+                        by_name.insert(key, plugin);
+                        continue;
+                    }
+                    if !state.capability_enabled(&key, PluginCapability::Skills) {
+                        plugin.components.skills_dir = None;
+                    }
+                    if !state.capability_enabled(&key, PluginCapability::Commands) {
+                        plugin.components.commands_dir = None;
+                    }
+                    if !state.capability_enabled(&key, PluginCapability::Hooks) {
+                        plugin.components.hooks_config = None;
+                    }
+                    if !state.capability_enabled(&key, PluginCapability::Mcp) {
+                        plugin.components.mcp_path = None;
+                    }
                     by_name.insert(key, plugin);
                 }
             }
@@ -163,7 +261,32 @@ impl PluginRegistry {
                 .then_with(|| a.root.cmp(&b.root))
         });
 
-        Self { plugins }
+        Self {
+            plugins,
+            skipped_untrusted_roots: Vec::new(),
+        }
+    }
+
+    /// Human-readable notice describing any project-scoped plugin roots
+    /// skipped by [`Self::discover`] because the workspace isn't trusted,
+    /// or `None` if none were skipped.
+    #[must_use]
+    pub fn untrusted_skip_notice(&self) -> Option<String> {
+        if self.skipped_untrusted_roots.is_empty() {
+            return None;
+        }
+        let paths: Vec<String> = self
+            .skipped_untrusted_roots
+            .iter()
+            .map(|path| format!("`{}`", path.display()))
+            .collect();
+        Some(format!(
+            "This workspace isn't trusted, so {} project plugin root(s) were not loaded: {}. \
+             Set projects.\"<workspace>\".trust_level = \"trusted\" in global config \
+             (~/.composer/config.toml) to enable them.",
+            paths.len(),
+            paths.join(", ")
+        ))
     }
 
     /// All discovered plugins (sorted by name).
@@ -269,6 +392,9 @@ impl PluginRegistry {
 }
 
 fn load_plugin_dir(path: &Path, origin: PluginOrigin) -> Option<DiscoveredPlugin> {
+    if path.join(".maestro-untrusted").exists() {
+        return None;
+    }
     let dir_name = path.file_name()?.to_str()?.to_string();
     // Skip hidden directories (e.g. .git under plugins root).
     if dir_name.starts_with('.') {
@@ -324,6 +450,57 @@ mod tests {
                 "---\nname: demo-skill\ndescription: Demo skill for plugin tests\n---\n# Demo\n",
             );
         }
+    }
+
+    // ── Trust gate (repo-controlled `.maestro/plugins`, `.composer/plugins`) ──
+
+    /// Regression test for the trust-gate fix: an untrusted workspace's
+    /// project-scoped plugin roots must not be discovered at all, so their
+    /// skills (the only currently-wired component) never load. Before the
+    /// fix, `PluginRegistry::discover` had no trust check at all.
+    #[test]
+    fn test_untrusted_workspace_skips_project_plugin_roots() {
+        let tmp = TempDir::new().unwrap();
+        let plugins_root = tmp.path().join("plugins");
+        make_plugin(&plugins_root, "evil-plugin", true, true);
+
+        let roots = vec![(plugins_root.clone(), PluginOrigin::Project)];
+        let registry = PluginRegistry::discover_gated(&roots, false);
+
+        assert!(
+            registry.is_empty(),
+            "untrusted workspace must not discover project-scoped plugins"
+        );
+        let notice = registry.untrusted_skip_notice().expect("notice present");
+        assert!(notice.contains(&plugins_root.display().to_string()));
+    }
+
+    #[test]
+    fn test_trusted_workspace_discovers_project_plugin_roots() {
+        let tmp = TempDir::new().unwrap();
+        let plugins_root = tmp.path().join("plugins");
+        make_plugin(&plugins_root, "good-plugin", true, true);
+
+        let roots = vec![(plugins_root, PluginOrigin::Project)];
+        let registry = PluginRegistry::discover_gated(&roots, true);
+
+        assert_eq!(registry.len(), 1);
+        assert!(registry.untrusted_skip_notice().is_none());
+    }
+
+    #[test]
+    fn test_untrusted_workspace_still_discovers_user_plugin_roots() {
+        // User-scoped plugin roots (~/.maestro/plugins) aren't
+        // repository-controlled, so they must not be gated on workspace trust.
+        let tmp = TempDir::new().unwrap();
+        let plugins_root = tmp.path().join("plugins");
+        make_plugin(&plugins_root, "user-plugin", true, true);
+
+        let roots = vec![(plugins_root, PluginOrigin::User)];
+        let registry = PluginRegistry::discover_gated(&roots, false);
+
+        assert_eq!(registry.len(), 1);
+        assert!(registry.untrusted_skip_notice().is_none());
     }
 
     #[test]
@@ -439,6 +616,17 @@ mod tests {
     }
 
     #[test]
+    fn skips_incomplete_untrusted_installs() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("plugins");
+        let plugin = root.join("incomplete");
+        fs::create_dir_all(plugin.join("skills")).unwrap();
+        write_file(&plugin.join(".maestro-untrusted"), "incomplete");
+        let registry = PluginRegistry::discover_from(&[(root, PluginOrigin::User)]);
+        assert!(registry.is_empty());
+    }
+
+    #[test]
     fn skill_command_mcp_hook_accessors() {
         let tmp = TempDir::new().unwrap();
         let plugins_root = tmp.path().join("plugins");
@@ -453,6 +641,37 @@ mod tests {
         assert_eq!(registry.command_dirs().len(), 1);
         assert_eq!(registry.mcp_paths().len(), 1);
         assert_eq!(registry.hook_configs().len(), 1);
+    }
+
+    #[test]
+    fn disabled_higher_priority_plugin_tombstones_lower_priority_copy() {
+        let tmp = TempDir::new().unwrap();
+        let legacy_root = tmp.path().join("legacy").join("plugins");
+        let native_root = tmp.path().join("native").join("plugins");
+        make_plugin(&legacy_root, "duplicate", true, false);
+        make_plugin(&native_root, "duplicate", true, false);
+        let mut state = manager::PluginState::default();
+        state.plugins.insert(
+            "duplicate".into(),
+            manager::PluginTrustState {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+        state
+            .save(&native_root.parent().unwrap().join("plugin-state.json"))
+            .unwrap();
+
+        let registry = PluginRegistry::discover_from(&[
+            (legacy_root, PluginOrigin::LegacyUser),
+            (native_root, PluginOrigin::User),
+        ]);
+        let disabled = registry.get("duplicate").unwrap();
+        assert_eq!(disabled.origin, PluginOrigin::User);
+        assert!(disabled.components.skills_dir.is_none());
+        assert!(disabled.components.commands_dir.is_none());
+        assert!(disabled.components.hooks_config.is_none());
+        assert!(disabled.components.mcp_path.is_none());
     }
 
     #[test]

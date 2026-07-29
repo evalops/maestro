@@ -18,6 +18,35 @@ use super::messages::{
     ToAgentMessage,
 };
 
+#[cfg(target_os = "linux")]
+const EXECUTABLE_BUSY_RETRIES: usize = 10;
+
+#[cfg(target_os = "linux")]
+const EXECUTABLE_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
+
+async fn spawn_agent_command(cmd: &mut Command) -> std::io::Result<Child> {
+    #[cfg(target_os = "linux")]
+    {
+        for retries in 0..=EXECUTABLE_BUSY_RETRIES {
+            match cmd.spawn() {
+                Ok(child) => return Ok(child),
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                        && retries < EXECUTABLE_BUSY_RETRIES =>
+                {
+                    tokio::time::sleep(EXECUTABLE_BUSY_RETRY_DELAY).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("the final retry returns its error")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        cmd.spawn()
+    }
+}
+
 /// Configuration for the async agent transport
 #[derive(Debug, Clone)]
 pub struct AsyncTransportConfig {
@@ -180,7 +209,9 @@ impl AsyncAgentTransport {
             cmd.env(key, value);
         }
 
-        let mut child = cmd.spawn().map_err(AsyncTransportError::SpawnFailed)?;
+        let mut child = spawn_agent_command(&mut cmd)
+            .await
+            .map_err(AsyncTransportError::SpawnFailed)?;
 
         let stdin = child.stdin.take().ok_or_else(|| {
             AsyncTransportError::SpawnFailed(std::io::Error::other("Failed to get stdin"))
@@ -671,6 +702,37 @@ mod tests {
                 ServerRequestType::ToolRetry,
             ])
         );
+        assert_eq!(
+            local_controller_capabilities().transcript_grade,
+            Some(crate::transcript::TranscriptGrade::Delta)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn spawn_retries_while_agent_executable_is_temporarily_busy() {
+        use std::fs::{self, OpenOptions};
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script = temp.path().join("agent.sh");
+        fs::write(&script, "#!/bin/sh\nexit 0\n").expect("write script");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod script");
+        let writer = OpenOptions::new()
+            .write(true)
+            .open(&script)
+            .expect("open writer");
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            drop(writer);
+        });
+
+        let mut command = Command::new(&script);
+        let mut child = spawn_agent_command(&mut command)
+            .await
+            .expect("spawn after writer closes");
+        assert!(child.wait().await.expect("wait for script").success());
+        release.await.expect("release task");
     }
 
     #[tokio::test]

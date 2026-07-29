@@ -1,5 +1,8 @@
 # Grok Build Parity Design Map
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. The TUI/CLI surfaces referenced below now live in `packages/tui-rs` generally; individual paths were not re-verified. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 Audience: product and engineering leads deciding how EvalOps Maestro should
 converge on **Grok Build-class** terminal agent UX without becoming an xAI-only
 product or a source-level port.
@@ -99,7 +102,7 @@ Statuses mirror [NATIVE_TUI_PARITY.md](../NATIVE_TUI_PARITY.md):
 | Config story | JSON + TOML mix (`~/.maestro/*`, legacy composer) | **Partial** | Native reads `config.toml` in places; public story still multi-format |
 | Plugins + marketplace | Skills + MCP + hooks separately | **Open** | No installable plugin unit, no marketplace tab, no trust-scoped plugin dir |
 | ACP (Agent Client Protocol) | IDE extensions own their protocols | **Open** | No first-class ACP server for arbitrary editors |
-| One-liner install | Release binaries + npm + Nix | **Partial** | Manual curl-to-binary; no polished `install.sh` PATH installer UX |
+| One-liner install | Release binaries + npm | **Partial** | Manual curl-to-binary; no polished `install.sh` PATH installer UX |
 | First-run auth UX | Multi-provider login (Codex, keys, EvalOps) | **Partial** | Powerful but not a single guided browser-first path |
 | Numbered user guide | Docs index + FEATURES + QUICKSTART | **Partial** | Excellent contributor docs; not a 01–N progressive user guide |
 | In-product dashboard / usage | Cost/status/value commands | **Partial** | Operator value reports exist; not a Grok-like usage dashboard product |
@@ -114,7 +117,7 @@ Statuses mirror [NATIVE_TUI_PARITY.md](../NATIVE_TUI_PARITY.md):
 | Hosted remote runner | (product-specific) | `maestro-hosted-runner` + contracts | **Present** (Maestro-shaped) |
 | CLI utilities in Rust | Single binary surface | skill, modes, agents, painter, anthropic, memory, init, openai, update, sessions, cost, status, hooks, export/import, hosted runner | **Partial** |
 | Remaining TS CLI | n/a | `a2a`, `codex`, `config`, `context`, `evalops`, `mission`, `operating-plane`, `remote`, `run`, `scenario`, `value` | **Open** (migrate or deliberately keep) |
-| Packaging | `install.sh` / `install.ps1` → `grok` | GitHub release assets, npm, Nix | **Partial** |
+| Packaging | `install.sh` / `install.ps1` → `grok` | GitHub release assets, npm | **Partial** |
 | Multi-surface web/IDE | ACP-focused | Web + VS Code + JetBrains + Slack + GitHub | **Present** (broader than Grok) |
 | Platform attach | n/a (xAI cloud) | EvalOps Platform optional | **Present** (keep) |
 
@@ -450,9 +453,9 @@ A full inventory pass compared Maestro against the public grok-build repo
   expansion, `/loop <interval> <prompt>` scheduler, `/theme auto`
   (COLORFGBG) (#3050)
 - Mouse click-to-select on the slash completion popup (this change)
-- `/theme auto` follows the terminal background: one-time OSC 11 startup
-  probe behind `tui.theme_follow` (default off); live polling rejected —
-  crossterm 0.28 mangles OSC replies into Alt-key input (this change)
+- `/theme auto` follows the terminal background live behind
+  `tui.theme_follow` (default off); uncurses decodes OSC 11 and DEC light/dark
+  replies without leaking them into keyboard input
 - `maestro import-claude` — MCP + permissions import from Claude Code
   config (in flight)
 

@@ -14,6 +14,7 @@
 //! 3. Unknown model ids are not in the catalog at all and keep passing
 //!    through to the provider registry unchanged.
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
@@ -81,6 +82,27 @@ pub struct ModelInfo {
     pub description: String,
     pub capabilities: ModelCapabilities,
     pub verification: ModelVerification,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedModelInspection {
+    pub provider: String,
+    pub protocol: String,
+    pub base_url: Option<String>,
+    pub auth_configured: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ModelCapabilities>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInspection {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<ModelInfo>,
+    pub resolved: ResolvedModelInspection,
+    pub sources: BTreeMap<String, String>,
 }
 
 /// Upstream community catalog (MIT-licensed) that feeds both the bundled
@@ -151,6 +173,106 @@ pub fn available_models() -> Vec<ModelInfo> {
     maybe_spawn_background_refresh();
     let cache = catalog_cache_path().and_then(|path| load_cache(&path));
     select_models(&BUNDLED_CATALOG, cache.as_ref()).to_vec()
+}
+
+/// Inspect the exact native model/provider resolution while retaining per-field
+/// provenance and never returning credential material.
+pub fn inspect_model(id: &str) -> anyhow::Result<ModelInspection> {
+    inspect_model_with_env(id, &std::env::vars().collect())
+}
+
+fn inspect_model_with_env(
+    id: &str,
+    env: &HashMap<String, String>,
+) -> anyhow::Result<ModelInspection> {
+    let catalog = find_model(id);
+    let resolved = ProviderRegistry::resolve(id, env)?;
+    let mut sources = BTreeMap::new();
+    let cache_wins = catalog_cache_path()
+        .and_then(|path| load_cache(&path))
+        .is_some_and(|cache| {
+            !cache.models.is_empty() && cache.fetched_at >= BUNDLED_CATALOG.generated_at
+        });
+    sources.insert(
+        "catalog".to_string(),
+        if catalog.is_none() {
+            "uncataloged"
+        } else if cache_wins {
+            "runtime-cache"
+        } else {
+            "bundled"
+        }
+        .to_string(),
+    );
+    sources.insert(
+        "provider".to_string(),
+        if id.contains('/') {
+            "model-id-prefix"
+        } else {
+            "model-family-inference"
+        }
+        .to_string(),
+    );
+    sources.insert(
+        "auth".to_string(),
+        resolved
+            .auth_source
+            .as_ref()
+            .map_or_else(|| "none".to_string(), |name| format!("environment:{name}")),
+    );
+    let base_url_source = resolved
+        .provider
+        .base_url_env
+        .iter()
+        .find(|name| {
+            env.get(**name)
+                .is_some_and(|value| !value.trim().is_empty())
+        })
+        .map_or_else(
+            || {
+                if resolved.provider.default_base_url.is_some() {
+                    "builtin".to_string()
+                } else {
+                    "none".to_string()
+                }
+            },
+            |name| format!("environment:{name}"),
+        );
+    sources.insert("baseUrl".to_string(), base_url_source);
+    sources.insert(
+        "capabilities".to_string(),
+        if catalog.is_some() {
+            "catalog"
+        } else {
+            "unavailable"
+        }
+        .to_string(),
+    );
+
+    Ok(ModelInspection {
+        id: id.to_string(),
+        resolved: ResolvedModelInspection {
+            provider: resolved.provider.id.to_string(),
+            protocol: protocol_name(resolved.provider.protocol).to_string(),
+            base_url: resolved.base_url.as_deref().map(redact_endpoint),
+            auth_configured: resolved.credential.is_some(),
+            capabilities: catalog.as_ref().map(|catalog| catalog.capabilities.clone()),
+        },
+        catalog,
+        sources,
+    })
+}
+
+fn redact_endpoint(value: &str) -> String {
+    let Ok(mut url) = url::Url::parse(value) else {
+        return "[configured endpoint]".to_string();
+    };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_path("/");
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
 }
 
 /// Bundled snapshot only; used where the runtime overlay must not leak in.
@@ -261,13 +383,10 @@ async fn fetch_remote_catalog(
 /// Write the cache via a sibling temp file + rename so readers never observe
 /// a partially written catalog.
 async fn write_cache_atomic(path: &Path, cache: &CachedCatalog) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let tmp_path = path.with_extension(format!("json.tmp-{}", std::process::id()));
+    let path = path.to_path_buf();
     let contents = serde_json::to_vec_pretty(cache)?;
-    tokio::fs::write(&tmp_path, contents).await?;
-    tokio::fs::rename(&tmp_path, path).await?;
+    tokio::task::spawn_blocking(move || crate::path_utils::atomic_private_write(&path, &contents))
+        .await??;
     Ok(())
 }
 
@@ -516,6 +635,44 @@ mod tests {
     }
 
     #[test]
+    fn model_inspection_reports_provenance_without_secret_values() {
+        let mut env = std::collections::HashMap::new();
+        env.insert(
+            "OPENAI_API_KEY".to_string(),
+            "super-secret-value".to_string(),
+        );
+        env.insert(
+            "OPENAI_BASE_URL".to_string(),
+            "https://user:password@gateway.example.test/v1/path-secret?token=secret".to_string(),
+        );
+        let inspection = inspect_model_with_env("openai/gpt-5.5", &env).unwrap();
+        let json = serde_json::to_string(&inspection).unwrap();
+        assert!(!json.contains("super-secret-value"));
+        assert!(!json.contains("password"));
+        assert!(!json.contains("path-secret"));
+        assert!(!json.contains("token=secret"));
+        assert_eq!(
+            inspection.resolved.base_url.as_deref(),
+            Some("https://gateway.example.test/")
+        );
+        assert_eq!(inspection.sources["auth"], "environment:OPENAI_API_KEY");
+        assert_eq!(inspection.sources["baseUrl"], "environment:OPENAI_BASE_URL");
+        assert_eq!(inspection.resolved.provider, "openai");
+    }
+
+    #[test]
+    fn model_inspection_resolves_uncataloged_models() {
+        let inspection =
+            inspect_model_with_env("openai/future-custom-model", &HashMap::new()).unwrap();
+
+        assert!(inspection.catalog.is_none());
+        assert!(inspection.resolved.capabilities.is_none());
+        assert_eq!(inspection.resolved.provider, "openai");
+        assert_eq!(inspection.sources["catalog"], "uncataloged");
+        assert_eq!(inspection.sources["capabilities"], "unavailable");
+    }
+
+    #[test]
     fn mapping_filters_deprecated_and_tool_less_models() {
         let payload = serde_json::json!({
             "anthropic": {"models": {
@@ -604,25 +761,35 @@ mod tests {
     }
 
     #[test]
-    fn cache_round_trips_through_atomic_write() {
+    fn atomic_cache_write_replaces_existing_cache() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("nested").join("models-catalog.json");
-        let cache = cache_with(42, vec![catalog_model("gpt-5.5")]);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("runtime");
         runtime
-            .block_on(write_cache_atomic(&path, &cache))
-            .expect("atomic write");
+            .block_on(write_cache_atomic(
+                &path,
+                &cache_with(21, vec![catalog_model("gpt-4o")]),
+            ))
+            .expect("initial write");
+        runtime
+            .block_on(write_cache_atomic(
+                &path,
+                &cache_with(42, vec![catalog_model("gpt-5.5")]),
+            ))
+            .expect("replacement write");
+
         let loaded = load_cache(&path).expect("cache loads");
         assert_eq!(loaded.fetched_at, 42);
         assert_eq!(loaded.models[0].id, "gpt-5.5");
-        assert!(
-            !path
-                .with_extension(format!("json.tmp-{}", std::process::id()))
-                .exists(),
-            "temp file must be renamed away"
+        assert_eq!(
+            std::fs::read_dir(path.parent().expect("cache parent"))
+                .expect("read cache parent")
+                .count(),
+            1,
+            "temporary file must be renamed away"
         );
     }
 

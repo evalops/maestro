@@ -589,20 +589,65 @@ impl AmbientDaemon {
             return;
         }
 
-        let result = self.executor.execute(&plan, &routing).await;
+        let mut result = self.executor.execute(&plan, &routing).await;
 
         // Goal evaluation gate (grok-build pattern): an executor Success status
         // is only the agent's own claim of completion. When a judge is
         // configured, the claim must be confirmed as candidate_complete by an
         // independent, adversarial evaluation before the Critic runs
-        // verification and a PR can be opened. Any rejection or judge failure
-        // is conservative: roll back and do not ship.
+        // verification and a PR can be opened. A `continue` verdict feeds the
+        // judge's next_step back into the executor for a bounded number of
+        // retries (default 1); any rejection or judge failure after that is
+        // conservative: roll back and do not ship.
         if result.status == ExecutionStatus::Success {
             if let Some(evaluator) = &self.goal_evaluator {
-                let gate = evaluator
-                    .evaluate_execution(&event, &plan, &result, &routing.model)
-                    .await;
-                if let Some(reason) = goal_gate_rejection_reason(gate) {
+                let mut gate = Some(
+                    evaluator
+                        .evaluate_execution(&event, &plan, &result, &routing.model)
+                        .await,
+                );
+                let mut retries_left = evaluator.max_continue_retries();
+                let mut retry_notes: Vec<String> = Vec::new();
+                loop {
+                    let continue_verdict = match gate {
+                        Some(Ok(ref verdict))
+                            if retries_left > 0
+                                && verdict.decision == GoalEvaluatorDecision::Continue =>
+                        {
+                            verdict.clone()
+                        }
+                        _ => break,
+                    };
+                    retries_left -= 1;
+                    retry_notes.push(format!(
+                        "attempt {}: {} (next: {})",
+                        retry_notes.len() + 1,
+                        continue_verdict.evidence,
+                        continue_verdict.next_step
+                    ));
+                    info!(
+                        "Goal evaluator: retrying execution with judge's next step — {}",
+                        continue_verdict.next_step
+                    );
+                    let retry_plan = plan_with_retry_guidance(&plan, &continue_verdict);
+                    result = self.executor.execute(&retry_plan, &routing).await;
+                    if result.status != ExecutionStatus::Success {
+                        // The retry itself failed; fall through to the normal
+                        // failed-execution path instead of rejecting on a
+                        // verdict that judged the previous attempt.
+                        gate = None;
+                        break;
+                    }
+                    gate = Some(
+                        evaluator
+                            .evaluate_execution(&event, &plan, &result, &routing.model)
+                            .await,
+                    );
+                }
+                if let Some(mut reason) = gate.and_then(goal_gate_rejection_reason) {
+                    if !retry_notes.is_empty() {
+                        reason = format!("{reason} (retried after: {})", retry_notes.join("; "));
+                    }
                     warn!("Event {} not shipped: {}", event.id, reason);
                     let outcome = PlanRunOutcome::rejected(
                         reason,
@@ -879,6 +924,21 @@ impl AmbientDaemon {
     }
 }
 
+/// Build the follow-up plan for a `continue` retry: the same tasks with the
+/// judge's evidence and next step appended, so the executor addresses the
+/// remaining work instead of repeating the first attempt.
+fn plan_with_retry_guidance(plan: &TaskPlan, verdict: &GoalEvaluatorVerdict) -> TaskPlan {
+    let guidance = format!(
+        "\n\nA review of the previous attempt found work remaining: {}\nFinish the remaining work: {}",
+        verdict.evidence, verdict.next_step
+    );
+    let mut retry_plan = plan.clone();
+    for task in &mut retry_plan.tasks {
+        task.prompt.push_str(&guidance);
+    }
+    retry_plan
+}
+
 /// Map a goal-evaluation outcome to a rejection reason. `None` means the run
 /// is candidate_complete and may proceed to the Critic for adversarial
 /// verification; `Some(reason)` means do not ship. Judge failures are
@@ -989,6 +1049,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::path::Path;
+    use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
@@ -1375,40 +1436,55 @@ mod tests {
         assert!(reason.contains("refusing to ship"));
     }
 
-    fn mock_openrouter_server(body: String) -> String {
+    /// Serve `bodies` in order, one per connection; further connections get
+    /// the last body again (a retried executor call reuses the same fixture).
+    /// Every received request is forwarded on the returned channel so tests
+    /// can assert how many calls were made and what they contained.
+    fn mock_openrouter_server_sequence(bodies: Vec<String>) -> (String, mpsc::Receiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut buffer = Vec::new();
-            let mut chunk = [0_u8; 4096];
-            loop {
-                let read = stream.read(&mut chunk).unwrap();
-                if read == 0 {
-                    break;
+            let mut bodies = bodies.into_iter();
+            let mut last: Option<String> = None;
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut buffer = Vec::new();
+                let mut chunk = [0_u8; 4096];
+                loop {
+                    let read = stream.read(&mut chunk).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    buffer.extend_from_slice(&chunk[..read]);
+                    let Some(header_end) = buffer.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let headers =
+                        String::from_utf8_lossy(&buffer[..header_end]).to_ascii_lowercase();
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length: "))
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if buffer.len() >= header_end + 4 + content_length {
+                        break;
+                    }
                 }
-                buffer.extend_from_slice(&chunk[..read]);
-                let Some(header_end) = buffer.windows(4).position(|w| w == b"\r\n\r\n") else {
-                    continue;
-                };
-                let headers = String::from_utf8_lossy(&buffer[..header_end]).to_ascii_lowercase();
-                let content_length = headers
-                    .lines()
-                    .find_map(|line| line.strip_prefix("content-length: "))
-                    .and_then(|value| value.trim().parse::<usize>().ok())
-                    .unwrap_or(0);
-                if buffer.len() >= header_end + 4 + content_length {
-                    break;
-                }
+                let _ = request_tx.send(String::from_utf8_lossy(&buffer).into_owned());
+                let body = bodies
+                    .next()
+                    .unwrap_or_else(|| last.clone().unwrap_or_default());
+                last = Some(body.clone());
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
             }
-            let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream.write_all(response.as_bytes()).unwrap();
         });
-        format!("http://{}", addr)
+        (format!("http://{}", addr), request_rx)
     }
 
     fn chat_completion_body(content: &str) -> String {
@@ -1420,9 +1496,22 @@ mod tests {
     }
 
     fn install_mock_llms(daemon: &mut AmbientDaemon, working_dir: &Path, judge_verdict: &str) {
-        let executor_url = mock_openrouter_server(chat_completion_body(
-            "<file_change><action>create</action><path>src/feature.rs</path><content>pub fn feature() {}\n</content></file_change>",
-        ));
+        install_mock_llms_with_judge_sequence(daemon, working_dir, &[judge_verdict]);
+    }
+
+    /// Install mock executor and judge LLMs. The judge serves `judge_verdicts`
+    /// in order across evaluation calls. Returns the request receivers for
+    /// the executor and judge mocks so tests can inspect the calls.
+    fn install_mock_llms_with_judge_sequence(
+        daemon: &mut AmbientDaemon,
+        working_dir: &Path,
+        judge_verdicts: &[&str],
+    ) -> (mpsc::Receiver<String>, mpsc::Receiver<String>) {
+        let (executor_url, executor_rx) = mock_openrouter_server_sequence(vec![
+            chat_completion_body(
+                "<file_change><action>create</action><path>src/feature.rs</path><content>pub fn feature() {}\n</content></file_change>",
+            ),
+        ]);
         daemon.executor = Arc::new(Executor::new(ExecutorConfig {
             api_key: "test-key".to_string(),
             api_base_url: executor_url,
@@ -1431,11 +1520,17 @@ mod tests {
             working_dir: working_dir.to_string_lossy().to_string(),
             ..ExecutorConfig::default()
         }));
-        let judge_url = mock_openrouter_server(chat_completion_body(judge_verdict));
+        let (judge_url, judge_rx) = mock_openrouter_server_sequence(
+            judge_verdicts
+                .iter()
+                .map(|verdict| chat_completion_body(verdict))
+                .collect(),
+        );
         daemon.goal_evaluator = Some(GoalEvaluator::new(
             GoalEvaluatorConfig {
                 model: Some("judge-model".to_string()),
                 timeout: std::time::Duration::from_secs(5),
+                ..Default::default()
             },
             Arc::new(Executor::new(ExecutorConfig {
                 api_key: "test-key".to_string(),
@@ -1444,6 +1539,7 @@ mod tests {
                 ..ExecutorConfig::default()
             })),
         ));
+        (executor_rx, judge_rx)
     }
 
     fn feature_plan(event: &NormalizedEvent) -> TaskPlan {
@@ -1531,6 +1627,108 @@ mod tests {
         assert_eq!(stats.prs_created, 0);
         drop(stats);
         assert!(daemon.checkpoint_mgr.read().await.list_active().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_execute_plan_continue_retry_then_candidate_complete_ships() {
+        let temp = TempDir::new().unwrap();
+        let mut daemon = DaemonBuilder::new()
+            .config(test_config())
+            .data_dir(temp.path().to_path_buf())
+            .ipc_socket_path(temp.path().join("daemon-goal-retry-ship.sock"))
+            .build()
+            .unwrap();
+        let (executor_rx, _judge_rx) = install_mock_llms_with_judge_sequence(
+            &mut daemon,
+            temp.path(),
+            &[
+                r#"{"decision":"continue","evidence":"no tests were run","next_step":"run the test suite","blocker_key":""}"#,
+                r#"{"decision":"candidate_complete","evidence":"change applied and verified","next_step":"open the PR","blocker_key":""}"#,
+            ],
+        );
+        let event = test_event("Add feature", "Add the feature.", EventType::Issue);
+        let plan = feature_plan(&event);
+
+        daemon.execute_plan(event, plan).await;
+
+        // The retry cleared the goal evaluator and the critic. No real
+        // GitHub repo/token exists in tests, so no PR is created.
+        let stats = daemon.stats.read().await;
+        assert_eq!(stats.tasks_executed, 1);
+        assert_eq!(stats.tasks_succeeded, 1);
+        assert_eq!(stats.tasks_failed, 0);
+        assert_eq!(stats.prs_created, 0);
+        drop(stats);
+        assert!(daemon.checkpoint_mgr.read().await.list_active().is_empty());
+
+        // The executor ran exactly twice, and the judge's next_step from the
+        // first attempt was fed back into the retry prompt.
+        let first = executor_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let second = executor_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(!first.contains("run the test suite"));
+        assert!(second.contains("run the test suite"));
+        assert!(
+            executor_rx
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "retry loop must be bounded to one retry"
+        );
+
+        let learner = daemon.learner.read().await;
+        let outcomes = learner.outcomes();
+        assert_eq!(outcomes.len(), 1);
+        assert!(outcomes[0].success);
+    }
+
+    #[tokio::test]
+    async fn test_execute_plan_continue_retry_still_continue_fails_closed() {
+        let temp = TempDir::new().unwrap();
+        let mut daemon = DaemonBuilder::new()
+            .config(test_config())
+            .data_dir(temp.path().to_path_buf())
+            .ipc_socket_path(temp.path().join("daemon-goal-retry-fail.sock"))
+            .build()
+            .unwrap();
+        install_mock_llms_with_judge_sequence(
+            &mut daemon,
+            temp.path(),
+            &[
+                r#"{"decision":"continue","evidence":"no tests were run","next_step":"run the test suite","blocker_key":""}"#,
+                r#"{"decision":"continue","evidence":"tests still missing","next_step":"add coverage for the new module","blocker_key":""}"#,
+            ],
+        );
+        let event = test_event("Add feature", "Add the feature.", EventType::Issue);
+        let plan = feature_plan(&event);
+
+        daemon.execute_plan(event, plan).await;
+
+        let stats = daemon.stats.read().await;
+        assert_eq!(stats.tasks_executed, 1);
+        assert_eq!(stats.tasks_succeeded, 0);
+        assert_eq!(stats.tasks_failed, 1);
+        assert_eq!(stats.prs_created, 0);
+        drop(stats);
+        assert!(daemon.checkpoint_mgr.read().await.list_active().is_empty());
+
+        // Both judge attempts are recorded in the failure reason: the verdict
+        // that triggered the retry and the verdict that closed the run.
+        let learner = daemon.learner.read().await;
+        let outcomes = learner.outcomes();
+        assert_eq!(outcomes.len(), 1);
+        assert!(!outcomes[0].success);
+        let reason = outcomes[0].failure_reason.as_deref().unwrap();
+        assert!(
+            reason.contains("run the test suite"),
+            "missing first attempt in: {reason}"
+        );
+        assert!(
+            reason.contains("tests still missing"),
+            "missing retry verdict in: {reason}"
+        );
     }
 
     #[tokio::test]

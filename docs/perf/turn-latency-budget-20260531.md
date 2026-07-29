@@ -1,5 +1,8 @@
 # Maestro Turn Latency Budget - 2026-05-31
 
+> **Historical:** This is a dated engineering record from before the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. Paths below reflect the TypeScript tree as it existed at the time and are kept as-written for historical accuracy; do not treat them as live code.
+
+
 ## Scope
 
 This pass builds on the thin CLI launcher split by measuring the remaining command/turn path and landing a focused split:

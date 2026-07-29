@@ -109,7 +109,7 @@ use maestro_tui::execpolicy::{parse_command, parse_policy, Decision};
 const CANONICAL_FIXTURES: &[&str] = &[
     "synthetic_execpolicy_destructive_fs.json",
     "synthetic_execpolicy_git_workflow.json",
-    "synthetic_execpolicy_nested_alts_degradation.json",
+    "synthetic_execpolicy_nested_alts.json",
     "synthetic_safety_doom_loop_distinct_args.json",
     "synthetic_safety_doom_loop_identical_calls.json",
     "synthetic_safety_rate_limit.json",

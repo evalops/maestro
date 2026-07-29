@@ -1,0 +1,13 @@
+{
+  "harness": "execpolicy",
+  "name": "synthetic_execpolicy_nested_alts",
+  "description": "Nested alternative groups parse correctly: pattern=[\"git\", [\"push\", \"fetch\"]] yields a two-token prefix rule whose second token is the alternative set, so the rule prompts on git push/git fetch only. Other git subcommands match no rule and fall through to the default allow. Originally pinned the pre-fix degradation to a bare [\"git\"] prefix (#3086); updated to the narrowed expectations after the parser fix (#3091).",
+  "policy_source": "prefix_rule(\n    pattern=[\"git\", [\"push\", \"fetch\"]],\n    decision=\"prompt\",\n)\n",
+  "cases": [
+    { "command": "git push origin main", "expected": "prompt" },
+    { "command": "git fetch origin", "expected": "prompt" },
+    { "command": "git status", "expected": "allow" },
+    { "command": "git log --oneline", "expected": "allow" },
+    { "command": "cargo build", "expected": "allow" }
+  ]
+}

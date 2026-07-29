@@ -1,5 +1,8 @@
 # Threat Model
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. Safety and auth now live in `packages/tui-rs/src/safety/` and `packages/control-plane-rs/src/auth.rs`. The enterprise RBAC/audit/SSO surfaces described below have no verified Rust equivalent and may not have been ported. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 Audience: security auditors, operators deploying Maestro in sensitive environments.
 Nav: [Docs index](README.md) · [Safety](SAFETY.md) · [Enterprise](ENTERPRISE.md)
 

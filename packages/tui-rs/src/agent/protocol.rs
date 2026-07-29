@@ -361,7 +361,17 @@ impl ToolExecution {
         let call_id = call_id.into();
         let tool_name = tool_name.into();
         let details = receipt_details(&tool_name, result.details.as_ref());
-        let outcome = if result.success && result.error.is_none() {
+        let cancelled = result.details.as_ref().is_some_and(|details| {
+            details
+                .get("cancelled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        });
+        let outcome = if cancelled {
+            ToolOutcome::Cancelled {
+                phase: ExecutionPhase::Running,
+            }
+        } else if result.success && result.error.is_none() {
             ToolOutcome::Succeeded {
                 output: ToolOutput::new(result.output),
             }
@@ -613,6 +623,15 @@ impl ToolResult {
         self.details = Some(details);
         self
     }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.details
+            .as_ref()
+            .and_then(|details| details.get("cancelled"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
 }
 
 // ============================================================================
@@ -849,6 +868,13 @@ pub enum FromAgent {
         ///
         /// True if the tool executed without errors, false otherwise.
         success: bool,
+
+        /// Complete semantic result when the producer owns execution.
+        ///
+        /// Older and remote producers may omit this; consumers can fall back
+        /// to the streamed output and success flag in that case.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<ToolResult>,
 
         /// Typed execution evidence when the producer has it available.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1122,6 +1148,84 @@ mod tests {
             execution.receipt.details,
             ToolReceiptDetails::BuiltIn(ToolDetails::Bash(_))
         ));
+    }
+
+    #[test]
+    fn legacy_cancellation_becomes_a_typed_running_cancellation() {
+        let execution = ToolExecution::from_legacy(
+            "call-cancelled",
+            "bash",
+            ExecutionSource::Native,
+            ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some("Command cancelled".to_string()),
+                details: Some(serde_json::json!({
+                    "command": "sleep 30",
+                    "exit_code": 130,
+                    "cancelled": true,
+                    "truncated": false,
+                    "background": false,
+                    "required_approval": true,
+                })),
+            },
+        );
+
+        assert_eq!(
+            execution.receipt.status,
+            ExecutionStatus::Cancelled {
+                phase: ExecutionPhase::Running
+            }
+        );
+        assert!(matches!(
+            execution.outcome,
+            ToolOutcome::Cancelled {
+                phase: ExecutionPhase::Running
+            }
+        ));
+    }
+
+    #[test]
+    fn explicit_non_cancelled_exit_130_stays_a_failure() {
+        let execution = ToolExecution::from_legacy(
+            "call-exit-130",
+            "bash",
+            ExecutionSource::Native,
+            ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some("Exit code: 130".to_string()),
+                details: Some(serde_json::json!({
+                    "command": "exit 130",
+                    "exit_code": 130,
+                    "cancelled": false,
+                    "truncated": false,
+                    "background": false,
+                    "required_approval": true,
+                })),
+            },
+        );
+
+        assert_eq!(execution.receipt.status, ExecutionStatus::Failed);
+        assert!(matches!(execution.outcome, ToolOutcome::Failed { .. }));
+    }
+
+    #[test]
+    fn exit_130_without_cancellation_evidence_stays_a_failure() {
+        let execution = ToolExecution::from_legacy(
+            "call-inline-exit-130",
+            "custom_inline",
+            ExecutionSource::Native,
+            ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some("Exit code: 130".to_string()),
+                details: Some(serde_json::json!({"exit_code": 130})),
+            },
+        );
+
+        assert_eq!(execution.receipt.status, ExecutionStatus::Failed);
+        assert!(matches!(execution.outcome, ToolOutcome::Failed { .. }));
     }
 
     #[test]

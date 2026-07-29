@@ -161,7 +161,12 @@ pub fn osc_progress_clear() -> String {
 
 /// Strip control characters so user-influenced text cannot break out of an
 /// OSC sequence.
-fn sanitize_osc_text(text: &str) -> String {
+///
+/// `pub(crate)` because [`crate::hyperlink::format_link`] and
+/// [`crate::ansi_commands::PostNotification`] reuse it for the same reason:
+/// any text interpolated into an OSC payload needs this, not just the
+/// title-setting sequence it was first written for.
+pub(crate) fn sanitize_osc_text(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).collect()
 }
 

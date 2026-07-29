@@ -788,6 +788,26 @@ impl Default for ApprovalController {
     }
 }
 
+/// Which approval modal variant to present for the current queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalModalKind {
+    Single,
+    Batched,
+}
+
+/// Select the approval modal variant for the current queue. Evaluated on
+/// every render and keypress so a second approval arriving while the
+/// single-call modal is open upgrades the visible modal to the batched
+/// variant without dropping the earlier request (#3085).
+#[must_use]
+pub fn approval_modal_kind(controller: &ApprovalController) -> ApprovalModalKind {
+    if controller.total_count() > 1 {
+        ApprovalModalKind::Batched
+    } else {
+        ApprovalModalKind::Single
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

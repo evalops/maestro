@@ -205,6 +205,11 @@ fn wrap_lines_for_terminal<'a>(lines: &'a [Line<'a>], width: usize) -> Vec<Line<
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Write styled spans to a writer using ANSI escape sequences.
+///
+/// Unlike ratatui's own `Buffer::set_stringn`, this writer has no built-in
+/// control-character filtering (that is the point of this module: native
+/// scrollback bypasses the `Buffer` entirely), so `span.content` is
+/// sanitized here before being queued for write.
 fn write_styled_spans<W: Write>(writer: &mut W, spans: &[Span<'_>]) -> io::Result<()> {
     let mut current_fg = Color::Reset;
     let mut current_bg = Color::Reset;
@@ -234,8 +239,20 @@ fn write_styled_spans<W: Write>(writer: &mut W, spans: &[Span<'_>]) -> io::Resul
             current_bg = next_bg;
         }
 
-        // Write content
-        queue!(writer, Print(span.content.clone()))?;
+        // Write content, sanitized: this writer deliberately bypasses
+        // ratatui's `Buffer`, which is what normally filters control
+        // characters (including ESC) out of rendered content. A span whose
+        // content is *exactly* a trusted, already-sanitized OSC 8 hyperlink
+        // wrapper (see `crate::hyperlink::is_exact_sanitized_hyperlink`) is
+        // passed through unchanged instead: blanket-stripping it would
+        // remove the wrapper's own ESC/BEL bytes and silently break a
+        // legitimate `file://` link written via `crate::hyperlink`.
+        let content = if crate::hyperlink::is_exact_sanitized_hyperlink(&span.content) {
+            span.content.to_string()
+        } else {
+            crate::output_sanitize::sanitize_control_chars(&span.content)
+        };
+        queue!(writer, Print(content))?;
     }
 
     // Reset all attributes at end
@@ -420,5 +437,46 @@ mod tests {
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("red"));
         assert!(output.contains("normal"));
+    }
+
+    #[test]
+    fn write_styled_spans_strips_control_chars_from_content() {
+        // A minimal OSC-0 (set title) sequence embedded in span content.
+        let spans = vec![Span::raw("before\x1b]0;evil\x07after")];
+
+        let mut buf = Vec::new();
+        write_styled_spans(&mut buf, &spans).unwrap();
+
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("before]0;evilafter"));
+        assert!(!output.contains("\x1b]0;evil\x07"));
+        assert!(!output.contains('\x07'));
+    }
+
+    #[test]
+    fn write_styled_spans_preserves_trusted_file_link_wrapper() {
+        let link_text = crate::hyperlink::wrap_in_link("file:///tmp/report.md", "report.md");
+        let spans = vec![Span::raw(link_text.clone())];
+
+        let mut buf = Vec::new();
+        write_styled_spans(&mut buf, &spans).unwrap();
+
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            output.contains(&link_text),
+            "a trusted, already-sanitized OSC 8 wrapper must survive intact, \
+             got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn write_styled_spans_preserves_ordinary_text() {
+        let spans = vec![Span::raw("plain\ttext\nhere")];
+
+        let mut buf = Vec::new();
+        write_styled_spans(&mut buf, &spans).unwrap();
+
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("plain\ttext\nhere"));
     }
 }

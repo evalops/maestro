@@ -456,3 +456,6 @@ fn string_field(obj: &serde_json::Map<String, Value>, key: &str) -> Option<Strin
 pub fn registry_path_display(path: &Path) -> String {
     path.display().to_string()
 }
+
+#[cfg(test)]
+mod tests;

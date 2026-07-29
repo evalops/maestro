@@ -156,12 +156,32 @@ fn wrap_lines(lines: &[Line<'_>], width: usize) -> Vec<Line<'static>> {
 /// This function converts ratatui's style attributes to ANSI SGR (Select Graphic
 /// Rendition) codes and writes them inline with the text. This is necessary because
 /// we're writing directly to the terminal outside of ratatui's rendering system.
+///
+/// Unlike ratatui's own `Buffer::set_stringn`, this writer has no built-in
+/// control-character filtering, so `span.content` is sanitized here before
+/// being written. Note that we only strip control characters, never the
+/// `\x1b[` SGR sequences this function itself emits via `apply_style`.
 fn write_styled_line<W: Write>(writer: &mut W, line: &Line) -> io::Result<()> {
     for span in &line.spans {
         // Apply style
         apply_style(writer, &span.style)?;
-        // Write content
-        write!(writer, "{}", span.content)?;
+        // Write content, sanitized: this writer deliberately bypasses
+        // ratatui's `Buffer`, which is what normally filters control
+        // characters (including ESC) out of rendered content. A span whose
+        // content is *exactly* a trusted, already-sanitized OSC 8 hyperlink
+        // wrapper (see `crate::hyperlink::is_exact_sanitized_hyperlink`) is
+        // passed through unchanged instead: blanket-stripping it would
+        // remove the wrapper's own ESC/BEL bytes and silently break a
+        // legitimate `file://` link written via `crate::hyperlink`.
+        if crate::hyperlink::is_exact_sanitized_hyperlink(&span.content) {
+            write!(writer, "{}", span.content)?;
+        } else {
+            write!(
+                writer,
+                "{}",
+                crate::output_sanitize::sanitize_control_chars(&span.content)
+            )?;
+        }
     }
     // Reset style
     write!(writer, "\x1b[0m")?;
@@ -294,5 +314,58 @@ mod tests {
         assert!(output.contains("\x1b[r"));
         // Should contain our text
         assert!(output.contains("Hello"));
+    }
+
+    #[test]
+    fn test_push_history_strips_control_chars_from_span_content() {
+        let mut buf = Vec::new();
+        // A minimal OSC-0 (set title) sequence embedded in span text.
+        let lines = vec![HistoryLine {
+            spans: vec![StyledSpan {
+                text: "before\x1b]0;evil\x07after".to_string(),
+                style: TextStyle::default(),
+            }],
+        }];
+        push_history_lines(&mut buf, &lines, 10, 80).unwrap();
+
+        let output = String::from_utf8(buf).unwrap();
+        // Visible text survives, but the embedded escape/BEL must not.
+        assert!(output.contains("before]0;evilafter"));
+        assert!(!output.contains("\x1b]0;evil\x07"));
+        assert!(!output.contains('\x07'));
+    }
+
+    #[test]
+    fn test_push_history_preserves_trusted_file_link_wrapper() {
+        let mut buf = Vec::new();
+        let link_text = crate::hyperlink::wrap_in_link("file:///tmp/report.md", "report.md");
+        let lines = vec![HistoryLine {
+            spans: vec![StyledSpan {
+                text: link_text.clone(),
+                style: TextStyle::default(),
+            }],
+        }];
+        push_history_lines(&mut buf, &lines, 10, 80).unwrap();
+
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            output.contains(&link_text),
+            "a trusted, already-sanitized OSC 8 wrapper must survive intact, \
+             got: {output:?}"
+        );
+    }
+
+    #[test]
+    fn test_push_history_preserves_ordinary_text_with_newlines() {
+        let mut buf = Vec::new();
+        let lines = vec![HistoryLine {
+            spans: vec![StyledSpan {
+                text: "line one\tand a tab".to_string(),
+                style: TextStyle::default(),
+            }],
+        }];
+        push_history_lines(&mut buf, &lines, 10, 80).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("line one\tand a tab"));
     }
 }

@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 
 const UTILITY_COMMANDS: &[&str] = &[
+    "acp",
     "a2a",
     "agents",
     "anthropic",
@@ -16,6 +17,7 @@ const UTILITY_COMMANDS: &[&str] = &[
     "import-claude",
     "init",
     "memory",
+    "mcp",
     "mission",
     "models",
     "modes",

@@ -125,6 +125,12 @@ pub fn tracked_pids() -> Vec<u32> {
 #[cfg(unix)]
 fn is_process_running(pid: u32) -> bool {
     // kill(pid, 0) checks if process exists without sending a signal
+    // SAFETY: signal 0 delivers no signal; `kill` only validates that a
+    // process with this pid exists, so there is no memory-safety precondition
+    // beyond the FFI call itself. Note the inherent PID-reuse race: if `pid`
+    // already exited, the OS may have recycled it to an unrelated process,
+    // producing a false "running" result. Callers only use this as a
+    // liveness hint for registry bookkeeping, not as a security check.
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 

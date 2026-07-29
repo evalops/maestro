@@ -1,5 +1,8 @@
 # Governed Custom Agents
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. Agent orchestration now lives in `packages/tui-rs/src/agent/`; a Rust equivalent of the plugin agent API described below has not been verified. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 Installed Maestro packages can prepare primary or subagent modes with the capability-scoped API exported from `src/agent/plugin-agent-api.ts`.
 
 Declare agent resource directories in the package manifest. Each child directory is one statically discoverable agent and can be filtered like other package resources:

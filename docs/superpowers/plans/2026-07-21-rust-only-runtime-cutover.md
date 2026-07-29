@@ -1,5 +1,8 @@
 # Rust-Only Maestro Runtime Cutover Implementation Plan
 
+> **Historical:** This is a dated engineering record from before the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. Paths below reflect the TypeScript tree as it existed at the time and are kept as-written for historical accuracy; do not treat them as live code.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make Rust the only shipped Maestro agent, CLI, and web-backend runtime; delete the internal TypeScript agent SDK and every TypeScript execution fallback while preserving product contracts.
@@ -535,7 +538,7 @@ Commit: `refactor: delete TypeScript runtime and backend`
 - Modify: `scripts/build-release-binary.mjs`
 - Modify: `scripts/materialize-tui-vendor.mjs`
 - Modify: `scripts/smoke-release-binary.mjs`
-- Modify: `.github/workflows/release.yml`, `.github/workflows/ci.yml`, `.github/workflows/rust.yml`
+- Modify: `.github/workflows/release.yml`, `.github/workflows/ci.yml`
 - Modify: `Dockerfile`, `.devcontainer/devcontainer.json`, Nix/Bazel build files
 
 **Interfaces:**

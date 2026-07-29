@@ -1,5 +1,8 @@
 # Agent Internals
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. The agent runtime, safety, tools, and session modules now live under `packages/tui-rs/src/agent/`, `packages/tui-rs/src/safety/`, `packages/tui-rs/src/tools/`, and `packages/tui-rs/src/session/`. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 This document describes the internal architecture of the Maestro agent system, including the transport layer, tool execution flow, and context management.
 
 ## Architecture Overview

@@ -130,11 +130,47 @@ function getPortFromBaseUrl(baseUrl) {
 	}
 }
 
+const EXTENSION_ID_PATTERN = /^[a-p]{32}$/;
+const EXTENSION_ORIGIN_PATTERN = /^chrome-extension:\/\/([a-p]{32})\/?$/;
+
+/**
+ * Resolve the concrete `chrome-extension://<id>` origin allowed to call the
+ * local Maestro server. Chrome starts a native messaging host with the calling
+ * extension's origin as a command-line argument, and that argument is
+ * authenticated by the host manifest's `allowed_origins`, so it is the most
+ * trustworthy source. `CONDUCTOR_EXTENSION_ID` is the documented fallback used
+ * by `install-native-host.mjs`.
+ *
+ * Returns null when the extension identity cannot be established. Callers must
+ * not fall back to "*": a wildcard origin lets any page the user visits reach
+ * the local agent runtime.
+ */
+function resolveExtensionOrigin() {
+	for (const arg of process.argv.slice(1)) {
+		const match = EXTENSION_ORIGIN_PATTERN.exec(String(arg).trim());
+		if (match) return `chrome-extension://${match[1]}`;
+	}
+	const configured = process.env.CONDUCTOR_EXTENSION_ID?.trim();
+	if (configured && EXTENSION_ID_PATTERN.test(configured)) {
+		return `chrome-extension://${configured}`;
+	}
+	return null;
+}
+
 function buildLaunchEnv() {
 	const env = { ...process.env };
-	if (!env.MAESTRO_WEB_REQUIRE_KEY) env.MAESTRO_WEB_REQUIRE_KEY = "0";
+	// MAESTRO_WEB_REQUIRE_KEY is deliberately left alone. The bridge launches
+	// `maestro web` on its default loopback bind, where the control plane
+	// already runs without an API key; forcing the kill-switch on would also
+	// strip auth from a non-loopback bind the operator configured on purpose.
 	if (!env.MAESTRO_WEB_REQUIRE_REDIS) env.MAESTRO_WEB_REQUIRE_REDIS = "0";
-	if (!env.MAESTRO_WEB_ORIGIN) env.MAESTRO_WEB_ORIGIN = "*";
+	if (!env.MAESTRO_WEB_ORIGIN) {
+		const extensionOrigin = resolveExtensionOrigin();
+		// No wildcard fallback. Leaving MAESTRO_WEB_ORIGIN unset keeps the
+		// server's built-in localhost allowlist, which is still correct for the
+		// web UI even when the extension identity is unknown.
+		if (extensionOrigin) env.MAESTRO_WEB_ORIGIN = extensionOrigin;
+	}
 	return env;
 }
 

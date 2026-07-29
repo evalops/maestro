@@ -26,6 +26,17 @@ In the TUI:
 
 With no argument, `/theme` opens the theme selector.
 
+To make the automatic theme follow terminal dark/light changes, enable:
+
+```toml
+[tui]
+theme_follow = true
+```
+
+Maestro listens for terminal color-scheme notifications and periodically
+queries the background color. It requires two consistent background readings
+before switching, which avoids flicker near the light/dark threshold.
+
 ---
 
 ## Custom themes

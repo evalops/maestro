@@ -87,6 +87,7 @@ mod gh;
 mod history;
 mod image;
 pub mod inline;
+mod net_guard;
 mod notebook_edit;
 pub mod process_registry;
 mod process_utils;

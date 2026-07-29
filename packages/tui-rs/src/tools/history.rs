@@ -929,6 +929,24 @@ impl ToolHistory {
         }
     }
 
+    /// Close a cancelled execution without counting user interruption as a
+    /// tool failure.
+    pub fn cancel_with_details(
+        &mut self,
+        id: &str,
+        note: String,
+        details: Option<serde_json::Value>,
+    ) {
+        let duration = self
+            .in_progress
+            .remove(id)
+            .map_or(Duration::ZERO, |start| start.elapsed());
+
+        if let Some(exec) = self.executions.iter_mut().rev().find(|e| e.id == id) {
+            exec.fail_with_details(note, duration, details);
+        }
+    }
+
     /// Set details on an existing execution by ID
     pub fn set_details(&mut self, id: &str, details: serde_json::Value) {
         if let Some(exec) = self.executions.iter_mut().rev().find(|e| e.id == id) {

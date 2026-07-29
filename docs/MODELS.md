@@ -1,9 +1,12 @@
 # Providers & Factory Integration
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. Model/provider registry logic now lives in `packages/control-plane-rs/src/model_catalog.rs` and the provider modules under `packages/tui-rs/src`. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 For task-level selection, prefer the `low`, `medium`, `high`, and `ultra` agent profiles over selecting a model alone. Profiles keep the model, reasoning effort, Oracle, specialists, fallbacks, and budgets reproducible as one versioned unit. See [Agent Profiles](AGENT_PROFILES.md).
 
 Audience: contributors/operator tweaking model registry and provider configs.  
-Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Safety](SAFETY.md) · [AI SDK](../packages/ai/README.md)
+Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Safety](SAFETY.md) · [Model catalog](../packages/tui-rs/src/model_catalog.rs)
 
 Maestro loads model/provider metadata from multiple locations so you can mix
 built-in configs with Factory CLI settings. This page clarifies the resolution
@@ -12,7 +15,11 @@ order and how to customize providers.
 ## Native capability catalog and doctor
 
 `maestro models` and the TUI model selector consume the same typed native
-catalog. Each entry reports protocol, tool use, vision, reasoning, streaming,
+catalog. The catalog is a snapshot of the [models.dev](https://models.dev)
+API (`packages/tui-rs/src/model_catalog_data.json`, sourced from
+`https://models.dev/api.json` and refreshed by the model-catalog pipeline);
+deprecated IDs such as `gpt-5.1-codex-max` are dropped on regeneration. Each
+entry reports protocol, tool use, vision, reasoning, streaming,
 and context-window metadata. Verification is a separate field: built-in claims
 are marked `catalog`, while provider checks can report `verified`, `unavailable`,
 or `unknown` without rewriting capability metadata.
@@ -237,9 +244,9 @@ generator, so you can use them out of the box:
   routed via Groq’s OpenAI-compatible endpoint
   `https://api.groq.com/openai/v1/responses`.
 - **OpenAI Codex (Codex app-server + ChatGPT sign-in):** `gpt-5.1`,
-  `gpt-5.1-codex-max`, `gpt-5.1-codex-mini`, `gpt-5.2`,
-  `gpt-5.2-codex`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`,
-  `gpt-5.4`, `gpt-5.4-mini`, and `gpt-5.5` under the `openai-codex`
+  `gpt-5.2`, `gpt-5.2-codex`, `gpt-5.3-codex`,
+  `gpt-5.3-codex-spark`, `gpt-5.4`, `gpt-5.4-mini`, and `gpt-5.5`
+  (the live-catalog default for OpenAI) under the `openai-codex`
   provider. These use `api: "openai-codex-app-server"` and require
   `maestro codex login` to Sign in with ChatGPT through Codex app-server.
   Published Maestro installs use the packaged `@openai/codex` app-server first

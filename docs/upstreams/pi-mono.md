@@ -9,23 +9,31 @@ Maestro includes a few components that are **adapted from** or **inspired by** t
 
 ## What we currently adapt/inherit
 
+> **Note:** Maestro's side of both comparisons below was rewritten from TypeScript to
+> Rust in the Rust-only runtime migration (#3016, #3017, merged 2026-07-22). The
+> `Maestro:` paths point at the current Rust modules; the concepts still apply even
+> though the original TS files are gone. The `Upstream reference:` paths are pi-mono's
+> own (external) layout and are not expected to resolve in this repo.
+
 ### Theme system
 
-- Maestro: `src/theme/theme.ts`
+- Maestro: `packages/tui-rs/src/themes/mod.rs` (color resolution folded in; there is
+  no separate `color-utils` module in the Rust port)
 - Upstream reference: `packages/coding-agent/src/modes/interactive/theme/theme.ts`
 
 Notable differences in Maestro vs upstream:
-- Maestro adds additional semantic tokens (e.g. `accentWarm`) and uses `src/theme/color-utils.ts` for color resolution.
+- Maestro adds additional semantic tokens (e.g. `accentWarm`) and resolves colors inline in the themes module.
 - Token sets and embedded defaults have diverged (upstream includes `thinkingXhigh` and `bashMode`; Maestro includes its own thinking levels and additional UI tokens).
 - Theme discovery paths differ (Maestro searches built-in + CWD candidates; upstream uses config-based theme directories).
 
-### TypeScript hooks loader (pi-style hooks)
+### Hooks loader (pi-style hooks)
 
-- Maestro: `src/hooks/typescript-loader.ts`, `src/hooks/types.ts`
+- Maestro: `packages/tui-rs/src/hooks/` (`types.rs`, `config.rs`, plus native `lua.rs`
+  and `wasm.rs` backends; hooks are no longer TypeScript-loaded)
 - Upstream reference: `packages/coding-agent/src/core/hooks/{loader.ts,types.ts}`
 
 Notable differences in Maestro vs upstream:
-- Maestro supports a larger event surface (`HookEventType`) and additional integration layers (tool/session integration + UI context).
+- Maestro supports a larger event surface (`HookEventType`) and additional integration layers (tool/session integration + UI context), plus Lua and WASM hook backends upstream does not have.
 - Loader behavior and config locations differ (`~/.maestro` / `.maestro` vs upstream’s `~/.pi` / `.pi`).
 
 ## Low-risk upstream improvements we should track

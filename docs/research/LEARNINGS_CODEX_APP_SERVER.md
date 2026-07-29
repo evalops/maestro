@@ -1,5 +1,8 @@
 # Learnings from OpenAI Codex app-server
 
+> **Historical:** This is a dated engineering record from before the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. Paths below reflect the TypeScript tree as it existed at the time and are kept as-written for historical accuracy; do not treat them as live code.
+
+
 **Source**: https://github.com/openai/codex/tree/main/codex-rs/app-server  
 **Analysis Date**: 2026-04-01
 

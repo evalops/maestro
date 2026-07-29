@@ -353,10 +353,9 @@ pub struct TuiConfig {
     /// Suppress desktop notifications while the terminal window is focused
     /// (only when the terminal reports focus in/out events). Defaults to true.
     pub focus_gated_notifications: Option<bool>,
-    /// When true (default false), start in the `auto` theme and refine its
-    /// dark/light choice with a one-time OSC 11 background-color probe at
-    /// startup (enhanced terminals only). Live polling is intentionally not
-    /// done — see `themes::osc11` for why.
+    /// When true (default false), follow live terminal light/dark and
+    /// background-color reports through the protocol-aware input reader.
+    /// Falls back to a one-time OSC 11 probe when that reader is unavailable.
     pub theme_follow: Option<bool>,
 }
 
@@ -871,37 +870,49 @@ fn parse_config_file(path: &Path) -> Option<ComposerConfig> {
 
 /// Apply environment variable overrides
 fn apply_env_overrides(config: &mut ComposerConfig) {
+    apply_env_overrides_from(config, |key| env::var(key).ok());
+}
+
+/// Apply overrides from an environment-like lookup.
+///
+/// Keeping the lookup injectable lets tests verify precedence without
+/// mutating process-wide environment variables while other config tests run
+/// in parallel.
+fn apply_env_overrides_from(
+    config: &mut ComposerConfig,
+    mut lookup: impl FnMut(&str) -> Option<String>,
+) {
     // MAESTRO_MODEL
-    if let Ok(model) = env::var("MAESTRO_MODEL") {
+    if let Some(model) = lookup("MAESTRO_MODEL") {
         config.model = Some(model);
     }
 
     // MAESTRO_MODEL_PROVIDER
-    if let Ok(provider) = env::var("MAESTRO_MODEL_PROVIDER") {
+    if let Some(provider) = lookup("MAESTRO_MODEL_PROVIDER") {
         config.model_provider = Some(provider);
     }
 
     // MAESTRO_APPROVAL_POLICY
-    if let Ok(policy) = env::var("MAESTRO_APPROVAL_POLICY") {
+    if let Some(policy) = lookup("MAESTRO_APPROVAL_POLICY") {
         if let Some(p) = ApprovalPolicy::parse(&policy) {
             config.approval_policy = Some(p);
         }
     }
 
     // MAESTRO_SANDBOX_MODE
-    if let Ok(mode) = env::var("MAESTRO_SANDBOX_MODE") {
+    if let Some(mode) = lookup("MAESTRO_SANDBOX_MODE") {
         if let Some(m) = SandboxMode::parse(&mode) {
             config.sandbox_mode = Some(m);
         }
     }
 
     // MAESTRO_PROFILE
-    if let Ok(profile) = env::var("MAESTRO_PROFILE") {
+    if let Some(profile) = lookup("MAESTRO_PROFILE") {
         config.profile = Some(profile);
     }
 
     // MAESTRO_HISTORY_PERSISTENCE
-    if let Ok(persistence) = env::var("MAESTRO_HISTORY_PERSISTENCE") {
+    if let Some(persistence) = lookup("MAESTRO_HISTORY_PERSISTENCE") {
         if let Some(parsed) = HistoryPersistence::parse(&persistence) {
             let history = config.history.get_or_insert_with(Default::default);
             history.persistence = Some(parsed);
@@ -909,7 +920,7 @@ fn apply_env_overrides(config: &mut ComposerConfig) {
     }
 
     // MAESTRO_HISTORY_MAX_BYTES
-    if let Ok(max_bytes) = env::var("MAESTRO_HISTORY_MAX_BYTES") {
+    if let Some(max_bytes) = lookup("MAESTRO_HISTORY_MAX_BYTES") {
         if let Ok(parsed) = max_bytes.trim().parse::<usize>() {
             let history = config.history.get_or_insert_with(Default::default);
             history.max_bytes = Some(parsed);
@@ -1158,7 +1169,6 @@ pub fn parse_cli_override(override_str: &str) -> Option<(String, toml::Value)> {
 #[cfg(test)]
 mod tests {
     use super::*; // Import everything from parent (config) module
-    use std::env;
     use tempfile::TempDir; // Creates temporary directories that auto-cleanup
 
     #[test]
@@ -1369,18 +1379,14 @@ model_reasoning_effort = "high"
 
     #[test]
     fn test_env_overrides() {
-        let temp_dir = TempDir::new().unwrap();
-
-        clear_config_cache();
-        env::set_var("MAESTRO_MODEL", "env-model");
-        env::set_var("MAESTRO_MODEL_PROVIDER", "env-provider");
-
-        let config = load_config(temp_dir.path(), None);
+        let mut config = DEFAULT_CONFIG.clone();
+        apply_env_overrides_from(&mut config, |key| match key {
+            "MAESTRO_MODEL" => Some("env-model".to_string()),
+            "MAESTRO_MODEL_PROVIDER" => Some("env-provider".to_string()),
+            _ => None,
+        });
         assert_eq!(config.model.as_deref(), Some("env-model"));
         assert_eq!(config.model_provider.as_deref(), Some("env-provider"));
-
-        env::remove_var("MAESTRO_MODEL");
-        env::remove_var("MAESTRO_MODEL_PROVIDER");
     }
 
     #[test]

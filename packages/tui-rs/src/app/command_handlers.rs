@@ -1,4 +1,5 @@
 use super::*;
+use crate::state::ApprovalMode;
 
 /// Normalize a slash-completion string to a single leading `/`.
 ///
@@ -197,6 +198,7 @@ impl App {
                     ));
                     return;
                 }
+                self.sync_agent_approval_mode();
                 // Keep interaction_mode loosely aligned with approval shortcuts.
                 self.state.interaction_mode = match self.state.approval_mode {
                     ApprovalMode::Yolo => crate::state::InteractionMode::AlwaysApprove,
@@ -978,6 +980,7 @@ impl App {
         }
         self.state.interaction_mode = mode;
         self.state.approval_mode = mode.approval_mode();
+        self.sync_agent_approval_mode();
         match mode {
             crate::state::InteractionMode::Plan => {
                 self.apply_plan_mode(true);
@@ -1004,6 +1007,7 @@ impl App {
             self.state.interaction_mode = crate::state::InteractionMode::Plan;
             if matches!(self.state.approval_mode, ApprovalMode::Yolo) {
                 self.state.approval_mode = ApprovalMode::Selective;
+                self.sync_agent_approval_mode();
             }
             // Bind plan file to the active session when available.
             if let Some(id) = self.session_manager.current_session_id() {
@@ -1496,6 +1500,12 @@ Manual snapshot: `/magic-trace stop`",
         use crate::commands::McpAction;
 
         match action {
+            McpAction::Configure { args } => match crate::mcp_config_cli::apply_mcp_config(&args) {
+                Ok(message) => self.state.add_system_message(message),
+                Err(error) => self
+                    .state
+                    .add_system_message(format!("MCP configuration failed: {error}")),
+            },
             McpAction::Status => match self.tool_executor.mcp_status().await {
                 Ok(servers) => {
                     self.update_mcp_badge_counts(&servers);

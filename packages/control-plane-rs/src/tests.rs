@@ -90,6 +90,7 @@ const CONTROL_PLANE_ENV_NAMES: &[&str] = &[
     "NODE_ENV",
     "PORT",
 ];
+const CORS_ENV_NAMES: &[&str] = &["MAESTRO_WEB_ORIGIN"];
 
 fn snapshot_env(names: &'static [&'static str]) -> Vec<(&'static str, Option<std::ffi::OsString>)> {
     names
@@ -143,6 +144,76 @@ fn control_plane_defaults_to_auth_on_non_loopback_bind() {
 }
 
 #[test]
+fn require_key_kill_switch_is_ignored_on_non_loopback_bind() {
+    let _guard = ENV_LOCK.blocking_lock();
+    let snapshot = snapshot_env(CONTROL_PLANE_ENV_NAMES);
+    clear_env(CONTROL_PLANE_ENV_NAMES);
+    env::set_var("MAESTRO_CONTROL_HOST", "0.0.0.0");
+    env::set_var("MAESTRO_WEB_REQUIRE_KEY", "0");
+
+    let config = Config::from_env();
+
+    assert!(
+        config.require_key,
+        "MAESTRO_WEB_REQUIRE_KEY=0 must not disable auth on a non-loopback bind"
+    );
+    let error = config
+        .validate_startup()
+        .expect_err("non-loopback bind with the kill switch must refuse to start");
+    assert!(
+        error
+            .to_string()
+            .contains("only honored for loopback binds"),
+        "unexpected startup error: {error}"
+    );
+
+    // An API key does not make the combination acceptable either.
+    env::set_var("MAESTRO_WEB_API_KEY", "secret");
+    let config = Config::from_env();
+    assert!(config.require_key);
+    assert!(config.validate_startup().is_err());
+
+    restore_env(snapshot);
+}
+
+#[test]
+fn require_key_kill_switch_still_works_on_loopback_binds() {
+    let _guard = ENV_LOCK.blocking_lock();
+    let snapshot = snapshot_env(CONTROL_PLANE_ENV_NAMES);
+
+    for host in ["127.0.0.1", "localhost", "::1", "[::1]", "127.0.0.2"] {
+        clear_env(CONTROL_PLANE_ENV_NAMES);
+        env::set_var("MAESTRO_CONTROL_HOST", host);
+        env::set_var("MAESTRO_WEB_REQUIRE_KEY", "0");
+
+        let config = Config::from_env();
+
+        assert!(
+            config.listen_host_is_loopback(),
+            "{host} should be loopback"
+        );
+        assert!(!config.require_key, "{host} should honor the kill switch");
+        assert!(config.validate_startup().is_ok(), "{host} should start");
+    }
+
+    restore_env(snapshot);
+}
+
+#[test]
+fn unresolvable_bind_hosts_are_treated_as_network_exposed() {
+    let _guard = ENV_LOCK.blocking_lock();
+    let snapshot = snapshot_env(CONTROL_PLANE_ENV_NAMES);
+    clear_env(CONTROL_PLANE_ENV_NAMES);
+    env::set_var("MAESTRO_CONTROL_HOST", "maestro.internal.example");
+
+    let config = Config::from_env();
+
+    assert!(!config.listen_host_is_loopback());
+    assert!(config.require_key);
+    restore_env(snapshot);
+}
+
+#[test]
 fn control_plane_requires_api_key_when_auth_required() {
     let _guard = ENV_LOCK.blocking_lock();
     let snapshot = snapshot_env(CONTROL_PLANE_ENV_NAMES);
@@ -152,8 +223,8 @@ fn control_plane_requires_api_key_when_auth_required() {
     let config = Config::from_env();
 
     assert_eq!(
-        config.validate_startup().unwrap_err(),
-        "web auth is required when MAESTRO_WEB_REQUIRE_KEY is enabled; set MAESTRO_WEB_API_KEY, MAESTRO_AUTH_SHARED_SECRET, MAESTRO_JWT_SECRET, MAESTRO_JWT_JWKS_URL, or MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN"
+        config.validate_startup().unwrap_err().to_string(),
+        "web auth is required because MAESTRO_WEB_REQUIRE_KEY is enabled; set MAESTRO_WEB_API_KEY, MAESTRO_AUTH_SHARED_SECRET, MAESTRO_JWT_SECRET, MAESTRO_JWT_JWKS_URL, or MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN"
     );
 
     env::set_var("MAESTRO_WEB_API_KEY", "secret");
@@ -251,7 +322,7 @@ fn cli_args_handle_help_and_version_without_serving() {
 #[test]
 fn cli_args_reject_unknown_values() {
     let error = parse_cli_action(["--wat"]).unwrap_err();
-    assert!(error.contains("--wat"));
+    assert!(error.to_string().contains("--wat"));
 }
 
 #[test]
@@ -1771,7 +1842,10 @@ rl.on("line", (line) => {
         .await
     });
     let mut bytes = Vec::new();
-    tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut bytes))
+    // Closing depends on a cold Node fixture starting and shutting down. Keep
+    // this as a bounded wait, but do not turn loaded CI scheduling into a
+    // protocol failure.
+    tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut bytes))
         .await
         .expect("WebSocket stream should close")
         .expect("WebSocket frames should be readable");
@@ -1879,8 +1953,10 @@ rl.on("line", (line) => {
 
     let expected_prefix = "codex:session-wait:";
     let expected_suffix = ":approval-wait";
-    // Registration can take several seconds under loaded CI runners (cold node).
-    let deadline = Instant::now() + Duration::from_secs(15);
+    // Registration can take several seconds under loaded CI runners (cold
+    // Node plus concurrent Rust tests). This is an outer scheduling bound;
+    // the 500 ms request timeout below remains the behavior under test.
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if state
             .pending_tool_responses
@@ -2207,7 +2283,9 @@ fn auth_test_config() -> Config {
         listen_host: "127.0.0.1".to_string(),
         listen_port: 0,
         api_key: Some("api-key".to_string()),
+        allowed_hosts: Vec::new(),
         require_key: true,
+        require_key_explicitly_disabled: false,
         csrf_token: None,
         require_csrf: false,
         cwd: PathBuf::from("."),
@@ -2449,6 +2527,256 @@ fn parses_percent_encoded_query_components() {
         Some(&"logs/today one.txt".to_string())
     );
     assert_eq!(head.query.get("action"), Some(&"mark done".to_string()));
+}
+
+#[tokio::test]
+async fn wildcard_cors_origin_never_reflects_a_requesting_origin() {
+    let _guard = ENV_LOCK.lock().await;
+    let snapshot = snapshot_env(CORS_ENV_NAMES);
+    env::set_var("MAESTRO_WEB_ORIGIN", "*");
+
+    let head = parse_request_head(
+        b"GET /api/status HTTP/1.1\r\nHost: localhost:8080\r\nOrigin: https://evil.example\r\n\r\n",
+    )
+    .expect("request should parse");
+
+    assert_eq!(
+        requested_cors_origin(&head),
+        "*",
+        "a wildcard configuration must not reflect the caller's origin"
+    );
+
+    let response = with_response_cors_origin(requested_cors_origin(&head), async {
+        String::from_utf8(json_response(200, &serde_json::json!({ "ok": true })))
+            .expect("response should be utf-8")
+    })
+    .await;
+
+    assert!(response.contains("Access-Control-Allow-Origin: *\r\n"));
+    assert!(
+        !response
+            .to_ascii_lowercase()
+            .contains("access-control-allow-credentials"),
+        "credentials must never accompany a wildcard origin: {response}"
+    );
+    assert!(!response.contains("evil.example"));
+
+    restore_env(snapshot);
+}
+
+#[tokio::test]
+async fn non_allowlisted_origin_never_receives_allow_credentials() {
+    let _guard = ENV_LOCK.lock().await;
+    let snapshot = snapshot_env(CORS_ENV_NAMES);
+
+    // Both the wildcard configuration and a concrete configuration must refuse
+    // to hand `Access-Control-Allow-Credentials: true` to an unknown origin.
+    for configured in ["*", "chrome-extension://abcdefghijklmnopabcdefghijklmnop"] {
+        env::set_var("MAESTRO_WEB_ORIGIN", configured);
+
+        let head = parse_request_head(
+            b"POST /api/chat HTTP/1.1\r\nHost: localhost:8080\r\nOrigin: https://evil.example\r\n\r\n",
+        )
+        .expect("request should parse");
+
+        let reflected = requested_cors_origin(&head);
+        assert_ne!(
+            reflected, "https://evil.example",
+            "configured={configured} must not reflect an unknown origin"
+        );
+
+        let response = with_response_cors_origin(reflected, async {
+            String::from_utf8(json_response(200, &serde_json::json!({ "ok": true })))
+                .expect("response should be utf-8")
+        })
+        .await;
+
+        let credentialed = response
+            .to_ascii_lowercase()
+            .contains("access-control-allow-credentials: true");
+        let reflects_attacker = response.contains("https://evil.example");
+        assert!(
+            !(credentialed && reflects_attacker),
+            "configured={configured} produced a credentialed reflection: {response}"
+        );
+        assert!(!reflects_attacker, "configured={configured}: {response}");
+    }
+
+    restore_env(snapshot);
+}
+
+#[tokio::test]
+async fn allowlisted_origin_still_receives_allow_credentials() {
+    let _guard = ENV_LOCK.lock().await;
+    let snapshot = snapshot_env(CORS_ENV_NAMES);
+    env::set_var(
+        "MAESTRO_WEB_ORIGIN",
+        "chrome-extension://abcdefghijklmnopabcdefghijklmnop",
+    );
+
+    for origin in [
+        "chrome-extension://abcdefghijklmnopabcdefghijklmnop",
+        "http://localhost:8080",
+    ] {
+        let request =
+            format!("GET /api/status HTTP/1.1\r\nHost: localhost:8080\r\nOrigin: {origin}\r\n\r\n");
+        let head = parse_request_head(request.as_bytes()).expect("request should parse");
+        let reflected = requested_cors_origin(&head);
+        assert_eq!(reflected, origin);
+
+        let response = with_response_cors_origin(reflected, async {
+            String::from_utf8(json_response(200, &serde_json::json!({ "ok": true })))
+                .expect("response should be utf-8")
+        })
+        .await;
+
+        assert!(response.contains(&format!("Access-Control-Allow-Origin: {origin}\r\n")));
+        assert!(response.contains("Access-Control-Allow-Credentials: true\r\n"));
+    }
+
+    restore_env(snapshot);
+}
+
+fn head_with_host(host: Option<&str>) -> RequestHead {
+    let request = match host {
+        Some(host) => format!("GET /api/chat HTTP/1.1\r\nHost: {host}\r\n\r\n"),
+        None => "GET /api/chat HTTP/1.1\r\n\r\n".to_string(),
+    };
+    parse_request_head(request.as_bytes()).expect("request should parse")
+}
+
+#[test]
+fn loopback_bind_accepts_its_own_host_header_values() {
+    let config = Config::test_default();
+    assert_eq!(config.listen_host, "127.0.0.1");
+
+    // The web UI is served same-origin, so the browser sends whichever loopback
+    // spelling the user typed. The JetBrains plugin uses OkHttp against
+    // `http://localhost:8080` (ComposerSettings.apiEndpoint), which emits
+    // `Host: localhost:8080`.
+    for host in [
+        "localhost",
+        "localhost:8080",
+        "LOCALHOST:8080",
+        "127.0.0.1",
+        "127.0.0.1:8080",
+        "127.0.0.1:3000",
+        "[::1]",
+        "[::1]:8080",
+        "::1",
+        "127.0.0.2:8080",
+    ] {
+        assert!(
+            host_header_allowed(&head_with_host(Some(host)), &config),
+            "Host: {host} should be accepted on a loopback bind"
+        );
+    }
+
+    // A client that sends no Host at all is not a browser and cannot be steered
+    // by DNS rebinding.
+    assert!(host_header_allowed(&head_with_host(None), &config));
+}
+
+#[test]
+fn loopback_bind_rejects_rebound_host_headers() {
+    let config = Config::test_default();
+
+    for host in [
+        "evil.example",
+        "evil.example:8080",
+        "attacker.localhost",
+        "localhost.evil.example",
+        "127.0.0.1.evil.example",
+        "10.0.0.5:8080",
+        "maestro.internal.example",
+        // Duplicate Host headers are joined with ", " by parse_request_head.
+        "localhost, evil.example",
+    ] {
+        assert!(
+            !host_header_allowed(&head_with_host(Some(host)), &config),
+            "Host: {host} should be rejected on a loopback bind"
+        );
+    }
+}
+
+#[test]
+fn non_loopback_bind_does_not_validate_the_host_header() {
+    let mut config = Config::test_default();
+    config.listen_host = "0.0.0.0".to_string();
+
+    // A network-facing deployment is reached through names this process cannot
+    // enumerate; auth is the control there, not Host.
+    for host in ["maestro.example.com", "evil.example", "10.0.0.5"] {
+        assert!(host_header_allowed(&head_with_host(Some(host)), &config));
+    }
+}
+
+#[test]
+fn allowed_hosts_extends_the_loopback_host_allowlist() {
+    let mut config = Config::test_default();
+    config.allowed_hosts = parse_allowed_hosts(Some(
+        " maestro.tunnel.example , Dev.Box.Internal ".to_string(),
+    ));
+
+    assert_eq!(
+        config.allowed_hosts,
+        vec!["maestro.tunnel.example", "dev.box.internal"]
+    );
+    assert!(host_header_allowed(
+        &head_with_host(Some("maestro.tunnel.example")),
+        &config
+    ));
+    assert!(host_header_allowed(
+        &head_with_host(Some("dev.box.internal:9000")),
+        &config
+    ));
+    assert!(!host_header_allowed(
+        &head_with_host(Some("evil.example")),
+        &config
+    ));
+}
+
+#[tokio::test]
+async fn rebound_host_header_is_rejected_before_any_route_runs() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test server");
+    let addr = listener.local_addr().expect("local addr");
+    let mut config = Config::test_default();
+    config.listen_host = "127.0.0.1".to_string();
+    config.listen_port = addr.port();
+
+    tokio::spawn(async move {
+        let _ = serve_listener(listener, config).await;
+    });
+
+    async fn send(addr: std::net::SocketAddr, host: &str) -> String {
+        let mut stream = TcpStream::connect(addr).await.expect("connect");
+        let request = format!("GET /healthz HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("write request");
+        let mut response = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut response)
+            .await
+            .expect("read response");
+        String::from_utf8_lossy(&response).to_string()
+    }
+
+    let rebound = send(addr, "evil.example").await;
+    assert!(
+        rebound.starts_with("HTTP/1.1 421 Misdirected Request"),
+        "rebound Host should get 421, got: {rebound}"
+    );
+    assert!(!rebound.contains("ok\n"), "route must not run: {rebound}");
+
+    let legitimate = send(addr, &format!("localhost:{}", addr.port())).await;
+    assert!(
+        legitimate.starts_with("HTTP/1.1 200 OK"),
+        "legitimate Host should be served, got: {legitimate}"
+    );
+    assert!(legitimate.contains("ok\n"));
 }
 
 #[test]
@@ -3824,6 +4152,62 @@ fn a2a_push_private_ip_check_includes_ipv4_mapped_ipv6() {
         .expect("mapped IPv6 parses");
 
     assert!(a2a_push_ip_is_private(mapped_loopback));
+}
+
+#[test]
+fn a2a_push_private_ip_check_includes_cgnat_shared_address_space() {
+    // 100.64.0.0/10 (RFC 6598 Shared Address Space / CGNAT). This fleet's
+    // Tailscale network lives entirely inside this range, and it is not
+    // covered by `Ipv4Addr::is_private()` -- a push notification callback
+    // URL pointed at a Tailscale peer or at Alibaba Cloud's metadata
+    // endpoint (100.100.100.200) would previously have been accepted.
+    let cgnat = "100.64.0.5".parse::<IpAddr>().expect("CGNAT IPv4 parses");
+    let alibaba_metadata = "100.100.100.200"
+        .parse::<IpAddr>()
+        .expect("Alibaba metadata IPv4 parses");
+
+    assert!(a2a_push_ip_is_private(cgnat));
+    assert!(a2a_push_ip_is_private(alibaba_metadata));
+    assert!(!a2a_push_ip_is_private(
+        "100.63.255.255"
+            .parse::<IpAddr>()
+            .expect("adjacent public IPv4 parses")
+    ));
+}
+
+#[test]
+fn a2a_push_private_ip_check_includes_cgnat_via_ipv4_mapped_ipv6() {
+    // Classic bypass: encode the blocked IPv4 target as an IPv4-mapped IPv6
+    // literal to route around a naive IPv4-only blocklist.
+    let mapped_cgnat = "::ffff:100.64.0.1"
+        .parse::<IpAddr>()
+        .expect("mapped CGNAT IPv6 parses");
+
+    assert!(a2a_push_ip_is_private(mapped_cgnat));
+}
+
+#[test]
+fn a2a_push_private_ip_check_includes_remaining_special_use_ranges() {
+    for literal in [
+        "0.0.0.5",         // 0.0.0.0/8 "this network"
+        "192.0.0.8",       // 192.0.0.0/24 IETF protocol assignment
+        "198.18.0.1",      // 198.18.0.0/15 benchmarking
+        "240.0.0.1",       // 240.0.0.0/4 reserved
+        "224.0.0.1",       // multicast
+        "255.255.255.255", // broadcast
+    ] {
+        let addr = literal
+            .parse::<IpAddr>()
+            .unwrap_or_else(|_| panic!("{literal} should parse as an IP"));
+        assert!(
+            a2a_push_ip_is_private(addr),
+            "{literal} should be treated as private/reserved"
+        );
+    }
+
+    assert!(!a2a_push_ip_is_private(
+        "8.8.8.8".parse::<IpAddr>().expect("public IPv4 parses")
+    ));
 }
 
 #[test]
@@ -8319,16 +8703,16 @@ fn resolves_provider_model_ids() {
         models: builtin_models(),
         aliases: HashMap::new(),
     };
-    let model = resolve_model("openai/gpt-5.1-codex-max", &registry).expect("model should resolve");
+    let model = resolve_model("openai/gpt-5.5", &registry).expect("model should resolve");
 
     assert_eq!(model.provider, "openai");
-    assert_eq!(model.id, "gpt-5.1-codex-max");
+    assert_eq!(model.id, "gpt-5.5");
     assert_eq!(model.api, "openai-responses");
 
-    let codex_app_server = resolve_model("openai-codex/gpt-5.1-codex-max", &registry)
+    let codex_app_server = resolve_model("openai-codex/gpt-5.5", &registry)
         .expect("codex app-server model should resolve");
     assert_eq!(codex_app_server.provider, "openai-codex");
-    assert_eq!(codex_app_server.id, "gpt-5.1-codex-max");
+    assert_eq!(codex_app_server.id, "gpt-5.5");
     assert_eq!(codex_app_server.api, "openai-codex-app-server");
 }
 
@@ -8431,7 +8815,10 @@ fn merges_platform_model_catalog_from_llm_gateway_payload() {
     let codex_app_server =
         resolve_model("openai-codex/gpt-5.5", &registry).expect("codex app-server model");
     assert_eq!(codex_app_server.api, "openai-codex-app-server");
-    assert_eq!(codex_app_server.max_tokens, 128_000);
+    assert_eq!(codex_app_server.context_window, 1_050_000);
+    // The shared models.dev snapshot carries no output-token limit; the
+    // gateway overlay supplies one only for models it describes.
+    assert_eq!(codex_app_server.max_tokens, 0);
 
     let llama = resolve_model(
         "together-ai/meta-llama/Llama-3.3-70B-Instruct-Turbo",
@@ -9725,7 +10112,9 @@ async fn missing_static_asset_returns_404_instead_of_index() {
         listen_host: "127.0.0.1".to_string(),
         listen_port: 8080,
         api_key: None,
+        allowed_hosts: Vec::new(),
         require_key: false,
+        require_key_explicitly_disabled: false,
         csrf_token: None,
         require_csrf: false,
         cwd: PathBuf::from("."),
@@ -9766,7 +10155,9 @@ async fn missing_spa_route_falls_back_to_index() {
         listen_host: "127.0.0.1".to_string(),
         listen_port: 8080,
         api_key: None,
+        allowed_hosts: Vec::new(),
         require_key: false,
+        require_key_explicitly_disabled: false,
         csrf_token: None,
         require_csrf: false,
         cwd: PathBuf::from("."),
@@ -9812,7 +10203,9 @@ async fn delete_session_subpath_returns_404_without_removing_session() {
             listen_host: "127.0.0.1".to_string(),
             listen_port: 8080,
             api_key: Some("api-key".to_string()),
+            allowed_hosts: Vec::new(),
             require_key: true,
+            require_key_explicitly_disabled: false,
             csrf_token: None,
             require_csrf: false,
             cwd: PathBuf::from("."),
@@ -9892,7 +10285,9 @@ async fn invalid_session_store_is_left_untouched_and_future_writes_are_blocked()
             listen_host: "127.0.0.1".to_string(),
             listen_port: 8080,
             api_key: None,
+            allowed_hosts: Vec::new(),
             require_key: false,
+            require_key_explicitly_disabled: false,
             csrf_token: None,
             require_csrf: false,
             cwd: PathBuf::from("."),

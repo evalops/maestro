@@ -5,6 +5,7 @@
 //! lightweight JSON Schema check via `--output-schema`.
 
 use std::collections::HashSet;
+use std::io::IsTerminal;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -112,6 +113,8 @@ fn allowed_tools_from_env() -> Result<Option<HashSet<String>>> {
 }
 
 fn canonical_workspace_path(workspace: &Path, input: &str) -> Result<PathBuf> {
+    let canonical_workspace = dunce::canonicalize(workspace)
+        .with_context(|| format!("canonicalize workspace {}", workspace.display()))?;
     let candidate = if Path::new(input).is_absolute() {
         PathBuf::from(input)
     } else {
@@ -119,11 +122,11 @@ fn canonical_workspace_path(workspace: &Path, input: &str) -> Result<PathBuf> {
     };
     let canonical = dunce::canonicalize(&candidate)
         .with_context(|| format!("canonicalize tool path {}", candidate.display()))?;
-    if !canonical.starts_with(workspace) {
+    if !canonical.starts_with(&canonical_workspace) {
         bail!(
             "Tool path `{}` resolves outside workspace `{}`",
             input,
-            workspace.display()
+            canonical_workspace.display()
         );
     }
     Ok(canonical)
@@ -207,6 +210,33 @@ fn prepare_workspace_tool_args(
     Ok(prepared)
 }
 
+/// Sanitize a raw provider stream delta before it reaches the real terminal
+/// in the non-`--json` `--print` output path, which has no ratatui `Buffer`
+/// to filter it (unlike the TUI chat pane).
+fn sanitize_stream_chunk(content: &str) -> String {
+    crate::output_sanitize::sanitize_control_chars(content)
+}
+
+/// Decide whether a `--print` stream delta's stdout write should sanitize
+/// `content`.
+///
+/// Redirected output (piped to a file or another process) cannot execute a
+/// terminal escape sequence and must stay byte-exact -- it is also what
+/// `--output-last-message` saves from and, unlike this path, never
+/// sanitizes, so unconditionally sanitizing here would make plain
+/// redirected `--print` stdout diverge from that saved copy for the same
+/// run. Only sanitize when stdout is an actual terminal. Takes
+/// `stdout_is_terminal` as a parameter (mirroring
+/// `hyperlink::format_link_with_fallback`'s `is_tty` parameter) so this
+/// stays unit-testable without a real pty.
+fn stream_chunk_for_stdout(content: &str, stdout_is_terminal: bool) -> String {
+    if stdout_is_terminal {
+        sanitize_stream_chunk(content)
+    } else {
+        content.to_string()
+    }
+}
+
 /// Run one prompt non-interactively and print the final answer.
 pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
     let limits = PrintModeLimits::from_env()?;
@@ -232,6 +262,10 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
         thinking_enabled: false,
         thinking_budget: 0,
         cwd: cwd.clone(),
+        // Print mode has no interactive approval UI; preserve the prior
+        // (mode-unaware) per-tool heuristic exactly. `fail_on_approval`
+        // above is this mode's own separate reject-instead-of-run policy.
+        approval_mode: crate::state::ApprovalMode::Selective,
     };
 
     let credential_vault = CredentialVault::new();
@@ -285,7 +319,19 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
                     });
                     println!("{line}");
                 } else {
-                    print!("{content}");
+                    // `content` is a raw provider stream delta with no
+                    // ratatui `Buffer` in this loop to filter it, unlike the
+                    // TUI chat pane. Sanitize at this print boundary rather
+                    // than upstream: the same delta also flows to the
+                    // `--json` branch above, where `serde_json` already
+                    // escapes control characters, so filtering earlier would
+                    // be redundant there. Sanitizing is further gated on
+                    // stdout actually being a terminal: see
+                    // `stream_chunk_for_stdout`'s doc comment.
+                    print!(
+                        "{}",
+                        stream_chunk_for_stdout(&content, std::io::stdout().is_terminal())
+                    );
                     let _ = std::io::Write::flush(&mut std::io::stdout());
                 }
                 assistant_buf.push_str(&content);
@@ -668,6 +714,33 @@ pub fn resolve_output_path(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_stream_chunk_strips_osc_injection_from_provider_delta() {
+        // A minimal OSC-0 (set title) sequence embedded in a provider
+        // stream delta -- this is what `--print`'s non-JSON branch writes
+        // straight to `print!` with no ratatui `Buffer` to filter it.
+        let input = "before\x1b]0;evil\x07after";
+        let out = sanitize_stream_chunk(input);
+        assert_eq!(out, "before]0;evilafter");
+        assert!(!out.contains('\x1b'));
+        assert!(!out.contains('\x07'));
+    }
+
+    #[test]
+    fn sanitize_stream_chunk_preserves_ordinary_streamed_text() {
+        let input = "Here is a plan:\n1. First\n2. Second\tindented";
+        assert_eq!(sanitize_stream_chunk(input), input);
+    }
+
+    #[test]
+    fn stream_chunk_for_stdout_sanitizes_only_when_a_terminal() {
+        let input = "before\x1b]0;evil\x07after";
+        assert_eq!(stream_chunk_for_stdout(input, true), "before]0;evilafter");
+        // Redirected output must stay byte-exact, matching what
+        // `--output-last-message` saves for the same run.
+        assert_eq!(stream_chunk_for_stdout(input, false), input);
+    }
 
     #[test]
     fn print_options_default_json_false() {

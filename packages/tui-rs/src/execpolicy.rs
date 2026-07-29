@@ -43,6 +43,44 @@
 //! - **regex**: For parsing policy files (not for command matching)
 //! - **serde**: For serializing evaluation results for IPC
 //! - **once_cell**: For lazy policy loading and caching
+//!
+//! # ⚠️ NOT WIRED INTO THE APPROVAL PATH -- DO NOT CONNECT AS WRITTEN ⚠️
+//!
+//! This module is **not** consulted by the live tool-approval flow
+//! (`components::approval`, `tools::registry::ToolExecutor`,
+//! `safety::firewall`). Its only production caller is
+//! `import_claude_cli`, which uses [`parse_policy`]/[`render_prefix_rule`]
+//! purely to *migrate* Claude CLI permission rules into a `.composer/execpolicy`
+//! file for potential future use -- it never reads that file back to make a
+//! live approval decision. `tests/trace_replay.rs` also exercises
+//! [`Policy::check`] directly as a fixture harness, not through any runtime
+//! path.
+//!
+//! **Do not wire this up as-is.** [`load_policy`] reads
+//! `<workspace>/.composer/execpolicy` -- a path fully controlled by the
+//! repository being opened -- and honors any `decision="allow"` rule it
+//! finds there with no workspace-trust gate (contrast with
+//! `config::workspace_trusted_in_global_config`, which every other
+//! repo-controlled load path in this crate is gated on, see
+//! `tools::registry` (MCP servers)/`tools::inline`/`hooks::config`/
+//! `skills::loader`/`plugins::discovery`). If this module is connected to
+//! the approval path
+//! exactly as written, a hostile repository can drop an `execpolicy` file
+//! that self-declares its own dangerous commands `allow`ed, producing an
+//! instant, repository-controlled auto-approve bypass -- worse than having
+//! no execpolicy feature at all.
+//!
+//! There is also a known correctness bug that would make any such bypass
+//! broader than intended: [`parse_policy`] silently degrades nested
+//! alternative patterns (e.g. `pattern=["git", ["push", "fetch"]]`) to a
+//! bare prefix (`["git"]`), so a rule meant to scope `allow`/`prompt` to one
+//! subcommand actually matches the whole command family. See
+//! <https://github.com/evalops/maestro-internal/issues/3091>.
+//!
+//! Before wiring this module into any live decision path: (1) fix #3091,
+//! and (2) gate `load_policy`'s project-level file read on
+//! `config::workspace_trusted_in_global_config`, the same way every other
+//! repo-controlled loader in this crate is gated.
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -287,8 +325,8 @@ static PREFIX_RULE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"prefix_rule\s*\(\s*([\s\S]*?)\s*\)\s*,?").expect("valid regex")
 });
 
-static PATTERN_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"pattern\s*=\s*(\[[\s\S]*?\])").expect("valid regex"));
+static PATTERN_KEY_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"pattern\s*=\s*\[").expect("valid regex"));
 
 static DECISION_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"decision\s*=\s*"(\w+)""#).expect("valid regex"));
@@ -326,8 +364,7 @@ struct ParsedPrefixRule {
 
 fn parse_prefix_rule_args(args: &str) -> Option<ParsedPrefixRule> {
     // Parse pattern
-    let pattern_cap = PATTERN_REGEX.captures(args)?;
-    let pattern_str = &pattern_cap[1];
+    let pattern_str = extract_pattern_array(args)?;
     let pattern_tokens = parse_pattern_array(pattern_str)?;
 
     if pattern_tokens.is_empty() {
@@ -351,6 +388,42 @@ fn parse_prefix_rule_args(args: &str) -> Option<ParsedPrefixRule> {
         rest: rest.to_vec(),
         decision,
     })
+}
+
+/// Extract the full `pattern=[...]` array literal from a prefix_rule body.
+///
+/// A regex cannot express the balanced brackets of nested alternative
+/// groups (`["git", ["push", "fetch"]]`), so this scans from the opening
+/// `[` to its matching `]`, ignoring brackets inside quoted strings.
+/// Returns `None` (rule skipped) when the brackets never balance.
+fn extract_pattern_array(args: &str) -> Option<&str> {
+    let key = PATTERN_KEY_REGEX.find(args)?;
+    let start = key.end() - 1; // byte index of the opening '['
+    let bytes = args.as_bytes();
+    let mut depth = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+    for (i, &b) in bytes.iter().enumerate().skip(start) {
+        if escaped {
+            escaped = false;
+        } else if let Some(q) = quote {
+            if b == b'\\' {
+                escaped = true;
+            } else if b == q {
+                quote = None;
+            }
+        } else if b == b'"' || b == b'\'' {
+            quote = Some(b);
+        } else if b == b'[' {
+            depth += 1;
+        } else if b == b']' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(&args[start..=i]);
+            }
+        }
+    }
+    None
 }
 
 fn parse_pattern_array(s: &str) -> Option<Vec<PatternToken>> {
@@ -889,23 +962,93 @@ prefix_rule(
 )
 "#;
         let policy = parse_policy(content, "test");
+        let check = |cmd: &[&str]| {
+            let tokens: Vec<String> = cmd.iter().map(|s| (*s).to_string()).collect();
+            policy.check(&tokens, None::<fn(&[String]) -> Decision>)
+        };
+
+        // Both alternatives match with the full two-token prefix.
+        let push = check(&["git", "push"]);
+        assert_eq!(push.decision, Decision::Prompt);
+        assert_eq!(push.matched_rules.len(), 1);
+        let fetch = check(&["git", "fetch", "origin"]);
+        assert_eq!(fetch.decision, Decision::Prompt);
+        assert_eq!(fetch.matched_rules.len(), 1);
+
+        // The nested-alternatives token must survive parsing: any other git
+        // subcommand matches NO rule, rather than a degraded bare ["git"]
+        // prefix that would prompt on every git command (#3091).
+        for cmd in [
+            &["git", "status"][..],
+            &["git", "log", "--oneline"],
+            &["git", "pull"],
+            &["git"],
+        ] {
+            let result = check(cmd);
+            assert_eq!(result.decision, Decision::Allow, "cmd {cmd:?}");
+            assert!(
+                result.matched_rules.is_empty(),
+                "cmd {cmd:?} must not match the push/fetch rule"
+            );
+        }
+
+        // The matched prefix covers both tokens, not just "git".
+        match &check(&["git", "push"]).matched_rules[0] {
+            RuleMatch::Prefix { matched_prefix, .. } => {
+                assert_eq!(matched_prefix, &vec!["git".to_string(), "push".to_string()]);
+            }
+            other => panic!("expected prefix match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_policy_nested_alternatives_not_first_position() {
+        // Alternatives as the first token expand into one rule per program.
+        let content = r#"prefix_rule(pattern=[["git", "cargo"], "status"], decision="allow")"#;
+        let policy = parse_policy(content, "test");
+        assert_eq!(check_decision(&policy, &["git", "status"]), Decision::Allow);
         assert_eq!(
-            policy
-                .check(
-                    &["git".to_string(), "push".to_string()],
-                    None::<fn(&[String]) -> Decision>
-                )
-                .decision,
+            check_decision(&policy, &["cargo", "status"]),
+            Decision::Allow
+        );
+        assert_eq!(check_decision(&policy, &["npm", "status"]), Decision::Allow);
+        let nomatch = policy.check(
+            &["npm".to_string(), "status".to_string()],
+            None::<fn(&[String]) -> Decision>,
+        );
+        assert!(nomatch.matched_rules.is_empty());
+
+        // Several alternative groups in one pattern.
+        let content = r#"prefix_rule(pattern=["git", ["push", "fetch"], ["--force", "--tags"]], decision="prompt")"#;
+        let policy = parse_policy(content, "test");
+        assert_eq!(
+            check_decision(&policy, &["git", "push", "--force"]),
             Decision::Prompt
         );
         assert_eq!(
-            policy
-                .check(
-                    &["git".to_string(), "fetch".to_string()],
-                    None::<fn(&[String]) -> Decision>
-                )
-                .decision,
+            check_decision(&policy, &["git", "fetch", "--tags"]),
             Decision::Prompt
         );
+        let partial = policy.check(
+            &["git".to_string(), "push".to_string()],
+            None::<fn(&[String]) -> Decision>,
+        );
+        assert!(
+            partial.matched_rules.is_empty(),
+            "three-token pattern must not match a two-token command"
+        );
+    }
+
+    #[test]
+    fn test_parse_policy_unbalanced_pattern_brackets_skips_rule() {
+        // Fail closed-ish: a pattern whose brackets never balance is not
+        // parsed as a truncated prefix; the rule is dropped entirely.
+        let content = r#"prefix_rule(pattern=["git", ["push"], decision="forbidden")"#;
+        let policy = parse_policy(content, "test");
+        let result = policy.check(
+            &["git".to_string(), "push".to_string()],
+            None::<fn(&[String]) -> Decision>,
+        );
+        assert!(result.matched_rules.is_empty());
     }
 }

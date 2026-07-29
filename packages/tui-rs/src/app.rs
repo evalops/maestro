@@ -38,6 +38,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // `Arc` (Atomic Reference Counted) is a thread-safe reference-counted pointer.
@@ -50,7 +51,7 @@ use anyhow::{bail, Context, Result};
 // - `.context("msg")` adds context to errors for better debugging
 
 use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, KeyModifiers as CrosstermModifiers, MouseEventKind,
+    self, KeyCode, KeyEventKind, KeyModifiers as CrosstermModifiers, MouseEventKind,
 };
 // `crossterm` is a cross-platform terminal manipulation library.
 // It handles raw mode, events, and cursor control across Windows/Mac/Linux.
@@ -60,7 +61,6 @@ use ratatui::prelude::*;
 // It provides widgets (Paragraph, Block, List) and layout primitives.
 
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 // `mpsc` = Multi-Producer, Single-Consumer channel.
 // Used for async message passing between tasks.
 // - `mpsc::unbounded_channel()` creates a channel with no size limit
@@ -80,10 +80,10 @@ use crate::commands::{
     SlashCommandMatcher, SlashCycleState,
 };
 use crate::components::{
-    calculate_input_height, ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest,
-    BatchedApprovalModal, ChatInputWidget, ChatInputWidgetOptions, ChatView, CommandPalette,
-    DetailView, FileSearchModal, ModelSelector, OperationsModal, RewindPicker, SessionSwitcher,
-    ShortcutsHelp, ThemeSelector,
+    approval_modal_kind, calculate_input_height, ApprovalController, ApprovalDecision,
+    ApprovalModal, ApprovalModalKind, ApprovalRequest, BatchedApprovalModal, ChatInputWidget,
+    ChatInputWidgetOptions, ChatView, CommandPalette, DetailView, FileSearchModal, ModelSelector,
+    OperationsModal, RewindPicker, SessionSwitcher, ShortcutsHelp, ThemeSelector,
 };
 use crate::config_watcher::{ConfigEvent, ConfigWatcher, ConfigWatcherBuilder};
 use crate::files::{get_workspace_files, WorkspaceFile};
@@ -95,7 +95,7 @@ use crate::mcp::{
 };
 use crate::palette_resource::{PaletteResource, PaletteResourceKind};
 use crate::plugins::PluginRegistry;
-use crate::prompts::{load_prompts, parse_args, render_prompt, PromptDefinition};
+use crate::prompts::{parse_args, render_prompt, PromptDefinition};
 use crate::safety::{
     check_model_allowed, check_path_allowed, check_session_limits, FirewallVerdict,
 };
@@ -106,8 +106,9 @@ use crate::session::{
     ThinkingLevelChange, TokenCost, TokenUsage as SessionTokenUsage, ToolInfo,
 };
 use crate::skills::{skills_to_prompt, LoadedSkill, SkillLoadError, SkillLoader, SkillRegistry};
-use crate::state::{AppState, ApprovalMode, Message, MessageKind, MessageRole, QueueMode};
-use crate::terminal::{self, TerminalCapabilities};
+use crate::state::{AppState, Message, MessageKind, MessageRole, QueueMode};
+use crate::sync_output::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+use crate::terminal::{self, AppTerminalEvent, TerminalCapabilities, TerminalEventReader};
 use crate::tools::{ToolExecutor, ToolRegistry};
 use chrono::{Datelike, Utc};
 
@@ -169,12 +170,16 @@ fn build_mcp_config_watcher() -> ConfigWatcher {
         builder = builder
             .watch(home.join(".composer").join("mcp.json"))
             .watch(home.join(".composer").join("enterprise").join("mcp.json"))
+            .watch(home.join(".maestro").join("mcp.json"))
+            .watch(home.join(".maestro").join("enterprise").join("mcp.json"))
             .watch(home.join(".maestro").join("keybindings.json"));
     }
 
     builder
         .watch(".composer/mcp.json")
         .watch(".composer/mcp.local.json")
+        .watch(".maestro/mcp.json")
+        .watch(".maestro/mcp.local.json")
         .watch(crate::keybindings::keybindings_config_path())
         .build()
         .unwrap_or_default()
@@ -183,8 +188,15 @@ fn build_mcp_config_watcher() -> ConfigWatcher {
 fn is_mcp_config_path(path: &std::path::Path) -> bool {
     path.ends_with(std::path::Path::new(".composer").join("mcp.json"))
         || path.ends_with(std::path::Path::new(".composer").join("mcp.local.json"))
+        || path.ends_with(std::path::Path::new(".maestro").join("mcp.json"))
+        || path.ends_with(std::path::Path::new(".maestro").join("mcp.local.json"))
         || path.ends_with(
             std::path::Path::new(".composer")
+                .join("enterprise")
+                .join("mcp.json"),
+        )
+        || path.ends_with(
+            std::path::Path::new(".maestro")
                 .join("enterprise")
                 .join("mcp.json"),
         )
@@ -369,7 +381,9 @@ fn render_mcp_status_lines(servers: &[crate::tools::McpServerStatus]) -> Vec<Str
     if servers.is_empty() {
         lines.push("No MCP servers configured.".to_string());
         lines.push(String::new());
-        lines.push("Add servers to ~/.composer/mcp.json or .composer/mcp.json:".to_string());
+        lines.push(
+            "Use `/mcp-config help`, or edit ~/.maestro/mcp.json or .maestro/mcp.json:".to_string(),
+        );
         lines.push(String::new());
         lines.push(
             "{ \"mcpServers\": { \"my-server\": { \"command\": \"npx\", \"args\": [\"-y\", \"@example/mcp-server\"] } } }"
@@ -489,9 +503,9 @@ pub struct App {
     /// `mpsc::UnboundedReceiver` = async channel with unlimited buffer.
     native_event_rx: Option<mpsc::UnboundedReceiver<FromAgent>>,
 
-    /// Channel sender for tool execution results back to the agent.
-    /// When a tool completes, we send the result through this channel.
-    /// Tuple: (`call_id`, success, `optional_result`)
+    /// Channel sender for approval decisions back to the agent.
+    /// The native agent owns ordered execution after approval.
+    /// Tuple: (`call_id`, approved, `optional_external_result`)
     tool_response_tx: Option<mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>>,
 
     /// Executes tools (bash commands, file reads, etc.) requested by the agent.
@@ -500,20 +514,14 @@ pub struct App {
     /// blocking the event loop (a bash command may run for minutes).
     tool_executor: Arc<ToolExecutor>,
 
-    /// Cancellation tokens for in-flight tool executions, keyed by call_id.
-    /// Ctrl+C cancels them, killing the tool's child process group.
-    running_tools: HashMap<String, CancellationToken>,
-
-    /// Completion channel for spawned tool executions; drained by the event
-    /// loop via `poll_tool_completions`.
-    tool_completion_tx: mpsc::UnboundedSender<(String, String, ToolExecution)>,
-    tool_completion_rx: mpsc::UnboundedReceiver<(String, String, ToolExecution)>,
-
     /// Shared credential vault for the active application session.
     credential_vault: CredentialVault,
 
     /// The ratatui terminal handle for rendering.
     terminal: terminal::Terminal,
+
+    /// Protocol-aware terminal input. Falls back to crossterm when unavailable.
+    terminal_events: Option<TerminalEventReader>,
 
     /// Flag to exit the main loop.
     should_quit: bool,
@@ -705,6 +713,53 @@ pub struct App {
     detail_return_modal: ActiveModal,
 }
 
+/// Build a single, user-facing notice explaining why repo-controlled
+/// project config (inline tools, hooks, skills, plugins) was skipped
+/// because this workspace isn't trusted.
+///
+/// Silently dropping a repository's tools/hooks/skills reads as a bug to
+/// users, so every one of the four project-scoped load paths is checked
+/// here (in addition to logging via `eprintln!` at the point of skipping,
+/// for headless/log-based consumption) and folded into one system message
+/// shown once at startup / on `/skills reload`. Returns `None` when the
+/// workspace is trusted, or when it's untrusted but none of the
+/// project-scoped config files/directories exist (nothing to explain).
+fn untrusted_workspace_notice(
+    workspace_dir: &std::path::Path,
+    plugin_registry: &PluginRegistry,
+) -> Option<String> {
+    if crate::config::workspace_trusted_in_global_config(workspace_dir) {
+        return None;
+    }
+
+    let mut skipped = Vec::new();
+    if crate::tools::inline::has_project_tools_config(workspace_dir) {
+        skipped.push(".composer/tools.json (custom tools)");
+    }
+    if crate::hooks::has_project_hook_config(workspace_dir) {
+        skipped.push(".composer/hooks.toml or .json (hooks)");
+    }
+    if SkillLoader::has_project_skill_dirs(workspace_dir) {
+        skipped.push(".agents|.composer|.maestro/skills (skills)");
+    }
+    let has_skipped_plugins = plugin_registry.untrusted_skip_notice().is_some();
+    if has_skipped_plugins {
+        skipped.push(".maestro|.composer/plugins (plugins)");
+    }
+
+    if skipped.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "This workspace isn't trusted, so the following project-controlled config was not \
+         loaded: {}. A repository cannot grant itself trust: to enable them, add \
+         `projects.\"{}\".trust_level = \"trusted\"` to ~/.composer/config.toml.",
+        skipped.join(", "),
+        workspace_dir.display()
+    ))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // IMPLEMENTATION
 // ─────────────────────────────────────────────────────────────────────────────
@@ -736,11 +791,9 @@ impl App {
     /// Create an app, optionally submitting `initial_prompt` after the agent is ready.
     pub fn new_with_initial_prompt(initial_prompt: Option<String>) -> Result<Self> {
         let (terminal, capabilities) = terminal::init().context("Failed to initialize terminal")?;
-        Ok(Self::new_with_terminal(
-            terminal,
-            capabilities,
-            initial_prompt,
-        ))
+        let mut app = Self::new_with_terminal(terminal, capabilities, initial_prompt);
+        app.initialize_terminal_events();
+        Ok(app)
     }
 
     fn new_with_terminal(
@@ -769,18 +822,11 @@ impl App {
             .as_ref()
             .and_then(|tui| tui.slash_command_fallback)
             .unwrap_or(true);
-        // Live theme follow: `tui.theme_follow = true` starts in the `auto`
-        // theme and refines dark/light with a one-time OSC 11 probe, gated on
-        // an enhanced terminal. This must run before the event loop starts
-        // consuming input — see themes::osc11 for why polling is unsafe.
         let theme_follow = config
             .tui
             .as_ref()
             .and_then(|tui| tui.theme_follow)
             .unwrap_or(false);
-        if theme_follow && capabilities.enhanced_keys {
-            crate::themes::osc11::apply_auto_theme_from_terminal();
-        }
         let mut app = Self::new_with_terminal_with_history(
             terminal,
             capabilities,
@@ -789,6 +835,14 @@ impl App {
             context_window,
         );
         app.state.unknown_slash_command_fallback = slash_command_fallback;
+        if theme_follow {
+            let current = if crate::themes::current_theme_name() == "light" {
+                "light"
+            } else {
+                "dark"
+            };
+            app.state.theme_follower = Some(crate::themes::osc11::AutoThemeFollower::new(current));
+        }
         app
     }
 
@@ -831,8 +885,14 @@ impl App {
         for loaded in &loaded_skills {
             skill_registry.register(loaded.definition.clone());
         }
-        let custom_prompts = load_prompts(&workspace_dir);
-        let exec_commands = crate::exec_commands::discover(&workspace_dir);
+        if let Some(notice) = untrusted_workspace_notice(&workspace_dir, &plugin_registry) {
+            state.add_system_message(notice);
+        }
+        let plugin_command_dirs = plugin_registry.command_dirs();
+        let custom_prompts =
+            crate::prompts::load_prompts_with_plugin_dirs(&workspace_dir, &plugin_command_dirs);
+        let exec_commands =
+            crate::exec_commands::discover_with_plugin_dirs(&workspace_dir, &plugin_command_dirs);
         let (model_monitor, model_verification_rx) = crate::model_monitor::spawn_model_monitor();
 
         let tui_settings = crate::config::load_config(&workspace_dir, None).tui;
@@ -854,7 +914,6 @@ impl App {
         }
         let command_registry = Arc::new(command_registry);
         let slash_matcher = SlashCommandMatcher::new(Arc::clone(&command_registry));
-        let (tool_completion_tx, tool_completion_rx) = mpsc::unbounded_channel();
         let (exec_command_tx, exec_command_rx) = std::sync::mpsc::channel();
 
         Self {
@@ -866,11 +925,9 @@ impl App {
                 &cwd,
                 credential_vault.clone(),
             )),
-            running_tools: HashMap::new(),
-            tool_completion_tx,
-            tool_completion_rx,
             credential_vault,
             terminal,
+            terminal_events: None,
             should_quit: false,
             capabilities,
             command_palette: CommandPalette::new(Arc::clone(&command_registry)),
@@ -999,6 +1056,85 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         sections.join("\n\n")
     }
 
+    fn initialize_terminal_events(&mut self) {
+        if uncurses_input_enabled(std::env::var_os("MAESTRO_UNCURSES_INPUT").as_deref()) {
+            self.terminal_events = TerminalEventReader::open().ok();
+        }
+
+        if self.state.theme_follower.is_some() {
+            if self.terminal_events.is_some() {
+                // Discover whether mode 2031 is already active before
+                // changing it, so cleanup preserves a parent process's mode.
+                let _ = terminal::initialize_theme_reporting();
+                self.state.last_theme_query = Some(Instant::now());
+            } else if self.capabilities.enhanced_keys {
+                // Compatibility path for terminals where uncurses cannot open
+                // the controlling tty.
+                crate::themes::osc11::apply_auto_theme_from_terminal();
+            }
+        }
+    }
+
+    fn poll_terminal_event(&mut self, timeout: Duration) -> Result<Option<AppTerminalEvent>> {
+        if let Some(reader) = &mut self.terminal_events {
+            return reader.poll(timeout).map_err(Into::into);
+        }
+        if event::poll(timeout)? {
+            return Ok(AppTerminalEvent::from_crossterm(event::read()?));
+        }
+        Ok(None)
+    }
+
+    fn poll_terminal_theme(&mut self) {
+        if !terminal_theme_query_due(
+            self.terminal_events.is_some(),
+            self.state.theme_follower.is_some(),
+            self.state.theme_reporting_available,
+            self.state.last_theme_query.map(|last| last.elapsed()),
+        ) {
+            return;
+        }
+        let _ = terminal::query_theme();
+        self.state.last_theme_query = Some(Instant::now());
+    }
+
+    fn apply_terminal_theme_event(&mut self, event: &AppTerminalEvent) -> bool {
+        // Theme replies may be unsolicited or left in the input queue from a
+        // previous query. They must never override an explicit opt-out.
+        if self.state.theme_follower.is_none() {
+            return false;
+        }
+        let next = match event {
+            AppTerminalEvent::ColorScheme(scheme) => {
+                let next = match scheme {
+                    uncurses::event::ColorScheme::Light => "light",
+                    uncurses::event::ColorScheme::Dark => "dark",
+                };
+                self.state.theme_follower =
+                    Some(crate::themes::osc11::AutoThemeFollower::new(next));
+                Some(next)
+            }
+            AppTerminalEvent::BackgroundColor { red, green, blue } => {
+                let luminance = crate::themes::osc11::relative_luminance(*red, *green, *blue);
+                self.state
+                    .theme_follower
+                    .as_mut()
+                    .and_then(|follower| follower.observe_luminance(luminance))
+            }
+            _ => None,
+        };
+        let Some(next) = next else {
+            return false;
+        };
+        if crate::themes::current_theme_name() == next {
+            return false;
+        }
+        if crate::themes::set_theme_by_name(next).is_ok() {
+            return true;
+        }
+        false
+    }
+
     /// Run the main event loop.
     ///
     /// # Rust Concept: Async Main Loop
@@ -1018,6 +1154,11 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     /// Exit code for the process (0 = success, non-zero = error).
     pub async fn run(mut self) -> Result<i32> {
         let result = self.run_inner().await;
+        if self.terminal_events.is_some() && self.state.theme_follower.is_some() {
+            let _ = terminal::disable_theme_reporting();
+        }
+        // Stop reading from the tty before crossterm restores its modes.
+        self.terminal_events.take();
         // Restore the terminal unconditionally: an error propagated out of
         // the loop (event poll/read, render, agent poll, ...) must not leave
         // raw mode, bracketed paste, and mouse capture enabled. The panic
@@ -1084,13 +1225,16 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             // Poll for terminal events. Shorter timeout while busy (animations);
             // longer while idle to avoid burning CPU on empty frames.
             let poll_ms = if self.state.busy { 33 } else { 100 };
-            if event::poll(std::time::Duration::from_millis(poll_ms))? {
-                match event::read()? {
-                    Event::Key(key) if should_handle_key_event(key.kind) => {
+            self.poll_terminal_theme();
+            if let Some(event) =
+                self.poll_terminal_event(std::time::Duration::from_millis(poll_ms))?
+            {
+                match event {
+                    AppTerminalEvent::Key(key) if should_handle_key_event(key.kind) => {
                         self.handle_key(key.code, key.modifiers).await?;
                         needs_redraw = true;
                     }
-                    Event::Mouse(mouse) => {
+                    AppTerminalEvent::Mouse(mouse) => {
                         // Handle mouse scroll wheel
                         match mouse.kind {
                             MouseEventKind::ScrollUp => {
@@ -1128,24 +1272,34 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                             _ => {} // Ignore other mouse events
                         }
                     }
-                    Event::Resize(_, height) => {
+                    AppTerminalEvent::Resize { height } => {
                         self.handle_resize(height)?;
                         needs_redraw = true;
                     }
                     // Bracketed paste: route to the open modal's text input,
                     // or to the main input (large pastes fold into a
                     // `[Pasted: N lines]` display chip).
-                    Event::Paste(text) => {
+                    AppTerminalEvent::Paste(text) => {
                         self.handle_paste(&text);
                         needs_redraw = true;
                     }
-                    Event::FocusGained => {
+                    AppTerminalEvent::FocusGained => {
                         self.terminal_notifier.record_focus(true);
                     }
-                    Event::FocusLost => {
+                    AppTerminalEvent::FocusLost => {
                         self.terminal_notifier.record_focus(false);
                     }
-                    _ => {} // Ignore other events
+                    AppTerminalEvent::ThemeReportingStatus(setting) => {
+                        self.state.theme_reporting_available = setting.is_available();
+                        if setting == uncurses::ansi::mode::ModeSetting::Reset {
+                            let _ = terminal::enable_theme_reporting();
+                        }
+                    }
+                    theme_event @ (AppTerminalEvent::BackgroundColor { .. }
+                    | AppTerminalEvent::ColorScheme(_)) => {
+                        needs_redraw |= self.apply_terminal_theme_event(&theme_event);
+                    }
+                    _ => {}
                 }
             }
 
@@ -1153,12 +1307,6 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             // This handles streaming responses, tool calls, etc.
             let agent_activity = self.poll_agent().await?;
             if agent_activity {
-                needs_redraw = true;
-            }
-
-            // Apply finished tool executions (spawned per call so a long
-            // bash run does not freeze the loop).
-            if self.poll_tool_completions() {
                 needs_redraw = true;
             }
 
@@ -1329,6 +1477,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             thinking_enabled: false,
             thinking_budget: 10000,
             cwd: cwd.clone(),
+            approval_mode: self.state.approval_mode,
         };
 
         let policy_model = policy_model_id(&model);
@@ -1418,8 +1567,14 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
         let workspace_dir =
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        self.custom_prompts = load_prompts(&workspace_dir);
-        self.exec_commands = crate::exec_commands::discover(&workspace_dir);
+        if let Some(notice) = untrusted_workspace_notice(&workspace_dir, &self.plugin_registry) {
+            self.state.add_system_message(notice);
+        }
+        let plugin_command_dirs = self.plugin_registry.command_dirs();
+        self.custom_prompts =
+            crate::prompts::load_prompts_with_plugin_dirs(&workspace_dir, &plugin_command_dirs);
+        self.exec_commands =
+            crate::exec_commands::discover_with_plugin_dirs(&workspace_dir, &plugin_command_dirs);
         self.rebuild_slash_registry();
     }
 
@@ -1520,6 +1675,18 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             if let Err(e) = agent.set_system_prompt(prompt) {
                 self.state.error = Some(format!("Failed to update system prompt: {e}"));
             }
+        }
+    }
+
+    /// Push `state.approval_mode` to the native agent.
+    ///
+    /// The agent is the sole owner of the approve/auto-execute decision (see
+    /// the `FromAgent::ToolCall` handler in `poll_agent`); call this
+    /// wherever `state.approval_mode` changes so the agent's inline gate
+    /// never runs a stale mode against the one shown in the UI.
+    pub(super) fn sync_agent_approval_mode(&mut self) {
+        if let Some(agent) = &self.native_agent {
+            let _ = agent.set_approval_mode(self.state.approval_mode);
         }
     }
 
@@ -1773,6 +1940,23 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             }
             _ => None,
         };
+        let native_tool_completion = match &msg {
+            FromAgent::ToolEnd {
+                call_id,
+                success,
+                result,
+                receipt,
+            } => self.tool_history.get(call_id).map(|execution| {
+                (
+                    call_id.clone(),
+                    execution.tool_name.clone(),
+                    *success,
+                    result.clone(),
+                    receipt.clone(),
+                )
+            }),
+            _ => None,
+        };
         let mut needs_post_interrupt_queue = false;
 
         if matches!(msg, FromAgent::ResponseStart { .. }) {
@@ -1932,24 +2116,23 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     error.clone(),
                 );
             }
-            FromAgent::ResponseEnd { response_id, .. } => {
+            FromAgent::ResponseEnd { response_id, .. } if response_id == "done" => {
                 // Model responses can end before their tool calls and follow-up
                 // responses complete. Only the runner's terminal sentinel ends
                 // the full agent turn.
-                if response_id == "done" {
-                    self.state.busy = false;
-                    self.notify_terminal_turn_finished();
-                    self.finalize_file_checkpoint();
-                    self.queued_prompt_active = None;
-                    self.queued_prompt_inflight = None;
-                    self.queued_prompt_inflight = self
-                        .queued_prompts
-                        .front()
-                        .map(|prompt| QueuedPromptCursor { id: prompt.id });
-                    self.sync_queue_prompt_count();
-                    needs_post_interrupt_queue = true;
-                }
+                self.state.busy = false;
+                self.notify_terminal_turn_finished();
+                self.finalize_file_checkpoint();
+                self.queued_prompt_active = None;
+                self.queued_prompt_inflight = None;
+                self.queued_prompt_inflight = self
+                    .queued_prompts
+                    .front()
+                    .map(|prompt| QueuedPromptCursor { id: prompt.id });
+                self.sync_queue_prompt_count();
+                needs_post_interrupt_queue = true;
             }
+            FromAgent::ResponseEnd { .. } => {}
             FromAgent::Error { .. } => {
                 // Clear busy state on error
                 self.state.busy = false;
@@ -1986,41 +2169,6 @@ Retry with a supported tool (bash/read/write/glob/grep) and valid args."
                     return Ok(());
                 }
 
-                // Drop obviously invalid bash requests so we don't spam the user with empty approvals
-                let command = args.get("command").and_then(|v| v.as_str());
-                let command_trimmed = command.and_then(|c| {
-                    let trimmed = c.trim();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed)
-                    }
-                });
-
-                if tool.eq_ignore_ascii_case("bash") && command_trimmed.is_none() {
-                    // Auto-fill a safe default command so the model makes progress instead of looping
-                    let mut filled_args = args.clone();
-                    filled_args
-                        .as_object_mut()
-                        .map(|obj| obj.insert("command".to_string(), serde_json::json!("pwd")));
-
-                    self.state.add_system_message(
-                        "Received empty bash tool call; auto-filled command as \"pwd\" to proceed."
-                            .to_string(),
-                    );
-
-                    // Record tool call
-                    self.state.handle_agent_message(msg.clone());
-                    self.tool_history.record_approval(call_id, true);
-                    // Run the tool with the filled command (auto-approved)
-                    self.execute_tool_and_respond(
-                        call_id.clone(),
-                        tool.clone(),
-                        filled_args.clone(),
-                    );
-                    return Ok(());
-                }
-
                 // Validate required fields per tool schema
                 let missing = self.tool_executor.missing_required(tool, args);
                 if !missing.is_empty() {
@@ -2050,20 +2198,25 @@ Add the required fields and retry.",
                     return Ok(());
                 }
 
-                // Check approval requirement based on mode and registry
-                let mut needs_approval = match self.state.approval_mode {
-                    ApprovalMode::Yolo => false,
-                    ApprovalMode::Safe => true,
-                    ApprovalMode::Selective => self.tool_executor.requires_approval(tool, args),
-                };
-
-                if matches!(&firewall_verdict, FirewallVerdict::RequireApproval { .. })
-                    && self.state.approval_mode != ApprovalMode::Yolo
-                {
-                    needs_approval = true;
-                }
-
-                if needs_approval {
+                // The native agent is the single owner of the approve/execute
+                // decision: it already applied `self.state.approval_mode`
+                // (kept in sync via `sync_agent_approval_mode`) to the same
+                // Yolo/Safe/Selective gate before emitting this event, and if
+                // `requires_approval` is false it has ALREADY executed the
+                // tool inline and will report the result to the model itself
+                // (see `NativeAgentRunner::run_loop` in `agent/native.rs`).
+                //
+                // Recomputing that decision here from `self.state` -- as this
+                // used to do -- let the two sides disagree: in Safe mode the
+                // agent (mode-unaware) would auto-execute while this recomputed
+                // `true` and popped an approval modal for an already-finished
+                // call, and Deny had nowhere to go (issue #3149). In Selective
+                // mode both sides agreed `false` and both executed the tool,
+                // running side effects (e.g. bash) twice (issue #3156).
+                //
+                // This mirrors the same rule the headless server already
+                // enforces (see the module doc on `headless_server.rs`).
+                if *requires_approval {
                     let mut request =
                         ApprovalRequest::new(call_id.clone(), tool.clone(), args.clone());
                     if let FirewallVerdict::RequireApproval { reason } = &firewall_verdict {
@@ -2075,14 +2228,19 @@ Add the required fields and retry.",
                     // Show approval modal
                     self.active_modal = ActiveModal::Approval;
                 } else {
-                    // Auto-approve and execute
+                    // Already auto-executed inline by the native agent above;
+                    // do not execute it again. Just record the approval flag
+                    // for the tool-history UI.
                     self.tool_history.record_approval(call_id, true);
-                    self.execute_tool_and_respond(call_id.clone(), tool.clone(), args.clone());
                 }
             }
             _ => {}
         }
         self.state.handle_agent_message(msg);
+
+        if let Some((call_id, tool, success, result, receipt)) = native_tool_completion {
+            self.record_native_tool_completion(&call_id, &tool, success, result, receipt);
+        }
 
         if let Some((response_id, usage)) = response_end_info {
             if let Some(ref usage) = usage {
@@ -2101,72 +2259,62 @@ Add the required fields and retry.",
         Ok(())
     }
 
-    /// Execute a tool on a spawned task and send the response back to the
-    /// agent when it finishes.
-    ///
-    /// Tool execution (notably bash, which may run for minutes) must not block
-    /// the event loop: while it runs the loop keeps polling terminal events
-    /// and spinner frames, and Ctrl+C cancels the per-call token, which kills
-    /// the tool's child process group (see `BashTool::execute_with_cancellation`).
-    fn execute_tool_and_respond(&mut self, call_id: String, tool: String, args: serde_json::Value) {
-        let cancel = CancellationToken::new();
-        self.running_tools.insert(call_id.clone(), cancel.clone());
-        let executor = Arc::clone(&self.tool_executor);
-        let vault = self.credential_vault.clone();
-        let completion_tx = self.tool_completion_tx.clone();
-        tokio::spawn(async move {
-            let resolved_args = vault.resolve_in_json(&args);
-            let execution = executor
-                .execute_with_receipt_cancellable(&tool, &resolved_args, None, &call_id, cancel)
-                .await;
-            let _ = completion_tx.send((call_id, tool, execution));
+    /// Complete a tool that the native agent executed.
+    fn record_native_tool_completion(
+        &mut self,
+        call_id: &str,
+        tool: &str,
+        success: bool,
+        result: Option<ToolResult>,
+        receipt: Option<crate::agent::ExecutionReceipt>,
+    ) {
+        let output = self
+            .state
+            .messages
+            .iter()
+            .rev()
+            .flat_map(|message| message.tool_calls.iter())
+            .find(|call| call.call_id == call_id)
+            .map_or_else(String::new, |call| call.output.clone());
+        let result = result.unwrap_or_else(|| {
+            let error = (!success).then(|| {
+                if output.is_empty() {
+                    "Tool execution failed".to_string()
+                } else {
+                    output.clone()
+                }
+            });
+            ToolResult {
+                success,
+                output,
+                error,
+                details: None,
+            }
         });
+        let execution = receipt.map(|receipt| {
+            let mut execution =
+                ToolExecution::from_legacy(call_id, tool, receipt.source, result.clone());
+            execution.receipt = receipt;
+            execution
+        });
+
+        self.record_tool_result(call_id, tool, &result, execution.as_ref());
+        self.persist_attachment_extract(call_id, tool, &result);
     }
 
-    /// Apply finished tool executions (non-blocking). Returns true when any
-    /// completion was applied.
-    fn poll_tool_completions(&mut self) -> bool {
-        let mut completions = Vec::new();
-        while let Ok(completion) = self.tool_completion_rx.try_recv() {
-            completions.push(completion);
-        }
-        let had_completions = !completions.is_empty();
-        for (call_id, tool, execution) in completions {
-            self.running_tools.remove(&call_id);
-            self.finish_tool_execution(call_id, tool, execution);
-        }
-        had_completions
-    }
-
-    /// Record a finished tool execution and respond to the agent.
-    fn finish_tool_execution(&mut self, call_id: String, tool: String, execution: ToolExecution) {
-        let result = execution.to_legacy();
-
-        self.record_tool_result(&call_id, &tool, &result, Some(&execution));
-
+    fn persist_attachment_extract(&mut self, call_id: &str, tool: &str, result: &ToolResult) {
         if tool.eq_ignore_ascii_case("extract_document") && result.success {
             let attachment_id = result
                 .details
                 .as_ref()
                 .and_then(|details| details.get("url"))
                 .and_then(|value| value.as_str())
-                .unwrap_or(&call_id)
+                .unwrap_or(call_id)
                 .to_string();
             let _ = self
                 .session_manager
                 .save_attachment_extract(attachment_id, result.output.clone());
-        }
-
-        // Send response back to native agent
-        if let Some(tx) = &self.tool_response_tx {
-            let _ = tx.send((call_id, true, Some(result)));
-        }
-    }
-
-    /// Cancel all in-flight tool executions (Ctrl+C interrupt).
-    pub(super) fn cancel_running_tools(&mut self) {
-        for (_, token) in self.running_tools.drain() {
-            token.cancel();
+            self.flush_session();
         }
     }
 
@@ -2259,133 +2407,152 @@ Slash Commands:
         let rewind_picker = &mut self.rewind_picker;
         let detail_view = &self.detail_view;
 
-        self.terminal.draw(|frame| {
-            let area = frame.area();
-            let view = ChatView::new(state);
-            frame.render_widget(view, area);
+        // DEC mode 2026 lets capable terminals present a whole Ratatui diff
+        // atomically, eliminating visible partial-frame tearing. Unknown DEC
+        // modes are ignored, so this is safe on older terminals.
+        {
+            let writer = self.terminal.backend_mut();
+            crossterm::queue!(writer, BeginSynchronizedUpdate)?;
+            Write::flush(writer)?;
+        }
+        let draw_result = self
+            .terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let view = ChatView::new(state);
+                frame.render_widget(view, area);
 
-            // Show error if any. Wrap the full provider message across lines
-            // (extracted upstream from the error body) instead of clipping a
-            // fixed two-line slice of it. Hidden while a modal/overlay is
-            // active so the error text cannot mix with the overlay's cells;
-            // the status-bar alert badge and `/alerts` still surface it.
-            let visible_error = if active_modal == ActiveModal::None {
-                state.error.as_deref()
-            } else {
-                None
-            };
-            if let Some(error) = visible_error {
-                let error_width = area.width.saturating_sub(2).max(1);
-                let wrapped_lines = crate::wrapping::wrapped_line_count(
-                    &ratatui::text::Text::raw(error),
-                    error_width as usize,
-                ) as u16;
-                let error_height = wrapped_lines.clamp(1, 8);
-                let status_height = u16::from(!state.zen_mode);
-                let input_height = calculate_input_height(state, area);
-                let error_y = area
-                    .height
-                    .saturating_sub(status_height)
-                    .saturating_sub(input_height)
-                    .saturating_sub(error_height);
-                let error_area = Rect {
-                    x: area.x + 1,
-                    y: area.y + error_y,
-                    width: error_width,
-                    height: error_height,
+                // Show error if any. Wrap the full provider message across lines
+                // (extracted upstream from the error body) instead of clipping a
+                // fixed two-line slice of it. Hidden while a modal/overlay is
+                // active so the error text cannot mix with the overlay's cells;
+                // the status-bar alert badge and `/alerts` still surface it.
+                let visible_error = if active_modal == ActiveModal::None {
+                    state.error.as_deref()
+                } else {
+                    None
                 };
-                // Blank the covered cells first so no older frame content
-                // shows through the wrapped paragraph.
-                frame.render_widget(ratatui::widgets::Clear, error_area);
-                let error_widget = ratatui::widgets::Paragraph::new(error)
-                    .style(Style::default().fg(Color::Red))
-                    .wrap(ratatui::widgets::Wrap { trim: false });
-                frame.render_widget(error_widget, error_area);
-            }
+                if let Some(error) = visible_error {
+                    let error_width = area.width.saturating_sub(2).max(1);
+                    let wrapped_lines = crate::wrapping::wrapped_line_count(
+                        &ratatui::text::Text::raw(error),
+                        error_width as usize,
+                    ) as u16;
+                    let error_height = wrapped_lines.clamp(1, 8);
+                    let status_height = u16::from(!state.zen_mode);
+                    let input_height = calculate_input_height(state, area);
+                    let error_y = area
+                        .height
+                        .saturating_sub(status_height)
+                        .saturating_sub(input_height)
+                        .saturating_sub(error_height);
+                    let error_area = Rect {
+                        x: area.x + 1,
+                        y: area.y + error_y,
+                        width: error_width,
+                        height: error_height,
+                    };
+                    // Blank the covered cells first so no older frame content
+                    // shows through the wrapped paragraph.
+                    frame.render_widget(ratatui::widgets::Clear, error_area);
+                    let error_widget = ratatui::widgets::Paragraph::new(error)
+                        .style(Style::default().fg(Color::Red))
+                        .wrap(ratatui::widgets::Wrap { trim: false });
+                    frame.render_widget(error_widget, error_area);
+                }
 
-            // Render slash completions if active
-            if active_modal == ActiveModal::None && slash_state.has_completions() {
-                Self::render_slash_completions_static(slash_state, frame, area);
-            }
+                // Render slash completions if active
+                if active_modal == ActiveModal::None && slash_state.has_completions() {
+                    Self::render_slash_completions_static(slash_state, frame, area);
+                }
 
-            // Render modals
-            match active_modal {
-                ActiveModal::FileSearch => {
-                    file_search.render(frame, area);
+                // Render modals
+                match active_modal {
+                    ActiveModal::FileSearch => {
+                        file_search.render(frame, area);
+                    }
+                    ActiveModal::SessionSwitcher => {
+                        session_switcher.render(frame, area);
+                    }
+                    ActiveModal::Operations => {
+                        operations.render(frame, area);
+                    }
+                    ActiveModal::CommandPalette => {
+                        command_palette.render(frame, area);
+                    }
+                    ActiveModal::Approval => {
+                        // Parallel tool calls queue several approvals at once; show
+                        // them together in one batch modal instead of N sequential
+                        // single-call modals. Re-evaluated every frame so an
+                        // approval arriving while the single-call modal is open
+                        // upgrades it to the batched variant.
+                        if approval_modal_kind(approval_controller) == ApprovalModalKind::Batched {
+                            let modal = BatchedApprovalModal::new(approval_controller.pending())
+                                .selected(approval_controller.selected_index());
+                            frame.render_widget(modal, area);
+                        } else if let Some(request) = approval_controller.current() {
+                            let modal = ApprovalModal::new(request);
+                            frame.render_widget(modal, area);
+                        }
+                    }
+                    ActiveModal::ModelSelector => {
+                        model_selector.render(frame, area);
+                    }
+                    ActiveModal::ThemeSelector => {
+                        theme_selector.render(frame, area);
+                    }
+                    ActiveModal::ShortcutsHelp => {
+                        frame.render_widget(shortcuts_help.clone(), area);
+                    }
+                    ActiveModal::RewindPicker => {
+                        rewind_picker.render(frame, area);
+                    }
+                    ActiveModal::DetailView => {
+                        if let Some(detail) = detail_view {
+                            frame.render_widget(detail, area);
+                        }
+                    }
+                    ActiveModal::None => {}
                 }
-                ActiveModal::SessionSwitcher => {
-                    session_switcher.render(frame, area);
-                }
-                ActiveModal::Operations => {
-                    operations.render(frame, area);
-                }
-                ActiveModal::CommandPalette => {
-                    command_palette.render(frame, area);
-                }
-                ActiveModal::Approval => {
-                    // Parallel tool calls queue several approvals at once; show
-                    // them together in one batch modal instead of N sequential
-                    // single-call modals.
-                    if approval_controller.total_count() > 1 {
-                        let modal = BatchedApprovalModal::new(approval_controller.pending())
-                            .selected(approval_controller.selected_index());
-                        frame.render_widget(modal, area);
-                    } else if let Some(request) = approval_controller.current() {
-                        let modal = ApprovalModal::new(request);
-                        frame.render_widget(modal, area);
+
+                // Position terminal cursor in the input area
+                // Layout: [Messages(Min), Input(auto), Status(1)]
+                if active_modal == ActiveModal::None {
+                    // Calculate input area position (same layout as ChatView)
+                    let status_height = u16::from(!state.zen_mode);
+                    let input_height = calculate_input_height(state, area);
+                    let input_area = Rect {
+                        x: area.x,
+                        y: area.y.saturating_add(
+                            area.height.saturating_sub(status_height + input_height),
+                        ),
+                        width: area.width,
+                        height: input_height,
+                    };
+
+                    // Create widget just to calculate cursor position
+                    let input_widget = ChatInputWidget::new(
+                        &state.textarea,
+                        "",
+                        ChatInputWidgetOptions {
+                            busy: state.busy,
+                            pending_input_preview: None,
+                            ghost_text: None,
+                        },
+                    );
+
+                    if let Some((cursor_x, cursor_y)) = input_widget.cursor_pos(input_area) {
+                        frame.set_cursor_position((cursor_x, cursor_y));
                     }
                 }
-                ActiveModal::ModelSelector => {
-                    model_selector.render(frame, area);
-                }
-                ActiveModal::ThemeSelector => {
-                    theme_selector.render(frame, area);
-                }
-                ActiveModal::ShortcutsHelp => {
-                    frame.render_widget(shortcuts_help.clone(), area);
-                }
-                ActiveModal::RewindPicker => {
-                    rewind_picker.render(frame, area);
-                }
-                ActiveModal::DetailView => {
-                    if let Some(detail) = detail_view {
-                        frame.render_widget(detail, area);
-                    }
-                }
-                ActiveModal::None => {}
-            }
-
-            // Position terminal cursor in the input area
-            // Layout: [Messages(Min), Input(auto), Status(1)]
-            if active_modal == ActiveModal::None {
-                // Calculate input area position (same layout as ChatView)
-                let status_height = u16::from(!state.zen_mode);
-                let input_height = calculate_input_height(state, area);
-                let input_area = Rect {
-                    x: area.x,
-                    y: area
-                        .y
-                        .saturating_add(area.height.saturating_sub(status_height + input_height)),
-                    width: area.width,
-                    height: input_height,
-                };
-
-                // Create widget just to calculate cursor position
-                let input_widget = ChatInputWidget::new(
-                    &state.textarea,
-                    "",
-                    ChatInputWidgetOptions {
-                        busy: state.busy,
-                        pending_input_preview: None,
-                        ghost_text: None,
-                    },
-                );
-
-                if let Some((cursor_x, cursor_y)) = input_widget.cursor_pos(input_area) {
-                    frame.set_cursor_position((cursor_x, cursor_y));
-                }
-            }
-        })?;
+            })
+            .map(|_| ());
+        let sync_end_result = {
+            let writer = self.terminal.backend_mut();
+            crossterm::queue!(writer, EndSynchronizedUpdate).and_then(|()| Write::flush(writer))
+        };
+        draw_result?;
+        sync_end_result?;
 
         Ok(())
     }
@@ -2656,6 +2823,22 @@ fn policy_model_id(model: &str) -> String {
 /// Handle presses and repeats (so held keys auto-repeat); ignore releases.
 fn should_handle_key_event(kind: KeyEventKind) -> bool {
     matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat)
+}
+
+fn uncurses_input_enabled(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_none_or(|value| value != "0")
+}
+
+fn terminal_theme_query_due(
+    has_terminal_events: bool,
+    has_theme_follower: bool,
+    reporting_available: bool,
+    elapsed_since_query: Option<Duration>,
+) -> bool {
+    has_terminal_events
+        && has_theme_follower
+        && !reporting_available
+        && elapsed_since_query.is_none_or(|elapsed| elapsed >= Duration::from_secs(2))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

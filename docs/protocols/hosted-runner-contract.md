@@ -1,5 +1,8 @@
 # Hosted Runner Contract
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. Hosted runner code now lives in `packages/tui-rs/src/hosted_runner.rs`, `hosted_runner_cli.rs`, and `packages/tui-rs/src/hosted_runner/`. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 Maestro hosted runners are substrate-neutral runtime pods or sandboxes that
 Platform can create, attach to, drain, and stop for an EvalOps account. The
 contract is deliberately small: every provider must expose the same Maestro

@@ -48,6 +48,23 @@ use crate::headless::HEADLESS_PROTOCOL_VERSION;
 struct RuntimeMeta {
     session_id: Option<String>,
     approval_mode: Option<ApprovalMode>,
+    transcript_grade: crate::transcript::TranscriptGrade,
+    response_chunks: Vec<(String, bool)>,
+}
+
+impl RuntimeMeta {
+    fn record_response_chunk(
+        &mut self,
+        content: &str,
+        is_thinking: bool,
+    ) -> crate::transcript::TranscriptGrade {
+        let grade = self.transcript_grade;
+        if grade != crate::transcript::TranscriptGrade::Delta {
+            self.response_chunks
+                .push((content.to_string(), is_thinking));
+        }
+        grade
+    }
 }
 
 struct HeadlessState {
@@ -105,6 +122,8 @@ impl HeadlessState {
             meta: Arc::new(Mutex::new(RuntimeMeta {
                 session_id,
                 approval_mode: None,
+                transcript_grade: crate::transcript::TranscriptGrade::Delta,
+                response_chunks: Vec::new(),
             })),
             agent: None,
             tool_tx: None,
@@ -151,6 +170,11 @@ impl HeadlessState {
                 thinking_enabled: self.thinking_enabled,
                 thinking_budget: self.thinking_budget,
                 cwd: self.cwd.clone(),
+                // The headless protocol's own `ApprovalMode` (Auto/Fail/Prompt,
+                // imported above) only resolves calls the runner already
+                // marked `requires_approval`; preserve the prior (mode-unaware)
+                // per-tool heuristic here exactly so that decision is unchanged.
+                approval_mode: crate::state::ApprovalMode::Selective,
             };
             let (agent, mut event_rx) =
                 NativeAgent::new_with_credential_vault(config, self.credential_vault.clone())
@@ -253,10 +277,17 @@ pub async fn run_headless_server() -> Result<i32> {
             ToAgentMessage::Hello {
                 protocol_version,
                 client_info,
-                capabilities: _,
+                capabilities,
                 role,
                 opt_out_notifications,
             } => {
+                if let Some(grade) = capabilities.and_then(|value| value.transcript_grade) {
+                    state
+                        .meta
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .transcript_grade = grade;
+                }
                 emit(&FromAgentMessage::HelloOk {
                     protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
                     connection_id: Some("native-local".to_string()),
@@ -642,6 +673,7 @@ fn native_capabilities() -> ClientCapabilities {
             UtilityOperation::FileWatch,
         ]),
         raw_agent_events: Some(true),
+        transcript_grade: Some(crate::transcript::TranscriptGrade::Delta),
     }
 }
 
@@ -1066,6 +1098,10 @@ async fn handle_agent_event(
             })?;
         }
         FromAgent::ResponseStart { response_id } => {
+            meta.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .response_chunks
+                .clear();
             emit(&FromAgentMessage::ResponseStart { response_id })?;
         }
         FromAgent::ResponseChunk {
@@ -1073,13 +1109,40 @@ async fn handle_agent_event(
             content,
             is_thinking,
         } => {
-            emit(&FromAgentMessage::ResponseChunk {
-                response_id,
-                content,
-                is_thinking,
-            })?;
+            let grade = {
+                let mut meta = meta
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                meta.record_response_chunk(&content, is_thinking)
+            };
+            if grade == crate::transcript::TranscriptGrade::Delta {
+                emit(&FromAgentMessage::ResponseChunk {
+                    response_id,
+                    content,
+                    is_thinking,
+                })?;
+            }
         }
         FromAgent::ResponseEnd { response_id, usage } => {
+            let (grade, content) = {
+                let mut meta = meta
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let content = coalesce_response_chunks(&mut meta.response_chunks);
+                (meta.transcript_grade, content)
+            };
+            if matches!(
+                grade,
+                crate::transcript::TranscriptGrade::Turn
+                    | crate::transcript::TranscriptGrade::Block
+            ) && !content.is_empty()
+            {
+                emit(&FromAgentMessage::ResponseChunk {
+                    response_id: response_id.clone(),
+                    content,
+                    is_thinking: false,
+                })?;
+            }
             emit(&FromAgentMessage::ResponseEnd {
                 response_id,
                 usage: usage.map(to_headless_usage),
@@ -1094,13 +1157,18 @@ async fn handle_agent_event(
             args,
             requires_approval,
         } => {
-            emit(&FromAgentMessage::ToolCall {
+            let message = FromAgentMessage::ToolCall {
                 call_id: call_id.clone(),
                 tool_execution_id: None,
                 tool,
                 args,
                 requires_approval,
-            })?;
+            };
+            if requires_approval {
+                emit(&message)?;
+            } else {
+                emit_transcript(meta, crate::transcript::TranscriptLevel::Block, &message)?;
+            }
 
             // Tools that do not require approval are auto-executed by the
             // native agent (with ToolStart/ToolOutput/ToolEnd). Do not
@@ -1117,24 +1185,37 @@ async fn handle_agent_event(
             }
         }
         FromAgent::ToolStart { call_id } => {
-            emit(&FromAgentMessage::ToolStart { call_id })?;
+            emit_transcript(
+                meta,
+                crate::transcript::TranscriptLevel::Block,
+                &FromAgentMessage::ToolStart { call_id },
+            )?;
         }
         FromAgent::ToolOutput { call_id, content } => {
-            emit(&FromAgentMessage::ToolOutput { call_id, content })?;
+            emit_transcript(
+                meta,
+                crate::transcript::TranscriptLevel::Delta,
+                &FromAgentMessage::ToolOutput { call_id, content },
+            )?;
         }
         FromAgent::ToolEnd {
             call_id,
             success,
             receipt,
+            ..
         } => {
-            emit(&FromAgentMessage::ToolEnd {
-                call_id,
-                tool_execution_id: None,
-                success,
-                tool: None,
-                details: None,
-                receipt,
-            })?;
+            emit_transcript(
+                meta,
+                crate::transcript::TranscriptLevel::Block,
+                &FromAgentMessage::ToolEnd {
+                    call_id,
+                    tool_execution_id: None,
+                    success,
+                    tool: None,
+                    details: None,
+                    receipt,
+                },
+            )?;
         }
         FromAgent::Error { message, fatal } => {
             emit(&FromAgentMessage::Error {
@@ -1149,7 +1230,11 @@ async fn handle_agent_event(
             })?;
         }
         FromAgent::Status { message } => {
-            emit(&FromAgentMessage::Status { message })?;
+            emit_transcript(
+                meta,
+                crate::transcript::TranscriptLevel::Delta,
+                &FromAgentMessage::Status { message },
+            )?;
         }
         FromAgent::SessionInfo {
             session_id,
@@ -1177,16 +1262,43 @@ async fn handle_agent_event(
             custom_instructions,
             timestamp,
         } => {
-            emit(&FromAgentMessage::Compaction {
-                summary,
-                first_kept_entry_index,
-                tokens_before,
-                auto,
-                custom_instructions,
-                timestamp,
-            })?;
+            emit_transcript(
+                meta,
+                crate::transcript::TranscriptLevel::Block,
+                &FromAgentMessage::Compaction {
+                    summary,
+                    first_kept_entry_index,
+                    tokens_before,
+                    auto,
+                    custom_instructions,
+                    timestamp,
+                },
+            )?;
         }
         _ => {}
+    }
+    Ok(())
+}
+
+fn coalesce_response_chunks(chunks: &mut Vec<(String, bool)>) -> String {
+    chunks
+        .drain(..)
+        .filter(|(_, is_thinking)| !is_thinking)
+        .map(|(content, _)| content)
+        .collect()
+}
+
+fn emit_transcript(
+    meta: &Arc<Mutex<RuntimeMeta>>,
+    level: crate::transcript::TranscriptLevel,
+    message: &FromAgentMessage,
+) -> Result<()> {
+    let grade = meta
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .transcript_grade;
+    if grade.includes(level) {
+        emit(message)?;
     }
     Ok(())
 }
@@ -1317,7 +1429,39 @@ mod tests {
             ])
         );
         assert_eq!(capabilities.raw_agent_events, Some(true));
+        assert_eq!(
+            capabilities.transcript_grade,
+            Some(crate::transcript::TranscriptGrade::Delta)
+        );
         assert_eq!(capabilities.server_requests.as_ref().map(Vec::len), Some(4));
+    }
+
+    #[test]
+    fn coarser_transcripts_coalesce_text_and_drop_thinking() {
+        let mut chunks = vec![
+            ("reasoning".to_string(), true),
+            ("hello ".to_string(), false),
+            ("world".to_string(), false),
+        ];
+        assert_eq!(coalesce_response_chunks(&mut chunks), "hello world");
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn delta_transcript_does_not_buffer_emitted_response_chunks() {
+        let mut meta = RuntimeMeta {
+            transcript_grade: crate::transcript::TranscriptGrade::Delta,
+            ..RuntimeMeta::default()
+        };
+
+        for _ in 0..10_000 {
+            assert_eq!(
+                meta.record_response_chunk("already emitted", false),
+                crate::transcript::TranscriptGrade::Delta,
+            );
+        }
+
+        assert!(meta.response_chunks.is_empty());
     }
 
     #[test]

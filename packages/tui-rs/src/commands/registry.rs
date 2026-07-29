@@ -1853,6 +1853,9 @@ pub fn build_command_registry() -> CommandRegistry {
 
             let action = match subcommand.as_str() {
                 "" => McpAction::Status,
+                "config" => McpAction::Configure {
+                    args: tokens.into_iter().skip(1).collect(),
+                },
                 "resources" => {
                     let server = tokens.get(1).cloned();
                     let uri = if server.is_some() {
@@ -1871,12 +1874,25 @@ pub fn build_command_registry() -> CommandRegistry {
                 other => {
                     return Err(
                         CommandError::new(format!("Unknown mcp subcommand: {other}"))
-                            .with_hint("Available: resources, prompts"),
+                            .with_hint("Available: config, resources, prompts"),
                     );
                 }
             };
 
             Ok(CommandOutput::Action(CommandAction::Mcp(action)))
+        }),
+    ));
+
+    registry.register(Command::new(
+        "mcp-config",
+        "Configure MCP servers safely",
+        CommandCategory::Tools,
+        Box::new(|ctx| {
+            Ok(CommandOutput::Action(CommandAction::Mcp(
+                McpAction::Configure {
+                    args: tokenize_command_args(ctx.raw_args.trim()),
+                },
+            )))
         }),
     ));
 

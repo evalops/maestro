@@ -1,3 +1,4 @@
+use anyhow::Context;
 use base64::{
     engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
     Engine as _,
@@ -128,7 +129,7 @@ pub enum CliAction {
     Version,
 }
 
-pub fn parse_cli_action<I, S>(args: I) -> Result<CliAction, String>
+pub fn parse_cli_action<I, S>(args: I) -> anyhow::Result<CliAction>
 where
     I: IntoIterator<Item = S>,
     S: Into<String>,
@@ -146,14 +147,14 @@ where
     if args.len() == 1 && matches!(args[0].as_str(), "-V" | "--version") {
         return Ok(CliAction::Version);
     }
-    Err(format!("unexpected argument: {}", args.join(" ")))
+    anyhow::bail!("unexpected argument: {}", args.join(" "))
 }
 
 pub fn print_cli_help() {
     println!(
         "Maestro Rust control plane\n\n\
 Usage:\n  maestro-control-plane [--help] [--version]\n\n\
-Environment:\n  MAESTRO_CONTROL_HOST  bind host (default: 127.0.0.1)\n  PORT                  bind port (default: 8080)\n  MAESTRO_HOME          state directory for sessions, usage, and preferences\n  MAESTRO_WEB_API_KEY   API key accepted via Bearer or x-maestro-api-key\n  MAESTRO_WEB_REQUIRE_KEY=0 disables API-key auth for local development\n"
+Environment:\n  MAESTRO_CONTROL_HOST  bind host (default: 127.0.0.1)\n  PORT                  bind port (default: 8080)\n  MAESTRO_HOME          state directory for sessions, usage, and preferences\n  MAESTRO_WEB_API_KEY   API key accepted via Bearer or x-maestro-api-key\n  MAESTRO_WEB_REQUIRE_KEY=0 disables API-key auth for local development; only honored when the bind host is loopback\n  MAESTRO_WEB_ALLOWED_HOSTS  extra comma-separated Host header values accepted on a loopback bind\n"
     );
 }
 
@@ -161,12 +162,111 @@ pub fn print_cli_version() {
     println!("maestro-control-plane {}", env!("CARGO_PKG_VERSION"));
 }
 
+/// A bind host counts as loopback when it is `localhost` or resolves to a
+/// loopback IP literal. Anything else (including unresolvable names) is treated
+/// as network-exposed so auth defaults stay fail-closed.
+pub(crate) fn host_is_loopback(host: &str) -> bool {
+    let host = host.trim();
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let literal = host
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(host);
+    literal
+        .parse::<IpAddr>()
+        .map(|address| address.is_loopback())
+        .unwrap_or(false)
+}
+
+/// Extra `Host` values accepted on a loopback bind, for operators who front the
+/// control plane with a tunnel or port-forward that rewrites `Host`.
+pub(crate) fn parse_allowed_hosts(value: Option<String>) -> Vec<String> {
+    value
+        .unwrap_or_default()
+        .split(',')
+        .map(|host| host.trim().to_ascii_lowercase())
+        .filter(|host| !host.is_empty())
+        .collect()
+}
+
+/// Split the hostname out of a `Host` header value, dropping any port.
+fn host_header_hostname(value: &str) -> &str {
+    if let Some(rest) = value.strip_prefix('[') {
+        // Bracketed IPv6 literal: `[::1]` or `[::1]:8080`.
+        return rest.split(']').next().unwrap_or("");
+    }
+    if value.matches(':').count() > 1 {
+        // Bare IPv6 literal with no brackets and therefore no port.
+        return value;
+    }
+    value.split(':').next().unwrap_or("")
+}
+
+/// Reject requests whose `Host` header does not name the loopback interface the
+/// server is actually bound to.
+///
+/// Without this, DNS rebinding defeats the loopback default: an attacker serves
+/// `evil.example` with a short TTL, re-resolves it to `127.0.0.1`, and the
+/// browser then treats `http://evil.example:8080/` as same-origin. No `Origin`
+/// header is sent on a same-origin navigation, so every origin check in the
+/// control plane passes, and the default local posture needs no credential.
+///
+/// Only the hostname is checked, never the port: a legitimate `ssh -L` forward
+/// or container port mapping changes the port but not the host, while rebinding
+/// depends on the attacker's *hostname* resolving to loopback.
+pub(crate) fn host_header_allowed(head: &RequestHead, config: &Config) -> bool {
+    if !config.listen_host_is_loopback() {
+        // A network-facing bind is reached by names this process cannot know.
+        // Auth, not `Host`, is the control there.
+        return true;
+    }
+    let Some(value) = head.headers.get("host").map(|value| value.trim()) else {
+        // HTTP/1.1 requires `Host`, and a browser always sends one. A client
+        // that omits it is not a browser and cannot be steered by DNS.
+        return true;
+    };
+    if value.is_empty() {
+        return true;
+    }
+    if value.contains(',') {
+        // `parse_request_head` joins duplicate headers with ", ". More than one
+        // `Host` is ambiguous and is a request-smuggling shape; reject it.
+        return false;
+    }
+
+    let hostname = host_header_hostname(value);
+    if hostname.is_empty() {
+        return false;
+    }
+    if hostname.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    if hostname.eq_ignore_ascii_case(config.listen_host.trim_matches(['[', ']'])) {
+        return true;
+    }
+    if hostname
+        .parse::<IpAddr>()
+        .map(|address| address.is_loopback())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    config
+        .allowed_hosts
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(hostname))
+}
+
 #[derive(Debug, Clone)]
 pub struct ControlPlaneConfig {
     listen_host: String,
     listen_port: u16,
     api_key: Option<String>,
+    allowed_hosts: Vec<String>,
     require_key: bool,
+    require_key_explicitly_disabled: bool,
     csrf_token: Option<String>,
     require_csrf: bool,
     cwd: PathBuf,
@@ -188,15 +288,17 @@ impl ControlPlaneConfig {
     pub fn from_env() -> Self {
         let listen_port = env_u16("PORT", 8080);
         let listen_host = env::var("MAESTRO_CONTROL_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-        let require_key = env::var("MAESTRO_WEB_REQUIRE_KEY")
-            .map(|value| value != "0")
-            .unwrap_or_else(|_| {
-                listen_host != "localhost"
-                    && listen_host
-                        .parse::<IpAddr>()
-                        .map(|address| !address.is_loopback())
-                        .unwrap_or(true)
-            });
+        let listen_host_is_loopback = host_is_loopback(&listen_host);
+        let require_key_explicitly_disabled =
+            matches!(env::var("MAESTRO_WEB_REQUIRE_KEY").as_deref(), Ok("0"));
+        // MAESTRO_WEB_REQUIRE_KEY=0 is a local-development kill switch. It is
+        // only honored for loopback binds; on any other bind address auth stays
+        // on and `validate_startup` refuses to start, so the switch can never
+        // silently expose an unauthenticated agent runtime to the network.
+        let require_key = !listen_host_is_loopback
+            || env::var("MAESTRO_WEB_REQUIRE_KEY")
+                .map(|value| value != "0")
+                .unwrap_or(false);
         let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let csrf_token = trimmed_env("MAESTRO_WEB_CSRF_TOKEN");
         let require_csrf = csrf_token.is_some()
@@ -213,7 +315,9 @@ impl ControlPlaneConfig {
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
+            allowed_hosts: parse_allowed_hosts(env::var("MAESTRO_WEB_ALLOWED_HOSTS").ok()),
             require_key,
+            require_key_explicitly_disabled,
             csrf_token,
             require_csrf,
             cwd: cwd.clone(),
@@ -257,7 +361,9 @@ impl ControlPlaneConfig {
             listen_host: "127.0.0.1".into(),
             listen_port: 0,
             api_key: None,
+            allowed_hosts: Vec::new(),
             require_key: false,
+            require_key_explicitly_disabled: false,
             csrf_token: None,
             require_csrf: false,
             cwd,
@@ -288,9 +394,27 @@ impl ControlPlaneConfig {
         format!("{}:{}", self.listen_host, self.listen_port)
     }
 
-    fn validate_startup(&self) -> Result<(), String> {
+    pub(crate) fn listen_host_is_loopback(&self) -> bool {
+        host_is_loopback(&self.listen_host)
+    }
+
+    fn validate_startup(&self) -> anyhow::Result<()> {
+        if self.require_key_explicitly_disabled && !self.listen_host_is_loopback() {
+            anyhow::bail!(
+                "MAESTRO_WEB_REQUIRE_KEY=0 is only honored for loopback binds, but MAESTRO_CONTROL_HOST={} exposes the control plane beyond localhost; remove MAESTRO_WEB_REQUIRE_KEY=0 and configure auth (MAESTRO_WEB_API_KEY, MAESTRO_AUTH_SHARED_SECRET, MAESTRO_JWT_SECRET, MAESTRO_JWT_JWKS_URL, or MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN), or bind to 127.0.0.1",
+                self.listen_host
+            );
+        }
         if self.require_key && !auth_is_configured(self) {
-            return Err("web auth is required when MAESTRO_WEB_REQUIRE_KEY is enabled; set MAESTRO_WEB_API_KEY, MAESTRO_AUTH_SHARED_SECRET, MAESTRO_JWT_SECRET, MAESTRO_JWT_JWKS_URL, or MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN".into());
+            let reason = if self.listen_host_is_loopback() {
+                "MAESTRO_WEB_REQUIRE_KEY is enabled".to_string()
+            } else {
+                format!(
+                    "MAESTRO_CONTROL_HOST={} binds beyond localhost",
+                    self.listen_host
+                )
+            };
+            anyhow::bail!("web auth is required because {reason}; set MAESTRO_WEB_API_KEY, MAESTRO_AUTH_SHARED_SECRET, MAESTRO_JWT_SECRET, MAESTRO_JWT_JWKS_URL, or MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN");
         }
         Ok(())
     }
@@ -436,7 +560,7 @@ struct HookConcurrencySnapshot {
 }
 
 pub async fn serve(config: ControlPlaneConfig) -> anyhow::Result<()> {
-    config.validate_startup().map_err(anyhow::Error::msg)?;
+    config.validate_startup()?;
     let listen_addr = config.listen_addr();
     let listener = TcpListener::bind(&listen_addr).await?;
     println!("maestro rust server listening on http://{}", listen_addr);
@@ -447,7 +571,7 @@ pub async fn serve_listener(
     listener: TcpListener,
     config: ControlPlaneConfig,
 ) -> anyhow::Result<()> {
-    config.validate_startup().map_err(anyhow::Error::msg)?;
+    config.validate_startup()?;
     let config = Arc::new(config);
     let (sessions, session_store_persist_enabled) =
         load_session_store(&config.session_store_path).await;
@@ -494,28 +618,56 @@ pub async fn serve_listener(
         let state = state.clone();
         tokio::spawn(async move {
             if let Err(error) = handle_connection(stream, state).await {
-                eprintln!("control-plane request failed: {error}");
+                eprintln!("control-plane request failed: {error:#}");
             }
         });
     }
 }
 
-async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(), String> {
+async fn handle_connection(mut stream: TcpStream, state: AppState) -> anyhow::Result<()> {
     let mut initial = Vec::with_capacity(4096);
-    let head = read_request_head(&mut stream, &mut initial).await?;
+    let head = read_request_head(&mut stream, &mut initial)
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("failed to read request head")?;
     let response_origin = requested_cors_origin(&head);
 
     with_response_cors_origin(response_origin, async move {
+        if !host_header_allowed(&head, &state.config) {
+            let response = json_response(
+                421,
+                &serde_json::json!({
+                    "error": "Host header does not match the server's loopback bind address",
+                    "runtime": "rust-control-plane"
+                }),
+            );
+            stream
+                .write_all(&response)
+                .await
+                .context("failed to write misdirected request response")?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+
         if is_chat_websocket_endpoint(&head) {
-            return handle_chat_websocket_endpoint(stream, initial, head, state).await;
+            return handle_chat_websocket_endpoint(stream, initial, head, state)
+                .await
+                .map_err(anyhow::Error::msg)
+                .context("chat websocket endpoint failed");
         }
 
         if is_chat_endpoint(&head) {
-            return handle_chat_endpoint(stream, initial, head, state).await;
+            return handle_chat_endpoint(stream, initial, head, state)
+                .await
+                .map_err(anyhow::Error::msg)
+                .context("chat endpoint failed");
         }
 
         if is_a2a_streaming_endpoint(&head) {
-            return handle_a2a_streaming_endpoint(stream, initial, head, state).await;
+            return handle_a2a_streaming_endpoint(stream, initial, head, state)
+                .await
+                .map_err(anyhow::Error::msg)
+                .context("a2a streaming endpoint failed");
         }
 
         if is_a2a_endpoint(&head) {
@@ -523,7 +675,7 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
             stream
                 .write_all(&response)
                 .await
-                .map_err(|error| error.to_string())?;
+                .context("failed to write a2a response")?;
             let _ = stream.shutdown().await;
             return Ok(());
         }
@@ -534,7 +686,7 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
             stream
                 .write_all(&response)
                 .await
-                .map_err(|error| error.to_string())?;
+                .context("failed to write platform a2a push response")?;
             let _ = stream.shutdown().await;
             return Ok(());
         }
@@ -544,7 +696,7 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
             stream
                 .write_all(&response)
                 .await
-                .map_err(|error| error.to_string())?;
+                .context("failed to write extended endpoint response")?;
             let _ = stream.shutdown().await;
             return Ok(());
         }
@@ -554,7 +706,7 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
             stream
                 .write_all(&response)
                 .await
-                .map_err(|error| error.to_string())?;
+                .context("failed to write local endpoint response")?;
             let _ = stream.shutdown().await;
             return Ok(());
         }
@@ -564,7 +716,7 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
             stream
                 .write_all(&response)
                 .await
-                .map_err(|error| error.to_string())?;
+                .context("failed to write runtime config response")?;
             let _ = stream.shutdown().await;
             return Ok(());
         }
@@ -574,7 +726,7 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
             stream
                 .write_all(&response)
                 .await
-                .map_err(|error| error.to_string())?;
+                .context("failed to write static asset response")?;
             let _ = stream.shutdown().await;
             return Ok(());
         }
@@ -590,7 +742,7 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
         stream
             .write_all(&response)
             .await
-            .map_err(|error| error.to_string())?;
+            .context("failed to write not-yet-migrated fallback response")?;
         let _ = stream.shutdown().await;
         Ok(())
     })

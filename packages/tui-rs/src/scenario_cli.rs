@@ -3315,20 +3315,4 @@ fn evaluate_trajectory_scenario_file(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn positional_skips_flags() {
-        let args = ["--json", "path.json", "--junit", "out.xml"]
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>();
-        assert_eq!(positional_args(&args), vec!["path.json"]);
-    }
-
-    #[test]
-    fn escape_xml_encodes_entities() {
-        assert_eq!(escape_xml("a<b>&\"'"), "a&lt;b&gt;&amp;&quot;&apos;");
-    }
-}
+mod tests;

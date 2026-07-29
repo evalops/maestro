@@ -915,6 +915,7 @@ fn emit_batch_completion(
     let _ = tx.send(FromAgent::ToolEnd {
         call_id: result.call_id.clone(),
         success: result.result.success,
+        result: Some(result.result.clone()),
         receipt: result
             .execution
             .as_ref()

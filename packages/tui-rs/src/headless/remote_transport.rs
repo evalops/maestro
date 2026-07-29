@@ -221,6 +221,8 @@ struct RemoteClientCapabilities {
         skip_serializing_if = "std::ops::Not::not"
     )]
     raw_agent_events: bool,
+    #[serde(rename = "transcriptGrade")]
+    transcript_grade: crate::transcript::TranscriptGrade,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -946,6 +948,16 @@ fn build_remote_connection_role(config: &RemoteTransportConfig) -> Option<Connec
     }
 }
 
+fn build_remote_transcript_grade(
+    config: &RemoteTransportConfig,
+) -> crate::transcript::TranscriptGrade {
+    if config.enable_raw_agent_events {
+        crate::transcript::TranscriptGrade::Delta
+    } else {
+        crate::transcript::TranscriptGrade::Block
+    }
+}
+
 fn build_remote_hello_message(config: &RemoteTransportConfig) -> ToAgentMessage {
     ToAgentMessage::Hello {
         protocol_version: Some(super::HEADLESS_PROTOCOL_VERSION.to_string()),
@@ -957,6 +969,7 @@ fn build_remote_hello_message(config: &RemoteTransportConfig) -> ToAgentMessage 
             server_requests: Some(build_remote_server_request_types(config)),
             utility_operations: Some(build_remote_utility_operation_types(config)),
             raw_agent_events: Some(config.enable_raw_agent_events),
+            transcript_grade: Some(build_remote_transcript_grade(config)),
         }),
         role: build_remote_connection_role(config),
         opt_out_notifications: (!config.opt_out_notifications.is_empty())
@@ -984,6 +997,7 @@ fn build_remote_connection_create_request(
             server_requests: build_remote_server_requests(config),
             utility_operations: build_remote_utility_operations(config),
             raw_agent_events: config.enable_raw_agent_events,
+            transcript_grade: build_remote_transcript_grade(config),
         }),
         opt_out_notifications: config.opt_out_notifications.clone(),
         client: config.client.clone(),
@@ -1052,6 +1066,7 @@ async fn subscribe_to_session(
             server_requests: build_remote_server_requests(config),
             utility_operations: build_remote_utility_operations(config),
             raw_agent_events: config.enable_raw_agent_events,
+            transcript_grade: build_remote_transcript_grade(config),
         }),
         role: config.role.clone(),
         opt_out_notifications: config.opt_out_notifications.clone(),
@@ -1324,6 +1339,7 @@ async fn reader_loop(
 
     let mut stream = response.bytes_stream().eventsource();
     let mut saw_event = false;
+    let mut coalesced_response_cursor = None;
 
     loop {
         tokio::select! {
@@ -1334,10 +1350,15 @@ async fn reader_loop(
                         saw_event = true;
                         match serde_json::from_str::<RemoteEnvelope>(&event.data) {
                             Ok(RemoteEnvelope::Message { cursor: next_cursor, message }) => {
-                                if !advances_remote_cursor(cursor, next_cursor) {
+                                if !accepts_remote_message_cursor(
+                                    cursor,
+                                    next_cursor,
+                                    &message,
+                                    &mut coalesced_response_cursor,
+                                ) {
                                     continue;
                                 }
-                                cursor = next_cursor;
+                                cursor = cursor.max(next_cursor);
                                 if event_tx
                                     .send(Ok(RemoteIncoming::Message(*message)))
                                     .is_err()
@@ -1363,7 +1384,7 @@ async fn reader_loop(
                                 }
                             }
                             Ok(RemoteEnvelope::Reset { reason, snapshot }) => {
-                                if !advances_remote_cursor(cursor, snapshot.cursor) {
+                                if !accepts_remote_reset_cursor(cursor, snapshot.cursor) {
                                     continue;
                                 }
                                 let (_snapshot_session_id, next_cursor, last_init, state) =
@@ -1421,6 +1442,42 @@ async fn reader_loop(
 
 fn advances_remote_cursor(current_cursor: u64, next_cursor: u64) -> bool {
     next_cursor > current_cursor
+}
+
+fn accepts_remote_reset_cursor(current_cursor: u64, next_cursor: u64) -> bool {
+    next_cursor >= current_cursor
+}
+
+fn accepts_remote_message_cursor(
+    current_cursor: u64,
+    next_cursor: u64,
+    message: &FromAgentMessage,
+    coalesced_response_cursor: &mut Option<(u64, String)>,
+) -> bool {
+    if advances_remote_cursor(current_cursor, next_cursor) {
+        *coalesced_response_cursor = match message {
+            FromAgentMessage::ResponseChunk {
+                response_id,
+                is_thinking: false,
+                ..
+            } => Some((next_cursor, response_id.clone())),
+            _ => None,
+        };
+        return true;
+    }
+    let accepts_completion = matches!(
+        (message, coalesced_response_cursor.as_ref()),
+        (
+            FromAgentMessage::ResponseEnd { response_id, .. },
+            Some((chunk_cursor, chunk_response_id))
+        ) if next_cursor == current_cursor
+            && *chunk_cursor == next_cursor
+            && chunk_response_id == response_id
+    );
+    if accepts_completion {
+        *coalesced_response_cursor = None;
+    }
+    accepts_completion
 }
 
 fn accepts_remote_heartbeat_cursor(current_cursor: u64, next_cursor: u64) -> bool {
@@ -1596,6 +1653,17 @@ async fn response_status_error(
         retryable,
         kind,
         message,
+    }
+}
+
+#[cfg(test)]
+mod reset_cursor_tests {
+    use super::accepts_remote_reset_cursor;
+
+    #[test]
+    fn authoritative_reset_is_accepted_at_the_current_cursor() {
+        assert!(accepts_remote_reset_cursor(42, 42));
+        assert!(!accepts_remote_reset_cursor(42, 41));
     }
 }
 

@@ -1,5 +1,8 @@
 # Headless Protocol Reference
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. Headless protocol dispatch now lives in `packages/tui-rs/src/headless/`. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 Maestro's headless mode is the embedding-oriented JSON-over-stdio contract used
 by native TUIs and external control planes such as EvalOps Chat.
 
@@ -20,9 +23,9 @@ Current version: `2026-04-02`
 
 Source of truth:
 
-- generated constants: [packages/contracts/src/headless-protocol-generated.ts](../../packages/contracts/src/headless-protocol-generated.ts)
+- generated constants: [packages/tui-rs/src/headless/generated_protocol.rs](../../packages/tui-rs/src/headless/generated_protocol.rs)
 - runtime message shapes: [src/cli/headless-protocol.ts](../../src/cli/headless-protocol.ts)
-- transport implementation: [packages/tui-rs/src/headless_server.rs](../../packages/tui-rs/src/headless_server.rs) (launched via [src/cli/native-tui-launcher.ts](../../src/cli/native-tui-launcher.ts))
+- transport implementation: [packages/tui-rs/src/headless_server.rs](../../packages/tui-rs/src/headless_server.rs)
 - hosted runner contract: [docs/protocols/hosted-runner-contract.md](./hosted-runner-contract.md)
 - hosted runner retention: [docs/protocols/hosted-runner-retention.md](./hosted-runner-retention.md)
 - conformance suite: [docs/protocols/headless-conformance.md](./headless-conformance.md)

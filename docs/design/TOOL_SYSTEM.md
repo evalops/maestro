@@ -1,5 +1,8 @@
 # Tool System Architecture
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. The tool system now lives in `packages/tui-rs/src/tools/`. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 The tool system is the largest module in Maestro (~335KB), providing a framework for defining, validating, executing, and caching tool operations that the LLM can invoke.
 
 ## Overview

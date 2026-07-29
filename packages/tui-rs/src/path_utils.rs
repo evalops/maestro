@@ -1,5 +1,7 @@
 use std::env;
-use std::path::PathBuf;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use crate::safety::expand_tilde;
 
@@ -47,6 +49,34 @@ pub(crate) fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
         }
     }
     result
+}
+
+/// Atomically replace a configuration file with private permissions.
+pub(crate) fn atomic_private_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("configuration path has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(&format!(
+            ".{}.tmp-",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("maestro")
+        ))
+        .tempfile_in(parent)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temporary
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    temporary.write_all(bytes)?;
+    temporary.write_all(b"\n")?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -105,5 +135,19 @@ mod tests {
         assert_eq!(maestro_home_dir(), Some(home.join(".maestro")));
 
         restore_env_var("MAESTRO_HOME", previous);
+    }
+
+    #[test]
+    fn atomic_private_write_replaces_existing_file() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let path = temporary.path().join("config.json");
+
+        atomic_private_write(&path, br#"{"value":1}"#).expect("initial write");
+        atomic_private_write(&path, br#"{"value":2}"#).expect("replacement write");
+
+        assert_eq!(
+            fs::read_to_string(path).expect("read replacement"),
+            "{\"value\":2}\n"
+        );
     }
 }

@@ -69,17 +69,6 @@
 		{
 			"area": "dynamic-tools",
 			"evidenceType": "source",
-			"path": "src/codex/compatibility.ts",
-			"anchors": [
-				"CODEX_DEFAULT_TOOL_PROFILE",
-				"CODEX_DYNAMIC_TOOL_CONFORMANCE",
-				"compileCodexDynamicToolSpecs",
-				"item/tool/call"
-			]
-		},
-		{
-			"area": "dynamic-tools",
-			"evidenceType": "source",
 			"path": "packages/tui-rs/src/codex_cli.rs",
 			"anchors": [
 				"compile_codex_dynamic_tool_specs",
@@ -111,30 +100,6 @@
 		},
 		{
 			"area": "dynamic-tools",
-			"evidenceType": "source",
-			"path": "src/agent/providers/codex-app-server.ts",
-			"anchors": [
-				"nextCodexStreamItem",
-				"codexDynamicToolStartEvent",
-				"codexDynamicToolEndEvent",
-				"provider_tool_execution_start",
-				"provider_tool_execution_end",
-				"toolExecutionId",
-				"approvalRequestId"
-			]
-		},
-		{
-			"area": "dynamic-tools",
-			"evidenceType": "test",
-			"path": "test/codex/compatibility.test.ts",
-			"anchors": [
-				"tracks the upstream dynamic tool protocol fixture",
-				"compiles the curated Codex default profile into Responses-safe dynamic tools",
-				"renames invalid or reserved tool identifiers while preserving original bindings"
-			]
-		},
-		{
-			"area": "dynamic-tools",
 			"evidenceType": "test",
 			"path": "packages/tui-rs/src/codex_cli.rs",
 			"anchors": [
@@ -144,30 +109,22 @@
 			]
 		},
 		{
-			"area": "dynamic-tools",
-			"evidenceType": "test",
-			"path": "test/agent/codex-app-server.test.ts",
+			"area": "durable-threads-goals-memory",
+			"evidenceType": "source",
+			"path": "src/session/types.ts",
 			"anchors": [
-				"streams dynamic Maestro tool callbacks as provider-owned tool lifecycle events",
-				"wakes the stream for quiet dynamic tool callbacks before later app-server notifications",
-				"Codex dynamic tool: lookup_ticket",
-				"provider_tool_execution_start",
-				"provider_tool_execution_end",
-				"tool-exec-dynamic-1",
-				"approval-dynamic-1"
+				"memoryExtractionHash",
+				"appServerGoal"
 			]
 		},
 		{
 			"area": "durable-threads-goals-memory",
 			"evidenceType": "source",
-			"path": "src/session/types.ts",
-			"anchors": ["memoryExtractionHash", "appServerGoal"]
-		},
-		{
-			"area": "durable-threads-goals-memory",
-			"evidenceType": "source",
 			"path": "packages/contracts/src/maestro-app-server.ts",
-			"anchors": ["MaestroAppServerThreadSummarySchema", "memoryExtractionHash"]
+			"anchors": [
+				"MaestroAppServerThreadSummarySchema",
+				"memoryExtractionHash"
+			]
 		},
 		{
 			"area": "durable-threads-goals-memory",
@@ -194,48 +151,13 @@
 		},
 		{
 			"area": "approvals-sandbox-policy",
-			"evidenceType": "source",
-			"path": "src/agent/transport.ts",
-			"anchors": [
-				"executeDynamicTool",
-				"approvalService: this.options.approvalService",
-				"action_approval_required/resolved",
-				"evaluateToolSafety"
-			]
-		},
-		{
-			"area": "approvals-sandbox-policy",
-			"evidenceType": "test",
-			"path": "test/agent/provider-transport-provider-tools.test.ts",
-			"anchors": [
-				"reuses repeated read-only tool results across provider turns",
-				"reuses provider read results only after repeated guarded-file approvals",
-				"reuses dynamic read callback results only after repeated guarded-file approvals",
-				"does not reuse cached dynamic reads while a mutating callback is pending",
-				"does not reuse cached read results while mutating provider tools are pending",
-				"does not skip loop detection when cached reads run behind pending mutations",
-				"executes repeated non-read-only provider tool calls independently",
-				"records Platform observations for cached dynamic read callbacks",
-				"lets Codex dynamic tool callbacks wait for user approval instead of auto-denying",
-				"preserves Platform joins for denied Codex dynamic callbacks",
-				"returns workflow-state errors from repeated dynamic callbacks",
-				"withTimeout",
-				"action_approval_required",
-				"ActionApprovalService(\"prompt\")",
-				"mcp_ticket_update",
-				"observed:dynamic-observed-read-1",
-				"approval:dynamic-observed-read-1",
-				"tool-exec-denied-dynamic-1",
-				"approval-denied-dynamic-1",
-				"observed:codex-dynamic-redact-1",
-				"observed:codex-dynamic-redact-2"
-			]
-		},
-		{
-			"area": "approvals-sandbox-policy",
 			"evidenceType": "doc",
 			"path": "docs/protocols/pending-requests.md",
-			"anchors": ["approval", "tool_retry", "ResumeToolExecution"]
+			"anchors": [
+				"approval",
+				"tool_retry",
+				"ResumeToolExecution"
+			]
 		},
 		{
 			"area": "subagents",
@@ -441,36 +363,6 @@
 		{
 			"area": "remote-runner-continuity",
 			"evidenceType": "source",
-			"path": "src/server/handlers/hosted-runner-drain.ts",
-			"anchors": [
-				"evalops.remote-runner.work-continuity.v1",
-				"evalops.remote-runner.runtime-continuity.v1",
-				"collectHostedRunnerWorkContinuity",
-				"buildHostedRunnerRuntimeContinuity",
-				"codex_subagent_child_run_ids",
-				"codex_subagent_thread_ids",
-				"codex_subagent_edges",
-				"collectCodexSubagentEdgesFromSource",
-				"codexSubagentOperation",
-				"source_owner_instance_id"
-			]
-		},
-		{
-			"area": "remote-runner-continuity",
-			"evidenceType": "source",
-			"path": "src/cli/headless-protocol.ts",
-			"anchors": [
-				"HeadlessCodexSubagentContinuityEdge",
-				"buildCodexSubagentContinuityEdges",
-				"codexSubagentOperation",
-				"codexSubagentOperationName",
-				"codexSubagentActiveStatus",
-				"codexSubagentTerminalSuccessStatus"
-			]
-		},
-		{
-			"area": "remote-runner-continuity",
-			"evidenceType": "source",
 			"path": "packages/tui-rs/src/hosted_runner.rs",
 			"anchors": [
 				"evalops.remote-runner.work-continuity.v1",
@@ -514,7 +406,10 @@
 			"area": "remote-runner-continuity",
 			"evidenceType": "source",
 			"path": "packages/tui-rs/Cargo.toml",
-			"anchors": ["maestro-hosted-runner", "src/bin/maestro_hosted_runner.rs"]
+			"anchors": [
+				"maestro-hosted-runner",
+				"src/bin/maestro_hosted_runner.rs"
+			]
 		},
 		{
 			"area": "remote-runner-continuity",
@@ -541,20 +436,8 @@
 			"area": "remote-runner-continuity",
 			"evidenceType": "test",
 			"path": "packages/tui-rs/src/main.rs",
-			"anchors": ["hosted_runner_subcommand_is_reserved_before_prompt_capture"]
-		},
-		{
-			"area": "remote-runner-continuity",
-			"evidenceType": "test",
-			"path": "test/server/hosted-runner-drain.test.ts",
 			"anchors": [
-				"records Codex subagent continuity without copying prompt payloads into manifest metadata",
-				"records Codex subagent edge lifecycle from restored runtime state",
-				"HOSTED_RUNNER_WORK_CONTINUITY_VERSION",
-				"HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION",
-				"codex_subagent_child_run_ids",
-				"codex_subagent_edges",
-				"close_agent"
+				"hosted_runner_subcommand_is_reserved_before_prompt_capture"
 			]
 		},
 		{
@@ -788,13 +671,18 @@
 			"area": "live-verification",
 			"evidenceType": "test",
 			"path": "test/safety/loop-detector.test.ts",
-			"anchors": ["differentiates nested tool arguments"]
+			"anchors": [
+				"differentiates nested tool arguments"
+			]
 		},
 		{
 			"area": "live-verification",
 			"evidenceType": "package-script",
 			"path": "package.json",
-			"anchors": ["smoke:codex-app-server-live", "check:codex-operating-layer"]
+			"anchors": [
+				"smoke:codex-app-server-live",
+				"check:codex-operating-layer"
+			]
 		}
 	]
 }

@@ -1,5 +1,8 @@
 # MCP Server Integration Guide
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. MCP integration now lives in `packages/tui-rs/src/mcp/`. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 Contents: [What is MCP?](#what-is-mcp) · [Quick Start](#quick-start) · [Configuration](#configuration) · [Usage](#usage) · [Troubleshooting](#troubleshooting)
 
 This guide explains how to create, configure, and use custom MCP (Model Context Protocol) servers with Maestro.

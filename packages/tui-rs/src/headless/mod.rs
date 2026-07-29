@@ -214,6 +214,7 @@ fn local_controller_capabilities() -> messages::ClientCapabilities {
         ]),
         utility_operations: Some(vec![messages::UtilityOperation::CommandExec]),
         raw_agent_events: None,
+        transcript_grade: Some(crate::transcript::TranscriptGrade::Delta),
     }
 }
 

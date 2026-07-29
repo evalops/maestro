@@ -32,6 +32,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use zip::ZipArchive;
 
+use super::net_guard;
 use crate::agent::ToolResult;
 
 const MAX_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
@@ -602,15 +603,23 @@ pub async fn extract_document(args: Value) -> ToolResult {
         Err(_) => return ToolResult::failure(format!("Invalid URL: {}", parsed.url)),
     };
 
-    if url.scheme() != "http" && url.scheme() != "https" {
-        return ToolResult::failure("Only http(s) URLs are supported".to_string());
+    if let Err(err) = net_guard::validate_fetch_url(&url) {
+        return ToolResult::failure(err);
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(DOWNLOAD_TIMEOUT)
-        .build()
-        .expect("Failed to create HTTP client");
-    let response = match client.get(url.clone()).send().await {
+    // Resolve-then-pin and re-validate every redirect hop before connecting.
+    // A bare `reqwest::Client` here (scheme check only, default redirect
+    // policy) is what let this tool reach cloud metadata endpoints
+    // (`169.254.169.254`) via an attacker-controlled URL; see the
+    // `net_guard` module docs for why every hop must be validated, not just
+    // the first.
+    let response = match net_guard::fetch_with_validated_redirects(
+        url.clone(),
+        DOWNLOAD_TIMEOUT,
+        net_guard::DEFAULT_USER_AGENT,
+    )
+    .await
+    {
         Ok(resp) => resp,
         Err(err) => {
             return ToolResult::failure(format!("Failed to download document: {err}"));
@@ -1127,5 +1136,98 @@ mod tests {
     fn test_max_download_bytes() {
         // 50MB = 50 * 1024 * 1024 = 52,428,800 bytes
         assert_eq!(MAX_DOWNLOAD_BYTES, 52_428_800);
+    }
+
+    // ========================================================================
+    // extract_document SSRF regression tests
+    //
+    // Before this fix, `extract_document` validated only the URL scheme and
+    // built a bare `reqwest::Client` with default redirect-following, so a
+    // model- or content-supplied URL could reach cloud IAM credentials at
+    // http://169.254.169.254/latest/meta-data/iam/security-credentials/
+    // with zero prompts (requires_approval: false). These tests exercise
+    // the full `extract_document` entry point (not just the shared
+    // `net_guard` helpers) to prove the tool itself now fails closed.
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_extract_document_rejects_cloud_metadata_ip() {
+        let args = serde_json::json!({
+            "url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+        });
+        let result = extract_document(args).await;
+        assert!(!result.success);
+        let error = result.error.unwrap_or_default();
+        assert!(
+            error.contains("blocked network target"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_extract_document_rejects_cgnat_address() {
+        // 100.64.0.0/10 (RFC 6598 Shared Address Space / CGNAT). This
+        // fleet's Tailscale network lives in this range, and it is not
+        // covered by `Ipv4Addr::is_private()`.
+        let args = serde_json::json!({
+            "url": "http://100.64.0.5/internal-service"
+        });
+        let result = extract_document(args).await;
+        assert!(!result.success);
+        let error = result.error.unwrap_or_default();
+        assert!(
+            error.contains("blocked network target"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_extract_document_rejects_ipv4_mapped_ipv6_metadata_address() {
+        // Classic bypass: encode the blocked IPv4 target as an IPv4-mapped
+        // IPv6 literal to route around a naive IPv4-only blocklist.
+        let args = serde_json::json!({
+            "url": "http://[::ffff:169.254.169.254]/latest/meta-data/"
+        });
+        let result = extract_document(args).await;
+        assert!(!result.success);
+        let error = result.error.unwrap_or_default();
+        assert!(
+            error.contains("blocked network target"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_extract_document_rejects_non_http_scheme() {
+        let args = serde_json::json!({
+            "url": "file:///etc/passwd"
+        });
+        let result = extract_document(args).await;
+        assert!(!result.success);
+        let error = result.error.unwrap_or_default();
+        assert!(
+            error.contains("Unsupported URL scheme"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_extract_document_redirect_to_metadata_ip_is_rejected() {
+        // Mirrors the ordering inside `net_guard::fetch_with_validated_redirects`:
+        // a redirect `Location` pointing at cloud metadata parses fine as a
+        // URL, but must be rejected on resolution, before it is ever
+        // connected to. See `net_guard::tests` for the direct coverage of
+        // that loop; this asserts the same invariant holds when reached
+        // through `extract_document`'s public entry point.
+        let current = reqwest::Url::parse("https://example.com/start").unwrap();
+        let next = super::net_guard::redirect_target_url(
+            &current,
+            "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+        )
+        .expect("redirect target should parse: scheme/host validation doesn't resolve IPs");
+        let error = super::net_guard::resolve_public_endpoint(&next)
+            .await
+            .expect_err("redirect target must be rejected before connecting");
+        assert!(error.contains("blocked network target"));
     }
 }

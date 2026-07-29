@@ -18,12 +18,6 @@ Package managers (contributors and source workflows):
 npm install -g @evalops/maestro
 ```
 
-Nix:
-
-```bash
-nix run github:evalops/maestro
-```
-
 Verify:
 
 ```bash

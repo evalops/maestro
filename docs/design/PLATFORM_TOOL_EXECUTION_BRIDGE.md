@@ -1,5 +1,8 @@
 # Platform ToolExecution Bridge
 
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. The Platform tool-execution bridge would now live in `packages/control-plane-rs`; individual TS paths below were not re-verified. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+
+
 This document describes how Maestro maps local tool calls onto Platform `ToolExecution`
 records so policy, approval, audit, and provenance can share one lifecycle.
 

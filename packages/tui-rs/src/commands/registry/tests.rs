@@ -568,6 +568,25 @@ fn mcp_prompts_command_parses_prompt_arguments() {
 }
 
 #[test]
+fn mcp_config_commands_preserve_conversational_arguments() {
+    let registry = build_command_registry();
+    for command in [
+        "/mcp config add-http docs https://example.test --scope project",
+        "/mcp-config add-stdio local cargo run --scope local",
+    ] {
+        match registry
+            .execute(command, "/tmp", None, None)
+            .expect("MCP configuration should parse")
+        {
+            CommandOutput::Action(CommandAction::Mcp(McpAction::Configure { args })) => {
+                assert!(args.len() >= 3);
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn mcp_prompts_command_rejects_invalid_prompt_arguments() {
     let registry = build_command_registry();
     let result = registry.execute(

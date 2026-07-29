@@ -1324,7 +1324,7 @@ impl BashTool {
                     // Best-effort reap to avoid zombies
                     let _ = timeout(Duration::from_secs(1), child.wait()).await;
                     let mut details = self.stamp_details(
-                        BashDetails::failed(&args.command, 130) // 130 = SIGINT
+                        BashDetails::cancelled(&args.command) // exit 130 = SIGINT
                             .with_cwd(cwd_string)
                             .with_duration(start_time.elapsed().as_millis() as u64),
                     );
