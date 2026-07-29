@@ -60,9 +60,12 @@ jobs:
 
           echo "changed=$changed" >> "$GITHUB_OUTPUT"
 
-  integration-tests:
+  integration-suite:
     needs: pull-request-path-check
-    if: ${{ needs.pull-request-path-check.outputs.integration_paths_changed == 'true' && (github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-integration')) }}
+    # Keep the expensive service-container suite scoped to integration-relevant
+    # changes. The required integration-tests job below always materializes and
+    # converts this conditional result into an explicit pass or failure.
+    if: ${{ needs.pull-request-path-check.outputs.integration_paths_changed == 'true' }}
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.id != github.event.repository.id && 'ubuntu-latest' || (github.event_name == 'pull_request' && (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest')) }}
     timeout-minutes: 45
     services:
@@ -108,6 +111,27 @@ jobs:
           PGPASSWORD: maestro
         run: |
           cargo test --locked -p maestro-control-plane
+
+  integration-tests:
+    needs: [pull-request-path-check, integration-suite]
+    if: ${{ always() }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.id != github.event.repository.id && 'ubuntu-latest' || (vars.PUBLIC_PR_VALIDATION_RUNNER || vars.PR_CHECKS_RUNNER || 'ubuntu-latest') }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: 22
+
+      - name: Validate required integration gate
+        env:
+          PATH_CHECK_RESULT: ${{ needs.pull-request-path-check.result }}
+          INTEGRATION_PATHS_CHANGED: ${{ needs.pull-request-path-check.outputs.integration_paths_changed }}
+          INTEGRATION_SUITE_RESULT: ${{ needs.integration-suite.result }}
+        run: node scripts/check-integration-required-gate.mjs
 
   capability-gated-tests:
     if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'run-capability-integration') }}
