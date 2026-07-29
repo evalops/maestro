@@ -35,7 +35,9 @@ jobs:
       - id: release
         name: Resolve immutable release tag
         env:
+          EVENT_NAME: ${{ github.event_name }}
           REQUESTED: ${{ github.event.inputs.version || github.ref_name }}
+          TRIGGER_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           release_version="${REQUESTED#v}"
@@ -45,22 +47,28 @@ jobs:
           fi
 
           release_tag="v${release_version}"
-          for attempt in 1 2 3; do
-            if timeout 60s git \
-              -c http.lowSpeedLimit=1000 \
-              -c http.lowSpeedTime=30 \
-              fetch --force --no-tags origin "refs/tags/${release_tag}:refs/tags/${release_tag}"; then
-              break
-            fi
-            if [[ "$attempt" -eq 3 ]]; then
-              echo "::error::Unable to fetch ${release_tag} after ${attempt} bounded attempts."
-              exit 1
-            fi
-            sleep 2
-          done
-          release_sha="$(git rev-list -n 1 "$release_tag")"
-          if [[ -z "$release_sha" ]]; then
-            echo "::error::Release tag ${release_tag} does not resolve to a commit."
+          release_sha="$TRIGGER_SHA"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            for attempt in 1 2 3; do
+              if timeout 60s git \
+                -c http.lowSpeedLimit=1000 \
+                -c http.lowSpeedTime=30 \
+                fetch --force --no-tags origin "refs/tags/${release_tag}:refs/tags/${release_tag}"; then
+                break
+              fi
+              if [[ "$attempt" -eq 3 ]]; then
+                echo "::error::Unable to fetch ${release_tag} after ${attempt} bounded attempts."
+                exit 1
+              fi
+              sleep 2
+            done
+            release_sha="$(git rev-list -n 1 "$release_tag")"
+          elif [[ "$EVENT_NAME" != "push" ]]; then
+            echo "::error::Unsupported release event ${EVENT_NAME}."
+            exit 1
+          fi
+          if [[ ! "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Release source ${release_sha} is not an immutable commit SHA."
             exit 1
           fi
 
@@ -131,7 +139,9 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.release_sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version: 24 }
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
       - uses: actions/download-artifact@v4
         with:
           pattern: maestro-*
@@ -170,6 +180,7 @@ jobs:
           NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
           NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
           NPM_CONFIG_FETCH_TIMEOUT: "30000"
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org
         run: node scripts/smoke-packed-cli.js "${{ steps.pack.outputs.tarball }}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -187,6 +198,7 @@ jobs:
           NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
           NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
           NPM_CONFIG_FETCH_TIMEOUT: "30000"
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org
           NPM_PUBLISH_AUTH_MODE: ${{ vars.NPM_PUBLISH_AUTH_MODE || 'auto' }}
         run: |
           set -euo pipefail
@@ -201,18 +213,18 @@ jobs:
             printf "//registry.npmjs.org/:_authToken=%s\n" "$npm_token_fallback" > "$RUNNER_TEMP/npmrc"
             NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/npmrc" \
               NODE_AUTH_TOKEN="$npm_token_fallback" \
-              command npm publish "${{ steps.pack.outputs.tarball }}" --access public --provenance
+              command npm publish "${{ steps.pack.outputs.tarball }}" --access public --provenance --registry "$NPM_CONFIG_REGISTRY"
           }
 
           publish_with_trusted_publisher() {
             unset NODE_AUTH_TOKEN NPM_CONFIG_USERCONFIG
-            command npm publish "${{ steps.pack.outputs.tarball }}" --access public
+            command npm publish "${{ steps.pack.outputs.tarball }}" --access public --registry "$NPM_CONFIG_REGISTRY"
           }
 
           verify_published_tarball() {
             local registry_integrity
             registry_integrity="$(
-              command npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" dist.integrity 2>/dev/null
+              command npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" --registry "$NPM_CONFIG_REGISTRY" dist.integrity 2>/dev/null
             )" || return 1
 
             if [[ -z "$registry_integrity" ]]; then
@@ -322,7 +334,9 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.release_sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: { node-version: 24 }
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
       - name: Verify published package from npm
         env:
           CLI_COMMAND: maestro
@@ -335,6 +349,7 @@ jobs:
           NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
           NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
           NPM_CONFIG_FETCH_TIMEOUT: "30000"
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org
           PACKAGE_NAME: ${{ needs.prepare.outputs.package_name }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
         run: |

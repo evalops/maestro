@@ -329,13 +329,42 @@ export function validateReleaseWorkflow(source) {
 	if (requiredStepCanBeSkippedOrIgnored(resolveStep)) {
 		failures.push("immutable release resolution must not be conditional or ignored");
 	}
-	for (const command of [
+	if (
+		!hasExactRecord(resolveStep?.env ?? {}, {
+			EVENT_NAME: "${{ github.event_name }}",
+			REQUESTED: "${{ github.event.inputs.version || github.ref_name }}",
+			TRIGGER_SHA: "${{ github.sha }}",
+		})
+	) {
+		failures.push("immutable resolver must bind the triggering event and SHA");
+	}
+	const triggerShaIndex = resolveLines.indexOf('release_sha="$TRIGGER_SHA"');
+	const dispatchIndex = resolveLines.indexOf(
+		'if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then',
+	);
+	const fetchedShaIndex = resolveLines.indexOf(
 		'release_sha="$(git rev-list -n 1 "$release_tag")"',
-		'git checkout --detach "$release_sha"',
-	]) {
-		if (!resolveLines.includes(command) || !topLevelResolveLines.includes(command)) {
-			failures.push(`immutable release resolution is missing: ${command}`);
-		}
+	);
+	const pushGuardIndex = resolveLines.indexOf(
+		'elif [[ "$EVENT_NAME" != "push" ]]; then',
+	);
+	if (
+		triggerShaIndex < 0 ||
+		dispatchIndex <= triggerShaIndex ||
+		fetchedShaIndex <= dispatchIndex ||
+		pushGuardIndex <= fetchedShaIndex ||
+		resolveLines.filter((line) => line === 'release_sha="$TRIGGER_SHA"').length !==
+			1 ||
+		resolveLines.filter(
+			(line) => line === 'release_sha="$(git rev-list -n 1 "$release_tag")"',
+		).length !== 1
+	) {
+		failures.push(
+			"tag pushes must preserve the triggering SHA and only dispatches may resolve a tag name",
+		);
+	}
+	if (!topLevelResolveLines.includes('git checkout --detach "$release_sha"')) {
+		failures.push("immutable release resolution must check out the resolved SHA");
 	}
 	const boundedFetch =
 		'fetch --force --no-tags origin "refs/tags/${release_tag}:refs/tags/${release_tag}"; then';
@@ -458,7 +487,7 @@ export function validateReleaseWorkflow(source) {
 		preAuthTerminations.length !== 0 ||
 		publishLines.some((line) => /^npm\s*\(\)\s*\{/u.test(line)) ||
 		!publishLines.includes(
-			'command npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" dist.integrity 2>/dev/null',
+			'command npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" --registry "$NPM_CONFIG_REGISTRY" dist.integrity 2>/dev/null',
 		) ||
 		!publishLines.includes(
 			'if [[ "$registry_integrity" != "$PACKED_INTEGRITY" ]]; then',
@@ -490,8 +519,8 @@ export function validateReleaseWorkflow(source) {
 		line.startsWith("command npm publish "),
 	);
 	const expectedPublishLines = new Set([
-		'command npm publish "${{ steps.pack.outputs.tarball }}" --access public --provenance',
-		'command npm publish "${{ steps.pack.outputs.tarball }}" --access public',
+		'command npm publish "${{ steps.pack.outputs.tarball }}" --access public --provenance --registry "$NPM_CONFIG_REGISTRY"',
+		'command npm publish "${{ steps.pack.outputs.tarball }}" --access public --registry "$NPM_CONFIG_REGISTRY"',
 	]);
 	if (guardedTrustedCalls !== 1 || trustedCalls < 1 || tokenCalls < 2) {
 		failures.push("npm publish helpers must be invoked in auto, trusted, and token modes");
@@ -528,6 +557,7 @@ export function validateReleaseWorkflow(source) {
 			NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000",
 			NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000",
 			NPM_CONFIG_FETCH_TIMEOUT: "30000",
+			NPM_CONFIG_REGISTRY: "https://registry.npmjs.org",
 			NPM_PUBLISH_AUTH_MODE: "${{ vars.NPM_PUBLISH_AUTH_MODE || 'auto' }}",
 		})
 	) {
@@ -544,6 +574,7 @@ export function validateReleaseWorkflow(source) {
 		NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000",
 		NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000",
 		NPM_CONFIG_FETCH_TIMEOUT: "30000",
+		NPM_CONFIG_REGISTRY: "https://registry.npmjs.org",
 	};
 	for (const [name, step] of [
 		["publish", publishStep],
@@ -555,6 +586,21 @@ export function validateReleaseWorkflow(source) {
 				failures.push(`${name} must set bounded npm network configuration`);
 				break;
 			}
+		}
+	}
+
+	for (const [name, job] of [
+		["publish", publish],
+		["post-publish canary", canary],
+	]) {
+		const setupNode = job.steps.find((step) =>
+			step.uses.startsWith("actions/setup-node@"),
+		);
+		if (
+			setupNode?.with["registry-url"] !== "https://registry.npmjs.org" ||
+			setupNode.with["node-version"] !== "24"
+		) {
+			failures.push(`${name} must pin setup-node to the public npm registry`);
 		}
 	}
 

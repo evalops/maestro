@@ -29,7 +29,13 @@ jobs:
           fetch-depth: 1
       - id: release
         name: Resolve immutable release tag
+        env:
+          EVENT_NAME: \${{ github.event_name }}
+          REQUESTED: \${{ github.event.inputs.version || github.ref_name }}
+          TRIGGER_SHA: \${{ github.sha }}
         run: |
+          release_sha="$TRIGGER_SHA"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
           for attempt in 1 2 3; do
             if timeout 60s git \\
               -c http.lowSpeedLimit=1000 \\
@@ -43,6 +49,9 @@ jobs:
             sleep 2
           done
           release_sha="$(git rev-list -n 1 "$release_tag")"
+          elif [[ "$EVENT_NAME" != "push" ]]; then
+            exit 1
+          fi
           git checkout --detach "$release_sha"
           {
             echo "package_name=$package_name"
@@ -70,6 +79,10 @@ jobs:
       - uses: actions/checkout@sha
         with:
           ref: ${releaseSha}
+      - uses: actions/setup-node@sha
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
       - name: Verify native package inputs
         run: |
           set -euo pipefail
@@ -86,18 +99,19 @@ jobs:
           NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
           NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
           NPM_CONFIG_FETCH_TIMEOUT: "30000"
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org
           NPM_PUBLISH_AUTH_MODE: \${{ vars.NPM_PUBLISH_AUTH_MODE || 'auto' }}
         run: |
           set -euo pipefail
           publish_with_token() {
-            command npm publish "\${{ steps.pack.outputs.tarball }}" --access public --provenance
+            command npm publish "\${{ steps.pack.outputs.tarball }}" --access public --provenance --registry "$NPM_CONFIG_REGISTRY"
           }
           publish_with_trusted_publisher() {
-            command npm publish "\${{ steps.pack.outputs.tarball }}" --access public
+            command npm publish "\${{ steps.pack.outputs.tarball }}" --access public --registry "$NPM_CONFIG_REGISTRY"
           }
           verify_published_tarball() {
             registry_integrity="\$(
-              command npm view "\${PACKAGE_NAME}@\${RELEASE_VERSION}" dist.integrity 2>/dev/null
+              command npm view "\${PACKAGE_NAME}@\${RELEASE_VERSION}" --registry "$NPM_CONFIG_REGISTRY" dist.integrity 2>/dev/null
             )" || return 1
             if [[ -z "\$registry_integrity" ]]; then
               return 1
@@ -153,6 +167,7 @@ jobs:
           NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
           NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
           NPM_CONFIG_FETCH_TIMEOUT: "30000"
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org
         run: node scripts/smoke-packed-cli.js package.tgz
       - uses: actions/upload-artifact@sha
         with:
@@ -199,12 +214,17 @@ jobs:
       - uses: actions/checkout@sha
         with:
           ref: ${releaseSha}
+      - uses: actions/setup-node@sha
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
       - name: Verify published package from npm
         env:
           NPM_CONFIG_FETCH_RETRIES: "1"
           NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
           NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
           NPM_CONFIG_FETCH_TIMEOUT: "30000"
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org
           PACKAGE_NAME: \${{ needs.prepare.outputs.package_name }}
           RELEASE_VERSION: \${{ needs.prepare.outputs.release_version }}
         run: |
@@ -329,6 +349,36 @@ test("rejects a full-history prepare checkout before bounded tag resolution", ()
 	assert.ok(
 		validateReleaseWorkflow(fullHistory).some((failure) =>
 			failure.includes("prepare checkout must be shallow"),
+		),
+	);
+});
+
+test("rejects tag-push source replacement with a freshly resolved tag", () => {
+	const movedTag = completeWorkflow
+		.replace('          release_sha="$TRIGGER_SHA"\n', "")
+		.replace(
+			'          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then\n',
+			"",
+		)
+		.replace(
+			'          elif [[ "$EVENT_NAME" != "push" ]]; then\n            exit 1\n          fi\n',
+			"",
+		);
+	assert.ok(
+		validateReleaseWorkflow(movedTag).some((failure) =>
+			failure.includes("tag pushes must preserve the triggering SHA"),
+		),
+	);
+});
+
+test("rejects an unbound triggering event or SHA", () => {
+	const reboundTrigger = completeWorkflow.replace(
+		"          TRIGGER_SHA: ${{ github.sha }}",
+		"          TRIGGER_SHA: ${{ github.ref_name }}",
+	);
+	assert.ok(
+		validateReleaseWorkflow(reboundTrigger).some((failure) =>
+			failure.includes("bind the triggering event and SHA"),
 		),
 	);
 });
@@ -553,8 +603,8 @@ test("rejects unauthorized early success or a shell function that shadows npm", 
 	);
 
 	const swallowedTrustedFailure = completeWorkflow.replace(
-		'            command npm publish "${{ steps.pack.outputs.tarball }}" --access public\n',
-		'            command npm publish "${{ steps.pack.outputs.tarball }}" --access public\n            return 0\n',
+		'            command npm publish "${{ steps.pack.outputs.tarball }}" --access public --registry "$NPM_CONFIG_REGISTRY"\n',
+		'            command npm publish "${{ steps.pack.outputs.tarball }}" --access public --registry "$NPM_CONFIG_REGISTRY"\n            return 0\n',
 	);
 	assert.ok(
 		validateReleaseWorkflow(swallowedTrustedFailure).some((failure) =>
@@ -591,6 +641,38 @@ test("requires exact registry reconciliation after errors and on reruns", () => 
 	assert.ok(
 		validateReleaseWorkflow(noIntegrityBinding).some((failure) =>
 			failure.includes("exact package identity"),
+		),
+	);
+});
+
+test("rejects npm publication or reconciliation without the public registry", () => {
+	const inheritedRegistry = completeWorkflow.replaceAll(
+		' --registry "$NPM_CONFIG_REGISTRY"',
+		"",
+	);
+	assert.ok(
+		validateReleaseWorkflow(inheritedRegistry).some((failure) =>
+			failure.includes("exact unswallowed npm publish commands"),
+		),
+	);
+
+	const unboundRegistry = completeWorkflow.replaceAll(
+		"          NPM_CONFIG_REGISTRY: https://registry.npmjs.org\n",
+		"",
+	);
+	assert.ok(
+		validateReleaseWorkflow(unboundRegistry).some((failure) =>
+			failure.includes("bounded npm network configuration"),
+		),
+	);
+
+	const setupRegistryMissing = completeWorkflow.replaceAll(
+		"          registry-url: https://registry.npmjs.org\n",
+		"",
+	);
+	assert.ok(
+		validateReleaseWorkflow(setupRegistryMissing).some((failure) =>
+			failure.includes("pin setup-node to the public npm registry"),
 		),
 	);
 });
@@ -662,8 +744,8 @@ test("rejects release control jobs outside the internal confirmation runner", ()
 
 test("rejects unbounded npm registry calls in publish and canary", () => {
 	const unboundedPublish = completeWorkflow.replace(
-		'          NPM_CONFIG_FETCH_TIMEOUT: "30000"\n          NPM_PUBLISH_AUTH_MODE:',
-		"          NPM_PUBLISH_AUTH_MODE:",
+		'          NPM_CONFIG_FETCH_TIMEOUT: "30000"\n          NPM_CONFIG_REGISTRY: https://registry.npmjs.org\n          NPM_PUBLISH_AUTH_MODE:',
+		'          NPM_CONFIG_REGISTRY: https://registry.npmjs.org\n          NPM_PUBLISH_AUTH_MODE:',
 	);
 	assert.ok(
 		validateReleaseWorkflow(unboundedPublish).some((failure) =>
