@@ -152,6 +152,7 @@ jobs:
         with:
           retention-days: 14
           name: release-web-dist-${{ needs.prepare.outputs.release_tag }}
+          overwrite: true
           path: maestro-web-dist.tar.gz
       - id: pack
         run: |
@@ -161,11 +162,16 @@ jobs:
       - name: Smoke packed package without JS runtime
         env:
           MAESTRO_REQUIRE_PACKAGED_TUI: "1"
+          NPM_CONFIG_FETCH_RETRIES: "1"
+          NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
+          NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
+          NPM_CONFIG_FETCH_TIMEOUT: "30000"
         run: node scripts/smoke-packed-cli.js "${{ steps.pack.outputs.tarball }}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           retention-days: 14
           name: npm-tarball-${{ needs.prepare.outputs.release_tag }}
+          overwrite: true
           path: ${{ steps.pack.outputs.tarball }}
       - name: Publish to npm
         env:

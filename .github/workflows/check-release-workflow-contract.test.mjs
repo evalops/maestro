@@ -103,13 +103,22 @@ jobs:
               exit 1
               ;;
           esac
+      - name: Smoke packed package without JS runtime
+        env:
+          NPM_CONFIG_FETCH_RETRIES: "1"
+          NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
+          NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
+          NPM_CONFIG_FETCH_TIMEOUT: "30000"
+        run: node scripts/smoke-packed-cli.js package.tgz
       - uses: actions/upload-artifact@sha
         with:
           name: npm-tarball-\${{ needs.prepare.outputs.release_tag }}
+          overwrite: true
           path: package.tgz
       - uses: actions/upload-artifact@sha
         with:
           name: release-web-dist-\${{ needs.prepare.outputs.release_tag }}
+          overwrite: true
           path: maestro-web-dist.tar.gz
   github-release:
     needs: [prepare, binaries, publish]
@@ -565,6 +574,21 @@ test("rejects unbounded npm registry calls in publish and canary", () => {
 			),
 		),
 	);
+
+	const smokeName = "      - name: Smoke packed package without JS runtime\n";
+	const smokeStart = completeWorkflow.indexOf(smokeName);
+	const unboundedSmoke =
+		completeWorkflow.slice(0, smokeStart) +
+		completeWorkflow
+			.slice(smokeStart)
+			.replace('          NPM_CONFIG_FETCH_TIMEOUT: "30000"\n', "");
+	assert.ok(
+		validateReleaseWorkflow(unboundedSmoke).some((failure) =>
+			failure.includes(
+				"packed-package smoke must set bounded npm network configuration",
+			),
+		),
+	);
 });
 
 test("rejects a non-retryable or incomplete GitHub release job", () => {
@@ -602,6 +626,16 @@ test("rejects a non-retryable or incomplete GitHub release job", () => {
 		validateReleaseWorkflow(missingArtifact).some((failure) =>
 			failure.includes("retryable artifact") ||
 			failure.includes("exact immutable release artifacts"),
+		),
+	);
+
+	const nonReplaceableArtifact = completeWorkflow.replace(
+		"          overwrite: true\n          path: package.tgz",
+		"          path: package.tgz",
+	);
+	assert.ok(
+		validateReleaseWorkflow(nonReplaceableArtifact).some((failure) =>
+			failure.includes("persist retryable artifact"),
 		),
 	);
 });

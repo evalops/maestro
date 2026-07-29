@@ -473,6 +473,7 @@ export function validateReleaseWorkflow(source) {
 	};
 	for (const [name, step] of [
 		["publish", publishStep],
+		["packed-package smoke", findStep(publish, "Smoke packed package without JS runtime")],
 		["post-publish canary", findStep(canary, "Verify published package from npm")],
 	]) {
 		for (const [key, value] of Object.entries(boundedNpmEnv)) {
@@ -516,7 +517,12 @@ export function validateReleaseWorkflow(source) {
 		"npm-tarball-${{ needs.prepare.outputs.release_tag }}",
 		"release-web-dist-${{ needs.prepare.outputs.release_tag }}",
 	]) {
-		if (!publishUploads.some((step) => step.with.name === artifactName)) {
+		if (
+			!publishUploads.some(
+				(step) =>
+					step.with.name === artifactName && step.with.overwrite === "true",
+			)
+		) {
 			failures.push(`publish must persist retryable artifact ${artifactName}`);
 		}
 	}
