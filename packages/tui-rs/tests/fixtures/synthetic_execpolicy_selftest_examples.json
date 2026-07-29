@@ -1,0 +1,12 @@
+{
+  "harness": "execpolicy",
+  "name": "synthetic_execpolicy_selftest_examples",
+  "description": "Exercises codex-style self-testing rules: match/not_match example invocations are validated at policy load time, and the rule's justification travels with the match (surfaced in the approval reason). The nested-alternatives pattern must stay narrowed (#3091): a degradation to a bare [\"git\"] prefix would fail load-time validation of the not_match examples.",
+  "policy_source": "prefix_rule(\n    pattern=[\"git\", [\"push\", \"fetch\"]],\n    decision=\"prompt\",\n    justification=\"Pushes and fetches contact the remote.\",\n    match=[[\"git\", \"push\"], \"git fetch origin\"],\n    not_match=[\"git status\", [\"git\", \"pull\"]],\n)\nprefix_rule(pattern=[\"git\", \"status\"], decision=\"allow\")\n",
+  "cases": [
+    { "command": "git push origin main", "expected": "prompt" },
+    { "command": "git fetch", "expected": "prompt" },
+    { "command": "git status --short", "expected": "allow" },
+    { "command": "git pull", "expected": "allow" }
+  ]
+}

@@ -2148,6 +2148,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 tool,
                 args,
                 requires_approval,
+                approval_inline_env,
             } => {
                 self.tool_history.start_with_approval(
                     call_id.clone(),
@@ -2156,7 +2157,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     *requires_approval,
                 );
                 // Unknown tool name -> deny immediately
-                if !self.tool_executor.has_tool(tool) {
+                if !self.tool_executor.has_tool(tool) && approval_inline_env.is_none() {
                     let note = format!(
                         "Skipped unknown tool '{tool}' (not in registry); denied call. \
 Retry with a supported tool (bash/read/write/glob/grep) and valid args."
@@ -2221,6 +2222,41 @@ Add the required fields and retry.",
                         ApprovalRequest::new(call_id.clone(), tool.clone(), args.clone());
                     if let FirewallVerdict::RequireApproval { reason } = &firewall_verdict {
                         request = request.with_reason(reason.clone());
+                    }
+                    // Inline tools (`.composer/tools.json`) resolve their entire
+                    // shell command from the tool's own config, not from the
+                    // call's JSON arguments. Without this, `display_command()`'s
+                    // args-based fallback has nothing to show and the dialog
+                    // renders as `tool_name: {}` -- approving a command the user
+                    // never actually saw. Populate the real command (and where
+                    // it came from) so the dialog can't hide it.
+                    if let Some(inline_context) = approval_inline_env.as_ref() {
+                        request = request.with_inline_tool_source(
+                            inline_context.command.clone(),
+                            &inline_context.source_path,
+                            &inline_context.source_label,
+                            Some(&inline_context.cwd),
+                            &inline_context.environment,
+                        );
+                        request = request
+                            .with_inline_shell(&inline_context.shell, &inline_context.shell_arg);
+                    } else if self.tool_executor.get_inline_tool(tool).is_some() {
+                        let note = format!(
+                            "Skipped inline tool '{tool}': approval environment snapshot \
+was missing; retry to review the exact execution context."
+                        );
+                        self.state.add_system_message(note);
+                        self.state.handle_agent_message(msg.clone());
+                        self.state
+                            .fail_tool_call(call_id, "Missing approval environment snapshot");
+                        self.handle_tool_approval(
+                            call_id.clone(),
+                            tool.clone(),
+                            args.clone(),
+                            false,
+                        )
+                        .await?;
+                        return Ok(());
                     }
 
                     // Queue approval

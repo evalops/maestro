@@ -373,7 +373,8 @@ fn import_permissions(
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(err) => return Err(err).with_context(|| format!("read {}", execpolicy_path.display())),
     };
-    let existing_policy = execpolicy::parse_policy(&existing_content, "existing execpolicy");
+    let existing_policy = execpolicy::parse_policy(&existing_content, "existing execpolicy")
+        .map_err(|err| anyhow::anyhow!(err))?;
 
     let mut pending: Vec<(Vec<String>, Decision)> = Vec::new();
     for (source_rule, tokens, decision) in candidates {

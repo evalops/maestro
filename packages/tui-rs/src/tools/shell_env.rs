@@ -234,6 +234,33 @@ pub fn resolve_shell_environment(
     build_shell_environment(std::env::vars(), policy, overrides)
 }
 
+/// Resolve the environment values an approver must see before an inline shell
+/// command can safely execute.
+///
+/// This returns the exact filtered child environment passed to
+/// `Command::envs`, including inherited executable selectors such as
+/// `LD_PRELOAD` and `GIT_ASKPASS`. Approval rendering is responsible for
+/// redacting credential-shaped values before display.
+pub fn resolve_shell_environment_approval_context(
+    workspace_dir: &Path,
+    overrides: Option<&HashMap<String, String>>,
+) -> HashMap<String, String> {
+    let config = load_config(workspace_dir, None);
+    let policy = config.shell_environment_policy.as_ref();
+    build_shell_environment_approval_context(std::env::vars(), policy, overrides)
+}
+
+fn build_shell_environment_approval_context<I>(
+    base_env: I,
+    policy: Option<&ShellEnvironmentPolicy>,
+    overrides: Option<&HashMap<String, String>>,
+) -> HashMap<String, String>
+where
+    I: IntoIterator<Item = (String, String)>,
+{
+    build_shell_environment(base_env, policy, overrides)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,6 +393,38 @@ mod tests {
         overrides.insert("OPENAI_API_KEY".to_string(), "override".to_string());
         let env = build_shell_environment(base, None, Some(&overrides));
         assert_eq!(env.get("OPENAI_API_KEY"), Some(&"override".to_string()));
+    }
+
+    #[test]
+    fn test_approval_context_matches_filtered_execution_environment() {
+        let base = env(&[
+            ("HOME", "/home/test"),
+            ("BASH_ENV", "/tmp/prelude.sh"),
+            ("LD_PRELOAD", "/tmp/inject.so"),
+            ("MAESTRO_SURFACE", PLATFORM_WORKER_SURFACE),
+            (PLATFORM_TRUSTED_TOOL_ENV_FLAG, "true"),
+            ("GIT_ASKPASS", "/tmp/git-askpass"),
+            ("OPENAI_API_KEY", "sk-hidden"),
+        ]);
+        let overrides = HashMap::from([("MODE".to_string(), "inline".to_string())]);
+
+        let context = build_shell_environment_approval_context(base, None, Some(&overrides));
+
+        assert_eq!(context.get("HOME"), Some(&"/home/test".to_string()));
+        assert_eq!(
+            context.get("BASH_ENV"),
+            Some(&"/tmp/prelude.sh".to_string())
+        );
+        assert_eq!(
+            context.get("LD_PRELOAD"),
+            Some(&"/tmp/inject.so".to_string())
+        );
+        assert_eq!(
+            context.get("GIT_ASKPASS"),
+            Some(&"/tmp/git-askpass".to_string())
+        );
+        assert_eq!(context.get("MODE"), Some(&"inline".to_string()));
+        assert!(!context.contains_key("OPENAI_API_KEY"));
     }
 
     #[test]
