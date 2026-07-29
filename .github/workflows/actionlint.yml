@@ -55,3 +55,62 @@ jobs:
 
       - name: Run actionlint
         run: actionlint -shellcheck= -pyflakes=
+
+      - name: Set up Node.js for workflow contract tests
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: 22
+
+      - name: Run required-context contract tests
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFileSync } from "node:fs";
+          import { evaluateIntegrationRequiredGate } from "./scripts/check-integration-required-gate.mjs";
+
+          function jobBlock(workflow, job) {
+            return workflow.match(
+              new RegExp(`^  ${job}:\\n([\\s\\S]*?)(?=^  [a-z][a-z0-9-]+:\\n|(?![\\s\\S]))`, "m"),
+            )?.[0] ?? "";
+          }
+
+          assert.equal(evaluateIntegrationRequiredGate({
+            pathCheckResult: "success",
+            integrationPathsChanged: "false",
+            integrationSuiteResult: "skipped",
+          }).ok, true);
+          assert.equal(evaluateIntegrationRequiredGate({
+            pathCheckResult: "success",
+            integrationPathsChanged: "true",
+            integrationSuiteResult: "success",
+          }).ok, true);
+          assert.equal(evaluateIntegrationRequiredGate({
+            pathCheckResult: "success",
+            integrationPathsChanged: "true",
+            integrationSuiteResult: "failure",
+          }).ok, false);
+
+          const integration = readFileSync(".github/workflows/integration.yml", "utf8");
+          const suite = jobBlock(integration, "integration-suite");
+          const integrationGate = jobBlock(integration, "integration-tests");
+          assert.match(suite, /integration_paths_changed == 'true'/);
+          assert.match(suite, /cargo test --locked -p maestro-control-plane/);
+          assert.match(integrationGate, /needs: \[pull-request-path-check, integration-suite\]/);
+          assert.match(integrationGate, /if: \$\{\{ always\(\) \}\}/);
+          assert.match(integrationGate, /run: node scripts\/check-integration-required-gate\.mjs/);
+
+          const publish = readFileSync(".github/workflows/ghcr-publish.yml", "utf8");
+          const publishImage = jobBlock(publish, "publish-image");
+          const publishGate = jobBlock(publish, "build-and-publish");
+          assert.match(publishImage, /if: github\.event_name == 'push'/);
+          assert.match(publishImage, /packages: write/);
+          assert.match(publishImage, /push: true/);
+          assert.match(publishImage, /maestro_runtime_image_published/);
+          assert.match(publishGate, /needs: publish-image/);
+          assert.match(publishGate, /if: \$\{\{ always\(\) \}\}/);
+          assert.match(publishGate, /permissions: \{\}/);
+          assert.match(publishGate, /PUBLISH_RESULT: \$\{\{ needs\.publish-image\.result \}\}/);
+          assert.match(publishGate, /github\.event\.pull_request\.head\.repo\.id != github\.event\.repository\.id && 'ubuntu-latest'/);
+          assert.doesNotMatch(publishGate, /packages: write|docker\/login-action|docker\/build-push-action|repos\/evalops\/deploy\/dispatches/);
+          NODE
