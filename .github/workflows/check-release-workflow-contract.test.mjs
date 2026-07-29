@@ -12,7 +12,7 @@ const completeWorkflow = `
 permissions:
   contents: read
 concurrency:
-  group: \${{ github.workflow }}
+  group: \${{ github.workflow }}-\${{ github.event_name == 'workflow_dispatch' && (startsWith(inputs.version, 'v') && inputs.version || format('v{0}', inputs.version)) || github.ref_name }}
 jobs:
   prepare:
     runs-on: \${{ vars.INTERNAL_CONFIRMATION_RUNNER }}
@@ -25,6 +25,8 @@ jobs:
       release_version: \${{ steps.release.outputs.release_version }}
     steps:
       - uses: actions/checkout@sha
+        with:
+          fetch-depth: 1
       - id: release
         name: Resolve immutable release tag
         run: |
@@ -225,7 +227,10 @@ test("comments cannot spoof environment, permissions, or dependencies", () => {
 test("rejects broad build permissions and non-serialized releases", () => {
 	const broadened = completeWorkflow
 		.replace("permissions:\n  contents: read\n", "permissions:\n  contents: write\n")
-		.replace("  group: ${{ github.workflow }}\n", "  group: ${{ github.workflow }}-${{ github.ref }}\n")
+		.replace(
+			"  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && (startsWith(inputs.version, 'v') && inputs.version || format('v{0}', inputs.version)) || github.ref_name }}\n",
+			"  group: ${{ github.workflow }}\n",
+		)
 		.replace(
 			"  binaries:\n    needs: prepare\n    permissions:\n      contents: read\n",
 			"  binaries:\n    needs: prepare\n    permissions:\n      contents: write\n",
@@ -268,6 +273,18 @@ test("rejects workflow_dispatch work from an unbound ref", () => {
 	assert.ok(
 		validateReleaseWorkflow(unbound).some((failure) =>
 			failure.includes("immutable release SHA"),
+		),
+	);
+});
+
+test("rejects a full-history prepare checkout before bounded tag resolution", () => {
+	const fullHistory = completeWorkflow.replace(
+		"          fetch-depth: 1\n",
+		"          fetch-depth: 0\n",
+	);
+	assert.ok(
+		validateReleaseWorkflow(fullHistory).some((failure) =>
+			failure.includes("prepare checkout must be shallow"),
 		),
 	);
 });

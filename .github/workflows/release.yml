@@ -14,7 +14,7 @@ permissions:
 concurrency:
   # A tag push and a manual dispatch can target the same immutable release tag
   # from different refs. Serialize releases so those paths cannot publish twice.
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && (startsWith(inputs.version, 'v') && inputs.version || format('v{0}', inputs.version)) || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          fetch-depth: 0
+          fetch-depth: 1
       - id: release
         name: Resolve immutable release tag
         env:

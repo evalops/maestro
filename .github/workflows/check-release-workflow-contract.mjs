@@ -248,8 +248,12 @@ export function validateReleaseWorkflow(source) {
 	if (!hasExactPermissions(permissions, { contents: "read" })) {
 		failures.push("workflow default permissions must be exactly contents: read");
 	}
-	if (concurrencyGroup !== "${{ github.workflow }}") {
-		failures.push("release workflows must serialize tag pushes and manual dispatches");
+	const normalizedReleaseConcurrency =
+		"${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && (startsWith(inputs.version, 'v') && inputs.version || format('v{0}', inputs.version)) || github.ref_name }}";
+	if (concurrencyGroup !== normalizedReleaseConcurrency) {
+		failures.push(
+			"release workflows must serialize only duplicate paths for the same normalized release tag",
+		);
 	}
 	for (const [name, job] of [
 		["prepare", prepare],
@@ -299,6 +303,14 @@ export function validateReleaseWorkflow(source) {
 	}
 
 	const resolveStep = findStep(prepare, "Resolve immutable release tag");
+	const prepareCheckout = prepare.steps.find((step) =>
+		step.uses.startsWith("actions/checkout@"),
+	);
+	if (prepareCheckout?.with["fetch-depth"] !== "1") {
+		failures.push(
+			"prepare checkout must be shallow before the bounded immutable tag fetch",
+		);
+	}
 	const resolveLines = executableLines(resolveStep?.run ?? "");
 	const topLevelResolveLines = topLevelExecutableLines(resolveStep?.run ?? "");
 	if (resolveStep?.id !== "release") {
