@@ -484,7 +484,7 @@ test("current release workflow satisfies the parsed contract", async () => {
 
 test("versioned browser asset is present in the release source tree", async () => {
 	const html = await readFile(
-		new URL("../packages/web/dist/index.html", import.meta.url),
+		new URL("../../packages/web/dist/index.html", import.meta.url),
 		"utf8",
 	);
 	assert.match(html, /<!doctype html>/iu);
