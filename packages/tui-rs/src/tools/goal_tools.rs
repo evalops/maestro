@@ -40,6 +40,9 @@ pub fn get_goal() -> ToolResult {
                     "autoContinue": g.auto_continue,
                     "autoContinueCount": g.auto_continue_count,
                     "maxTurns": g.max_turns,
+                    "tokenBudget": g.token_budget,
+                    "tokensUsed": g.tokens_used,
+                    "remainingTokens": g.token_budget.map(|b| b.saturating_sub(g.tokens_used)),
                 }
             })
             .to_string(),

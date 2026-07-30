@@ -2739,6 +2739,25 @@ was missing; retry to review the exact execution context."
         if let Some((response_id, usage)) = response_end_info {
             if let Some(ref usage) = usage {
                 let headless_usage = to_headless_usage(usage);
+                let turn_tokens = headless_usage
+                    .input_tokens
+                    .saturating_add(headless_usage.output_tokens);
+                if self.goal_store.current.is_some() && turn_tokens > 0 {
+                    match self.goal_store.account_tokens(turn_tokens) {
+                        Ok(true) => {
+                            self.goal_auto_continue_armed = false;
+                            self.state.add_system_message(format!(
+                                "Goal token budget exhausted after this turn (+{turn_tokens} tokens). Auto-continue stopped."
+                            ));
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            self.state
+                                .error
+                                .replace(format!("Failed to account goal tokens: {e}"));
+                        }
+                    }
+                }
                 let alerts = self.usage_tracker.add_turn(&headless_usage);
                 for alert in alerts {
                     self.state.add_system_message(alert);

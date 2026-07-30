@@ -2094,7 +2094,7 @@ pub fn build_command_registry() -> CommandRegistry {
             }),
         )
         .usage(
-            "/goal [status|create [--max-turns N]|replace|pause|resume|block|complete|clear|auto on|auto off] [text]",
+            "/goal [status|create [--max-turns N] [--token-budget N]|replace|pause|resume|block|complete|clear|auto on|auto off] [text]",
         ),
     );
 
@@ -2591,11 +2591,11 @@ fn parse_goal_action(raw: &str) -> Result<GoalAction, CommandError> {
     let rest = parts.collect::<Vec<_>>().join(" ");
     match sub.as_str() {
         "create" | "set" | "start" => {
-            let (text, max_turns) =
-                crate::goal::strip_max_turns_flag(&rest).map_err(CommandError::new)?;
+            let (text, max_turns, token_budget) =
+                crate::goal::strip_goal_flags(&rest).map_err(CommandError::new)?;
             if text.is_empty() {
                 return Err(CommandError::new(
-                    "Usage: /goal create [--max-turns N] <text>",
+                    "Usage: /goal create [--max-turns N] [--token-budget N] <text>",
                 ));
             }
             Ok(GoalAction::Create {
@@ -2603,14 +2603,15 @@ fn parse_goal_action(raw: &str) -> Result<GoalAction, CommandError> {
                 replace: false,
                 criteria: None,
                 max_turns,
+                token_budget,
             })
         }
         "replace" => {
-            let (text, max_turns) =
-                crate::goal::strip_max_turns_flag(&rest).map_err(CommandError::new)?;
+            let (text, max_turns, token_budget) =
+                crate::goal::strip_goal_flags(&rest).map_err(CommandError::new)?;
             if text.is_empty() {
                 return Err(CommandError::new(
-                    "Usage: /goal replace [--max-turns N] <text>",
+                    "Usage: /goal replace [--max-turns N] [--token-budget N] <text>",
                 ));
             }
             Ok(GoalAction::Create {
@@ -2618,6 +2619,7 @@ fn parse_goal_action(raw: &str) -> Result<GoalAction, CommandError> {
                 replace: true,
                 criteria: None,
                 max_turns,
+                token_budget,
             })
         }
         "pause" => Ok(GoalAction::Pause),
@@ -2638,19 +2640,20 @@ fn parse_goal_action(raw: &str) -> Result<GoalAction, CommandError> {
             };
             Ok(GoalAction::AutoContinue { enabled })
         }
-        // Bare text → create without replace (may include --max-turns).
+        // Bare text → create without replace (may include flags).
         _ => {
-            let (text, max_turns) =
-                crate::goal::strip_max_turns_flag(trimmed).map_err(CommandError::new)?;
+            let (text, max_turns, token_budget) =
+                crate::goal::strip_goal_flags(trimmed).map_err(CommandError::new)?;
             if text.is_empty() {
                 return Err(CommandError::new(
-                    "Usage: /goal create [--max-turns N] <text>",
+                    "Usage: /goal create [--max-turns N] [--token-budget N] <text>",
                 ));
             }
             Ok(GoalAction::Create {
                 text,
                 replace: false,
                 criteria: None,
+                token_budget,
                 max_turns,
             })
         }

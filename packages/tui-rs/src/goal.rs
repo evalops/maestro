@@ -81,9 +81,16 @@ pub struct Goal {
     /// How many auto-continue prompts have already been submitted.
     #[serde(default)]
     pub auto_continue_count: u32,
-    /// Last status note (circuit-breaker or tool reason) for status display.
+    /// Last status note (circuit-breaker, budget, or tool reason) for status.
     #[serde(default)]
     pub last_judge_reason: Option<String>,
+    /// Optional token budget (Codex-style). When set, auto-continue stops once
+    /// `tokens_used` reaches this value.
+    #[serde(default)]
+    pub token_budget: Option<u64>,
+    /// Tokens accounted to this goal (sum of turn input+output while active).
+    #[serde(default)]
+    pub tokens_used: u64,
 }
 
 fn default_true() -> bool {
@@ -145,7 +152,12 @@ impl GoalStore {
             } else {
                 String::new()
             };
-            format!("{}{turns} {preview}{ellipsis}", g.status.badge())
+            let budget = match g.token_budget {
+                Some(b) => format!(" tok={}/{}", g.tokens_used, b),
+                None if g.tokens_used > 0 => format!(" tok={}", g.tokens_used),
+                None => String::new(),
+            };
+            format!("{}{turns}{budget} {preview}{ellipsis}", g.status.badge())
         })
     }
 
@@ -155,6 +167,7 @@ impl GoalStore {
         success_criteria: Option<String>,
         replace: bool,
         max_turns: Option<u32>,
+        token_budget: Option<u64>,
     ) -> Result<&Goal> {
         let text = text.into().trim().to_string();
         if text.is_empty() {
@@ -178,6 +191,11 @@ impl GoalStore {
             }
         }
         let max_turns = max_turns.unwrap_or(DEFAULT_MAX_AUTO_CONTINUES).max(1);
+        if let Some(budget) = token_budget {
+            if budget == 0 {
+                bail!("token budget must be at least 1 when set");
+            }
+        }
         let now = now_unix();
         self.current = Some(Goal {
             id: new_id(),
@@ -191,6 +209,8 @@ impl GoalStore {
             max_turns,
             auto_continue_count: 0,
             last_judge_reason: None,
+            token_budget,
+            tokens_used: 0,
         });
         self.save_default()?;
         Ok(self.current.as_ref().expect("just set"))
@@ -266,10 +286,50 @@ impl GoalStore {
         Ok(hit_cap)
     }
 
+    /// Account tokens for the latest worker turn. Returns `true` if a token
+    /// budget was just exhausted (auto-continue disabled).
+    pub fn account_tokens(&mut self, turn_tokens: u64) -> Result<bool> {
+        if turn_tokens == 0 {
+            return Ok(false);
+        }
+        let goal = self.current.as_mut().context("no current goal")?;
+        if goal.status != GoalStatus::Active {
+            return Ok(false);
+        }
+        goal.tokens_used = goal.tokens_used.saturating_add(turn_tokens);
+        goal.updated_at_unix = now_unix();
+        let hit = goal
+            .token_budget
+            .is_some_and(|budget| goal.tokens_used >= budget);
+        if hit {
+            goal.auto_continue = false;
+            goal.last_judge_reason = Some(format!(
+                "token budget exhausted: used {} of {}",
+                goal.tokens_used,
+                goal.token_budget.unwrap_or(0)
+            ));
+        }
+        self.save_default()?;
+        Ok(hit)
+    }
+
     /// Whether the TUI should submit a continuation prompt now.
     pub fn should_auto_continue(&self) -> bool {
         self.current.as_ref().is_some_and(|g| {
-            g.status == GoalStatus::Active && g.auto_continue && g.auto_continue_count < g.max_turns
+            g.status == GoalStatus::Active
+                && g.auto_continue
+                && g.auto_continue_count < g.max_turns
+                && g.token_budget.is_none_or(|budget| g.tokens_used < budget)
+        })
+    }
+
+    /// True when get_goal / update_goal should be offered to the model.
+    pub fn tools_visible(&self) -> bool {
+        self.current.as_ref().is_some_and(|g| {
+            matches!(
+                g.status,
+                GoalStatus::Active | GoalStatus::Paused | GoalStatus::Blocked
+            )
         })
     }
 
@@ -294,6 +354,18 @@ impl GoalStore {
              Auto-continue turns so far: {} (safety max {}).\n",
             g.id, g.text, g.auto_continue_count, g.max_turns
         );
+        match g.token_budget {
+            Some(budget) => {
+                let remaining = budget.saturating_sub(g.tokens_used);
+                prompt.push_str(&format!(
+                    "Token budget: used {} / {} (remaining {}).\n",
+                    g.tokens_used, budget, remaining
+                ));
+            }
+            None => {
+                prompt.push_str(&format!("Tokens used on this goal: {}.\n", g.tokens_used));
+            }
+        }
         if let Some(criteria) = &g.success_criteria {
             prompt.push_str(&format!("Success criteria: {criteria}\n"));
         }
@@ -322,8 +394,13 @@ impl GoalStore {
         match &self.current {
             None => "No active goal. Create one with `/goal create <text>`.".to_string(),
             Some(g) => {
+                let budget_line = match g.token_budget {
+                    Some(b) => format!("**Tokens:** {} / {b}\n", g.tokens_used),
+                    None => format!("**Tokens used:** {}\n", g.tokens_used),
+                };
                 let mut out = format!(
                     "## Goal {}\n\n**Status:** {}\n**Auto-continue:** {} ({} turns; safety max {})\n\
+                     {budget_line}\
                      **Completion:** worker calls `update_goal` complete|blocked (same model; Codex-style)\n\n{}\n",
                     g.id,
                     g.status.as_str(),
@@ -343,8 +420,8 @@ impl GoalStore {
                 }
                 out.push_str(
                     "\nCommands: `/goal pause` · `/goal resume` · `/goal block [reason]` · `/goal complete` · `/goal clear`\n\
-                     Agent tools: `get_goal`, `update_goal`.\n\
-                     Safety: `/goal create --max-turns N <text>` sets the circuit-breaker only (default 50).\n",
+                     Agent tools: `get_goal`, `update_goal` (visible only while a goal exists).\n\
+                     Create flags: `--max-turns N` (safety), `--token-budget N` (Codex-style budget).\n",
                 );
                 out
             }
@@ -388,10 +465,11 @@ fn save_to_path(store: &GoalStore, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Strip `--max-turns N` / `--max-turns=N` from goal create text.
-/// Returns `(remaining_text, max_turns)`.
-pub fn strip_max_turns_flag(raw: &str) -> Result<(String, Option<u32>), String> {
+/// Strip goal create flags from text.
+/// Returns `(remaining_text, max_turns, token_budget)`.
+pub fn strip_goal_flags(raw: &str) -> Result<(String, Option<u32>, Option<u64>), String> {
     let mut max_turns = None;
+    let mut token_budget = None;
     let mut out = Vec::new();
     let mut parts = raw.split_whitespace().peekable();
     while let Some(part) = parts.next() {
@@ -406,9 +484,26 @@ pub fn strip_max_turns_flag(raw: &str) -> Result<(String, Option<u32>), String> 
             max_turns = Some(parse_max_turns(value)?);
             continue;
         }
+        if let Some(value) = part.strip_prefix("--token-budget=") {
+            token_budget = Some(parse_token_budget(value)?);
+            continue;
+        }
+        if part == "--token-budget" || part == "--budget" {
+            let value = parts
+                .next()
+                .ok_or_else(|| "Usage: --token-budget <N>".to_string())?;
+            token_budget = Some(parse_token_budget(value)?);
+            continue;
+        }
         out.push(part);
     }
-    Ok((out.join(" "), max_turns))
+    Ok((out.join(" "), max_turns, token_budget))
+}
+
+/// Back-compat wrapper.
+pub fn strip_max_turns_flag(raw: &str) -> Result<(String, Option<u32>), String> {
+    let (text, max_turns, _) = strip_goal_flags(raw)?;
+    Ok((text, max_turns))
 }
 
 fn parse_max_turns(raw: &str) -> Result<u32, String> {
@@ -424,6 +519,16 @@ fn parse_max_turns(raw: &str) -> Result<u32, String> {
     Ok(n)
 }
 
+fn parse_token_budget(raw: &str) -> Result<u64, String> {
+    let n: u64 = raw
+        .parse()
+        .map_err(|_| format!("invalid --token-budget value '{raw}' (expected positive integer)"))?;
+    if n == 0 {
+        return Err("--token-budget must be at least 1".to_string());
+    }
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,7 +537,13 @@ mod tests {
     fn create_pause_resume_complete() {
         let mut store = GoalStore::default();
         store
-            .create("Ship the release", Some("tag exists".into()), false, None)
+            .create(
+                "Ship the release",
+                Some("tag exists".into()),
+                false,
+                None,
+                None,
+            )
             .unwrap();
         assert!(store.should_auto_continue());
         store.pause().unwrap();
@@ -447,17 +558,19 @@ mod tests {
     #[test]
     fn refuses_second_goal_without_replace() {
         let mut store = GoalStore::default();
-        store.create("first", None, false, None).unwrap();
-        let err = store.create("second", None, false, None).unwrap_err();
+        store.create("first", None, false, None, None).unwrap();
+        let err = store.create("second", None, false, None, None).unwrap_err();
         assert!(err.to_string().contains("already"));
-        store.create("second", None, true, None).unwrap();
+        store.create("second", None, true, None, None).unwrap();
         assert_eq!(store.current.as_ref().unwrap().text, "second");
     }
 
     #[test]
     fn continuation_prompt_only_when_active() {
         let mut store = GoalStore::default();
-        store.create("do the thing", None, false, None).unwrap();
+        store
+            .create("do the thing", None, false, None, None)
+            .unwrap();
         assert!(store
             .continuation_prompt()
             .unwrap()
@@ -469,7 +582,7 @@ mod tests {
     #[test]
     fn safety_max_turns_stops_auto_continue() {
         let mut store = GoalStore::default();
-        store.create("ship it", None, false, Some(2)).unwrap();
+        store.create("ship it", None, false, Some(2), None).unwrap();
         assert!(store.should_auto_continue());
         assert!(!store.note_auto_continue_submitted().unwrap());
         assert!(store.should_auto_continue());
@@ -488,10 +601,36 @@ mod tests {
     }
 
     #[test]
-    fn strip_max_turns_flag_parses() {
-        let (text, n) = strip_max_turns_flag("--max-turns 3 Ship the thing").unwrap();
+    fn token_budget_stops_auto_continue() {
+        let mut store = GoalStore::default();
+        store
+            .create("ship it", None, false, None, Some(100))
+            .unwrap();
+        assert!(store.should_auto_continue());
+        assert!(!store.account_tokens(40).unwrap());
+        assert!(store.should_auto_continue());
+        assert!(store.account_tokens(70).unwrap());
+        assert!(!store.should_auto_continue());
+        assert_eq!(store.current.as_ref().unwrap().tokens_used, 110);
+    }
+
+    #[test]
+    fn tools_visible_only_with_goal() {
+        let mut store = GoalStore::default();
+        assert!(!store.tools_visible());
+        store.create("x", None, false, None, None).unwrap();
+        assert!(store.tools_visible());
+        store.complete().unwrap();
+        assert!(!store.tools_visible());
+    }
+
+    #[test]
+    fn strip_goal_flags_parses() {
+        let (text, n, b) =
+            strip_goal_flags("--max-turns 3 --token-budget 5000 Ship the thing").unwrap();
         assert_eq!(text, "Ship the thing");
         assert_eq!(n, Some(3));
+        assert_eq!(b, Some(5000));
         let (text, n) = strip_max_turns_flag("Ship --max-turns=5 release").unwrap();
         assert_eq!(text, "Ship release");
         assert_eq!(n, Some(5));
