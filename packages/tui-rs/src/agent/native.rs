@@ -94,9 +94,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::Utc;
+use serde_json::{json, Value};
 use tokio::fs;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -752,6 +753,7 @@ impl NativeAgent {
         // Create the background runner
         let runner = NativeAgentRunner {
             client,
+            codex_session: None,
             config: config.clone(),
             messages: Vec::new(),
             tools,
@@ -1198,7 +1200,15 @@ struct NativeAgentRunner {
     ///
     /// Handles communication with AI providers (Anthropic, `OpenAI`, etc.).
     /// Can be swapped at runtime via `SetModel` commands.
+    /// For `openai-codex/*`, turns are routed through
+    /// [`codex_session`] instead of this HTTP client.
     client: UnifiedClient,
+
+    /// Live Codex app-server session for `openai-codex/*` models.
+    ///
+    /// Lazily created on the first prompt so ChatGPT OAuth refresh and
+    /// `thread/start` / `turn/start` stay owned by Codex.
+    codex_session: Option<super::codex_app_server_turns::CodexAppServerTurnSession>,
 
     /// Configuration
     ///
@@ -2349,6 +2359,10 @@ impl NativeAgentRunner {
                         continue;
                     }
 
+                    // Drop any live Codex thread when the model changes so the
+                    // next openai-codex prompt opens a fresh app-server session.
+                    self.codex_session = None;
+
                     // Ensure Codex auth is present before resolving openai-codex/*.
                     let _ = crate::codex_auth::apply_codex_auth_to_process_env();
                     match UnifiedClient::from_model(&model) {
@@ -2610,8 +2624,336 @@ impl NativeAgentRunner {
         }
     }
 
+    /// Ensure a Codex app-server thread exists for `openai-codex/*`.
+    async fn ensure_codex_session(&mut self) -> Result<()> {
+        if self.codex_session.is_some() {
+            return Ok(());
+        }
+        let model = super::codex_app_server_turns::codex_thread_model_id(&self.config.model);
+        let cwd = self.config.cwd.clone();
+        // Codex approvalPolicy values: never | on-request | on-failure | untrusted.
+        // Safe is intentionally stricter than Selective (untrusted).
+        let approval_policy = match self.config.approval_mode {
+            ApprovalMode::Yolo => Some("never".to_owned()),
+            ApprovalMode::Selective => Some("on-request".to_owned()),
+            ApprovalMode::Safe => Some("untrusted".to_owned()),
+        };
+        let sandbox = std::env::var("MAESTRO_SANDBOX_MODE")
+            .ok()
+            .filter(|mode| !mode.is_empty() && mode != "default" && mode != "inherit");
+        let dynamic_tools = super::codex_app_server_turns::dynamic_tools_from_native(&self.tools);
+        // Same standing instructions the HTTP path puts in RequestConfig.system.
+        let instructions = {
+            let system = match (&self.config.system_prompt, &self.prompt_context) {
+                (Some(base), Some(extra)) if !extra.trim().is_empty() => {
+                    Some(format!("{base}\n\n{extra}"))
+                }
+                (Some(base), _) => Some(base.clone()),
+                (None, Some(extra)) if !extra.trim().is_empty() => Some(extra.clone()),
+                _ => None,
+            };
+            ensure_untrusted_content_policy(system)
+        };
+        let session = super::codex_app_server_turns::CodexAppServerTurnSession::connect(
+            model,
+            Some(cwd),
+            approval_policy,
+            sandbox,
+            &dynamic_tools,
+            instructions,
+        )
+        .await?;
+        let _ = self.event_tx.send(FromAgent::Status {
+            message: format!("Codex app-server thread ready ({})", session.thread_id()),
+        });
+        self.codex_session = Some(session);
+        Ok(())
+    }
+
+    /// Drive one user turn (and any tool calls) entirely through Codex
+    /// app-server so ChatGPT OAuth refresh is never handled as a Platform API key.
+    ///
+    /// **Partial surface (tracked):**
+    /// - Dynamic tools run via Maestro `ToolExecutor` + firewall (same as HTTP).
+    /// - Codex-native `commandExecution` / `fileChange` approvals auto-accept
+    ///   only in Yolo; Selective/Safe decline them (status line only). Codex
+    ///   shell via those RPCs is effectively off unless Yolo.
+    async fn run_loop_via_codex_app_server(&mut self) -> Result<()> {
+        use super::codex_app_server_turns::TurnWaitEvent;
+        use crate::codex_app_server::agent_message_text_from_notifications;
+
+        self.ensure_codex_session().await?;
+
+        let user_text = self
+            .messages
+            .iter()
+            .rev()
+            .find_map(|message| match (&message.role, &message.content) {
+                (Role::User, MessageContent::Text(text)) => Some(text.clone()),
+                (Role::User, MessageContent::Blocks(blocks)) => {
+                    let text = blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    (!text.is_empty()).then_some(text)
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
+        if user_text.is_empty() {
+            bail!("No user message available for Codex app-server turn");
+        }
+
+        let response_id = Uuid::new_v4().to_string();
+        let _ = self.event_tx.send(FromAgent::ResponseStart {
+            response_id: response_id.clone(),
+        });
+
+        let turn_id = {
+            let session = self
+                .codex_session
+                .as_ref()
+                .context("Codex app-server session missing")?;
+            session.start_text_turn(user_text, None).await?
+        };
+
+        // Accumulate streamed text so completion does not re-emit deltas.
+        let mut streamed_assistant = String::new();
+
+        loop {
+            if self.drain_pending_commands() {
+                return Err(anyhow::anyhow!("Request cancelled"));
+            }
+
+            // Stream any agent message deltas that arrived since the last wait.
+            {
+                let session = self
+                    .codex_session
+                    .as_ref()
+                    .context("Codex app-server session missing")?;
+                let deltas = session.take_message_deltas().await;
+                let text = agent_message_text_from_notifications(&deltas);
+                if !text.is_empty() {
+                    streamed_assistant.push_str(&text);
+                    let _ = self.event_tx.send(FromAgent::ResponseChunk {
+                        response_id: response_id.clone(),
+                        content: text,
+                        is_thinking: false,
+                    });
+                }
+            }
+
+            let event = {
+                let session = self
+                    .codex_session
+                    .as_ref()
+                    .context("Codex app-server session missing")?;
+                session
+                    .wait_server_request_or_turn_complete(&turn_id, None)
+                    .await?
+            };
+
+            match event {
+                TurnWaitEvent::Completed(result) => {
+                    // Prefer already-streamed deltas; only emit a completion
+                    // chunk when nothing was streamed (avoids duplicating text).
+                    let final_text = if !streamed_assistant.is_empty() {
+                        streamed_assistant
+                    } else if !result.assistant_text.is_empty() {
+                        let text = result.assistant_text;
+                        let _ = self.event_tx.send(FromAgent::ResponseChunk {
+                            response_id: response_id.clone(),
+                            content: text.clone(),
+                            is_thinking: false,
+                        });
+                        text
+                    } else {
+                        String::new()
+                    };
+                    if !final_text.is_empty() {
+                        self.messages.push(Message {
+                            role: Role::Assistant,
+                            content: MessageContent::Text(final_text),
+                        });
+                    }
+                    let _ = self.event_tx.send(FromAgent::ResponseEnd {
+                        response_id,
+                        usage: None,
+                    });
+                    return Ok(());
+                }
+                TurnWaitEvent::ServerRequest(request) => {
+                    self.handle_codex_server_request(request).await?;
+                }
+            }
+        }
+    }
+
+    async fn handle_codex_server_request(
+        &mut self,
+        request: crate::codex_app_server::IncomingServerRequest,
+    ) -> Result<()> {
+        use super::codex_app_server_turns::{
+            approval_decision, parse_tool_call_params, tool_call_error_result,
+            tool_call_success_result,
+        };
+
+        let method = request.method.clone();
+        match method.as_str() {
+            "item/tool/call" => {
+                let params = request.params.clone().unwrap_or(Value::Null);
+                let (tool_name, call_id, args) = match parse_tool_call_params(&params) {
+                    Ok(parsed) => parsed,
+                    Err(err) => {
+                        request.respond(tool_call_error_result(err.to_string()));
+                        return Ok(());
+                    }
+                };
+
+                // Prefer the original registry key (case-insensitive / sanitized).
+                let registry_name = self
+                    .tools
+                    .keys()
+                    .find(|name| {
+                        name.eq_ignore_ascii_case(&tool_name)
+                            || name.replace([' ', '/', ':'], "_") == tool_name
+                    })
+                    .cloned()
+                    .unwrap_or_else(|| tool_name.to_lowercase());
+
+                let tool_key = registry_name.to_lowercase();
+                let is_external_tool = self.external_tools.contains(&tool_key);
+                let annotations = self.tool_executor.tool_annotations(&tool_key);
+                let workflow_snapshot = self.workflow_state.snapshot();
+                let firewall = ActionFirewall::new(&self.config.cwd);
+                let firewall_verdict = if is_external_tool {
+                    FirewallVerdict::Allow
+                } else {
+                    firewall.check_tool_with_context(FirewallContext {
+                        tool_name: &tool_key,
+                        args: &args,
+                        workflow_state: Some(&workflow_snapshot),
+                        annotations: annotations.as_ref(),
+                    })
+                };
+                if let FirewallVerdict::Block { reason } = &firewall_verdict {
+                    let _ = self.event_tx.send(FromAgent::Error {
+                        message: reason.clone(),
+                        fatal: false,
+                    });
+                    request.respond(tool_call_error_result(format!(
+                        "Tool blocked by action firewall: {reason}"
+                    )));
+                    return Ok(());
+                }
+
+                let requires_approval = tool_requires_approval(
+                    self.config.approval_mode,
+                    is_external_tool,
+                    &firewall_verdict,
+                    &self.tool_executor,
+                    &registry_name,
+                    &args,
+                );
+
+                if requires_approval {
+                    let _ = self.event_tx.send(FromAgent::ToolCall {
+                        call_id: call_id.clone(),
+                        tool: registry_name.clone(),
+                        args: args.clone(),
+                        requires_approval: true,
+                        approval_inline_env: None,
+                    });
+                    // Wait for the UI approval on the tool-response channel.
+                    let (approved, provided_result) = loop {
+                        match self.tool_response_rx.recv().await {
+                            Some((id, approved, result, _source)) if id == call_id => {
+                                break (approved, result);
+                            }
+                            Some(_) => continue,
+                            None => {
+                                request.respond(tool_call_error_result(
+                                    "Tool approval channel closed",
+                                ));
+                                return Ok(());
+                            }
+                        }
+                    };
+                    if !approved {
+                        request.respond(tool_call_error_result("Tool denied by user"));
+                        return Ok(());
+                    }
+                    if let Some(result) = provided_result {
+                        if result.success {
+                            request.respond(tool_call_success_result(result.output));
+                        } else {
+                            request.respond(tool_call_error_result(
+                                result.error.unwrap_or_else(|| result.output.clone()),
+                            ));
+                        }
+                        return Ok(());
+                    }
+                } else {
+                    let _ = self.event_tx.send(FromAgent::ToolCall {
+                        call_id: call_id.clone(),
+                        tool: registry_name.clone(),
+                        args: args.clone(),
+                        requires_approval: false,
+                        approval_inline_env: None,
+                    });
+                }
+
+                let execution = self
+                    .execute_tool(&registry_name, &args, &call_id, None)
+                    .await;
+                let text = execution.model_content();
+                if execution.is_error() {
+                    request.respond(tool_call_error_result(text));
+                } else {
+                    request.respond(tool_call_success_result(text));
+                }
+                Ok(())
+            }
+            "item/commandExecution/requestApproval"
+            | "item/fileChange/requestApproval"
+            | "applyPatchApproval"
+            | "execCommandApproval" => {
+                // Partial: only Yolo auto-accepts Codex-native exec approvals.
+                // Selective/Safe decline; Maestro dynamic tools still use the
+                // normal ToolCall approval path above.
+                let accept = matches!(self.config.approval_mode, ApprovalMode::Yolo);
+                if !accept {
+                    let _ = self.event_tx.send(FromAgent::Status {
+                        message: format!(
+                            "Declined Codex-native {} (approval mode is not Yolo; use Maestro tools or switch to Yolo)",
+                            request.method
+                        ),
+                    });
+                }
+                request.respond(approval_decision(accept));
+                Ok(())
+            }
+            "item/permissions/requestApproval" => {
+                request.respond(json!({ "permissions": {}, "scope": "turn" }));
+                Ok(())
+            }
+            other => {
+                request.reject(format!("Unsupported Codex server-request: {other}"));
+                Ok(())
+            }
+        }
+    }
+
     /// Run the agent loop until complete or interrupted
     async fn run_loop(&mut self) -> Result<()> {
+        if super::codex_app_server_turns::model_should_use_app_server_turns(&self.config.model) {
+            return self.run_loop_via_codex_app_server().await;
+        }
+
         'turn: loop {
             let response_id = Uuid::new_v4().to_string();
             let start_time = Instant::now();
