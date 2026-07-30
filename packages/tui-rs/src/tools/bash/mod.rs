@@ -2794,8 +2794,17 @@ mod tests {
             result.success,
             "background command should start: {result:?}"
         );
+        // Both fixture writes are create-then-write (`printf ... > file`):
+        // the files become visible to `exists()` before their contents are
+        // written, so polling existence alone can race an empty read under
+        // load. Wait for the expected contents instead.
         timeout(Duration::from_secs(2), async {
-            while !sentinel.exists() || !received_command.exists() {
+            loop {
+                let received = std::fs::read_to_string(&received_command).unwrap_or_default();
+                let output = std::fs::read_to_string(&sentinel).unwrap_or_default();
+                if received == command && output == "configured shell" {
+                    break;
+                }
                 sleep(Duration::from_millis(10)).await;
             }
         })

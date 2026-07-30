@@ -1492,6 +1492,28 @@ mod tests {
         let _ = fs::remove_file(script_path);
     }
 
+    /// Poll a fake-MarkItDown pid file until it contains a complete,
+    /// parseable pid. The scripts publish with `printf '%s' "$$" > file`,
+    /// which makes the file visible to `exists()` before the pid is written
+    /// into it, so waiting on existence alone can race an empty read.
+    #[cfg(unix)]
+    async fn read_pid_file_when_ready(pid_path: &Path) -> i32 {
+        let started = Instant::now();
+        loop {
+            if let Ok(contents) = fs::read_to_string(pid_path) {
+                if let Ok(pid) = contents.trim().parse() {
+                    return pid;
+                }
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "fake MarkItDown should record its pid in {}",
+                pid_path.display()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn test_async_extraction_is_responsive_and_cancels_markitdown_process() {
@@ -1529,23 +1551,13 @@ mod tests {
         ));
 
         let readiness_started = Instant::now();
-        while !pid_path.exists() && readiness_started.elapsed() < Duration::from_secs(1) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(
-            pid_path.exists(),
-            "MarkItDown process did not start while the async runtime remained responsive"
-        );
+        let pid = read_pid_file_when_ready(&pid_path).await;
         assert!(
             readiness_started.elapsed() < Duration::from_millis(500),
             "synchronous extraction blocked the async runtime for {:?}",
             readiness_started.elapsed()
         );
 
-        let pid: i32 = fs::read_to_string(&pid_path)
-            .expect("fake MarkItDown should record its pid")
-            .parse()
-            .expect("recorded MarkItDown pid should parse");
         extraction.abort();
         let _ = extraction.await;
 
@@ -1605,14 +1617,7 @@ mod tests {
             Some(cancellation.clone()),
         ));
 
-        let readiness_started = Instant::now();
-        while !pid_path.exists() && readiness_started.elapsed() < Duration::from_secs(1) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        let pid: i32 = fs::read_to_string(&pid_path)
-            .expect("fake MarkItDown should record its pid")
-            .parse()
-            .expect("recorded MarkItDown pid should parse");
+        let pid = read_pid_file_when_ready(&pid_path).await;
 
         cancellation.cancel();
         let result = tokio::time::timeout(Duration::from_secs(2), extraction)
