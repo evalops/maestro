@@ -201,12 +201,20 @@ where
     );
     let sessions_dir = config.runner.workspace_root.join(".maestro/sessions");
     let mut recorder = SessionRecorder::resume(sessions_dir, &session_recorder_id(&session_id))?;
+    let recorded_replay = recorder.replay();
     if let Some(replay) = restore_replay.as_ref() {
         recorder.apply_snapshot(replay.state.clone(), replay.last_init.clone())?;
     }
     let mut supervisor = AgentSupervisor::new(config.supervisor).with_session_recorder(recorder);
     if let Some(replay) = restore_replay {
-        supervisor.restore_session_replay(replay);
+        supervisor.restore_session_replay(crate::headless::SessionReplay {
+            semantic_conversation: replay
+                .semantic_conversation
+                .or(recorded_replay.semantic_conversation),
+            ..replay
+        });
+    } else if recorded_replay.semantic_conversation.is_some() {
+        supervisor.restore_session_replay(recorded_replay);
     }
     supervisor.connect().await?;
     let executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::new(
@@ -709,7 +717,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_manifest_hydrates_supervised_session_and_replays_last_init() {
+    async fn restore_manifest_replays_semantic_conversation_after_init() {
         let workspace = tempdir().expect("workspace");
         let source_agent = workspace.path().join("source-agent.sh");
         let mut source_script = fs::File::create(&source_agent).expect("source agent script");
@@ -719,7 +727,17 @@ mod tests {
             "printf '%s\\n' '{{\"type\":\"ready\",\"model\":\"fake\",\"provider\":\"test\",\"session_id\":\"sess_restore\"}}'"
         )
         .expect("write ready");
-        writeln!(source_script, "while IFS= read -r line; do :; done").expect("write loop");
+        writeln!(source_script, "while IFS= read -r line; do").expect("write loop");
+        writeln!(source_script, "  case \"$line\" in").expect("write case");
+        writeln!(source_script, "    *'\"type\":\"prompt\"'*)").expect("write prompt case");
+        writeln!(
+            source_script,
+            "      printf '%s\\n' '{{\"type\":\"conversation_snapshot\",\"protocol_version\":\"evalops.maestro.semantic-conversation.v1\",\"messages\":[{{\"role\":\"user\",\"content\":\"first turn\"}},{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"tool-call-1\",\"name\":\"bash\",\"input\":{{\"command\":\"pwd\"}}}}]}},{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"tool-call-1\",\"content\":\"unbounded source tool output\"}}]}}]}}'"
+        )
+        .expect("write runtime snapshot");
+        writeln!(source_script, "      ;;").expect("write case end");
+        writeln!(source_script, "  esac").expect("write case close");
+        writeln!(source_script, "done").expect("write loop end");
         drop(source_script);
         #[cfg(unix)]
         {
@@ -830,6 +848,75 @@ mod tests {
             .expect("source init response")
             .error_for_status()
             .expect("source init status");
+        let semantic_messages = vec![
+            crate::ai::Message {
+                role: crate::ai::Role::User,
+                content: crate::ai::MessageContent::Text("first turn".to_string()),
+            },
+            crate::ai::Message {
+                role: crate::ai::Role::Assistant,
+                content: crate::ai::MessageContent::Blocks(vec![
+                    crate::ai::ContentBlock::ToolUse {
+                        id: "tool-call-1".to_string(),
+                        name: "bash".to_string(),
+                        input: json!({ "command": "pwd" }),
+                    },
+                ]),
+            },
+            crate::ai::Message {
+                role: crate::ai::Role::User,
+                content: crate::ai::MessageContent::Blocks(vec![
+                    crate::ai::ContentBlock::ToolResult {
+                        tool_use_id: "tool-call-1".to_string(),
+                        content: "/workspace".to_string(),
+                        is_error: None,
+                    },
+                ]),
+            },
+        ];
+        client
+            .post(format!(
+                "{}/api/headless/sessions/sess_restore/messages",
+                source.base_url()
+            ))
+            .header("x-maestro-headless-connection-id", "conn_restore")
+            .header("x-maestro-headless-subscriber-id", subscription_id)
+            .header(
+                "x-maestro-headless-connection-capability",
+                connection_capability,
+            )
+            .json(&json!({ "type": "prompt", "content": "first turn" }))
+            .send()
+            .await
+            .expect("source prompt response")
+            .error_for_status()
+            .expect("source prompt status");
+        let session_path = workspace
+            .path()
+            .join(".maestro/sessions")
+            .join(format!("{}.jsonl", session_recorder_id("sess_restore")));
+        let replay_path = session_path.with_extension("replay.json");
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let replay_ready = fs::read_to_string(&replay_path)
+                    .ok()
+                    .and_then(|_| {
+                        SessionRecorder::resume(
+                            workspace.path().join(".maestro/sessions"),
+                            &session_recorder_id("sess_restore"),
+                        )
+                        .ok()
+                    })
+                    .and_then(|recorder| recorder.replay().semantic_conversation)
+                    .is_some();
+                if replay_ready {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("runtime semantic checkpoint timeout");
         let drain = source
             .drain_for_shutdown(HostedRunnerShutdownSignal::Terminate)
             .await
@@ -916,7 +1003,9 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 let messages = fs::read_to_string(&restored_messages).unwrap_or_default();
-                if messages.contains("restore system prompt") {
+                if messages.contains("restore system prompt")
+                    && messages.contains("\"type\":\"restore_conversation\"")
+                {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -941,6 +1030,31 @@ mod tests {
         assert_eq!(init["append_system_prompt"], "restore append prompt");
         assert_eq!(init["thinking_level"], "high");
         assert_eq!(init["approval_mode"], "prompt");
+        let parsed_messages = messages
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("restored message"))
+            .collect::<Vec<_>>();
+        let init_index = parsed_messages
+            .iter()
+            .position(|message| message["type"] == "init")
+            .expect("restored init");
+        let restore_index = parsed_messages
+            .iter()
+            .position(|message| message["type"] == "restore_conversation")
+            .expect("restored semantic conversation");
+        assert!(init_index < restore_index, "restore must follow init");
+        let mut expected_semantic_messages = semantic_messages.clone();
+        if let crate::ai::MessageContent::Blocks(blocks) =
+            &mut expected_semantic_messages[2].content
+        {
+            if let crate::ai::ContentBlock::ToolResult { content, .. } = &mut blocks[0] {
+                *content = "[tool result omitted from checkpoint]".to_string();
+            }
+        }
+        assert_eq!(
+            parsed_messages[restore_index]["messages"],
+            serde_json::to_value(expected_semantic_messages).expect("semantic messages json")
+        );
         let restored_drain = restored
             .drain_for_shutdown(HostedRunnerShutdownSignal::Terminate)
             .await

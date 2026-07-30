@@ -2102,7 +2102,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "attach",
-            "Queue local files for the next prompt (add|list|clear)",
+            "Queue local files for the next prompt (add|list|clear|remove)",
             CommandCategory::Ui,
             Box::new(|ctx| {
                 let raw = ctx.raw_args.trim();
@@ -2119,6 +2119,22 @@ pub fn build_command_registry() -> CommandRegistry {
                         AttachAction::Clear,
                     )));
                 }
+                let mut parts = raw.split_whitespace();
+                let first = parts.next().unwrap_or("");
+                if first.eq_ignore_ascii_case("remove")
+                    || first.eq_ignore_ascii_case("rm")
+                    || first.eq_ignore_ascii_case("drop")
+                    || first.eq_ignore_ascii_case("detach")
+                {
+                    let index = parts
+                        .next()
+                        .ok_or_else(|| CommandError::new("Usage: /attach remove <1-based-index>"))?
+                        .parse::<usize>()
+                        .map_err(|_| CommandError::new("Usage: /attach remove <1-based-index>"))?;
+                    return Ok(CommandOutput::Action(CommandAction::Attach(
+                        AttachAction::Remove { index },
+                    )));
+                }
                 let path = raw
                     .strip_prefix("add ")
                     .or_else(|| raw.strip_prefix("add\t"))
@@ -2126,7 +2142,7 @@ pub fn build_command_registry() -> CommandRegistry {
                     .trim();
                 if path.is_empty() {
                     return Err(CommandError::new(
-                        "Usage: /attach <path> | /attach list | /attach clear",
+                        "Usage: /attach <path> | /attach list | /attach clear | /attach remove <n>",
                     ));
                 }
                 Ok(CommandOutput::Action(CommandAction::Attach(
@@ -2134,7 +2150,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 )))
             }),
         )
-        .usage("/attach <path|list|clear>"),
+        .usage("/attach <path|list|clear|remove <n>>"),
     );
 
     // Memory commands

@@ -84,6 +84,9 @@ impl SharedRunner {
             events,
             controller_events,
             message_executor,
+            mutation_lifecycle: Arc::new(tokio::sync::Mutex::new(())),
+            event_pump_cancellation: CancellationToken::new(),
+            event_pump_task: Arc::new(tokio::sync::Mutex::new(None)),
         };
         if restore_manifest.is_some() {
             let envelope = shared.reset_envelope("restored_from_snapshot");

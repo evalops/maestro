@@ -173,6 +173,30 @@ impl SnapshotManifest {
             let _ =
                 resolve_workspace_path(workspace_root, None, Some(path.relative_path.as_str()))?;
         }
+        if let Some(replay_file) = &self.runtime.replay_file {
+            let replay_export = self
+                .workspace_export
+                .paths
+                .iter()
+                .find(|path| path.path == *replay_file)
+                .ok_or_else(|| {
+                    HostedError::new(
+                        HostedRunnerErrorCode::InvalidSnapshotManifest,
+                        "runtime replay sidecar is not declared in workspace export",
+                    )
+                })?;
+            if replay_export.path_type != "file" {
+                return Err(HostedError::new(
+                    HostedRunnerErrorCode::InvalidSnapshotManifest,
+                    "runtime replay sidecar must be exported as a file",
+                ));
+            }
+            let _ = resolve_workspace_path(
+                workspace_root,
+                None,
+                Some(replay_export.relative_path.as_str()),
+            )?;
+        }
         Ok(())
     }
 
@@ -230,6 +254,10 @@ impl SnapshotManifest {
                 .last_init
                 .as_ref()
                 .and_then(RuntimeInitSnapshot::to_init_config),
+            // Provider history is read from the durable session JSONL by the
+            // hosted-runner CLI; older facade manifests deliberately do not
+            // erase that checkpoint during restore.
+            semantic_conversation: None,
         }
     }
 }
@@ -858,6 +886,8 @@ pub(super) struct RuntimeFlushManifest {
     pub(super) error: Option<String>,
     pub(super) session_id: String,
     pub(super) session_file: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) replay_file: Option<PathBuf>,
     pub(super) protocol_version: Option<String>,
     pub(super) cursor: Option<u64>,
 }

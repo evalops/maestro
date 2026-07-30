@@ -44,6 +44,22 @@ pub struct PluginTrustState {
     pub trusted_source: String,
     pub enabled: bool,
     pub capabilities: BTreeMap<PluginCapability, bool>,
+    /// Marketplace catalog id when installed via marketplace install.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marketplace_id: Option<String>,
+    /// Marketplace trust tier at install time (official|curated|community).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marketplace_tier: Option<String>,
+    /// Unix seconds when the plugin was installed (if known).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_at_unix: Option<u64>,
+}
+
+/// Optional provenance recorded into `plugin-state.json` on install.
+#[derive(Debug, Clone, Default)]
+pub struct InstallProvenance {
+    pub marketplace_id: Option<String>,
+    pub marketplace_tier: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -89,6 +105,17 @@ pub fn install(
     state_path: &Path,
     trust: bool,
 ) -> Result<InstallPreview> {
+    install_with_provenance(source, destination_root, state_path, trust, None)
+}
+
+/// Install with optional marketplace provenance for `plugin-state.json`.
+pub fn install_with_provenance(
+    source: &str,
+    destination_root: &Path,
+    state_path: &Path,
+    trust: bool,
+    provenance: Option<InstallProvenance>,
+) -> Result<InstallPreview> {
     let source_path = Path::new(source);
     let checkout;
     let root = if source_path.is_dir() {
@@ -128,12 +155,20 @@ pub fn install(
     }
     let mut state = PluginState::load(state_path)?;
     let previous_state = state.clone();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let provenance = provenance.unwrap_or_default();
     state.plugins.insert(
         name.to_lowercase(),
         PluginTrustState {
             trusted_source: source.to_string(),
             enabled: true,
             capabilities: capabilities.iter().map(|value| (*value, true)).collect(),
+            marketplace_id: provenance.marketplace_id,
+            marketplace_tier: provenance.marketplace_tier,
+            installed_at_unix: Some(now),
         },
     );
 
@@ -267,6 +302,7 @@ pub fn set_enabled(state_path: &Path, plugin: &str, enabled: bool) -> Result<()>
             trusted_source: "adopted-existing-plugin".to_string(),
             enabled: true,
             capabilities: BTreeMap::new(),
+            ..Default::default()
         });
     entry.enabled = enabled;
     state.save(state_path)
@@ -286,6 +322,7 @@ pub fn set_capability(
             trusted_source: "adopted-existing-plugin".to_string(),
             enabled: true,
             capabilities: BTreeMap::new(),
+            ..Default::default()
         });
     entry.capabilities.insert(capability, enabled);
     state.save(state_path)
@@ -596,6 +633,7 @@ mod tests {
                     trusted_source: "local".to_string(),
                     enabled: true,
                     capabilities: BTreeMap::from([(PluginCapability::Mcp, false)]),
+                    ..Default::default()
                 },
             )]),
         };

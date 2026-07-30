@@ -32,7 +32,8 @@ pub mod marketplace;
 pub use discovery::{default_search_roots, search_roots_for_workspace, PluginOrigin};
 pub use loader::{load_manifest, resolve_components, PluginComponents};
 pub use manager::{
-    install, set_capability, set_enabled, InstallPreview, PluginCapability, PluginState,
+    install, install_with_provenance, set_capability, set_enabled, InstallPreview,
+    InstallProvenance, PluginCapability, PluginState, PluginTrustState,
 };
 pub use manifest::PluginManifest;
 pub use marketplace::{

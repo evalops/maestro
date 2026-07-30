@@ -26,4 +26,5 @@ serde_json.workspace = true
 sha1 = "0.10"
 sha2.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "net", "process", "sync", "time", "fs"] }
+tokio-util = "0.7"
 zip.workspace = true

@@ -870,6 +870,7 @@ fn test_supervisor_builder_restores_session_replay() {
             approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
             history: None,
         }),
+        semantic_conversation: None,
     };
 
     let supervisor = SupervisorBuilder::new().session_replay(replay).build();
@@ -887,6 +888,7 @@ fn session_replay_does_not_override_explicit_remote_session_id() {
             ..AgentState::default()
         },
         last_init: None,
+        semantic_conversation: None,
     };
 
     let supervisor = SupervisorBuilder::new()
@@ -933,6 +935,70 @@ fn snapshot_incoming_preserves_existing_event_queue_order() {
             session_id: Some(ref session_id)
         }) if session_id == "sess_snapshot"
     ));
+}
+
+#[test]
+fn semantic_restore_is_not_sent_without_a_saved_init_boundary() {
+    let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
+    supervisor.semantic_conversation = Some(vec![]);
+
+    // If replay attempted to send RestoreConversation this would fail because
+    // no transport is attached. A facade-only session must not restore provider
+    // history before Init has established the runtime boundary.
+    assert!(supervisor.replay_saved_semantic_conversation().is_ok());
+}
+
+#[test]
+fn unsupported_live_semantic_snapshot_clears_reconnect_history() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let recorder = SessionRecorder::new(temp.path()).expect("recorder");
+    let mut supervisor =
+        AgentSupervisor::new(SupervisorConfig::default()).with_session_recorder(recorder);
+    let supported = vec![maestro_ai::Message {
+        role: maestro_ai::Role::User,
+        content: maestro_ai::MessageContent::text("first turn"),
+    }];
+    supervisor.apply_agent_message(FromAgentMessage::ConversationSnapshot {
+        protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL.to_owned(),
+        messages: supported,
+    });
+    assert!(supervisor.semantic_conversation.is_some());
+
+    supervisor.apply_agent_message(FromAgentMessage::ConversationSnapshot {
+        protocol_version: "evalops.maestro.semantic-conversation.v999".to_owned(),
+        messages: vec![],
+    });
+    assert!(supervisor.semantic_conversation.is_none());
+}
+
+#[test]
+fn replay_without_recorder_clears_history_after_unsupported_live_snapshot() {
+    let replay = SessionReplay {
+        state: AgentState::default(),
+        last_init: Some(InitConfig {
+            system_prompt: Some("restore boundary".to_owned()),
+            append_system_prompt: None,
+            thinking_level: None,
+            approval_mode: None,
+            history: None,
+        }),
+        semantic_conversation: Some(vec![maestro_ai::Message {
+            role: maestro_ai::Role::User,
+            content: maestro_ai::MessageContent::text("stale reconnect history"),
+        }]),
+    };
+    let mut supervisor =
+        AgentSupervisor::new(SupervisorConfig::default()).with_session_replay(replay);
+
+    supervisor.apply_agent_message(FromAgentMessage::ConversationSnapshot {
+        protocol_version: "evalops.maestro.semantic-conversation.v999".to_owned(),
+        messages: vec![],
+    });
+
+    assert!(
+        supervisor.semantic_conversation.is_none(),
+        "an unsupported live checkpoint must clear replayed history before reconnect"
+    );
 }
 
 #[test]
@@ -1509,6 +1575,7 @@ async fn connect_replays_saved_init_from_restored_session_snapshot() {
             ..AgentState::default()
         },
         last_init: Some(init.clone()),
+        semantic_conversation: None,
     };
 
     let mut supervisor = AgentSupervisor::new(config).with_session_replay(replay);

@@ -25,7 +25,12 @@ use super::push_notifications::{
     handle_a2a_push_notification_config_create, handle_a2a_push_notification_config_delete,
     handle_a2a_push_notification_config_get, handle_a2a_push_notification_config_list,
 };
-use super::{a2a_agent_card, a2a_extended_agent_card, run_a2a_native_turn, A2ATurnResult};
+use super::{
+    a2a_agent_card, a2a_extended_agent_card, build_a2a_subagent_execution_policy_for_state,
+    decode_subagent_capsule_for_completion, run_a2a_native_turn, validate_subagent_capsule,
+    A2ASubagentExecutionPolicy, A2ATurnResult, CapsuleValidationError,
+    ValidatedSubagentTaskCapsule,
+};
 
 pub(crate) const A2A_PROTOCOL_VERSION: &str = "1.0";
 pub(crate) const A2A_DEFAULT_TURN_TIMEOUT_MS: u64 = 180_000;
@@ -114,6 +119,8 @@ pub(crate) struct A2ASendTarget {
     pub(crate) history: Vec<Value>,
     pub(crate) previous_task: Option<Value>,
     pub(crate) metadata: Value,
+    pub(crate) subagent_capsule: Option<ValidatedSubagentTaskCapsule>,
+    pub(crate) subagent_execution_policy: Option<A2ASubagentExecutionPolicy>,
 }
 
 pub(crate) fn is_a2a_endpoint(head: &RequestHead) -> bool {
@@ -428,6 +435,8 @@ async fn handle_a2a_message_stream(
     let history = target.history;
     let mut previous_task = target.previous_task;
     let metadata = target.metadata;
+    let subagent_capsule = target.subagent_capsule;
+    let subagent_execution_policy = target.subagent_execution_policy;
     let (cancel_tx, cancel_rx) = watch::channel(false);
     if let Err(response) = register_a2a_cancel_sender(state, &task_id, cancel_tx).await {
         rollback_a2a_send_claim(state, &task_id, previous_task.take()).await;
@@ -451,8 +460,18 @@ async fn handle_a2a_message_stream(
             return Err(error);
         }
     }
-    let task = complete_a2a_task(
-        state, prompt, task_id, context_id, history, metadata, cancel_rx,
+    let task = complete_a2a_task_with_capsule(
+        state,
+        A2ACompletionRequest {
+            prompt,
+            task_id,
+            context_id,
+            history,
+            metadata,
+            capsule: subagent_capsule,
+            execution_policy: subagent_execution_policy,
+        },
+        cancel_rx,
     )
     .await;
     send_a2a_stream_response(
@@ -854,6 +873,19 @@ pub(crate) async fn cancel_a2a_task(
         "timestamp": now_rfc3339()
     });
     task["artifacts"] = Value::Array(Vec::new());
+    if let Some(metadata) = task.get_mut("metadata") {
+        let capsule = completion_subagent_capsule_from_metadata(metadata)
+            .ok()
+            .flatten();
+        attach_server_owned_subagent_completion(
+            metadata,
+            capsule.as_ref(),
+            task_id,
+            &context_id,
+            "canceled",
+            &[],
+        );
+    }
     let task = task.clone();
     prune_a2a_terminal_tasks(&mut tasks);
     drop(tasks);
@@ -1313,6 +1345,36 @@ fn a2a_normalize_state(value: &str) -> String {
     canonical_a2a_task_state(value)
 }
 
+fn validated_subagent_capsule_from_metadata(
+    metadata: &Value,
+) -> Result<Option<ValidatedSubagentTaskCapsule>, CapsuleValidationError> {
+    let Some(request) = metadata.get(A2A_SUBAGENT_REQUEST_METADATA_PATH) else {
+        return Ok(None);
+    };
+    let skill_id = request
+        .get("skillId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CapsuleValidationError::Malformed {
+            message: "skillId must be a string".to_string(),
+        })?;
+    validate_subagent_capsule(request, skill_id).map(Some)
+}
+
+fn completion_subagent_capsule_from_metadata(
+    metadata: &Value,
+) -> Result<Option<ValidatedSubagentTaskCapsule>, CapsuleValidationError> {
+    let Some(request) = metadata.get(A2A_SUBAGENT_REQUEST_METADATA_PATH) else {
+        return Ok(None);
+    };
+    let skill_id = request
+        .get("skillId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CapsuleValidationError::Malformed {
+            message: "skillId must be a string".to_string(),
+        })?;
+    decode_subagent_capsule_for_completion(request, skill_id).map(Some)
+}
+
 pub(crate) async fn claim_a2a_send_task(
     state: &AppState,
     request: &A2ASendMessageRequest,
@@ -1416,6 +1478,19 @@ pub(crate) async fn claim_a2a_send_task(
         task_metadata = a2a_metadata_with_push_notification_config(task_metadata, config)
             .map_err(|message| a2a_error_response(400, "INVALID_REQUEST", &message))?;
     }
+    let subagent_capsule = validated_subagent_capsule_from_metadata(&task_metadata)
+        .map_err(|error| a2a_error_response(400, "INVALID_REQUEST", &error.to_string()))?;
+    let subagent_execution_policy = subagent_capsule
+        .as_ref()
+        .map(|capsule| build_a2a_subagent_execution_policy_for_state(state, capsule))
+        .transpose()
+        .map_err(|error| a2a_error_response(400, "INVALID_REQUEST", &error))?;
+    if subagent_capsule.is_some() {
+        if let Some(metadata) = task_metadata.as_object_mut() {
+            metadata.remove("workGraph");
+            metadata.remove("evalops.subagentCompletion");
+        }
+    }
     history.push(a2a_user_message_value(&request.message, &context_id));
     let working_message = a2a_agent_message(&context_id, "Maestro is working on the A2A task.");
     let task = a2a_task_value(
@@ -1438,6 +1513,8 @@ pub(crate) async fn claim_a2a_send_task(
         history,
         previous_task,
         metadata: task_metadata,
+        subagent_capsule,
+        subagent_execution_policy,
     })
 }
 
@@ -1595,6 +1672,8 @@ pub(crate) async fn handle_a2a_message_send(
     let history = target.history;
     let previous_task = target.previous_task;
     let metadata = target.metadata;
+    let subagent_capsule = target.subagent_capsule;
+    let subagent_execution_policy = target.subagent_execution_policy;
 
     let (cancel_tx, cancel_rx) = watch::channel(false);
     if let Err(response) = register_a2a_cancel_sender(state, &task_id, cancel_tx).await {
@@ -1621,13 +1700,17 @@ pub(crate) async fn handle_a2a_message_send(
         let task = store_a2a_task_unless_canceled(state, &task_id, task).await;
         let state = state.clone();
         tokio::spawn(async move {
-            let _ = complete_a2a_task(
+            let _ = complete_a2a_task_with_capsule(
                 &state,
-                prompt,
-                task_id,
-                context_id,
-                accepted_history,
-                metadata,
+                A2ACompletionRequest {
+                    prompt,
+                    task_id,
+                    context_id,
+                    history: accepted_history,
+                    metadata,
+                    capsule: subagent_capsule,
+                    execution_policy: subagent_execution_policy,
+                },
                 cancel_rx,
             )
             .await;
@@ -1635,27 +1718,100 @@ pub(crate) async fn handle_a2a_message_send(
         return json_response(200, &serde_json::json!({ "task": a2a_public_task(&task) }));
     }
 
-    let task = complete_a2a_task(
-        state, prompt, task_id, context_id, history, metadata, cancel_rx,
+    let task = complete_a2a_task_with_capsule(
+        state,
+        A2ACompletionRequest {
+            prompt,
+            task_id,
+            context_id,
+            history,
+            metadata,
+            capsule: subagent_capsule,
+            execution_policy: subagent_execution_policy,
+        },
+        cancel_rx,
     )
     .await;
     json_response(200, &serde_json::json!({ "task": a2a_public_task(&task) }))
 }
 
+#[allow(dead_code)]
 pub(crate) async fn complete_a2a_task(
     state: &AppState,
     prompt: String,
     task_id: String,
     context_id: String,
-    mut history: Vec<Value>,
-    mut metadata: Value,
+    history: Vec<Value>,
+    metadata: Value,
     cancel_rx: A2ACancelReceiver,
 ) -> Value {
-    let turn = match run_a2a_native_turn(state, prompt, cancel_rx).await {
+    let capsule = completion_subagent_capsule_from_metadata(&metadata)
+        .ok()
+        .flatten();
+    let execution_policy = capsule
+        .as_ref()
+        .and_then(|capsule| build_a2a_subagent_execution_policy_for_state(state, capsule).ok());
+    complete_a2a_task_with_capsule(
+        state,
+        A2ACompletionRequest {
+            prompt,
+            task_id,
+            context_id,
+            history,
+            metadata,
+            capsule,
+            execution_policy,
+        },
+        cancel_rx,
+    )
+    .await
+}
+
+struct A2ACompletionRequest {
+    prompt: String,
+    task_id: String,
+    context_id: String,
+    history: Vec<Value>,
+    metadata: Value,
+    capsule: Option<ValidatedSubagentTaskCapsule>,
+    execution_policy: Option<A2ASubagentExecutionPolicy>,
+}
+
+async fn complete_a2a_task_with_capsule(
+    state: &AppState,
+    request: A2ACompletionRequest,
+    cancel_rx: A2ACancelReceiver,
+) -> Value {
+    let A2ACompletionRequest {
+        prompt,
+        task_id,
+        context_id,
+        mut history,
+        mut metadata,
+        capsule,
+        execution_policy,
+    } = request;
+    let turn = match run_a2a_native_turn(
+        state,
+        prompt,
+        cancel_rx,
+        capsule.as_ref(),
+        execution_policy.as_ref(),
+    )
+    .await
+    {
         Ok(A2ATurnResult::Completed(turn)) => turn,
         Ok(A2ATurnResult::Canceled) => {
             let message = a2a_agent_message(&context_id, "Task canceled");
             history.push(message.clone());
+            attach_server_owned_subagent_completion(
+                &mut metadata,
+                capsule.as_ref(),
+                &task_id,
+                &context_id,
+                "canceled",
+                &[],
+            );
             let task = a2a_task_value(
                 &task_id,
                 &context_id,
@@ -1672,6 +1828,14 @@ pub(crate) async fn complete_a2a_task(
         Err(error) => {
             let message = a2a_agent_message(&context_id, &error);
             history.push(message.clone());
+            attach_server_owned_subagent_completion(
+                &mut metadata,
+                capsule.as_ref(),
+                &task_id,
+                &context_id,
+                "failed",
+                &[],
+            );
             let task = a2a_task_value(
                 &task_id,
                 &context_id,
@@ -1708,7 +1872,36 @@ pub(crate) async fn complete_a2a_task(
             "cost": usage.cost.unwrap_or(0.0)
         });
     }
-    maybe_attach_a2a_subagent_work_graph(&mut metadata, &task_id, &context_id);
+    let mut artifacts = vec![serde_json::json!({
+        "artifactId": format!("{task_id}-assistant-response"),
+        "name": "assistant-response",
+        "artifactKind": "assistant.response",
+        "parts": [{ "text": assistant_text.clone(), "mediaType": "text/plain" }]
+    })];
+    if capsule
+        .as_ref()
+        .is_some_and(|capsule| capsule.lane_id == "code-review")
+    {
+        artifacts.push(serde_json::json!({
+            "artifactId": format!("{task_id}-review-summary"),
+            "name": "review-summary",
+            "artifactKind": "review.summary",
+            "parts": [{ "text": assistant_text, "mediaType": "text/plain" }],
+            "metadata": { "serverGenerated": true }
+        }));
+    }
+    artifacts.extend(a2a_acceptance_report_artifacts(
+        &task_id,
+        &turn.acceptance_reports,
+    ));
+    attach_server_owned_subagent_completion(
+        &mut metadata,
+        capsule.as_ref(),
+        &task_id,
+        &context_id,
+        "completed",
+        &artifacts,
+    );
     let task = a2a_task_value(
         &task_id,
         &context_id,
@@ -1718,16 +1911,139 @@ pub(crate) async fn complete_a2a_task(
             history.push(agent_message);
             history
         },
-        vec![serde_json::json!({
-            "artifactId": format!("{task_id}-assistant-response"),
-            "name": "assistant-response",
-            "parts": [{ "text": assistant_text, "mediaType": "text/plain" }]
-        })],
+        artifacts,
         metadata,
     );
     let task = store_a2a_task_unless_canceled(state, &task_id, task).await;
     state.a2a_cancel_senders.lock().await.remove(&task_id);
     task
+}
+
+pub(crate) fn a2a_acceptance_report_artifacts(task_id: &str, reports: &[Value]) -> Vec<Value> {
+    reports
+        .iter()
+        .enumerate()
+        .map(|(index, report)| {
+            serde_json::json!({
+                "artifactId": format!("{task_id}-test-report-{index}"),
+                "name": format!("acceptance-check-{index}"),
+                "artifactKind": "test.report",
+                "parts": [{
+                    "data": report,
+                    "mediaType": "application/json"
+                }]
+            })
+        })
+        .collect()
+}
+
+fn attach_server_owned_subagent_completion(
+    metadata: &mut Value,
+    capsule: Option<&ValidatedSubagentTaskCapsule>,
+    task_id: &str,
+    context_id: &str,
+    observed_outcome: &str,
+    artifacts: &[Value],
+) {
+    let Some(capsule) = capsule else {
+        maybe_attach_a2a_subagent_work_graph(metadata, task_id, context_id);
+        return;
+    };
+    if let Some(metadata) = metadata.as_object_mut() {
+        metadata.remove("workGraph");
+        metadata.remove("evalops.subagentCompletion");
+    }
+    maybe_attach_a2a_subagent_work_graph(metadata, task_id, context_id);
+
+    let mut observed_artifact_kinds = Vec::new();
+    for artifact in artifacts {
+        let artifact_kind = artifact
+            .get("artifactKind")
+            .or_else(|| artifact.get("kind"))
+            .or_else(|| {
+                artifact
+                    .get("metadata")
+                    .and_then(|metadata| metadata.get("artifactKind"))
+            })
+            .and_then(Value::as_str);
+        if let Some(artifact_kind) = artifact_kind {
+            if !observed_artifact_kinds
+                .iter()
+                .any(|observed| observed == artifact_kind)
+            {
+                observed_artifact_kinds.push(artifact_kind.to_string());
+            }
+        }
+    }
+    let missing_artifact_kinds = capsule
+        .expected_artifact_kinds
+        .iter()
+        .filter(|expected| !observed_artifact_kinds.contains(expected))
+        .cloned()
+        .collect::<Vec<_>>();
+    let verification_disposition = match observed_outcome {
+        "completed" if capsule.material => "pending_independent_review",
+        "completed" if missing_artifact_kinds.is_empty() => "completed",
+        "completed" => "completed_with_missing_artifacts",
+        "canceled" => "canceled",
+        _ => "runtime_failed",
+    };
+    let work_graph_status = if observed_outcome == "completed" && capsule.material {
+        "awaiting_review"
+    } else {
+        observed_outcome
+    };
+
+    let Some(metadata_object) = metadata.as_object_mut() else {
+        return;
+    };
+    metadata_object.insert(
+        "evalops.subagentCompletion".to_string(),
+        serde_json::json!({
+            "serverGenerated": true,
+            "capsuleVersion": super::SUBAGENT_TASK_CAPSULE_VERSION,
+            "taskId": capsule.task_id,
+            "parentTaskId": capsule.parent_task_id,
+            "skillId": capsule.skill_id,
+            "laneId": capsule.lane_id,
+            "taskClass": capsule.task_class,
+            "observedOutcome": observed_outcome,
+            "observedArtifactKinds": observed_artifact_kinds,
+            "missingArtifactKinds": missing_artifact_kinds,
+            "verificationDisposition": verification_disposition
+        }),
+    );
+    if let Some(work_graph) = metadata_object
+        .get_mut("workGraph")
+        .and_then(Value::as_object_mut)
+    {
+        work_graph.insert(
+            "state".to_string(),
+            Value::String(work_graph_status.to_string()),
+        );
+        work_graph.insert(
+            "status".to_string(),
+            Value::String(work_graph_status.to_string()),
+        );
+        if work_graph_status == "awaiting_review" {
+            work_graph.insert("waitingItemCount".to_string(), Value::from(1));
+            work_graph.insert(
+                "stateCounts".to_string(),
+                serde_json::json!({ "awaiting_review": 1 }),
+            );
+            if let Some(edges) = work_graph
+                .get_mut("codexSubagents")
+                .and_then(|subagents| subagents.get_mut("edges"))
+                .and_then(Value::as_array_mut)
+            {
+                for edge in edges {
+                    edge["status"] = Value::String("awaiting_review".to_string());
+                    edge["workItemState"] = Value::String("awaiting_review".to_string());
+                    edge["completionGate"] = Value::String("independent-code-review".to_string());
+                }
+            }
+        }
+    }
 }
 
 fn maybe_attach_a2a_subagent_work_graph(metadata: &mut Value, task_id: &str, context_id: &str) {
@@ -1743,10 +2059,16 @@ fn maybe_attach_a2a_subagent_work_graph(metadata: &mut Value, task_id: &str, con
     else {
         return;
     };
+    let capsule = subagent_request.get("capsule").and_then(Value::as_object);
     let skill_id = json_string_from_object(subagent_request, &["skillId", "skill_id"]);
-    let role = json_string_from_object(subagent_request, &["role"]);
+    let role = json_string_from_object(subagent_request, &["role"]).or_else(|| {
+        capsule.and_then(|capsule| json_string_from_object(capsule, &["laneId", "lane_id"]))
+    });
     let swarm_id = json_string_from_object(subagent_request, &["swarmId", "swarm_id"]);
     let work_item_id = json_string_from_object(subagent_request, &["taskId", "task_id"])
+        .or_else(|| {
+            capsule.and_then(|capsule| json_string_from_object(capsule, &["taskId", "task_id"]))
+        })
         .unwrap_or_else(|| task_id.to_string());
     let child_run_id = format!("a2a-task:{task_id}");
     let tool_call_id = format!("a2a-subagent-dispatch:{task_id}");

@@ -139,7 +139,7 @@ impl ErrorKind {
         if lower.contains("rate limit")
             || lower.contains("rate_limit")
             || lower.contains("too many requests")
-            || lower.contains("429")
+            || Self::contains_http_status_code(&lower, "429")
         {
             // Try to extract retry-after time from message
             let retry_after = Self::extract_retry_after(&lower);
@@ -162,8 +162,8 @@ impl ErrorKind {
             || lower.contains("authentication")
             || lower.contains("invalid api key")
             || lower.contains("invalid_api_key")
-            || lower.contains("401")
-            || lower.contains("403")
+            || Self::contains_http_status_code(&lower, "401")
+            || Self::contains_http_status_code(&lower, "403")
         {
             return ErrorKind::AuthFailure;
         }
@@ -172,17 +172,17 @@ impl ErrorKind {
         if lower.contains("invalid request")
             || lower.contains("bad request")
             || lower.contains("malformed")
-            || lower.contains("400")
+            || Self::contains_http_status_code(&lower, "400")
         {
             return ErrorKind::InvalidRequest;
         }
 
         // Check for transient errors
         if lower.contains("overloaded")
-            || lower.contains("500")
-            || lower.contains("502")
-            || lower.contains("503")
-            || lower.contains("504")
+            || Self::contains_http_status_code(&lower, "500")
+            || Self::contains_http_status_code(&lower, "502")
+            || Self::contains_http_status_code(&lower, "503")
+            || Self::contains_http_status_code(&lower, "504")
             || lower.contains("service unavailable")
             || lower.contains("server error")
             || lower.contains("internal error")
@@ -196,6 +196,73 @@ impl ErrorKind {
         }
 
         ErrorKind::Unknown
+    }
+
+    /// Match a three-digit HTTP status only when it is a standalone status or
+    /// is introduced by an explicit status/error/code label. Parser locations,
+    /// record IDs, and larger numbers are not provider status evidence.
+    fn contains_http_status_code(message: &str, code: &str) -> bool {
+        debug_assert!(code.len() == 3 && code.bytes().all(|byte| byte.is_ascii_digit()));
+
+        message.match_indices(code).any(|(start, _)| {
+            let before = &message[..start];
+            let after = &message[start + code.len()..];
+            if before
+                .chars()
+                .next_back()
+                .is_some_and(|character| character.is_ascii_alphanumeric())
+                || after
+                    .chars()
+                    .next()
+                    .is_some_and(|character| character.is_ascii_alphanumeric())
+            {
+                return false;
+            }
+
+            let prefix = before.trim_end_matches(|character: char| {
+                character.is_ascii_whitespace()
+                    || matches!(character, ':' | '=' | '(' | '[' | '{' | '"' | '\'')
+            });
+            if prefix.is_empty() {
+                return true;
+            }
+
+            const STATUS_CONTEXTS: &[&str] = &[
+                "http",
+                "http error",
+                "http status",
+                "http status code",
+                "status",
+                "status code",
+                "status_code",
+                "response status",
+                "response status code",
+                "error",
+                "error code",
+                "code",
+            ];
+            STATUS_CONTEXTS.iter().any(|context| {
+                prefix.strip_suffix(context).is_some_and(|leading| {
+                    leading
+                        .chars()
+                        .next_back()
+                        .is_none_or(|character| !character.is_ascii_alphanumeric())
+                })
+            }) || prefix
+                .split_ascii_whitespace()
+                .next_back()
+                .is_some_and(Self::is_http_version)
+        })
+    }
+
+    fn is_http_version(token: &str) -> bool {
+        token.strip_prefix("http/").is_some_and(|version| {
+            !version.is_empty()
+                && version
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || byte == b'.')
+                && version.bytes().any(|byte| byte.is_ascii_digit())
+        })
     }
 
     /// Extract retry-after duration from error message (if present)
@@ -471,6 +538,65 @@ mod tests {
 
         let kind = ErrorKind::classify("Too many requests, slow down");
         assert!(matches!(kind, ErrorKind::RateLimited { .. }));
+    }
+
+    #[test]
+    fn numeric_http_status_tokens_retain_their_error_classification() {
+        let cases = [
+            ("429", ErrorKind::RateLimited { retry_after: None }),
+            (
+                "HTTP status 429",
+                ErrorKind::RateLimited { retry_after: None },
+            ),
+            (
+                "HTTP/1.1 429 Too Many Requests",
+                ErrorKind::RateLimited { retry_after: None },
+            ),
+            ("HTTP 400", ErrorKind::InvalidRequest),
+            ("status code 401", ErrorKind::AuthFailure),
+            ("error 403", ErrorKind::AuthFailure),
+            ("HTTP 500", ErrorKind::Transient),
+            ("HTTP/2 503", ErrorKind::Transient),
+            ("response status 502", ErrorKind::Transient),
+            ("status=503", ErrorKind::Transient),
+            ("error code: 504", ErrorKind::Transient),
+        ];
+
+        for (message, expected) in cases {
+            assert_eq!(
+                ErrorKind::classify(message),
+                expected,
+                "status-bearing message must retain classification: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn incidental_numeric_fields_are_not_http_status_codes() {
+        for message in [
+            "EOF while parsing a value at line 1 column 429",
+            "schema field 400 is absent",
+            "account 401 was not found",
+            "permission record 403 is stale",
+            "batch 500 was rejected",
+            "row 502 is invalid",
+            "job 503 is pending",
+            "column 504 exceeds width",
+            "embedded 1429 must not match 429",
+            "token 429th is not a status",
+            "HTTP 429x is not a status",
+        ] {
+            let kind = ErrorKind::classify(message);
+            assert_eq!(
+                kind,
+                ErrorKind::Unknown,
+                "incidental digits must not classify as an HTTP status: {message}"
+            );
+            assert!(
+                !kind.is_retryable(),
+                "incidental digits must never trigger retry: {message}"
+            );
+        }
     }
 
     #[test]

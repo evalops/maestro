@@ -771,6 +771,8 @@ impl AppState {
     /// we add a handler for it.
     pub fn handle_agent_message(&mut self, msg: FromAgent) {
         match msg {
+            // Private durable provider state is not interactive UI state.
+            FromAgent::ConversationSnapshot { .. } => {}
             // Agent is ready with its model info
             FromAgent::Ready { model, provider } => {
                 self.model = Some(model);

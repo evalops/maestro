@@ -151,6 +151,16 @@ pub struct ThreadStartResult {
     pub raw: Value,
 }
 
+/// Parameters for Codex app-server `thread/inject_items`.
+///
+/// This protocol-defined operation appends raw Responses API items to the
+/// model-visible history of an existing thread before its next turn.
+#[derive(Debug, Clone)]
+pub struct ThreadInjectItemsParams {
+    pub thread_id: String,
+    pub items: Value,
+}
+
 /// Parameters for Codex app-server `turn/start`.
 #[derive(Debug, Clone)]
 pub struct TurnStartParams {
@@ -840,6 +850,23 @@ impl CodexAppServerClient {
             thread_id,
             raw: result,
         })
+    }
+
+    /// Append Responses API items to an existing thread (`thread/inject_items`).
+    pub async fn inject_thread_items(
+        &self,
+        params: ThreadInjectItemsParams,
+        timeout_ms: Option<u64>,
+    ) -> Result<Value> {
+        self.request(
+            "thread/inject_items",
+            Some(json!({
+                "threadId": params.thread_id,
+                "items": params.items,
+            })),
+            timeout_ms,
+        )
+        .await
     }
 
     /// Start a turn on an existing thread (`turn/start`).
@@ -1865,6 +1892,32 @@ mod tests {
             .expect("turn complete");
         assert_eq!(completed.turn_id, "turn-9");
         assert_eq!(completed.method, "turn/completed");
+    }
+
+    #[tokio::test]
+    async fn injects_items_into_existing_thread_before_next_turn() {
+        let (client, mock) = CodexAppServerClient::mock();
+        let task = tokio::spawn(async move {
+            client
+                .inject_thread_items(
+                    ThreadInjectItemsParams {
+                        thread_id: "thr-restored".to_owned(),
+                        items: json!([
+                            { "type": "function_call", "call_id": "tool-1", "name": "read", "arguments": "{}" },
+                            { "type": "function_call_output", "call_id": "tool-1", "output": "[tool result omitted from checkpoint]" }
+                        ]),
+                    },
+                    Some(1_000),
+                )
+                .await
+        });
+        let request = mock.next_request().await.expect("thread/inject_items");
+        assert_eq!(request["method"], "thread/inject_items");
+        assert_eq!(request["params"]["threadId"], "thr-restored");
+        assert_eq!(request["params"]["items"][0]["call_id"], "tool-1");
+        assert_eq!(request["params"]["items"][1]["call_id"], "tool-1");
+        mock.respond(request["id"].as_u64().unwrap(), json!({}));
+        task.await.unwrap().expect("inject ok");
     }
 
     #[tokio::test]

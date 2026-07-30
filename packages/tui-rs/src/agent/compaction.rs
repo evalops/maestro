@@ -60,11 +60,11 @@ pub struct CompactionConfig {
     /// Whether intra-message compaction is enabled. This is the second
     /// compaction layer: when inter-turn compaction cannot find a valid cut
     /// point (or the kept messages still exceed budget after compaction),
-    /// individual oversized messages have their largest text/tool-result
+    /// individual oversized messages have their largest text/tool-result/tool-input
     /// blocks elided in place. Mirrors grok-build's `intra_compaction` pass.
     pub intra_compact_enabled: bool,
     /// Maximum tokens a single kept message may occupy before its largest
-    /// elidable blocks (Text, ToolResult) are head/tail-elided.
+    /// elidable blocks (Text, ToolResult, ToolUse input) are bounded.
     pub intra_message_token_budget: u64,
 }
 
@@ -426,7 +426,8 @@ impl ContextCompactor {
     ///
     /// Elides any message whose estimated token count exceeds
     /// [`CompactionConfig::intra_message_token_budget`] down to that budget by
-    /// head/tail-eliding its largest Text/ToolResult blocks. Returns the number
+    /// head/tail-eliding its largest Text/ToolResult blocks or replacing an
+    /// oversized ToolUse input with a bounded marker. Returns the number
     /// of messages that were modified. No-ops when intra compaction is disabled.
     pub fn compact_intra(&self, messages: &mut [Message]) -> usize {
         if !self.config.intra_compact_enabled {
@@ -772,10 +773,11 @@ fn elide_oversized_code_blocks(text: &str, max_chars: usize) -> String {
 
 /// Elide a single content block's large string field down to `max_chars`.
 ///
-/// Only [`ContentBlock::Text`] and [`ContentBlock::ToolResult`] are elided.
-/// `ToolUse` blocks (small, needed for tool-call continuity), `Thinking`
-/// blocks (signature-bound for API replay), and `Image` blocks (fixed cost)
-/// are returned unchanged.
+/// Text and tool results are head/tail-elided. Oversized ToolUse input is
+/// replaced with a valid bounded JSON marker while retaining the provider call
+/// ID and tool name required to pair it with the following result. Thinking
+/// blocks (signature-bound for API replay) and images (fixed cost) are returned
+/// unchanged.
 fn elide_block(block: ContentBlock, max_chars: usize) -> ContentBlock {
     match block {
         ContentBlock::Text { text } => ContentBlock::Text {
@@ -795,13 +797,27 @@ fn elide_block(block: ContentBlock, max_chars: usize) -> ContentBlock {
             content: close_dangling_untrusted_content_envelope(&elide_text(&content, max_chars)),
             is_error,
         },
+        ContentBlock::ToolUse { id, name, input } => {
+            let serialized_input = serde_json::to_string(&input).unwrap_or_default();
+            ContentBlock::ToolUse {
+                id,
+                name,
+                input: if serialized_input.chars().count() > max_chars {
+                    serde_json::json!({
+                        "_maestro_compacted": "[tool input omitted during context compaction]"
+                    })
+                } else {
+                    input
+                },
+            }
+        }
         other => other,
     }
 }
 
 /// Elide an oversized message in place so it fits within `budget_tokens`.
 ///
-/// Greedily elides the largest elidable blocks (Text, ToolResult) until the
+/// Greedily bounds the largest elidable blocks (Text, ToolResult, ToolUse input) until the
 /// message token estimate is within budget (or no more elidable blocks
 /// remain). Returns the number of blocks that were modified.
 fn elide_message_to_budget(message: &mut Message, budget_tokens: u64) -> usize {

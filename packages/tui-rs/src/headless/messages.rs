@@ -97,6 +97,7 @@ use std::collections::HashMap;
 pub(crate) const CODEX_SUBAGENT_TOOL_PREFIX: &str = "codex.subagent.";
 pub(crate) const CODEX_SUBAGENT_WORK_GRAPH_SCHEMA: &str =
     "evalops.maestro.codex.subagent-workgraph.v1";
+pub(crate) const SEMANTIC_CONVERSATION_PROTOCOL: &str = "evalops.maestro.semantic-conversation.v1";
 
 /// Current headless protocol version shared with the TypeScript runtime.
 pub use super::generated_protocol::HEADLESS_PROTOCOL_VERSION;
@@ -174,6 +175,11 @@ pub enum ToAgentMessage {
         /// Prefer this over stuffing multi-turn context into `append_system_prompt`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         history: Option<Vec<HistoryMessage>>,
+    },
+    /// Restore a private, versioned native provider conversation after init.
+    RestoreConversation {
+        protocol_version: String,
+        messages: Vec<maestro_ai::Message>,
     },
     /// Send a user prompt
     Prompt {
@@ -554,6 +560,12 @@ pub struct UtilityFileSearchMatch {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromAgentMessage {
+    /// Private native-provider conversation checkpoint. This is recorded for
+    /// process recovery but is intentionally never surfaced as an agent event.
+    ConversationSnapshot {
+        protocol_version: String,
+        messages: Vec<maestro_ai::Message>,
+    },
     /// Handshake acknowledgement for a specific client connection
     HelloOk {
         protocol_version: String,

@@ -1479,28 +1479,32 @@ impl ToolExecutor {
                     None
                 };
 
-                let validators = match run_validators_with_diagnostics(
-                    std::slice::from_ref(&path),
-                    lsp_diagnostics.as_ref(),
-                )
-                .await
-                {
-                    Ok(results) => Some(results),
-                    Err(err) => {
-                        if let Some(prev) = &previous_content {
-                            if let Err(error) = crate::sandbox::commit_native_write(
-                                self.sandbox_policy.as_ref(),
-                                std::path::Path::new(&self.cwd),
-                                std::path::Path::new(&path),
-                                prev.as_bytes(),
-                            ) {
-                                report_diagnostic_nonblocking(format!(
-                                    "[write] failed to restore original content of {path}: {error}"
-                                ));
+                let validators = if self.ambient_mutation_validators_enabled {
+                    match run_validators_with_diagnostics(
+                        std::slice::from_ref(&path),
+                        lsp_diagnostics.as_ref(),
+                    )
+                    .await
+                    {
+                        Ok(results) => Some(results),
+                        Err(err) => {
+                            if let Some(prev) = &previous_content {
+                                if let Err(error) = crate::sandbox::commit_native_write(
+                                    self.sandbox_policy.as_ref(),
+                                    std::path::Path::new(&self.cwd),
+                                    std::path::Path::new(&path),
+                                    prev.as_bytes(),
+                                ) {
+                                    report_diagnostic_nonblocking(format!(
+                                        "[write] failed to restore original content of {path}: {error}"
+                                    ));
+                                }
                             }
+                            return ToolResult::failure(err);
                         }
-                        return ToolResult::failure(err);
                     }
+                } else {
+                    None
                 };
 
                 self.invalidate_file_cache(&path);
@@ -1859,21 +1863,25 @@ impl ToolExecutor {
                     None
                 };
 
-                let validators = match run_validators_with_diagnostics(
-                    std::slice::from_ref(&path),
-                    lsp_diagnostics.as_ref(),
-                )
-                .await
-                {
-                    Ok(results) => Some(results),
-                    Err(err) => {
-                        if let Err(error) = tokio::fs::write(&path, &content).await {
-                            report_diagnostic_nonblocking(format!(
-                                "[edit] failed to restore original content of {path}: {error}"
-                            ));
+                let validators = if self.ambient_mutation_validators_enabled {
+                    match run_validators_with_diagnostics(
+                        std::slice::from_ref(&path),
+                        lsp_diagnostics.as_ref(),
+                    )
+                    .await
+                    {
+                        Ok(results) => Some(results),
+                        Err(err) => {
+                            if let Err(error) = tokio::fs::write(&path, &content).await {
+                                report_diagnostic_nonblocking(format!(
+                                    "[edit] failed to restore original content of {path}: {error}"
+                                ));
+                            }
+                            return ToolResult::failure(err);
                         }
-                        return ToolResult::failure(err);
                     }
+                } else {
+                    None
                 };
 
                 self.invalidate_file_cache(&path);

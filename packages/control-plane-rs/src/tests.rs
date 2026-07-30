@@ -607,7 +607,7 @@ fn a2a_platform_payload_projects_governed_agent_card_without_drift_fields() {
         .as_array()
         .expect("capabilities")
         .contains(&Value::String("code:review".to_string())));
-    assert!(payload["capabilities"]
+    assert!(!payload["capabilities"]
         .as_array()
         .expect("capabilities")
         .contains(&Value::String("browser:qa".to_string())));
@@ -621,13 +621,9 @@ fn a2a_platform_payload_projects_governed_agent_card_without_drift_fields() {
     assert_eq!(review["allowedTaskClasses"][0], "code.review");
     assert!(review.get("metadata").is_none());
     assert!(review.get("examples").is_none());
-    let browser_qa = skills
+    assert!(skills
         .iter()
-        .find(|skill| skill["id"] == "maestro.subagent.browser-qa")
-        .expect("browser QA skill should be advertised");
-    assert_eq!(browser_qa["requiredContextGrants"][0], "browser:control");
-    assert_eq!(browser_qa["allowedTaskClasses"][0], "product.qa");
-    assert!(browser_qa.get("metadata").is_none());
+        .all(|skill| skill["id"] != "maestro.subagent.browser-qa"));
 
     let heartbeat = a2a_platform_heartbeat_payload(&registration, &config);
     assert_eq!(heartbeat["agentId"], "maestro-peer-1");
@@ -636,6 +632,71 @@ fn a2a_platform_payload_projects_governed_agent_card_without_drift_fields() {
     assert_eq!(heartbeat["surfaceType"], "SURFACE_MAESTRO");
 
     restore_env(snapshot);
+}
+
+#[test]
+fn a2a_agent_card_skills_and_hosted_capabilities_share_executable_lanes() {
+    let config = auth_test_config();
+    let registration = A2APlatformRegistrationConfig {
+        base_url: "https://registry.example".to_string(),
+        token: "token".to_string(),
+        organization_id: "org_1".to_string(),
+        workspace_id: "ws_1".to_string(),
+        agent_id: "maestro-peer-1".to_string(),
+        name: "Maestro Peer".to_string(),
+        description: "Peer".to_string(),
+        agent_type: "maestro".to_string(),
+        owner_id: None,
+        public_endpoint_url: "https://maestro.example/a2a".to_string(),
+        internal_endpoint_url: None,
+        agent_card_url: None,
+        heartbeat_interval_ms: 60_000,
+        timeout_ms: 2_500,
+        current_objective_ids: Vec::new(),
+        max_concurrent_objectives: "4".to_string(),
+        surface: "a2a".to_string(),
+        surface_type: "SURFACE_MAESTRO".to_string(),
+        traceparent: None,
+        tracestate: None,
+        remote_runner_session_id: None,
+    };
+
+    let agent_skills = a2a_agent_skills();
+    let card_lanes = agent_skills
+        .as_array()
+        .expect("agent-card skills should be an array")
+        .iter()
+        .filter_map(|skill| skill["attributes"]["subagentLaneId"].as_str())
+        .collect::<Vec<_>>();
+    let payload = a2a_platform_register_payload(&registration, &config);
+    let capabilities = payload["capabilities"]
+        .as_array()
+        .expect("hosted capabilities should be an array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    let hosted_lanes = capabilities
+        .iter()
+        .filter_map(|capability| capability.strip_prefix("maestro:"))
+        .filter(|capability| !matches!(*capability, "a2a" | "cli" | "subagents"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(card_lanes, vec!["code-writer", "code-review"]);
+    assert_eq!(hosted_lanes, card_lanes);
+    assert_eq!(
+        capabilities,
+        vec![
+            "maestro:a2a",
+            "maestro:cli",
+            "maestro:subagents",
+            "maestro:code-writer",
+            "code:write",
+            "code:edit",
+            "code:implement",
+            "maestro:code-review",
+            "code:review",
+        ]
+    );
 }
 
 #[test]
@@ -3166,6 +3227,823 @@ fn detects_a2a_streaming_routes_separately() {
     }
 }
 
+fn valid_code_writer_capsule() -> Value {
+    serde_json::json!({
+        "skillId": "maestro.subagent.code-writer",
+        "capsule": {
+            "capsuleVersion": "evalops.maestro.task-capsule.v1",
+            "taskId": "task-1",
+            "parentTaskId": "mission-1",
+            "laneId": "code-writer",
+            "taskClass": "code.implementation",
+            "objective": "Add the bounded parser and its regression test.",
+            "inScope": {
+                "paths": ["packages/control-plane-rs/src/a2a"],
+                "resources": []
+            },
+            "outOfScope": ["deployment"],
+            "contextArtifacts": [{
+                "artifactId": "context-1",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }],
+            "allowedCapabilities": [
+                "repo:read",
+                "repo:write-scoped",
+                "tool:execute-tests"
+            ],
+            "mutationBoundary": {
+                "paths": ["packages/control-plane-rs/src/a2a"],
+                "resources": []
+            },
+            "expectedArtifactKinds": ["patch.summary", "test.report"],
+            "acceptanceChecks": [
+                "cargo test -p maestro-control-plane subagent_capsule"
+            ],
+            "stopConditions": ["scope expansion required"],
+            "retryLimit": 2,
+            "deadlineAt": "2099-07-31T00:00:00Z",
+            "modelRoute": "haiku",
+            "review": {
+                "required": true,
+                "laneId": "code-review"
+            }
+        }
+    })
+}
+
+fn valid_code_review_capsule() -> Value {
+    let mut request = valid_code_writer_capsule();
+    request["skillId"] = serde_json::json!("maestro.subagent.code-review");
+    request["capsule"]["laneId"] = serde_json::json!("code-review");
+    request["capsule"]["taskClass"] = serde_json::json!("code.review");
+    request["capsule"]["allowedCapabilities"] = serde_json::json!(["repo:read"]);
+    request["capsule"]["mutationBoundary"]["paths"] = serde_json::json!([]);
+    request["capsule"]["expectedArtifactKinds"] = serde_json::json!(["review.summary"]);
+    request["capsule"]["review"] = serde_json::json!({"required": false});
+    request
+}
+
+fn valid_browser_qa_capsule() -> Value {
+    let mut request = valid_code_writer_capsule();
+    request["skillId"] = serde_json::json!("maestro.subagent.browser-qa");
+    request["capsule"]["laneId"] = serde_json::json!("browser-qa");
+    request["capsule"]["taskClass"] = serde_json::json!("product.qa");
+    request["capsule"]["allowedCapabilities"] =
+        serde_json::json!(["browser:control", "artifact:write", "runtime:events:read"]);
+    request["capsule"]["mutationBoundary"]["paths"] = serde_json::json!([]);
+    request["capsule"]["expectedArtifactKinds"] = serde_json::json!(["qa.repro-report"]);
+    request["capsule"]["review"] = serde_json::json!({"required": false});
+    request
+}
+
+#[test]
+fn valid_code_writer_capsule_is_accepted() {
+    let capsule = crate::a2a::validate_subagent_capsule(
+        &valid_code_writer_capsule(),
+        "maestro.subagent.code-writer",
+    )
+    .expect("valid capsule should be accepted");
+    assert_eq!(capsule.lane_id, "code-writer");
+}
+
+#[test]
+fn capsule_rejects_scope_broadening() {
+    let mut request = valid_code_writer_capsule();
+    request["capsule"]["mutationBoundary"]["paths"] = serde_json::json!(["../deploy"]);
+
+    assert!(matches!(
+        crate::a2a::validate_subagent_capsule(&request, "maestro.subagent.code-writer"),
+        Err(crate::a2a::CapsuleValidationError::ScopeBroadening { .. })
+    ));
+}
+
+#[test]
+fn capsule_rejects_lane_skill_or_artifact_mismatch() {
+    let mut request = valid_code_writer_capsule();
+    request["capsule"]["laneId"] = serde_json::json!("code-review");
+
+    assert!(
+        crate::a2a::validate_subagent_capsule(&request, "maestro.subagent.code-writer").is_err()
+    );
+}
+
+#[test]
+fn capsule_rejects_unknown_version_task_class_and_missing_grant() {
+    let mut wrong_version = valid_code_writer_capsule();
+    wrong_version["capsule"]["capsuleVersion"] = serde_json::json!("v0");
+    assert!(matches!(
+        crate::a2a::validate_subagent_capsule(&wrong_version, "maestro.subagent.code-writer"),
+        Err(crate::a2a::CapsuleValidationError::UnsupportedVersion { .. })
+    ));
+
+    let mut denied_class = valid_code_writer_capsule();
+    denied_class["capsule"]["taskClass"] = serde_json::json!("secret.exfiltration");
+    assert!(matches!(
+        crate::a2a::validate_subagent_capsule(&denied_class, "maestro.subagent.code-writer"),
+        Err(crate::a2a::CapsuleValidationError::DeniedTaskClass { .. })
+    ));
+
+    let mut missing_grant = valid_code_writer_capsule();
+    missing_grant["capsule"]["allowedCapabilities"] =
+        serde_json::json!(["repo:read", "repo:write-scoped"]);
+    assert!(matches!(
+        crate::a2a::validate_subagent_capsule(&missing_grant, "maestro.subagent.code-writer"),
+        Err(crate::a2a::CapsuleValidationError::MissingCapability { .. })
+    ));
+
+    let mut uncontracted_grant = valid_code_writer_capsule();
+    uncontracted_grant["capsule"]["allowedCapabilities"]
+        .as_array_mut()
+        .expect("capabilities should be an array")
+        .push(serde_json::json!("secret:read"));
+    assert!(matches!(
+        crate::a2a::validate_subagent_capsule(&uncontracted_grant, "maestro.subagent.code-writer"),
+        Err(crate::a2a::CapsuleValidationError::UnexpectedCapability { .. })
+    ));
+}
+
+#[test]
+fn capsule_rejects_uncontracted_artifacts_and_missing_required_artifacts() {
+    let mut uncontracted = valid_code_writer_capsule();
+    uncontracted["capsule"]["expectedArtifactKinds"] =
+        serde_json::json!(["patch.summary", "database.dump"]);
+    assert!(matches!(
+        crate::a2a::validate_subagent_capsule(&uncontracted, "maestro.subagent.code-writer"),
+        Err(crate::a2a::CapsuleValidationError::ArtifactMismatch { .. })
+    ));
+
+    let mut missing_required = valid_code_writer_capsule();
+    missing_required["capsule"]["expectedArtifactKinds"] = serde_json::json!(["test.report"]);
+    assert!(matches!(
+        crate::a2a::validate_subagent_capsule(&missing_required, "maestro.subagent.code-writer"),
+        Err(crate::a2a::CapsuleValidationError::ArtifactMismatch { .. })
+    ));
+}
+
+#[test]
+fn capsule_rejects_non_normalized_or_out_of_scope_mutation_paths() {
+    for invalid_path in [
+        "/tmp/deploy",
+        "packages/control-plane-rs/src/../deploy",
+        "packages//control-plane-rs",
+        "packages\\control-plane-rs",
+        "packages/control-plane-rs/src/a2a/",
+        "",
+    ] {
+        let mut request = valid_code_writer_capsule();
+        request["capsule"]["mutationBoundary"]["paths"] = serde_json::json!([invalid_path]);
+        assert!(
+            crate::a2a::validate_subagent_capsule(&request, "maestro.subagent.code-writer")
+                .is_err(),
+            "{invalid_path:?} should be rejected"
+        );
+    }
+
+    let mut out_of_scope = valid_code_writer_capsule();
+    out_of_scope["capsule"]["mutationBoundary"]["paths"] =
+        serde_json::json!(["packages/control-plane-rs/src/chat.rs"]);
+    assert!(matches!(
+        crate::a2a::validate_subagent_capsule(&out_of_scope, "maestro.subagent.code-writer"),
+        Err(crate::a2a::CapsuleValidationError::ScopeBroadening { .. })
+    ));
+
+    let mut read_only_mutation = valid_code_review_capsule();
+    read_only_mutation["capsule"]["mutationBoundary"]["paths"] =
+        serde_json::json!(["packages/control-plane-rs/src/a2a"]);
+    assert!(matches!(
+        crate::a2a::validate_subagent_capsule(&read_only_mutation, "maestro.subagent.code-review"),
+        Err(crate::a2a::CapsuleValidationError::MissingCapability { .. })
+    ));
+}
+
+#[test]
+fn capsule_rejects_invalid_deadline_retry_and_material_review_policy() {
+    let mut invalid_deadline = valid_code_writer_capsule();
+    invalid_deadline["capsule"]["deadlineAt"] = serde_json::json!("tomorrow");
+    assert!(matches!(
+        crate::a2a::validate_subagent_capsule(&invalid_deadline, "maestro.subagent.code-writer"),
+        Err(crate::a2a::CapsuleValidationError::InvalidDeadline { .. })
+    ));
+
+    let mut expired_deadline = valid_code_writer_capsule();
+    expired_deadline["capsule"]["deadlineAt"] = serde_json::json!("2000-01-01T00:00:00Z");
+    assert!(matches!(
+        crate::a2a::validate_subagent_capsule(&expired_deadline, "maestro.subagent.code-writer"),
+        Err(crate::a2a::CapsuleValidationError::ExpiredDeadline { .. })
+    ));
+
+    let mut excessive_retry = valid_code_writer_capsule();
+    excessive_retry["capsule"]["retryLimit"] = serde_json::json!(4);
+    assert!(matches!(
+        crate::a2a::validate_subagent_capsule(&excessive_retry, "maestro.subagent.code-writer"),
+        Err(crate::a2a::CapsuleValidationError::RetryLimitExceeded { .. })
+    ));
+
+    let mut no_review = valid_code_writer_capsule();
+    no_review["capsule"]["review"]["required"] = serde_json::json!(false);
+    assert!(matches!(
+        crate::a2a::validate_subagent_capsule(&no_review, "maestro.subagent.code-writer"),
+        Err(crate::a2a::CapsuleValidationError::IndependentReviewRequired { .. })
+    ));
+
+    let mut self_review = valid_code_writer_capsule();
+    self_review["capsule"]["review"]["laneId"] = serde_json::json!("code-writer");
+    assert!(matches!(
+        crate::a2a::validate_subagent_capsule(&self_review, "maestro.subagent.code-writer"),
+        Err(crate::a2a::CapsuleValidationError::IndependentReviewRequired { .. })
+    ));
+}
+
+#[test]
+fn capsule_v1_rejects_unknown_fields_and_malformed_resource_ids() {
+    for pointer in [
+        "",
+        "/capsule",
+        "/capsule/inScope",
+        "/capsule/contextArtifacts/0",
+        "/capsule/review",
+    ] {
+        let mut request = valid_code_writer_capsule();
+        request
+            .pointer_mut(pointer)
+            .and_then(Value::as_object_mut)
+            .expect("fixture object should exist")
+            .insert("unknownV1Field".to_string(), Value::Bool(true));
+        assert!(
+            crate::a2a::validate_subagent_capsule(&request, "maestro.subagent.code-writer")
+                .is_err(),
+            "unknown field at {pointer:?} must fail closed"
+        );
+    }
+
+    for resource in ["", " ", " deploy/prod ", "../deploy", "deploy//prod"] {
+        let mut request = valid_code_writer_capsule();
+        request["capsule"]["inScope"]["resources"] = serde_json::json!([resource]);
+        request["capsule"]["mutationBoundary"]["resources"] = serde_json::json!([resource]);
+        assert!(
+            crate::a2a::validate_subagent_capsule(&request, "maestro.subagent.code-writer")
+                .is_err(),
+            "resource id {resource:?} must be normalized and nonempty"
+        );
+    }
+}
+
+#[test]
+fn capsule_execution_policy_enforces_scope_model_deadline_guidance_and_tools() {
+    let root = TestDir::new("subagent-execution-policy");
+    let scope = root.path().join("packages/control-plane-rs/src/a2a");
+    fs::create_dir_all(&scope).expect("scope should be created");
+    fs::write(scope.join("inside.rs"), "inside").expect("inside fixture should be written");
+    fs::write(root.path().join("outside.rs"), "outside")
+        .expect("outside fixture should be written");
+    let mut request = valid_code_writer_capsule();
+    request["capsule"]["deadlineAt"] = serde_json::json!("2099-01-01T00:00:30Z");
+    let capsule = crate::a2a::validate_subagent_capsule(&request, "maestro.subagent.code-writer")
+        .expect("capsule should validate");
+    let now = chrono::DateTime::parse_from_rfc3339("2099-01-01T00:00:00Z")
+        .expect("time should parse")
+        .with_timezone(&chrono::Utc);
+
+    let policy = crate::a2a::build_a2a_subagent_execution_policy(
+        &capsule,
+        root.path(),
+        Duration::from_secs(300),
+        now,
+    )
+    .expect("policy should build");
+
+    assert_eq!(policy.model, "anthropic/claude-haiku-4-5");
+    assert_eq!(policy.turn_timeout, Duration::from_secs(30));
+    assert!(policy.guidance.contains("task-1"));
+    assert!(policy
+        .guidance
+        .contains("Objective:\nAdd the bounded parser and its regression test."));
+    assert!(policy
+        .guidance
+        .contains("Acceptance checks:\n- cargo test -p maestro-control-plane subagent_capsule"));
+    assert_eq!(
+        policy.allowed_tools,
+        ["diff", "edit", "find", "glob", "grep", "list", "read", "search", "write"]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    );
+
+    assert!(policy
+        .guard_tool_call(
+            "read",
+            &serde_json::json!({"path": scope.join("inside.rs")})
+        )
+        .is_ok());
+    assert!(policy
+        .guard_tool_call(
+            "read",
+            &serde_json::json!({"path": "packages/control-plane-rs/src/a2a/inside.rs"})
+        )
+        .is_ok());
+    assert!(policy
+        .guard_tool_call(
+            "read",
+            &serde_json::json!({"path": root.path().join("outside.rs")})
+        )
+        .is_err());
+    assert!(policy
+        .guard_tool_call(
+            "write",
+            &serde_json::json!({"path": root.path().join("outside.rs"), "content": "no"})
+        )
+        .is_err());
+    assert!(policy
+        .guard_tool_call(
+            "glob",
+            &serde_json::json!({
+                "path": "packages/control-plane-rs/src/a2a",
+                "pattern": "../../outside.rs"
+            })
+        )
+        .is_err());
+    assert!(policy
+        .guard_tool_call(
+            "glob",
+            &serde_json::json!({
+                "path": "packages/control-plane-rs/src/a2a",
+                "pattern": root.path().join("outside.rs")
+            })
+        )
+        .is_err());
+    assert!(policy
+        .guard_tool_call(
+            "search",
+            &serde_json::json!({
+                "pattern": "outside",
+                "paths": "packages/control-plane-rs/src/a2a",
+                "cwd": root.path()
+            })
+        )
+        .is_err());
+    assert!(policy
+        .guard_tool_call(
+            "bash",
+            &serde_json::json!({
+                "command": "cargo test -p maestro-control-plane subagent_capsule"
+            })
+        )
+        .is_err());
+    assert!(policy
+        .guard_tool_call(
+            "web_fetch",
+            &serde_json::json!({"url": "https://example.com"})
+        )
+        .is_err());
+}
+
+#[test]
+fn every_advertised_a2a_subagent_lane_builds_an_honest_execution_policy() {
+    let root = TestDir::new("advertised-subagent-policies");
+    fs::create_dir_all(root.path().join("packages/control-plane-rs/src/a2a"))
+        .expect("scope should be created");
+    let advertised = crate::a2a_skill_catalog::a2a_subagent_skills("urn:test:operating-plane");
+    let skill_ids = advertised
+        .iter()
+        .filter_map(|skill| skill["id"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        skill_ids,
+        vec![
+            "maestro.subagent.code-writer",
+            "maestro.subagent.code-review"
+        ]
+    );
+
+    for (skill_id, request) in [
+        ("maestro.subagent.code-writer", valid_code_writer_capsule()),
+        ("maestro.subagent.code-review", valid_code_review_capsule()),
+    ] {
+        let capsule = crate::a2a::validate_subagent_capsule(&request, skill_id)
+            .expect("advertised capsule should validate");
+        let policy = crate::a2a::build_a2a_subagent_execution_policy(
+            &capsule,
+            root.path(),
+            Duration::from_secs(300),
+            chrono::Utc::now(),
+        )
+        .expect("advertised capsule should build an execution policy");
+        if skill_id == "maestro.subagent.code-review" {
+            assert!(!policy.allowed_tools.contains("write"));
+            assert!(!policy.allowed_tools.contains("edit"));
+        }
+    }
+}
+
+#[test]
+fn code_review_capsule_builds_a_read_only_execution_policy() {
+    let root = TestDir::new("code-review-policy");
+    fs::create_dir_all(root.path().join("packages/control-plane-rs/src/a2a"))
+        .expect("scope should be created");
+    let request = valid_code_review_capsule();
+    let capsule = crate::a2a::validate_subagent_capsule(&request, "maestro.subagent.code-review")
+        .expect("review capsule should validate");
+
+    let policy = crate::a2a::build_a2a_subagent_execution_policy(
+        &capsule,
+        root.path(),
+        Duration::from_secs(300),
+        chrono::Utc::now(),
+    )
+    .expect("review lane must have an executable policy");
+
+    assert!(policy.allowed_tools.contains("read"));
+    assert!(!policy.allowed_tools.contains("write"));
+    assert!(!policy.allowed_tools.contains("edit"));
+}
+
+#[test]
+fn a2a_acceptance_checks_become_observed_test_report_artifacts() {
+    let reports = vec![serde_json::json!({
+        "kind": "acceptance.check",
+        "success": true,
+        "package": "maestro-control-plane",
+        "filter": "subagent_capsule"
+    })];
+
+    let artifacts = crate::a2a::a2a_acceptance_report_artifacts("task-1", &reports);
+
+    assert_eq!(artifacts.len(), 1);
+    assert_eq!(artifacts[0]["artifactKind"], "test.report");
+    assert_eq!(artifacts[0]["parts"][0]["data"]["success"], true);
+    assert!(
+        artifacts
+            .iter()
+            .all(|artifact| artifact["artifactKind"] != "patch.summary"),
+        "assistant prose must not be promoted to a patch summary"
+    );
+}
+
+#[test]
+fn capsule_execution_policy_fails_closed_for_unexecutable_boundaries_and_checks() {
+    let root = TestDir::new("subagent-fail-closed-policy");
+    let scope = root.path().join("packages/control-plane-rs/src/a2a");
+    fs::create_dir_all(&scope).expect("scope should be created");
+
+    let mut unsafe_check = valid_code_writer_capsule();
+    unsafe_check["capsule"]["acceptanceChecks"] = serde_json::json!(["cat /etc/passwd"]);
+    let unsafe_check =
+        crate::a2a::validate_subagent_capsule(&unsafe_check, "maestro.subagent.code-writer")
+            .expect("schema-valid check should reach server allowlist");
+    assert!(crate::a2a::build_a2a_subagent_execution_policy(
+        &unsafe_check,
+        root.path(),
+        Duration::from_secs(300),
+        chrono::Utc::now(),
+    )
+    .is_err());
+
+    let mut resource_scope = valid_code_writer_capsule();
+    resource_scope["capsule"]["inScope"]["resources"] = serde_json::json!(["repo:issue#1"]);
+    resource_scope["capsule"]["mutationBoundary"]["resources"] =
+        serde_json::json!(["repo:issue#1"]);
+    let resource_scope =
+        crate::a2a::validate_subagent_capsule(&resource_scope, "maestro.subagent.code-writer")
+            .expect("normalized resource should be schema-valid");
+    assert!(crate::a2a::build_a2a_subagent_execution_policy(
+        &resource_scope,
+        root.path(),
+        Duration::from_secs(300),
+        chrono::Utc::now(),
+    )
+    .is_err());
+
+    let mut future_mutation_root = valid_code_writer_capsule();
+    future_mutation_root["capsule"]["mutationBoundary"]["paths"] =
+        serde_json::json!(["packages/control-plane-rs/src/a2a/future"]);
+    let future_mutation_root = crate::a2a::validate_subagent_capsule(
+        &future_mutation_root,
+        "maestro.subagent.code-writer",
+    )
+    .expect("nested path should be capsule-valid");
+    assert!(crate::a2a::build_a2a_subagent_execution_policy(
+        &future_mutation_root,
+        root.path(),
+        Duration::from_secs(300),
+        chrono::Utc::now(),
+    )
+    .is_err());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn capsule_execution_policy_applies_absolute_deadline_to_tools_and_checks() {
+    let root = TestDir::new("subagent-absolute-deadline");
+    let scope = root.path().join("packages/control-plane-rs/src/a2a");
+    fs::create_dir_all(&scope).expect("scope should be created");
+    fs::write(scope.join("inside.rs"), "inside").expect("inside fixture should be written");
+    let mut request = valid_code_writer_capsule();
+    request["capsule"]["deadlineAt"] =
+        Value::String((chrono::Utc::now() + chrono::Duration::milliseconds(250)).to_rfc3339());
+    let capsule = crate::a2a::validate_subagent_capsule(&request, "maestro.subagent.code-writer")
+        .expect("capsule should validate before its deadline");
+    let policy = crate::a2a::build_a2a_subagent_execution_policy(
+        &capsule,
+        root.path(),
+        Duration::from_secs(300),
+        chrono::Utc::now(),
+    )
+    .expect("policy should build before its deadline");
+    let (_cancel_tx, cancel_rx) = watch::channel(false);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let result = policy
+        .execute_tool_call(
+            "read",
+            &serde_json::json!({"path": "packages/control-plane-rs/src/a2a/inside.rs"}),
+            "expired-read",
+            cancel_rx.clone(),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(result
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("deadline")));
+
+    let mut acceptance_cancel_rx = cancel_rx;
+    let error = policy
+        .run_acceptance_checks(&mut acceptance_cancel_rx)
+        .await
+        .expect_err("acceptance checks must share the absolute capsule deadline");
+    assert!(error.contains("deadline"));
+
+    let mut cancellation_request = valid_code_writer_capsule();
+    cancellation_request["capsule"]["deadlineAt"] = serde_json::json!("2099-01-01T00:00:00Z");
+    let cancellation_capsule = crate::a2a::validate_subagent_capsule(
+        &cancellation_request,
+        "maestro.subagent.code-writer",
+    )
+    .expect("cancellation capsule should validate");
+    let cancellation_policy = crate::a2a::build_a2a_subagent_execution_policy(
+        &cancellation_capsule,
+        root.path(),
+        Duration::from_secs(300),
+        chrono::Utc::now(),
+    )
+    .expect("cancellation policy should build");
+    let canceled_target = scope.join("canceled.rs");
+    let (_cancel_tx, canceled_rx) = watch::channel(true);
+    let canceled = cancellation_policy
+        .execute_tool_call(
+            "write",
+            &serde_json::json!({
+                "path": canceled_target,
+                "content": "must not be written"
+            }),
+            "pre-canceled-write",
+            canceled_rx,
+        )
+        .await;
+    assert!(!canceled.success);
+    assert!(!scope.join("canceled.rs").exists());
+}
+
+#[test]
+fn capsule_deadline_cannot_leave_an_ambient_validator_process_running() {
+    const CHILD_FLAG: &str = "MAESTRO_TEST_CAPSULE_VALIDATOR_CHILD";
+    const ROOT_ENV: &str = "MAESTRO_TEST_CAPSULE_VALIDATOR_ROOT";
+    const SENTINEL_ENV: &str = "MAESTRO_TEST_CAPSULE_VALIDATOR_SENTINEL";
+
+    if env::var_os(CHILD_FLAG).is_some() {
+        let root = std::path::PathBuf::from(
+            env::var_os(ROOT_ENV).expect("child workspace should be configured"),
+        );
+        let sentinel = std::path::PathBuf::from(
+            env::var_os(SENTINEL_ENV).expect("child sentinel should be configured"),
+        );
+        let scope = root.join("packages/control-plane-rs/src/a2a");
+        fs::create_dir_all(&scope).expect("scope should be created");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("child runtime");
+        runtime.block_on(async {
+            let mut request = valid_code_writer_capsule();
+            request["capsule"]["deadlineAt"] = Value::String(
+                (chrono::Utc::now() + chrono::Duration::milliseconds(200)).to_rfc3339(),
+            );
+            let capsule =
+                crate::a2a::validate_subagent_capsule(&request, "maestro.subagent.code-writer")
+                    .expect("capsule should validate");
+            let policy = crate::a2a::build_a2a_subagent_execution_policy(
+                &capsule,
+                &root,
+                Duration::from_secs(5),
+                chrono::Utc::now(),
+            )
+            .expect("policy should build");
+            let (_cancel_tx, cancel_rx) = watch::channel(false);
+            let result = policy
+                .execute_tool_call(
+                    "write",
+                    &serde_json::json!({
+                        "path": scope.join("inside.rs"),
+                        "content": "inside"
+                    }),
+                    "deadline-validator-write",
+                    cancel_rx,
+                )
+                .await;
+            assert!(result.success, "{result:?}");
+            tokio::time::sleep(Duration::from_millis(900)).await;
+            assert!(
+                !sentinel.exists(),
+                "no validator child may outlive the governed call"
+            );
+
+            let mut expired_request = valid_code_writer_capsule();
+            expired_request["capsule"]["deadlineAt"] = Value::String(
+                (chrono::Utc::now() + chrono::Duration::milliseconds(100)).to_rfc3339(),
+            );
+            let expired_capsule = crate::a2a::validate_subagent_capsule(
+                &expired_request,
+                "maestro.subagent.code-writer",
+            )
+            .expect("deadline capsule should validate");
+            let expired_policy = crate::a2a::build_a2a_subagent_execution_policy(
+                &expired_capsule,
+                &root,
+                Duration::from_secs(5),
+                chrono::Utc::now(),
+            )
+            .expect("deadline policy should build");
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            let (_cancel_tx, cancel_rx) = watch::channel(false);
+            let expired_target = scope.join("expired.rs");
+            let expired = expired_policy
+                .execute_tool_call(
+                    "write",
+                    &serde_json::json!({
+                        "path": expired_target,
+                        "content": "must not be written"
+                    }),
+                    "expired-validator-write",
+                    cancel_rx,
+                )
+                .await;
+            assert!(!expired.success);
+            assert!(!scope.join("expired.rs").exists());
+            assert!(!sentinel.exists());
+        });
+        return;
+    }
+
+    let root = TestDir::new("capsule-validator-deadline");
+    let sentinel = root.path().join("outside-validator-write");
+    let quoted_sentinel = format!("'{}'", sentinel.to_string_lossy().replace('\'', "'\"'\"'"));
+    let output = std::process::Command::new(std::env::current_exe().expect("current test binary"))
+        .args([
+            "--exact",
+            "tests::capsule_deadline_cannot_leave_an_ambient_validator_process_running",
+            "--nocapture",
+        ])
+        .env(CHILD_FLAG, "1")
+        .env(ROOT_ENV, root.path())
+        .env(SENTINEL_ENV, &sentinel)
+        .env("MAESTRO_SAFE_MODE", "1")
+        .env("MAESTRO_SAFE_REQUIRE_PLAN", "0")
+        .env(
+            "MAESTRO_SAFE_VALIDATORS",
+            format!("sleep 0.6; printf escaped > {quoted_sentinel}"),
+        )
+        .output()
+        .expect("run isolated governed-validator child");
+
+    assert!(
+        output.status.success(),
+        "isolated governed-validator child failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_subagent_request_rejects_invalid_task_capsule_before_claim() {
+    for return_immediately in [false, true] {
+        let mut subagent_request = valid_code_writer_capsule();
+        subagent_request["capsule"]["mutationBoundary"]["paths"] = serde_json::json!(["../deploy"]);
+        let body = serde_json::json!({
+            "message": {
+                "messageId": "msg-1",
+                "contextId": "ctx-1",
+                "role": "ROLE_USER",
+                "parts": [{
+                    "text": "implement this",
+                    "mediaType": "text/plain"
+                }]
+            },
+            "configuration": {
+                "returnImmediately": return_immediately
+            },
+            "metadata": {
+                "evalops.subagentRequest": subagent_request
+            }
+        })
+        .to_string();
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+
+        assert_eq!(response["error"]["code"], "INVALID_REQUEST");
+        assert_eq!(
+            state.a2a_tasks.lock().await.len(),
+            0,
+            "invalid capsule must reject before claim for returnImmediately={return_immediately}"
+        );
+        assert_eq!(state.a2a_cancel_senders.lock().await.len(), 0);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unsupported_a2a_subagent_lane_rejects_before_task_persistence() {
+    let subagent_request = valid_browser_qa_capsule();
+    let body = serde_json::json!({
+        "message": {
+            "messageId": "msg-unsupported-lane",
+            "contextId": "ctx-unsupported-lane",
+            "role": "ROLE_USER",
+            "parts": [{
+                "text": "run browser QA",
+                "mediaType": "text/plain"
+            }]
+        },
+        "configuration": {
+            "returnImmediately": true
+        },
+        "metadata": {
+            "evalops.subagentRequest": subagent_request
+        }
+    })
+    .to_string();
+    let request = format!(
+        "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let mut initial = request.into_bytes();
+    let head = parse_request_head(&initial).expect("request should parse");
+    let (_client, mut server) = tcp_stream_pair().await;
+    let state = test_app_state_with_sessions(HashMap::new());
+
+    let response =
+        response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+
+    assert_eq!(response["error"]["code"], "INVALID_REQUEST");
+    assert_eq!(state.a2a_tasks.lock().await.len(), 0);
+    assert_eq!(state.a2a_cancel_senders.lock().await.len(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unexecutable_a2a_capsule_rejects_before_task_persistence() {
+    let mut subagent_request = valid_code_writer_capsule();
+    subagent_request["capsule"]["acceptanceChecks"] = serde_json::json!(["cat /etc/passwd"]);
+    let body = serde_json::json!({
+        "message": {
+            "messageId": "msg-unexecutable",
+            "contextId": "ctx-unexecutable",
+            "role": "ROLE_USER",
+            "parts": [{
+                "text": "run an unsafe check",
+                "mediaType": "text/plain"
+            }]
+        },
+        "configuration": {
+            "returnImmediately": true
+        },
+        "metadata": {
+            "evalops.subagentRequest": subagent_request
+        }
+    })
+    .to_string();
+    let request = format!(
+        "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let mut initial = request.into_bytes();
+    let head = parse_request_head(&initial).expect("request should parse");
+    let (_client, mut server) = tcp_stream_pair().await;
+    let state = test_app_state_with_sessions(HashMap::new());
+
+    let response =
+        response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+
+    assert_eq!(response["error"]["code"], "INVALID_REQUEST");
+    assert_eq!(state.a2a_tasks.lock().await.len(), 0);
+    assert_eq!(state.a2a_cancel_senders.lock().await.len(), 0);
+}
+
 #[test]
 fn detects_platform_a2a_push_callback_route() {
     let head =
@@ -3219,8 +4097,11 @@ fn a2a_agent_card_advertises_http_json_interface() {
         .filter_map(|skill| skill.get("id").and_then(Value::as_str))
         .collect::<Vec<_>>();
     assert!(skill_ids.contains(&"maestro.subagent.code-review"));
-    assert!(skill_ids.contains(&"maestro.subagent.test-runner"));
-    assert!(skill_ids.contains(&"maestro.subagent.repo-explorer"));
+    assert!(skill_ids.contains(&"maestro.subagent.code-writer"));
+    assert!(!skill_ids.contains(&"maestro.subagent.test-runner"));
+    assert!(!skill_ids.contains(&"maestro.subagent.repo-explorer"));
+    assert!(!skill_ids.contains(&"maestro.subagent.browser-qa"));
+    assert!(!skill_ids.contains(&"maestro.subagent.release-shepherd"));
     let code_review_skill = card["skills"]
         .as_array()
         .expect("skills should be an array")
@@ -3241,7 +4122,7 @@ fn a2a_agent_card_advertises_http_json_interface() {
     );
     assert_eq!(
         code_review_skill["requiredContextGrants"],
-        serde_json::json!(["repo:read", "pull-request:read", "artifact:read"])
+        serde_json::json!(["repo:read"])
     );
     assert_eq!(
         code_review_skill["approvalPolicyRef"],
@@ -3263,6 +4144,28 @@ fn a2a_agent_card_advertises_http_json_interface() {
             "secret.exfiltration",
             "unbounded.repository.write"
         ])
+    );
+    let code_writer_skill = card["skills"]
+        .as_array()
+        .expect("skills should be an array")
+        .iter()
+        .find(|skill| skill["id"] == "maestro.subagent.code-writer")
+        .expect("code writer subagent skill should be advertised");
+    assert_eq!(
+        code_writer_skill["metadata"]["taskCapsuleVersion"],
+        "evalops.maestro.task-capsule.v1"
+    );
+    assert_eq!(
+        code_writer_skill["metadata"]["taskCapsuleMetadataPath"],
+        "evalops.subagentRequest.capsule"
+    );
+    assert_eq!(
+        code_writer_skill["metadata"]["reviewRequirement"],
+        "independent-code-review-for-material-lanes"
+    );
+    assert_eq!(
+        code_writer_skill["metadata"]["completionPolicy"],
+        "server-generated-from-observed-outcome-and-artifacts"
     );
     if let Some(previous_a2a_url) = previous_a2a_url {
         env::set_var("MAESTRO_A2A_PUBLIC_URL", previous_a2a_url);
@@ -7463,6 +8366,234 @@ async fn a2a_completion_attaches_subagent_work_graph_metadata() {
         task["metadata"]["workGraph"]["correlationPath"],
         "maestro-swarm/swarm-1/alpha-review/a2a/maestro-task-1"
     );
+
+    if let Some(previous_fake) = previous_fake {
+        env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
+    } else {
+        env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_subagent_completion_requires_independent_review_disposition() {
+    let _guard = ENV_LOCK.lock().await;
+    let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
+    env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "implementation complete");
+    let state = test_app_state_with_sessions(HashMap::new());
+    let (_cancel_tx, cancel_rx) = watch::channel(false);
+    let metadata = serde_json::json!({
+        "evalops.subagentRequest": valid_code_writer_capsule(),
+        "evalops.subagentCompletion": {
+            "verified": true,
+            "verificationDisposition": "verified"
+        },
+        "workGraph": "caller-owned"
+    });
+
+    let task = complete_a2a_task(
+        &state,
+        "implement this".to_string(),
+        "maestro-task-code-writer".to_string(),
+        "ctx-1".to_string(),
+        Vec::new(),
+        metadata,
+        cancel_rx,
+    )
+    .await;
+
+    assert_eq!(
+        task["metadata"]["evalops.subagentCompletion"]["verificationDisposition"],
+        "pending_independent_review"
+    );
+    assert_eq!(
+        task["metadata"]["evalops.subagentCompletion"]["serverGenerated"],
+        true
+    );
+    assert_eq!(
+        task["metadata"]["evalops.subagentCompletion"]["observedOutcome"],
+        "completed"
+    );
+    assert_eq!(
+        task["metadata"]["evalops.subagentCompletion"]["missingArtifactKinds"],
+        serde_json::json!(["patch.summary", "test.report"])
+    );
+    assert!(
+        task["metadata"]["evalops.subagentCompletion"]["verified"].is_null(),
+        "caller-controlled verified field must not survive"
+    );
+    assert_eq!(task["metadata"]["workGraph"]["status"], "awaiting_review");
+    assert_eq!(task["metadata"]["workGraph"]["state"], "awaiting_review");
+    assert_eq!(
+        task["metadata"]["workGraph"]["codexSubagents"]["edges"][0]["workItemId"],
+        "task-1"
+    );
+
+    if let Some(previous_fake) = previous_fake {
+        env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
+    } else {
+        env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_non_material_subagent_completion_records_server_disposition() {
+    let _guard = ENV_LOCK.lock().await;
+    let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
+    env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "review complete");
+    let state = test_app_state_with_sessions(HashMap::new());
+    let (_cancel_tx, cancel_rx) = watch::channel(false);
+    let metadata = serde_json::json!({
+        "evalops.subagentRequest": valid_code_review_capsule()
+    });
+
+    let task = complete_a2a_task(
+        &state,
+        "review this".to_string(),
+        "maestro-task-code-review".to_string(),
+        "ctx-1".to_string(),
+        Vec::new(),
+        metadata,
+        cancel_rx,
+    )
+    .await;
+
+    assert_eq!(
+        task["metadata"]["evalops.subagentCompletion"]["verificationDisposition"],
+        "completed"
+    );
+    assert_eq!(
+        task["metadata"]["evalops.subagentCompletion"]["serverGenerated"],
+        true
+    );
+    assert_eq!(
+        task["metadata"]["evalops.subagentCompletion"]["missingArtifactKinds"],
+        serde_json::json!([])
+    );
+    assert_eq!(task["metadata"]["workGraph"]["status"], "completed");
+    assert!(task["artifacts"]
+        .as_array()
+        .expect("artifacts should be an array")
+        .iter()
+        .any(|artifact| artifact["artifactKind"] == "review.summary"));
+
+    if let Some(previous_fake) = previous_fake {
+        env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
+    } else {
+        env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_cancel_persists_server_owned_subagent_disposition() {
+    let (_client, mut server) = tcp_stream_pair().await;
+    let mut initial =
+        b"POST /tasks/maestro-task-capsule:cancel HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n"
+            .to_vec();
+    let head = parse_request_head(&initial).expect("request should parse");
+    let state = test_app_state_with_sessions(HashMap::new());
+    let task = a2a_task_value(
+        "maestro-task-capsule",
+        "ctx-1",
+        "TASK_STATE_WORKING",
+        a2a_agent_message("ctx-1", "working"),
+        Vec::new(),
+        Vec::new(),
+        serde_json::json!({
+            "evalops.subagentRequest": valid_code_writer_capsule(),
+            "evalops.subagentCompletion": {
+                "verified": true,
+                "verificationDisposition": "verified"
+            },
+            "workGraph": "caller-owned"
+        }),
+    );
+    state
+        .a2a_tasks
+        .lock()
+        .await
+        .insert("maestro-task-capsule".to_string(), task);
+
+    let response =
+        response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+    let stored = state.a2a_tasks.lock().await;
+
+    assert_eq!(response["status"]["state"], "TASK_STATE_CANCELED");
+    assert_eq!(
+        response["metadata"]["evalops.subagentCompletion"]["observedOutcome"],
+        "canceled"
+    );
+    assert_eq!(
+        response["metadata"]["evalops.subagentCompletion"]["serverGenerated"],
+        true
+    );
+    assert!(
+        response["metadata"]["evalops.subagentCompletion"]["verified"].is_null(),
+        "caller verified state must be removed atomically"
+    );
+    assert_eq!(response["metadata"]["workGraph"]["state"], "canceled");
+    assert_eq!(
+        stored["maestro-task-capsule"]["metadata"]["evalops.subagentCompletion"]["observedOutcome"],
+        "canceled"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn expired_claimed_capsule_still_gets_server_owned_completion_and_cancel_dispositions() {
+    let _guard = ENV_LOCK.lock().await;
+    let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
+    env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "implementation complete");
+    let mut expired = valid_code_writer_capsule();
+    expired["capsule"]["deadlineAt"] = serde_json::json!("2000-01-01T00:00:00Z");
+    let state = test_app_state_with_sessions(HashMap::new());
+    let (_cancel_tx, cancel_rx) = watch::channel(false);
+
+    let completed = complete_a2a_task(
+        &state,
+        "implement this".to_string(),
+        "expired-completed".to_string(),
+        "ctx-1".to_string(),
+        Vec::new(),
+        serde_json::json!({"evalops.subagentRequest": expired.clone()}),
+        cancel_rx,
+    )
+    .await;
+
+    assert_eq!(
+        completed["metadata"]["evalops.subagentCompletion"]["observedOutcome"],
+        "completed"
+    );
+    assert_eq!(
+        completed["metadata"]["workGraph"]["state"],
+        "awaiting_review"
+    );
+
+    let cancel_task = a2a_task_value(
+        "expired-canceled",
+        "ctx-1",
+        "TASK_STATE_WORKING",
+        a2a_agent_message("ctx-1", "working"),
+        Vec::new(),
+        Vec::new(),
+        serde_json::json!({"evalops.subagentRequest": expired}),
+    );
+    state
+        .a2a_tasks
+        .lock()
+        .await
+        .insert("expired-canceled".to_string(), cancel_task);
+    let auth = AuthContext {
+        subject: None,
+        unrestricted: true,
+    };
+    let canceled = crate::a2a::cancel_a2a_task(&state, "expired-canceled", &auth)
+        .await
+        .expect("expired claimed capsule should cancel");
+
+    assert_eq!(
+        canceled["metadata"]["evalops.subagentCompletion"]["observedOutcome"],
+        "canceled"
+    );
+    assert_eq!(canceled["metadata"]["workGraph"]["state"], "canceled");
 
     if let Some(previous_fake) = previous_fake {
         env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);

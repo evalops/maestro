@@ -11,6 +11,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use chrono::{DateTime, Duration as ChronoDuration, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
@@ -57,6 +58,7 @@ pub const HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION: &str =
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 15_000;
 const CONNECTION_IDLE_MS: i64 = (DEFAULT_HEARTBEAT_INTERVAL_MS as i64) * 3;
+const EVENT_PUMP_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_EVENTS: usize = 1024;
 
 #[derive(Clone)]
@@ -66,6 +68,9 @@ struct SharedRunner {
     events: broadcast::Sender<StreamEnvelope>,
     controller_events: broadcast::Sender<StreamEnvelope>,
     message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
+    mutation_lifecycle: Arc<tokio::sync::Mutex<()>>,
+    event_pump_cancellation: CancellationToken,
+    event_pump_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 struct RunnerState {
@@ -488,6 +493,7 @@ pub async fn start_hosted_runner_with_message_executor(
         message_executor,
         restore_manifest,
     );
+    shared.start_event_pump();
     let server_shared = shared.clone();
     let task = tokio::spawn(async move {
         serve(listener, server_shared, server_shutdown).await;
@@ -499,6 +505,124 @@ pub async fn start_hosted_runner_with_message_executor(
         shutdown,
         task,
     })
+}
+
+async fn pump_agent_events(shared: SharedRunner, cancelled: CancellationToken) {
+    let mut interval = tokio::time::interval(EVENT_PUMP_INTERVAL);
+    loop {
+        tokio::select! {
+            () = cancelled.cancelled() => break,
+            _ = interval.tick() => {
+                let lifecycle = shared.mutation_lifecycle.clone();
+                let _lifecycle = tokio::select! {
+                    () = cancelled.cancelled() => break,
+                    lifecycle = lifecycle.lock() => lifecycle,
+                };
+                match shared.message_executor.drain() {
+                    Ok(messages) => {
+                        let mut state = shared
+                            .state
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if state.draining {
+                            break;
+                        }
+                        for message in messages {
+                            shared.publish_message(&mut state, message);
+                        }
+                    }
+                    Err(error) => {
+                        shared.publish_runtime_error("event_pump_failed", error);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl SharedRunner {
+    fn start_event_pump(&self) {
+        let shared = self.clone();
+        let cancelled = self.event_pump_cancellation.clone();
+        let task = tokio::spawn(async move {
+            pump_agent_events(shared, cancelled).await;
+        });
+        *self
+            .event_pump_task
+            .try_lock()
+            .expect("event pump is not stopped while it starts") = Some(task);
+    }
+
+    async fn stop_event_pump(&self) -> Result<(), HostedRunnerError> {
+        self.event_pump_cancellation.cancel();
+        let mut task = self.event_pump_task.lock().await;
+        if let Some(join_handle) = task.as_mut() {
+            if let Err(error) = join_handle.await {
+                let error = HostedRunnerError::internal(format!(
+                    "event pump task terminated unexpectedly: {error}"
+                ));
+                self.publish_runtime_error("event_pump_join_failed", error.clone());
+                task.take();
+                return Err(error);
+            }
+        }
+        task.take();
+        Ok(())
+    }
+
+    fn ensure_mutation_allowed(&self) -> HostedResult<()> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.ready || state.draining {
+            return Err(HostedError::new(
+                HostedRunnerErrorCode::RuntimeNotReady,
+                "hosted runner is draining or not ready",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn last_published_cursor(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cursor
+    }
+
+    #[cfg(test)]
+    fn event_pump_is_finished(&self) -> bool {
+        self.event_pump_task
+            .try_lock()
+            .map(|task| {
+                task.as_ref()
+                    .is_none_or(tokio::task::JoinHandle::is_finished)
+            })
+            .unwrap_or(false)
+    }
+
+    fn publish_runtime_error(&self, error_type: &str, error: HostedRunnerError) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.ready = false;
+        state.last_status = Some("Runtime failed".to_string());
+        state.last_error = Some(error.message.clone());
+        state.last_error_type = Some(error_type.to_string());
+        self.publish_message(
+            &mut state,
+            FromAgentMessage::Error {
+                request_id: None,
+                message: error.message,
+                fatal: true,
+                error_type: Some(crate::headless::messages::HeadlessErrorType::Fatal),
+            },
+        );
+    }
 }
 
 impl HostedError {
@@ -951,6 +1075,19 @@ async fn route_request(
     {
         require_auth_header(&request.headers, shared.config.auth_token.as_deref())?;
     }
+    let mutation_lifecycle = (request.method == "POST"
+        && request.path != HOSTED_RUNNER_DRAIN_PATH
+        && !request.path.ends_with("/messages")
+        && !request.path.ends_with("/message"))
+    .then(|| shared.mutation_lifecycle.clone());
+    let _mutation = match mutation_lifecycle.as_ref() {
+        Some(lifecycle) => {
+            let mutation = lifecycle.lock().await;
+            shared.ensure_mutation_allowed()?;
+            Some(mutation)
+        }
+        None => None,
+    };
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", HOSTED_RUNNER_IDENTITY_PATH) => json_response(200, shared.identity()),
         ("GET", "/readyz" | "/healthz") => {
@@ -1061,6 +1198,7 @@ fn normalize_auth_token(token: Option<&str>) -> Option<&str> {
 }
 
 async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult<ResponseBody> {
+    let _lifecycle = shared.mutation_lifecycle.lock().await;
     let export_paths = input
         .export_paths
         .clone()
@@ -1072,7 +1210,23 @@ async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult
             Some(export_path.as_str()),
         )?;
     }
+    {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.draining {
+            return Err(HostedError::new(
+                HostedRunnerErrorCode::RuntimeNotReady,
+                "hosted runner is already draining",
+            ));
+        }
+        state.draining = true;
+        state.ready = false;
+        state.last_status = Some("Draining".to_string());
+    }
 
+    shared.stop_event_pump().await.map_err(HostedError::from)?;
     let drained_messages = shared.message_executor.drain().map_err(HostedError::from)?;
     {
         let mut state = shared
@@ -1102,8 +1256,6 @@ async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.draining = true;
-        state.ready = false;
         state.last_status = Some("Drained".to_string());
         shared.publish_snapshot(&mut state);
     }
@@ -1405,6 +1557,7 @@ async fn handle_message(
     headers: HashMap<String, String>,
     message: ToAgentMessage,
 ) -> HostedResult<ResponseBody> {
+    let _lifecycle = shared.mutation_lifecycle.lock().await;
     let (connection_header_id, subscription_id, connection_capability) =
         connection_from_headers(&headers);
     let connection_id;
@@ -1427,7 +1580,7 @@ async fn handle_message(
             connection_capability.as_deref(),
         )?;
         assert_controller(&state, Some(resolved_connection_id.as_str()))?;
-        if state.draining {
+        if !state.ready || state.draining {
             return Err(HostedError::new(
                 HostedRunnerErrorCode::RuntimeNotReady,
                 "hosted runner is draining",
@@ -1534,6 +1687,7 @@ async fn handle_message(
             }
             ToAgentMessage::UtilityCommandStdin { .. }
             | ToAgentMessage::UtilityCommandResize { .. }
+            | ToAgentMessage::RestoreConversation { .. }
             | ToAgentMessage::ToolResponse { .. }
             | ToAgentMessage::ClientToolResult { .. }
             | ToAgentMessage::ServerRequestResponse { .. }
@@ -1578,7 +1732,7 @@ async fn handle_message(
             connection_capability.as_deref(),
         )?;
         assert_controller(&state, Some(resolved_connection_id.as_str()))?;
-        if state.draining {
+        if !state.ready || state.draining {
             return Err(HostedError::new(
                 HostedRunnerErrorCode::RuntimeNotReady,
                 "hosted runner is draining",
@@ -1602,7 +1756,7 @@ async fn handle_message(
             rows,
             ..
         } => {
-            run_utility_command(
+            let utility_command_task = run_utility_command(
                 shared.clone(),
                 UtilityCommandInvocation {
                     connection_id: connection_id.clone(),
@@ -1617,6 +1771,7 @@ async fn handle_message(
                 },
             )
             .await?;
+            drop(utility_command_task);
         }
         ToAgentMessage::UtilityFileRead {
             read_id,
@@ -1901,7 +2056,7 @@ fn lease_expires_at(connection: &ConnectionRecord) -> String {
 async fn run_utility_command(
     shared: SharedRunner,
     invocation: UtilityCommandInvocation,
-) -> HostedResult<()> {
+) -> HostedResult<tokio::task::JoinHandle<()>> {
     let UtilityCommandInvocation {
         connection_id,
         command_id,
@@ -1950,12 +2105,16 @@ async fn run_utility_command(
         );
     }
 
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let output = spawn_command(&command, &cwd_path, env, shell_mode).await;
+        let _lifecycle = shared.mutation_lifecycle.lock().await;
         let mut state = shared
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.draining || !state.ready {
+            return;
+        }
         match output {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -2013,7 +2172,7 @@ async fn run_utility_command(
             }
         }
     });
-    Ok(())
+    Ok(task)
 }
 
 async fn spawn_command(

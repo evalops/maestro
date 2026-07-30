@@ -2,6 +2,7 @@ mod agent_card;
 mod ledger;
 mod native_turn;
 mod push_notifications;
+mod subagent_capsule;
 mod tasks;
 
 pub(crate) use agent_card::{
@@ -12,7 +13,12 @@ pub(crate) use ledger::{
     persist_a2a_tasks, release_a2a_task_ledger_file_lock, spawn_a2a_task_ledger_lock_heartbeat,
     A2A_LEDGER_LOCK_HEARTBEAT_FILE, A2A_LEDGER_LOCK_RETRY_MS,
 };
-pub(crate) use native_turn::{run_a2a_native_turn, A2ATurnResult};
+#[cfg(test)]
+pub(crate) use native_turn::build_a2a_subagent_execution_policy;
+pub(crate) use native_turn::{
+    build_a2a_subagent_execution_policy_for_state, run_a2a_native_turn, A2ASubagentExecutionPolicy,
+    A2ATurnResult,
+};
 #[allow(unused_imports)]
 pub(crate) use push_notifications::{
     a2a_push_authorization_header, a2a_push_ip_is_private, a2a_push_notification_payloads,
@@ -20,6 +26,13 @@ pub(crate) use push_notifications::{
     apply_platform_a2a_status_update, handle_platform_a2a_push_endpoint,
     is_platform_a2a_push_endpoint, normalize_a2a_push_notification_config,
 };
+pub(crate) use subagent_capsule::{
+    decode_subagent_capsule_for_completion, validate_subagent_capsule, CapsuleValidationError,
+    ValidatedSubagentTaskCapsule, SUBAGENT_TASK_CAPSULE_MAX_RETRY_LIMIT,
+    SUBAGENT_TASK_CAPSULE_VERSION,
+};
+#[cfg(test)]
+pub(crate) use tasks::{a2a_acceptance_report_artifacts, cancel_a2a_task};
 pub(crate) use tasks::{
     a2a_agent_message, a2a_context_id, a2a_return_immediately, a2a_state_is_completed,
     a2a_state_is_failed, a2a_task_is_terminal, a2a_task_value, a2a_user_message_value,

@@ -383,6 +383,8 @@ pub struct AgentSupervisor {
     transport: Option<ManagedTransport>,
     /// Last init config to replay after reconnects
     last_init: Option<InitConfig>,
+    /// Private provider conversation checkpoint replayed immediately after init.
+    semantic_conversation: Option<Vec<maestro_ai::Message>>,
     /// Current supervisor-owned agent state
     state: AgentState,
     /// Event sender
@@ -420,6 +422,7 @@ impl AgentSupervisor {
             config,
             transport: None,
             last_init: None,
+            semantic_conversation: None,
             state: AgentState::default(),
             event_tx,
             event_rx,
@@ -494,6 +497,7 @@ impl AgentSupervisor {
     pub fn restore_session_replay(&mut self, replay: SessionReplay) {
         self.state = replay.state;
         self.last_init = replay.last_init;
+        self.semantic_conversation = replay.semantic_conversation;
         self.seed_remote_session_id_if_missing(self.state.session_id.clone());
     }
 
@@ -715,6 +719,20 @@ impl AgentSupervisor {
         Ok(())
     }
 
+    fn replay_saved_semantic_conversation(&mut self) -> Result<(), AsyncTransportError> {
+        if self.last_init.is_none() {
+            return Ok(());
+        }
+        if let Some(messages) = self.semantic_conversation.clone() {
+            self.send(ToAgentMessage::RestoreConversation {
+                protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL
+                    .to_string(),
+                messages,
+            })?;
+        }
+        Ok(())
+    }
+
     fn remember_remote_session_id(&mut self, session_id: Option<String>) {
         if let (Some(remote), Some(session_id)) = (self.config.remote.as_mut(), session_id) {
             remote.session_id = Some(session_id);
@@ -752,7 +770,10 @@ impl AgentSupervisor {
         );
         self.remote_resume_authority = remote_resume_authority;
         if should_replay_init {
-            if let Err(error) = self.replay_saved_init() {
+            if let Err(error) = self
+                .replay_saved_init()
+                .and_then(|()| self.replay_saved_semantic_conversation())
+            {
                 if let Some(transport) = self.transport.take() {
                     let _ = transport.shutdown();
                 }
@@ -787,6 +808,18 @@ impl AgentSupervisor {
     }
 
     fn apply_agent_message(&mut self, message: FromAgentMessage) -> Option<SupervisorEvent> {
+        if let FromAgentMessage::ConversationSnapshot {
+            protocol_version,
+            messages,
+        } = &message
+        {
+            // This in-memory reconnect boundary must not depend on the optional
+            // recorder. An unsupported live version is fail-closed and clears
+            // previously replayed history immediately.
+            self.semantic_conversation = (protocol_version
+                == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL)
+                .then(|| messages.clone());
+        }
         let event = self.state.handle_message(message.clone());
         if let Some(ref mut recorder) = self.session_recorder {
             let result = recorder.record_received(&message);
@@ -1280,6 +1313,7 @@ impl SupervisorBuilder {
         let replay = SessionReplay {
             state: recorder.replay_state().clone(),
             last_init: recorder.last_init().cloned(),
+            semantic_conversation: recorder.replay().semantic_conversation,
         };
         self.session_replay = Some(replay);
         self.session_recorder = Some(recorder);

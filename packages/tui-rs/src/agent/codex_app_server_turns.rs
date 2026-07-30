@@ -7,13 +7,16 @@
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
+use std::env;
 use std::time::Duration;
 
 use crate::codex_app_server::{
     agent_message_completed_text, agent_message_text_from_notifications,
     is_agent_message_notification, CodexAppServerClient, IncomingServerRequest, InitializeOptions,
-    Notification, ServerRequestWaitError, ThreadStartParams, TurnStartParams,
+    Notification, ServerRequestWaitError, ThreadInjectItemsParams, ThreadStartParams,
+    TurnStartParams,
 };
+use maestro_ai::{ContentBlock, Message, MessageContent, Role};
 
 /// Result of a single text turn over Codex app-server.
 #[derive(Debug, Clone)]
@@ -21,6 +24,13 @@ pub struct CodexAppServerTurnResult {
     pub thread_id: String,
     pub turn_id: String,
     pub assistant_text: String,
+    /// True when `assistant_text` is an authoritative full response rather
+    /// than the unconsumed suffix assembled from delta notifications.
+    ///
+    /// The current adapter emits suffixes. This explicit mode keeps native
+    /// chronology reconciliation compatible with app-server versions that
+    /// surface full text through `item/completed`.
+    pub assistant_text_is_full: bool,
     pub raw_completion: Value,
 }
 
@@ -52,9 +62,11 @@ impl CodexAppServerTurnSession {
         sandbox: Option<String>,
         dynamic_tools: &[DynamicToolSpec],
         instructions: Option<String>,
+        restored_messages: &[Message],
     ) -> Result<Self> {
         let model = model.into();
-        let client = CodexAppServerClient::spawn(None, None, None)
+        let (command, args) = codex_app_server_spawn_override_from_env()?;
+        let client = CodexAppServerClient::spawn(command, args, None)
             .await
             .context("spawn Codex app-server")?;
         client
@@ -107,9 +119,32 @@ impl CodexAppServerTurnSession {
             .await
             .context("thread/start")?;
 
+        Self::from_started_thread(client, thread.thread_id, model, restored_messages).await
+    }
+
+    async fn from_started_thread(
+        client: CodexAppServerClient,
+        thread_id: String,
+        model: String,
+        restored_messages: &[Message],
+    ) -> Result<Self> {
+        let restored_items = semantic_messages_to_codex_items(restored_messages);
+        if !restored_items.is_empty() {
+            client
+                .inject_thread_items(
+                    ThreadInjectItemsParams {
+                        thread_id: thread_id.clone(),
+                        items: Value::Array(restored_items),
+                    },
+                    None,
+                )
+                .await
+                .context("thread/inject_items")?;
+        }
+
         Ok(Self {
             client,
-            thread_id: thread.thread_id,
+            thread_id,
             model,
         })
     }
@@ -176,23 +211,27 @@ impl CodexAppServerTurnSession {
     }
 
     /// Drain assistant message notifications (streaming deltas + completed
-    /// agentMessage items) and return the best text we can assemble.
-    async fn take_assistant_text(&self) -> String {
+    /// agentMessage items) and return the best text plus whether it is an
+    /// authoritative full message.
+    async fn take_assistant_text(&self) -> (String, bool) {
         let notes = self
             .client
             .take_notifications_where(is_agent_message_notification)
             .await;
-        // Prefer fully-accumulated text from item/completed when present.
-        let mut completed_parts = Vec::new();
-        for n in &notes {
-            if let Some(text) = agent_message_completed_text(n) {
-                completed_parts.push(text);
-            }
-        }
-        if !completed_parts.is_empty() {
-            return completed_parts.join("");
-        }
-        agent_message_text_from_notifications(&notes)
+        assistant_text_from_notifications(&notes)
+    }
+
+    /// Drain authoritative completed assistant items at a causal boundary.
+    ///
+    /// Native turns call this before persisting a pre-tool assistant segment,
+    /// so the final completion only contains the post-tool segment and cannot
+    /// duplicate already-checkpointed text.
+    pub async fn take_completed_assistant_text(&self) -> String {
+        let notes = self
+            .client
+            .take_notifications_where(|note| agent_message_completed_text(note).is_some())
+            .await;
+        completed_assistant_text_from_notifications(&notes)
     }
 
     /// Wait until the turn completes; returns assistant text collected so far.
@@ -207,12 +246,13 @@ impl CodexAppServerTurnSession {
             .await
             .context("wait for turn completion")?;
 
-        let assistant_text = self.take_assistant_text().await;
+        let (assistant_text, assistant_text_is_full) = self.take_assistant_text().await;
 
         Ok(CodexAppServerTurnResult {
             thread_id: self.thread_id.clone(),
             turn_id: turn_id.to_owned(),
             assistant_text,
+            assistant_text_is_full,
             raw_completion: completed.params,
         })
     }
@@ -271,11 +311,12 @@ impl CodexAppServerTurnSession {
                 })
                 .await;
             if let Some(notification) = completed.into_iter().next() {
-                let assistant_text = self.take_assistant_text().await;
+                let (assistant_text, assistant_text_is_full) = self.take_assistant_text().await;
                 return Ok(TurnWaitEvent::Completed(CodexAppServerTurnResult {
                     thread_id: self.thread_id.clone(),
                     turn_id: turn_id.to_owned(),
                     assistant_text,
+                    assistant_text_is_full,
                     raw_completion: notification.params.unwrap_or(Value::Null),
                 }));
             }
@@ -288,6 +329,102 @@ impl CodexAppServerTurnSession {
             .take_notifications_where(|n| n.method.starts_with("item/agentMessage"))
             .await
     }
+}
+
+fn assistant_text_from_notifications(notes: &[Notification]) -> (String, bool) {
+    let completed_text = completed_assistant_text_from_notifications(notes);
+    if completed_text.is_empty() {
+        (agent_message_text_from_notifications(notes), false)
+    } else {
+        (completed_text, true)
+    }
+}
+
+fn completed_assistant_text_from_notifications(notes: &[Notification]) -> String {
+    notes
+        .iter()
+        .filter_map(agent_message_completed_text)
+        .collect::<String>()
+}
+
+/// Optional process-local override for the app-server executable. Hosted
+/// children receive these variables through their own transport environment;
+/// the normal desktop path leaves both unset and resolves Codex as before.
+fn codex_app_server_spawn_override_from_env() -> Result<(Option<String>, Option<Vec<String>>)> {
+    let command = env::var("MAESTRO_CODEX_APP_SERVER_COMMAND")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let args = env::var("MAESTRO_CODEX_APP_SERVER_ARGS_JSON")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            serde_json::from_str::<Vec<String>>(&value)
+                .context("invalid MAESTRO_CODEX_APP_SERVER_ARGS_JSON")
+        })
+        .transpose()?;
+    if args.is_some() && command.is_none() {
+        bail!("MAESTRO_CODEX_APP_SERVER_ARGS_JSON requires MAESTRO_CODEX_APP_SERVER_COMMAND");
+    }
+    Ok((command, args))
+}
+
+/// Convert persisted semantic history into protocol-defined Responses API
+/// items. Tool-call/result IDs remain paired in the provider-visible thread.
+fn semantic_messages_to_codex_items(messages: &[Message]) -> Vec<Value> {
+    let mut items = Vec::new();
+    for message in messages {
+        match &message.content {
+            MessageContent::Text(text) if !text.is_empty() => {
+                items.push(codex_message_item(message.role, text));
+            }
+            MessageContent::Text(_) => {}
+            MessageContent::Blocks(blocks) => {
+                for block in blocks {
+                    match block {
+                        ContentBlock::Text { text } if !text.is_empty() => {
+                            items.push(codex_message_item(message.role, text));
+                        }
+                        ContentBlock::Text { .. } => {}
+                        ContentBlock::ToolUse { id, name, input } => items.push(json!({
+                            "type": "function_call",
+                            "call_id": id,
+                            "name": name,
+                            "arguments": input.to_string(),
+                        })),
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            ..
+                        } => items.push(json!({
+                            "type": "function_call_output",
+                            "call_id": tool_use_id,
+                            "output": content,
+                        })),
+                        // These blocks are excluded at checkpoint creation.
+                        ContentBlock::Image { .. } | ContentBlock::Thinking { .. } => {}
+                    }
+                }
+            }
+        }
+    }
+    items
+}
+
+fn codex_message_item(role: Role, text: &str) -> Value {
+    let content_type = if role == Role::Assistant {
+        "output_text"
+    } else {
+        "input_text"
+    };
+    json!({
+        "type": "message",
+        "role": match role {
+            Role::User => "user",
+            Role::Assistant => "assistant",
+            Role::System => "developer",
+        },
+        "content": [{ "type": content_type, "text": text }],
+    })
 }
 
 /// Event while driving a Codex app-server turn.
@@ -458,5 +595,131 @@ mod tests {
     fn sanitizes_dynamic_tool_names() {
         assert_eq!(sanitize_dynamic_tool_name("bash tool"), "bash_tool");
         assert_eq!(sanitize_dynamic_tool_name("mcp"), "maestro_mcp");
+    }
+
+    #[test]
+    fn completed_agent_text_is_marked_as_authoritative_full_text() {
+        let notes = vec![
+            Notification {
+                method: "item/agentMessage/delta".to_owned(),
+                params: Some(json!({ "turnId": "turn-1", "delta": "partial" })),
+            },
+            Notification {
+                method: "item/completed".to_owned(),
+                params: Some(json!({
+                    "turnId": "turn-1",
+                    "item": {
+                        "id": "message-1",
+                        "type": "agentMessage",
+                        "text": "full answer"
+                    }
+                })),
+            },
+        ];
+
+        assert_eq!(
+            assistant_text_from_notifications(&notes),
+            ("full answer".to_owned(), true)
+        );
+    }
+
+    #[test]
+    fn semantic_history_becomes_provider_visible_message_and_tool_pair_items() {
+        let items = semantic_messages_to_codex_items(&[
+            Message {
+                role: Role::User,
+                content: MessageContent::text("first prompt"),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                    id: "call-42".to_owned(),
+                    name: "read".to_owned(),
+                    input: json!({ "path": "src/lib.rs" }),
+                }]),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-42".to_owned(),
+                    content: "[tool result omitted from checkpoint]".to_owned(),
+                    is_error: Some(false),
+                }]),
+            },
+        ]);
+
+        assert_eq!(items[0]["type"], "message");
+        assert_eq!(items[0]["content"][0]["text"], "first prompt");
+        assert_eq!(items[1]["type"], "function_call");
+        assert_eq!(items[1]["call_id"], "call-42");
+        assert_eq!(items[2]["type"], "function_call_output");
+        assert_eq!(items[2]["call_id"], "call-42");
+    }
+
+    #[test]
+    fn semantic_history_preserves_mixed_block_order() {
+        let items = semantic_messages_to_codex_items(&[Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::Text {
+                    text: "I'll inspect it.".to_owned(),
+                },
+                ContentBlock::ToolUse {
+                    id: "call-1".to_owned(),
+                    name: "read".to_owned(),
+                    input: json!({ "path": "src/lib.rs" }),
+                },
+                ContentBlock::Text {
+                    text: "Then I'll explain.".to_owned(),
+                },
+            ]),
+        }]);
+
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["type"], "message");
+        assert_eq!(items[0]["content"][0]["text"], "I'll inspect it.");
+        assert_eq!(items[1]["type"], "function_call");
+        assert_eq!(items[1]["call_id"], "call-1");
+        assert_eq!(items[2]["type"], "message");
+        assert_eq!(items[2]["content"][0]["text"], "Then I'll explain.");
+    }
+
+    #[tokio::test]
+    async fn restored_items_are_injected_before_the_next_turn_starts() {
+        let (client, mock) = CodexAppServerClient::mock();
+        let history = vec![Message {
+            role: Role::User,
+            content: MessageContent::text("first turn"),
+        }];
+        let session_task = tokio::spawn(async move {
+            CodexAppServerTurnSession::from_started_thread(
+                client,
+                "thr-restored".to_owned(),
+                "gpt-5.5".to_owned(),
+                &history,
+            )
+            .await
+        });
+
+        let inject = mock.next_request().await.expect("inject before turn");
+        assert_eq!(inject["method"], "thread/inject_items");
+        assert_eq!(
+            inject["params"]["items"][0]["content"][0]["text"],
+            "first turn"
+        );
+        mock.respond(inject["id"].as_u64().unwrap(), json!({}));
+        let session = session_task.await.unwrap().expect("restored session");
+
+        let turn_task =
+            tokio::spawn(async move { session.start_text_turn("second turn", Some(1_000)).await });
+        let turn = mock.next_request().await.expect("next turn");
+        assert_eq!(turn["method"], "turn/start");
+        assert_eq!(turn["params"]["threadId"], "thr-restored");
+        assert_eq!(turn["params"]["input"][0]["text"], "second turn");
+        mock.respond(
+            turn["id"].as_u64().unwrap(),
+            json!({ "turn": { "id": "turn-2" } }),
+        );
+        assert_eq!(turn_task.await.unwrap().unwrap(), "turn-2");
     }
 }
