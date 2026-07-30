@@ -1535,17 +1535,20 @@ mod tests {
             .arg(&pid_file);
 
         let task = tokio::spawn(run_command_output(command, None));
-        for _ in 0..100 {
-            if pid_file.exists() {
-                break;
+        // `echo "$child" > pid` makes the file visible to `exists()` before
+        // the shell writes the pid into it, so poll for a complete,
+        // parseable pid rather than mere existence.
+        let pid: libc::pid_t = 'published: {
+            for _ in 0..100 {
+                if let Ok(contents) = std::fs::read_to_string(&pid_file) {
+                    if let Ok(pid) = contents.trim().parse() {
+                        break 'published pid;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        let pid: libc::pid_t = std::fs::read_to_string(&pid_file)
-            .expect("subprocess must publish child pid")
-            .trim()
-            .parse()
-            .unwrap();
+            panic!("subprocess must publish child pid");
+        };
 
         task.abort();
         let _ = task.await;

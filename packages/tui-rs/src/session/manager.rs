@@ -2802,6 +2802,29 @@ mod tests {
         );
     }
 
+    /// Acquire a staging lock, riding out the transient `Locked` window that
+    /// fork+exec from unrelated test threads can cause: a child forked while
+    /// a lock fd is open anywhere in the process inherits that open file
+    /// description and keeps the flock held until its exec completes
+    /// (`O_CLOEXEC` only takes effect at exec), so a lock can briefly outlive
+    /// the `SessionLock` drop that released it. Poll for a bounded time
+    /// rather than fail on that window; a genuinely stuck lock still fails
+    /// the test.
+    #[cfg(unix)]
+    fn acquire_staging_lock_after_release(key: &Path) -> SessionLock {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match SessionLock::acquire(key) {
+                Err(crate::session::writer::SessionWriteError::Locked(_))
+                    if std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                result => return result.expect("acquire staging lock"),
+            }
+        }
+    }
+
     /// Regression test for the three-cleanup inode-split race: actor A
     /// releases a reusable staging lock, actor B acquires the same inode,
     /// and actor C must not be able to acquire a replacement inode at the
@@ -2817,11 +2840,11 @@ mod tests {
         let lock_key = SessionManager::prune_staging_lock_key(&staged);
         let sidecar = lock_path_for(&lock_key);
 
-        let actor_a = SessionLock::acquire(&lock_key).unwrap();
+        let actor_a = acquire_staging_lock_after_release(&lock_key);
         let original_inode = fs::metadata(&sidecar).unwrap().ino();
         drop(actor_a);
 
-        let actor_b = SessionLock::acquire(&lock_key).unwrap();
+        let actor_b = acquire_staging_lock_after_release(&lock_key);
         assert_eq!(
             fs::metadata(&sidecar).unwrap().ino(),
             original_inode,
@@ -2841,7 +2864,7 @@ mod tests {
         );
         drop(actor_b);
 
-        let _actor_c = SessionLock::acquire(&lock_key).unwrap();
+        let _actor_c = acquire_staging_lock_after_release(&lock_key);
         assert_eq!(
             fs::metadata(&sidecar).unwrap().ino(),
             original_inode,
