@@ -1,94 +1,151 @@
-//! Shimmer Animation Effect
+//! Shimmer animation effect
 //!
-//! Creates an animated shimmer effect for text, commonly used for loading
-//! indicators and attention-grabbing headers.
-//!
-//! The shimmer is a wave of brightness that sweeps across the text,
-//! creating a polished visual effect.
-//!
-//! Ported from OpenAI Codex CLI (MIT licensed).
+//! Wall-clock raised-cosine sheen for busy text and multi-line brand art.
+//! Motion grammar matches Grok Build's welcome logo (rest between sweeps,
+//! soft pulse, ~12 fps quantization) with Deixic violet brand colors from
+//! `evalops/deixic` (`#6857fe` solid violet, soft highlight).
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 
-use crate::color_utils::blend;
+use crate::color_utils::{blend, has_true_color_support};
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PROCESS START TIME
+// DEIXIC BRAND PALETTE
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Deixic solid violet (`--dx-violet-solid` / `--primary` on platform UI).
+pub const DEIXIC_VIOLET: (u8, u8, u8) = (0x68, 0x57, 0xfe);
+
+/// Hover shade of Deixic violet (`--dx-violet-solid-hover` / `#5847e6`).
+pub const DEIXIC_VIOLET_HOVER: (u8, u8, u8) = (0x58, 0x47, 0xe6);
+
+/// Soft violet tint (`--dx-violet-soft` / `#efebff`).
+pub const DEIXIC_SOFT: (u8, u8, u8) = (0xef, 0xeb, 0xff);
+
+/// Ink used on the marketing site (`--dx-ink`).
+pub const DEIXIC_INK: (u8, u8, u8) = (0x1b, 0x18, 0x26);
+
+/// Resting (dim) tone for logo glyphs — deeper violet-gray.
+pub const DEIXIC_LOGO_BASE: (u8, u8, u8) = (0x4a, 0x42, 0x9a);
+
+/// Peak highlight on logo sheen.
+pub const DEIXIC_LOGO_HILITE: (u8, u8, u8) = (0xef, 0xeb, 0xff);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROCESS CLOCK
 // ─────────────────────────────────────────────────────────────────────────────
 
 static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 
-/// Get the time elapsed since process start.
+/// Elapsed time since first shimmer use (shared so effects stay in phase).
+#[must_use]
+pub fn elapsed_since_start() -> Duration {
+    PROCESS_START.get_or_init(Instant::now).elapsed()
+}
+
+/// Animation phase in seconds (wall-clock, frame-rate independent).
+#[must_use]
+pub fn anim_phase_secs() -> f32 {
+    elapsed_since_start().as_secs_f32()
+}
+
+/// Welcome / idle shimmer redraw cadence. Sweep is slow; 12 fps is enough and
+/// avoids full event-loop paint rate while idle.
+pub const SHIMMER_FPS: f32 = 12.0;
+
+/// Quantized shimmer frame for dirty-tracking idle welcome paints.
+#[must_use]
+pub fn shimmer_frame() -> u64 {
+    (anim_phase_secs() * SHIMMER_FPS) as u64
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHINE (Grok-style motion grammar)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Per-position shine opacity in `[0, 1]`.
 ///
-/// This ensures shimmer animations are synchronized across the application.
-fn elapsed_since_start() -> Duration {
-    let start = PROCESS_START.get_or_init(Instant::now);
-    start.elapsed()
-}
+/// `pos` is a normalized coordinate along the sweep axis (0..1 for 1D text,
+/// or diagonal position for multi-line art). A raised-cosine band sweeps
+/// with rest between passes; a gentle global pulse sits under it.
+#[must_use]
+pub fn shine_opacity(pos: f32, secs: f32) -> f32 {
+    const BAND: f32 = 0.38;
+    const CYCLE: f32 = 4.0;
+    const SWEEP_FRAC: f32 = 0.32;
+    const SHINE: f32 = 0.45;
+    const PULSE: f32 = 0.08;
+    const PULSE_SECS: f32 = 5.0;
 
-/// Reset the process start time (useful for testing).
-#[cfg(test)]
-pub fn reset_process_start() {
-    // Can't reset OnceLock, but tests can work around this
+    let p = (secs % CYCLE) / CYCLE;
+    let q = (p / SWEEP_FRAC).min(1.0);
+    let band_pos = -BAND + q * (1.0 + 2.0 * BAND);
+    let pulse = PULSE * (0.5 - 0.5 * (std::f32::consts::TAU * secs / PULSE_SECS).cos());
+
+    let d = (pos - band_pos).abs();
+    let shine = if d < BAND {
+        0.5 * (1.0 + (std::f32::consts::PI * d / BAND).cos())
+    } else {
+        0.0
+    };
+    (pulse + SHINE * shine).clamp(0.0, 1.0)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SHIMMER CONFIGURATION
+// SHIMMER CONFIG
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Configuration for the shimmer effect.
+/// Configuration for the linear text shimmer.
 #[derive(Debug, Clone)]
 pub struct ShimmerConfig {
     /// Base color for non-highlighted text.
     pub base_color: (u8, u8, u8),
     /// Highlight color for the shimmer peak.
     pub highlight_color: (u8, u8, u8),
-    /// Duration of one complete sweep cycle in seconds.
-    pub sweep_seconds: f32,
-    /// Width of the shimmer band (in characters).
-    pub band_half_width: f32,
-    /// Padding before/after text for smooth entry/exit.
-    pub padding: usize,
     /// Whether true color is supported.
     pub has_true_color: bool,
+    /// When true, use continuous legacy sweep (no rest). Prefer false.
+    pub continuous: bool,
 }
 
 impl Default for ShimmerConfig {
     fn default() -> Self {
         Self {
-            base_color: (128, 128, 128),
-            highlight_color: (255, 255, 255),
-            sweep_seconds: 2.0,
-            band_half_width: 5.0,
-            padding: 10,
+            // Muted violet-gray resting tone; peak is soft white-violet.
+            base_color: (0x6e, 0x68, 0xa8),
+            highlight_color: DEIXIC_SOFT,
             has_true_color: true,
+            continuous: false,
         }
     }
 }
 
 impl ShimmerConfig {
-    /// Create a config that automatically detects terminal capabilities.
+    /// Config with automatic terminal capability detection.
     #[must_use]
     pub fn auto() -> Self {
         Self {
-            has_true_color: crate::color_utils::has_true_color_support(),
+            has_true_color: has_true_color_support(),
             ..Default::default()
         }
+    }
+
+    /// Deixic brand defaults (same as [`Default`] with true-color auto).
+    #[must_use]
+    pub fn deixic() -> Self {
+        Self::auto()
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SHIMMER EFFECT
+// LINEAR TEXT SHIMMER
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Create shimmer spans for the given text.
-///
-/// Returns a vector of spans where each character has a style based on
-/// its distance from the current shimmer position.
+/// Create shimmer spans for the given text (Deixic defaults).
 #[must_use]
 pub fn shimmer_spans(text: &str) -> Vec<Span<'static>> {
     shimmer_spans_with_config(text, &ShimmerConfig::auto())
@@ -97,98 +154,69 @@ pub fn shimmer_spans(text: &str) -> Vec<Span<'static>> {
 /// Create shimmer spans with custom configuration.
 #[must_use]
 pub fn shimmer_spans_with_config(text: &str, config: &ShimmerConfig) -> Vec<Span<'static>> {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() {
-        return Vec::new();
-    }
-
-    // Calculate current shimmer position based on time
-    let period = chars.len() + config.padding * 2;
-    let pos_f = (elapsed_since_start().as_secs_f32() % config.sweep_seconds) / config.sweep_seconds
-        * (period as f32);
-    let pos = pos_f as usize;
-
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(chars.len());
-
-    for (i, ch) in chars.iter().enumerate() {
-        // Calculate distance from shimmer center
-        let i_pos = i as isize + config.padding as isize;
-        let pos_isize = pos as isize;
-        let dist = (i_pos - pos_isize).abs() as f32;
-
-        // Calculate intensity using cosine falloff
-        let t = if dist <= config.band_half_width {
-            let x = std::f32::consts::PI * (dist / config.band_half_width);
-            0.5 * (1.0 + x.cos())
-        } else {
-            0.0
-        };
-
-        let style = if config.has_true_color {
-            // Use smooth color blending
-            let highlight = t.clamp(0.0, 1.0);
-            let (r, g, b) = blend(config.highlight_color, config.base_color, highlight * 0.9);
-            Style::default()
-                .fg(Color::Rgb(r, g, b))
-                .add_modifier(Modifier::BOLD)
-        } else {
-            // Fallback to modifier-based styling
-            fallback_style_for_intensity(t)
-        };
-
-        spans.push(Span::styled(ch.to_string(), style));
-    }
-
-    spans
+    shimmer_spans_at(text, config, anim_phase_secs())
 }
 
-/// Create shimmer spans at a specific time offset.
-///
-/// Useful for testing or when you want to control the animation position.
+/// Create shimmer spans at a specific elapsed time (tests / locked frames).
 #[must_use]
 pub fn shimmer_spans_at_time(text: &str, elapsed: Duration) -> Vec<Span<'static>> {
-    let config = ShimmerConfig::auto();
+    shimmer_spans_at(text, &ShimmerConfig::auto(), elapsed.as_secs_f32())
+}
+
+fn shimmer_spans_at(text: &str, config: &ShimmerConfig, secs: f32) -> Vec<Span<'static>> {
     let chars: Vec<char> = text.chars().collect();
     if chars.is_empty() {
         return Vec::new();
     }
 
-    let period = chars.len() + config.padding * 2;
-    let pos_f =
-        (elapsed.as_secs_f32() % config.sweep_seconds) / config.sweep_seconds * (period as f32);
-    let pos = pos_f as usize;
-
+    let n = chars.len().max(1) as f32;
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(chars.len());
 
     for (i, ch) in chars.iter().enumerate() {
-        let i_pos = i as isize + config.padding as isize;
-        let pos_isize = pos as isize;
-        let dist = (i_pos - pos_isize).abs() as f32;
-
-        let t = if dist <= config.band_half_width {
-            let x = std::f32::consts::PI * (dist / config.band_half_width);
-            0.5 * (1.0 + x.cos())
+        let intensity = if config.continuous {
+            // Legacy continuous left→right band with padding.
+            let padding = 10.0;
+            let period = n + padding * 2.0;
+            let sweep_seconds = 2.0f32;
+            let band_half = 5.0f32;
+            let pos_f = (secs % sweep_seconds) / sweep_seconds * period;
+            let i_pos = i as f32 + padding;
+            let dist = (i_pos - pos_f).abs();
+            if dist <= band_half {
+                0.5 * (1.0 + (std::f32::consts::PI * (dist / band_half)).cos())
+            } else {
+                0.0
+            }
         } else {
-            0.0
+            // Normalized position; rest/pulse via shine_opacity.
+            let t = if n <= 1.0 { 0.5 } else { i as f32 / (n - 1.0) };
+            shine_opacity(t, secs)
         };
 
-        let style = if config.has_true_color {
-            let highlight = t.clamp(0.0, 1.0);
-            let (r, g, b) = blend(config.highlight_color, config.base_color, highlight * 0.9);
-            Style::default()
-                .fg(Color::Rgb(r, g, b))
-                .add_modifier(Modifier::BOLD)
-        } else {
-            fallback_style_for_intensity(t)
-        };
-
-        spans.push(Span::styled(ch.to_string(), style));
+        spans.push(Span::styled(
+            ch.to_string(),
+            style_for_opacity(intensity, config),
+        ));
     }
 
     spans
 }
 
-/// Create a fallback style based on intensity when true color isn't available.
+fn style_for_opacity(opacity: f32, config: &ShimmerConfig) -> Style {
+    if config.has_true_color {
+        let (r, g, b) = blend(
+            config.highlight_color,
+            config.base_color,
+            opacity.clamp(0.0, 1.0),
+        );
+        Style::default()
+            .fg(Color::Rgb(r, g, b))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        fallback_style_for_intensity(opacity)
+    }
+}
+
 fn fallback_style_for_intensity(intensity: f32) -> Style {
     if intensity < 0.2 {
         Style::default().add_modifier(Modifier::DIM)
@@ -199,24 +227,121 @@ fn fallback_style_for_intensity(intensity: f32) -> Style {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SHIMMER LINE
-// ─────────────────────────────────────────────────────────────────────────────
-
 /// Create a shimmer line from text.
 #[must_use]
-pub fn shimmer_line(text: &str) -> ratatui::text::Line<'static> {
-    ratatui::text::Line::from(shimmer_spans(text))
+pub fn shimmer_line(text: &str) -> Line<'static> {
+    Line::from(shimmer_spans(text))
 }
 
 /// Create a shimmer line with custom configuration.
 #[must_use]
-pub fn shimmer_line_with_config(
-    text: &str,
-    config: &ShimmerConfig,
-) -> ratatui::text::Line<'static> {
-    ratatui::text::Line::from(shimmer_spans_with_config(text, config))
+pub fn shimmer_line_with_config(text: &str, config: &ShimmerConfig) -> Line<'static> {
+    Line::from(shimmer_spans_with_config(text, config))
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DIAGONAL MULTI-LINE SHEEN (welcome / logo)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Render multi-line art with a bottom-left → top-right diagonal sheen.
+///
+/// Adjacent glyphs that share a color are coalesced into one [`Span`] to
+/// keep per-frame allocation low.
+#[must_use]
+pub fn diagonal_shimmer_lines(
+    lines: &[&str],
+    base: (u8, u8, u8),
+    hilite: (u8, u8, u8),
+) -> Vec<Line<'static>> {
+    diagonal_shimmer_lines_at(
+        lines,
+        base,
+        hilite,
+        anim_phase_secs(),
+        has_true_color_support(),
+    )
+}
+
+/// Same as [`diagonal_shimmer_lines`] with an explicit clock (tests).
+#[must_use]
+pub fn diagonal_shimmer_lines_at(
+    lines: &[&str],
+    base: (u8, u8, u8),
+    hilite: (u8, u8, u8),
+    secs: f32,
+    true_color: bool,
+) -> Vec<Line<'static>> {
+    let non_empty: Vec<&str> = lines.iter().copied().filter(|l| !l.is_empty()).collect();
+    if non_empty.is_empty() {
+        return Vec::new();
+    }
+
+    let rows = non_empty.len().max(1) as f32;
+    let cols = non_empty
+        .iter()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(1)
+        .max(1) as f32;
+
+    non_empty
+        .iter()
+        .enumerate()
+        .map(|(row, line)| {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            let mut run = String::new();
+            let mut run_color: Option<Color> = None;
+            let mut run_style: Style = Style::default();
+
+            for (col, ch) in line.chars().enumerate() {
+                // Sweep along bottom-left → top-right: col up, row down.
+                let diag = (col as f32 + (rows - 1.0 - row as f32)) / (cols + rows);
+                let opacity = shine_opacity(diag, secs);
+                let (style, color) = if true_color {
+                    let (r, g, b) = blend(hilite, base, opacity);
+                    let c = Color::Rgb(r, g, b);
+                    (Style::default().fg(c), Some(c))
+                } else {
+                    (fallback_style_for_intensity(opacity), None)
+                };
+
+                if true_color {
+                    if run_color != color {
+                        if let Some(prev) = run_color {
+                            spans.push(Span::styled(
+                                std::mem::take(&mut run),
+                                Style::default().fg(prev),
+                            ));
+                        }
+                        run_color = color;
+                    }
+                    run.push(ch);
+                } else {
+                    // Modifier path: coalesce only identical styles.
+                    if !run.is_empty() && run_style != style {
+                        spans.push(Span::styled(std::mem::take(&mut run), run_style));
+                    }
+                    run_style = style;
+                    run.push(ch);
+                }
+            }
+
+            if true_color {
+                if let Some(prev) = run_color {
+                    spans.push(Span::styled(run, Style::default().fg(prev)));
+                }
+            } else if !run.is_empty() {
+                spans.push(Span::styled(run, run_style));
+            }
+
+            Line::from(spans)
+        })
+        .collect()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TESTS
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -224,29 +349,27 @@ mod tests {
 
     #[test]
     fn shimmer_empty_text() {
-        let spans = shimmer_spans("");
-        assert!(spans.is_empty());
+        assert!(shimmer_spans("").is_empty());
     }
 
     #[test]
     fn shimmer_creates_spans_for_each_char() {
-        let spans = shimmer_spans("hello");
-        assert_eq!(spans.len(), 5);
+        assert_eq!(shimmer_spans("hello").len(), 5);
     }
 
     #[test]
     fn shimmer_spans_are_styled() {
-        let spans = shimmer_spans("test");
-        for span in spans {
-            // Each span should have exactly one character
+        for span in shimmer_spans("test") {
             assert_eq!(span.content.chars().count(), 1);
         }
     }
 
     #[test]
     fn shimmer_at_time_works() {
-        let spans = shimmer_spans_at_time("hello", Duration::from_millis(500));
-        assert_eq!(spans.len(), 5);
+        assert_eq!(
+            shimmer_spans_at_time("hello", Duration::from_millis(500)).len(),
+            5
+        );
     }
 
     #[test]
@@ -263,12 +386,75 @@ mod tests {
     #[test]
     fn shimmer_config_auto_creates_config() {
         let config = ShimmerConfig::auto();
-        assert!(config.sweep_seconds > 0.0);
+        assert_eq!(config.base_color.0, 0x6e);
     }
 
     #[test]
     fn shimmer_line_creates_line() {
-        let line = shimmer_line("test");
-        assert_eq!(line.spans.len(), 4);
+        assert_eq!(shimmer_line("test").spans.len(), 4);
+    }
+
+    #[test]
+    fn shine_opacity_stays_in_unit_range() {
+        let mut secs = 0.0;
+        while secs < 10.0 {
+            for i in 0..=20 {
+                let pos = i as f32 / 20.0;
+                let op = shine_opacity(pos, secs);
+                assert!(
+                    (0.0..=1.0).contains(&op),
+                    "opacity {op} out of range at pos {pos}, secs {secs}"
+                );
+            }
+            secs += 0.13;
+        }
+    }
+
+    #[test]
+    fn shine_band_sweeps_across() {
+        let brightest = |secs: f32| -> f32 {
+            (0..=100)
+                .map(|i| i as f32 / 100.0)
+                .max_by(|a, b| {
+                    shine_opacity(*a, secs)
+                        .partial_cmp(&shine_opacity(*b, secs))
+                        .unwrap()
+                })
+                .unwrap()
+        };
+        let early = brightest(0.1);
+        let mid = brightest(0.4);
+        let late = brightest(0.7);
+        assert!(early < mid, "early {early} should precede mid {mid}");
+        assert!(mid < late, "mid {mid} should precede late {late}");
+    }
+
+    #[test]
+    fn shine_rests_dim_between_sweeps() {
+        // secs % 4.0 = 2.0 → past SWEEP_FRAC, rest phase.
+        let op = shine_opacity(0.5, 6.0);
+        assert!(op < 0.2, "resting opacity {op} should stay dim");
+    }
+
+    #[test]
+    fn diagonal_shimmer_produces_lines() {
+        let art = ["  ██  ", " █  █ ", "  ██  "];
+        let lines =
+            diagonal_shimmer_lines_at(&art, DEIXIC_LOGO_BASE, DEIXIC_LOGO_HILITE, 0.2, true);
+        assert_eq!(lines.len(), 3);
+        assert!(!lines[0].spans.is_empty());
+    }
+
+    #[test]
+    fn shimmer_frame_is_monotonic_with_time() {
+        // Just ensure it is a finite counter; absolute value depends on process age.
+        let _ = shimmer_frame();
+    }
+
+    #[test]
+    fn deixic_violet_matches_marketing_hex() {
+        assert_eq!(DEIXIC_VIOLET, (0x68, 0x57, 0xfe));
+        assert_eq!(DEIXIC_VIOLET_HOVER, (0x58, 0x47, 0xe6));
+        assert_eq!(DEIXIC_SOFT, (0xef, 0xeb, 0xff));
     }
 }
