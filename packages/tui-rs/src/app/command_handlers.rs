@@ -1,5 +1,5 @@
 use super::*;
-use crate::commands::GoalAction;
+use crate::commands::{AttachAction, GoalAction};
 use crate::state::ApprovalMode;
 
 /// Normalize a slash-completion string to a single leading `/`.
@@ -409,30 +409,20 @@ impl App {
             CommandAction::Goal(action) => self.handle_goal_action(action),
             CommandAction::SetFooterStyle(style) => {
                 self.footer_style = style;
-                self.state
-                    .status
-                    .replace(format!("Footer style: {}", style.as_str()));
-            }
-            CommandAction::AttachPath(path) => {
-                let expanded = if let Some(rest) = path.strip_prefix("~/") {
-                    dirs::home_dir()
-                        .map(|h| h.join(rest).display().to_string())
-                        .unwrap_or(path.clone())
-                } else {
-                    path.clone()
-                };
-                let p = std::path::Path::new(&expanded);
-                if !p.exists() {
-                    self.state.error = Some(format!("Attach path does not exist: {expanded}"));
-                } else {
-                    self.pending_attachments.push(expanded.clone());
-                    let n = self.pending_attachments.len();
-                    self.state.status = Some(format!("Attached ({n}): {expanded}"));
-                    self.state.add_system_message(format!(
-                        "Attached `{expanded}`. It will be sent with the next user prompt ({n} pending)."
+                let mut prefs = crate::ui_prefs::UiPrefs::load_default();
+                prefs.set_footer_style(style);
+                if let Err(e) = prefs.save_default() {
+                    self.state.error = Some(format!(
+                        "Footer style set to {} but failed to persist: {e}",
+                        style.as_str()
                     ));
+                } else {
+                    self.state
+                        .status
+                        .replace(format!("Footer style: {} (saved)", style.as_str()));
                 }
             }
+            CommandAction::Attach(action) => self.handle_attach_action(action),
             CommandAction::CompactConversation(instructions) => {
                 // Compact conversation by summarizing older messages
                 let transcript_messages: Vec<_> = self
@@ -2527,8 +2517,14 @@ Manual snapshot: `/magic-trace stop`",
             }
             PluginsAction::MarketplaceList => {
                 let catalog = crate::plugins::builtin_catalog();
+                let installed: std::collections::HashSet<String> = self
+                    .plugin_registry
+                    .plugins()
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .collect();
                 self.state
-                    .add_system_message(crate::plugins::format_catalog(&catalog));
+                    .add_system_message(crate::plugins::format_catalog(&catalog, &installed));
             }
             PluginsAction::MarketplaceInstall { id, trust } => {
                 let catalog = crate::plugins::builtin_catalog();
@@ -2582,6 +2578,55 @@ Manual snapshot: `/magic-trace stop`",
         }
     }
 
+    /// Handle `/attach` add|list|clear.
+    pub(super) fn handle_attach_action(&mut self, action: AttachAction) {
+        match action {
+            AttachAction::List => {
+                if self.pending_attachments.is_empty() {
+                    self.state
+                        .add_system_message("No pending attachments. Use `/attach <path>`.".into());
+                } else {
+                    let mut msg = format!(
+                        "## Pending attachments ({})\n\n",
+                        self.pending_attachments.len()
+                    );
+                    for (i, path) in self.pending_attachments.iter().enumerate() {
+                        msg.push_str(&format!("{}. `{path}`\n", i + 1));
+                    }
+                    msg.push_str("\nSent with the next user prompt. `/attach clear` drops them.\n");
+                    self.state.add_system_message(msg);
+                }
+            }
+            AttachAction::Clear => {
+                let n = self.pending_attachments.len();
+                self.pending_attachments.clear();
+                self.state.status = Some(format!("Cleared {n} attachment(s)"));
+                self.state
+                    .add_system_message(format!("Cleared {n} pending attachment(s)."));
+            }
+            AttachAction::Add(path) => {
+                let expanded = if let Some(rest) = path.strip_prefix("~/") {
+                    dirs::home_dir()
+                        .map(|h| h.join(rest).display().to_string())
+                        .unwrap_or(path.clone())
+                } else {
+                    path.clone()
+                };
+                let p = std::path::Path::new(&expanded);
+                if !p.exists() {
+                    self.state.error = Some(format!("Attach path does not exist: {expanded}"));
+                } else {
+                    self.pending_attachments.push(expanded.clone());
+                    let n = self.pending_attachments.len();
+                    self.state.status = Some(format!("Attached ({n}): {expanded}"));
+                    self.state.add_system_message(format!(
+                        "Attached `{expanded}`. It will be sent with the next user prompt ({n} pending)."
+                    ));
+                }
+            }
+        }
+    }
+
     /// Handle `/goal` lifecycle actions.
     pub(super) fn handle_goal_action(&mut self, action: GoalAction) {
         match action {
@@ -2592,14 +2637,16 @@ Manual snapshot: `/magic-trace stop`",
                 text,
                 replace,
                 criteria,
-            } => match self.goal_store.create(text, criteria, replace) {
+                max_turns,
+            } => match self.goal_store.create(text, criteria, replace, max_turns) {
                 Ok(goal) => {
                     self.goal_auto_continue_armed = goal.auto_continue;
                     self.state.add_system_message(format!(
-                        "Goal {} set (**{}**).\n\n{}\n\nAuto-continue will re-prompt when the agent is idle. Use `/goal pause` to stop.",
+                        "Goal {} set (**{}**).\n\n{}\n\nAuto-continue re-prompts when idle (cap {}). Use `/goal pause` to stop. Skipped while `/loop` or queue is active.",
                         goal.id,
                         goal.status.as_str(),
-                        goal.text
+                        goal.text,
+                        goal.max_turns
                     ));
                     self.state.status = Some(format!("Goal {}", goal.id));
                 }

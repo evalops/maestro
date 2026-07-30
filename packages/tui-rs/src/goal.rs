@@ -4,6 +4,9 @@
 //! auto-continue while the agent is idle. Models complete goals via explicit
 //! user slash commands (or future tool hooks); free-text "done" does not clear
 //! the goal.
+//!
+//! Auto-continue is capped by `max_turns` (default 8) so an active goal cannot
+//! re-prompt indefinitely.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,6 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+
+/// Default auto-continue cap for a new goal.
+pub const DEFAULT_MAX_AUTO_CONTINUES: u32 = 8;
 
 /// Lifecycle state for a user goal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -64,10 +70,21 @@ pub struct Goal {
     /// prompt when the agent becomes idle.
     #[serde(default = "default_true")]
     pub auto_continue: bool,
+    /// Max auto-continue submissions for this goal (not counting the first
+    /// user-driven turn).
+    #[serde(default = "default_max_turns")]
+    pub max_turns: u32,
+    /// How many auto-continue prompts have already been submitted.
+    #[serde(default)]
+    pub auto_continue_count: u32,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_max_turns() -> u32 {
+    DEFAULT_MAX_AUTO_CONTINUES
 }
 
 fn now_unix() -> u64 {
@@ -116,7 +133,12 @@ impl GoalStore {
             } else {
                 ""
             };
-            format!("{} {preview}{ellipsis}", g.status.badge())
+            let turns = if g.auto_continue {
+                format!(" {}/{}", g.auto_continue_count, g.max_turns)
+            } else {
+                String::new()
+            };
+            format!("{}{turns} {preview}{ellipsis}", g.status.badge())
         })
     }
 
@@ -125,6 +147,7 @@ impl GoalStore {
         text: impl Into<String>,
         success_criteria: Option<String>,
         replace: bool,
+        max_turns: Option<u32>,
     ) -> Result<&Goal> {
         let text = text.into().trim().to_string();
         if text.is_empty() {
@@ -147,6 +170,7 @@ impl GoalStore {
                 );
             }
         }
+        let max_turns = max_turns.unwrap_or(DEFAULT_MAX_AUTO_CONTINUES).max(1);
         let now = now_unix();
         self.current = Some(Goal {
             id: new_id(),
@@ -157,6 +181,8 @@ impl GoalStore {
             created_at_unix: now,
             updated_at_unix: now,
             auto_continue: true,
+            max_turns,
+            auto_continue_count: 0,
         });
         self.save_default()?;
         Ok(self.current.as_ref().expect("just set"))
@@ -174,6 +200,8 @@ impl GoalStore {
         goal.status = GoalStatus::Active;
         goal.block_reason = None;
         goal.auto_continue = true;
+        // Resume resets the auto-continue budget so operators can continue work.
+        goal.auto_continue_count = 0;
         goal.updated_at_unix = now_unix();
         self.save_default()?;
         Ok(self.current.as_ref().expect("just set"))
@@ -201,27 +229,52 @@ impl GoalStore {
     pub fn set_auto_continue(&mut self, enabled: bool) -> Result<&Goal> {
         let goal = self.current.as_mut().context("no current goal")?;
         goal.auto_continue = enabled;
+        if enabled {
+            // Re-enable with a fresh budget so `/goal auto on` is usable after
+            // a max-turns stop.
+            goal.auto_continue_count = 0;
+        }
         goal.updated_at_unix = now_unix();
         self.save_default()?;
         Ok(self.current.as_ref().expect("just set"))
     }
 
+    /// Record that an auto-continue prompt was submitted. Disables further
+    /// auto-continue when `max_turns` is reached. Returns `true` if the cap
+    /// was just hit.
+    pub fn note_auto_continue_submitted(&mut self) -> Result<bool> {
+        let goal = self.current.as_mut().context("no current goal")?;
+        goal.auto_continue_count = goal.auto_continue_count.saturating_add(1);
+        goal.updated_at_unix = now_unix();
+        let hit_cap = goal.auto_continue_count >= goal.max_turns;
+        if hit_cap {
+            goal.auto_continue = false;
+        }
+        self.save_default()?;
+        Ok(hit_cap)
+    }
+
     /// Whether the TUI should submit a continuation prompt now.
     pub fn should_auto_continue(&self) -> bool {
-        self.current
-            .as_ref()
-            .is_some_and(|g| g.status == GoalStatus::Active && g.auto_continue)
+        self.current.as_ref().is_some_and(|g| {
+            g.status == GoalStatus::Active && g.auto_continue && g.auto_continue_count < g.max_turns
+        })
     }
 
     /// Prompt text injected when auto-continuing an active goal.
     pub fn continuation_prompt(&self) -> Option<String> {
         let g = self.current.as_ref()?;
-        if g.status != GoalStatus::Active || !g.auto_continue {
+        if !self.should_auto_continue() {
             return None;
         }
+        let remaining = g.max_turns.saturating_sub(g.auto_continue_count);
         let mut prompt = format!(
-            "Continue working toward the active goal (id {}).\n\nGoal: {}\n",
-            g.id, g.text
+            "Continue working toward the active goal (id {}).\n\nGoal: {}\n\
+             Auto-continue budget remaining after this turn: {} of {}.\n",
+            g.id,
+            g.text,
+            remaining.saturating_sub(1),
+            g.max_turns
         );
         if let Some(criteria) = &g.success_criteria {
             prompt.push_str(&format!("Success criteria: {criteria}\n"));
@@ -241,10 +294,12 @@ impl GoalStore {
             None => "No active goal. Create one with `/goal create <text>`.".to_string(),
             Some(g) => {
                 let mut out = format!(
-                    "## Goal {}\n\n**Status:** {}\n**Auto-continue:** {}\n\n{}\n",
+                    "## Goal {}\n\n**Status:** {}\n**Auto-continue:** {} ({}/{} used)\n\n{}\n",
                     g.id,
                     g.status.as_str(),
                     if g.auto_continue { "on" } else { "off" },
+                    g.auto_continue_count,
+                    g.max_turns,
                     g.text
                 );
                 if let Some(c) = &g.success_criteria {
@@ -254,7 +309,7 @@ impl GoalStore {
                     out.push_str(&format!("\n**Block reason:** {r}\n"));
                 }
                 out.push_str(
-                    "\nCommands: `/goal pause` · `/goal resume` · `/goal block [reason]` · `/goal complete` · `/goal clear`\n",
+                    "\nCommands: `/goal pause` · `/goal resume` · `/goal block [reason]` · `/goal complete` · `/goal clear` · `/goal create --max-turns N <text>`\n",
                 );
                 out
             }
@@ -298,6 +353,42 @@ fn save_to_path(store: &GoalStore, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Strip `--max-turns N` / `--max-turns=N` from goal create text.
+/// Returns `(remaining_text, max_turns)`.
+pub fn strip_max_turns_flag(raw: &str) -> Result<(String, Option<u32>), String> {
+    let mut max_turns = None;
+    let mut out = Vec::new();
+    let mut parts = raw.split_whitespace().peekable();
+    while let Some(part) = parts.next() {
+        if let Some(value) = part.strip_prefix("--max-turns=") {
+            max_turns = Some(parse_max_turns(value)?);
+            continue;
+        }
+        if part == "--max-turns" || part == "-n" {
+            let value = parts
+                .next()
+                .ok_or_else(|| "Usage: --max-turns <N>".to_string())?;
+            max_turns = Some(parse_max_turns(value)?);
+            continue;
+        }
+        out.push(part);
+    }
+    Ok((out.join(" "), max_turns))
+}
+
+fn parse_max_turns(raw: &str) -> Result<u32, String> {
+    let n: u32 = raw
+        .parse()
+        .map_err(|_| format!("invalid --max-turns value '{raw}' (expected positive integer)"))?;
+    if n == 0 {
+        return Err("--max-turns must be at least 1".to_string());
+    }
+    if n > 100 {
+        return Err("--max-turns must be at most 100".to_string());
+    }
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,7 +397,7 @@ mod tests {
     fn create_pause_resume_complete() {
         let mut store = GoalStore::default();
         store
-            .create("Ship the release", Some("tag exists".into()), false)
+            .create("Ship the release", Some("tag exists".into()), false, None)
             .unwrap();
         assert!(store.should_auto_continue());
         store.pause().unwrap();
@@ -321,22 +412,45 @@ mod tests {
     #[test]
     fn refuses_second_goal_without_replace() {
         let mut store = GoalStore::default();
-        store.create("first", None, false).unwrap();
-        let err = store.create("second", None, false).unwrap_err();
+        store.create("first", None, false, None).unwrap();
+        let err = store.create("second", None, false, None).unwrap_err();
         assert!(err.to_string().contains("already"));
-        store.create("second", None, true).unwrap();
+        store.create("second", None, true, None).unwrap();
         assert_eq!(store.current.as_ref().unwrap().text, "second");
     }
 
     #[test]
     fn continuation_prompt_only_when_active() {
         let mut store = GoalStore::default();
-        store.create("do the thing", None, false).unwrap();
+        store.create("do the thing", None, false, None).unwrap();
         assert!(store
             .continuation_prompt()
             .unwrap()
             .contains("do the thing"));
         store.pause().unwrap();
         assert!(store.continuation_prompt().is_none());
+    }
+
+    #[test]
+    fn max_turns_stops_auto_continue() {
+        let mut store = GoalStore::default();
+        store.create("ship it", None, false, Some(2)).unwrap();
+        assert!(store.should_auto_continue());
+        assert!(!store.note_auto_continue_submitted().unwrap());
+        assert!(store.should_auto_continue());
+        assert!(store.note_auto_continue_submitted().unwrap());
+        assert!(!store.should_auto_continue());
+        assert_eq!(store.current.as_ref().unwrap().auto_continue_count, 2);
+        assert!(!store.current.as_ref().unwrap().auto_continue);
+    }
+
+    #[test]
+    fn strip_max_turns_flag_parses() {
+        let (text, n) = strip_max_turns_flag("--max-turns 3 Ship the thing").unwrap();
+        assert_eq!(text, "Ship the thing");
+        assert_eq!(n, Some(3));
+        let (text, n) = strip_max_turns_flag("Ship --max-turns=5 release").unwrap();
+        assert_eq!(text, "Ship release");
+        assert_eq!(n, Some(5));
     }
 }

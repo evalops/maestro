@@ -234,10 +234,27 @@ fn run_marketplace(positionals: &[String], trust: bool, json: bool) -> Result<i3
     match sub {
         "list" | "ls" => {
             let catalog = crate::plugins::builtin_catalog();
+            let registry = discover_registry(None)?;
+            let installed: std::collections::HashSet<String> =
+                registry.plugins().iter().map(|p| p.name.clone()).collect();
             if json {
-                println!("{}", serde_json::to_string_pretty(&catalog)?);
+                let rows: Vec<serde_json::Value> = catalog
+                    .iter()
+                    .map(|e| {
+                        serde_json::json!({
+                            "id": e.id,
+                            "displayName": e.display_name,
+                            "tier": e.tier.as_str(),
+                            "description": e.description,
+                            "source": e.source,
+                            "homepage": e.homepage,
+                            "installed": crate::plugins::is_installed(e, &installed),
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&rows)?);
             } else {
-                print!("{}", crate::plugins::format_catalog(&catalog));
+                print!("{}", crate::plugins::format_catalog(&catalog, &installed));
             }
             Ok(0)
         }

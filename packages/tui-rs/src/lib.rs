@@ -157,6 +157,9 @@ pub mod clipboard;
 /// Interactive goal mode (create / pause / block / complete + auto-continue).
 pub mod goal;
 
+/// Lightweight UI prefs (`~/.maestro/ui.json`), e.g. footer density.
+pub mod ui_prefs;
+
 /// Diff generation and rendering.
 /// Shows file changes with colored additions/deletions.
 pub mod diff;

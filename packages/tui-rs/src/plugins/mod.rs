@@ -36,8 +36,8 @@ pub use manager::{
 };
 pub use manifest::PluginManifest;
 pub use marketplace::{
-    builtin_catalog, find_entry, format_catalog, resolve_install_source, MarketplaceEntry,
-    MarketplaceTier,
+    builtin_catalog, find_entry, format_catalog, is_installed, resolve_install_source,
+    MarketplaceEntry, MarketplaceTier,
 };
 
 use std::collections::HashMap;

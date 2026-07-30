@@ -1022,7 +1022,7 @@ fn plugins_command_list_info_and_reload() {
 
 #[test]
 fn goal_footer_attach_commands_parse() {
-    use crate::commands::{FooterStyle, GoalAction};
+    use crate::commands::{AttachAction, FooterStyle, GoalAction};
 
     let registry = build_command_registry();
 
@@ -1031,12 +1031,35 @@ fn goal_footer_attach_commands_parse() {
         .expect("/goal create")
     {
         CommandOutput::Action(CommandAction::Goal(GoalAction::Create {
-            text, replace, ..
+            text,
+            replace,
+            max_turns,
+            ..
         })) => {
             assert_eq!(text, "Ship release");
             assert!(!replace);
+            assert_eq!(max_turns, None);
         }
         other => panic!("expected Goal::Create, got {other:?}"),
+    }
+
+    match registry
+        .execute(
+            "/goal create --max-turns 3 Ship release",
+            "/tmp",
+            None,
+            None,
+        )
+        .expect("/goal create max-turns")
+    {
+        CommandOutput::Action(CommandAction::Goal(GoalAction::Create {
+            text,
+            max_turns: Some(3),
+            ..
+        })) => {
+            assert_eq!(text, "Ship release");
+        }
+        other => panic!("expected Goal::Create with max_turns 3, got {other:?}"),
     }
 
     match registry
@@ -1068,10 +1091,26 @@ fn goal_footer_attach_commands_parse() {
         .execute("/attach /tmp/shot.png", "/tmp", None, None)
         .expect("/attach")
     {
-        CommandOutput::Action(CommandAction::AttachPath(path)) => {
+        CommandOutput::Action(CommandAction::Attach(AttachAction::Add(path))) => {
             assert_eq!(path, "/tmp/shot.png");
         }
-        other => panic!("expected AttachPath, got {other:?}"),
+        other => panic!("expected Attach::Add, got {other:?}"),
+    }
+
+    match registry
+        .execute("/attach list", "/tmp", None, None)
+        .expect("/attach list")
+    {
+        CommandOutput::Action(CommandAction::Attach(AttachAction::List)) => {}
+        other => panic!("expected Attach::List, got {other:?}"),
+    }
+
+    match registry
+        .execute("/attach clear", "/tmp", None, None)
+        .expect("/attach clear")
+    {
+        CommandOutput::Action(CommandAction::Attach(AttachAction::Clear)) => {}
+        other => panic!("expected Attach::Clear, got {other:?}"),
     }
 
     match registry

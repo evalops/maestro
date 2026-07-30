@@ -74,11 +74,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::types::{
-    A2aAction, ArgumentValue, BackgroundMonitorAction, Command, CommandAction, CommandArgument,
-    CommandCategory, CommandContext, CommandError, CommandOutput, CommandResult, ExportAction,
-    FooterStyle, GoalAction, HistoryAction, HooksAction, LoopAction, McpAction, ModalType,
-    PlanReviewAction, PluginsAction, QueueAction, QueueModeKind, SessionAction, SkillsAction,
-    ToolHistoryAction, UsageAction,
+    A2aAction, ArgumentValue, AttachAction, BackgroundMonitorAction, Command, CommandAction,
+    CommandArgument, CommandCategory, CommandContext, CommandError, CommandOutput, CommandResult,
+    ExportAction, FooterStyle, GoalAction, HistoryAction, HooksAction, LoopAction, McpAction,
+    ModalType, PlanReviewAction, PluginsAction, QueueAction, QueueModeKind, SessionAction,
+    SkillsAction, ToolHistoryAction, UsageAction,
 };
 use crate::git;
 use crate::keybindings::{
@@ -2094,7 +2094,7 @@ pub fn build_command_registry() -> CommandRegistry {
             }),
         )
         .usage(
-            "/goal [status|create|replace|pause|resume|block|complete|clear|auto on|auto off] [text]",
+            "/goal [status|create [--max-turns N]|replace|pause|resume|block|complete|clear|auto on|auto off] [text]",
         ),
     );
 
@@ -2102,19 +2102,39 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "attach",
-            "Attach a local file (image/video/document) to the next prompt",
+            "Queue local files for the next prompt (add|list|clear)",
             CommandCategory::Ui,
             Box::new(|ctx| {
-                let path = ctx.raw_args.trim();
-                if path.is_empty() {
-                    return Err(CommandError::new("Usage: /attach <path-to-image-or-video>"));
+                let raw = ctx.raw_args.trim();
+                if raw.is_empty()
+                    || raw.eq_ignore_ascii_case("list")
+                    || raw.eq_ignore_ascii_case("ls")
+                {
+                    return Ok(CommandOutput::Action(CommandAction::Attach(
+                        AttachAction::List,
+                    )));
                 }
-                Ok(CommandOutput::Action(CommandAction::AttachPath(
-                    path.to_string(),
+                if raw.eq_ignore_ascii_case("clear") || raw.eq_ignore_ascii_case("reset") {
+                    return Ok(CommandOutput::Action(CommandAction::Attach(
+                        AttachAction::Clear,
+                    )));
+                }
+                let path = raw
+                    .strip_prefix("add ")
+                    .or_else(|| raw.strip_prefix("add\t"))
+                    .unwrap_or(raw)
+                    .trim();
+                if path.is_empty() {
+                    return Err(CommandError::new(
+                        "Usage: /attach <path> | /attach list | /attach clear",
+                    ));
+                }
+                Ok(CommandOutput::Action(CommandAction::Attach(
+                    AttachAction::Add(path.to_string()),
                 )))
             }),
         )
-        .usage("/attach <path>"),
+        .usage("/attach <path|list|clear>"),
     );
 
     // Memory commands
@@ -2571,23 +2591,33 @@ fn parse_goal_action(raw: &str) -> Result<GoalAction, CommandError> {
     let rest = parts.collect::<Vec<_>>().join(" ");
     match sub.as_str() {
         "create" | "set" | "start" => {
-            if rest.is_empty() {
-                return Err(CommandError::new("Usage: /goal create <text>"));
+            let (text, max_turns) =
+                crate::goal::strip_max_turns_flag(&rest).map_err(CommandError::new)?;
+            if text.is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /goal create [--max-turns N] <text>",
+                ));
             }
             Ok(GoalAction::Create {
-                text: rest,
+                text,
                 replace: false,
                 criteria: None,
+                max_turns,
             })
         }
         "replace" => {
-            if rest.is_empty() {
-                return Err(CommandError::new("Usage: /goal replace <text>"));
+            let (text, max_turns) =
+                crate::goal::strip_max_turns_flag(&rest).map_err(CommandError::new)?;
+            if text.is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /goal replace [--max-turns N] <text>",
+                ));
             }
             Ok(GoalAction::Create {
-                text: rest,
+                text,
                 replace: true,
                 criteria: None,
+                max_turns,
             })
         }
         "pause" => Ok(GoalAction::Pause),
@@ -2608,17 +2638,22 @@ fn parse_goal_action(raw: &str) -> Result<GoalAction, CommandError> {
             };
             Ok(GoalAction::AutoContinue { enabled })
         }
-        // Bare text → create without replace
-        other if rest.is_empty() && !other.is_empty() => Ok(GoalAction::Create {
-            text: trimmed.to_string(),
-            replace: false,
-            criteria: None,
-        }),
-        _ => Ok(GoalAction::Create {
-            text: trimmed.to_string(),
-            replace: false,
-            criteria: None,
-        }),
+        // Bare text → create without replace (may include --max-turns).
+        _ => {
+            let (text, max_turns) =
+                crate::goal::strip_max_turns_flag(trimmed).map_err(CommandError::new)?;
+            if text.is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /goal create [--max-turns N] <text>",
+                ));
+            }
+            Ok(GoalAction::Create {
+                text,
+                replace: false,
+                criteria: None,
+                max_turns,
+            })
+        }
     }
 }
 
