@@ -1596,9 +1596,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         let git_branch = git::current_branch(&cwd_path);
         self.current_git_branch = git_branch.clone();
 
-        // Determine model from environment or default (prefer Codex/OpenAI)
-        let model =
-            std::env::var("MAESTRO_MODEL").unwrap_or_else(|_| "gpt-5.1-codex-max".to_string());
+        // Codex ChatGPT login (CODEX_HOME/auth.json) wins when present and no
+        // explicit MAESTRO_MODEL is set — see codex_auth::resolve_default_model.
+        let _codex_auth = crate::codex_auth::apply_codex_auth_to_process_env();
+        let model = crate::codex_auth::resolve_default_model();
 
         let (history, session_id, thinking_level) = self.agent_context_for_spawn();
         let (thinking_enabled, thinking_budget) = thinking_level.to_config();
@@ -1656,7 +1657,15 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 self.state.status = Some(format!("Ready: {model}"));
             }
             Err(e) => {
-                self.state.error = Some(format!("Failed to create agent: {e}"));
+                let mut message = format!("Failed to create agent: {e}");
+                if crate::codex_auth::read_codex_auth().is_none()
+                    && std::env::var_os("OPENAI_API_KEY").is_none()
+                    && std::env::var_os("OPENAI_CODEX_TOKEN").is_none()
+                {
+                    message
+                        .push_str(" — run `maestro codex login` (ChatGPT) or set OPENAI_API_KEY.");
+                }
+                self.state.error = Some(message);
             }
         }
 

@@ -159,6 +159,7 @@ pub fn default_model_for_provider(provider: &str) -> Option<&'static str> {
     match provider.trim().to_ascii_lowercase().as_str() {
         "anthropic" | "claude" => Some("claude-sonnet-4-6"),
         "openai" => Some("gpt-5.5"),
+        "openai-codex" | "codex" => Some("gpt-5.5"),
         "google" | "gemini" => Some("gemini-2.5-pro"),
         "xai" | "grok" => Some("grok-4.5"),
         _ => None,

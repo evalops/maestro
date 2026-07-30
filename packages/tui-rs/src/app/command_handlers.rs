@@ -184,7 +184,11 @@ impl App {
         } else if persist_default {
             self.state.status = Some(format!("Default model saved: {model_id}"));
         } else {
-            self.state.error = Some("No agent available to set model".to_string());
+            self.state.error = Some(
+                "No agent available to set model — agent failed to start. \
+                 Check the status line, or run `maestro codex login` / set OPENAI_API_KEY and restart."
+                    .to_string(),
+            );
         }
     }
 

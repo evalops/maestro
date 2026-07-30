@@ -439,11 +439,37 @@ fn auth_health_check(provider_id: &str, env: &HashMap<String, String>) -> Doctor
 
 pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) -> DoctorReport {
     let config = crate::config::load_config(cwd, None);
+    // load_config always merges DEFAULT_CONFIG.model = "gpt-5.5". When Codex
+    // ChatGPT auth is present, prefer openai-codex/gpt-5.5 unless the user
+    // set MAESTRO_MODEL or passed --model (same policy as spawn_agent).
+    let codex_auth = crate::codex_auth::apply_codex_auth_to_process_env();
     let requested = model_override
         .map(str::to_owned)
-        .or_else(|| std::env::var("MAESTRO_MODEL").ok())
-        .or(config.model)
-        .unwrap_or_else(|| "gpt-5.5".to_owned());
+        .filter(|m| !m.trim().is_empty())
+        .or_else(|| {
+            std::env::var("MAESTRO_MODEL")
+                .ok()
+                .map(|m| m.trim().to_string())
+                .filter(|m| !m.is_empty())
+        })
+        .or_else(|| {
+            let configured = config
+                .model
+                .as_deref()
+                .map(str::trim)
+                .filter(|m| !m.is_empty());
+            match (configured, codex_auth.preferred_default_model) {
+                (Some(model), Some(codex_default))
+                    if model == "gpt-5.5" || model == "gpt-5.1-codex-max" =>
+                {
+                    Some(codex_default.to_string())
+                }
+                (Some(model), _) => Some(model.to_string()),
+                (None, Some(codex_default)) => Some(codex_default.to_string()),
+                (None, None) => Some(crate::codex_auth::DEFAULT_PLATFORM_MODEL.to_string()),
+            }
+        })
+        .unwrap_or_else(|| crate::codex_auth::DEFAULT_PLATFORM_MODEL.to_string());
     let env = std::env::vars().collect();
     let resolved = ProviderRegistry::resolve(&requested, &env);
     let (provider, protocol) = resolved.as_ref().map_or_else(
