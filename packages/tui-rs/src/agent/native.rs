@@ -2502,7 +2502,21 @@ impl NativeAgentRunner {
 
     /// Build request configuration
     fn build_config(&self) -> RequestConfig {
-        let tools: Vec<Tool> = self.tools.values().map(|d| d.tool.clone()).collect();
+        // Codex-style: only expose goal tools while a goal record exists.
+        let goal_tools_visible = crate::goal::GoalStore::load_default().tools_visible();
+        let tools: Vec<Tool> = self
+            .tools
+            .values()
+            .filter(|d| {
+                let name = d.tool.name.as_str();
+                if matches!(name, "get_goal" | "update_goal") {
+                    goal_tools_visible
+                } else {
+                    true
+                }
+            })
+            .map(|d| d.tool.clone())
+            .collect();
 
         let thinking = if self.config.thinking_enabled {
             Some(ThinkingConfig::enabled(self.config.thinking_budget))

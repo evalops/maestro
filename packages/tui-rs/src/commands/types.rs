@@ -358,8 +358,10 @@ pub enum GoalAction {
         text: String,
         replace: bool,
         criteria: Option<String>,
-        /// Cap on auto-continue submissions; `None` uses the default (8).
+        /// Safety cap on auto-continue submissions; `None` uses default (50).
         max_turns: Option<u32>,
+        /// Optional Codex-style token budget for the goal.
+        token_budget: Option<u64>,
     },
     Status,
     Pause,

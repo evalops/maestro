@@ -1034,18 +1034,20 @@ fn goal_footer_attach_commands_parse() {
             text,
             replace,
             max_turns,
+            token_budget,
             ..
         })) => {
             assert_eq!(text, "Ship release");
             assert!(!replace);
             assert_eq!(max_turns, None);
+            assert_eq!(token_budget, None);
         }
         other => panic!("expected Goal::Create, got {other:?}"),
     }
 
     match registry
         .execute(
-            "/goal create --max-turns 3 Ship release",
+            "/goal create --max-turns 3 --token-budget 9000 Ship release",
             "/tmp",
             None,
             None,
@@ -1055,11 +1057,12 @@ fn goal_footer_attach_commands_parse() {
         CommandOutput::Action(CommandAction::Goal(GoalAction::Create {
             text,
             max_turns: Some(3),
+            token_budget: Some(9000),
             ..
         })) => {
             assert_eq!(text, "Ship release");
         }
-        other => panic!("expected Goal::Create with max_turns 3, got {other:?}"),
+        other => panic!("expected Goal::Create with max_turns 3 and budget, got {other:?}"),
     }
 
     match registry
