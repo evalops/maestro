@@ -401,42 +401,29 @@ fn infer_provider_from_model(model: &str) -> &'static str {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Command-line arguments for the Maestro TUI.
-///
-/// # Rust Concepts Used
-///
-/// - **Derive Macros**: `#[derive(Parser, Debug)]` automatically generates code.
-///   `Parser` generates CLI parsing logic, `Debug` enables `{:?}` formatting.
-///
-/// - **Attributes**: `#[command(...)]` and `#[arg(...)]` are attributes that
-///   provide metadata to the derive macro about how to parse arguments.
-///
-/// - **`Option<T>`**: Rust's way of representing optional values. Unlike null
-///   in other languages, you must explicitly handle the None case. This prevents
-///   null pointer exceptions at compile time.
-///
-/// - **Raw Identifiers**: `r#continue` uses `r#` prefix because `continue` is
-///   a reserved keyword in Rust. This lets us use it as an identifier anyway.
 #[derive(Parser, Debug)]
 #[command(name = "maestro-tui")]
 #[command(about = "Native terminal interface for Maestro")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
+#[command(long_about = "Native terminal UI for Maestro (coding agent).\n\n\
+Interactive: maestro-tui --provider openai -m gpt-4.1-mini\n\
+Print mode:  maestro-tui -p --provider openai -m gpt-4.1-mini \"question\"\n\
+Trust cwd:   maestro-tui trust\n\
+Sandbox:     use /sandbox in-session or MAESTRO_SANDBOX_MODE")]
 struct Args {
-    /// Provider to use (for example, openai).
-    /// When None, we infer from the model name.
+    /// Provider to use (for example, openai). When omitted, inferred from the model.
     #[arg(long)]
     provider: Option<String>,
 
     /// Model to use (for example, gpt-5.5).
-    /// `-m` is the short flag, `--model` is the long flag.
     #[arg(short, long)]
     model: Option<String>,
 
-    /// API key for authentication.
-    /// If not provided, falls back to environment variables.
+    /// API key for authentication (defaults to env / op:// references).
     #[arg(long)]
     api_key: Option<String>,
 
     /// Continue the previous session.
-    /// `r#continue` uses raw identifier syntax because `continue` is a keyword.
     #[arg(short, long)]
     r#continue: bool,
 
@@ -444,13 +431,15 @@ struct Args {
     #[arg(short, long)]
     resume: bool,
 
-    /// Run the session in a new git worktree at `../<repo>-wt-<name>` on a new
-    /// branch named from <name> (Droid-style). On exit, a clean worktree is
-    /// removed with its branch; a dirty one is kept and reported.
+    /// Do not persist this conversation (ephemeral session).
+    #[arg(long = "no-session")]
+    no_session: bool,
+
+    /// Run the session in a new git worktree at `../<repo>-wt-<name>` on a new branch.
     #[arg(short = 'w', long, value_name = "NAME")]
     worktree: Option<String>,
 
-    /// Non-interactive print mode (Grok-style single-shot). Prints the answer and exits.
+    /// Non-interactive print mode (single-shot). Prints the answer and exits.
     #[arg(long, short = 'p')]
     print: bool,
 
@@ -458,7 +447,7 @@ struct Args {
     #[arg(long)]
     json: bool,
 
-    /// Run as native headless protocol server on stdio (replaces TS headless agent).
+    /// Run as native headless protocol server on stdio.
     #[arg(long)]
     headless: bool,
 
@@ -475,7 +464,6 @@ struct Args {
     output_schema: Option<String>,
 
     /// Initial prompt to send (all remaining arguments are joined).
-    /// `trailing_var_arg = true` means all positional args after flags go here.
     #[arg(trailing_var_arg = true)]
     prompt: Vec<String>,
 }
@@ -838,6 +826,8 @@ pub enum AgentEntry {
     /// First argv token is `exec` or `print`; carries the literal word for
     /// the usage message.
     ExecOrPrintSubcommand(&'static str),
+    /// First argv token is `trust` (grant/revoke/status for cwd).
+    TrustSubcommand,
     /// Falls through to `Args::try_parse_from` (interactive TUI, `-p`,
     /// `--headless`/`--rpc` flags, unknown commands, `--help`/`--version`
     /// on the `maestro-tui` binary directly, or a parse error).
@@ -858,6 +848,9 @@ pub fn classify_agent_entry(raw_args: &[std::ffi::OsString]) -> AgentEntry {
         }
         if cmd == "print" {
             return AgentEntry::ExecOrPrintSubcommand("print");
+        }
+        if cmd == "trust" {
+            return AgentEntry::TrustSubcommand;
         }
     }
     AgentEntry::ClapParsed
@@ -917,6 +910,7 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
             return Ok(code);
         }
         AgentEntry::ForkSubcommand => return run_fork(&raw_args[2..]).await,
+        AgentEntry::TrustSubcommand => return run_trust_cli(&raw_args[2..]),
         AgentEntry::ExecOrPrintSubcommand(cmd) => {
             // maestro-tui print|exec [--json] [--model X] [--output-last-message P]
             //   [--output-schema S] <prompt...>
@@ -1026,6 +1020,12 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
     // stays in Args so the flag validates and shows up in --help.
     let _ = args.worktree.as_deref();
 
+    if args.no_session {
+        // SessionManager still creates an id for UI purposes, but callers that
+        // honor this env skip durable transcript persistence.
+        std::env::set_var("MAESTRO_NO_SESSION", "1");
+    }
+
     // Trailing positional args become the initial prompt (Grok-style).
     let initial_prompt = if args.prompt.is_empty() {
         None
@@ -1063,6 +1063,55 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
     }
 
     run_interactive_with_shutdown(move || App::new_with_initial_prompt(initial_prompt)).await
+}
+
+/// `maestro-tui trust [status|grant|revoke]` — writes global trust for cwd.
+fn run_trust_cli(args: &[std::ffi::OsString]) -> Result<i32> {
+    let action = args
+        .first()
+        .and_then(|a| a.to_str())
+        .unwrap_or("grant")
+        .to_ascii_lowercase();
+    let cwd = std::env::current_dir().context("failed to resolve current directory")?;
+    match action.as_str() {
+        "status" | "show" => {
+            let trusted = crate::config::workspace_trusted_in_global_config(&cwd);
+            println!(
+                "{}: {}",
+                cwd.display(),
+                if trusted { "trusted" } else { "untrusted" }
+            );
+            Ok(0)
+        }
+        "grant" | "on" | "yes" | "true" | "trusted" => {
+            let path = crate::config::set_workspace_trust_in_global_config(&cwd, true)
+                .map_err(anyhow::Error::msg)?;
+            println!("Trusted {}. Wrote {}.", cwd.display(), path.display());
+            println!("Reload skills with /skills reload in a running TUI, or restart.");
+            Ok(0)
+        }
+        "revoke" | "off" | "no" | "false" | "untrusted" => {
+            let path = crate::config::set_workspace_trust_in_global_config(&cwd, false)
+                .map_err(anyhow::Error::msg)?;
+            println!(
+                "Revoked trust for {}. Wrote {}.",
+                cwd.display(),
+                path.display()
+            );
+            Ok(0)
+        }
+        "help" | "-h" | "--help" => {
+            println!("Usage: maestro-tui trust [status|grant|revoke]");
+            println!("Grant or revoke project skills/plugins/hooks for the current workspace.");
+            println!("Writes only ~/.composer/config.toml (repositories cannot self-trust).");
+            Ok(0)
+        }
+        other => {
+            eprintln!("Unknown trust action: {other}");
+            eprintln!("Usage: maestro-tui trust [status|grant|revoke]");
+            Ok(2)
+        }
+    }
 }
 
 /// Construct and run an interactive app under the complete shutdown lifecycle.

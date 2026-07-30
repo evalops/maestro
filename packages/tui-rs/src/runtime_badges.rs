@@ -34,6 +34,12 @@ pub struct RuntimeBadgeParams {
     pub mcp_tool_count: usize,
     pub mcp_failed: usize,
     pub alert_count: usize,
+    /// Session sandbox policy label (e.g. `workspace-write`, `read-only`, `none`).
+    pub sandbox_policy: Option<String>,
+    /// Whether the workspace is trusted in global config for project skills/plugins.
+    pub workspace_trusted: bool,
+    /// Pending tool-approval count for the status bar.
+    pub pending_approvals: usize,
 }
 
 pub fn build_runtime_badges(params: RuntimeBadgeParams) -> RuntimeBadges {
@@ -59,11 +65,30 @@ pub fn build_runtime_badges(params: RuntimeBadgeParams) -> RuntimeBadges {
         approval_label(params.approval_mode)
     ));
 
-    if let Ok(value) = env::var(SANDBOX_ENV_VAR) {
+    if params.pending_approvals > 0 {
+        core.push(format!("pending:{}", params.pending_approvals));
+    }
+
+    core.push(if params.workspace_trusted {
+        "trust:yes".to_string()
+    } else {
+        "trust:no".to_string()
+    });
+
+    if let Some(policy) = params
+        .sandbox_policy
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        core.push(format!("sandbox:{policy}"));
+    } else if let Ok(value) = env::var(SANDBOX_ENV_VAR) {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
             core.push(format!("sandbox:{trimmed}"));
         }
+    } else {
+        core.push("sandbox:none".to_string());
     }
 
     if params.alert_count > 0 {
@@ -394,6 +419,9 @@ mod tests {
             mcp_tool_count: 0,
             mcp_failed: 2,
             alert_count: 0,
+            sandbox_policy: None,
+            workspace_trusted: true,
+            pending_approvals: 0,
         });
 
         assert!(badges.core.contains(&"mcp:0!2".to_string()));
@@ -408,9 +436,15 @@ mod tests {
             mcp_tool_count: 3,
             mcp_failed: 2,
             alert_count: 0,
+            sandbox_policy: Some("workspace-write".to_string()),
+            workspace_trusted: false,
+            pending_approvals: 2,
         });
 
         assert!(badges.core.contains(&"mcp:1(3)!2".to_string()));
+        assert!(badges.core.contains(&"trust:no".to_string()));
+        assert!(badges.core.contains(&"sandbox:workspace-write".to_string()));
+        assert!(badges.core.contains(&"pending:2".to_string()));
     }
 
     #[test]
@@ -428,6 +462,9 @@ mod tests {
             mcp_tool_count: 0,
             mcp_failed: 0,
             alert_count: 0,
+            sandbox_policy: None,
+            workspace_trusted: true,
+            pending_approvals: 0,
         });
 
         restore_env_var("MAESTRO_MODE", previous_mode);

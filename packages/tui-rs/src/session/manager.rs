@@ -650,6 +650,16 @@ impl SessionManager {
     ) -> Result<(), super::writer::SessionWriteError> {
         self.current_session_id = Some(header.id.clone());
 
+        // Ephemeral sessions (CLI `--no-session` / MAESTRO_NO_SESSION=1): keep an
+        // id for UI/diagnostics but do not open a durable transcript writer.
+        if std::env::var("MAESTRO_NO_SESSION")
+            .ok()
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        {
+            self.writer = None;
+            return Ok(());
+        }
+
         let filename = super::writer::generate_session_filename(&header.id);
         let path = self.sessions_dir.join(filename);
 

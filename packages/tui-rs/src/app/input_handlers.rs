@@ -103,6 +103,9 @@ impl App {
                             self.sync_queue_prompt_count();
                         }
                     }
+                    // Make cancel vs quit explicit: first Ctrl+C cancels the
+                    // turn; a second Ctrl+C while idle quits (handled below).
+                    self.state.status = Some("Cancelled. Ctrl+C again to quit.".to_string());
                 } else {
                     self.should_quit = true;
                 }

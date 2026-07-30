@@ -505,6 +505,12 @@ impl App {
             CommandAction::Session(session_action) => {
                 self.handle_session_action(session_action);
             }
+            CommandAction::Trust(trust_action) => {
+                self.handle_trust_action(trust_action);
+            }
+            CommandAction::ShowSandbox => {
+                self.show_sandbox_status();
+            }
             CommandAction::ShowTools => {
                 self.show_tools_list();
             }
@@ -548,6 +554,25 @@ impl App {
                 diag.push_str(&format!(
                     "**Approval Mode:** {}\n",
                     self.state.approval_mode.label()
+                ));
+                let sandbox = self
+                    .sandbox_policy
+                    .as_ref()
+                    .map_or("none", crate::sandbox::SandboxPolicy::mode_label);
+                diag.push_str(&format!("**Sandbox:** {sandbox}\n"));
+                let cwd_path = self
+                    .state
+                    .cwd
+                    .as_deref()
+                    .map(std::path::Path::new)
+                    .unwrap_or_else(|| std::path::Path::new("."));
+                diag.push_str(&format!(
+                    "**Trust:** {}\n",
+                    if crate::config::workspace_trusted_in_global_config(cwd_path) {
+                        "trusted"
+                    } else {
+                        "untrusted"
+                    }
                 ));
                 diag.push_str(&format!(
                     "**Zen Mode:** {}\n",
@@ -658,7 +683,140 @@ impl App {
             SessionAction::Continue => {
                 self.continue_last_session();
             }
+            SessionAction::Status => {
+                self.show_session_status();
+            }
         }
+    }
+
+    fn handle_trust_action(&mut self, action: crate::commands::TrustAction) {
+        use crate::commands::TrustAction;
+        let cwd = self
+            .state
+            .cwd
+            .as_deref()
+            .map(std::path::Path::new)
+            .unwrap_or_else(|| std::path::Path::new("."));
+        match action {
+            TrustAction::Status => {
+                let trusted = crate::config::workspace_trusted_in_global_config(cwd);
+                self.state.add_system_message(format!(
+                    "Workspace trust for {}: **{}**\n\nUse `/trust grant` to load project skills/plugins/hooks, or `/trust revoke` to disable them.",
+                    cwd.display(),
+                    if trusted { "trusted" } else { "untrusted" }
+                ));
+            }
+            TrustAction::Grant => match crate::config::set_workspace_trust_in_global_config(cwd, true)
+            {
+                Ok(path) => self.state.add_system_message(format!(
+                    "Trusted {}. Project skills/plugins/hooks will load on the next `/skills reload` or restart.\nWrote {}.",
+                    cwd.display(),
+                    path.display()
+                )),
+                Err(error) => self.state.error = Some(error),
+            },
+            TrustAction::Revoke => {
+                match crate::config::set_workspace_trust_in_global_config(cwd, false) {
+                    Ok(path) => self.state.add_system_message(format!(
+                        "Revoked trust for {}. Project config will not load after restart.\nWrote {}.",
+                        cwd.display(),
+                        path.display()
+                    )),
+                    Err(error) => self.state.error = Some(error),
+                }
+            }
+        }
+    }
+
+    fn show_sandbox_status(&mut self) {
+        let mut msg = String::from("## Sandbox\n\n");
+        match &self.sandbox_policy {
+            None => {
+                msg.push_str("**Policy:** none (session is not OS-sandboxed)\n");
+                msg.push_str(
+                    "Interactive default is gated (stage-1). Set `MAESTRO_SANDBOX_MODE` or config sandbox settings to enable.\n",
+                );
+            }
+            Some(policy) => {
+                msg.push_str(&format!("**Policy:** `{}`\n", policy.mode_label()));
+                match policy {
+                    crate::sandbox::SandboxPolicy::ReadOnly => {
+                        msg.push_str("Reads allowed; writes and many network tools are blocked.\n");
+                    }
+                    crate::sandbox::SandboxPolicy::WorkspaceWrite { network_access, .. } => {
+                        msg.push_str(
+                            "In-workspace writes allowed under existing trees; `.git` stays read-only.\n",
+                        );
+                        msg.push_str(
+                            "Stage-1 note: writing content into a *new* file at the repo root can fail closed under Landlock (no WriteFile on root).\n",
+                        );
+                        msg.push_str(&format!(
+                            "Network: {}\n",
+                            if *network_access {
+                                "enabled"
+                            } else {
+                                "disabled"
+                            }
+                        ));
+                    }
+                    crate::sandbox::SandboxPolicy::DangerFullAccess => {
+                        msg.push_str("Full host access; native OS sandbox not applied.\n");
+                    }
+                }
+                if !crate::sandbox::is_sandbox_available() {
+                    let reason = crate::sandbox::sandbox_unavailable_reason()
+                        .unwrap_or_else(|| "native sandbox unavailable".to_string());
+                    msg.push_str(&format!("\n**Host:** sandbox unavailable ({reason})\n"));
+                }
+            }
+        }
+        self.state.add_system_message(msg);
+    }
+
+    fn show_session_status(&mut self) {
+        let mut msg = String::from("## Session\n\n");
+        msg.push_str(&format!(
+            "**Session id:** {}\n",
+            self.state.session_id.as_deref().unwrap_or("(ephemeral)")
+        ));
+        if let Some(path) = self.session_manager.current_session_path() {
+            msg.push_str(&format!("**Path:** {}\n", path.display()));
+        } else {
+            msg.push_str(&format!(
+                "**Sessions dir:** {}\n",
+                self.session_manager.sessions_dir().display()
+            ));
+        }
+        msg.push_str(&format!(
+            "**Model:** {}\n",
+            self.state.model.as_deref().unwrap_or("(none)")
+        ));
+        msg.push_str(&format!(
+            "**Provider:** {}\n",
+            self.state.provider.as_deref().unwrap_or("(none)")
+        ));
+        msg.push_str(&format!(
+            "**Approval:** {}\n",
+            self.state.approval_mode.label()
+        ));
+        let sandbox = self
+            .sandbox_policy
+            .as_ref()
+            .map_or("none", crate::sandbox::SandboxPolicy::mode_label);
+        msg.push_str(&format!("**Sandbox:** {sandbox}\n"));
+        let cwd = self
+            .state
+            .cwd
+            .as_deref()
+            .map(std::path::Path::new)
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let trusted = crate::config::workspace_trusted_in_global_config(cwd);
+        msg.push_str(&format!(
+            "**Trust:** {}\n",
+            if trusted { "trusted" } else { "untrusted" }
+        ));
+        msg.push_str(&format!("**Messages:** {}\n", self.state.messages.len()));
+        self.state.add_system_message(msg);
     }
 
     fn show_tools_list(&mut self) {
@@ -2078,6 +2236,17 @@ Manual snapshot: `/magic-trace stop`",
         match action {
             SkillsAction::List => {
                 let mut msg = String::from("## Available Skills\n\n");
+                let cwd = self
+                    .state
+                    .cwd
+                    .as_deref()
+                    .map(std::path::Path::new)
+                    .unwrap_or_else(|| std::path::Path::new("."));
+                if !crate::config::workspace_trusted_in_global_config(cwd) {
+                    msg.push_str(
+                        "*Workspace is untrusted — project skill dirs are skipped. Use `/trust grant` to enable them.*\n\n",
+                    );
+                }
                 if self.loaded_skills.is_empty() && self.skill_load_errors.is_empty() {
                     msg.push_str("*No skills found*\n\n");
                     msg.push_str("Skills are loaded from:\n");
@@ -2286,8 +2455,23 @@ Manual snapshot: `/magic-trace stop`",
 
         match action {
             PluginsAction::List => {
-                self.state
-                    .add_system_message(self.plugin_registry.list_report());
+                let mut report = self.plugin_registry.list_report();
+                let cwd = self
+                    .state
+                    .cwd
+                    .as_deref()
+                    .map(std::path::Path::new)
+                    .unwrap_or_else(|| std::path::Path::new("."));
+                if !crate::config::workspace_trusted_in_global_config(cwd) {
+                    report = format!(
+                        "*Workspace is untrusted — project plugin roots are skipped. Use `/trust grant` to enable them.*\n\n{report}"
+                    );
+                }
+                if let Some(skip) = self.plugin_registry.untrusted_skip_notice() {
+                    report.push_str("\n\n");
+                    report.push_str(&skip);
+                }
+                self.state.add_system_message(report);
             }
             PluginsAction::Info(name) => match self.plugin_registry.get(&name) {
                 Some(plugin) => {

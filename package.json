@@ -33,6 +33,7 @@
     "check:docker-runtime-workspaces": "node scripts/check-docker-runtime-workspaces.mjs",
     "smoke": "node scripts/smoke-release-native-only.mjs",
     "smoke:release-native-only": "node scripts/smoke-release-native-only.mjs",
+    "smoke:tui": "bash scripts/smoke-tui-interactive.sh",
     "release:check": "npm run check:rust-only-runtime && npm run build && npm run smoke:release-native-only",
     "release:check:ci": "npm run release:check",
     "pr:ready": "node scripts/pr-ready-to-merge.mjs",

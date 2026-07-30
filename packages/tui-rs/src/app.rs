@@ -794,9 +794,7 @@ fn untrusted_workspace_notice(
     }
 
     Some(format!(
-        "This workspace isn't trusted, so the following project-controlled config was not \
-         loaded: {}. A repository cannot grant itself trust: to enable them, add \
-         `projects.\"{}\".trust_level = \"trusted\"` to ~/.composer/config.toml.",
+        "Workspace untrusted — skipped project config: {}. Run `/trust` (or `maestro-tui trust`) to load them for {}.",
         skipped.join(", "),
         workspace_dir.display()
     ))
@@ -2867,6 +2865,10 @@ Slash Commands:
         let operations = &mut self.operations;
         let command_palette = &mut self.command_palette;
         let approval_controller = &self.approval_controller;
+        let sandbox_label = self
+            .sandbox_policy
+            .as_ref()
+            .map(crate::sandbox::SandboxPolicy::mode_label);
         let model_selector = &mut self.model_selector;
         let theme_selector = &mut self.theme_selector;
         let shortcuts_help = &self.shortcuts_help;
@@ -2885,7 +2887,18 @@ Slash Commands:
             .terminal
             .draw(|frame| {
                 let area = frame.area();
-                let view = ChatView::new(state);
+                let workspace_trusted = state
+                    .cwd
+                    .as_deref()
+                    .map(std::path::Path::new)
+                    .is_some_and(crate::config::workspace_trusted_in_global_config);
+                // Include the current request plus any queued behind it.
+                let pending_approvals = approval_controller.pending().len();
+                let view = ChatView::new(state).with_runtime_status(
+                    sandbox_label,
+                    workspace_trusted,
+                    pending_approvals,
+                );
                 frame.render_widget(view, area);
 
                 // Show error if any. Wrap the full provider message across lines

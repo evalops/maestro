@@ -1842,6 +1842,9 @@ pub struct StatusBarWidget<'a> {
     mcp_tool_count: usize,
     mcp_failed: usize,
     alert_count: usize,
+    sandbox_policy: Option<&'a str>,
+    workspace_trusted: bool,
+    pending_approvals: usize,
     shortcut_hints: bool,
     paste_note: Option<&'a str>,
 }
@@ -1868,6 +1871,9 @@ impl<'a> StatusBarWidget<'a> {
             mcp_tool_count: 0,
             mcp_failed: 0,
             alert_count: 0,
+            sandbox_policy: None,
+            workspace_trusted: false,
+            pending_approvals: 0,
             shortcut_hints: false,
             paste_note: None,
         }
@@ -1915,6 +1921,24 @@ impl<'a> StatusBarWidget<'a> {
     #[must_use]
     pub fn with_alert_count(mut self, alert_count: usize) -> Self {
         self.alert_count = alert_count;
+        self
+    }
+
+    #[must_use]
+    pub fn with_sandbox_policy(mut self, sandbox_policy: Option<&'a str>) -> Self {
+        self.sandbox_policy = sandbox_policy;
+        self
+    }
+
+    #[must_use]
+    pub fn with_workspace_trusted(mut self, workspace_trusted: bool) -> Self {
+        self.workspace_trusted = workspace_trusted;
+        self
+    }
+
+    #[must_use]
+    pub fn with_pending_approvals(mut self, pending_approvals: usize) -> Self {
+        self.pending_approvals = pending_approvals;
         self
     }
 
@@ -2035,6 +2059,9 @@ impl Widget for StatusBarWidget<'_> {
                 mcp_tool_count: self.mcp_tool_count,
                 mcp_failed: self.mcp_failed,
                 alert_count: self.alert_count,
+                sandbox_policy: self.sandbox_policy.map(str::to_owned),
+                workspace_trusted: self.workspace_trusted,
+                pending_approvals: self.pending_approvals,
             })
         });
         let core_badges = badges
@@ -2187,11 +2214,32 @@ fn build_right_text(
 /// ```
 pub struct ChatView<'a> {
     state: &'a crate::state::AppState,
+    sandbox_policy: Option<&'a str>,
+    workspace_trusted: bool,
+    pending_approvals: usize,
 }
 
 impl<'a> ChatView<'a> {
     pub fn new(state: &'a crate::state::AppState) -> Self {
-        Self { state }
+        Self {
+            state,
+            sandbox_policy: None,
+            workspace_trusted: false,
+            pending_approvals: 0,
+        }
+    }
+
+    #[must_use]
+    pub fn with_runtime_status(
+        mut self,
+        sandbox_policy: Option<&'a str>,
+        workspace_trusted: bool,
+        pending_approvals: usize,
+    ) -> Self {
+        self.sandbox_policy = sandbox_policy;
+        self.workspace_trusted = workspace_trusted;
+        self.pending_approvals = pending_approvals;
+        self
     }
 }
 
@@ -2301,6 +2349,9 @@ impl Widget for ChatView<'_> {
                     self.state.mcp_failed,
                 )
                 .with_alert_count(alert_count)
+                .with_sandbox_policy(self.sandbox_policy)
+                .with_workspace_trusted(self.workspace_trusted)
+                .with_pending_approvals(self.pending_approvals)
                 .with_paste_note(paste_note.as_deref())
                 .with_shortcut_hints();
             status_widget.render(chunks[4], buf);
