@@ -1,4 +1,5 @@
 use super::*;
+use crate::headless::report_diagnostic_nonblocking;
 #[cfg(windows)]
 use crate::tools::bash::resolve_shell_config;
 use tokio::io::{AsyncRead, AsyncReadExt as _};
@@ -1361,7 +1362,11 @@ impl ToolExecutor {
                     if tokio::fs::rename(&path, &backup_target).await.is_ok() {
                         backup_renamed = true;
                     } else if let Some(prev) = &previous_content {
-                        let _ = tokio::fs::write(&backup_target, prev).await;
+                        if let Err(error) = tokio::fs::write(&backup_target, prev).await {
+                            report_diagnostic_nonblocking(format!(
+                                "[write] failed to write fallback backup {backup_target}: {error}"
+                            ));
+                        }
                     }
                     backup_path = Some(backup_target);
                 }
@@ -1377,9 +1382,17 @@ impl ToolExecutor {
                 if let Err(e) = write_result {
                     let _ = tokio::fs::remove_file(&tmp_path).await;
                     if backup_renamed {
-                        let _ = tokio::fs::rename(format!("{path}.bak"), &path).await;
+                        if let Err(error) = tokio::fs::rename(format!("{path}.bak"), &path).await {
+                            report_diagnostic_nonblocking(format!(
+                                "[write] failed to restore backup for {path}: {error}"
+                            ));
+                        }
                     } else if let Some(prev) = &previous_content {
-                        let _ = tokio::fs::write(&path, prev).await;
+                        if let Err(error) = tokio::fs::write(&path, prev).await {
+                            report_diagnostic_nonblocking(format!(
+                                "[write] failed to restore original content of {path}: {error}"
+                            ));
+                        }
                     }
                     let details = WriteDetails::new(path.clone())
                         .with_duration(start_time.elapsed().as_millis() as u64);
@@ -1389,11 +1402,15 @@ impl ToolExecutor {
 
                 // Mirror plan-mode plan files into the session plan location.
                 if crate::plan_mode::is_plan_file_path(&self.cwd, std::path::Path::new(&path)) {
-                    let _ = crate::plan_mode::record_plan_write(
+                    if let Err(error) = crate::plan_mode::record_plan_write(
                         &self.cwd,
                         std::path::Path::new(&path),
                         &content,
-                    );
+                    ) {
+                        report_diagnostic_nonblocking(format!(
+                            "[write] failed to mirror plan file {path}: {error}"
+                        ));
+                    }
                 }
 
                 let diff = if preview_diff {
@@ -1432,9 +1449,19 @@ impl ToolExecutor {
                     Ok(results) => Some(results),
                     Err(err) => {
                         if backup_renamed {
-                            let _ = tokio::fs::rename(format!("{path}.bak"), &path).await;
+                            if let Err(error) =
+                                tokio::fs::rename(format!("{path}.bak"), &path).await
+                            {
+                                report_diagnostic_nonblocking(format!(
+                                    "[write] failed to restore backup for {path}: {error}"
+                                ));
+                            }
                         } else if let Some(prev) = &previous_content {
-                            let _ = tokio::fs::write(&path, prev).await;
+                            if let Err(error) = tokio::fs::write(&path, prev).await {
+                                report_diagnostic_nonblocking(format!(
+                                    "[write] failed to restore original content of {path}: {error}"
+                                ));
+                            }
                         }
                         return ToolResult::failure(err);
                     }
@@ -1798,7 +1825,11 @@ impl ToolExecutor {
                 {
                     Ok(results) => Some(results),
                     Err(err) => {
-                        let _ = tokio::fs::write(&path, &content).await;
+                        if let Err(error) = tokio::fs::write(&path, &content).await {
+                            report_diagnostic_nonblocking(format!(
+                                "[edit] failed to restore original content of {path}: {error}"
+                            ));
+                        }
                         return ToolResult::failure(err);
                     }
                 };

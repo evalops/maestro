@@ -251,6 +251,10 @@ pub use supervisor::{
     agent_event_to_message, AgentSupervisor, HealthStatus, SupervisorBuilder, SupervisorConfig,
     SupervisorEvent,
 };
+// Internal-only: a best-effort, off-the-hot-path stderr diagnostic helper
+// shared with `tools::registry::execute` and `agent::native`, not part of
+// this crate's public surface.
+pub(crate) use supervisor::report_diagnostic_nonblocking;
 
 // Message framing
 pub use framing::{

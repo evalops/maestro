@@ -50,7 +50,7 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - uses: ./.github/actions/setup-rust
-        with: { toolchain: stable, components: rustfmt }
+        with: { toolchain: stable, components: "rustfmt,clippy" }
 
       - name: Summarize release cadence
         run: |

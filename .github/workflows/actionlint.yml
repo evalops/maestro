@@ -57,7 +57,7 @@ jobs:
         run: actionlint -shellcheck= -pyflakes=
 
       - name: Set up Node.js for workflow contract tests
-        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -118,5 +118,6 @@ jobs:
       - name: Run release workflow contract tests
         run: |
           set -euo pipefail
+          node --test scripts/version.test.mjs
           node --test .github/workflows/check-release-workflow-contract.test.mjs
           node .github/workflows/check-release-workflow-contract.mjs
