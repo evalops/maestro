@@ -61,7 +61,7 @@ test("workflow retains the full suite and an always-reporting required gate", ()
   assert.match(requiredGate, /timeout-minutes: 5/);
   assert.match(
     requiredGate,
-    /uses: actions\/setup-node@820762786026740c76f36085b0efc47a31fe5020[\s\S]*node-version: 22/,
+    /uses: actions\/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f[\s\S]*node-version: 22/,
   );
   assert.match(
     requiredGate,
