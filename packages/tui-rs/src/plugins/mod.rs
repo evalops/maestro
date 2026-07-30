@@ -21,13 +21,13 @@
 //!
 //! Name collisions prefer the higher-priority origin (project over user).
 //!
-//! This module is foundation-only: discovery, listing, and skill-path
-//! integration. Marketplace install / UI is intentionally out of scope.
+//! Discovery, listing, install, trust state, and a curated marketplace catalog.
 
 mod discovery;
 mod loader;
 mod manager;
 mod manifest;
+pub mod marketplace;
 
 pub use discovery::{default_search_roots, search_roots_for_workspace, PluginOrigin};
 pub use loader::{load_manifest, resolve_components, PluginComponents};
@@ -35,6 +35,10 @@ pub use manager::{
     install, set_capability, set_enabled, InstallPreview, PluginCapability, PluginState,
 };
 pub use manifest::PluginManifest;
+pub use marketplace::{
+    builtin_catalog, find_entry, format_catalog, resolve_install_source, MarketplaceEntry,
+    MarketplaceTier,
+};
 
 use std::collections::HashMap;
 use std::fs;

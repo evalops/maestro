@@ -76,8 +76,8 @@ use crate::ai::AiProvider;
 use crate::clipboard::ClipboardManager;
 use crate::commands::{
     build_command_registry_with_extensions, BackgroundMonitorAction, CommandAction, CommandOutput,
-    CommandRegistry, LoopAction, ModalType, PlanReviewAction, QueueAction, QueueModeKind,
-    SlashCommandMatcher, SlashCycleState,
+    CommandRegistry, FooterStyle, LoopAction, ModalType, PlanReviewAction, QueueAction,
+    QueueModeKind, SlashCommandMatcher, SlashCycleState,
 };
 use crate::components::{
     approval_modal_kind, calculate_input_height, ApprovalController, ApprovalDecision,
@@ -88,6 +88,7 @@ use crate::components::{
 use crate::config_watcher::{ConfigEvent, ConfigWatcher, ConfigWatcherBuilder};
 use crate::files::{get_workspace_files, WorkspaceFile};
 use crate::git;
+use crate::goal::GoalStore;
 use crate::keybindings::load_rust_tui_keybindings;
 use crate::keybindings::{is_keybindings_config_path, summarize_keybindings_config_issues};
 use crate::mcp::{
@@ -692,6 +693,20 @@ pub struct App {
     /// app is running.
     loop_schedule: Option<LoopSchedule>,
 
+    /// Structured goal mode store (`/goal`).
+    goal_store: GoalStore,
+
+    /// When true and the agent is idle, fire one goal continuation prompt.
+    /// Armed on create/resume/auto-on and after a completed agent turn.
+    goal_auto_continue_armed: bool,
+
+    /// Status-bar density (`/footer rich|solo|history|clear`).
+    footer_style: FooterStyle,
+
+    /// Local paths attached via `/attach` or clipboard image paste for the
+    /// next `submit_prompt` (cleared after send).
+    pending_attachments: Vec<String>,
+
     /// Last observed MCP server status snapshots for transition messages.
     last_mcp_server_statuses: HashMap<String, crate::tools::McpServerStatus>,
 
@@ -1068,6 +1083,10 @@ impl App {
             last_mcp_status_refresh: None,
             last_esc_at: None,
             loop_schedule: None,
+            goal_store: GoalStore::load_default(),
+            goal_auto_continue_armed: false,
+            footer_style: FooterStyle::default(),
+            pending_attachments: Vec::new(),
             last_mcp_server_statuses: HashMap::new(),
             config_watcher: build_mcp_config_watcher(),
             pending_model_change: None,
@@ -1488,6 +1507,23 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 self.state.status.replace(format!("Loop: \"{prompt}\""));
                 self.submit_prompt(prompt).await?;
                 needs_redraw = true;
+            }
+
+            // Goal auto-continue: one continuation prompt per idle cycle while
+            // the goal is active. Does not fire during a busy turn or while a
+            // /loop prompt is due (loop already submitted above).
+            if !self.state.busy
+                && self.goal_auto_continue_armed
+                && self.goal_store.should_auto_continue()
+            {
+                if let Some(prompt) = self.goal_store.continuation_prompt() {
+                    self.goal_auto_continue_armed = false;
+                    self.state.status.replace("Goal auto-continue".to_string());
+                    self.submit_prompt(prompt).await?;
+                    needs_redraw = true;
+                } else {
+                    self.goal_auto_continue_armed = false;
+                }
             }
 
             // Paint when dirty, or continuously while busy (thinking/spinner).
@@ -2433,6 +2469,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     .map(|prompt| QueuedPromptCursor { id: prompt.id });
                 self.sync_queue_prompt_count();
                 needs_post_interrupt_queue = true;
+                if self.goal_store.should_auto_continue() {
+                    self.goal_auto_continue_armed = true;
+                }
             }
             FromAgent::ResponseEnd { .. } => {}
             FromAgent::Error { .. } => {
@@ -2446,6 +2485,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 self.queued_prompt_active = None;
                 self.sync_queue_prompt_count();
                 needs_post_interrupt_queue = true;
+                // Do not auto-continue after an error; user must re-arm via
+                // /goal resume or a successful create.
             }
             FromAgent::ToolCall {
                 call_id,
@@ -2903,6 +2944,8 @@ Slash Commands:
         let shortcuts_help = &self.shortcuts_help;
         let rewind_picker = &mut self.rewind_picker;
         let detail_view = &self.detail_view;
+        let footer_style = self.footer_style;
+        let goal_badge = self.goal_store.status_line();
 
         // DEC mode 2026 lets capable terminals present a whole Ratatui diff
         // atomically, eliminating visible partial-frame tearing. Unknown DEC
@@ -2923,11 +2966,10 @@ Slash Commands:
                     .is_some_and(crate::config::workspace_trusted_in_global_config);
                 // Include the current request plus any queued behind it.
                 let pending_approvals = approval_controller.pending().len();
-                let view = ChatView::new(state).with_runtime_status(
-                    sandbox_label,
-                    workspace_trusted,
-                    pending_approvals,
-                );
+                let view = ChatView::new(state)
+                    .with_runtime_status(sandbox_label, workspace_trusted, pending_approvals)
+                    .with_footer_style(footer_style)
+                    .with_goal_badge(goal_badge.as_deref());
                 frame.render_widget(view, area);
 
                 // Show error if any. Wrap the full provider message across lines

@@ -154,6 +154,9 @@ pub mod tools;
 /// Platform-specific clipboard access for copying code blocks.
 pub mod clipboard;
 
+/// Interactive goal mode (create / pause / block / complete + auto-continue).
+pub mod goal;
+
 /// Diff generation and rendering.
 /// Shows file changes with colored additions/deletions.
 pub mod diff;

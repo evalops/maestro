@@ -110,6 +110,9 @@ pub fn run_plugins(args: &[String]) -> Result<i32> {
             println!("{}", serde_json::to_string_pretty(&preview)?);
             Ok(0)
         }
+        "marketplace" | "market" | "catalog" => {
+            run_marketplace(&parsed.positionals, parsed.trust, parsed.json)
+        }
         "enable" | "disable" => {
             let name = parsed
                 .positionals
@@ -202,11 +205,13 @@ fn parse_args(args: &[String]) -> Result<PluginArgs> {
 
 fn print_help() {
     println!(
-        "maestro plugins [list|info] [name] [options]\n\n\
+        "maestro plugins [list|info|marketplace] [name] [options]\n\n\
 Commands:\n\
   list                   List discovered plugins (default)\n\
   info <name>            Show one plugin's path, origin, and components\n\
   install <path|git-url> Install a plugin; git URLs require --trust\n\
+  marketplace [list]     List curated catalog (id, tier, source)\n\
+  marketplace install <id>  Install catalog entry; non-official needs --trust\n\
   enable|disable <name>  Toggle the whole plugin\n\
   capability <name> <skills|commands|hooks|mcp> <on|off>\n\
   <name>                 Alias for info <name>\n\n\
@@ -222,6 +227,63 @@ Discovery roots (high wins on name collision):\n\
   ~/.composer/plugins/<name>/ legacy user\n\n\
 Installed plugin code and each capability remain independently disableable."
     );
+}
+
+fn run_marketplace(positionals: &[String], trust: bool, json: bool) -> Result<i32> {
+    let sub = positionals.first().map(String::as_str).unwrap_or("list");
+    match sub {
+        "list" | "ls" => {
+            let catalog = crate::plugins::builtin_catalog();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&catalog)?);
+            } else {
+                print!("{}", crate::plugins::format_catalog(&catalog));
+            }
+            Ok(0)
+        }
+        "install" => {
+            let id = positionals
+                .get(1)
+                .map(String::as_str)
+                .filter(|s| !s.is_empty())
+                .context("Usage: maestro plugins marketplace install <id> [--trust]")?;
+            let catalog = crate::plugins::builtin_catalog();
+            let entry = crate::plugins::find_entry(&catalog, id).with_context(|| {
+                format!(
+                    "marketplace entry '{id}' not found; try `maestro plugins marketplace list`"
+                )
+            })?;
+            if entry.tier.requires_explicit_trust() && !trust {
+                bail!(
+                    "entry '{}' ({}) requires --trust for install",
+                    entry.id,
+                    entry.tier.as_str()
+                );
+            }
+            let source = crate::plugins::resolve_install_source(entry)?;
+            let home = maestro_home_dir().context("could not resolve ~/.maestro")?;
+            let preview = crate::plugins::install(
+                &source,
+                &home.join("plugins"),
+                &home.join("plugin-state.json"),
+                trust || !entry.tier.requires_explicit_trust(),
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&preview)?);
+            } else {
+                println!(
+                    "Installed {} from {} (capabilities: {:?})",
+                    preview.name, preview.source, preview.capabilities
+                );
+            }
+            Ok(0)
+        }
+        other => {
+            eprintln!("Unknown marketplace subcommand: {other}");
+            eprintln!("Usage: maestro plugins marketplace [list|install <id>] [--trust]");
+            Ok(1)
+        }
+    }
 }
 
 /// Discover for the read-only `maestro plugins` CLI.

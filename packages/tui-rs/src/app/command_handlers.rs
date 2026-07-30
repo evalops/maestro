@@ -1,4 +1,5 @@
 use super::*;
+use crate::commands::GoalAction;
 use crate::state::ApprovalMode;
 
 /// Normalize a slash-completion string to a single leading `/`.
@@ -405,6 +406,33 @@ impl App {
                         .add_system_message("No active loop. Usage: /loop <interval> <prompt>".to_string()),
                 },
             },
+            CommandAction::Goal(action) => self.handle_goal_action(action),
+            CommandAction::SetFooterStyle(style) => {
+                self.footer_style = style;
+                self.state
+                    .status
+                    .replace(format!("Footer style: {}", style.as_str()));
+            }
+            CommandAction::AttachPath(path) => {
+                let expanded = if let Some(rest) = path.strip_prefix("~/") {
+                    dirs::home_dir()
+                        .map(|h| h.join(rest).display().to_string())
+                        .unwrap_or(path.clone())
+                } else {
+                    path.clone()
+                };
+                let p = std::path::Path::new(&expanded);
+                if !p.exists() {
+                    self.state.error = Some(format!("Attach path does not exist: {expanded}"));
+                } else {
+                    self.pending_attachments.push(expanded.clone());
+                    let n = self.pending_attachments.len();
+                    self.state.status = Some(format!("Attached ({n}): {expanded}"));
+                    self.state.add_system_message(format!(
+                        "Attached `{expanded}`. It will be sent with the next user prompt ({n} pending)."
+                    ));
+                }
+            }
             CommandAction::CompactConversation(instructions) => {
                 // Compact conversation by summarizing older messages
                 let transcript_messages: Vec<_> = self
@@ -2496,6 +2524,165 @@ Manual snapshot: `/magic-trace stop`",
                     "Reloaded plugins from filesystem. Found {count} plugin(s).\n\n{}",
                     self.plugin_registry.list_report()
                 ));
+            }
+            PluginsAction::MarketplaceList => {
+                let catalog = crate::plugins::builtin_catalog();
+                self.state
+                    .add_system_message(crate::plugins::format_catalog(&catalog));
+            }
+            PluginsAction::MarketplaceInstall { id, trust } => {
+                let catalog = crate::plugins::builtin_catalog();
+                let Some(entry) = crate::plugins::find_entry(&catalog, &id) else {
+                    self.state.error = Some(format!(
+                        "Marketplace entry '{id}' not found. Use `/plugins marketplace list`."
+                    ));
+                    return;
+                };
+                if entry.tier.requires_explicit_trust() && !trust {
+                    self.state.error = Some(format!(
+                        "Entry '{}' ({}) requires explicit trust. Re-run with `--trust`.",
+                        entry.id,
+                        entry.tier.as_str()
+                    ));
+                    return;
+                }
+                let source = match crate::plugins::resolve_install_source(entry) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        self.state.error = Some(format!("Cannot install '{}': {e}", entry.id));
+                        return;
+                    }
+                };
+                let home = match crate::path_utils::maestro_home_dir() {
+                    Some(h) => h,
+                    None => {
+                        self.state.error = Some("Could not resolve ~/.maestro".to_string());
+                        return;
+                    }
+                };
+                match crate::plugins::install(
+                    &source,
+                    &home.join("plugins"),
+                    &home.join("plugin-state.json"),
+                    trust || !entry.tier.requires_explicit_trust(),
+                ) {
+                    Ok(preview) => {
+                        self.refresh_skills(true);
+                        self.state.add_system_message(format!(
+                            "Installed marketplace plugin **{}** from `{}`.\nCapabilities: {:?}\n\nUse `/plugins list` to verify.",
+                            preview.name, preview.source, preview.capabilities
+                        ));
+                        self.state.status = Some(format!("Installed plugin {}", preview.name));
+                    }
+                    Err(e) => {
+                        self.state.error = Some(format!("Install failed: {e}"));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Handle `/goal` lifecycle actions.
+    pub(super) fn handle_goal_action(&mut self, action: GoalAction) {
+        match action {
+            GoalAction::Status => {
+                self.state.add_system_message(self.goal_store.report());
+            }
+            GoalAction::Create {
+                text,
+                replace,
+                criteria,
+            } => match self.goal_store.create(text, criteria, replace) {
+                Ok(goal) => {
+                    self.goal_auto_continue_armed = goal.auto_continue;
+                    self.state.add_system_message(format!(
+                        "Goal {} set (**{}**).\n\n{}\n\nAuto-continue will re-prompt when the agent is idle. Use `/goal pause` to stop.",
+                        goal.id,
+                        goal.status.as_str(),
+                        goal.text
+                    ));
+                    self.state.status = Some(format!("Goal {}", goal.id));
+                }
+                Err(e) => self.state.error = Some(e.to_string()),
+            },
+            GoalAction::Pause => match self.goal_store.pause() {
+                Ok(goal) => {
+                    self.goal_auto_continue_armed = false;
+                    self.state
+                        .status
+                        .replace(format!("Goal {} paused", goal.id));
+                    self.state
+                        .add_system_message(format!("Goal {} paused.", goal.id));
+                }
+                Err(e) => self.state.error = Some(e.to_string()),
+            },
+            GoalAction::Resume => match self.goal_store.resume() {
+                Ok(goal) => {
+                    self.goal_auto_continue_armed = true;
+                    self.state
+                        .status
+                        .replace(format!("Goal {} resumed", goal.id));
+                    self.state.add_system_message(format!(
+                        "Goal {} resumed (auto-continue on).",
+                        goal.id
+                    ));
+                }
+                Err(e) => self.state.error = Some(e.to_string()),
+            },
+            GoalAction::Block { reason } => match self.goal_store.block(reason) {
+                Ok(goal) => {
+                    self.goal_auto_continue_armed = false;
+                    let msg = match &goal.block_reason {
+                        Some(r) => format!("Goal {} blocked: {r}", goal.id),
+                        None => format!("Goal {} blocked.", goal.id),
+                    };
+                    self.state.status.replace(msg.clone());
+                    self.state.add_system_message(msg);
+                }
+                Err(e) => self.state.error = Some(e.to_string()),
+            },
+            GoalAction::Complete => match self.goal_store.complete() {
+                Ok(done) => {
+                    self.goal_auto_continue_armed = false;
+                    self.state
+                        .status
+                        .replace(format!("Goal {} complete", done.id));
+                    self.state.add_system_message(format!(
+                        "Goal {} marked complete.\n\n{}",
+                        done.id, done.text
+                    ));
+                }
+                Err(e) => self.state.error = Some(e.to_string()),
+            },
+            GoalAction::Clear => match self.goal_store.clear() {
+                Ok(Some(prev)) => {
+                    self.goal_auto_continue_armed = false;
+                    self.state
+                        .status
+                        .replace(format!("Goal {} cleared", prev.id));
+                    self.state
+                        .add_system_message(format!("Cleared goal {}.", prev.id));
+                }
+                Ok(None) => {
+                    self.state.status = Some("No goal to clear".to_string());
+                }
+                Err(e) => self.state.error = Some(e.to_string()),
+            },
+            GoalAction::AutoContinue { enabled } => {
+                match self.goal_store.set_auto_continue(enabled) {
+                    Ok(goal) => {
+                        self.goal_auto_continue_armed = enabled && goal.status.as_str() == "active";
+                        let label = if enabled { "on" } else { "off" };
+                        self.state
+                            .status
+                            .replace(format!("Goal auto-continue {label}"));
+                        self.state.add_system_message(format!(
+                            "Goal {} auto-continue: {label}.",
+                            goal.id
+                        ));
+                    }
+                    Err(e) => self.state.error = Some(e.to_string()),
+                }
             }
         }
     }

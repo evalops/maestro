@@ -297,6 +297,68 @@ pub enum CommandAction {
     BackgroundMonitor(BackgroundMonitorAction),
     /// Re-run a prompt on an interval (Grok-style `/loop`).
     Loop(LoopAction),
+    /// Structured goal mode (create / pause / block / complete).
+    Goal(GoalAction),
+    /// Change status-bar footer density.
+    SetFooterStyle(FooterStyle),
+    /// Attach a local path (image/video/file) to the next prompt.
+    AttachPath(String),
+}
+
+/// Status bar density presets (Kimi-inspired `/footer`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FooterStyle {
+    /// Model, cwd, git, badges, shortcuts.
+    #[default]
+    Rich,
+    /// Compact: model + goal + key badges only.
+    Solo,
+    /// Hide most chrome; keep alerts and pending approvals.
+    History,
+    /// Status bar empty (zen-adjacent; zen mode still separate).
+    Clear,
+}
+
+impl FooterStyle {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "rich" | "full" | "default" => Some(Self::Rich),
+            "solo" | "compact" | "min" => Some(Self::Solo),
+            "history" | "hist" => Some(Self::History),
+            "clear" | "off" | "none" | "hidden" => Some(Self::Clear),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rich => "rich",
+            Self::Solo => "solo",
+            Self::History => "history",
+            Self::Clear => "clear",
+        }
+    }
+}
+
+/// Goal-mode slash actions.
+#[derive(Debug, Clone)]
+pub enum GoalAction {
+    Create {
+        text: String,
+        replace: bool,
+        criteria: Option<String>,
+    },
+    Status,
+    Pause,
+    Resume,
+    Block {
+        reason: Option<String>,
+    },
+    Complete,
+    Clear,
+    AutoContinue {
+        enabled: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -550,6 +612,10 @@ pub enum PluginsAction {
     Info(String),
     /// Rediscover plugins from the filesystem
     Reload,
+    /// List curated marketplace catalog
+    MarketplaceList,
+    /// Install a marketplace entry by id
+    MarketplaceInstall { id: String, trust: bool },
 }
 
 /// Types of modals that can be opened by commands
