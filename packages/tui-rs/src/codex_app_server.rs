@@ -177,6 +177,91 @@ pub struct TurnStartResult {
     pub raw: Value,
 }
 
+/// Parameters for Codex app-server `thread/list` (subset of v2).
+#[derive(Debug, Clone, Default)]
+pub struct ThreadListParams {
+    pub cursor: Option<String>,
+    pub limit: Option<u32>,
+    /// Exact cwd match filter when set.
+    pub cwd: Option<String>,
+    pub archived: Option<bool>,
+    pub search_term: Option<String>,
+}
+
+/// Result of `thread/list`.
+#[derive(Debug, Clone)]
+pub struct ThreadListResult {
+    pub threads: Vec<Value>,
+    pub next_cursor: Option<String>,
+    pub raw: Value,
+}
+
+/// Parameters for Codex app-server `thread/resume`.
+#[derive(Debug, Clone)]
+pub struct ThreadResumeParams {
+    pub thread_id: String,
+    pub model: Option<String>,
+    pub cwd: Option<String>,
+    pub path: Option<String>,
+    pub extra: Option<Value>,
+}
+
+impl ThreadResumeParams {
+    pub fn new(thread_id: impl Into<String>) -> Self {
+        Self {
+            thread_id: thread_id.into(),
+            model: None,
+            cwd: None,
+            path: None,
+            extra: None,
+        }
+    }
+}
+
+/// Result of `thread/resume` (thread id + raw payload).
+#[derive(Debug, Clone)]
+pub struct ThreadResumeResult {
+    pub thread_id: String,
+    pub raw: Value,
+}
+
+/// Parameters for Codex app-server `turn/interrupt`.
+#[derive(Debug, Clone)]
+pub struct TurnInterruptParams {
+    pub thread_id: String,
+    pub turn_id: String,
+}
+
+/// Parameters for Codex app-server `turn/steer`.
+#[derive(Debug, Clone)]
+pub struct TurnSteerParams {
+    pub thread_id: String,
+    pub expected_turn_id: String,
+    /// Steer input items (same shape as turn/start input).
+    pub input: Value,
+}
+
+impl TurnSteerParams {
+    pub fn text(
+        thread_id: impl Into<String>,
+        expected_turn_id: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Self {
+        Self {
+            thread_id: thread_id.into(),
+            expected_turn_id: expected_turn_id.into(),
+            input: json!([{ "type": "text", "text": text.into() }]),
+        }
+    }
+}
+
+/// Result of `turn/steer`.
+#[derive(Debug, Clone)]
+pub struct TurnSteerResult {
+    pub turn_id: String,
+    pub raw: Value,
+}
+
 /// Terminal turn notification payload.
 #[derive(Debug, Clone)]
 pub struct TurnCompleted {
@@ -778,6 +863,135 @@ impl CodexAppServerClient {
         let turn_id = extract_nested_id(&result, "turn")
             .ok_or_else(|| anyhow!("turn/start response missing turn id: {result}"))?;
         Ok(TurnStartResult {
+            turn_id,
+            raw: result,
+        })
+    }
+
+    /// List persisted threads (`thread/list`).
+    pub async fn list_threads(
+        &self,
+        params: ThreadListParams,
+        timeout_ms: Option<u64>,
+    ) -> Result<ThreadListResult> {
+        let mut body = Map::new();
+        if let Some(cursor) = params.cursor {
+            body.insert("cursor".to_owned(), json!(cursor));
+        }
+        if let Some(limit) = params.limit {
+            body.insert("limit".to_owned(), json!(limit));
+        }
+        if let Some(cwd) = params.cwd {
+            body.insert("cwd".to_owned(), json!(cwd));
+        }
+        if let Some(archived) = params.archived {
+            body.insert("archived".to_owned(), json!(archived));
+        }
+        if let Some(search_term) = params.search_term {
+            body.insert("searchTerm".to_owned(), json!(search_term));
+        }
+
+        let result = self
+            .request(
+                "thread/list",
+                if body.is_empty() {
+                    Some(json!({}))
+                } else {
+                    Some(Value::Object(body))
+                },
+                timeout_ms,
+            )
+            .await?;
+        let threads = result
+            .get("data")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let next_cursor = result
+            .get("nextCursor")
+            .or_else(|| result.get("next_cursor"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        Ok(ThreadListResult {
+            threads,
+            next_cursor,
+            raw: result,
+        })
+    }
+
+    /// Resume a thread by id (`thread/resume`).
+    pub async fn resume_thread(
+        &self,
+        params: ThreadResumeParams,
+        timeout_ms: Option<u64>,
+    ) -> Result<ThreadResumeResult> {
+        let mut body = Map::new();
+        body.insert("threadId".to_owned(), json!(params.thread_id));
+        if let Some(model) = params.model {
+            body.insert("model".to_owned(), json!(model));
+        }
+        if let Some(cwd) = params.cwd {
+            body.insert("cwd".to_owned(), json!(cwd));
+        }
+        if let Some(path) = params.path {
+            body.insert("path".to_owned(), json!(path));
+        }
+        if let Some(Value::Object(map)) = params.extra {
+            for (key, value) in map {
+                body.entry(key).or_insert(value);
+            }
+        }
+
+        let result = self
+            .request("thread/resume", Some(Value::Object(body)), timeout_ms)
+            .await?;
+        let thread_id = extract_nested_id(&result, "thread")
+            .or_else(|| {
+                result
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .unwrap_or(params.thread_id);
+        Ok(ThreadResumeResult {
+            thread_id,
+            raw: result,
+        })
+    }
+
+    /// Interrupt an in-flight turn (`turn/interrupt`).
+    pub async fn interrupt_turn(
+        &self,
+        params: TurnInterruptParams,
+        timeout_ms: Option<u64>,
+    ) -> Result<Value> {
+        let body = json!({
+            "threadId": params.thread_id,
+            "turnId": params.turn_id,
+        });
+        self.request("turn/interrupt", Some(body), timeout_ms).await
+    }
+
+    /// Steer the active turn with additional user input (`turn/steer`).
+    pub async fn steer_turn(
+        &self,
+        params: TurnSteerParams,
+        timeout_ms: Option<u64>,
+    ) -> Result<TurnSteerResult> {
+        let body = json!({
+            "threadId": params.thread_id,
+            "expectedTurnId": params.expected_turn_id,
+            "input": params.input,
+        });
+        let result = self.request("turn/steer", Some(body), timeout_ms).await?;
+        let turn_id = result
+            .get("turnId")
+            .or_else(|| result.get("turn_id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| extract_nested_id(&result, "turn"))
+            .unwrap_or(params.expected_turn_id);
+        Ok(TurnSteerResult {
             turn_id,
             raw: result,
         })
@@ -1651,6 +1865,96 @@ mod tests {
             .expect("turn complete");
         assert_eq!(completed.turn_id, "turn-9");
         assert_eq!(completed.method, "turn/completed");
+    }
+
+    #[tokio::test]
+    async fn lists_resumes_interrupts_and_steers_threads() {
+        let (client, mock) = CodexAppServerClient::mock();
+        let client = Arc::new(client);
+
+        let list_client = Arc::clone(&client);
+        let list_task = tokio::spawn(async move {
+            list_client
+                .list_threads(
+                    ThreadListParams {
+                        limit: Some(10),
+                        cwd: Some("/tmp/ws".to_owned()),
+                        ..Default::default()
+                    },
+                    Some(1_000),
+                )
+                .await
+        });
+        let request = mock.next_request().await.expect("thread/list");
+        assert_eq!(request["method"], "thread/list");
+        assert_eq!(request["params"]["limit"], 10);
+        assert_eq!(request["params"]["cwd"], "/tmp/ws");
+        mock.respond(
+            request["id"].as_u64().unwrap(),
+            json!({
+                "data": [{ "id": "thr-1", "cwd": "/tmp/ws" }],
+                "nextCursor": "cur-2"
+            }),
+        );
+        let listed = list_task.await.unwrap().expect("list ok");
+        assert_eq!(listed.threads.len(), 1);
+        assert_eq!(listed.next_cursor.as_deref(), Some("cur-2"));
+
+        let resume_client = Arc::clone(&client);
+        let resume_task = tokio::spawn(async move {
+            resume_client
+                .resume_thread(ThreadResumeParams::new("thr-1"), Some(1_000))
+                .await
+        });
+        let request = mock.next_request().await.expect("thread/resume");
+        assert_eq!(request["method"], "thread/resume");
+        assert_eq!(request["params"]["threadId"], "thr-1");
+        mock.respond(
+            request["id"].as_u64().unwrap(),
+            json!({ "thread": { "id": "thr-1" } }),
+        );
+        let resumed = resume_task.await.unwrap().expect("resume ok");
+        assert_eq!(resumed.thread_id, "thr-1");
+
+        let interrupt_client = Arc::clone(&client);
+        let interrupt_task = tokio::spawn(async move {
+            interrupt_client
+                .interrupt_turn(
+                    TurnInterruptParams {
+                        thread_id: "thr-1".to_owned(),
+                        turn_id: "turn-9".to_owned(),
+                    },
+                    Some(1_000),
+                )
+                .await
+        });
+        let request = mock.next_request().await.expect("turn/interrupt");
+        assert_eq!(request["method"], "turn/interrupt");
+        assert_eq!(request["params"]["threadId"], "thr-1");
+        assert_eq!(request["params"]["turnId"], "turn-9");
+        mock.respond(request["id"].as_u64().unwrap(), json!({}));
+        interrupt_task.await.unwrap().expect("interrupt ok");
+
+        let steer_client = Arc::clone(&client);
+        let steer_task = tokio::spawn(async move {
+            steer_client
+                .steer_turn(
+                    TurnSteerParams::text("thr-1", "turn-9", "also do this"),
+                    Some(1_000),
+                )
+                .await
+        });
+        let request = mock.next_request().await.expect("turn/steer");
+        assert_eq!(request["method"], "turn/steer");
+        assert_eq!(request["params"]["threadId"], "thr-1");
+        assert_eq!(request["params"]["expectedTurnId"], "turn-9");
+        assert_eq!(request["params"]["input"][0]["text"], "also do this");
+        mock.respond(
+            request["id"].as_u64().unwrap(),
+            json!({ "turnId": "turn-9" }),
+        );
+        let steered = steer_task.await.unwrap().expect("steer ok");
+        assert_eq!(steered.turn_id, "turn-9");
     }
 
     #[test]

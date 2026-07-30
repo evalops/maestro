@@ -34,6 +34,19 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.59] - 2026-07-30
+
+### Added
+
+- Codex-style goal completion (update_goal, no second model) (#3233). <!-- maestro-release-note:4ba093d4d69b -->
+- Goal completion judged by second model (#3232). <!-- maestro-release-note:53e55554821a -->
+- Harden goal, attach, footer prefs, marketplace installed (#3231). <!-- maestro-release-note:3991a4564d7d -->
+- Kimi-inspired goal, footer, attach, marketplace (#3228). <!-- maestro-release-note:770647446c23 -->
+
+### Fixed
+
+- Codex app-server assistant text and instructions polish (#3229). <!-- maestro-release-note:6152e46959cd -->
+
 ## [0.10.58] - 2026-07-30
 
 ### Added

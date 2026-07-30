@@ -140,6 +140,41 @@ impl CodexAppServerTurnSession {
         Ok(turn.turn_id)
     }
 
+    /// Interrupt an in-flight turn (`turn/interrupt`).
+    pub async fn interrupt_turn(&self, turn_id: &str, timeout_ms: Option<u64>) -> Result<()> {
+        use crate::codex_app_server::TurnInterruptParams;
+        self.client
+            .interrupt_turn(
+                TurnInterruptParams {
+                    thread_id: self.thread_id.clone(),
+                    turn_id: turn_id.to_owned(),
+                },
+                timeout_ms,
+            )
+            .await
+            .context("turn/interrupt")?;
+        Ok(())
+    }
+
+    /// Steer the active turn with additional user text (`turn/steer`).
+    pub async fn steer_text(
+        &self,
+        expected_turn_id: &str,
+        text: impl Into<String>,
+        timeout_ms: Option<u64>,
+    ) -> Result<String> {
+        use crate::codex_app_server::TurnSteerParams;
+        let result = self
+            .client
+            .steer_turn(
+                TurnSteerParams::text(&self.thread_id, expected_turn_id, text),
+                timeout_ms,
+            )
+            .await
+            .context("turn/steer")?;
+        Ok(result.turn_id)
+    }
+
     /// Drain assistant message notifications (streaming deltas + completed
     /// agentMessage items) and return the best text we can assemble.
     async fn take_assistant_text(&self) -> String {
