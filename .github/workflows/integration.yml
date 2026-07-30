@@ -40,10 +40,18 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" != "pull_request" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Generated public mirror PRs re-sync already-integrated internal main.
+          if [ "$HEAD_REF" = "sync/public-release-mirror" ]; then
+            echo "Generated public mirror PR; skipping integration suite."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 

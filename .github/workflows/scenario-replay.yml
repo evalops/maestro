@@ -23,23 +23,37 @@ jobs:
       id-token: write
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.id != github.event.repository.id && 'ubuntu-latest' || (github.event_name == 'pull_request' && (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest')) }}
     timeout-minutes: 15
+    env:
+      IS_GENERATED_MIRROR_PR: ${{ github.event_name == 'pull_request' && github.head_ref == 'sync/public-release-mirror' }}
     steps:
+      - name: Skip scenario replay on generated mirror PR
+        if: ${{ env.IS_GENERATED_MIRROR_PR == 'true' }}
+        run: |
+          echo "Skipping scenario replay on generated public mirror PR."
+          echo "Replay gate already ran on evalops/maestro-internal for the mirrored SHA."
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ env.IS_GENERATED_MIRROR_PR != 'true' }}
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        if: ${{ env.IS_GENERATED_MIRROR_PR != 'true' }}
         with: { node-version: 22 }
 
       - uses: ./.github/actions/setup-rust
+        if: ${{ env.IS_GENERATED_MIRROR_PR != 'true' }}
         with:
           toolchain: stable
 
       - name: Build native scenario runner
+        if: ${{ env.IS_GENERATED_MIRROR_PR != 'true' }}
         run: cargo build --locked -p maestro
 
       - name: Validate replay gate governance reporter
+        if: ${{ env.IS_GENERATED_MIRROR_PR != 'true' }}
         run: node --test scripts/scenario-replay-governance.test.mjs
 
       - name: Run replay gate scenario suite
+        if: ${{ env.IS_GENERATED_MIRROR_PR != 'true' }}
         env:
           MAESTRO_TOOL_EXECUTION_SERVICE_URL: ${{ vars.MAESTRO_TOOL_EXECUTION_SERVICE_URL }}
           MAESTRO_TOOL_EXECUTION_SERVICE_TOKEN: ${{ secrets.MAESTRO_TOOL_EXECUTION_SERVICE_TOKEN }}

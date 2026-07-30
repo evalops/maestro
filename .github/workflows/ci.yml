@@ -7,6 +7,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# Generated public mirror PRs re-sync already-reviewed internal main. Full
+# cargo test / heavy lanes already ran on evalops/maestro-internal for that
+# SHA; re-running them here only burns 15–25 minutes and finds runner skew.
+# Detected via head branch name `sync/public-release-mirror`.
+env:
+  IS_GENERATED_MIRROR_PR: ${{ github.event_name == 'pull_request' && github.head_ref == 'sync/public-release-mirror' }}
+
 jobs:
   native-quality:
     runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
@@ -25,10 +32,21 @@ jobs:
     runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: ./.github/actions/setup-rust
+      - name: Skip full tests on generated mirror PR
+        if: ${{ env.IS_GENERATED_MIRROR_PR == 'true' }}
+        run: |
+          echo "Skipping cargo test on generated public mirror PR."
+          echo "Correctness for this tree already ran on evalops/maestro-internal for the mirrored source SHA."
+      - name: Checkout
+        if: ${{ env.IS_GENERATED_MIRROR_PR != 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Setup Rust
+        if: ${{ env.IS_GENERATED_MIRROR_PR != 'true' }}
+        uses: ./.github/actions/setup-rust
         with: { toolchain: stable }
-      - run: cargo test --workspace --locked
+      - name: cargo test
+        if: ${{ env.IS_GENERATED_MIRROR_PR != 'true' }}
+        run: cargo test --workspace --locked
 
   native-release:
     runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
