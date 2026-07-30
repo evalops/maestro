@@ -1,11 +1,7 @@
 //! Welcome/Onboarding Screen Component
 //!
-//! Displays a plain welcome screen for first-time setup and new sessions.
-//! Used for first-time setup and new session starts.
-//!
-//! # Features
-//!
-//! - Version and status display
+//! Empty-session and onboarding chrome. Brand art is the Deixic Dex ghost
+//! ([`super::deixic_logo`]); product title remains Maestro.
 //!
 //! # Example
 //!
@@ -14,9 +10,9 @@
 //!
 //! let welcome = WelcomeScreen::new()
 //!     .with_version("0.1.0")
-//!     .with_model("claude-sonnet-4-20250514");
+//!     .with_model("claude-sonnet-4-20250514")
+//!     .animations(true);
 //!
-//! // Render in your UI
 //! welcome.render(frame, area);
 //! ```
 
@@ -25,14 +21,10 @@ use ratatui::{
     widgets::{Clear, Paragraph, Widget, Wrap},
 };
 
-use super::ascii_animation::AsciiAnimation;
-
 /// Welcome screen widget
 #[derive(Debug, Clone)]
 pub struct WelcomeScreen {
-    /// ASCII animation
-    animation: Option<AsciiAnimation>,
-    /// Whether animations are enabled
+    /// Whether Deixic sheen animations are enabled
     animations_enabled: bool,
     /// Application version
     version: Option<String>,
@@ -40,9 +32,9 @@ pub struct WelcomeScreen {
     model: Option<String>,
     /// Whether user is authenticated
     is_authenticated: bool,
-    /// Custom welcome message
+    /// Custom welcome message (replaces product title)
     welcome_message: Option<String>,
-    /// Show keyboard hints
+    /// Show keyboard hints (default hint is always present on the brand block)
     show_hints: bool,
 }
 
@@ -57,7 +49,6 @@ impl WelcomeScreen {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            animation: None,
             animations_enabled: false,
             version: None,
             model: None,
@@ -92,7 +83,7 @@ impl WelcomeScreen {
         self
     }
 
-    /// Enable/disable animations
+    /// Enable/disable Deixic sheen animations
     #[must_use]
     pub fn animations(mut self, enabled: bool) -> Self {
         self.animations_enabled = enabled;
@@ -106,29 +97,32 @@ impl WelcomeScreen {
         self
     }
 
-    /// Handle keyboard event (for animation variant switching)
-    pub fn handle_key(&mut self, key: char) {
-        if key == '.' && self.animations_enabled {
-            if let Some(ref mut anim) = self.animation {
-                anim.pick_random_variant();
+    /// Build the content lines
+    fn build_content(&self, area: Rect) -> Vec<Line<'static>> {
+        // Brand block: Dex ghost + deixic wordmark + Maestro title.
+        // Custom welcome_message replaces only the product title line.
+        let mut lines =
+            super::deixic_logo::welcome_content_lines(area.height, self.animations_enabled);
+
+        if let Some(ref custom) = self.welcome_message {
+            for line in &mut lines {
+                if line.to_string() == "Maestro" {
+                    *line = if self.animations_enabled {
+                        Line::from(crate::shimmer::shimmer_spans(custom))
+                            .alignment(Alignment::Center)
+                    } else {
+                        Line::from(Span::styled(
+                            custom.clone(),
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        ))
+                        .alignment(Alignment::Center)
+                    };
+                    break;
+                }
             }
         }
-    }
-
-    /// Build the content lines
-    fn build_content(&self, _area: Rect) -> Vec<Line<'static>> {
-        let mut lines: Vec<Line<'static>> = Vec::new();
-
-        let welcome_text = self
-            .welcome_message
-            .clone()
-            .unwrap_or_else(|| "Maestro".to_string());
-        lines.push(Line::from(vec![Span::styled(
-            welcome_text,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )]));
 
         if let Some(ref version) = self.version {
             lines.push(Line::from(vec![
@@ -151,15 +145,7 @@ impl WelcomeScreen {
             ]));
         }
 
-        if self.show_hints {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "Type a message or /help",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::DIM),
-            )));
-        }
+        let _ = self.show_hints;
 
         lines
     }
@@ -167,13 +153,9 @@ impl WelcomeScreen {
 
 impl Widget for WelcomeScreen {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Clear area
         Clear.render(area, buf);
 
-        // Build content
         let content = self.build_content(area);
-
-        // Center vertically
         let content_height = content.len() as u16;
         let y_offset = if area.height > content_height {
             (area.height - content_height) / 2
@@ -332,7 +314,7 @@ pub struct SplashScreen {
     pub title: String,
     /// Subtitle text
     pub subtitle: Option<String>,
-    /// Show logo
+    /// When true, prepend the Deixic Dex ghost mark
     pub show_logo: bool,
 }
 
@@ -361,7 +343,7 @@ impl SplashScreen {
         self
     }
 
-    /// Show/hide logo
+    /// Show/hide the Deixic ghost mark
     #[must_use]
     pub fn show_logo(mut self, show: bool) -> Self {
         self.show_logo = show;
@@ -374,6 +356,16 @@ impl Widget for SplashScreen {
         Clear.render(area, buf);
 
         let mut lines: Vec<Line<'static>> = Vec::new();
+
+        if self.show_logo {
+            for mut line in super::deixic_logo::static_logo_lines(area.height) {
+                line.alignment = Some(Alignment::Center);
+                lines.push(line);
+            }
+            if !lines.is_empty() {
+                lines.push(Line::from(""));
+            }
+        }
 
         lines.push(Line::from(Span::styled(
             self.title.clone(),
@@ -389,7 +381,6 @@ impl Widget for SplashScreen {
             )));
         }
 
-        // Center
         let content_height = lines.len() as u16;
         let y_offset = if area.height > content_height {
             (area.height - content_height) / 2
@@ -440,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn test_welcome_screen_uses_plain_maestro_branding() {
+    fn test_welcome_screen_uses_maestro_title_and_deixic_brand() {
         let welcome = WelcomeScreen::new().animations(false);
         let lines = welcome.build_content(Rect::new(0, 0, 80, 24));
         let rendered = lines
@@ -450,6 +441,8 @@ mod tests {
             .join("\n");
 
         assert!(rendered.contains("Maestro"));
+        assert!(rendered.contains("deixic"));
+        assert!(rendered.contains("Type a message or /help."));
         assert!(!rendered.contains("Welcome to Maestro"));
         assert!(!rendered.contains("Welcome to Composer"));
         assert!(!rendered.contains("Getting Started"));

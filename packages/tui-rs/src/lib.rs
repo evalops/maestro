@@ -1191,14 +1191,21 @@ pub use field_format::{
 // SHIMMER EXPORTS
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Shimmer animation effect for loading indicators.
+/// Shimmer animation effect for loading indicators (Deixic palette + sheen).
 pub use shimmer::{
+    anim_phase_secs,
+    diagonal_shimmer_lines,
+    shimmer_frame,
     shimmer_line,              // Create shimmer line
     shimmer_line_with_config,  // With custom config
     shimmer_spans,             // Create shimmer spans
     shimmer_spans_at_time,     // At specific time offset
     shimmer_spans_with_config, // With custom config
-    ShimmerConfig,             // Shimmer configuration
+    shine_opacity,
+    ShimmerConfig, // Shimmer configuration
+    DEIXIC_SOFT,
+    DEIXIC_VIOLET,
+    SHIMMER_FPS,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

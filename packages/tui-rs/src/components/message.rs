@@ -1633,7 +1633,14 @@ impl Widget for TurnStatusWidget<'_> {
             activity.to_owned()
         };
         let dim = Style::default().fg(Color::DarkGray);
-        let mut spans = vec![Span::styled("◐ ", Style::default().fg(Color::Cyan))];
+        let mut spans = vec![Span::styled(
+            "◐ ",
+            Style::default().fg(Color::Rgb(
+                crate::shimmer::DEIXIC_VIOLET.0,
+                crate::shimmer::DEIXIC_VIOLET.1,
+                crate::shimmer::DEIXIC_VIOLET.2,
+            )),
+        )];
         spans.extend(shimmer_spans(&activity));
         spans.push(Span::styled(
             format!("  ·  {}", fmt_elapsed_compact(self.elapsed_secs)),
@@ -2398,10 +2405,10 @@ impl ChatView<'_> {
             .collect();
 
         if area.height == 0 || renderable_messages.is_empty() {
-            let welcome = Paragraph::new("Maestro\nType a message or /help.")
-                .style(Style::default().fg(Color::DarkGray))
-                .wrap(Wrap { trim: false });
-            welcome.render(area, buf);
+            // Deixic ghost logo + wordmark with diagonal/linear sheen; product
+            // title stays "Maestro". Animation uses wall-clock phase so idle
+            // welcome paints (app loop keys off shimmer_frame) advance the sheen.
+            crate::components::deixic_logo::render_welcome(area, buf, true);
             return;
         }
 

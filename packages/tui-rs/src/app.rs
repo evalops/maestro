@@ -753,6 +753,10 @@ pub struct App {
 
     /// Modal to restore when the detail view closes (e.g. back to Approval).
     detail_return_modal: ActiveModal,
+
+    /// Last quantized Deixic welcome shimmer frame. Empty chat animates at
+    /// [`crate::shimmer::SHIMMER_FPS`] without continuous full-rate idle paints.
+    last_welcome_shimmer_frame: u64,
 }
 
 /// Build a single, user-facing notice explaining why repo-controlled
@@ -1085,6 +1089,7 @@ impl App {
             terminal_session_started: false,
             detail_view: None,
             detail_return_modal: ActiveModal::None,
+            last_welcome_shimmer_frame: 0,
         }
     }
 
@@ -1323,9 +1328,24 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 needs_redraw = true;
             }
 
-            // Poll for terminal events. Shorter timeout while busy (animations);
-            // longer while idle to avoid burning CPU on empty frames.
-            let poll_ms = if self.state.busy { 33 } else { 100 };
+            // Empty chat runs the Deixic welcome sheen; advance paint only when
+            // the quantized shimmer frame changes (~12 fps), not every idle tick.
+            let welcome_animating = self.state.messages.is_empty() && !self.state.busy;
+            if welcome_animating {
+                let frame = crate::shimmer::shimmer_frame();
+                if frame != self.last_welcome_shimmer_frame {
+                    self.last_welcome_shimmer_frame = frame;
+                    needs_redraw = true;
+                }
+            }
+
+            // Poll for terminal events. Shorter timeout while busy (animations)
+            // or while the empty welcome sheen is active; longer while idle.
+            let poll_ms = if self.state.busy || welcome_animating {
+                33
+            } else {
+                100
+            };
             self.poll_terminal_theme();
             if let Some(event) =
                 self.poll_terminal_event(std::time::Duration::from_millis(poll_ms))?
