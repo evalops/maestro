@@ -494,16 +494,26 @@ pub fn find_model(id: &str) -> Option<ModelInfo> {
     let (provider, bare_id) = id
         .split_once('/')
         .map_or((None, id), |(provider, model)| (Some(provider), model));
-    let model = available_models()
-        .into_iter()
-        .find(|model| model.id == bare_id)?;
-    if provider.is_some_and(|provider| {
-        ProviderRegistry::descriptor(provider)
-            .is_none_or(|descriptor| descriptor.id != model.provider)
-    }) {
+    let models = available_models();
+    if let Some(provider) = provider {
+        let descriptor = ProviderRegistry::descriptor(provider)?;
+        // Exact provider match first.
+        if let Some(model) = models
+            .iter()
+            .find(|model| model.id == bare_id && model.provider == descriptor.id)
+        {
+            return Some(model.clone());
+        }
+        // openai-codex is a ChatGPT-subscription transport for OpenAI frontier
+        // models; catalog rows are stored under provider "openai".
+        if descriptor.id == "openai-codex" {
+            return models
+                .into_iter()
+                .find(|model| model.id == bare_id && model.provider == "openai");
+        }
         return None;
     }
-    Some(model)
+    models.into_iter().find(|model| model.id == bare_id)
 }
 
 #[must_use]
@@ -511,13 +521,33 @@ pub fn has_provider_mismatch(id: &str) -> bool {
     let Some((provider, bare_id)) = id.split_once('/') else {
         return false;
     };
-    let Some(model) = available_models()
-        .into_iter()
-        .find(|model| model.id == bare_id)
-    else {
+    let Some(descriptor) = ProviderRegistry::descriptor(provider) else {
+        // Unknown provider prefix is not a catalog mismatch; resolution
+        // fails elsewhere if the prefix is truly invalid.
         return false;
     };
-    ProviderRegistry::descriptor(provider).is_none_or(|descriptor| descriptor.id != model.provider)
+    let models = available_models();
+    // Prefer an exact provider+id hit (openai-codex/gpt-5.5 vs openai/gpt-5.5).
+    if models
+        .iter()
+        .any(|model| model.id == bare_id && model.provider == descriptor.id)
+    {
+        return false;
+    }
+    // openai-codex reuses OpenAI catalog ids (subscription transport).
+    if descriptor.id == "openai-codex"
+        && models
+            .iter()
+            .any(|model| model.id == bare_id && model.provider == "openai")
+    {
+        return false;
+    }
+    // No catalog entry for this provider+id pair: only flag mismatch when
+    // the bare id is known under a *different* provider.
+    models
+        .iter()
+        .find(|model| model.id == bare_id)
+        .is_some_and(|model| model.provider != descriptor.id)
 }
 
 /// Verify registry routing and credential presence without network access.
@@ -812,6 +842,9 @@ mod tests {
         assert!(!has_provider_mismatch("anthropic/claude-sonnet-4-6"));
         assert!(find_model("claude/claude-sonnet-4-6").is_some());
         assert!(!has_provider_mismatch("openai/custom-model"));
+        // openai-codex is subscription transport over OpenAI catalog ids.
+        assert!(find_model("openai-codex/gpt-5.5").is_some());
+        assert!(!has_provider_mismatch("openai-codex/gpt-5.5"));
     }
 
     #[test]

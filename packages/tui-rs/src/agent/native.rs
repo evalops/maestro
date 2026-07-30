@@ -2176,6 +2176,9 @@ impl NativeAgentRunner {
                     let shutdown_token = self.shutdown_token.clone();
                     let active_cancellation = Arc::clone(&self.active_cancellation);
                     let mut request_cancelled = false;
+                    // One-shot: re-read CODEX_HOME/auth.json after 401 and rebuild
+                    // the client before treating auth failure as terminal.
+                    let mut codex_auth_refreshed = false;
                     loop {
                         let result = run_request_with_cancellation(
                             self.run_loop(),
@@ -2196,6 +2199,41 @@ impl NativeAgentRunner {
 
                                 // Classify error and check if we should retry
                                 let error_kind = super::retry::ErrorKind::classify(&msg);
+
+                                // Codex ChatGPT tokens rotate under CODEX_HOME.
+                                // On auth failure, re-read auth.json once and
+                                // rebuild UnifiedClient before giving up.
+                                if matches!(error_kind, super::retry::ErrorKind::AuthFailure)
+                                    && !codex_auth_refreshed
+                                    && crate::codex_auth::model_uses_openai_codex(
+                                        &self.config.model,
+                                    )
+                                {
+                                    codex_auth_refreshed = true;
+                                    let refresh =
+                                        crate::codex_auth::refresh_codex_auth_to_process_env();
+                                    if refresh.auth_present {
+                                        match UnifiedClient::from_model(&self.config.model) {
+                                            Ok(client) => {
+                                                self.client = client;
+                                                let _ = self.event_tx.send(FromAgent::Status {
+                                                    message: "Refreshed Codex credentials from auth.json; retrying…".to_string(),
+                                                });
+                                                continue;
+                                            }
+                                            Err(rebuild_err) => {
+                                                let _ = self.event_tx.send(FromAgent::Error {
+                                                    message: format!(
+                                                        "Agent error: {msg} (auth refresh failed: {rebuild_err})"
+                                                    ),
+                                                    fatal: false,
+                                                });
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+
                                 match self.retry_policy.should_retry(error_kind) {
                                     super::retry::RetryDecision::Retry {
                                         delay,
@@ -2227,8 +2265,16 @@ impl NativeAgentRunner {
                                     }
                                     super::retry::RetryDecision::GiveUp { reason } => {
                                         // Not retryable or exhausted retries
+                                        let hint = if matches!(
+                                            error_kind,
+                                            super::retry::ErrorKind::AuthFailure
+                                        ) {
+                                            " — run `maestro codex login --force` or set OPENAI_API_KEY"
+                                        } else {
+                                            ""
+                                        };
                                         let _ = self.event_tx.send(FromAgent::Error {
-                                            message: format!("Agent error: {msg} ({reason})"),
+                                            message: format!("Agent error: {msg} ({reason}){hint}"),
                                             fatal: false,
                                         });
                                         break;
@@ -2303,6 +2349,8 @@ impl NativeAgentRunner {
                         continue;
                     }
 
+                    // Ensure Codex auth is present before resolving openai-codex/*.
+                    let _ = crate::codex_auth::apply_codex_auth_to_process_env();
                     match UnifiedClient::from_model(&model) {
                         Ok(client) => {
                             let provider = format!("{:?}", client.provider());
@@ -2314,7 +2362,30 @@ impl NativeAgentRunner {
                                 .send(FromAgent::ModelChanged { model, provider });
                         }
                         Err(e) => {
-                            let message = format!("Failed to set model: {e}");
+                            // One force-refresh if this looks like a Codex model.
+                            let message = if crate::codex_auth::model_uses_openai_codex(&model) {
+                                let refresh =
+                                    crate::codex_auth::refresh_codex_auth_to_process_env();
+                                if refresh.auth_present {
+                                    match UnifiedClient::from_model(&model) {
+                                        Ok(client) => {
+                                            let provider = format!("{:?}", client.provider());
+                                            self.client = client;
+                                            self.config.model = model.clone();
+                                            self.hooks.set_model(&model);
+                                            let _ = self
+                                                .event_tx
+                                                .send(FromAgent::ModelChanged { model, provider });
+                                            continue;
+                                        }
+                                        Err(e2) => format!("Failed to set model: {e2}"),
+                                    }
+                                } else {
+                                    format!("Failed to set model: {e}")
+                                }
+                            } else {
+                                format!("Failed to set model: {e}")
+                            };
                             let _ = self.event_tx.send(FromAgent::Error {
                                 message: message.clone(),
                                 fatal: false,
