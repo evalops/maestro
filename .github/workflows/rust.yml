@@ -9,10 +9,19 @@ jobs:
   test:
     runs-on: ${{ vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 90
+    env:
+      IS_GENERATED_MIRROR_PR: ${{ github.event_name == 'pull_request' && github.head_ref == 'sync/public-release-mirror' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: ./.github/actions/setup-rust
         with: { toolchain: stable, components: "rustfmt,clippy" }
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
+      - name: cargo test
+        if: ${{ env.IS_GENERATED_MIRROR_PR != 'true' }}
+        run: cargo test --workspace --locked
+      - name: Skip cargo test on generated mirror PR
+        if: ${{ env.IS_GENERATED_MIRROR_PR == 'true' }}
+        run: |
+          echo "Skipping cargo test on generated public mirror PR."
+          echo "Correctness for this tree already ran on evalops/maestro-internal."

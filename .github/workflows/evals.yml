@@ -53,6 +53,12 @@ jobs:
               return "false";
             }
 
+            // Generated public mirror PRs re-sync already-evaluated internal main.
+            if (pull.head?.ref === "sync/public-release-mirror") {
+              core.info("Generated public mirror PR; skipping evals (ran on internal).");
+              return "false";
+            }
+
             const labels = new Set((pull.labels ?? []).map((label) => label.name));
             if (labels.has("run-evals")) {
               core.info("run-evals label present; running evals.");
