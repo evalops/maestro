@@ -240,10 +240,11 @@ fn stream_chunk_for_stdout(content: &str, stdout_is_terminal: bool) -> String {
 /// Run one prompt non-interactively and print the final answer.
 pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
     let limits = PrintModeLimits::from_env()?;
+    let _ = crate::codex_auth::apply_codex_auth_to_process_env();
     let model = options
         .model
-        .or_else(|| std::env::var("MAESTRO_MODEL").ok())
-        .unwrap_or_else(|| "gpt-5.5".to_string());
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(crate::codex_auth::resolve_default_model);
 
     let workspace = dunce::canonicalize(
         &std::env::current_dir().context("resolve print-mode working directory")?,
