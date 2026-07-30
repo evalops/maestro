@@ -3,7 +3,9 @@
 //! Provides tokio-based async communication with the Node.js agent subprocess.
 //! This is the recommended transport for async applications.
 
+use std::collections::HashSet;
 use std::process::Stdio;
+use std::sync::Mutex;
 
 use anyhow::Result;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -104,6 +106,8 @@ pub enum AsyncTransportError {
     ProcessExited(Option<i32>),
     /// Communication channel closed
     ChannelClosed,
+    /// A governed tool approval already received a controller decision.
+    ToolDecisionAlreadySent(String),
     /// Operation timed out
     Timeout,
     /// Operation was cancelled
@@ -133,6 +137,12 @@ impl std::fmt::Display for AsyncTransportError {
                 write!(f, "Agent process exited with code: {code:?}")
             }
             AsyncTransportError::ChannelClosed => write!(f, "Communication channel closed"),
+            AsyncTransportError::ToolDecisionAlreadySent(execution_id) => {
+                write!(
+                    f,
+                    "Tool execution {execution_id} already received a decision"
+                )
+            }
             AsyncTransportError::Timeout => write!(f, "Operation timed out"),
             AsyncTransportError::Cancelled => write!(f, "Operation was cancelled"),
             AsyncTransportError::Remote(e) => write!(f, "Remote transport error: {e}"),
@@ -151,6 +161,7 @@ impl AsyncTransportError {
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::RemoteStatus { retryable, .. } => *retryable,
+            Self::ToolDecisionAlreadySent(_) => false,
             _ => true,
         }
     }
@@ -179,6 +190,8 @@ pub struct AsyncAgentTransport {
     event_rx: mpsc::UnboundedReceiver<Result<FromAgentMessage, AsyncTransportError>>,
     /// Current agent state
     state: AgentState,
+    /// Governed approval calls which already received a controller decision.
+    decided_tool_executions: Mutex<HashSet<String>>,
     /// Cancellation token for graceful shutdown
     cancel_token: CancellationToken,
     /// Handle to the reader task
@@ -252,6 +265,7 @@ impl AsyncAgentTransport {
             message_tx,
             event_rx,
             state: AgentState::default(),
+            decided_tool_executions: Mutex::new(HashSet::new()),
             cancel_token,
             _reader_handle: reader_handle,
             _writer_handle: writer_handle,
@@ -444,25 +458,59 @@ impl AsyncAgentTransport {
 
     /// Approve a tool call
     pub fn approve_tool(&self, call_id: impl Into<String>) -> Result<(), AsyncTransportError> {
-        self.send(ToAgentMessage::ToolResponse {
-            call_id: call_id.into(),
-            approved: true,
-            result: None,
-        })
+        self.respond_to_tool(call_id.into(), true)
     }
 
     /// Deny a tool call
     pub fn deny_tool(&self, call_id: impl Into<String>) -> Result<(), AsyncTransportError> {
-        self.send(ToAgentMessage::ToolResponse {
-            call_id: call_id.into(),
-            approved: false,
+        self.respond_to_tool(call_id.into(), false)
+    }
+
+    fn respond_to_tool(&self, call_id: String, approved: bool) -> Result<(), AsyncTransportError> {
+        let pending = self
+            .state
+            .pending_approvals
+            .iter()
+            .find(|approval| approval.call_id == call_id);
+        let tool_execution_id = pending.and_then(|approval| approval.tool_execution_id.clone());
+        let reserved_execution_id = tool_execution_id.clone();
+
+        if let Some(execution_id) = &tool_execution_id {
+            let mut decided = self
+                .decided_tool_executions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !decided.insert(execution_id.clone()) {
+                return Err(AsyncTransportError::ToolDecisionAlreadySent(
+                    execution_id.clone(),
+                ));
+            }
+        }
+
+        let result = self.send(ToAgentMessage::ToolResponse {
+            call_id: call_id.clone(),
+            tool_execution_id,
+            approved,
             result: None,
-        })
+        });
+        if result.is_err() {
+            if let Some(execution_id) = &reserved_execution_id {
+                self.decided_tool_executions
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(execution_id);
+            }
+        }
+        result
     }
 
     /// Shut down the agent
     pub fn shutdown(&self) -> Result<(), AsyncTransportError> {
         let result = self.send(ToAgentMessage::Shutdown);
+        self.decided_tool_executions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
         self.cancel_token.cancel();
         result
     }
@@ -497,16 +545,26 @@ impl AsyncAgentTransport {
             Ok(result) => Some(result),
             Err(mpsc::error::TryRecvError::Empty) => None,
             Err(mpsc::error::TryRecvError::Disconnected) => {
+                self.decided_tool_executions
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clear();
                 Some(Err(AsyncTransportError::ChannelClosed))
             }
         }
     }
 
     pub(super) async fn recv_message(&mut self) -> Result<FromAgentMessage, AsyncTransportError> {
-        self.event_rx
-            .recv()
-            .await
-            .ok_or(AsyncTransportError::ChannelClosed)?
+        match self.event_rx.recv().await {
+            Some(result) => result,
+            None => {
+                self.decided_tool_executions
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clear();
+                Err(AsyncTransportError::ChannelClosed)
+            }
+        }
     }
 
     /// Receive an event with a timeout
@@ -521,7 +579,13 @@ impl AsyncAgentTransport {
                 .ok_or(AsyncTransportError::Timeout)?;
             let result = match timeout(remaining, self.event_rx.recv()).await {
                 Ok(Some(result)) => result,
-                Ok(None) => return Err(AsyncTransportError::ChannelClosed),
+                Ok(None) => {
+                    self.decided_tool_executions
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clear();
+                    return Err(AsyncTransportError::ChannelClosed);
+                }
                 Err(_) => return Err(AsyncTransportError::Timeout),
             };
             match self.apply_transport_result(result)? {
@@ -536,8 +600,26 @@ impl AsyncAgentTransport {
         result: Result<FromAgentMessage, AsyncTransportError>,
     ) -> Result<Option<AgentEvent>, AsyncTransportError> {
         match result {
-            Ok(message) => Ok(self.state.handle_message(message)),
-            Err(error) => Err(error),
+            Ok(message) => {
+                if let FromAgentMessage::ToolEnd {
+                    tool_execution_id: Some(execution_id),
+                    ..
+                } = &message
+                {
+                    self.decided_tool_executions
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .remove(execution_id);
+                }
+                Ok(self.state.handle_message(message))
+            }
+            Err(error) => {
+                self.decided_tool_executions
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clear();
+                Err(error)
+            }
         }
     }
 
@@ -708,6 +790,196 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn tool_responses_forward_pending_execution_id() {
+        let (message_tx, mut message_rx) = mpsc::unbounded_channel();
+        let (_event_tx, event_rx) =
+            mpsc::unbounded_channel::<Result<FromAgentMessage, AsyncTransportError>>();
+        let mut state = AgentState::default();
+        state
+            .pending_approvals
+            .push(crate::headless::messages::PendingApproval {
+                call_id: "call-1".to_string(),
+                tool_execution_id: Some("execution-1".to_string()),
+                request_id: None,
+                tool: "bash".to_string(),
+                args: serde_json::json!({}),
+                started_at_ms: None,
+            });
+        let mut transport = AsyncAgentTransport {
+            message_tx,
+            event_rx,
+            state,
+            decided_tool_executions: Mutex::new(HashSet::new()),
+            cancel_token: CancellationToken::new(),
+            _reader_handle: tokio::spawn(async {}),
+            _writer_handle: tokio::spawn(async {}),
+        };
+
+        transport.deny_tool("call-1").expect("deny tool");
+
+        assert!(matches!(
+            message_rx.recv().await.expect("tool response"),
+            ToAgentMessage::ToolResponse {
+                call_id,
+                tool_execution_id: Some(tool_execution_id),
+                approved: false,
+                result: None,
+            } if call_id == "call-1" && tool_execution_id == "execution-1"
+        ));
+
+        assert!(
+            transport.approve_tool("call-1").is_err(),
+            "a second decision for one governed approval must be rejected"
+        );
+        assert!(
+            message_rx.try_recv().is_err(),
+            "a rejected duplicate decision must not be sent"
+        );
+
+        transport
+            .apply_transport_result(Ok(FromAgentMessage::ToolEnd {
+                call_id: "call-1".to_string(),
+                tool_execution_id: Some("execution-1".to_string()),
+                success: false,
+                tool: Some("bash".to_string()),
+                details: None,
+                receipt: None,
+            }))
+            .expect("terminal event");
+        transport
+            .state
+            .pending_approvals
+            .push(crate::headless::messages::PendingApproval {
+                call_id: "call-1".to_string(),
+                tool_execution_id: Some("execution-2".to_string()),
+                request_id: None,
+                tool: "bash".to_string(),
+                args: serde_json::json!({}),
+                started_at_ms: None,
+            });
+        transport
+            .approve_tool("call-1")
+            .expect("a new execution may reuse the call ID");
+        assert!(matches!(
+            message_rx.recv().await.expect("new tool response"),
+            ToAgentMessage::ToolResponse {
+                tool_execution_id: Some(tool_execution_id),
+                ..
+            } if tool_execution_id == "execution-2"
+        ));
+    }
+
+    #[tokio::test]
+    async fn approve_tool_forwards_pending_execution_id() {
+        let (message_tx, mut message_rx) = mpsc::unbounded_channel();
+        let (_event_tx, event_rx) =
+            mpsc::unbounded_channel::<Result<FromAgentMessage, AsyncTransportError>>();
+        let mut state = AgentState::default();
+        state
+            .pending_approvals
+            .push(crate::headless::messages::PendingApproval {
+                call_id: "call-1".to_string(),
+                tool_execution_id: Some("execution-1".to_string()),
+                request_id: None,
+                tool: "bash".to_string(),
+                args: serde_json::json!({}),
+                started_at_ms: None,
+            });
+        let mut transport = AsyncAgentTransport {
+            message_tx,
+            event_rx,
+            state,
+            decided_tool_executions: Mutex::new(HashSet::new()),
+            cancel_token: CancellationToken::new(),
+            _reader_handle: tokio::spawn(async {}),
+            _writer_handle: tokio::spawn(async {}),
+        };
+
+        transport.approve_tool("call-1").expect("approve tool");
+
+        assert!(matches!(
+            message_rx.recv().await.expect("tool response"),
+            ToAgentMessage::ToolResponse {
+                call_id,
+                tool_execution_id: Some(tool_execution_id),
+                approved: true,
+                result: None,
+            } if call_id == "call-1" && tool_execution_id == "execution-1"
+        ));
+
+        assert!(
+            transport.deny_tool("call-1").is_err(),
+            "a second decision for one governed approval must be rejected"
+        );
+        assert!(
+            message_rx.try_recv().is_err(),
+            "a rejected duplicate decision must not be sent"
+        );
+
+        transport
+            .state
+            .pending_approvals
+            .push(crate::headless::messages::PendingApproval {
+                call_id: "legacy-call".to_string(),
+                tool_execution_id: None,
+                request_id: None,
+                tool: "read".to_string(),
+                args: serde_json::json!({}),
+                started_at_ms: None,
+            });
+        transport
+            .approve_tool("legacy-call")
+            .expect("legacy approval without an execution ID");
+        transport
+            .deny_tool("legacy-call")
+            .expect("legacy retry without an execution ID");
+        for approved in [true, false] {
+            assert!(matches!(
+                message_rx.recv().await.expect("legacy tool response"),
+                ToAgentMessage::ToolResponse {
+                    tool_execution_id: None,
+                    approved: actual,
+                    ..
+                } if actual == approved
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_tool_response_releases_execution_reservation() {
+        let (message_tx, message_rx) = mpsc::unbounded_channel();
+        drop(message_rx);
+        let (_event_tx, event_rx) =
+            mpsc::unbounded_channel::<Result<FromAgentMessage, AsyncTransportError>>();
+        let mut state = AgentState::default();
+        state
+            .pending_approvals
+            .push(crate::headless::messages::PendingApproval {
+                call_id: "call-1".to_string(),
+                tool_execution_id: Some("execution-1".to_string()),
+                request_id: None,
+                tool: "bash".to_string(),
+                args: serde_json::json!({}),
+                started_at_ms: None,
+            });
+        let transport = AsyncAgentTransport {
+            message_tx,
+            event_rx,
+            state,
+            decided_tool_executions: Mutex::new(HashSet::new()),
+            cancel_token: CancellationToken::new(),
+            _reader_handle: tokio::spawn(async {}),
+            _writer_handle: tokio::spawn(async {}),
+        };
+
+        assert!(transport.approve_tool("call-1").is_err());
+        assert!(
+            transport.decided_tool_executions.lock().unwrap().is_empty(),
+            "failed enqueue must release its reservation"
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn spawn_retries_while_agent_executable_is_temporarily_busy() {
@@ -760,6 +1032,7 @@ mod tests {
             message_tx: _message_tx,
             event_rx,
             state: AgentState::default(),
+            decided_tool_executions: Mutex::new(HashSet::new()),
             cancel_token,
             _reader_handle: noop,
             _writer_handle: tokio::spawn(async move {

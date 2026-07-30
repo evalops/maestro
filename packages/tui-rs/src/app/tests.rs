@@ -58,6 +58,14 @@ fn uncurses_input_kill_switch_defaults_on_and_accepts_only_zero_as_off() {
 }
 
 #[test]
+fn terminal_reporting_shutdown_requires_reader_and_theme_follower() {
+    assert!(terminal_reporting_shutdown_needed(true, true));
+    assert!(!terminal_reporting_shutdown_needed(true, false));
+    assert!(!terminal_reporting_shutdown_needed(false, true));
+    assert!(!terminal_reporting_shutdown_needed(false, false));
+}
+
+#[test]
 fn terminal_theme_query_requires_fallback_and_respects_throttle() {
     assert!(!terminal_theme_query_due(
         false,
@@ -2989,6 +2997,67 @@ async fn test_detail_view_from_approval_modal_expands_and_restores() {
     assert!(app.detail_view.is_none());
     assert!(app.approval_controller.current().is_some());
 }
+#[test]
+fn resume_session_at_startup_restores_agent_context_for_spawn() {
+    let temp = tempdir().unwrap();
+    let dir = temp.path().join("sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("2024-01-15T10-30-00-000Z_fork-target.jsonl");
+    let mut file = std::fs::File::create(&path).unwrap();
+    use std::io::Write;
+    writeln!(
+        file,
+        r#"{{"type":"session","id":"fork-target","timestamp":"2024-01-15T10:30:00Z","cwd":"/tmp","model":"openai/gpt-5.2","thinkingLevel":"medium"}}"#
+    )
+    .unwrap();
+    writeln!(
+        file,
+        r#"{{"type":"message","timestamp":"2024-01-15T10:30:01Z","message":{{"role":"user","content":"continue the fork","timestamp":0}}}}"#
+    )
+    .unwrap();
+    writeln!(
+        file,
+        r#"{{"type":"message","timestamp":"2024-01-15T10:30:02Z","message":{{"role":"assistant","content":[{{"type":"text","text":"Fork continued."}}],"timestamp":1}}}}"#
+    )
+    .unwrap();
+    drop(file);
+
+    let mut app = new_test_app();
+    app.session_manager = crate::session::SessionManager::with_sessions_dir("/tmp", &dir);
+    app.resume_session_at_startup("fork-target");
+
+    assert_eq!(app.state.session_id.as_deref(), Some("fork-target"));
+    assert!(!app.session_resume_failed);
+    assert!(app.state.error.is_none());
+    let texts: Vec<&str> = app
+        .state
+        .messages
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect();
+    assert!(texts.contains(&"continue the fork"));
+    assert!(texts.contains(&"Fork continued."));
+    // The writer resumed for appends under the forked session id.
+    assert_eq!(
+        app.session_manager.current_session_id(),
+        Some("fork-target")
+    );
+    assert_eq!(app.current_model, "openai/gpt-5.2");
+    assert_eq!(app.current_thinking_level, ThinkingLevel::Medium);
+
+    let (history, session_id, thinking_level) = app.agent_context_for_spawn();
+    assert_eq!(session_id.as_deref(), Some("fork-target"));
+    assert_eq!(thinking_level, ThinkingLevel::Medium);
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].role, crate::ai::Role::User);
+    assert_eq!(history[0].content.as_text(), Some("continue the fork"));
+    assert_eq!(history[1].role, crate::ai::Role::Assistant);
+    assert_eq!(history[1].content.as_text(), Some("Fork continued."));
+
+    // Unknown ids surface an error instead of panicking.
+    app.resume_session_at_startup("missing-session");
+    assert!(app.state.error.is_some());
+}
 
 #[tokio::test]
 async fn test_detail_view_from_approval_sanitizes_format_controls_in_args() {
@@ -3278,6 +3347,84 @@ async fn cancelled_native_tool_stays_cancelled_without_failure_stats() {
 }
 
 #[tokio::test]
+async fn signal_shutdown_drains_final_agent_events_before_session_flush() {
+    let mut app = new_test_app();
+    let temp = tempdir().expect("temp session directory");
+    app.session_manager =
+        SessionManager::with_sessions_dir("shutdown-drain-test", temp.path().to_path_buf());
+
+    app.handle_agent_message(FromAgent::ResponseStart {
+        response_id: "response-shutdown".to_string(),
+    })
+    .await
+    .expect("handle response start");
+    app.handle_agent_message(FromAgent::ToolCall {
+        call_id: "call-shutdown".to_string(),
+        tool: "bash".to_string(),
+        args: serde_json::json!({"command": "sleep 30"}),
+        requires_approval: false,
+        approval_inline_env: None,
+    })
+    .await
+    .expect("handle native tool call");
+
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.native_event_rx = Some(event_rx);
+    event_tx
+        .send(FromAgent::ToolEnd {
+            call_id: "call-shutdown".to_string(),
+            success: false,
+            result: Some(ToolResult::failure(
+                "Tool execution cancelled during Running",
+            )),
+            receipt: Some(
+                ToolExecution::cancelled(
+                    "call-shutdown",
+                    "bash",
+                    crate::agent::ExecutionSource::Native,
+                    crate::agent::ExecutionPhase::Running,
+                )
+                .receipt,
+            ),
+        })
+        .expect("queue terminal tool event");
+    event_tx
+        .send(FromAgent::ResponseEnd {
+            response_id: "done".to_string(),
+            usage: None,
+        })
+        .expect("queue terminal response event");
+    drop(event_tx);
+
+    let _ = app.signal_shutdown_teardown().await;
+
+    let execution = app
+        .tool_history
+        .get("call-shutdown")
+        .expect("shutdown must drain terminal tool completion");
+    assert!(
+        execution.duration.is_some(),
+        "drained cancellation must terminalize tool history"
+    );
+    let row = app
+        .state
+        .messages
+        .iter()
+        .flat_map(|message| &message.tool_calls)
+        .find(|call| call.call_id == "call-shutdown")
+        .expect("drained cancellation must update the tool row");
+    assert_eq!(row.status, crate::state::ToolCallStatus::Cancelled);
+    assert!(!app.state.busy, "terminal response event must be applied");
+
+    let session_path = find_session_jsonl(temp.path());
+    let session = std::fs::read_to_string(session_path).expect("read persisted session");
+    assert!(
+        session.contains(r#""toolCallId":"call-shutdown""#),
+        "shutdown must persist the drained terminal tool result"
+    );
+}
+
+#[tokio::test]
 async fn auto_approved_extract_document_persists_attachment_text() {
     let mut app = new_test_app();
     let temp = tempdir().expect("temp session directory");
@@ -3449,4 +3596,25 @@ async fn deny_never_executes_and_relays_the_denial_to_the_agent() {
     assert_eq!(call_id, "call-3");
     assert!(!approved);
     assert!(result.is_none());
+}
+
+#[test]
+fn signal_shutdown_only_ends_a_started_terminal_session() {
+    let mut app = new_test_app();
+    app.terminal_notifier = crate::notifications::TerminalStateNotifier::new(false, true, false);
+
+    assert!(
+        app.terminal_session_ended_sequences().is_empty(),
+        "shutdown before run_inner starts must not pop the title stack"
+    );
+
+    app.terminal_session_started = true;
+    let sequences = app.terminal_session_ended_sequences();
+    assert!(
+        sequences
+            .iter()
+            .any(|sequence| sequence == crate::notifications::TITLE_STACK_POP),
+        "a started terminal session must restore the saved title"
+    );
+    assert!(!app.terminal_session_started);
 }

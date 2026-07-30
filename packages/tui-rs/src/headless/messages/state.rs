@@ -1057,6 +1057,11 @@ impl AgentState {
             } => {
                 let active_tool = self.active_tools.remove(&call_id);
                 let tracked_tool = self.tracked_tools.remove(&call_id);
+                let tool_execution_id = tool_execution_id.or_else(|| {
+                    tracked_tool
+                        .as_ref()
+                        .and_then(|source| source.tool_execution_id.clone())
+                });
                 let source_tool = tool
                     .as_deref()
                     .or_else(|| tracked_tool.as_ref().map(|source| source.tool.as_str()))
@@ -1069,9 +1074,7 @@ impl AgentState {
                         );
                         self.upsert_codex_subagent_edges(
                             &call_id,
-                            tool_execution_id
-                                .as_deref()
-                                .or_else(|| tracked_tool.as_ref()?.tool_execution_id.as_deref()),
+                            tool_execution_id.as_deref(),
                             tool,
                             args.as_ref(),
                             terminal_codex_subagent_status(operation, success),
@@ -1084,6 +1087,7 @@ impl AgentState {
                 self.pending_tool_retries.retain(|p| p.call_id != call_id);
                 Some(AgentEvent::ToolEnd {
                     call_id,
+                    tool_execution_id,
                     success,
                     duration: active_tool.map(|t| t.started.elapsed()),
                     receipt,
@@ -1384,6 +1388,7 @@ pub enum AgentEvent {
     },
     ToolEnd {
         call_id: String,
+        tool_execution_id: Option<String>,
         success: bool,
         duration: Option<std::time::Duration>,
         receipt: Option<ExecutionReceipt>,

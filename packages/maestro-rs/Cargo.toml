@@ -15,6 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
+ctor.workspace = true
 maestro-control-plane.workspace = true
 maestro-tui.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

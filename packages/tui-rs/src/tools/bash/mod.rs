@@ -125,24 +125,38 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
-use tokio::sync::OnceCell;
+use tokio::sync::{Mutex as AsyncMutex, OnceCell};
+#[cfg(unix)]
+use tokio::time::sleep;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use super::details::BashDetails;
-use super::process_utils::{kill_process_tree, set_new_process_group};
+#[cfg(unix)]
+use super::process_utils::{kill_process_group, process_group_exists};
+use super::process_utils::{kill_process_tree_tracked, set_child_subreaper, set_new_process_group};
 use super::shell_env::resolve_shell_environment;
 use crate::agent::ToolResult;
 use crate::ai::Tool;
-use crate::safety::{analyze_bash_command, git_args_are_mutating, tokenize};
+use crate::safety::{
+    analyze_bash_command, find_has_dangerous_predicate, git_args_are_mutating, tokenize,
+};
 use crate::sandbox::{spawn_sandboxed_command, SandboxPolicy};
 
 mod versions;
+
+#[cfg(test)]
+#[derive(Clone, Default)]
+struct BackgroundRegistrationHook {
+    reached: std::sync::Arc<tokio::sync::Notify>,
+    release: std::sync::Arc<tokio::sync::Notify>,
+}
 
 /// Default timeout for bash commands (2 minutes)
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
@@ -152,6 +166,92 @@ const MAX_TIMEOUT_MS: u64 = 600_000;
 const MAX_OUTPUT_SIZE: usize = 30_000;
 /// Maximum lines to show in truncated output
 const MAX_OUTPUT_LINES: usize = 500;
+
+#[cfg(unix)]
+async fn monitor_background_process_group(
+    process_group_id: u32,
+    external_cancel: &CancellationToken,
+    background_shutdown: &CancellationToken,
+) {
+    while process_group_exists(process_group_id) {
+        tokio::select! {
+            () = external_cancel.cancelled() => {
+                kill_process_group(process_group_id);
+                break;
+            }
+            () = background_shutdown.cancelled() => {
+                kill_process_group(process_group_id);
+                break;
+            }
+            () = sleep(Duration::from_millis(25)) => {}
+        }
+    }
+
+    let _ = timeout(Duration::from_secs(1), async {
+        while process_group_exists(process_group_id) {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+}
+
+#[cfg(unix)]
+async fn wait_for_process_groups(process_group_ids: &[u32]) {
+    let _ = timeout(Duration::from_secs(1), async {
+        loop {
+            if process_group_ids
+                .iter()
+                .all(|process_group_id| !process_group_exists(*process_group_id))
+            {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+}
+
+#[cfg(not(unix))]
+async fn wait_for_process_groups(_process_group_ids: &[u32]) {}
+
+#[cfg(target_os = "linux")]
+fn background_supervisor_script() -> &'static str {
+    "maestro_wait_for_adopted_descendants() {\n\
+     \tmaestro_empty_child_scans=0\n\
+     \twhile [ -r \"/proc/$$/task/$$/children\" ]; do\n\
+     \t\tmaestro_adopted_children=\n\
+     \t\tIFS= read -r maestro_adopted_children < \"/proc/$$/task/$$/children\" || true\n\
+     \t\tif [ -z \"$maestro_adopted_children\" ]; then\n\
+     \t\t\tmaestro_empty_child_scans=$((maestro_empty_child_scans + 1))\n\
+     \t\t\t[ \"$maestro_empty_child_scans\" -ge 2 ] && break\n\
+     \t\telse\n\
+     \t\t\tmaestro_empty_child_scans=0\n\
+     \t\t\twait 2>/dev/null || true\n\
+     \t\tfi\n\
+     \t\tsleep 0.025\n\
+     \tdone\n\
+     }\n\
+     trap maestro_wait_for_adopted_descendants EXIT\n\
+     maestro_command_status=0\n\
+     \"$@\" &\n\
+     maestro_command_pid=$!\n\
+     wait \"$maestro_command_pid\" || maestro_command_status=$?\n\
+     maestro_wait_for_adopted_descendants\n\
+     trap - EXIT\n\
+     exit \"$maestro_command_status\""
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn background_supervisor_script() -> &'static str {
+    "trap 'wait' EXIT\n\
+     maestro_command_status=0\n\
+     \"$@\" &\n\
+     maestro_command_pid=$!\n\
+     wait \"$maestro_command_pid\" || maestro_command_status=$?\n\
+     wait\n\
+     trap - EXIT\n\
+     exit \"$maestro_command_status\""
+}
 
 /// Contract version of the bash tool's observable behavior.
 ///
@@ -216,21 +316,13 @@ fn current_requires_approval(command: &str) -> bool {
         }
 
         // Tokenize quote-aware so `find . "-delete"` cannot hide its
-        // flags behind quotes and slip past this guard.
-        tokenize(cmd_trimmed)
-            .iter()
-            .map(|token| {
-                token
-                    .to_lowercase()
-                    .trim_end_matches([';', '+', '\\'])
-                    .to_string()
-            })
-            .any(|token| {
-                matches!(
-                    token.as_str(),
-                    "-exec" | "-execdir" | "-ok" | "-okdir" | "-delete"
-                )
-            })
+        // flags behind quotes and slip past this guard. Predicate matching
+        // (including the GNU `-f*` write predicates: `-fprintf`/`-fprint`/
+        // `-fprint0`/`-fls`) lives in `safety::bash_analyzer` so both
+        // approval gates (this one and `ActionFirewall::check_bash`) reject
+        // the same set instead of relying on only one of them.
+        let tokens = tokenize(cmd_trimmed);
+        find_has_dangerous_predicate(&tokens)
     }
 
     fn is_safe_segment(cmd_trimmed: &str) -> bool {
@@ -239,6 +331,19 @@ fn current_requires_approval(command: &str) -> bool {
         }
 
         if is_find_with_exec(cmd_trimmed) {
+            return false;
+        }
+
+        // `env` gets special handling rather than a blanket prefix match:
+        // bare `env` only prints the environment, but any argument can affect
+        // a wrapped program through an open-ended, program-specific hook
+        // (`LESSOPEN` is one concrete command-execution vector). No finite
+        // variable denylist can prove an argument-bearing invocation safe.
+        if cmd_trimmed == "env" {
+            return true;
+        }
+        let tokens = tokenize(cmd_trimmed);
+        if tokens.first().is_some_and(|token| token == "env") {
             return false;
         }
 
@@ -260,7 +365,6 @@ fn current_requires_approval(command: &str) -> bool {
             "wc ",
             "du ",
             "df ",
-            "env",
             "printenv",
             "date",
             "whoami",
@@ -978,6 +1082,14 @@ pub struct BashTool {
     sandbox_policy: Option<SandboxPolicy>,
     /// Behavior contract version this instance executes with.
     version: BashVersion,
+    /// Per-executor shutdown signal for detached background commands.
+    background_shutdown: CancellationToken,
+    /// Serializes background launch registration with executor shutdown.
+    background_launch_gate: AsyncMutex<()>,
+    /// Waiters which own and reap detached background children.
+    background_watchers: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    #[cfg(test)]
+    background_registration_hook: Option<BackgroundRegistrationHook>,
 }
 
 impl BashTool {
@@ -994,6 +1106,30 @@ impl BashTool {
             shell_error,
             sandbox_policy: None,
             version: BashVersion::default(),
+            background_shutdown: CancellationToken::new(),
+            background_launch_gate: AsyncMutex::new(()),
+            background_watchers: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            background_registration_hook: None,
+        }
+    }
+
+    /// Stop and reap every background command started by this tool instance.
+    ///
+    /// This is intentionally scoped to one executor so shutting down one
+    /// headless agent session cannot terminate another session's commands.
+    pub async fn shutdown_background_processes(&self) {
+        let watchers = {
+            let _launch_guard = self.background_launch_gate.lock().await;
+            self.background_shutdown.cancel();
+            let mut watchers = self
+                .background_watchers
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *watchers)
+        };
+        for watcher in watchers {
+            let _ = timeout(Duration::from_secs(2), watcher).await;
         }
     }
 
@@ -1274,6 +1410,25 @@ impl BashTool {
         let start_time = Instant::now();
         let cwd_string = self.cwd.clone();
 
+        let background_launch_guard = if args.run_in_background {
+            Some(self.background_launch_gate.lock().await)
+        } else {
+            None
+        };
+        if cancel.as_ref().is_some_and(CancellationToken::is_cancelled)
+            || (args.run_in_background && self.background_shutdown.is_cancelled())
+        {
+            let mut details = self.stamp_details(
+                BashDetails::cancelled(&args.command)
+                    .with_cwd(cwd_string)
+                    .with_duration(start_time.elapsed().as_millis() as u64),
+            );
+            if let Some(ref desc) = args.description {
+                details = details.with_description(desc);
+            }
+            return ToolResult::failure("Command cancelled").with_details(details.to_json());
+        }
+
         // Spawn process
         let spawn_result = if let Some(policy) = &self.sandbox_policy {
             if args.run_in_background {
@@ -1288,15 +1443,48 @@ impl BashTool {
                 .await
                 .map_err(|error| std::io::Error::other(error.to_string()))
         } else {
-            let mut cmd = Command::new(&self.shell);
-            cmd.args(&self.shell_args)
-                .arg(&args.command)
-                .current_dir(&self.cwd)
+            #[cfg(unix)]
+            let mut cmd = if args.run_in_background {
+                let mut supervisor = Command::new("/bin/sh");
+                supervisor
+                    .arg("-c")
+                    .arg(background_supervisor_script())
+                    .arg("maestro-background-supervisor")
+                    .arg(&self.shell)
+                    .args(&self.shell_args)
+                    .arg(&args.command);
+                supervisor
+            } else {
+                let mut command = Command::new(&self.shell);
+                command.args(&self.shell_args).arg(&args.command);
+                command
+            };
+            #[cfg(not(unix))]
+            let mut cmd = {
+                let mut command = Command::new(&self.shell);
+                command.args(&self.shell_args).arg(&args.command);
+                command
+            };
+            cmd.current_dir(&self.cwd)
                 .stdin(Stdio::null())
                 .env_clear()
-                .envs(env);
+                .envs(env)
+                // Defense-in-depth backstop, consistent with the other spawn
+                // sites in this crate (device_identity.rs, codex_app_server.rs,
+                // lsp.rs): if this `Child` is ever dropped without being
+                // waited on (e.g. the future is torn down from above without
+                // going through the cancel-token path below), tokio kills the
+                // immediate process rather than leaking it silently. This does
+                // NOT kill the whole process group/tree -- only
+                // `kill_process_tree` below (via the cancel/timeout paths)
+                // does that -- so it is a partial backstop, not a substitute.
+                // Safe for `run_in_background`: that path moves `child` into
+                // a spawned task that runs `.wait()` to completion, so it is
+                // never dropped early and this flag never fires for it.
+                .kill_on_drop(true);
             set_new_process_group(&mut cmd);
             if args.run_in_background {
+                set_child_subreaper(&mut cmd);
                 cmd.stdout(Stdio::null()).stderr(Stdio::null());
             } else {
                 cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -1333,12 +1521,70 @@ impl BashTool {
 
             let pid_for_wait = child_pid;
             let mut child_for_wait = child;
-            tokio::spawn(async move {
-                let _ = child_for_wait.wait().await;
+            let external_cancel = cancel.unwrap_or_default();
+            let background_shutdown = self.background_shutdown.clone();
+            if external_cancel.is_cancelled() || background_shutdown.is_cancelled() {
+                let killed_process_groups = if let Some(pid) = pid_for_wait {
+                    kill_process_tree_tracked(pid)
+                } else {
+                    let _ = child_for_wait.kill().await;
+                    Vec::new()
+                };
+                let _ = timeout(Duration::from_secs(1), child_for_wait.wait()).await;
+                wait_for_process_groups(&killed_process_groups).await;
+                if let Some(pid) = pid_for_wait {
+                    super::process_registry::unregister(pid);
+                }
+                let mut details = self.stamp_details(
+                    BashDetails::cancelled(&args.command)
+                        .with_cwd(cwd_string)
+                        .with_duration(start_time.elapsed().as_millis() as u64),
+                );
+                if let Some(ref desc) = args.description {
+                    details = details.with_description(desc);
+                }
+                return ToolResult::failure("Command cancelled").with_details(details.to_json());
+            }
+            #[cfg(test)]
+            if let Some(hook) = &self.background_registration_hook {
+                hook.reached.notify_one();
+                hook.release.notified().await;
+            }
+            let watcher = tokio::spawn(async move {
+                tokio::select! {
+                    biased;
+                    _ = child_for_wait.wait() => {
+                        #[cfg(unix)]
+                        if let Some(process_group_id) = pid_for_wait {
+                            monitor_background_process_group(
+                                process_group_id, &external_cancel, &background_shutdown,
+                            ).await;
+                        }
+                    }
+                    () = external_cancel.cancelled() => {
+                        let killed_process_groups =
+                            pid_for_wait.map(kill_process_tree_tracked).unwrap_or_default();
+                        let _ = timeout(Duration::from_secs(1), child_for_wait.wait()).await;
+                        wait_for_process_groups(&killed_process_groups).await;
+                    }
+                    () = background_shutdown.cancelled() => {
+                        let killed_process_groups =
+                            pid_for_wait.map(kill_process_tree_tracked).unwrap_or_default();
+                        let _ = timeout(Duration::from_secs(1), child_for_wait.wait()).await;
+                        wait_for_process_groups(&killed_process_groups).await;
+                    }
+                }
                 if let Some(pid) = pid_for_wait {
                     super::process_registry::unregister(pid);
                 }
             });
+            let mut watchers = self
+                .background_watchers
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            watchers.retain(|watcher| !watcher.is_finished());
+            watchers.push(watcher);
+            drop(background_launch_guard);
 
             let mut details = self.stamp_details(
                 BashDetails::background(&args.command, child_pid.unwrap_or(0))
@@ -1396,13 +1642,15 @@ impl BashTool {
             } {
                 Some(result) => result,
                 None => {
-                    if let Some(pid) = child_pid {
-                        kill_process_tree(pid);
+                    let killed_process_groups = if let Some(pid) = child_pid {
+                        kill_process_tree_tracked(pid)
                     } else {
                         let _ = child.kill().await;
-                    }
+                        Vec::new()
+                    };
                     // Best-effort reap to avoid zombies
                     let _ = timeout(Duration::from_secs(1), child.wait()).await;
+                    wait_for_process_groups(&killed_process_groups).await;
                     let mut details = self.stamp_details(
                         BashDetails::cancelled(&args.command) // exit 130 = SIGINT
                             .with_cwd(cwd_string)
@@ -1477,14 +1725,16 @@ impl BashTool {
             Err(_) => {
                 // Timeout - kill the entire process tree to avoid orphan processes
                 // This is important for commands like `npm run dev` that spawn children
-                if let Some(pid) = child_pid {
-                    kill_process_tree(pid);
+                let killed_process_groups = if let Some(pid) = child_pid {
+                    kill_process_tree_tracked(pid)
                 } else {
                     // Fallback to direct kill if PID not available
                     let _ = child.kill().await;
-                }
+                    Vec::new()
+                };
                 // Best-effort reap to avoid zombies
                 let _ = timeout(Duration::from_secs(1), child.wait()).await;
+                wait_for_process_groups(&killed_process_groups).await;
                 let mut details = self.stamp_details(
                     BashDetails::failed(&args.command, 124) // 124 = timeout exit code
                         .with_cwd(cwd_string)
@@ -2209,6 +2459,67 @@ mod tests {
     }
 
     // ============================================================
+    // Security regressions: `env` assignment bypass (root cause B)
+    // ============================================================
+    //
+    // A finite environment-variable denylist cannot cover program-specific
+    // hooks such as `LESSOPEN`, so every argument-bearing `env` invocation
+    // must require approval.
+
+    #[test]
+    fn test_requires_approval_env_arguments() {
+        assert!(BashTool::requires_approval(
+            "env LD_PRELOAD=/tmp/evil.so cat /etc/hostname"
+        ));
+        assert!(BashTool::requires_approval(
+            "env DYLD_INSERT_LIBRARIES=/tmp/evil.dylib cat /etc/hostname"
+        ));
+        assert!(BashTool::requires_approval(
+            "env BASH_ENV=/tmp/evil.sh cat file"
+        ));
+        assert!(BashTool::requires_approval(
+            "env GIT_SSH_COMMAND=/tmp/evil.sh git log"
+        ));
+        assert!(BashTool::requires_approval(
+            "env LESSOPEN='|sh -c \"echo INJECTED\" %s' less /etc/hostname"
+        ));
+        assert!(BashTool::requires_approval("env FOO=bar cat file.txt"));
+        assert!(BashTool::requires_approval("env -i cat file.txt"));
+        assert!(!BashTool::requires_approval("env"));
+    }
+
+    // ============================================================
+    // Security regressions: `find` file-writing predicates (root cause A)
+    // ============================================================
+    //
+    // `is_find_with_exec` previously only recognized `-exec`/`-execdir`/
+    // `-ok`/`-okdir`/`-delete`. GNU find's `-fprintf`/`-fprint`/`-fprint0`/
+    // `-fls` write file contents to an arbitrary path named as their own
+    // argument, entirely independent of shell redirection (so the existing
+    // ">"-redirect approval check never sees it), and bypass path
+    // containment (which only applies to the write/edit tools, never bash).
+
+    #[test]
+    fn test_requires_approval_find_write_predicates() {
+        assert!(BashTool::requires_approval(
+            "find . -maxdepth 0 -fprintf /home/developer/.bashrc x"
+        ));
+        assert!(BashTool::requires_approval(
+            "find . -maxdepth 0 -fprint /home/developer/.ssh/authorized_keys"
+        ));
+        assert!(BashTool::requires_approval("find . -fprint0 /tmp/out"));
+        assert!(BashTool::requires_approval("find . -fls /tmp/out"));
+        // Quoted predicates must not bypass the guard either.
+        assert!(BashTool::requires_approval("find . \"-fprintf\" /tmp/x y"));
+    }
+
+    #[test]
+    fn test_requires_approval_find_read_only_predicates_unaffected() {
+        assert!(!BashTool::requires_approval("find . -newer /etc/passwd"));
+        assert!(!BashTool::requires_approval("find . -printf '%h\\n'"));
+    }
+
+    // ============================================================
     // Background Execution Tests
     // ============================================================
 
@@ -2233,6 +2544,395 @@ mod tests {
         assert!(result.output.contains("PID"));
         // Should return immediately, not wait for the sleep
         assert!(elapsed.as_secs() < 2);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn background_preserves_configured_shell_argv_and_command() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let fake_shell = workspace.path().join("configured-shell");
+        let received_command = workspace.path().join("received-command");
+        let sentinel = workspace.path().join("configured-shell-sentinel");
+        std::fs::write(
+            &fake_shell,
+            "#!/bin/sh\n\
+             [ \"$1\" = \"--eval\" ] || exit 21\n\
+             printf %s \"$3\" > \"$2\"\n\
+             exec /bin/sh -c \"$3\"\n",
+        )
+        .expect("configured shell fixture should be writable");
+        std::fs::set_permissions(&fake_shell, std::fs::Permissions::from_mode(0o700))
+            .expect("configured shell fixture should be executable");
+        let command = format!("printf '%s' 'configured shell' > '{}'", sentinel.display());
+        let mut tool = BashTool::new(workspace.path().display().to_string());
+        tool.shell = fake_shell.display().to_string();
+        tool.shell_args = vec!["--eval".to_string(), received_command.display().to_string()];
+
+        let result = tool
+            .execute(BashArgs {
+                command: command.clone(),
+                timeout: None,
+                description: Some("configured shell background regression".to_string()),
+                run_in_background: true,
+            })
+            .await;
+        assert!(
+            result.success,
+            "background command should start: {result:?}"
+        );
+        timeout(Duration::from_secs(2), async {
+            while !sentinel.exists() || !received_command.exists() {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("configured shell should receive and execute the user command");
+
+        assert_eq!(
+            std::fs::read_to_string(&received_command).expect("recorded command"),
+            command,
+            "the supervisor must pass the user command as one unchanged argv value"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&sentinel).expect("command output"),
+            "configured shell"
+        );
+        tool.shutdown_background_processes().await;
+    }
+
+    #[tokio::test]
+    async fn already_cancelled_background_launch_returns_failure_without_spawning() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sentinel = workspace.path().join("cancelled-background-sentinel");
+        let tool = BashTool::new(workspace.path().display().to_string());
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let result = tool
+            .execute_with_cancellation(
+                BashArgs {
+                    command: format!("sleep 1; printf leaked > '{}'", sentinel.display()),
+                    timeout: None,
+                    description: None,
+                    run_in_background: true,
+                },
+                Some(token),
+            )
+            .await;
+
+        assert!(!result.success);
+        assert_eq!(result.error.as_deref(), Some("Command cancelled"));
+        sleep(Duration::from_millis(1_100)).await;
+        assert!(
+            !sentinel.exists(),
+            "an already-cancelled background command must not mutate the workspace"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_tool_rejects_later_background_launch_without_spawning() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sentinel = workspace.path().join("shutdown-background-sentinel");
+        let tool = BashTool::new(workspace.path().display().to_string());
+        tool.shutdown_background_processes().await;
+
+        let result = tool
+            .execute(BashArgs {
+                command: format!("sleep 1; printf leaked > '{}'", sentinel.display()),
+                timeout: None,
+                description: None,
+                run_in_background: true,
+            })
+            .await;
+
+        assert!(!result.success);
+        assert_eq!(result.error.as_deref(), Some("Command cancelled"));
+        assert!(
+            tool.background_watchers
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty(),
+            "shutdown tool must not register a watcher for a rejected launch"
+        );
+        sleep(Duration::from_millis(1_100)).await;
+        assert!(
+            !sentinel.exists(),
+            "a background command submitted after shutdown must not mutate the workspace"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_launch_registration_before_draining_watchers() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sentinel = workspace.path().join("launch-registration-sentinel");
+        let hook = BackgroundRegistrationHook::default();
+        let mut tool = BashTool::new(workspace.path().display().to_string());
+        tool.background_registration_hook = Some(hook.clone());
+        let tool = std::sync::Arc::new(tool);
+
+        let execute_tool = tool.clone();
+        let execute_sentinel = sentinel.clone();
+        let execute = tokio::spawn(async move {
+            execute_tool
+                .execute(BashArgs {
+                    command: format!("sleep 1; printf leaked > '{}'", execute_sentinel.display()),
+                    timeout: None,
+                    description: None,
+                    run_in_background: true,
+                })
+                .await
+        });
+
+        hook.reached.notified().await;
+        let shutdown_tool = tool.clone();
+        let shutdown =
+            tokio::spawn(async move { shutdown_tool.shutdown_background_processes().await });
+        sleep(Duration::from_millis(50)).await;
+        assert!(
+            !shutdown.is_finished(),
+            "shutdown must wait while a background launch owns the registration gate"
+        );
+
+        hook.release.notify_one();
+        let result = execute
+            .await
+            .expect("background launch task should not panic");
+        assert!(
+            result.success,
+            "launch linearized before shutdown should return success"
+        );
+        shutdown
+            .await
+            .expect("background shutdown task should not panic");
+
+        sleep(Duration::from_millis(1_100)).await;
+        assert!(
+            !sentinel.exists(),
+            "shutdown returned before the registered background command was reaped"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn shutdown_kills_session_detached_background_children() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let detached_pid_path = workspace.path().join("detached.pid");
+        let sentinel = workspace.path().join("detached-background-sentinel");
+        let tool = BashTool::new(workspace.path().display().to_string());
+        let result = tool
+            .execute(BashArgs {
+                command: format!(
+                    "setsid sh -c 'printf %s \"$$\" > \"{}\"; sleep 1; printf leaked > \"{}\"' &",
+                    detached_pid_path.display(),
+                    sentinel.display()
+                ),
+                timeout: None,
+                description: Some("session-detached background shutdown regression".to_string()),
+                run_in_background: true,
+            })
+            .await;
+        assert!(
+            result.success,
+            "background command should start: {result:?}"
+        );
+        let original_process_group_id = result
+            .details
+            .as_ref()
+            .and_then(|details| details.get("pid"))
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok())
+            .expect("background receipt should include its process-group leader");
+
+        timeout(Duration::from_secs(2), async {
+            while !detached_pid_path.exists() {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("session-detached child should record its PID");
+        let detached_pid = std::fs::read_to_string(&detached_pid_path)
+            .expect("detached PID should be readable")
+            .trim()
+            .parse::<u32>()
+            .expect("detached PID should be numeric");
+        assert!(
+            process_group_exists(detached_pid),
+            "setsid child should lead a live detached process group"
+        );
+        assert!(
+            process_group_exists(original_process_group_id),
+            "supervising shell must remain live while its detached child runs"
+        );
+
+        tool.shutdown_background_processes().await;
+
+        assert!(
+            !process_group_exists(original_process_group_id),
+            "shutdown must terminate the supervising process group"
+        );
+        assert!(
+            !process_group_exists(detached_pid),
+            "shutdown must terminate the detached process group"
+        );
+        sleep(Duration::from_millis(1_100)).await;
+        assert!(
+            !sentinel.exists(),
+            "session-detached background process survived shutdown and mutated the workspace"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn shutdown_kills_adopted_double_fork_daemon() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let daemon_script = workspace.path().join("double-fork-daemon.sh");
+        let daemon_pid_path = workspace.path().join("double-fork-daemon.pid");
+        let sentinel = workspace.path().join("double-fork-daemon-sentinel");
+        std::fs::write(
+            &daemon_script,
+            format!(
+                "#!/bin/sh\nprintf %s \"$$\" > \"{}\"\nsleep 30\nprintf leaked > \"{}\"\n",
+                daemon_pid_path.display(),
+                sentinel.display()
+            ),
+        )
+        .expect("daemon fixture should be writable");
+
+        let tool = BashTool::new(workspace.path().display().to_string());
+        let result = tool
+            .execute(BashArgs {
+                command: format!(
+                    "sh -c 'setsid sh \"{}\" </dev/null >/dev/null 2>&1 &'",
+                    daemon_script.display()
+                ),
+                timeout: None,
+                description: Some("double-fork daemon shutdown regression".to_string()),
+                run_in_background: true,
+            })
+            .await;
+        assert!(
+            result.success,
+            "background command should start: {result:?}"
+        );
+        let supervisor_pid = result
+            .details
+            .as_ref()
+            .and_then(|details| details.get("pid"))
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok())
+            .expect("background receipt should include its supervisor PID");
+
+        timeout(Duration::from_secs(2), async {
+            while !daemon_pid_path.exists() {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("double-fork daemon should publish its PID");
+        let daemon_pid = std::fs::read_to_string(&daemon_pid_path)
+            .expect("daemon PID should be readable")
+            .trim()
+            .parse::<u32>()
+            .expect("daemon PID should be numeric");
+
+        timeout(Duration::from_secs(2), async {
+            loop {
+                let status = std::fs::read_to_string(format!("/proc/{daemon_pid}/status"))
+                    .expect("daemon should remain live before shutdown");
+                let parent_pid = status
+                    .lines()
+                    .find_map(|line| line.strip_prefix("PPid:"))
+                    .and_then(|value| value.trim().parse::<u32>().ok());
+                if parent_pid == Some(supervisor_pid) {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("subreaper shell should adopt the detached grandchild");
+
+        tool.shutdown_background_processes().await;
+
+        assert!(
+            !process_group_exists(supervisor_pid),
+            "shutdown must terminate the supervising process group"
+        );
+        assert!(
+            !process_group_exists(daemon_pid),
+            "shutdown must terminate the adopted daemon's detached process group"
+        );
+        sleep(Duration::from_millis(1_100)).await;
+        assert!(
+            !sentinel.exists(),
+            "adopted double-fork daemon survived shutdown and mutated the workspace"
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[tokio::test]
+    async fn shutdown_tracks_orphaned_background_group_after_shell_exits() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sentinel = workspace.path().join("orphaned-background-sentinel");
+        let tool = BashTool::new(workspace.path().display().to_string());
+        let result = tool
+            .execute(BashArgs {
+                command: format!(
+                    "exec sh -c '(sleep 1; printf leaked > \"{}\") &'",
+                    sentinel.display()
+                ),
+                timeout: None,
+                description: Some("orphaned background shutdown regression".to_string()),
+                run_in_background: true,
+            })
+            .await;
+        assert!(
+            result.success,
+            "background command should start: {result:?}"
+        );
+        let process_group_id = result
+            .details
+            .as_ref()
+            .and_then(|details| details.get("pid"))
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok())
+            .expect("background receipt should include its process-group leader");
+
+        timeout(Duration::from_secs(2), async {
+            loop {
+                let leader = i32::try_from(process_group_id).expect("pid fits i32");
+                // SAFETY: signal 0 checks only for the existence of this PID.
+                let leader_exists = unsafe { libc::kill(leader, 0) } == 0;
+                if !leader_exists && process_group_exists(process_group_id) {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("shell leader should exit while its background group remains");
+        assert!(
+            super::super::process_registry::tracked_pids().contains(&process_group_id),
+            "orphaned process group must remain registered after its leader exits"
+        );
+
+        tool.shutdown_background_processes().await;
+
+        assert!(
+            !super::super::process_registry::tracked_pids().contains(&process_group_id),
+            "shutdown must unregister the orphaned process group"
+        );
+        assert!(
+            !process_group_exists(process_group_id),
+            "shutdown must terminate the orphaned process group"
+        );
+        sleep(Duration::from_millis(1_100)).await;
+        assert!(
+            !sentinel.exists(),
+            "orphaned background process survived shutdown and mutated the workspace"
+        );
     }
 
     // ============================================================

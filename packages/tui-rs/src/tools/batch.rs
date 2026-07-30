@@ -19,6 +19,26 @@ use crate::agent::{
     CredentialVault, ExecutionPhase, ExecutionSource, FromAgent, ToolExecution, ToolResult,
 };
 
+/// Bounded grace period `execute_with_cancel_at_generation` gives an
+/// already-started call its own copy of `cancel_token` (see the per-call
+/// `Some(cancel_token.clone())` forwarded below) to run its own
+/// cancellation-aware cleanup to completion, before hard-abandoning it.
+///
+/// A bare `select! { .. => .., () = cancel_token.cancelled() => .. }` (or
+/// `JoinSet::abort_all`) is not a fair race once the call holds its own
+/// copy of the same token: `cancelled()` resolves in a single poll, while a
+/// tool's own nested cleanup (e.g. `BashTool::execute_with_cancellation`
+/// killing a process tree, then awaiting its reap) needs several polls
+/// across real wall-clock time, so the bare cancellation path would win
+/// almost every time and abandon that cleanup mid-way -- exactly the
+/// `kill_on_drop`-kills-only-the-shell failure mode forwarding the token
+/// alone does not fix. Mirrors `agent::native::race_with_cancellation_grace`
+/// (same window, same rationale), duplicated here rather than shared
+/// because that helper is private to `native.rs` and threaded through
+/// `run_loop_cancellable`'s single top-level future, not this module's
+/// per-call/per-task shape.
+const BATCH_CANCELLATION_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// A single tool call in a batch
 #[derive(Debug, Clone)]
 pub struct BatchToolCall {
@@ -403,27 +423,62 @@ impl BatchExecutor {
                         });
                     }
                 }
-                let execution = tokio::select! {
-                    execution = self.executor.execute_with_receipt_at_generation(
-                        &call.tool_name,
+                // Forward `cancel_token` into the per-call `cancel` slot too
+                // (not just this `select!`): a call whose own tool (bash,
+                // web_fetch, an inline tool) never observes the token
+                // relies solely on the abandoned future's `Drop` for
+                // cleanup -- which for a child process only kills the
+                // immediate shell (`kill_on_drop`), not any descendants it
+                // spawned.
+                //
+                // `call_id`/`tool_name` are cloned up front (rather than
+                // borrowed from `call`) so they can still be moved into the
+                // result below after `call_execution` -- which borrows
+                // `call.args` -- is done being polled.
+                let call_id = call.call_id.clone();
+                let tool_name = call.tool_name.clone();
+                // Scoped so `call_execution` (which borrows `call_id`,
+                // `tool_name`, and `call.args`) is dropped before they are
+                // moved into `BatchToolResult::from_execution` below.
+                let execution = {
+                    let call_execution = self.executor.execute_with_receipt_at_generation(
+                        &tool_name,
                         &call.args,
                         None,
-                        &call.call_id,
+                        &call_id,
                         generation,
-                        None,
-                    ) => execution,
-                    () = cancel_token.cancelled() => {
-                        cancelled = true;
-                        ToolExecution::cancelled(
-                            &call.call_id,
-                            &call.tool_name,
-                            ExecutionSource::Native,
-                            ExecutionPhase::Running,
-                        )
+                        Some(cancel_token.clone()),
+                    );
+                    tokio::pin!(call_execution);
+                    tokio::select! {
+                        execution = &mut call_execution => execution,
+                        () = cancel_token.cancelled() => {
+                            cancelled = true;
+                            // See `BATCH_CANCELLATION_GRACE_PERIOD`: give
+                            // the call's own cancellation-aware cleanup
+                            // (now that it holds the same token) a bounded
+                            // window to run to completion instead of
+                            // dropping it -- and whatever cleanup it was
+                            // mid-way through -- the instant `cancelled()`
+                            // resolves.
+                            match tokio::time::timeout(
+                                BATCH_CANCELLATION_GRACE_PERIOD,
+                                &mut call_execution,
+                            )
+                            .await
+                            {
+                                Ok(execution) => execution,
+                                Err(_) => ToolExecution::cancelled(
+                                    &call_id,
+                                    &tool_name,
+                                    ExecutionSource::Native,
+                                    ExecutionPhase::Running,
+                                ),
+                            }
+                        }
                     }
                 };
-                let result =
-                    BatchToolResult::from_execution(call.call_id, call.tool_name, execution);
+                let result = BatchToolResult::from_execution(call_id, tool_name, execution);
 
                 if !result.result.success {
                     failed = true;
@@ -491,11 +546,23 @@ impl BatchExecutor {
                 let call_id = call.call_id;
                 let tool_name = call.tool_name;
                 let args = call.args;
+                // Forward this call's own copy of the shared token so its
+                // tool's cancellation-aware cleanup (process-tree kill,
+                // etc.) has something to observe; see
+                // `drain_with_grace_period_then_abort` for why the task set
+                // gives it a bounded window to actually run before this
+                // task is hard-aborted.
+                let call_cancel_token = cancel_token.clone();
 
                 task_set.spawn(async move {
                     let execution = executor
                         .execute_with_receipt_at_generation(
-                            &tool_name, &args, None, &call_id, generation, None,
+                            &tool_name,
+                            &args,
+                            None,
+                            &call_id,
+                            generation,
+                            Some(call_cancel_token),
                         )
                         .await;
 
@@ -510,7 +577,7 @@ impl BatchExecutor {
         }
 
         if cancelled {
-            task_set.abort_all();
+            drain_with_grace_period_then_abort(&mut task_set, &mut result_slots).await;
         }
 
         while !task_set.is_empty() {
@@ -525,7 +592,7 @@ impl BatchExecutor {
                 }
                 () = cancel_token.cancelled() => {
                     cancelled = true;
-                    task_set.abort_all();
+                    drain_with_grace_period_then_abort(&mut task_set, &mut result_slots).await;
                 }
             }
         }
@@ -892,6 +959,33 @@ fn record_joined_batch_result(
             *slot = Some(result);
         }
     }
+}
+
+/// Drain already-spawned tasks for up to [`BATCH_CANCELLATION_GRACE_PERIOD`]
+/// before hard-aborting whatever is left.
+///
+/// `JoinSet::abort_all` drops each task's future in place without executing
+/// any more of its own logic -- including a cancelled bash/inline call's own
+/// branch body that calls `kill_process_tree` -- so aborting the instant
+/// cancellation fires would defeat forwarding `cancel_token` into each
+/// spawned call's own `cancel` slot (see the call sites above): the task
+/// would never get a chance to run that cleanup at all. Every remaining task
+/// already holds its own copy of the same token (it is what triggered this
+/// drain), so within the grace window each one's own cancellation-aware
+/// cleanup can finish and be recorded normally through `join_next`; only
+/// whatever is still running once the deadline passes gets hard-aborted.
+async fn drain_with_grace_period_then_abort(
+    task_set: &mut JoinSet<(usize, BatchToolResult)>,
+    result_slots: &mut [Option<BatchToolResult>],
+) {
+    let grace_deadline = tokio::time::Instant::now() + BATCH_CANCELLATION_GRACE_PERIOD;
+    while !task_set.is_empty() {
+        match tokio::time::timeout_at(grace_deadline, task_set.join_next()).await {
+            Ok(result) => record_joined_batch_result(result, result_slots),
+            Err(_) => break,
+        }
+    }
+    task_set.abort_all();
 }
 
 fn emit_batch_completion(
@@ -1269,7 +1363,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelling_started_batch_tool_retains_running_phase_and_one_tool_end() {
+    async fn cancelling_started_batch_tool_lets_bash_own_cancellation_cleanup_win() {
         let batch = BatchExecutor::with_config("/tmp", BatchConfig::default().with_concurrency(1));
         let cancel_token = CancellationToken::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -1295,17 +1389,30 @@ mod tests {
             }
         }
         cancel_token.cancel();
-        let results = run.await;
+        let results = tokio::time::timeout(std::time::Duration::from_secs(5), run)
+            .await
+            .expect("cancellation must resolve well within its own grace period");
 
-        assert!(matches!(
-            results[0]
-                .execution
-                .as_ref()
-                .map(|execution| &execution.outcome),
-            Some(crate::agent::ToolOutcome::Cancelled {
-                phase: ExecutionPhase::Running
-            })
-        ));
+        // Before forwarding `cancel_token` into the per-call `cancel` slot
+        // (and giving it a grace period to actually run), this always came
+        // back as the generic `ToolOutcome::Cancelled { phase: Running }`
+        // placeholder -- `BashTool::execute_with_cancellation` never saw the
+        // token at all, so it could never run its own process-tree kill
+        // before the batch executor gave up on it. Now bash's own
+        // cancellation-aware branch has a real, bounded window to run to
+        // completion, and its specific "Command cancelled" result (not a
+        // generic placeholder) is what gets surfaced.
+        assert!(
+            !results[0].result.success,
+            "cancelled bash call must not report success: {:?}",
+            results[0].result
+        );
+        assert_eq!(
+            results[0].result.error.as_deref(),
+            Some("Command cancelled"),
+            "the batch result must be bash's own cancellation-aware outcome, not a generic placeholder: {:?}",
+            results[0].result
+        );
         let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         assert_eq!(
             events
@@ -1313,6 +1420,56 @@ mod tests {
                 .filter(|event| matches!(event, FromAgent::ToolEnd { .. }))
                 .count(),
             1
+        );
+    }
+
+    /// Same fix, exercised through the *sequential*
+    /// (`continue_on_error(false)`) branch of `execute_with_cancel_at_generation`,
+    /// which is a materially different code path (no `JoinSet`, one call at
+    /// a time via a plain `select!`) with its own separate grace-period
+    /// handling.
+    #[tokio::test]
+    async fn cancelling_sequential_batch_tool_lets_bash_own_cancellation_cleanup_win() {
+        let batch =
+            BatchExecutor::with_config("/tmp", BatchConfig::default().continue_on_error(false));
+        let cancel_token = CancellationToken::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let run = batch.execute_with_cancel(
+            vec![BatchToolCall::new(
+                "running",
+                "bash",
+                json!({"command": "sleep 30"}),
+            )],
+            Some(tx),
+            cancel_token.clone(),
+        );
+        tokio::pin!(run);
+
+        loop {
+            tokio::select! {
+                result = &mut run => panic!("batch completed before cancellation: {result:?}"),
+                event = rx.recv() => match event {
+                    Some(FromAgent::ToolStart { call_id }) if call_id == "running" => break,
+                    Some(_) => {}
+                    None => panic!("batch closed the event channel before starting the tool"),
+                }
+            }
+        }
+        cancel_token.cancel();
+        let results = tokio::time::timeout(std::time::Duration::from_secs(5), run)
+            .await
+            .expect("cancellation must resolve well within its own grace period");
+
+        assert!(
+            !results[0].result.success,
+            "cancelled bash call must not report success: {:?}",
+            results[0].result
+        );
+        assert_eq!(
+            results[0].result.error.as_deref(),
+            Some("Command cancelled"),
+            "the batch result must be bash's own cancellation-aware outcome, not a generic placeholder: {:?}",
+            results[0].result
         );
     }
 

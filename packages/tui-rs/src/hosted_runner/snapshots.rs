@@ -26,7 +26,7 @@ pub(super) async fn write_snapshot_manifest(
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        (state.session_id.clone(), shared.snapshot(&state))
+        (state.session_id.clone(), shared.public_snapshot(&state))
     };
     let has_runtime_activity = snapshot.cursor > 0;
     let export_paths = input

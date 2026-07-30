@@ -23,23 +23,198 @@ use std::fs;
 use std::io::{Cursor, Read};
 use std::path::Path;
 use std::process::{self, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering as AtomicOrdering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 use zip::ZipArchive;
 
 use super::net_guard;
 use crate::agent::ToolResult;
+
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+};
+#[cfg(windows)]
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{
+    OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
+};
 
 const MAX_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
 const MARKITDOWN_EXTRACT_TIMEOUT: Duration = Duration::from_secs(20);
 /// Timeout for the document download request, matching `web_fetch`'s default.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 static MARKITDOWN_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static NATIVE_TEST_EXTRACTION_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+struct ExtractionCancellation {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl ExtractionCancellation {
+    fn new() -> (Self, Arc<AtomicBool>) {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        (
+            Self {
+                cancelled: Arc::clone(&cancelled),
+            },
+            cancelled,
+        )
+    }
+}
+
+const EXTRACTION_NATIVE: u8 = 0;
+const EXTRACTION_MARKITDOWN: u8 = 1;
+const EXTRACTION_CANCELLED: u8 = 2;
+const EXTRACTION_FINISHED: u8 = 3;
+
+struct MarkitdownActivity<'a>(&'a AtomicU8);
+
+impl<'a> MarkitdownActivity<'a> {
+    fn begin(phase: &'a AtomicU8) -> Result<Self, String> {
+        phase
+            .compare_exchange(
+                EXTRACTION_NATIVE,
+                EXTRACTION_MARKITDOWN,
+                AtomicOrdering::AcqRel,
+                AtomicOrdering::Acquire,
+            )
+            .map(|_| Self(phase))
+            .map_err(|_| "MarkItDown conversion cancelled".to_string())
+    }
+}
+
+impl Drop for MarkitdownActivity<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.compare_exchange(
+            EXTRACTION_MARKITDOWN,
+            EXTRACTION_NATIVE,
+            AtomicOrdering::AcqRel,
+            AtomicOrdering::Acquire,
+        );
+    }
+}
+
+impl Drop for ExtractionCancellation {
+    fn drop(&mut self) {
+        self.cancelled.store(true, AtomicOrdering::Release);
+    }
+}
+
+#[cfg(windows)]
+struct OwnedWindowsHandle(HANDLE);
+
+#[cfg(windows)]
+impl Drop for OwnedWindowsHandle {
+    fn drop(&mut self) {
+        // SAFETY: this type exclusively owns the valid handle returned by a
+        // Win32 API call below.
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(windows)]
+struct MarkitdownJobObject(OwnedWindowsHandle);
+
+#[cfg(windows)]
+impl MarkitdownJobObject {
+    fn assign(child: &std::process::Child) -> std::io::Result<Self> {
+        use std::os::windows::io::AsRawHandle;
+
+        // SAFETY: null security attributes and name request an unnamed job
+        // object with default security.
+        let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if job.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let job = OwnedWindowsHandle(job);
+
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: limits has the exact layout and size required by this
+        // information class, and job remains live for the call.
+        if unsafe {
+            SetInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_ref(&limits).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        // SAFETY: std::process::Child owns a live process handle until it is
+        // dropped.
+        if unsafe { AssignProcessToJobObject(job.0, child.as_raw_handle() as HANDLE) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        Ok(Self(job))
+    }
+}
+
+#[cfg(windows)]
+fn resume_markitdown_process(child: &std::process::Child) -> std::io::Result<()> {
+    let pid = child.id();
+    // SAFETY: the snapshot has no caller-owned backing storage.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    let snapshot = OwnedWindowsHandle(snapshot);
+    let mut entry = THREADENTRY32 {
+        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+        ..THREADENTRY32::default()
+    };
+    let mut resumed = 0usize;
+
+    // SAFETY: entry is initialized with the required structure size and
+    // remains valid while the snapshot is enumerated.
+    let mut has_entry = unsafe { Thread32First(snapshot.0, &mut entry) };
+    while has_entry != 0 {
+        if entry.th32OwnerProcessID == pid {
+            // SAFETY: the thread id came from the live system snapshot.
+            let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+            if thread.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let thread = OwnedWindowsHandle(thread);
+            // SAFETY: thread has THREAD_SUSPEND_RESUME access.
+            if unsafe { ResumeThread(thread.0) } == u32::MAX {
+                return Err(std::io::Error::last_os_error());
+            }
+            resumed += 1;
+        }
+        // SAFETY: same initialized snapshot and entry as above.
+        has_entry = unsafe { Thread32Next(snapshot.0, &mut entry) };
+    }
+
+    if resumed == 0 {
+        return Err(std::io::Error::other(
+            "spawned MarkItDown process had no resumable threads",
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Deserialize)]
 struct ExtractDocumentArgs {
@@ -165,6 +340,10 @@ fn extract_text_file(bytes: &[u8]) -> String {
 
 fn detect_format(file_name: &str, mime: Option<&str>) -> Option<&'static str> {
     let lower = file_name.to_lowercase();
+    #[cfg(test)]
+    if lower.ends_with(".slow-native-test.html") {
+        return Some("slow_native_test");
+    }
     if lower.ends_with(".pdf") || mime == Some("application/pdf") {
         return Some("pdf");
     }
@@ -199,6 +378,13 @@ fn detect_format(file_name: &str, mime: Option<&str>) -> Option<&'static str> {
 
 fn extract_from_format(format: &str, bytes: &[u8]) -> Option<String> {
     match format {
+        #[cfg(test)]
+        "slow_native_test" => {
+            NATIVE_TEST_EXTRACTION_ACTIVE.store(true, AtomicOrdering::Release);
+            thread::sleep(Duration::from_secs(2));
+            NATIVE_TEST_EXTRACTION_ACTIVE.store(false, AtomicOrdering::Release);
+            Some(String::new())
+        }
         "pdf" => pdf_extract::extract_text_from_mem(bytes).ok(),
         "docx" => extract_docx(bytes),
         "pptx" => extract_pptx(bytes),
@@ -383,7 +569,7 @@ fn join_markitdown_pipe(
 }
 
 #[cfg(unix)]
-fn set_markitdown_process_group(command: &mut Command) {
+fn configure_markitdown_process(command: &mut Command) {
     use std::os::unix::process::CommandExt;
 
     unsafe {
@@ -394,33 +580,70 @@ fn set_markitdown_process_group(command: &mut Command) {
     }
 }
 
-#[cfg(not(unix))]
-fn set_markitdown_process_group(_command: &mut Command) {}
+#[cfg(windows)]
+fn configure_markitdown_process(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
 
-fn kill_markitdown_process(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    {
-        if let Ok(pid) = i32::try_from(child.id()) {
-            let pgid = unsafe { libc::getpgid(pid) };
-            if pgid > 0 && pgid == pid {
-                unsafe {
-                    let _ = libc::kill(-pgid, libc::SIGKILL);
-                }
-            }
+    // Suspend before user code can spawn descendants, assign the process to a
+    // kill-on-close job, then resume it after spawn.
+    command.creation_flags(CREATE_SUSPENDED);
+}
+
+#[cfg(not(any(unix, windows)))]
+fn configure_markitdown_process(_command: &mut Command) {}
+
+#[cfg(unix)]
+fn kill_markitdown_process_group(process_group_id: u32) {
+    if let Ok(process_group_id) = i32::try_from(process_group_id) {
+        unsafe {
+            let _ = libc::kill(-process_group_id, libc::SIGKILL);
         }
     }
+}
 
+fn kill_markitdown_process(
+    child: &mut std::process::Child,
+    #[cfg_attr(not(unix), allow(unused_variables))] process_group_id: u32,
+) {
+    #[cfg(unix)]
+    kill_markitdown_process_group(process_group_id);
     let _ = child.kill();
 }
 
-fn run_markitdown_command(command: &str, args: &[String]) -> Result<String, String> {
+fn run_markitdown_command_with_cancellation(
+    command: &str,
+    args: &[String],
+    cancelled: &AtomicBool,
+) -> Result<String, String> {
     let mut process = Command::new(command);
     process
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    set_markitdown_process_group(&mut process);
+    configure_markitdown_process(&mut process);
     let mut child = process.spawn().map_err(|error| error.to_string())?;
+    // Unix configures the child as its own process-group leader before exec,
+    // so retain that identifier even after try_wait reaps the launcher.
+    let process_group_id = child.id();
+    #[cfg(windows)]
+    let mut windows_job = Some({
+        let job = match MarkitdownJobObject::assign(&child) {
+            Ok(job) => job,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "failed to contain MarkItDown process tree: {error}"
+                ));
+            }
+        };
+        if let Err(error) = resume_markitdown_process(&child) {
+            drop(job);
+            let _ = child.wait();
+            return Err(format!("failed to resume MarkItDown process: {error}"));
+        }
+        job
+    });
     let stdout_reader = child
         .stdout
         .take()
@@ -435,10 +658,24 @@ fn run_markitdown_command(command: &str, args: &[String]) -> Result<String, Stri
     let mut stderr_reader = Some(stderr_reader);
     let started = Instant::now();
     loop {
+        if cancelled.load(AtomicOrdering::Acquire) {
+            kill_markitdown_process(&mut child, process_group_id);
+            #[cfg(windows)]
+            drop(windows_job.take());
+            let _ = child.wait();
+            return Err("MarkItDown conversion cancelled".to_string());
+        }
         if let Some(status) = child
             .try_wait()
             .map_err(|error| format!("failed to wait for MarkItDown: {error}"))?
         {
+            // A converter launcher can exit while descendants still inherit
+            // its stdout/stderr. Terminate the retained Unix process group
+            // before joining the pipe readers or they can block forever.
+            #[cfg(unix)]
+            kill_markitdown_process_group(process_group_id);
+            #[cfg(windows)]
+            drop(windows_job.take());
             let stdout = join_markitdown_pipe(
                 "stdout",
                 stdout_reader
@@ -467,7 +704,9 @@ fn run_markitdown_command(command: &str, args: &[String]) -> Result<String, Stri
             ));
         }
         if started.elapsed() > MARKITDOWN_EXTRACT_TIMEOUT {
-            kill_markitdown_process(&mut child);
+            kill_markitdown_process(&mut child, process_group_id);
+            #[cfg(windows)]
+            drop(windows_job.take());
             let _ = child.wait();
             return Err("MarkItDown conversion timed out".to_string());
         }
@@ -475,13 +714,28 @@ fn run_markitdown_command(command: &str, args: &[String]) -> Result<String, Stri
     }
 }
 
+#[cfg(test)]
+fn run_markitdown_command(command: &str, args: &[String]) -> Result<String, String> {
+    run_markitdown_command_with_cancellation(command, args, &AtomicBool::new(false))
+}
+
 fn extract_with_markitdown(
     bytes: &[u8],
     file_name: &str,
     mime_type: Option<&str>,
+    cancelled: &AtomicBool,
+    extraction_phase: &AtomicU8,
 ) -> Result<Option<String>, String> {
     if markitdown_disabled() {
         return Ok(None);
+    }
+    // Mark the whole external-converter boundary active before checking
+    // cancellation. The async caller may then safely distinguish a native
+    // parser (which owns only memory) from work that must be joined until its
+    // subprocess tree and temporary files are cleaned up.
+    let _activity = MarkitdownActivity::begin(extraction_phase)?;
+    if cancelled.load(AtomicOrdering::Acquire) {
+        return Err("MarkItDown conversion cancelled".to_string());
     }
     let counter = MARKITDOWN_TEMP_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
     let temp_dir =
@@ -499,13 +753,16 @@ fn extract_with_markitdown(
             .map_err(|error| format!("failed to write MarkItDown input: {error}"))?;
         let mut last_error: Option<String> = None;
         for (command, prefix_args) in markitdown_candidates()? {
+            if cancelled.load(AtomicOrdering::Acquire) {
+                return Err("MarkItDown conversion cancelled".to_string());
+            }
             let mut args = prefix_args;
             args.push(input_path.to_string_lossy().to_string());
             if let Some(mime_type) = mime_type {
                 args.push("--mime-type".to_string());
                 args.push(mime_type.to_string());
             }
-            match run_markitdown_command(&command, &args) {
+            match run_markitdown_command_with_cancellation(&command, &args, cancelled) {
                 Ok(output) => {
                     let text = output.trim().to_string();
                     if !text.is_empty() {
@@ -532,18 +789,23 @@ fn extract_with_markitdown(
     result
 }
 
-fn extract_document_bytes(
+fn extract_document_bytes_with_cancellation(
     file_name: &str,
     mime_type: Option<&str>,
     bytes: &[u8],
     max_chars: Option<usize>,
+    cancelled: &AtomicBool,
+    extraction_phase: &AtomicU8,
 ) -> Result<DocumentExtraction, String> {
+    if cancelled.load(AtomicOrdering::Acquire) {
+        return Err("Document extraction cancelled".to_string());
+    }
     let format = detect_format(file_name, mime_type);
     let format_label = format.unwrap_or("unknown").to_string();
     let prefer_markitdown = markitdown_preferred() && !markitdown_disabled();
     let mut extractor = "native".to_string();
     let mut extracted = if prefer_markitdown {
-        match extract_with_markitdown(bytes, file_name, mime_type)? {
+        match extract_with_markitdown(bytes, file_name, mime_type, cancelled, extraction_phase)? {
             Some(text) => {
                 extractor = "markitdown".to_string();
                 text
@@ -560,8 +822,13 @@ fn extract_document_bytes(
         }
     }
 
+    if cancelled.load(AtomicOrdering::Acquire) {
+        return Err("Document extraction cancelled".to_string());
+    }
     if extractor != "markitdown" && should_try_markitdown(&format_label, file_name, mime_type) {
-        if let Some(text) = extract_with_markitdown(bytes, file_name, mime_type)? {
+        if let Some(text) =
+            extract_with_markitdown(bytes, file_name, mime_type, cancelled, extraction_phase)?
+        {
             extracted = text;
             extractor = "markitdown".to_string();
         }
@@ -590,7 +857,99 @@ fn extract_document_bytes(
     })
 }
 
+#[cfg(test)]
+fn extract_document_bytes(
+    file_name: &str,
+    mime_type: Option<&str>,
+    bytes: &[u8],
+    max_chars: Option<usize>,
+) -> Result<DocumentExtraction, String> {
+    extract_document_bytes_with_cancellation(
+        file_name,
+        mime_type,
+        bytes,
+        max_chars,
+        &AtomicBool::new(false),
+        &AtomicU8::new(EXTRACTION_NATIVE),
+    )
+}
+
+#[cfg(test)]
+async fn extract_document_bytes_async(
+    file_name: String,
+    mime_type: Option<String>,
+    bytes: Vec<u8>,
+    max_chars: Option<usize>,
+) -> Result<DocumentExtraction, String> {
+    extract_document_bytes_async_with_cancellation(file_name, mime_type, bytes, max_chars, None)
+        .await
+}
+
+async fn extract_document_bytes_async_with_cancellation(
+    file_name: String,
+    mime_type: Option<String>,
+    bytes: Vec<u8>,
+    max_chars: Option<usize>,
+    cancellation: Option<CancellationToken>,
+) -> Result<DocumentExtraction, String> {
+    let (cancel_on_drop, cancelled) = ExtractionCancellation::new();
+    let mut cancel_on_drop = Some(cancel_on_drop);
+    let extraction_phase = Arc::new(AtomicU8::new(EXTRACTION_NATIVE));
+    let worker_extraction_phase = Arc::clone(&extraction_phase);
+    let mut worker = tokio::task::spawn_blocking(move || {
+        let result = extract_document_bytes_with_cancellation(
+            &file_name,
+            mime_type.as_deref(),
+            &bytes,
+            max_chars,
+            &cancelled,
+            &worker_extraction_phase,
+        );
+        let _ = worker_extraction_phase.compare_exchange(
+            EXTRACTION_NATIVE,
+            EXTRACTION_FINISHED,
+            AtomicOrdering::AcqRel,
+            AtomicOrdering::Acquire,
+        );
+        result
+    });
+    let result = match cancellation {
+        Some(token) => tokio::select! {
+            biased;
+            () = token.cancelled() => {
+                let phase = extraction_phase.swap(
+                    EXTRACTION_CANCELLED,
+                    AtomicOrdering::AcqRel,
+                );
+                drop(cancel_on_drop.take());
+                // Native PDF/OOXML parsing owns only its input buffer and can
+                // finish harmlessly on Tokio's blocking pool. External
+                // MarkItDown work must instead be joined so its process tree
+                // and temporary files are reaped before shutdown continues.
+                if matches!(phase, EXTRACTION_MARKITDOWN | EXTRACTION_FINISHED) {
+                    let _ = worker
+                        .await
+                        .map_err(|error| format!("Document extraction task failed: {error}"))?;
+                }
+                return Err("Document extraction cancelled".to_string());
+            }
+            result = &mut worker => result,
+        },
+        None => worker.await,
+    };
+    drop(cancel_on_drop);
+    result.map_err(|error| format!("Document extraction task failed: {error}"))?
+}
+
+#[cfg(test)]
 pub async fn extract_document(args: Value) -> ToolResult {
+    extract_document_with_cancellation(args, None).await
+}
+
+pub async fn extract_document_with_cancellation(
+    args: Value,
+    cancellation: Option<CancellationToken>,
+) -> ToolResult {
     let parsed: ExtractDocumentArgs = match serde_json::from_value(args) {
         Ok(val) => val,
         Err(err) => {
@@ -613,13 +972,22 @@ pub async fn extract_document(args: Value) -> ToolResult {
     // (`169.254.169.254`) via an attacker-controlled URL; see the
     // `net_guard` module docs for why every hop must be validated, not just
     // the first.
-    let response = match net_guard::fetch_with_validated_redirects(
+    let fetch = net_guard::fetch_with_validated_redirects(
         url.clone(),
         DOWNLOAD_TIMEOUT,
         net_guard::DEFAULT_USER_AGENT,
-    )
-    .await
-    {
+    );
+    let response = match cancellation.as_ref() {
+        Some(token) => tokio::select! {
+            biased;
+            () = token.cancelled() => {
+                return cancelled_extract_document_result();
+            }
+            response = fetch => response,
+        },
+        None => fetch.await,
+    };
+    let response = match response {
         Ok(resp) => resp,
         Err(err) => {
             return ToolResult::failure(format!("Failed to download document: {err}"));
@@ -656,7 +1024,18 @@ pub async fn extract_document(args: Value) -> ToolResult {
         .and_then(|v| v.to_str().ok())
         .map(std::string::ToString::to_string);
 
-    let bytes = match response.bytes().await {
+    let body = response.bytes();
+    let bytes = match cancellation.as_ref() {
+        Some(token) => tokio::select! {
+            biased;
+            () = token.cancelled() => {
+                return cancelled_extract_document_result();
+            }
+            bytes = body => bytes,
+        },
+        None => body.await,
+    };
+    let bytes = match bytes {
         Ok(b) => b.to_vec(),
         Err(err) => {
             return ToolResult::failure(format!("Failed to read document bytes: {err}"));
@@ -672,14 +1051,25 @@ pub async fn extract_document(args: Value) -> ToolResult {
 
     let file_name = parse_content_disposition(content_disposition.as_deref())
         .unwrap_or_else(|| guess_filename_from_url(&url));
+    let size_bytes = bytes.len();
 
-    let extraction = match extract_document_bytes(
-        &file_name,
-        content_type.as_deref(),
-        &bytes,
+    let extraction = match extract_document_bytes_async_with_cancellation(
+        file_name.clone(),
+        content_type.clone(),
+        bytes,
         parsed.max_chars,
-    ) {
+        cancellation.clone(),
+    )
+    .await
+    {
         Ok(extraction) => extraction,
+        Err(_)
+            if cancellation
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled) =>
+        {
+            return cancelled_extract_document_result();
+        }
         Err(error) => {
             return ToolResult::failure(error);
         }
@@ -691,16 +1081,23 @@ pub async fn extract_document(args: Value) -> ToolResult {
         "mimeType": content_type,
         "format": extraction.format,
         "extractor": extraction.extractor,
-        "sizeBytes": bytes.len(),
+        "sizeBytes": size_bytes,
         "truncated": extraction.truncated
     });
 
     ToolResult::success(extraction.text).with_details(details)
 }
 
+fn cancelled_extract_document_result() -> ToolResult {
+    ToolResult::failure("extract_document cancelled")
+        .with_details(serde_json::json!({"cancelled": true}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static MARKITDOWN_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     // ========================================================================
     // ExtractDocumentArgs Deserialization Tests
@@ -991,8 +1388,9 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[test]
-    fn test_extract_document_bytes_uses_configured_markitdown_for_html() {
+    #[tokio::test]
+    async fn test_extract_document_bytes_uses_configured_markitdown_for_html() {
+        let _env_lock = MARKITDOWN_ENV_LOCK.lock().await;
         let script_path = env::temp_dir().join(format!(
             "maestro-tui-fake-markitdown-{}-{}.sh",
             process::id(),
@@ -1026,6 +1424,387 @@ mod tests {
         env::remove_var("MAESTRO_MARKITDOWN_CMD");
         env::remove_var("MAESTRO_MARKITDOWN_ARGS");
         let _ = fs::remove_file(script_path);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_does_not_join_pure_native_extraction() {
+        let _env_lock = MARKITDOWN_ENV_LOCK.lock().await;
+        let suffix = MARKITDOWN_TEMP_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+        let script_path = env::temp_dir().join(format!(
+            "maestro-tui-detached-native-markitdown-{}-{suffix}.sh",
+            process::id()
+        ));
+        let pid_path = env::temp_dir().join(format!(
+            "maestro-tui-detached-native-markitdown-{}-{suffix}.pid",
+            process::id()
+        ));
+        fs::write(
+            &script_path,
+            format!("printf '%s' \"$$\" > '{}'\n", pid_path.to_string_lossy()),
+        )
+        .expect("fallback MarkItDown fixture should be written");
+        env::set_var("MAESTRO_MARKITDOWN_CMD", "sh");
+        env::set_var(
+            "MAESTRO_MARKITDOWN_ARGS",
+            script_path.to_string_lossy().to_string(),
+        );
+        env::remove_var("MAESTRO_MARKITDOWN");
+        env::remove_var("MAESTRO_MARKITDOWN_PREFER");
+
+        NATIVE_TEST_EXTRACTION_ACTIVE.store(false, AtomicOrdering::Release);
+        let cancellation = CancellationToken::new();
+        let extraction = tokio::spawn(extract_document_bytes_async_with_cancellation(
+            "fixture.slow-native-test.html".to_string(),
+            None,
+            b"fixture".to_vec(),
+            None,
+            Some(cancellation.clone()),
+        ));
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !NATIVE_TEST_EXTRACTION_ACTIVE.load(AtomicOrdering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("native extraction must publish that it started");
+
+        let started = Instant::now();
+        cancellation.cancel();
+        let result = tokio::time::timeout(Duration::from_millis(250), extraction)
+            .await
+            .expect("cancellation must not join pure native parsing")
+            .expect("extraction task must not panic");
+        assert!(result.is_err());
+        assert!(
+            started.elapsed() < Duration::from_millis(250),
+            "native parsing held cancellation open"
+        );
+
+        tokio::time::sleep(Duration::from_millis(2200)).await;
+        assert!(
+            !pid_path.exists(),
+            "detached native extraction started MarkItDown after cancellation"
+        );
+        env::remove_var("MAESTRO_MARKITDOWN_CMD");
+        env::remove_var("MAESTRO_MARKITDOWN_ARGS");
+        let _ = fs::remove_file(script_path);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_async_extraction_is_responsive_and_cancels_markitdown_process() {
+        let _env_lock = MARKITDOWN_ENV_LOCK.lock().await;
+        let suffix = MARKITDOWN_TEMP_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+        let script_path = env::temp_dir().join(format!(
+            "maestro-tui-cancellable-markitdown-{}-{suffix}.sh",
+            process::id()
+        ));
+        let pid_path = env::temp_dir().join(format!(
+            "maestro-tui-cancellable-markitdown-{}-{suffix}.pid",
+            process::id()
+        ));
+        fs::write(
+            &script_path,
+            format!(
+                "printf '%s' \"$$\" > '{}'\nsleep 2\nprintf 'conversion completed\\n'\n",
+                pid_path.to_string_lossy()
+            ),
+        )
+        .expect("cancellable fake MarkItDown script should be written");
+        env::set_var("MAESTRO_MARKITDOWN_CMD", "sh");
+        env::set_var(
+            "MAESTRO_MARKITDOWN_ARGS",
+            script_path.to_string_lossy().to_string(),
+        );
+        env::remove_var("MAESTRO_MARKITDOWN");
+        env::remove_var("MAESTRO_MARKITDOWN_PREFER");
+
+        let extraction = tokio::spawn(extract_document_bytes_async(
+            "brief.html".to_string(),
+            Some("text/html".to_string()),
+            b"<html><body>blocking conversion</body></html>".to_vec(),
+            None,
+        ));
+
+        let readiness_started = Instant::now();
+        while !pid_path.exists() && readiness_started.elapsed() < Duration::from_secs(1) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            pid_path.exists(),
+            "MarkItDown process did not start while the async runtime remained responsive"
+        );
+        assert!(
+            readiness_started.elapsed() < Duration::from_millis(500),
+            "synchronous extraction blocked the async runtime for {:?}",
+            readiness_started.elapsed()
+        );
+
+        let pid: i32 = fs::read_to_string(&pid_path)
+            .expect("fake MarkItDown should record its pid")
+            .parse()
+            .expect("recorded MarkItDown pid should parse");
+        extraction.abort();
+        let _ = extraction.await;
+
+        let cancellation_started = Instant::now();
+        while unsafe { libc::kill(pid, 0) } == 0
+            && cancellation_started.elapsed() < Duration::from_secs(1)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_ne!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "aborting extraction left the MarkItDown process running"
+        );
+
+        env::remove_var("MAESTRO_MARKITDOWN_CMD");
+        env::remove_var("MAESTRO_MARKITDOWN_ARGS");
+        let _ = fs::remove_file(script_path);
+        let _ = fs::remove_file(pid_path);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_waits_for_markitdown_process_reaping() {
+        let _env_lock = MARKITDOWN_ENV_LOCK.lock().await;
+        let suffix = MARKITDOWN_TEMP_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+        let script_path = env::temp_dir().join(format!(
+            "maestro-tui-reaped-markitdown-{}-{suffix}.sh",
+            process::id()
+        ));
+        let pid_path = env::temp_dir().join(format!(
+            "maestro-tui-reaped-markitdown-{}-{suffix}.pid",
+            process::id()
+        ));
+        fs::write(
+            &script_path,
+            format!(
+                "printf '%s' \"$$\" > '{}'\nsleep 60\n",
+                pid_path.to_string_lossy()
+            ),
+        )
+        .expect("cancellable fake MarkItDown script should be written");
+        env::set_var("MAESTRO_MARKITDOWN_CMD", "sh");
+        env::set_var(
+            "MAESTRO_MARKITDOWN_ARGS",
+            script_path.to_string_lossy().to_string(),
+        );
+        env::remove_var("MAESTRO_MARKITDOWN");
+        env::remove_var("MAESTRO_MARKITDOWN_PREFER");
+
+        let cancellation = CancellationToken::new();
+        let extraction = tokio::spawn(extract_document_bytes_async_with_cancellation(
+            "brief.html".to_string(),
+            Some("text/html".to_string()),
+            b"<html><body>blocking conversion</body></html>".to_vec(),
+            None,
+            Some(cancellation.clone()),
+        ));
+
+        let readiness_started = Instant::now();
+        while !pid_path.exists() && readiness_started.elapsed() < Duration::from_secs(1) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let pid: i32 = fs::read_to_string(&pid_path)
+            .expect("fake MarkItDown should record its pid")
+            .parse()
+            .expect("recorded MarkItDown pid should parse");
+
+        cancellation.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(2), extraction)
+            .await
+            .expect("cancellation must not wait for the conversion timeout")
+            .expect("extraction task should join");
+
+        assert!(
+            result.is_err(),
+            "cancelled extraction unexpectedly succeeded"
+        );
+        assert_ne!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "extraction returned before the MarkItDown process was reaped"
+        );
+
+        env::remove_var("MAESTRO_MARKITDOWN_CMD");
+        env::remove_var("MAESTRO_MARKITDOWN_ARGS");
+        let _ = fs::remove_file(script_path);
+        let _ = fs::remove_file(pid_path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exited_markitdown_launcher_closes_inherited_descendant_pipes() {
+        let _env_lock = MARKITDOWN_ENV_LOCK.blocking_lock();
+        let suffix = MARKITDOWN_TEMP_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+        let script_path = env::temp_dir().join(format!(
+            "maestro-tui-descendant-markitdown-{}-{suffix}.sh",
+            process::id()
+        ));
+        let pid_path = env::temp_dir().join(format!(
+            "maestro-tui-descendant-markitdown-{}-{suffix}.pid",
+            process::id()
+        ));
+        fs::write(
+            &script_path,
+            format!(
+                "sleep 60 &\nprintf '%s' \"$!\" > '{}'\nexit 0\n",
+                pid_path.to_string_lossy()
+            ),
+        )
+        .expect("descendant fake MarkItDown script should be written");
+
+        let started = Instant::now();
+        let result = run_markitdown_command("sh", &[script_path.to_string_lossy().to_string()]);
+        let elapsed = started.elapsed();
+        let descendant_pid: i32 = fs::read_to_string(&pid_path)
+            .expect("fake MarkItDown should record its descendant pid")
+            .parse()
+            .expect("recorded descendant pid should parse");
+
+        assert!(
+            result.is_ok(),
+            "successful launcher should preserve its result: {result:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "inherited descendant pipes delayed completion for {elapsed:?}"
+        );
+        let stopped_started = Instant::now();
+        while unsafe { libc::kill(descendant_pid, 0) } == 0
+            && stopped_started.elapsed() < Duration::from_secs(1)
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_ne!(
+            unsafe { libc::kill(descendant_pid, 0) },
+            0,
+            "exited launcher left inherited-pipe descendant {descendant_pid} running"
+        );
+
+        let _ = fs::remove_file(script_path);
+        let _ = fs::remove_file(pid_path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_markitdown_job_kills_descendant_on_close() {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        let dir = tempfile::tempdir().expect("temporary directory should be created");
+        let pid_file = dir.path().join("child.pid");
+        let mut command = Command::new("powershell.exe");
+        command
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg(
+                "$child = Start-Process powershell.exe -ArgumentList '-NoProfile', \
+                 '-Command', 'Start-Sleep -Seconds 60' -PassThru; \
+                 Set-Content -LiteralPath $env:MAESTRO_TEST_PID_FILE -Value $child.Id; \
+                 $child.WaitForExit()",
+            )
+            .env("MAESTRO_TEST_PID_FILE", &pid_file)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        configure_markitdown_process(&mut command);
+        let mut child = command
+            .spawn()
+            .expect("suspended MarkItDown fixture should spawn");
+        let job =
+            MarkitdownJobObject::assign(&child).expect("fixture should enter kill-on-close job");
+        resume_markitdown_process(&child).expect("fixture should resume after job assignment");
+
+        for _ in 0..200 {
+            if pid_file.exists() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let descendant_pid: u32 = fs::read_to_string(&pid_file)
+            .expect("launcher must publish its descendant pid")
+            .trim()
+            .parse()
+            .expect("published descendant pid should parse");
+
+        // Closing a JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE handle must terminate
+        // the PowerShell descendant as well as the suspended launcher.
+        drop(job);
+        let mut descendant_stopped = false;
+        for _ in 0..200 {
+            // SAFETY: this opens a query-only handle to the pid published by
+            // the test descendant. A null result means the process no longer
+            // exists; any live handle is closed immediately.
+            let handle =
+                unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, descendant_pid) };
+            if handle.is_null() {
+                descendant_stopped = true;
+                break;
+            }
+            drop(OwnedWindowsHandle(handle));
+            thread::sleep(Duration::from_millis(10));
+        }
+        let _ = child.wait();
+        assert!(
+            descendant_stopped,
+            "closing the MarkItDown job left descendant {descendant_pid} running"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_markitdown_helper_closes_job_before_joining_inherited_pipes() {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        let _env_lock = MARKITDOWN_ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().expect("temporary directory should be created");
+        let pid_file = dir.path().join("child.pid");
+        env::set_var("MAESTRO_TEST_PID_FILE", &pid_file);
+        let args = vec![
+            "-NoProfile".to_string(),
+            "-Command".to_string(),
+            "$child = Start-Process powershell.exe -ArgumentList '-NoProfile', \
+             '-Command', 'Start-Sleep -Seconds 60' -NoNewWindow -PassThru; \
+             Set-Content -LiteralPath $env:MAESTRO_TEST_PID_FILE -Value $child.Id; \
+             exit 0"
+                .to_string(),
+        ];
+
+        let started = Instant::now();
+        let result = run_markitdown_command_with_cancellation(
+            "powershell.exe",
+            &args,
+            &AtomicBool::new(false),
+        );
+        let elapsed = started.elapsed();
+        env::remove_var("MAESTRO_TEST_PID_FILE");
+
+        assert!(result.is_ok(), "unexpected MarkItDown result: {result:?}");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "helper waited {elapsed:?} on pipes inherited by an exited launcher's descendant"
+        );
+        let descendant_pid: u32 = fs::read_to_string(&pid_file)
+            .expect("launcher must publish its descendant pid")
+            .trim()
+            .parse()
+            .expect("published descendant pid should parse");
+        // SAFETY: this opens a query-only handle to the pid published by the
+        // test descendant. A null result means the process no longer exists.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, descendant_pid) };
+        if !handle.is_null() {
+            drop(OwnedWindowsHandle(handle));
+            panic!(
+                "actual MarkItDown helper left inherited-pipe descendant {descendant_pid} running"
+            );
+        }
     }
 
     #[test]

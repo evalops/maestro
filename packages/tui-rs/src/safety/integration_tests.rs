@@ -424,4 +424,112 @@ mod tests {
         // Might succeed or fail, but shouldn't panic
         let _ = result;
     }
+
+    // ========================================================================
+    // Auto-approval bypass regressions (Selective mode)
+    // ========================================================================
+    //
+    // In the default `Selective` approval mode, a bash command auto-executes
+    // with no user prompt iff BOTH of the following independent gates agree
+    // it's safe:
+    //   1. `tools::bash::BashTool::requires_approval` (dynamic classifier)
+    //   2. `ActionFirewall::check_bash` -> `FirewallVerdict::Allow`
+    // (see `agent/native.rs`, where
+    // `requires_approval = is_external_tool
+    //     || matches!(firewall_verdict, RequireApproval)
+    //     || tool_executor.requires_approval(...)`).
+    //
+    // These tests reproduce that combination directly instead of asserting
+    // against either gate in isolation, so a fix that only patches one layer
+    // (leaving the other silently permissive) cannot pass by accident.
+
+    /// True if a bash `command` would auto-execute with no approval prompt
+    /// under the default Selective approval mode, mirroring
+    /// `agent/native.rs`'s combination of the two independent gates.
+    fn would_auto_run(command: &str) -> bool {
+        let firewall = ActionFirewall::new("/workspace");
+        let firewall_allows = matches!(firewall.check_bash(command), FirewallVerdict::Allow);
+        let gate_requires_approval = crate::tools::BashTool::requires_approval(command);
+        firewall_allows && !gate_requires_approval
+    }
+
+    #[test]
+    fn test_ld_preload_via_env_does_not_auto_run() {
+        // Auditor-demonstrated bypass A: LD_PRELOAD injected through `env`
+        // achieves arbitrary code execution inside a "safe" `cat`.
+        assert!(!would_auto_run(
+            "env LD_PRELOAD=/tmp/evil.so cat /etc/hostname"
+        ));
+    }
+
+    #[test]
+    fn test_dyld_insert_libraries_via_env_does_not_auto_run() {
+        // macOS analog of the same bypass.
+        assert!(!would_auto_run(
+            "env DYLD_INSERT_LIBRARIES=/tmp/evil.dylib cat /etc/hostname"
+        ));
+    }
+
+    #[test]
+    fn test_find_fprintf_write_does_not_auto_run() {
+        // Auditor-demonstrated bypass B1: `find` writes to an arbitrary
+        // path via `-fprintf`, bypassing both the ">"-redirect approval
+        // check and path containment (containment never applies to bash).
+        assert!(!would_auto_run(
+            "find . -maxdepth 0 -fprintf /home/developer/.bashrc x"
+        ));
+    }
+
+    #[test]
+    fn test_find_fprint_write_does_not_auto_run() {
+        // Auditor-demonstrated bypass B2.
+        assert!(!would_auto_run(
+            "find . -maxdepth 0 -fprint /home/developer/.ssh/authorized_keys"
+        ));
+    }
+
+    #[test]
+    fn test_find_fprint0_and_fls_do_not_auto_run() {
+        // Same predicate family as B1/B2, not explicitly named by the
+        // auditor but with identical write-to-arbitrary-path semantics.
+        assert!(!would_auto_run("find . -fprint0 /tmp/exfil"));
+        assert!(!would_auto_run("find . -fls /tmp/exfil"));
+    }
+
+    #[test]
+    fn test_other_loader_env_vars_do_not_auto_run() {
+        for cmd in [
+            "env BASH_ENV=/tmp/evil.sh cat file",
+            "env PYTHONSTARTUP=/tmp/evil.py python -c 1",
+            "env NODE_OPTIONS=--require=/tmp/evil.js node -e 1",
+            "env GIT_SSH_COMMAND=/tmp/evil.sh git log",
+            "env LESSOPEN='|sh -c \"echo INJECTED\" %s' less /etc/hostname",
+        ] {
+            assert!(!would_auto_run(cmd), "expected gated for: {cmd}");
+        }
+    }
+
+    #[test]
+    fn test_tee_and_xargs_do_not_auto_run() {
+        // SAFE_COMMANDS audit finding: `tee` and `xargs` have no read-only
+        // invocation (tee always writes; xargs always executes), so neither
+        // belongs in `bash_analyzer`'s SAFE_COMMANDS set even though this
+        // was previously masked end-to-end by gate 1's narrower allowlist.
+        assert!(!would_auto_run("tee /tmp/out"));
+        assert!(!would_auto_run("xargs rm -rf"));
+        assert!(!would_auto_run("echo hi | tee /etc/cron.d/backdoor"));
+    }
+
+    #[test]
+    fn test_env_arguments_are_gated_while_bare_env_and_find_stay_safe() {
+        // Unknown program-specific environment hooks make every assignment
+        // authority-bearing, even when the variable name looks benign.
+        assert!(!would_auto_run("env FOO=bar cat file.txt"));
+        assert!(would_auto_run("env"));
+
+        // Unrelated read-only behavior remains eligible for auto-approval.
+        assert!(would_auto_run("find . -name '*.rs'"));
+        assert!(would_auto_run("cat file.txt"));
+        assert!(would_auto_run("git status"));
+    }
 }

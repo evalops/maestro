@@ -20,9 +20,23 @@
 
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio_util::sync::CancellationToken;
 
 use crate::agent::ToolResult;
 use crate::safety::run_validators;
+
+async fn begin_mutation_commit(cancellation: Option<&CancellationToken>) -> bool {
+    match cancellation {
+        Some(token) => {
+            tokio::select! {
+                biased;
+                () = token.cancelled() => false,
+                () = std::future::ready(()) => true,
+            }
+        }
+        None => true,
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct NotebookEditArgs {
@@ -102,7 +116,11 @@ fn build_cell(cell_type: &str, source: &str) -> Value {
     Value::Object(cell)
 }
 
-pub async fn notebook_edit(raw_args: Value, cwd: &str) -> ToolResult {
+pub async fn notebook_edit_with_cancellation(
+    raw_args: Value,
+    cwd: &str,
+    cancellation: Option<&CancellationToken>,
+) -> ToolResult {
     let parsed: NotebookEditArgs = match serde_json::from_value(raw_args) {
         Ok(val) => val,
         Err(err) => return ToolResult::failure(format!("Invalid notebook_edit args: {err}")),
@@ -156,6 +174,10 @@ pub async fn notebook_edit(raw_args: Value, cwd: &str) -> ToolResult {
             "nbformat": 4,
             "nbformat_minor": 5
         });
+        if !begin_mutation_commit(cancellation).await {
+            return ToolResult::failure("notebook_edit cancelled")
+                .with_details(json!({"cancelled": true}));
+        }
         if let Some(parent) = path_buf.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
@@ -279,6 +301,10 @@ pub async fn notebook_edit(raw_args: Value, cwd: &str) -> ToolResult {
     let total_cells = cells.len();
 
     let updated = serde_json::to_string_pretty(&notebook).unwrap_or_else(|_| content.clone());
+    if !begin_mutation_commit(cancellation).await {
+        return ToolResult::failure("notebook_edit cancelled")
+            .with_details(json!({"cancelled": true}));
+    }
     if let Err(err) = tokio::fs::write(&path_buf, updated).await {
         return ToolResult::failure(format!("Failed to write notebook: {err}"));
     }

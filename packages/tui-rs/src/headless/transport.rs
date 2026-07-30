@@ -78,9 +78,11 @@
 //! The process is automatically cleaned up when `AgentTransport` is dropped,
 //! though child processes may continue running if not explicitly shut down.
 
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Mutex;
 use std::thread;
 
 use super::local_controller_capabilities;
@@ -102,6 +104,8 @@ pub enum TransportError {
     ProcessExited(Option<i32>),
     /// Channel communication error
     ChannelError(String),
+    /// A governed tool approval already received a controller decision.
+    ToolDecisionAlreadySent(String),
 }
 
 impl std::fmt::Display for TransportError {
@@ -114,6 +118,12 @@ impl std::fmt::Display for TransportError {
                 write!(f, "Agent process exited with code: {code:?}")
             }
             TransportError::ChannelError(msg) => write!(f, "Channel error: {msg}"),
+            TransportError::ToolDecisionAlreadySent(execution_id) => {
+                write!(
+                    f,
+                    "Tool execution {execution_id} already received a decision"
+                )
+            }
         }
     }
 }
@@ -210,6 +220,8 @@ pub struct AgentTransport {
     rx: Receiver<Result<FromAgentMessage, TransportError>>,
     /// Current agent state
     state: AgentState,
+    /// Governed approval calls which already received a controller decision.
+    decided_tool_executions: Mutex<HashSet<String>>,
     /// Handle to check if process is still running
     _process_handle: thread::JoinHandle<()>,
 }
@@ -267,6 +279,7 @@ impl AgentTransport {
             tx: to_agent_tx,
             rx: from_agent_rx,
             state: AgentState::default(),
+            decided_tool_executions: Mutex::new(HashSet::new()),
             _process_handle: process_handle,
         };
         transport.send(ToAgentMessage::Hello {
@@ -395,25 +408,60 @@ impl AgentTransport {
 
     /// Approve a tool call
     pub fn approve_tool(&self, call_id: impl Into<String>) -> Result<(), TransportError> {
-        self.send(ToAgentMessage::ToolResponse {
-            call_id: call_id.into(),
-            approved: true,
-            result: None,
-        })
+        self.respond_to_tool(call_id.into(), true)
     }
 
     /// Deny a tool call
     pub fn deny_tool(&self, call_id: impl Into<String>) -> Result<(), TransportError> {
-        self.send(ToAgentMessage::ToolResponse {
-            call_id: call_id.into(),
-            approved: false,
+        self.respond_to_tool(call_id.into(), false)
+    }
+
+    fn respond_to_tool(&self, call_id: String, approved: bool) -> Result<(), TransportError> {
+        let pending = self
+            .state
+            .pending_approvals
+            .iter()
+            .find(|approval| approval.call_id == call_id);
+        let tool_execution_id = pending.and_then(|approval| approval.tool_execution_id.clone());
+        let reserved_execution_id = tool_execution_id.clone();
+
+        if let Some(execution_id) = &tool_execution_id {
+            let mut decided = self
+                .decided_tool_executions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !decided.insert(execution_id.clone()) {
+                return Err(TransportError::ToolDecisionAlreadySent(
+                    execution_id.clone(),
+                ));
+            }
+        }
+
+        let result = self.send(ToAgentMessage::ToolResponse {
+            call_id: call_id.clone(),
+            tool_execution_id,
+            approved,
             result: None,
-        })
+        });
+        if result.is_err() {
+            if let Some(execution_id) = &reserved_execution_id {
+                self.decided_tool_executions
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(execution_id);
+            }
+        }
+        result
     }
 
     /// Shut down the agent
     pub fn shutdown(&self) -> Result<(), TransportError> {
-        self.send(ToAgentMessage::Shutdown)
+        let result = self.send(ToAgentMessage::Shutdown);
+        self.decided_tool_executions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        result
     }
 
     /// Try to receive an event without blocking
@@ -426,6 +474,10 @@ impl AgentTransport {
                 },
                 Err(mpsc::TryRecvError::Empty) => return None,
                 Err(mpsc::TryRecvError::Disconnected) => {
+                    self.decided_tool_executions
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clear();
                     return Some(Err(TransportError::ChannelError(
                         "Channel disconnected".to_string(),
                     )));
@@ -437,10 +489,16 @@ impl AgentTransport {
     /// Receive an event, blocking until one is available
     pub fn recv(&mut self) -> Result<AgentEvent, TransportError> {
         loop {
-            let result = self
-                .rx
-                .recv()
-                .map_err(|e| TransportError::ChannelError(e.to_string()))?;
+            let result = match self.rx.recv() {
+                Ok(result) => result,
+                Err(error) => {
+                    self.decided_tool_executions
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clear();
+                    return Err(TransportError::ChannelError(error.to_string()));
+                }
+            };
             if let Some(result) = self.apply_transport_result(result) {
                 return result;
             }
@@ -452,8 +510,26 @@ impl AgentTransport {
         result: Result<FromAgentMessage, TransportError>,
     ) -> Option<Result<AgentEvent, TransportError>> {
         match result {
-            Ok(message) => self.state.handle_message(message).map(Ok),
-            Err(error) => Some(Err(error)),
+            Ok(message) => {
+                if let FromAgentMessage::ToolEnd {
+                    tool_execution_id: Some(execution_id),
+                    ..
+                } = &message
+                {
+                    self.decided_tool_executions
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .remove(execution_id);
+                }
+                self.state.handle_message(message).map(Ok)
+            }
+            Err(error) => {
+                self.decided_tool_executions
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clear();
+                Some(Err(error))
+            }
         }
     }
 
@@ -583,6 +659,217 @@ mod tests {
     }
 
     #[test]
+    fn tool_responses_forward_pending_execution_id() {
+        let (tx, outgoing_rx) = mpsc::channel::<ToAgentMessage>();
+        let (_incoming_tx, rx) = mpsc::channel::<Result<FromAgentMessage, TransportError>>();
+        let mut state = AgentState::default();
+        state
+            .pending_approvals
+            .push(crate::headless::messages::PendingApproval {
+                call_id: "call-1".to_string(),
+                tool_execution_id: Some("execution-1".to_string()),
+                request_id: None,
+                tool: "bash".to_string(),
+                args: serde_json::json!({}),
+                started_at_ms: None,
+            });
+        let mut transport = AgentTransport {
+            tx,
+            rx,
+            state,
+            decided_tool_executions: Mutex::new(HashSet::new()),
+            _process_handle: thread::spawn(|| {}),
+        };
+
+        transport.deny_tool("call-1").expect("deny tool");
+
+        assert!(matches!(
+            outgoing_rx.recv().expect("tool response"),
+            ToAgentMessage::ToolResponse {
+                call_id,
+                tool_execution_id: Some(tool_execution_id),
+                approved: false,
+                result: None,
+            } if call_id == "call-1" && tool_execution_id == "execution-1"
+        ));
+
+        assert!(
+            transport.approve_tool("call-1").is_err(),
+            "a second decision for one governed approval must be rejected"
+        );
+        assert!(
+            outgoing_rx.try_recv().is_err(),
+            "a rejected duplicate decision must not be sent"
+        );
+
+        let _ = transport.apply_transport_result(Ok(FromAgentMessage::ToolEnd {
+            call_id: "call-1".to_string(),
+            tool_execution_id: Some("execution-1".to_string()),
+            success: false,
+            tool: Some("bash".to_string()),
+            details: None,
+            receipt: None,
+        }));
+        transport
+            .state
+            .pending_approvals
+            .push(crate::headless::messages::PendingApproval {
+                call_id: "call-1".to_string(),
+                tool_execution_id: Some("execution-2".to_string()),
+                request_id: None,
+                tool: "bash".to_string(),
+                args: serde_json::json!({}),
+                started_at_ms: None,
+            });
+        transport
+            .approve_tool("call-1")
+            .expect("a new execution may reuse the call ID");
+        assert!(matches!(
+            outgoing_rx.recv().expect("new tool response"),
+            ToAgentMessage::ToolResponse {
+                tool_execution_id: Some(tool_execution_id),
+                ..
+            } if tool_execution_id == "execution-2"
+        ));
+    }
+
+    #[test]
+    fn approve_tool_forwards_pending_execution_id() {
+        let (tx, outgoing_rx) = mpsc::channel::<ToAgentMessage>();
+        let (_incoming_tx, rx) = mpsc::channel::<Result<FromAgentMessage, TransportError>>();
+        let mut state = AgentState::default();
+        state
+            .pending_approvals
+            .push(crate::headless::messages::PendingApproval {
+                call_id: "call-1".to_string(),
+                tool_execution_id: Some("execution-1".to_string()),
+                request_id: None,
+                tool: "bash".to_string(),
+                args: serde_json::json!({}),
+                started_at_ms: None,
+            });
+        let mut transport = AgentTransport {
+            tx,
+            rx,
+            state,
+            decided_tool_executions: Mutex::new(HashSet::new()),
+            _process_handle: thread::spawn(|| {}),
+        };
+
+        transport.approve_tool("call-1").expect("approve tool");
+
+        assert!(matches!(
+            outgoing_rx.recv().expect("tool response"),
+            ToAgentMessage::ToolResponse {
+                call_id,
+                tool_execution_id: Some(tool_execution_id),
+                approved: true,
+                result: None,
+            } if call_id == "call-1" && tool_execution_id == "execution-1"
+        ));
+
+        assert!(
+            transport.deny_tool("call-1").is_err(),
+            "a second decision for one governed approval must be rejected"
+        );
+        assert!(
+            outgoing_rx.try_recv().is_err(),
+            "a rejected duplicate decision must not be sent"
+        );
+
+        transport
+            .state
+            .pending_approvals
+            .push(crate::headless::messages::PendingApproval {
+                call_id: "legacy-call".to_string(),
+                tool_execution_id: None,
+                request_id: None,
+                tool: "read".to_string(),
+                args: serde_json::json!({}),
+                started_at_ms: None,
+            });
+        transport
+            .approve_tool("legacy-call")
+            .expect("legacy approval without an execution ID");
+        transport
+            .deny_tool("legacy-call")
+            .expect("legacy retry without an execution ID");
+        for approved in [true, false] {
+            assert!(matches!(
+                outgoing_rx.recv().expect("legacy tool response"),
+                ToAgentMessage::ToolResponse {
+                    tool_execution_id: None,
+                    approved: actual,
+                    ..
+                } if actual == approved
+            ));
+        }
+    }
+
+    #[test]
+    fn failed_tool_response_releases_execution_reservation() {
+        let (tx, outgoing_rx) = mpsc::channel::<ToAgentMessage>();
+        drop(outgoing_rx);
+        let (_incoming_tx, rx) = mpsc::channel::<Result<FromAgentMessage, TransportError>>();
+        let mut state = AgentState::default();
+        state
+            .pending_approvals
+            .push(crate::headless::messages::PendingApproval {
+                call_id: "call-1".to_string(),
+                tool_execution_id: Some("execution-1".to_string()),
+                request_id: None,
+                tool: "bash".to_string(),
+                args: serde_json::json!({}),
+                started_at_ms: None,
+            });
+        let transport = AgentTransport {
+            tx,
+            rx,
+            state,
+            decided_tool_executions: Mutex::new(HashSet::new()),
+            _process_handle: thread::spawn(|| {}),
+        };
+
+        assert!(transport.approve_tool("call-1").is_err());
+        assert!(
+            transport.decided_tool_executions.lock().unwrap().is_empty(),
+            "failed enqueue must release its reservation"
+        );
+    }
+
+    #[test]
+    fn blocking_disconnect_clears_execution_reservations() {
+        let (tx, _outgoing_rx) = mpsc::channel::<ToAgentMessage>();
+        let (incoming_tx, rx) = mpsc::channel::<Result<FromAgentMessage, TransportError>>();
+        let mut state = AgentState::default();
+        state
+            .pending_approvals
+            .push(crate::headless::messages::PendingApproval {
+                call_id: "call-1".to_string(),
+                tool_execution_id: Some("execution-1".to_string()),
+                request_id: None,
+                tool: "bash".to_string(),
+                args: serde_json::json!({}),
+                started_at_ms: None,
+            });
+        let mut transport = AgentTransport {
+            tx,
+            rx,
+            state,
+            decided_tool_executions: Mutex::new(HashSet::new()),
+            _process_handle: thread::spawn(|| {}),
+        };
+
+        transport.approve_tool("call-1").expect("approve tool");
+        drop(incoming_tx);
+        assert!(transport.recv().is_err());
+        assert!(
+            transport.decided_tool_executions.lock().unwrap().is_empty(),
+            "blocking channel disconnect must clear execution reservations"
+        );
+    }
+
+    #[test]
     fn try_recv_skips_messages_without_events() {
         let (tx, _outgoing_rx) = mpsc::channel::<ToAgentMessage>();
         let (incoming_tx, rx) = mpsc::channel::<Result<FromAgentMessage, TransportError>>();
@@ -604,6 +891,7 @@ mod tests {
             tx,
             rx,
             state: AgentState::default(),
+            decided_tool_executions: Mutex::new(HashSet::new()),
             _process_handle: process_handle,
         };
 

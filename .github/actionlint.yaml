@@ -1,7 +1,5 @@
 self-hosted-runner:
   labels:
-    - evalops-private-ci
-    - evalops-private-heavy
     - evalops-internal
     - evalops-maestro-internal-rbe
     - evalops-maestro-rbe

@@ -23,8 +23,9 @@ Crate names differ from directory names; cargo commands need the crate name:
 
 ## Commands
 
+`package.json` declares zero dependencies, so there is no `npm install` step — the scripts below run directly against the Rust workspace and `scripts/*`.
+
 ```bash
-npm install
 npm run check
 npm test
 npm run lint

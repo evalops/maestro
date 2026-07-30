@@ -706,6 +706,9 @@ pub struct App {
     /// focus-gated desktop notifications).
     terminal_notifier: crate::notifications::TerminalStateNotifier,
 
+    /// Whether `run_inner` started a terminal notification session.
+    terminal_session_started: bool,
+
     /// Full-output detail view overlay (Ctrl+E), when open.
     detail_view: Option<DetailView>,
 
@@ -988,6 +991,7 @@ impl App {
             restore_queued_prompts_after_interrupt: false,
             pending_checkpoint: None,
             terminal_notifier,
+            terminal_session_started: false,
             detail_view: None,
             detail_return_modal: ActiveModal::None,
         }
@@ -1143,22 +1147,20 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     /// The pattern here combines sync operations (terminal rendering, input)
     /// with async operations (agent polling) using a polling approach.
     ///
-    /// # Rust Concept: `mut self`
+    /// # Rust Concept: `&mut self`
     ///
-    /// Taking `mut self` (not `&mut self`) means this function takes ownership
-    /// of the App and can modify it. The App is consumed when `run()` completes.
-    /// This is appropriate because the terminal needs cleanup on exit.
+    /// Borrowing the App mutably lets the signal wrapper cancel this future,
+    /// then retain the App long enough to finish orderly shutdown cleanup.
     ///
     /// # Returns
     ///
     /// Exit code for the process (0 = success, non-zero = error).
-    pub async fn run(mut self) -> Result<i32> {
+    pub async fn run(&mut self) -> Result<i32> {
         let result = self.run_inner().await;
-        if self.terminal_events.is_some() && self.state.theme_follower.is_some() {
+        let disable_theme_reporting = self.prepare_terminal_restore();
+        if disable_theme_reporting {
             let _ = terminal::disable_theme_reporting();
         }
-        // Stop reading from the tty before crossterm restores its modes.
-        self.terminal_events.take();
         // Restore the terminal unconditionally: an error propagated out of
         // the loop (event poll/read, render, agent poll, ...) must not leave
         // raw mode, bracketed paste, and mouse capture enabled. The panic
@@ -1190,6 +1192,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         self.render()?;
 
         // Save the terminal title and show the idle state (OSC title stack).
+        self.terminal_session_started = true;
         let startup_seqs = self.terminal_notifier.session_started();
         Self::write_terminal_sequences(&startup_seqs);
 
@@ -1381,7 +1384,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         }
 
         // Clear tab progress and restore the original terminal title.
-        let shutdown_seqs = self.terminal_notifier.session_ended();
+        let shutdown_seqs = self.terminal_session_ended_sequences();
         Self::write_terminal_sequences(&shutdown_seqs);
 
         // Terminal restore happens in `run`, which wraps this inner loop so
@@ -1470,12 +1473,14 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         let model =
             std::env::var("MAESTRO_MODEL").unwrap_or_else(|_| "gpt-5.1-codex-max".to_string());
 
+        let (history, session_id, thinking_level) = self.agent_context_for_spawn();
+        let (thinking_enabled, thinking_budget) = thinking_level.to_config();
         let config = NativeAgentConfig {
             model: model.clone(),
             max_tokens: 16384,
             system_prompt: Some(self.build_system_prompt()),
-            thinking_enabled: false,
-            thinking_budget: 10000,
+            thinking_enabled,
+            thinking_budget,
             cwd: cwd.clone(),
             approval_mode: self.state.approval_mode,
         };
@@ -1487,8 +1492,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         }
 
         self.current_model = model.clone();
-        self.current_thinking_level = ThinkingLevel::Off;
-        self.state.thinking_level = self.current_thinking_level;
+        self.state.thinking_level = thinking_level;
         self.usage_tracker.set_model(model.clone());
 
         self.state.status = Some(format!("Initializing agent ({model})..."));
@@ -1502,9 +1506,13 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
                 // Send ready event
                 if let Some(agent) = &self.native_agent {
+                    // Startup session restore runs before the agent exists. Queue
+                    // the copied conversation before any initial prompt so a
+                    // fork continues with the same model context.
+                    agent.replace_history(history);
                     agent.send_ready();
                     // Send session info with git branch
-                    agent.send_session_info(&cwd, None, git_branch);
+                    agent.send_session_info(&cwd, session_id, git_branch);
                     let _ = agent.set_steering_mode(self.state.steering_mode);
                     let _ = agent.set_follow_up_mode(self.state.follow_up_mode);
                 }
@@ -1520,6 +1528,33 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         }
 
         Ok(())
+    }
+
+    fn agent_context_for_spawn(&self) -> (Vec<crate::ai::Message>, Option<String>, ThinkingLevel) {
+        let history = self
+            .state
+            .messages
+            .iter()
+            .filter(|message| message.kind == MessageKind::Regular)
+            .filter_map(|message| match message.role {
+                MessageRole::User => Some(crate::ai::Message {
+                    role: crate::ai::Role::User,
+                    content: crate::ai::MessageContent::text(message.content.clone()),
+                }),
+                MessageRole::Assistant if message.is_assistant_reply() => {
+                    Some(crate::ai::Message {
+                        role: crate::ai::Role::Assistant,
+                        content: crate::ai::MessageContent::text(message.content.clone()),
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        (
+            history,
+            self.state.session_id.clone(),
+            self.current_thinking_level,
+        )
     }
 
     /// Build the system prompt for the agent
@@ -1907,9 +1942,74 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         self.last_keybinding_issue_summary = next_issue_summary;
     }
 
+    /// Cancel the current native-agent operation and wait until its request,
+    /// approval, and foreground-tool cleanup are all quiescent. The
+    /// repeat-signal monitor remains the escape hatch if cleanup wedges.
+    pub(crate) async fn signal_shutdown_teardown(&mut self) -> (Vec<String>, bool) {
+        if let Some(agent) = self.native_agent.take() {
+            agent.shutdown().await;
+        }
+        self.drain_agent_events_after_shutdown().await;
+        let disable_theme_reporting = self.prepare_terminal_restore();
+        (
+            self.terminal_session_ended_sequences(),
+            disable_theme_reporting,
+        )
+    }
+
+    /// Apply every event the agent published before its shutdown barrier
+    /// completed. The runner owns the last event sender, so after
+    /// `NativeAgent::shutdown` returns this channel is closed and `try_recv`
+    /// drains a stable, finite suffix.
+    ///
+    /// Post-interrupt queue submission and immediate terminal notifications
+    /// are intentionally disabled: signal teardown must persist terminal
+    /// events without starting another request or blocking the async
+    /// repeat-signal monitor on terminal I/O. The caller writes the final
+    /// terminal-session sequences from its blocking cleanup.
+    async fn drain_agent_events_after_shutdown(&mut self) {
+        let mut messages = Vec::new();
+        if let Some(rx) = &mut self.native_event_rx {
+            while let Ok(message) = rx.try_recv() {
+                messages.push(message);
+            }
+        }
+        for message in messages {
+            if let Err(error) = self
+                .handle_agent_message_with_options(message, false, false)
+                .await
+            {
+                self.state.error = Some(format!(
+                    "Failed to finalize an agent event during shutdown: {error}"
+                ));
+            }
+        }
+    }
+
+    /// Stop protocol-aware reads before terminal restoration and report
+    /// whether mode 2031 must be disabled by the caller's blocking cleanup.
+    ///
+    /// Signal cleanup invokes this after cancelling the run future; app
+    /// construction cleanup also invokes it on an app completed after the
+    /// signal won. Keeping this synchronous lets both paths drop the tty
+    /// reader before any restore while moving terminal writes off the async
+    /// worker.
+    pub(crate) fn prepare_terminal_restore(&mut self) -> bool {
+        let had_terminal_events = self.terminal_events.take().is_some();
+        terminal_reporting_shutdown_needed(had_terminal_events, self.state.theme_follower.is_some())
+    }
+
+    fn terminal_session_ended_sequences(&mut self) -> Vec<String> {
+        if !self.terminal_session_started {
+            return Vec::new();
+        }
+        self.terminal_session_started = false;
+        self.terminal_notifier.session_ended()
+    }
+
     /// Write terminal-notification escape sequences (OSC progress/title) to
     /// the terminal device. No-ops when the terminal is not initialized.
-    fn write_terminal_sequences(seqs: &[String]) {
+    pub(crate) fn write_terminal_sequences(seqs: &[String]) {
         if !seqs.is_empty() {
             let _ = terminal::write_raw(&seqs.concat());
         }
@@ -1934,6 +2034,16 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     }
 
     async fn handle_agent_message(&mut self, msg: FromAgent) -> Result<()> {
+        self.handle_agent_message_with_options(msg, true, true)
+            .await
+    }
+
+    async fn handle_agent_message_with_options(
+        &mut self,
+        msg: FromAgent,
+        allow_post_interrupt_queue: bool,
+        allow_terminal_notifications: bool,
+    ) -> Result<()> {
         let response_end_info = match &msg {
             FromAgent::ResponseEnd { response_id, usage } => {
                 Some((response_id.clone(), usage.clone()))
@@ -1963,7 +2073,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             let was_busy = self.state.busy;
             self.state.busy = true;
             self.queued_prompt_inflight = None;
-            if !was_busy {
+            if !was_busy && allow_terminal_notifications {
                 self.notify_terminal_turn_started();
             }
             if !was_busy {
@@ -2121,7 +2231,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 // responses complete. Only the runner's terminal sentinel ends
                 // the full agent turn.
                 self.state.busy = false;
-                self.notify_terminal_turn_finished();
+                if allow_terminal_notifications {
+                    self.notify_terminal_turn_finished();
+                }
                 self.finalize_file_checkpoint();
                 self.queued_prompt_active = None;
                 self.queued_prompt_inflight = None;
@@ -2136,7 +2248,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             FromAgent::Error { .. } => {
                 // Clear busy state on error
                 self.state.busy = false;
-                self.notify_terminal_turn_finished();
+                if allow_terminal_notifications {
+                    self.notify_terminal_turn_finished();
+                }
                 self.finalize_file_checkpoint();
                 self.queued_prompt_inflight = None;
                 self.queued_prompt_active = None;
@@ -2289,7 +2403,7 @@ was missing; retry to review the exact execution context."
             self.record_assistant_message(&response_id, usage);
         }
 
-        if needs_post_interrupt_queue {
+        if needs_post_interrupt_queue && allow_post_interrupt_queue {
             let _ = self.maybe_handle_post_interrupt_queue().await?;
         }
         Ok(())
@@ -2875,6 +2989,10 @@ fn terminal_theme_query_due(
         && has_theme_follower
         && !reporting_available
         && elapsed_since_query.is_none_or(|elapsed| elapsed >= Duration::from_secs(2))
+}
+
+fn terminal_reporting_shutdown_needed(had_terminal_events: bool, has_theme_follower: bool) -> bool {
+    had_terminal_events && has_theme_follower
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

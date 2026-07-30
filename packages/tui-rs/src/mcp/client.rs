@@ -3,14 +3,17 @@
 //! This module provides the client for communicating with MCP servers.
 
 use std::collections::HashMap;
+use std::future::{poll_fn, Future};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 
 use super::config::{expand_env_vars_for_scope, McpServerConfig, McpTransport};
 use super::http::HttpConnection;
@@ -19,6 +22,48 @@ use super::protocol::{
     McpResource, McpResponse, McpTool, McpToolAnnotations, McpToolResult, PromptGetResult,
     PromptsListResult, ResourceReadResult, ResourcesListResult, ToolsListResult,
 };
+
+async fn await_stdio_delivery_or_cancellation<F>(
+    delivery: F,
+    cancel: &CancellationToken,
+) -> Option<F::Output>
+where
+    F: Future,
+{
+    tokio::pin!(delivery);
+    let cancellation = cancel.cancelled();
+    tokio::pin!(cancellation);
+
+    enum InitialPoll<T> {
+        Cancelled,
+        Completed(T),
+        Started,
+    }
+
+    let initial = poll_fn(|cx| {
+        if cancellation.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(InitialPoll::Cancelled);
+        }
+
+        Poll::Ready(match delivery.as_mut().poll(cx) {
+            Poll::Ready(result) => InitialPoll::Completed(result),
+            Poll::Pending => InitialPoll::Started,
+        })
+    })
+    .await;
+
+    match initial {
+        InitialPoll::Cancelled => return None,
+        InitialPoll::Completed(result) => return Some(result),
+        InitialPoll::Started => {}
+    }
+
+    tokio::select! {
+        biased;
+        result = &mut delivery => Some(result),
+        () = cancel.cancelled() => None,
+    }
+}
 
 /// Error type for MCP operations
 #[derive(Debug, thiserror::Error)]
@@ -42,6 +87,15 @@ pub enum McpError {
     /// Timeout
     #[error("MCP operation timed out")]
     Timeout,
+
+    /// Request was cancelled by the client.
+    #[error("MCP operation cancelled")]
+    Cancelled,
+
+    /// A dispatched request may have completed remotely, but its terminal
+    /// outcome could not be observed.
+    #[error("MCP remote outcome is indeterminate: {0}")]
+    Indeterminate(String),
 
     /// Protocol error
     #[error("Protocol error: {0}")]
@@ -200,7 +254,8 @@ impl McpConnection {
         cmd.args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true);
 
         // Set working directory
         if let Some(cwd) = &self.config.cwd {
@@ -484,6 +539,34 @@ impl McpConnection {
         Ok(result)
     }
 
+    /// Call a tool and notify the MCP server if the client cancels it.
+    pub async fn call_tool_cancellable(
+        &mut self,
+        tool_name: &str,
+        arguments: serde_json::Value,
+        cancel: &CancellationToken,
+    ) -> Result<McpToolResult, McpError> {
+        self.ensure_stdio_connected_cancellable(cancel).await?;
+        if !self.tools.iter().any(|tool| tool.name == tool_name) {
+            return Err(McpError::ToolNotFound(tool_name.to_string()));
+        }
+
+        if let Some(ConnectionBackend::Http(ref mut http)) = self.backend {
+            return http
+                .call_tool_cancellable(tool_name, arguments, cancel)
+                .await;
+        }
+
+        let request = McpRequest::call_tool(self.next_id(), tool_name, arguments);
+        let response = self.send_request_cancellable(request, cancel).await?;
+        if let Some(error) = response.error {
+            return Err(McpError::RequestFailed(error.message));
+        }
+        response
+            .result_as()
+            .map_err(|error| McpError::Protocol(format!("Invalid tool result: {error}")))
+    }
+
     /// Read a resource by URI
     pub async fn read_resource(&mut self, uri: &str) -> Result<ResourceReadResult, McpError> {
         self.ensure_stdio_connected().await?;
@@ -567,6 +650,32 @@ impl McpConnection {
         Ok(())
     }
 
+    async fn ensure_stdio_connected_cancellable(
+        &mut self,
+        cancel: &CancellationToken,
+    ) -> Result<(), McpError> {
+        if cancel.is_cancelled() {
+            return Err(McpError::Cancelled);
+        }
+
+        let result = tokio::select! {
+            biased;
+            () = cancel.cancelled() => None,
+            result = self.ensure_stdio_connected() => Some(result),
+        };
+        match result {
+            Some(result) => result,
+            None => {
+                if self.config.transport == McpTransport::Stdio && !self.initialized {
+                    self.disconnect().await;
+                    self.pending.lock().await.clear();
+                    self.reconnecting = false;
+                }
+                Err(McpError::Cancelled)
+            }
+        }
+    }
+
     /// Send a request and wait for response (stdio only)
     async fn send_request(&mut self, request: McpRequest) -> Result<McpResponse, McpError> {
         let id = request.id;
@@ -595,6 +704,79 @@ impl McpConnection {
                 let mut pending = self.pending.lock().await;
                 pending.remove(&id);
                 Err(McpError::Timeout)
+            }
+        }
+    }
+
+    /// Send a stdio request and propagate client cancellation to the server.
+    async fn send_request_cancellable(
+        &mut self,
+        request: McpRequest,
+        cancel: &CancellationToken,
+    ) -> Result<McpResponse, McpError> {
+        if cancel.is_cancelled() {
+            return Err(McpError::Cancelled);
+        }
+
+        let id = request.id;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.pending.lock().await.insert(id, tx);
+
+        let send_result =
+            match await_stdio_delivery_or_cancellation(self.send_raw(&request), cancel).await {
+                Some(result) => result,
+                None => {
+                    self.pending.lock().await.remove(&id);
+                    // The write future may have already emitted a partial JSON
+                    // frame. A cancellation notification cannot repair that
+                    // stream, so close it and force a clean reconnect.
+                    self.disconnect().await;
+                    return Err(McpError::Cancelled);
+                }
+            };
+        if let Err(send_err) = send_result {
+            self.pending.lock().await.remove(&id);
+            return Err(send_err);
+        }
+
+        let timeout = Duration::from_millis(self.config.timeout.unwrap_or(30_000));
+        tokio::select! {
+            biased;
+            response = tokio::time::timeout(timeout, rx) => match response {
+                Ok(Ok(response)) => Ok(response),
+                Ok(Err(_)) => Err(McpError::Protocol("Response channel closed".to_string())),
+                Err(_) => {
+                    self.pending.lock().await.remove(&id);
+                    Err(McpError::Timeout)
+                }
+            },
+            () = cancel.cancelled() => {
+                self.pending.lock().await.remove(&id);
+                let notification =
+                    McpNotification::cancelled(id, "Maestro turn cancelled");
+                let delivery = tokio::time::timeout(
+                    Duration::from_millis(500),
+                    self.send_raw(&notification),
+                )
+                .await;
+                match delivery {
+                    Ok(Ok(())) => Err(McpError::Indeterminate(
+                        "Cancellation notification was acknowledged, but the remote request outcome is unknown"
+                            .to_string(),
+                    )),
+                    Ok(Err(error)) => {
+                        self.disconnect().await;
+                        Err(McpError::Indeterminate(format!(
+                            "Failed to deliver cancellation notification: {error}"
+                        )))
+                    }
+                    Err(_) => {
+                        self.disconnect().await;
+                        Err(McpError::Indeterminate(
+                            "Timed out delivering cancellation notification".to_string(),
+                        ))
+                    }
+                }
             }
         }
     }
@@ -896,6 +1078,32 @@ impl McpClient {
         Ok((server_name, tool_name, result))
     }
 
+    /// Call a tool with metadata and propagate cancellation to its server.
+    pub async fn call_tool_with_metadata_cancellable(
+        &self,
+        prefixed_name: &str,
+        arguments: serde_json::Value,
+        cancel: &CancellationToken,
+    ) -> Result<(String, String, McpToolResult), McpError> {
+        let connections = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(McpError::Cancelled),
+            connections = self.connections.read() => connections,
+        };
+        let (server_name, tool_name, conn) =
+            Self::resolve_prefixed_tool_with_connections(prefixed_name, &connections)?;
+        drop(connections);
+        let mut conn = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(McpError::Cancelled),
+            conn = conn.lock() => conn,
+        };
+        let result = conn
+            .call_tool_cancellable(&tool_name, arguments, cancel)
+            .await?;
+        Ok((server_name, tool_name, result))
+    }
+
     /// Parse a prefixed MCP tool name into (server, tool) using known connections
     pub async fn parse_prefixed_name(
         &self,
@@ -1029,6 +1237,302 @@ mod tests {
             disabled: false,
             scope: crate::mcp::McpConfigScope::User,
         }
+    }
+
+    #[tokio::test]
+    async fn completed_stdio_delivery_wins_after_start_when_cancellation_is_ready() {
+        let cancel = CancellationToken::new();
+        let cancel_from_delivery = cancel.clone();
+        let mut first_poll = true;
+        let delivery = poll_fn(move |cx| {
+            if first_poll {
+                first_poll = false;
+                cancel_from_delivery.cancel();
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            } else {
+                Poll::Ready(Ok::<(), McpError>(()))
+            }
+        });
+
+        let result = await_stdio_delivery_or_cancellation(delivery, &cancel).await;
+
+        assert!(matches!(result, Some(Ok(()))));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pre_cancelled_stdio_request_preserves_connected_transport() {
+        let mut process = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 60")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn healthy MCP stub");
+        let stdin = process.stdin.take().expect("stub stdin");
+        let (_notification_tx, notification_rx) = mpsc::unbounded_channel();
+
+        let mut connection = McpConnection::new(stub_config("healthy-pre-cancelled"));
+        connection.backend = Some(ConnectionBackend::Stdio {
+            process,
+            stdin,
+            notification_rx,
+        });
+        connection.initialized = true;
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let request = McpRequest::call_tool(5, "mutate", serde_json::json!({"value": "ignored"}));
+
+        let result = connection.send_request_cancellable(request, &cancel).await;
+
+        assert!(matches!(result, Err(McpError::Cancelled)));
+        assert!(
+            connection.backend.is_some(),
+            "cancellation before the write is polled must preserve the healthy transport"
+        );
+        assert!(
+            connection.initialized,
+            "pre-cancellation must not discard initialized server state"
+        );
+        assert!(
+            connection.pending.lock().await.is_empty(),
+            "pre-cancelled request must not leave a pending waiter"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_stdio_reconnect_reaps_partial_backend() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let pid_file = temp.path().join("reconnect-pid");
+        let mut config = stub_config("cancelled-reconnect");
+        config.command = Some("sh".to_string());
+        config.args = vec![
+            "-c".to_string(),
+            "echo $$ > \"$1\"; sleep 60".to_string(),
+            "reconnect-stub".to_string(),
+            pid_file.to_string_lossy().into_owned(),
+        ];
+        config.timeout = Some(5_000);
+
+        let mut dead_process = Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn exited MCP stub");
+        let stdin = dead_process.stdin.take().expect("stub stdin");
+        drop(dead_process.stdout.take());
+        dead_process.wait().await.expect("wait for exited stub");
+        let (_notification_tx, notification_rx) = mpsc::unbounded_channel();
+
+        let mut connection = McpConnection::new(config);
+        connection.backend = Some(ConnectionBackend::Stdio {
+            process: dead_process,
+            stdin,
+            notification_rx,
+        });
+        connection.initialized = true;
+
+        let cancel = CancellationToken::new();
+        let cancel_after_spawn = cancel.clone();
+        let pid_file_for_cancel = pid_file.clone();
+        tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !pid_file_for_cancel.exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("replacement stdio child must spawn");
+            cancel_after_spawn.cancel();
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            connection.call_tool_cancellable(
+                "mutate",
+                serde_json::json!({"value": "ignored"}),
+                &cancel,
+            ),
+        )
+        .await
+        .expect("reconnect cancellation must finish promptly");
+
+        assert!(matches!(result, Err(McpError::Cancelled)));
+        assert!(connection.backend.is_none());
+        assert!(!connection.initialized);
+        assert!(!connection.reconnecting);
+        assert!(connection.pending.lock().await.is_empty());
+
+        let pid = std::fs::read_to_string(&pid_file)
+            .expect("read replacement child pid")
+            .trim()
+            .parse::<i32>()
+            .expect("parse replacement child pid");
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            -1,
+            "cancelled replacement child must be reaped"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+    }
+
+    #[cfg(unix)]
+    fn saturate_pipe_and_leave_nonblocking(fd: std::os::fd::RawFd) {
+        // SAFETY: `fd` is a live duplicate of ChildStdin's descriptor and
+        // remains valid for this single-threaded test helper.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        assert!(flags >= 0, "read child stdin flags");
+        // SAFETY: Updating O_NONBLOCK on the same valid descriptor does not
+        // transfer ownership or outlive ChildStdin.
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) },
+            0,
+            "set child stdin nonblocking"
+        );
+
+        let filler = [b'x'; 4096];
+        loop {
+            // SAFETY: `filler` is valid for its full length and `fd` remains a
+            // live writable pipe descriptor for the duration of this call.
+            let written = unsafe { libc::write(fd, filler.as_ptr().cast(), filler.len()) };
+            if written >= 0 {
+                continue;
+            }
+            let error = std::io::Error::last_os_error();
+            assert_eq!(
+                error.raw_os_error(),
+                Some(libc::EAGAIN),
+                "fill child stdin pipe"
+            );
+            break;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancellation_during_stdio_write_drops_pending_and_transport() {
+        let mut process = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 60")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn non-reading MCP stub");
+        let stdin = process.stdin.take().expect("stub stdin");
+        let (_notification_tx, notification_rx) = mpsc::unbounded_channel();
+
+        let mut connection = McpConnection::new(stub_config("blocked-writer"));
+        connection.backend = Some(ConnectionBackend::Stdio {
+            process,
+            stdin,
+            notification_rx,
+        });
+        connection.initialized = true;
+
+        let cancel = CancellationToken::new();
+        let cancel_after_write_starts = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            cancel_after_write_starts.cancel();
+        });
+        let request = McpRequest::call_tool(
+            7,
+            "large_tool",
+            serde_json::json!({"payload": "x".repeat(8 * 1024 * 1024)}),
+        );
+
+        let result = connection.send_request_cancellable(request, &cancel).await;
+
+        assert!(matches!(result, Err(McpError::Cancelled)));
+        assert!(
+            connection.backend.is_none(),
+            "a possibly partial frame must force a clean reconnect"
+        );
+        assert!(
+            connection.pending.lock().await.is_empty(),
+            "cancelled request must not leave a pending waiter"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn saturated_stdio_cancellation_delivery_is_bounded_and_disconnects() {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ready = temp.path().join("read-complete");
+        let request = McpRequest::call_tool(11, "mutate", serde_json::json!({"value": "original"}));
+
+        let mut process = Command::new("sh")
+            .arg("-c")
+            .arg(
+                "IFS= read -r _request; \
+                 : > \"$1\"; sleep 60",
+            )
+            .arg("stdio-cancel-test")
+            .arg(&ready)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn selectively-reading MCP stub");
+        let stdin = process.stdin.take().expect("stub stdin");
+        // SAFETY: `dup` creates a separately owned descriptor referring to
+        // the same pipe; OwnedFd below assumes ownership of exactly that dup.
+        let duplicate = unsafe { libc::dup(stdin.as_raw_fd()) };
+        assert!(duplicate >= 0, "duplicate child stdin");
+        // SAFETY: `duplicate` is a fresh, valid descriptor returned by dup.
+        let filler = unsafe { OwnedFd::from_raw_fd(duplicate) };
+
+        let (_notification_tx, notification_rx) = mpsc::unbounded_channel();
+        let mut connection = McpConnection::new(stub_config("saturated-cancel-writer"));
+        connection.backend = Some(ConnectionBackend::Stdio {
+            process,
+            stdin,
+            notification_rx,
+        });
+        connection.initialized = true;
+
+        let cancel = CancellationToken::new();
+        let cancel_after_request = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !ready.exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("stub consumed the original request frame");
+            saturate_pipe_and_leave_nonblocking(filler.as_raw_fd());
+            cancel_after_request.cancel();
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            connection.send_request_cancellable(request, &cancel),
+        )
+        .await
+        .expect("cancellation delivery must finish below the outer cleanup grace");
+
+        assert!(
+            matches!(result, Err(McpError::Indeterminate(ref message)) if message.contains("cancellation notification")),
+            "an indeterminate cancellation delivery must stay visible: {result:?}"
+        );
+        assert!(
+            connection.backend.is_none(),
+            "a partial cancellation frame must force a clean reconnect"
+        );
+        assert!(
+            connection.pending.lock().await.is_empty(),
+            "failed cancellation delivery must not retain the response waiter"
+        );
     }
 
     async fn read_http_request(socket: &mut TcpStream) -> Option<(String, String)> {
@@ -1437,6 +1941,93 @@ mod tests {
         let client = McpClient::new();
         let tools = client.list_all_tools().await;
         assert!(tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancellation_while_waiting_for_connection_lock_is_bounded() {
+        let client = Arc::new(McpClient::new());
+        let connection = Arc::new(Mutex::new(McpConnection::new(stub_config("busy"))));
+        connection.lock().await.initialized = true;
+        client
+            .connections
+            .write()
+            .await
+            .insert("busy".to_string(), Arc::clone(&connection));
+
+        let held_connection = connection.lock().await;
+        let cancel = CancellationToken::new();
+        let queued_cancel = cancel.clone();
+        let queued_client = Arc::clone(&client);
+        let queued_call = tokio::spawn(async move {
+            queued_client
+                .call_tool_with_metadata_cancellable(
+                    "mcp__busy__mutate",
+                    serde_json::json!({"value": "ignored"}),
+                    &queued_cancel,
+                )
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            !queued_call.is_finished(),
+            "the call must be queued behind the held connection lock"
+        );
+        cancel.cancel();
+
+        let result = tokio::time::timeout(Duration::from_millis(250), queued_call)
+            .await
+            .expect("queued cancellation must finish promptly")
+            .expect("queued call task must not panic");
+        assert!(matches!(result, Err(McpError::Cancelled)));
+        assert!(held_connection.initialized);
+        assert!(held_connection.backend.is_none());
+        assert!(held_connection.pending.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancellation_while_waiting_for_connection_map_is_bounded() {
+        let client = Arc::new(McpClient::new());
+        let connection = Arc::new(Mutex::new(McpConnection::new(stub_config("busy-map"))));
+        connection.lock().await.initialized = true;
+        client
+            .connections
+            .write()
+            .await
+            .insert("busy-map".to_string(), Arc::clone(&connection));
+
+        let held_connections = client.connections.write().await;
+        let cancel = CancellationToken::new();
+        let queued_cancel = cancel.clone();
+        let queued_client = Arc::clone(&client);
+        let queued_call = tokio::spawn(async move {
+            queued_client
+                .call_tool_with_metadata_cancellable(
+                    "mcp__busy-map__mutate",
+                    serde_json::json!({"value": "ignored"}),
+                    &queued_cancel,
+                )
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            !queued_call.is_finished(),
+            "the call must be queued behind the held connection-map lock"
+        );
+        cancel.cancel();
+
+        let result = tokio::time::timeout(Duration::from_millis(250), queued_call)
+            .await
+            .expect("connection-map cancellation must finish promptly")
+            .expect("queued call task must not panic");
+        assert!(matches!(result, Err(McpError::Cancelled)));
+        drop(held_connections);
+
+        let connection = connection.lock().await;
+        assert!(connection.initialized);
+        assert!(connection.backend.is_none());
+        assert!(connection.pending.lock().await.is_empty());
     }
 
     #[test]

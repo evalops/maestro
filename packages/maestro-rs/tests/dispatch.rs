@@ -1,6 +1,7 @@
-use maestro::{classify, AgentMode, Command};
+use maestro::{classify, Command};
 use serde::Deserialize;
 use std::ffi::OsString;
+use std::process::Command as ProcessCommand;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,23 +29,19 @@ fn web_dispatches_to_in_process_control_plane() {
 }
 
 #[test]
-fn exec_dispatches_to_native_print() {
-    assert_eq!(
-        classify(["exec", "hello"]).unwrap(),
-        Command::Agent(AgentMode::Exec)
-    );
+fn exec_is_forwarded_to_native_dispatch() {
+    // `classify` no longer distinguishes exec/print/headless/utility argv from
+    // one another; it only needs to know whether to serve the in-process web
+    // control plane. Everything else forwards to `maestro_tui::run_cli`, which
+    // owns the real routing decision (see `packages/tui-rs/tests/entrypoint.rs`).
+    assert_eq!(classify(["exec", "hello"]).unwrap(), Command::Forward);
 }
 
 #[test]
-fn doctor_dispatches_as_native_utility() {
+fn doctor_is_forwarded_to_native_dispatch() {
     assert_eq!(
         classify(["doctor", "--json", "--model", "openai/gpt-4o"]).unwrap(),
-        Command::Utility(vec![
-            OsString::from("doctor"),
-            OsString::from("--json"),
-            OsString::from("--model"),
-            OsString::from("openai/gpt-4o"),
-        ])
+        Command::Forward
     );
 }
 
@@ -63,20 +60,18 @@ fn frozen_cli_routes_are_owned_by_native_dispatch() {
             continue;
         }
         let command = result.unwrap_or_else(|error| panic!("{}: {error}", case.name));
-        match case.route.as_str() {
-            "native-control-plane" => assert!(
-                matches!(command, Command::Web { .. }),
-                "{}: {command:?}",
-                case.name
-            ),
-            "native-headless" => assert_eq!(
-                command,
-                Command::Agent(AgentMode::Headless),
-                "{}",
-                case.name
-            ),
-            "native-tui" | "native" => assert!(!matches!(command, Command::Web { .. })),
-            other => panic!("{}: unknown fixture route {other}", case.name),
+        match (case.route.as_str(), case.name.as_str()) {
+            ("native-control-plane", _) => {
+                assert_eq!(command, Command::Web { port: None }, "{}", case.name)
+            }
+            ("native", "version") => assert_eq!(command, Command::Version, "{}", case.name),
+            ("native", "help" | "hidden-help") => {
+                assert_eq!(command, Command::Help, "{}", case.name)
+            }
+            ("native", _) | ("native-tui", _) | ("native-headless", _) => {
+                assert_eq!(command, Command::Forward, "{}", case.name)
+            }
+            other => panic!("{}: unknown fixture route {other:?}", case.name),
         }
     }
 }
@@ -84,4 +79,37 @@ fn frozen_cli_routes_are_owned_by_native_dispatch() {
 #[test]
 fn web_rejects_prompt_arguments() {
     assert!(classify(["web", "prompt"]).is_err());
+}
+
+#[test]
+fn hosted_runner_help_reaches_the_native_hosted_runner_dispatch() {
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_maestro"))
+        .args(["hosted-runner", "--help"])
+        .output()
+        .expect("run maestro hosted-runner help");
+
+    assert!(
+        output.status.success(),
+        "hosted-runner help failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("Usage: maestro-tui hosted-runner"),
+        "primary maestro binary did not reach the hosted-runner CLI: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn fork_invalid_flag_reaches_run_fork_with_forwarded_arguments() {
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_maestro"))
+        .args(["fork", "--definitely-invalid"])
+        .output()
+        .expect("run maestro fork invalid flag");
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).trim(),
+        "unknown fork flag: --definitely-invalid"
+    );
 }

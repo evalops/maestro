@@ -64,6 +64,7 @@ struct SharedRunner {
     config: Arc<HostedRunnerConfig>,
     state: Arc<Mutex<RunnerState>>,
     events: broadcast::Sender<StreamEnvelope>,
+    controller_events: broadcast::Sender<StreamEnvelope>,
     message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
 }
 
@@ -78,17 +79,28 @@ struct RunnerState {
     last_error_type: Option<String>,
     restored_snapshot: Option<RuntimeSnapshot>,
     controller_connection_id: Option<String>,
+    controller_stream_cancellation: CancellationToken,
     connections: HashMap<String, ConnectionRecord>,
     subscriptions: HashMap<String, SubscriptionRecord>,
     active_utility_commands: HashMap<String, ActiveUtilityCommandSnapshot>,
     active_file_watches: HashMap<String, ActiveFileWatchSnapshot>,
     active_response_ids: HashSet<String>,
     envelopes: VecDeque<StreamEnvelope>,
+    controller_envelopes: VecDeque<StreamEnvelope>,
+    pending_controller_events: VecDeque<FromAgentMessage>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConnectionAuthorityMode {
+    LegacySubscription,
+    Capability,
 }
 
 #[derive(Clone)]
 struct ConnectionRecord {
     id: String,
+    connection_capability: Option<String>,
+    authority_mode: ConnectionAuthorityMode,
     role: ConnectionRole,
     client_protocol_version: Option<String>,
     client_info: Option<ClientInfo>,
@@ -100,6 +112,8 @@ struct ConnectionRecord {
 
 struct ConnectionUpsert {
     connection_id: String,
+    connection_capability: Option<String>,
+    connection_capability_required: bool,
     role: ConnectionRole,
     client_protocol_version: Option<String>,
     client_info: Option<ClientInfo>,
@@ -111,6 +125,8 @@ struct ConnectionUpsert {
 #[derive(Clone)]
 struct SubscriptionRecord {
     connection_id: String,
+    connection_capability: Option<String>,
+    authority_mode: ConnectionAuthorityMode,
     role: ConnectionRole,
     attached: bool,
 }
@@ -125,6 +141,10 @@ struct ConnectionCreateRequest {
     session_id: Option<String>,
     #[serde(rename = "connectionId")]
     connection_id: Option<String>,
+    #[serde(rename = "connectionCapability")]
+    connection_capability: Option<String>,
+    #[serde(rename = "connectionCapabilityRequired", default)]
+    connection_capability_required: bool,
     #[serde(rename = "thinkingLevel")]
     _thinking_level: Option<ThinkingLevel>,
     capabilities: Option<HttpClientCapabilities>,
@@ -139,6 +159,12 @@ struct ConnectionCreateRequest {
 struct SubscribeRequest {
     #[serde(rename = "connectionId")]
     connection_id: Option<String>,
+    #[serde(rename = "subscriptionId")]
+    subscription_id: Option<String>,
+    #[serde(rename = "connectionCapability")]
+    connection_capability: Option<String>,
+    #[serde(rename = "connectionCapabilityRequired", default)]
+    connection_capability_required: bool,
     #[serde(rename = "protocolVersion")]
     protocol_version: Option<String>,
     #[serde(rename = "clientInfo")]
@@ -157,6 +183,8 @@ struct HeartbeatRequest {
     connection_id: Option<String>,
     #[serde(rename = "subscriptionId")]
     subscription_id: Option<String>,
+    #[serde(rename = "connectionCapability")]
+    connection_capability: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,6 +193,8 @@ struct DisconnectRequest {
     connection_id: Option<String>,
     #[serde(rename = "subscriptionId")]
     subscription_id: Option<String>,
+    #[serde(rename = "connectionCapability")]
+    connection_capability: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -633,24 +663,66 @@ async fn handle_socket(
             mut rx,
             shared,
             mut filter,
+            controller_authorization,
         }) => {
             write_sse_headers(&mut socket).await?;
+            if controller_authorization
+                .as_ref()
+                .is_some_and(|authorization| !shared.controller_stream_is_authorized(authorization))
+            {
+                return Ok(());
+            }
             for envelope in replay {
                 for envelope in filter.apply(envelope) {
-                    write_sse_event(&mut socket, &envelope).await?;
+                    if !write_sse_event_if_authorized(
+                        &mut socket,
+                        &shared,
+                        controller_authorization.as_ref(),
+                        &envelope,
+                    )
+                    .await?
+                    {
+                        return Ok(());
+                    }
                 }
             }
             loop {
                 match rx.recv().await {
                     Ok(envelope) => {
+                        if controller_authorization
+                            .as_ref()
+                            .is_some_and(|authorization| {
+                                !shared.controller_stream_is_authorized(authorization)
+                            })
+                        {
+                            break;
+                        }
                         for envelope in filter.apply(envelope) {
-                            write_sse_event(&mut socket, &envelope).await?;
+                            if !write_sse_event_if_authorized(
+                                &mut socket,
+                                &shared,
+                                controller_authorization.as_ref(),
+                                &envelope,
+                            )
+                            .await?
+                            {
+                                return Ok(());
+                            }
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
                         let envelope = shared.reset_envelope(format!("broadcast_lag:{skipped}"));
                         for envelope in filter.apply(envelope) {
-                            write_sse_event(&mut socket, &envelope).await?;
+                            if !write_sse_event_if_authorized(
+                                &mut socket,
+                                &shared,
+                                controller_authorization.as_ref(),
+                                &envelope,
+                            )
+                            .await?
+                            {
+                                return Ok(());
+                            }
                         }
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -671,8 +743,35 @@ enum ResponseBody {
         replay: Vec<StreamEnvelope>,
         rx: broadcast::Receiver<StreamEnvelope>,
         shared: SharedRunner,
-        filter: TranscriptStreamFilter,
+        filter: Box<TranscriptStreamFilter>,
+        controller_authorization: Option<ControllerStreamAuthorization>,
     },
+}
+
+struct ControllerStreamAuthorization {
+    connection_id: String,
+    subscription_id: String,
+    cancellation: CancellationToken,
+}
+
+async fn write_sse_event_if_authorized(
+    socket: &mut TcpStream,
+    shared: &SharedRunner,
+    authorization: Option<&ControllerStreamAuthorization>,
+    envelope: &StreamEnvelope,
+) -> io::Result<bool> {
+    let Some(authorization) = authorization else {
+        write_sse_event(socket, envelope).await?;
+        return Ok(true);
+    };
+    if !shared.controller_stream_is_authorized(authorization) {
+        return Ok(false);
+    }
+    tokio::select! {
+        biased;
+        () = authorization.cancellation.cancelled() => Ok(false),
+        result = write_sse_event(socket, envelope) => result.map(|()| true),
+    }
 }
 
 struct TranscriptStreamFilter {
@@ -1036,10 +1135,17 @@ fn handle_connection_create(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("conn_{}", Uuid::new_v4().simple()));
     let role = input.role.unwrap_or(ConnectionRole::Controller);
-    upsert_connection(
+    // Requests predating capability negotiation always sent a protocol version.
+    // Protocol-less in-process callers keep the secure default used by existing
+    // tests and embedders; wire clients explicitly opt in or follow the legacy lane.
+    let connection_capability_required = input.connection_capability_required
+        || (!state.connections.contains_key(&connection_id) && input.protocol_version.is_none());
+    let connection_capability = upsert_connection(
         &mut state,
         ConnectionUpsert {
             connection_id: connection_id.clone(),
+            connection_capability: input.connection_capability,
+            connection_capability_required,
             role,
             client_protocol_version: input.protocol_version,
             client_info: input.client_info,
@@ -1048,7 +1154,7 @@ fn handle_connection_create(
             take_control: input.take_control,
         },
     )?;
-    let snapshot = shared.snapshot(&state);
+    let snapshot = shared.public_snapshot(&state);
     let controller_lease_granted = role == ConnectionRole::Controller
         && state.controller_connection_id.as_deref() == Some(&connection_id);
     let lease_expires_at = state.connections.get(&connection_id).map(lease_expires_at);
@@ -1057,6 +1163,8 @@ fn handle_connection_create(
         json!({
             "session_id": state.session_id,
             "connection_id": connection_id,
+            "connection_capability": connection_capability,
+            "connection_capability_required": connection_capability_required,
             "role": role,
             "controller_lease_granted": controller_lease_granted,
             "controller_connection_id": state.controller_connection_id,
@@ -1082,10 +1190,41 @@ fn handle_subscribe(
         .connection_id
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("conn_{}", Uuid::new_v4().simple()));
-    upsert_connection(
+    let connection_capability_required = input.connection_capability_required
+        || (!state.connections.contains_key(&connection_id) && input.protocol_version.is_none());
+    if let Some(existing) = state.connections.get(&connection_id) {
+        if existing.authority_mode == ConnectionAuthorityMode::LegacySubscription
+            && !existing.subscription_ids.is_empty()
+        {
+            let has_private_subscription_proof = input
+                .subscription_id
+                .as_deref()
+                .and_then(|subscription_id| {
+                    state
+                        .subscriptions
+                        .get(subscription_id)
+                        .map(|subscription| (subscription_id, subscription))
+                })
+                .is_some_and(|(subscription_id, subscription)| {
+                    existing.subscription_ids.contains(subscription_id)
+                        && subscription.connection_id == connection_id
+                        && subscription.authority_mode
+                            == ConnectionAuthorityMode::LegacySubscription
+                });
+            if !has_private_subscription_proof {
+                return Err(HostedError::new(
+                    HostedRunnerErrorCode::AccessDenied,
+                    "existing legacy connection requires a private subscription",
+                ));
+            }
+        }
+    }
+    let connection_capability = upsert_connection(
         &mut state,
         ConnectionUpsert {
             connection_id: connection_id.clone(),
+            connection_capability: input.connection_capability,
+            connection_capability_required,
             role,
             client_protocol_version: input.protocol_version,
             client_info: input.client_info,
@@ -1099,6 +1238,12 @@ fn handle_subscribe(
         subscription_id.clone(),
         SubscriptionRecord {
             connection_id: connection_id.clone(),
+            connection_capability: connection_capability.clone(),
+            authority_mode: if connection_capability_required {
+                ConnectionAuthorityMode::Capability
+            } else {
+                ConnectionAuthorityMode::LegacySubscription
+            },
             role,
             attached: true,
         },
@@ -1128,15 +1273,27 @@ fn handle_subscribe(
             connections: None,
         },
     );
-    let snapshot = shared.snapshot(&state);
+    let snapshot = shared.public_snapshot(&state);
+    let controller_pending_events = if role == ConnectionRole::Controller
+        && state.controller_connection_id.as_deref() == Some(connection_id.as_str())
+    {
+        shared.controller_pending_events(&mut state)
+    } else {
+        Vec::new()
+    };
+    let controller_subscription_id =
+        (role == ConnectionRole::Controller).then(|| subscription_id.clone());
     json_response(
         200,
         json!({
             "connection_id": connection_id,
+            "connection_capability": connection_capability,
+            "connection_capability_required": connection_capability_required,
             "subscription_id": subscription_id,
             "role": role,
             "controller_lease_granted": role == ConnectionRole::Controller,
-            "controller_subscription_id": snapshot.state.controller_subscription_id,
+            "controller_subscription_id": controller_subscription_id,
+            "controller_pending_events": controller_pending_events,
             "controller_connection_id": snapshot.state.controller_connection_id,
             "lease_expires_at": lease_expires_at,
             "heartbeat_interval_ms": DEFAULT_HEARTBEAT_INTERVAL_MS,
@@ -1151,7 +1308,7 @@ fn handle_state(shared: SharedRunner, session_id: &str) -> HostedResult<Response
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     ensure_session_id(&state, Some(session_id))?;
-    json_response(200, shared.snapshot(&state))
+    json_response(200, shared.public_snapshot(&state))
 }
 
 fn handle_events(
@@ -1164,7 +1321,7 @@ fn handle_events(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     ensure_session_id(&state, Some(session_id))?;
-    let grade = match query.get("subscriptionId") {
+    let (grade, controller_authorization) = match query.get("subscriptionId") {
         Some(subscription_id) => {
             let subscription = state.subscriptions.get(subscription_id).ok_or_else(|| {
                 HostedError::new(
@@ -1181,33 +1338,54 @@ fn handle_events(
                         "Headless connection not found",
                     )
                 })?;
-            connection
-                .capabilities
-                .as_ref()
-                .and_then(|capabilities| capabilities.transcript_grade)
-                .unwrap_or_default()
+            let controller_authorization = (connection.role == ConnectionRole::Controller
+                && subscription.role == ConnectionRole::Controller
+                && state.controller_connection_id.as_deref() == Some(connection.id.as_str()))
+            .then(|| ControllerStreamAuthorization {
+                connection_id: connection.id.clone(),
+                subscription_id: subscription_id.clone(),
+                cancellation: state.controller_stream_cancellation.clone(),
+            });
+            (
+                connection
+                    .capabilities
+                    .as_ref()
+                    .and_then(|capabilities| capabilities.transcript_grade)
+                    .unwrap_or_default(),
+                controller_authorization,
+            )
         }
-        None => crate::transcript::TranscriptGrade::default(),
+        None => (crate::transcript::TranscriptGrade::default(), None),
     };
+    let controller_stream = controller_authorization.is_some();
     drop(state);
     if query
         .get("cursor")
         .map(|value| value.trim_start().starts_with('-'))
         .unwrap_or(false)
     {
-        let (replay, rx) = shared.reset_and_subscribe("replay_gap");
+        let (replay, rx) = if controller_stream {
+            shared.reset_and_subscribe_controller("replay_gap")
+        } else {
+            shared.reset_and_subscribe("replay_gap")
+        };
         return Ok(ResponseBody::Sse {
             replay,
             rx,
             shared,
-            filter: TranscriptStreamFilter::new(grade, 0),
+            filter: Box::new(TranscriptStreamFilter::new(grade, 0)),
+            controller_authorization,
         });
     }
     let cursor = query
         .get("cursor")
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0);
-    let (replay, rx) = if grade == crate::transcript::TranscriptGrade::Delta {
+    let (replay, rx) = if controller_stream && grade == crate::transcript::TranscriptGrade::Delta {
+        shared.subscribe_controller_from(cursor)
+    } else if controller_stream {
+        shared.subscribe_controller_coarse_from(cursor)
+    } else if grade == crate::transcript::TranscriptGrade::Delta {
         shared.subscribe_from(cursor)
     } else {
         shared.subscribe_coarse_from(cursor)
@@ -1216,7 +1394,8 @@ fn handle_events(
         replay,
         rx,
         shared,
-        filter: TranscriptStreamFilter::new(grade, cursor),
+        filter: Box::new(TranscriptStreamFilter::new(grade, cursor)),
+        controller_authorization,
     })
 }
 
@@ -1226,7 +1405,8 @@ async fn handle_message(
     headers: HashMap<String, String>,
     message: ToAgentMessage,
 ) -> HostedResult<ResponseBody> {
-    let (connection_header_id, subscription_id) = connection_from_headers(&headers);
+    let (connection_header_id, subscription_id, connection_capability) =
+        connection_from_headers(&headers);
     let connection_id;
     let mut executor_request = None;
     let mut execution = HostedRunnerHeadlessMessageExecution::TransportOnly;
@@ -1240,10 +1420,11 @@ async fn handle_message(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         ensure_session_id(&state, Some(session_id))?;
-        let resolved_connection_id = resolve_message_connection_id(
+        let resolved_connection_id = resolve_authorized_connection_id(
             &state,
             connection_header_id.clone(),
             subscription_id.clone(),
+            connection_capability.as_deref(),
         )?;
         assert_controller(&state, Some(resolved_connection_id.as_str()))?;
         if state.draining {
@@ -1261,6 +1442,25 @@ async fn handle_message(
                 role,
                 opt_out_notifications,
             } => {
+                let resolved_role = state
+                    .connections
+                    .get(&resolved_connection_id)
+                    .map(|connection| role.unwrap_or(connection.role))
+                    .unwrap_or(ConnectionRole::Controller);
+                if resolved_role == ConnectionRole::Viewer
+                    && state.controller_connection_id.as_deref()
+                        == Some(resolved_connection_id.as_str())
+                {
+                    revoke_controller_streams(&mut state);
+                    state.controller_connection_id = None;
+                }
+                for subscription in state
+                    .subscriptions
+                    .values_mut()
+                    .filter(|subscription| subscription.connection_id == resolved_connection_id)
+                {
+                    subscription.role = resolved_role;
+                }
                 let lease_expires_at =
                     state
                         .connections
@@ -1271,7 +1471,7 @@ async fn handle_message(
                             connection.capabilities = capabilities.clone();
                             connection.opt_out_notifications =
                                 opt_out_notifications.clone().unwrap_or_default();
-                            connection.role = role.unwrap_or(connection.role);
+                            connection.role = resolved_role;
                             connection.last_seen_at = Utc::now();
                             lease_expires_at(connection)
                         });
@@ -1285,7 +1485,7 @@ async fn handle_message(
                         client_info: client_info.clone(),
                         capabilities: capabilities.clone(),
                         opt_out_notifications: opt_out_notifications.clone(),
-                        role: (*role).or(Some(ConnectionRole::Controller)),
+                        role: Some(resolved_role),
                         controller_connection_id,
                         lease_expires_at,
                     },
@@ -1371,13 +1571,20 @@ async fn handle_message(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         ensure_session_id(&state, Some(session_id))?;
-        assert_controller(&state, Some(context.connection_id.as_str()))?;
+        let resolved_connection_id = resolve_authorized_connection_id(
+            &state,
+            Some(context.connection_id.clone()),
+            context.subscription_id.clone(),
+            connection_capability.as_deref(),
+        )?;
+        assert_controller(&state, Some(resolved_connection_id.as_str()))?;
         if state.draining {
             return Err(HostedError::new(
                 HostedRunnerErrorCode::RuntimeNotReady,
                 "hosted runner is draining",
             ));
         }
+        shared.prune_pending_controller_events(&mut state);
         for message in result.messages {
             shared.publish_message(&mut state, message);
         }
@@ -1450,7 +1657,7 @@ async fn handle_message(
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        shared.snapshot(&state)
+        shared.public_snapshot(&state)
     };
     let cursor = snapshot.cursor;
     json_response(
@@ -1478,7 +1685,12 @@ fn handle_heartbeat(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     ensure_session_id(&state, Some(session_id))?;
-    let connection_id = resolve_connection_id(&state, input.connection_id, input.subscription_id)?;
+    let connection_id = resolve_authorized_connection_id(
+        &state,
+        input.connection_id,
+        input.subscription_id,
+        input.connection_capability.as_deref(),
+    )?;
     let controller_lease_granted =
         state.controller_connection_id.as_deref() == Some(connection_id.as_str());
     let controller_connection_id = state.controller_connection_id.clone();
@@ -1512,7 +1724,12 @@ fn handle_disconnect(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     ensure_session_id(&state, Some(session_id))?;
-    let connection_id = resolve_connection_id(&state, input.connection_id, input.subscription_id)?;
+    let connection_id = resolve_disconnect_connection_id(
+        &state,
+        input.connection_id,
+        input.subscription_id,
+        input.connection_capability.as_deref(),
+    )?;
     let mut disconnected_subscription_ids = Vec::new();
     if let Some(connection) = state.connections.remove(&connection_id) {
         for subscription_id in connection.subscription_ids {
@@ -1521,6 +1738,7 @@ fn handle_disconnect(
         }
     }
     if state.controller_connection_id.as_deref() == Some(connection_id.as_str()) {
+        revoke_controller_streams(&mut state);
         state.controller_connection_id = None;
     }
     shared.publish_snapshot(&mut state);
@@ -1535,9 +1753,14 @@ fn handle_disconnect(
     )
 }
 
-fn upsert_connection(state: &mut RunnerState, input: ConnectionUpsert) -> HostedResult<()> {
+fn upsert_connection(
+    state: &mut RunnerState,
+    input: ConnectionUpsert,
+) -> HostedResult<Option<String>> {
     let ConnectionUpsert {
         connection_id,
+        connection_capability,
+        connection_capability_required,
         role,
         client_protocol_version,
         client_info,
@@ -1545,6 +1768,39 @@ fn upsert_connection(state: &mut RunnerState, input: ConnectionUpsert) -> Hosted
         opt_out_notifications,
         take_control,
     } = input;
+    if let Some(existing) = state.connections.get(&connection_id) {
+        match existing.authority_mode {
+            ConnectionAuthorityMode::Capability => {
+                let authorized = connection_capability_required
+                    && connection_capability.as_deref().is_some_and(|provided| {
+                        existing
+                            .connection_capability
+                            .as_deref()
+                            .is_some_and(|expected| {
+                                constant_time_equal(provided.as_bytes(), expected.as_bytes())
+                            })
+                    });
+                if !authorized {
+                    return Err(HostedError::new(
+                        HostedRunnerErrorCode::AccessDenied,
+                        "existing headless connection requires its private capability",
+                    ));
+                }
+            }
+            ConnectionAuthorityMode::LegacySubscription => {
+                let preserves_legacy_authority = !connection_capability_required
+                    && connection_capability.is_none()
+                    && role == existing.role
+                    && !take_control;
+                if !preserves_legacy_authority {
+                    return Err(HostedError::new(
+                        HostedRunnerErrorCode::AccessDenied,
+                        "legacy headless connection authority cannot be changed in place",
+                    ));
+                }
+            }
+        }
+    }
     let was_controller = state.controller_connection_id.as_deref() == Some(connection_id.as_str());
     if role == ConnectionRole::Controller {
         if let Some(controller_connection_id) = state.controller_connection_id.as_ref() {
@@ -1555,12 +1811,38 @@ fn upsert_connection(state: &mut RunnerState, input: ConnectionUpsert) -> Hosted
                 ));
             }
         }
+        if state.controller_connection_id.as_deref() != Some(connection_id.as_str()) {
+            revoke_controller_streams(state);
+        }
         state.controller_connection_id = Some(connection_id.clone());
     } else if was_controller {
+        revoke_controller_streams(state);
         state.controller_connection_id = None;
     }
     let now = Utc::now();
     let existing = state.connections.remove(&connection_id);
+    let authority_mode = existing
+        .as_ref()
+        .map(|connection| connection.authority_mode)
+        .unwrap_or(if connection_capability_required {
+            ConnectionAuthorityMode::Capability
+        } else {
+            ConnectionAuthorityMode::LegacySubscription
+        });
+    let connection_capability = match authority_mode {
+        ConnectionAuthorityMode::LegacySubscription => None,
+        ConnectionAuthorityMode::Capability => existing
+            .as_ref()
+            .and_then(|connection| connection.connection_capability.clone())
+            .or_else(|| {
+                connection_capability.filter(|capability| {
+                    capability
+                        .strip_prefix("cap_")
+                        .is_some_and(|value| Uuid::parse_str(value).is_ok())
+                })
+            })
+            .or_else(|| Some(format!("cap_{}", Uuid::new_v4().simple()))),
+    };
     let subscription_ids = existing
         .as_ref()
         .map(|connection| connection.subscription_ids.clone())
@@ -1592,6 +1874,8 @@ fn upsert_connection(state: &mut RunnerState, input: ConnectionUpsert) -> Hosted
         connection_id.clone(),
         ConnectionRecord {
             id: connection_id,
+            connection_capability: connection_capability.clone(),
+            authority_mode,
             role,
             client_protocol_version,
             client_info,
@@ -1601,7 +1885,12 @@ fn upsert_connection(state: &mut RunnerState, input: ConnectionUpsert) -> Hosted
             last_seen_at: now,
         },
     );
-    Ok(())
+    Ok(connection_capability)
+}
+
+fn revoke_controller_streams(state: &mut RunnerState) {
+    state.controller_stream_cancellation.cancel();
+    state.controller_stream_cancellation = CancellationToken::new();
 }
 
 fn lease_expires_at(connection: &ConnectionRecord) -> String {
@@ -1997,28 +2286,119 @@ fn resolve_connection_id(
     ))
 }
 
-fn resolve_message_connection_id(
+fn resolve_authorized_connection_id(
     state: &RunnerState,
     connection_id: Option<String>,
     subscription_id: Option<String>,
+    connection_capability: Option<&str>,
 ) -> HostedResult<String> {
+    let subscription_id = subscription_id.ok_or_else(|| {
+        HostedError::new(
+            HostedRunnerErrorCode::AccessDenied,
+            "headless operation requires a private subscription",
+        )
+    })?;
     let resolved_connection_id =
-        resolve_connection_id(state, connection_id.clone(), subscription_id.clone())?;
-    if let Some(subscription_id) = subscription_id {
-        let subscription = state.subscriptions.get(&subscription_id).ok_or_else(|| {
+        resolve_connection_id(state, connection_id.clone(), Some(subscription_id.clone()))?;
+    let subscription = state.subscriptions.get(&subscription_id).ok_or_else(|| {
+        HostedError::new(
+            HostedRunnerErrorCode::StaleConnection,
+            "Headless subscription not found",
+        )
+    })?;
+    if subscription.connection_id != resolved_connection_id {
+        return Err(HostedError::new(
+            HostedRunnerErrorCode::AccessDenied,
+            "Headless subscription does not belong to the message connection",
+        ));
+    }
+    let connection = state
+        .connections
+        .get(&resolved_connection_id)
+        .ok_or_else(|| {
             HostedError::new(
                 HostedRunnerErrorCode::StaleConnection,
-                "Headless subscription not found",
+                "Headless connection not found",
             )
         })?;
-        if subscription.connection_id != resolved_connection_id {
-            return Err(HostedError::new(
-                HostedRunnerErrorCode::AccessDenied,
-                "Headless subscription does not belong to the message connection",
-            ));
+    let authorized = match (connection.authority_mode, subscription.authority_mode) {
+        (
+            ConnectionAuthorityMode::LegacySubscription,
+            ConnectionAuthorityMode::LegacySubscription,
+        ) => connection_capability.is_none(),
+        (ConnectionAuthorityMode::Capability, ConnectionAuthorityMode::Capability) => {
+            connection_capability.is_some_and(|provided| {
+                connection
+                    .connection_capability
+                    .as_deref()
+                    .is_some_and(|connection_expected| {
+                        subscription.connection_capability.as_deref().is_some_and(
+                            |subscription_expected| {
+                                constant_time_equal(
+                                    provided.as_bytes(),
+                                    connection_expected.as_bytes(),
+                                ) && constant_time_equal(
+                                    provided.as_bytes(),
+                                    subscription_expected.as_bytes(),
+                                )
+                            },
+                        )
+                    })
+            })
         }
+        _ => false,
+    };
+    if !authorized {
+        return Err(HostedError::new(
+            HostedRunnerErrorCode::AccessDenied,
+            "missing or invalid headless connection capability",
+        ));
     }
     Ok(resolved_connection_id)
+}
+
+fn resolve_disconnect_connection_id(
+    state: &RunnerState,
+    connection_id: Option<String>,
+    subscription_id: Option<String>,
+    connection_capability: Option<&str>,
+) -> HostedResult<String> {
+    if subscription_id.is_some() {
+        return resolve_authorized_connection_id(
+            state,
+            connection_id,
+            subscription_id,
+            connection_capability,
+        );
+    }
+    let connection_id = connection_id.ok_or_else(|| {
+        HostedError::new(
+            HostedRunnerErrorCode::AccessDenied,
+            "headless disconnect requires a private connection capability",
+        )
+    })?;
+    let connection = state.connections.get(&connection_id).ok_or_else(|| {
+        HostedError::new(
+            HostedRunnerErrorCode::StaleConnection,
+            "Headless connection not found",
+        )
+    })?;
+    let authorized = connection.authority_mode == ConnectionAuthorityMode::Capability
+        && connection_capability.is_some_and(|provided| {
+            connection
+                .connection_capability
+                .as_deref()
+                .is_some_and(|expected| {
+                    constant_time_equal(provided.as_bytes(), expected.as_bytes())
+                })
+        });
+    if !authorized {
+        return Err(HostedError::new(
+            HostedRunnerErrorCode::AccessDenied,
+            "missing or invalid headless connection capability",
+        ));
+    }
+    Ok(connection_id)
 }
 
 fn message_context(
@@ -2049,7 +2429,9 @@ fn message_context(
     })
 }
 
-fn connection_from_headers(headers: &HashMap<String, String>) -> (Option<String>, Option<String>) {
+fn connection_from_headers(
+    headers: &HashMap<String, String>,
+) -> (Option<String>, Option<String>, Option<String>) {
     (
         headers
             .get("x-maestro-headless-connection-id")
@@ -2064,7 +2446,26 @@ fn connection_from_headers(headers: &HashMap<String, String>) -> (Option<String>
             .or_else(|| headers.get("x-evalops-headless-subscriber-id"))
             .or_else(|| headers.get("x-evalops-headless-subscription-id"))
             .cloned(),
+        headers
+            .get("x-maestro-headless-connection-capability")
+            .or_else(|| headers.get("x-composer-headless-connection-capability"))
+            .or_else(|| headers.get("x-evalops-headless-connection-capability"))
+            .cloned(),
     )
+}
+
+fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
+    let mut difference = left.len() ^ right.len();
+    for index in 0..right.len() {
+        difference |= usize::from(
+            left.get(index).copied().unwrap_or_default()
+                ^ right
+                    .get(index)
+                    .copied()
+                    .expect("index bounded by right length"),
+        );
+    }
+    difference == 0
 }
 
 fn session_id_from_path<'a>(path: &'a str, suffix: &str) -> HostedResult<&'a str> {

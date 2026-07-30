@@ -19,7 +19,7 @@
 //! - `ApprovalMode::Fail` → deny immediately
 //! - `ApprovalMode::Prompt` / unset → wait for client `ToolResponse`
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -48,11 +48,26 @@ use crate::headless::HEADLESS_PROTOCOL_VERSION;
 struct RuntimeMeta {
     session_id: Option<String>,
     approval_mode: Option<ApprovalMode>,
+    /// Controller-owned execution ids awaiting a native terminal event.
+    tool_execution_ids: HashMap<String, String>,
+    /// Governed executions for which this connection already accepted a decision.
+    decided_tool_execution_ids: HashSet<String>,
+    /// Tool call ids currently awaiting a raw client decision.
+    pending_tool_calls: HashSet<String>,
     transcript_grade: crate::transcript::TranscriptGrade,
     response_chunks: Vec<(String, bool)>,
 }
 
 impl RuntimeMeta {
+    fn reserve_tool_decision(&mut self, tool_execution_id: Option<&str>) -> bool {
+        let Some(tool_execution_id) = tool_execution_id else {
+            // Legacy, ungoverned clients have no durable id to deduplicate.
+            return true;
+        };
+        self.decided_tool_execution_ids
+            .insert(tool_execution_id.to_string())
+    }
+
     fn record_response_chunk(
         &mut self,
         content: &str,
@@ -122,6 +137,9 @@ impl HeadlessState {
             meta: Arc::new(Mutex::new(RuntimeMeta {
                 session_id,
                 approval_mode: None,
+                tool_execution_ids: HashMap::new(),
+                decided_tool_execution_ids: HashSet::new(),
+                pending_tool_calls: HashSet::new(),
                 transcript_grade: crate::transcript::TranscriptGrade::Delta,
                 response_chunks: Vec::new(),
             })),
@@ -388,25 +406,33 @@ pub async fn run_headless_server() -> Result<i32> {
             }
             ToAgentMessage::ToolResponse {
                 call_id,
+                tool_execution_id,
                 approved,
                 result,
             } => {
-                let agent_result = result.map(headless_tool_result_to_agent);
-                // When the client supplies a completed result, surface the full
-                // tool lifecycle (including tool_output) for streaming consumers.
-                // When only an approval is returned, the native agent executes
-                // and emits ToolStart/ToolOutput/ToolEnd itself.
-                if approved {
-                    if let Some(ref tool_result) = agent_result {
-                        for msg in tool_lifecycle_messages(&call_id, None, tool_result) {
-                            emit(&msg)?;
+                let Some(tool_tx) = state.tool_tx.as_ref() else {
+                    protocol_error(Some(call_id), "no pending native tool request")?;
+                    continue;
+                };
+                match prepare_tool_response(
+                    &state.meta,
+                    call_id.clone(),
+                    tool_execution_id,
+                    approved,
+                    result,
+                ) {
+                    Ok(accepted) => {
+                        for message in accepted.messages {
+                            emit(&message)?;
+                        }
+                        if tool_tx.send(accepted.agent_response).is_err() {
+                            protocol_error(
+                                Some(call_id),
+                                "native tool response channel is closed",
+                            )?;
                         }
                     }
-                }
-                if let Some(tool_tx) = state.tool_tx.as_ref() {
-                    let _ = tool_tx.send((call_id, approved, agent_result));
-                } else {
-                    protocol_error(Some(call_id), "no pending native tool request")?;
+                    Err(message) => protocol_error(Some(call_id), message)?,
                 }
             }
             ToAgentMessage::ClientToolResult {
@@ -414,14 +440,23 @@ pub async fn run_headless_server() -> Result<i32> {
                 content,
                 is_error,
             } => {
-                let result = client_content_to_agent_result(content, is_error);
-                if let Some(tool_tx) = state.tool_tx.as_ref() {
-                    let _ = tool_tx.send((call_id.clone(), true, Some(result.clone())));
-                    for msg in tool_lifecycle_messages(&call_id, None, &result) {
-                        emit(&msg)?;
-                    }
-                } else {
+                let Some(tool_tx) = state.tool_tx.as_ref() else {
                     protocol_error(Some(call_id), "no pending native client-tool request")?;
+                    continue;
+                };
+                match prepare_client_tool_result(&state.meta, call_id.clone(), content, is_error) {
+                    Ok(accepted) => {
+                        for message in accepted.messages {
+                            emit(&message)?;
+                        }
+                        if tool_tx.send(accepted.agent_response).is_err() {
+                            protocol_error(
+                                Some(call_id),
+                                "native client-tool response channel is closed",
+                            )?;
+                        }
+                    }
+                    Err(message) => protocol_error(Some(call_id), message)?,
                 }
             }
             ToAgentMessage::ServerRequestResponse {
@@ -652,8 +687,14 @@ pub async fn run_headless_server() -> Result<i32> {
         }
     }
 
+    if let Some(agent) = state.agent.take() {
+        agent.shutdown().await;
+    }
     if let Some(task) = state.event_task.take() {
-        task.abort();
+        let _ = task.await;
+    }
+    for message in take_interrupted_tool_terminal_messages(&state.meta) {
+        emit(&message)?;
     }
     Ok(exit_code)
 }
@@ -1078,6 +1119,32 @@ fn unix_timestamp_ms() -> u64 {
         .as_millis() as u64
 }
 
+fn take_interrupted_tool_terminal_messages(
+    meta: &Arc<Mutex<RuntimeMeta>>,
+) -> Vec<FromAgentMessage> {
+    let mut pending = {
+        let mut meta = meta
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        meta.pending_tool_calls.clear();
+        meta.tool_execution_ids.drain().collect::<Vec<_>>()
+    };
+    pending.sort_by(|(left, _), (right, _)| left.cmp(right));
+    pending
+        .into_iter()
+        .map(|(call_id, tool_execution_id)| FromAgentMessage::ToolEnd {
+            call_id,
+            tool_execution_id: Some(tool_execution_id),
+            success: false,
+            tool: None,
+            details: Some(serde_json::json!({
+                "reason": "interrupted_before_tool_completion"
+            })),
+            receipt: None,
+        })
+        .collect()
+}
+
 async fn handle_agent_event(
     msg: FromAgent,
     meta: &Arc<Mutex<RuntimeMeta>>,
@@ -1124,6 +1191,9 @@ async fn handle_agent_event(
             }
         }
         FromAgent::ResponseEnd { response_id, usage } => {
+            for message in take_interrupted_tool_terminal_messages(meta) {
+                emit(&message)?;
+            }
             let (grade, content) = {
                 let mut meta = meta
                     .lock()
@@ -1158,6 +1228,18 @@ async fn handle_agent_event(
             requires_approval,
             ..
         } => {
+            // Register an unresolved client decision before exposing the call.
+            // A raw client can respond immediately after observing ToolCall.
+            let immediate_approval = {
+                let mut meta = meta
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let immediate = resolve_tool_approval(requires_approval, meta.approval_mode);
+                if requires_approval && immediate.is_none() {
+                    meta.pending_tool_calls.insert(call_id.clone());
+                }
+                immediate
+            };
             let message = FromAgentMessage::ToolCall {
                 call_id: call_id.clone(),
                 tool_execution_id: None,
@@ -1177,11 +1259,7 @@ async fn handle_agent_event(
             // streaming tool_output.
             //
             // For approval-gated tools, honor Init approval_mode when set.
-            let approval_mode = meta
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .approval_mode;
-            if let Some(approved) = resolve_tool_approval(requires_approval, approval_mode) {
+            if let Some(approved) = immediate_approval {
                 let _ = tool_tx.send((call_id, approved, None));
             }
         }
@@ -1205,18 +1283,26 @@ async fn handle_agent_event(
             receipt,
             ..
         } => {
-            emit_transcript(
-                meta,
-                crate::transcript::TranscriptLevel::Block,
-                &FromAgentMessage::ToolEnd {
-                    call_id,
-                    tool_execution_id: None,
-                    success,
-                    tool: None,
-                    details: None,
-                    receipt,
-                },
-            )?;
+            let tool_execution_id = {
+                let mut meta = meta
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                meta.pending_tool_calls.remove(&call_id);
+                meta.tool_execution_ids.remove(&call_id)
+            };
+            let terminal = FromAgentMessage::ToolEnd {
+                call_id,
+                tool_execution_id: tool_execution_id.clone(),
+                success,
+                tool: None,
+                details: None,
+                receipt,
+            };
+            if tool_execution_id.is_some() {
+                emit(&terminal)?;
+            } else {
+                emit_transcript(meta, crate::transcript::TranscriptLevel::Block, &terminal)?;
+            }
         }
         FromAgent::Error { message, fatal } => {
             emit(&FromAgentMessage::Error {
@@ -1337,8 +1423,16 @@ fn infer_provider_label(model: &str) -> &'static str {
 }
 
 fn env_session_id() -> Option<String> {
-    std::env::var("MAESTRO_SESSION_ID")
-        .ok()
+    normalize_session_id(std::env::var("MAESTRO_SESSION_ID").ok().as_deref())
+}
+
+/// Trim and empty-filter a raw `MAESTRO_SESSION_ID` value. Split out of
+/// `env_session_id` so the trimming/filtering behavior is testable without
+/// mutating the process environment (`std::env::set_var`/`remove_var` are
+/// unsound to call from a test when other tests may be reading or writing
+/// the environment concurrently on the same `cargo test` process).
+fn normalize_session_id(value: Option<&str>) -> Option<String> {
+    value
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
@@ -1350,6 +1444,91 @@ fn headless_tool_result_to_agent(r: HeadlessToolResult) -> ToolResult {
         error: r.error,
         details: r.details,
     }
+}
+
+#[derive(Debug)]
+struct AcceptedToolResponse {
+    messages: Vec<FromAgentMessage>,
+    agent_response: (String, bool, Option<ToolResult>),
+}
+
+fn prepare_tool_response(
+    meta: &Arc<Mutex<RuntimeMeta>>,
+    call_id: String,
+    tool_execution_id: Option<String>,
+    approved: bool,
+    result: Option<HeadlessToolResult>,
+) -> std::result::Result<AcceptedToolResponse, String> {
+    let mut meta = meta
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(active_execution_id) = meta.tool_execution_ids.get(&call_id) {
+        return Err(format!(
+            "tool call {call_id} already has an active decision for execution {active_execution_id}"
+        ));
+    }
+    if !meta.pending_tool_calls.contains(&call_id) {
+        return Err(format!("tool call {call_id} is not awaiting a decision"));
+    }
+    if !meta.reserve_tool_decision(tool_execution_id.as_deref()) {
+        return Err(format!(
+            "tool execution {} already has a decision",
+            tool_execution_id
+                .as_deref()
+                .expect("only governed decisions can be duplicates")
+        ));
+    }
+    meta.pending_tool_calls.remove(&call_id);
+
+    let agent_result = result.map(headless_tool_result_to_agent);
+    // When the client supplies a completed result, surface the full lifecycle.
+    // When only an approval is returned, bind the durable id to the native end.
+    let messages = if approved {
+        if let Some(ref tool_result) = agent_result {
+            tool_lifecycle_messages(&call_id, tool_execution_id.as_deref(), None, tool_result)
+        } else {
+            if let Some(ref tool_execution_id) = tool_execution_id {
+                meta.tool_execution_ids
+                    .insert(call_id.clone(), tool_execution_id.clone());
+            }
+            Vec::new()
+        }
+    } else {
+        denied_tool_terminal_message(
+            &call_id,
+            tool_execution_id.as_deref(),
+            agent_result.as_ref(),
+        )
+        .into_iter()
+        .collect()
+    };
+    drop(meta);
+
+    Ok(AcceptedToolResponse {
+        messages,
+        agent_response: (call_id, approved, agent_result),
+    })
+}
+
+fn prepare_client_tool_result(
+    meta: &Arc<Mutex<RuntimeMeta>>,
+    call_id: String,
+    content: Vec<ClientToolResultContent>,
+    is_error: bool,
+) -> std::result::Result<AcceptedToolResponse, String> {
+    let mut meta = meta
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !meta.pending_tool_calls.remove(&call_id) {
+        return Err(format!("tool call {call_id} is not awaiting a decision"));
+    }
+    drop(meta);
+
+    let result = client_content_to_agent_result(content, is_error);
+    Ok(AcceptedToolResponse {
+        messages: tool_lifecycle_messages(&call_id, None, None, &result),
+        agent_response: (call_id, true, Some(result)),
+    })
 }
 
 /// Decide whether headless should immediately resolve an approval-gated tool.
@@ -1386,9 +1565,28 @@ fn tool_output_content(result: &ToolResult) -> Option<String> {
     None
 }
 
+/// A governed denial never executes natively, so it has no native `ToolEnd`.
+/// Emit the correlated terminal failure directly when the controller supplied
+/// a durable execution id.
+fn denied_tool_terminal_message(
+    call_id: &str,
+    tool_execution_id: Option<&str>,
+    result: Option<&ToolResult>,
+) -> Option<FromAgentMessage> {
+    Some(FromAgentMessage::ToolEnd {
+        call_id: call_id.to_string(),
+        tool_execution_id: Some(tool_execution_id?.to_string()),
+        success: false,
+        tool: None,
+        details: result.and_then(|result| result.details.clone()),
+        receipt: None,
+    })
+}
+
 /// Protocol messages for a completed tool run: start → output? → end.
 fn tool_lifecycle_messages(
     call_id: &str,
+    tool_execution_id: Option<&str>,
     tool: Option<String>,
     result: &ToolResult,
 ) -> Vec<FromAgentMessage> {
@@ -1404,7 +1602,7 @@ fn tool_lifecycle_messages(
     }
     msgs.push(FromAgentMessage::ToolEnd {
         call_id: call_id.to_string(),
-        tool_execution_id: None,
+        tool_execution_id: tool_execution_id.map(str::to_string),
         success: result.success,
         tool,
         details: result.details.clone(),
@@ -1556,7 +1754,12 @@ mod tests {
     #[test]
     fn tool_lifecycle_messages_include_tool_output() {
         let result = ToolResult::success("file contents");
-        let msgs = tool_lifecycle_messages("call-1", Some("read".into()), &result);
+        let msgs = tool_lifecycle_messages(
+            "call-1",
+            Some("tool-execution-1"),
+            Some("read".into()),
+            &result,
+        );
         assert_eq!(msgs.len(), 3);
         assert!(matches!(
             &msgs[0],
@@ -1571,23 +1774,342 @@ mod tests {
             &msgs[2],
             FromAgentMessage::ToolEnd {
                 call_id,
+                tool_execution_id: Some(tool_execution_id),
                 success: true,
                 tool: Some(t),
                 ..
-            } if call_id == "call-1" && t == "read"
+            } if call_id == "call-1"
+                && tool_execution_id == "tool-execution-1"
+                && t == "read"
         ));
     }
 
     #[test]
     fn tool_lifecycle_messages_omit_empty_success_output() {
         let result = ToolResult::success("");
-        let msgs = tool_lifecycle_messages("call-2", None, &result);
+        let msgs = tool_lifecycle_messages("call-2", None, None, &result);
         assert_eq!(msgs.len(), 2);
         assert!(matches!(msgs[0], FromAgentMessage::ToolStart { .. }));
         assert!(matches!(
             msgs[1],
             FromAgentMessage::ToolEnd { success: true, .. }
         ));
+    }
+
+    #[test]
+    fn governed_denial_emits_correlated_terminal_failure() {
+        let result = ToolResult::failure("denied").with_details(serde_json::json!({
+            "decision": "deny"
+        }));
+        let message = denied_tool_terminal_message(
+            "call-denied",
+            Some("tool-execution-denied"),
+            Some(&result),
+        )
+        .expect("governed denial terminal message");
+
+        assert!(matches!(
+            message,
+            FromAgentMessage::ToolEnd {
+                call_id,
+                tool_execution_id: Some(tool_execution_id),
+                success: false,
+                details: Some(details),
+                ..
+            } if call_id == "call-denied"
+                && tool_execution_id == "tool-execution-denied"
+                && details["decision"] == "deny"
+        ));
+        assert!(
+            denied_tool_terminal_message("call-local", None, Some(&result)).is_none(),
+            "ungoverned denials have no durable execution to correlate"
+        );
+    }
+
+    #[test]
+    fn governed_tool_decisions_are_single_use_at_the_server_boundary() {
+        let meta = Arc::new(Mutex::new(RuntimeMeta::default()));
+        let (tool_tx, mut tool_rx) = mpsc::unbounded_channel();
+
+        meta.lock()
+            .expect("runtime metadata")
+            .pending_tool_calls
+            .insert("call-1".to_string());
+        let accepted = prepare_tool_response(
+            &meta,
+            "call-1".to_string(),
+            Some("execution-1".to_string()),
+            true,
+            None,
+        )
+        .expect("first decision accepted");
+        assert!(accepted.messages.is_empty());
+        assert!(
+            tool_rx.try_recv().is_err(),
+            "preparing lifecycle output must not deliver the native decision first"
+        );
+        tool_tx
+            .send(accepted.agent_response)
+            .expect("deliver first decision after lifecycle output");
+        assert!(matches!(
+            tool_rx.try_recv(),
+            Ok((call_id, true, None)) if call_id == "call-1"
+        ));
+
+        let error = prepare_tool_response(
+            &meta,
+            "call-1".to_string(),
+            Some("execution-1".to_string()),
+            false,
+            None,
+        )
+        .expect_err("approve then deny must be rejected");
+        assert!(error.contains("already has"));
+        assert!(tool_rx.try_recv().is_err());
+
+        meta.lock()
+            .expect("runtime metadata")
+            .pending_tool_calls
+            .insert("call-2".to_string());
+        let accepted = prepare_tool_response(
+            &meta,
+            "call-2".to_string(),
+            Some("execution-2".to_string()),
+            false,
+            None,
+        )
+        .expect("first denial accepted");
+        assert!(matches!(
+            accepted.messages.as_slice(),
+            [FromAgentMessage::ToolEnd {
+                tool_execution_id: Some(tool_execution_id),
+                success: false,
+                ..
+            }] if tool_execution_id == "execution-2"
+        ));
+        assert!(
+            tool_rx.try_recv().is_err(),
+            "the server must emit the correlated denial before native delivery"
+        );
+        tool_tx
+            .send(accepted.agent_response)
+            .expect("deliver denial after terminal lifecycle");
+        assert!(matches!(
+            tool_rx.try_recv(),
+            Ok((call_id, false, None)) if call_id == "call-2"
+        ));
+        assert!(
+            prepare_tool_response(
+                &meta,
+                "call-2".to_string(),
+                Some("execution-2".to_string()),
+                true,
+                None,
+            )
+            .is_err(),
+            "deny then approve must be rejected"
+        );
+        assert!(tool_rx.try_recv().is_err());
+
+        meta.lock()
+            .expect("runtime metadata")
+            .pending_tool_calls
+            .insert("call-completed".to_string());
+        let accepted = prepare_tool_response(
+            &meta,
+            "call-completed".to_string(),
+            Some("execution-completed".to_string()),
+            true,
+            Some(HeadlessToolResult {
+                success: true,
+                output: "completed externally".to_string(),
+                error: None,
+                details: None,
+            }),
+        )
+        .expect("completed client result accepted");
+        assert!(matches!(
+            accepted.messages.last(),
+            Some(FromAgentMessage::ToolEnd {
+                tool_execution_id: Some(tool_execution_id),
+                success: true,
+                ..
+            }) if tool_execution_id == "execution-completed"
+        ));
+        assert!(
+            tool_rx.try_recv().is_err(),
+            "completed lifecycle must be emitted before native delivery"
+        );
+        tool_tx
+            .send(accepted.agent_response)
+            .expect("deliver completed result after lifecycle output");
+        assert!(matches!(
+            tool_rx.try_recv(),
+            Ok((call_id, true, Some(result)))
+                if call_id == "call-completed" && result.success
+        ));
+
+        let error = prepare_tool_response(
+            &meta,
+            "call-1".to_string(),
+            Some("execution-3".to_string()),
+            true,
+            None,
+        )
+        .expect_err("an active call id must not be rebound to a new execution");
+        assert!(error.contains("already has an active decision"));
+        assert!(tool_rx.try_recv().is_err());
+
+        meta.lock()
+            .expect("runtime metadata")
+            .tool_execution_ids
+            .remove("call-1")
+            .expect("simulate the prior native ToolEnd lifecycle boundary");
+        meta.lock()
+            .expect("runtime metadata")
+            .pending_tool_calls
+            .insert("call-1".to_string());
+        let accepted = prepare_tool_response(
+            &meta,
+            "call-1".to_string(),
+            Some("execution-3".to_string()),
+            true,
+            None,
+        )
+        .expect("call id reuse after the prior terminal boundary remains valid");
+        tool_tx
+            .send(accepted.agent_response)
+            .expect("deliver distinct execution decision");
+        assert!(matches!(
+            tool_rx.try_recv(),
+            Ok((call_id, true, None)) if call_id == "call-1"
+        ));
+
+        for _ in 0..2 {
+            meta.lock()
+                .expect("runtime metadata")
+                .pending_tool_calls
+                .insert("legacy-call".to_string());
+            let accepted =
+                prepare_tool_response(&meta, "legacy-call".to_string(), None, true, None)
+                    .expect("a registered legacy decision remains valid");
+            tool_tx
+                .send(accepted.agent_response)
+                .expect("deliver legacy decision");
+            assert!(tool_rx.try_recv().is_ok());
+        }
+    }
+
+    #[test]
+    fn governed_tool_response_rejects_an_unmatched_call_without_lifecycle_output() {
+        let meta = Arc::new(Mutex::new(RuntimeMeta::default()));
+
+        let error = prepare_tool_response(
+            &meta,
+            "mistyped-call".to_string(),
+            Some("execution-mistyped".to_string()),
+            false,
+            Some(HeadlessToolResult {
+                success: false,
+                output: String::new(),
+                error: Some("denied".to_string()),
+                details: None,
+            }),
+        )
+        .expect_err("unmatched governed response must be rejected");
+
+        assert!(error.contains("not awaiting a decision"));
+        let meta = meta.lock().expect("runtime metadata");
+        assert!(meta.tool_execution_ids.is_empty());
+        assert!(meta.decided_tool_execution_ids.is_empty());
+    }
+
+    #[test]
+    fn client_tool_result_requires_and_consumes_a_pending_call() {
+        let meta = Arc::new(Mutex::new(RuntimeMeta::default()));
+
+        let error = prepare_client_tool_result(
+            &meta,
+            "mistyped-client-call".to_string(),
+            vec![ClientToolResultContent::Text {
+                text: "ok".to_string(),
+            }],
+            false,
+        )
+        .expect_err("an unmatched client result must be rejected");
+        assert!(error.contains("not awaiting a decision"));
+
+        meta.lock()
+            .expect("runtime metadata")
+            .pending_tool_calls
+            .insert("client-call".to_string());
+        let accepted = prepare_client_tool_result(
+            &meta,
+            "client-call".to_string(),
+            vec![ClientToolResultContent::Text {
+                text: "ok".to_string(),
+            }],
+            false,
+        )
+        .expect("a registered client result must be accepted");
+        assert!(matches!(
+            accepted.messages.last(),
+            Some(FromAgentMessage::ToolEnd {
+                call_id,
+                success: true,
+                ..
+            }) if call_id == "client-call"
+        ));
+        assert!(
+            prepare_client_tool_result(
+                &meta,
+                "client-call".to_string(),
+                vec![ClientToolResultContent::Text {
+                    text: "ok".to_string(),
+                }],
+                false,
+            )
+            .is_err(),
+            "the pending call must be consumed exactly once"
+        );
+    }
+
+    #[test]
+    fn interrupted_governed_tools_emit_correlated_terminal_failures() {
+        let meta = Arc::new(Mutex::new(RuntimeMeta::default()));
+        {
+            let mut meta = meta.lock().expect("runtime metadata");
+            meta.tool_execution_ids
+                .insert("call-b".to_string(), "execution-b".to_string());
+            meta.tool_execution_ids
+                .insert("call-a".to_string(), "execution-a".to_string());
+            meta.pending_tool_calls.insert("call-pending".to_string());
+        }
+
+        let messages = take_interrupted_tool_terminal_messages(&meta);
+
+        assert_eq!(messages.len(), 2);
+        assert!(matches!(
+            &messages[0],
+            FromAgentMessage::ToolEnd {
+                call_id,
+                tool_execution_id: Some(tool_execution_id),
+                success: false,
+                ..
+            } if call_id == "call-a" && tool_execution_id == "execution-a"
+        ));
+        assert!(matches!(
+            &messages[1],
+            FromAgentMessage::ToolEnd {
+                call_id,
+                tool_execution_id: Some(tool_execution_id),
+                success: false,
+                ..
+            } if call_id == "call-b" && tool_execution_id == "execution-b"
+        ));
+        let meta = meta.lock().expect("runtime metadata");
+        assert!(meta.tool_execution_ids.is_empty());
+        assert!(meta.pending_tool_calls.is_empty());
     }
 
     #[test]
@@ -1618,18 +2140,15 @@ mod tests {
 
     #[test]
     fn env_session_id_reads_maestro_session_id() {
-        // Isolate from ambient env for this process.
-        let key = "MAESTRO_SESSION_ID";
-        let previous = std::env::var(key).ok();
-        // SAFETY: single-threaded test; restore after.
-        unsafe {
-            std::env::set_var(key, "  env-session-42  ");
-        }
-        let got = env_session_id();
-        match previous {
-            Some(v) => unsafe { std::env::set_var(key, v) },
-            None => unsafe { std::env::remove_var(key) },
-        }
-        assert_eq!(got.as_deref(), Some("env-session-42"));
+        assert_eq!(
+            normalize_session_id(Some("  env-session-42  ")).as_deref(),
+            Some("env-session-42")
+        );
+    }
+
+    #[test]
+    fn env_session_id_filters_blank_value() {
+        assert_eq!(normalize_session_id(Some("   ")), None);
+        assert_eq!(normalize_session_id(None), None);
     }
 }

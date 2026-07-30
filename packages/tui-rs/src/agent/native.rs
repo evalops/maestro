@@ -89,6 +89,7 @@
 //! triggered and the current request stops gracefully.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -469,6 +470,17 @@ pub struct NativeAgent {
     /// Cached provider identifier (e.g., "Anthropic", "`OpenAI`"). Used for
     /// status displays and debugging.
     provider_name: String,
+    /// Priority lifecycle signal that prevents buffered prompts from starting
+    /// once orderly shutdown begins.
+    shutdown_token: CancellationToken,
+
+    /// Background runner lifecycle retained for orderly signal shutdown.
+    ///
+    /// Normal drops preserve the historical detached-runner behavior. Signal
+    /// shutdown consumes the agent, closes the command channel, and awaits
+    /// this handle so queued cancellation and tool cleanup finish before App
+    /// and session state are dropped.
+    runner_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 #[derive(Default)]
@@ -477,6 +489,7 @@ struct ActiveCancellation {
     tool: Option<CancellationToken>,
     approval: Option<CancellationToken>,
     tool_batch_active: bool,
+    terminal_drain_required: bool,
     operation_interrupted: bool,
 }
 
@@ -494,11 +507,23 @@ impl ActiveCancellation {
             // whose active operation observed it.
             self.operation_interrupted = false;
             self.tool_batch_active = false;
+            self.terminal_drain_required = false;
         }
+    }
+
+    fn set_tool(&mut self, token: Option<CancellationToken>, terminal_drain_required: bool) {
+        if let Some(token) = token.as_ref() {
+            if self.operation_interrupted {
+                token.cancel();
+            }
+            self.terminal_drain_required |= terminal_drain_required;
+        }
+        self.tool = token;
     }
 
     fn finish_tool_batch(&mut self) -> bool {
         self.tool_batch_active = false;
+        self.terminal_drain_required = false;
         std::mem::take(&mut self.operation_interrupted)
     }
 }
@@ -646,6 +671,7 @@ impl NativeAgent {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (tool_response_tx, tool_response_rx) = mpsc::unbounded_channel();
         let (command_tx, command_rx) = mpsc::unbounded_channel();
+        let shutdown_token = CancellationToken::new();
 
         // Build tool definitions from the registry
         let registry = ToolRegistry::new();
@@ -700,6 +726,7 @@ impl NativeAgent {
             busy: false,
             cancel_token: None,
             active_cancellation: Arc::clone(&active_cancellation),
+            shutdown_token: shutdown_token.clone(),
             clear_pending_on_cancel: true,
             hooks,
             safety,
@@ -715,7 +742,7 @@ impl NativeAgent {
         };
 
         // Spawn the background task
-        tokio::spawn(async move {
+        let runner_handle = tokio::spawn(async move {
             runner.run().await;
         });
 
@@ -726,6 +753,8 @@ impl NativeAgent {
             event_tx,
             model_name: config.model,
             provider_name: format!("{provider:?}"),
+            shutdown_token,
+            runner_handle: Some(runner_handle),
         };
 
         Ok((agent, event_rx))
@@ -825,6 +854,24 @@ impl NativeAgent {
     /// Cancel the current operation
     pub fn cancel(&self) {
         self.cancel_with_options(true);
+    }
+
+    /// Cancel all queued and active work, close the command channel, and wait
+    /// for the background runner to exit.
+    ///
+    /// This is a lifecycle barrier:
+    /// buffered work must be preempted, active tool cleanup must finish, and
+    /// the runner task must return before this future completes. The external
+    /// repeat-signal monitor remains the hard escape hatch if platform cleanup
+    /// itself wedges.
+    pub async fn shutdown(mut self) {
+        self.shutdown_token.cancel();
+        self.cancel_with_options(true);
+        let runner_handle = self.runner_handle.take();
+        drop(self.command_tx);
+        if let Some(runner_handle) = runner_handle {
+            let _ = runner_handle.await;
+        }
     }
 
     /// Cancel the current operation but keep any queued prompts.
@@ -929,6 +976,155 @@ impl NativeAgent {
     }
 }
 
+async fn wait_for_retry_delay(
+    delay: std::time::Duration,
+    request_cancel: &CancellationToken,
+    shutdown_token: &CancellationToken,
+) -> bool {
+    tokio::select! {
+        () = tokio::time::sleep(delay) => true,
+        () = request_cancel.cancelled() => false,
+        () = shutdown_token.cancelled() => false,
+    }
+}
+
+enum CancellableLoad<T> {
+    Loaded(T),
+    RequestCancelled,
+    Shutdown,
+}
+
+async fn load_until_cancelled<F, T>(
+    load: F,
+    request_cancel: &CancellationToken,
+    shutdown_token: &CancellationToken,
+) -> CancellableLoad<T>
+where
+    F: Future<Output = T>,
+{
+    tokio::pin!(load);
+    tokio::select! {
+        biased;
+        () = shutdown_token.cancelled() => CancellableLoad::Shutdown,
+        () = request_cancel.cancelled() => CancellableLoad::RequestCancelled,
+        loaded = &mut load => CancellableLoad::Loaded(loaded),
+    }
+}
+
+const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+async fn run_request_with_cancellation<F>(
+    request: F,
+    request_cancel: &CancellationToken,
+    shutdown_token: &CancellationToken,
+    active_cancellation: &Arc<Mutex<ActiveCancellation>>,
+) -> Result<()>
+where
+    F: Future<Output = Result<()>>,
+{
+    tokio::pin!(request);
+    tokio::select! {
+        biased;
+        () = shutdown_token.cancelled() => {
+            let terminal_drain_required = || {
+                active_cancellation
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .terminal_drain_required
+            };
+            if terminal_drain_required() {
+                // A mutating native tool may already have committed its
+                // workspace change before bounded follow-up work (for example
+                // LSP diagnostics) finishes. Keep the request alive through
+                // batch cleanup so its one receipt-bearing terminal remains
+                // truthful and cannot invite a duplicate retry.
+                (&mut request).await
+            } else {
+                // Provider and legacy waits that have not crossed a mutating
+                // native boundary retain bounded shutdown. Recheck after the
+                // bound because polling the request may have crossed into a
+                // mutating tool after shutdown won the outer selector.
+                match tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, &mut request).await {
+                    Ok(result) => result,
+                    Err(_) if terminal_drain_required() => (&mut request).await,
+                    Err(_) => Err(anyhow::anyhow!("Request cancelled")),
+                }
+            }
+        }
+        () = request_cancel.cancelled() => {
+            Err(anyhow::anyhow!("Request cancelled"))
+        }
+        result = &mut request => result,
+    }
+}
+
+fn native_tool_requires_terminal_drain(
+    _tool_executor: &ToolExecutor,
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> bool {
+    let action = || args.get("action").and_then(serde_json::Value::as_str);
+
+    match tool_name.to_ascii_lowercase().as_str() {
+        // Shell syntax admits filesystem and process effects that cannot be
+        // exhaustively proven read-only. Bash execution consumes shutdown
+        // cancellation and reaps its process tree, so conservatively retain
+        // its receipt-bearing terminal independent of approval-version pins.
+        "bash" => true,
+        "write" | "notebook_edit" | "todo" => true,
+        "edit" => !args
+            .get("dryRun")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        "background_tasks" => matches!(action(), Some("start" | "stop")),
+        "gh_pr" => matches!(action(), Some("create" | "checkout" | "comment")),
+        "gh_issue" => matches!(action(), Some("create" | "comment" | "close")),
+        "gh_repo" => matches!(action(), Some("fork" | "clone")),
+        // These built-ins are observation-only even when a separate policy
+        // asks for approval (for example screenshot capture).
+        "read"
+        | "glob"
+        | "grep"
+        | "diff"
+        | "list"
+        | "find"
+        | "search"
+        | "parallel_ripgrep"
+        | "websearch"
+        | "codesearch"
+        | "status"
+        | "ask_user"
+        | "extract_document"
+        | "web_fetch"
+        | "webfetch"
+        | "read_image"
+        | "screenshot"
+        | "mcp_list_resources"
+        | "mcp_list_prompts"
+        | "mcp_read_resource"
+        | "mcp_get_prompt"
+        | "vscode_get_diagnostics"
+        | "vscode_get_definition"
+        | "vscode_find_references"
+        | "vscode_read_file_range"
+        | "jetbrains_get_diagnostics"
+        | "jetbrains_get_definition"
+        | "jetbrains_find_references"
+        | "jetbrains_read_file_range" => false,
+        // Unknown serial extensions are conservatively receipt-bearing.
+        // Explicit read-only inline tools are drained by the parallel wave
+        // before reaching this path.
+        _ => true,
+    }
+}
+
+fn command_after_shutdown_check(
+    command: AgentCommand,
+    shutdown_token: &CancellationToken,
+) -> Option<AgentCommand> {
+    (!shutdown_token.is_cancelled()).then_some(command)
+}
+
 /// The background agent runner that owns mutable state
 ///
 /// This struct is private to the module and runs in a background tokio task.
@@ -1031,6 +1227,9 @@ struct NativeAgentRunner {
     /// blocked awaiting a tool.
     active_cancellation: Arc<Mutex<ActiveCancellation>>,
 
+    /// Priority lifecycle signal checked before deferred or buffered commands.
+    shutdown_token: CancellationToken,
+
     /// Whether a cancellation should also clear pending messages.
     clear_pending_on_cancel: bool,
 
@@ -1085,6 +1284,31 @@ struct NativeAgentRunner {
     prompt_context: Option<String>,
 }
 
+async fn recv_command_or_shutdown(
+    shutdown_token: &CancellationToken,
+    command_rx: &mut mpsc::UnboundedReceiver<AgentCommand>,
+) -> Option<AgentCommand> {
+    tokio::select! {
+        biased;
+        () = shutdown_token.cancelled() => None,
+        command = command_rx.recv() => command,
+    }
+}
+
+async fn await_side_question_or_shutdown<F>(
+    shutdown_token: &CancellationToken,
+    side_question: F,
+) -> Option<F::Output>
+where
+    F: Future,
+{
+    tokio::select! {
+        biased;
+        () = shutdown_token.cancelled() => None,
+        output = side_question => Some(output),
+    }
+}
+
 impl NativeAgentRunner {
     fn set_active_request_cancel_token(&mut self, token: Option<CancellationToken>) {
         let mut active = self
@@ -1095,17 +1319,16 @@ impl NativeAgentRunner {
         self.cancel_token = token;
     }
 
-    fn set_active_tool_cancel_token(&self, token: Option<CancellationToken>) {
+    fn set_active_tool_cancel_token(
+        &self,
+        token: Option<CancellationToken>,
+        terminal_drain_required: bool,
+    ) {
         let mut active = self
             .active_cancellation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(token) = token.as_ref() {
-            if active.operation_interrupted {
-                token.cancel();
-            }
-        }
-        active.tool = token;
+        active.set_tool(token, terminal_drain_required);
     }
 
     fn set_active_approval_cancel_token(&self, token: Option<CancellationToken>) {
@@ -1122,10 +1345,14 @@ impl NativeAgentRunner {
     }
 
     fn set_tool_batch_active(&self, is_active: bool) {
-        self.active_cancellation
+        let mut active = self
+            .active_cancellation
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .tool_batch_active = is_active;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        active.tool_batch_active = is_active;
+        if !is_active {
+            active.terminal_drain_required = false;
+        }
     }
 
     fn take_active_operation_interruption(&self) -> bool {
@@ -1738,12 +1965,21 @@ impl NativeAgentRunner {
     /// Run the background task loop
     async fn run(mut self) {
         loop {
+            if self.shutdown_token.is_cancelled() {
+                break;
+            }
             let (cmd, activated_request_token) = if let Some(command) = self.take_deferred_command()
             {
                 command
-            } else if let Some(command) = self.command_rx.recv().await {
-                self.activate_received_command(command)
             } else {
+                let command =
+                    recv_command_or_shutdown(&self.shutdown_token, &mut self.command_rx).await;
+                let Some(command) = command else {
+                    break;
+                };
+                self.activate_received_command(command)
+            };
+            let Some(cmd) = command_after_shutdown_check(cmd, &self.shutdown_token) else {
                 break;
             };
             match cmd {
@@ -1861,8 +2097,26 @@ impl NativeAgentRunner {
 
                     let mut blocks = Vec::new();
                     blocks.push(ContentBlock::Text { text: prompt });
-                    let attachment_blocks = self.load_attachment_blocks(&attachments).await;
-                    blocks.extend(attachment_blocks);
+                    match load_until_cancelled(
+                        self.load_attachment_blocks(&attachments),
+                        &cancel_token,
+                        &self.shutdown_token,
+                    )
+                    .await
+                    {
+                        CancellableLoad::Loaded(attachment_blocks) => {
+                            blocks.extend(attachment_blocks);
+                        }
+                        CancellableLoad::RequestCancelled => {
+                            // Preserve the normal cancelled-request terminal below.
+                        }
+                        CancellableLoad::Shutdown => {
+                            self.busy = false;
+                            self.set_active_request_cancel_token(None);
+                            self.prompt_context = None;
+                            break;
+                        }
+                    }
 
                     let content = if blocks.len() == 1 {
                         match &blocks[0] {
@@ -1882,15 +2136,17 @@ impl NativeAgentRunner {
                     self.retry_policy.reset();
 
                     // Run the agent loop with cancellation and retry support
+                    let shutdown_token = self.shutdown_token.clone();
+                    let active_cancellation = Arc::clone(&self.active_cancellation);
                     let mut request_cancelled = false;
                     loop {
-                        let result = tokio::select! {
-                            biased;
-                            () = cancel_token.cancelled() => {
-                                Err(anyhow::anyhow!("Request cancelled"))
-                            },
-                            res = self.run_loop() => res,
-                        };
+                        let result = run_request_with_cancellation(
+                            self.run_loop(),
+                            &cancel_token,
+                            &shutdown_token,
+                            &active_cancellation,
+                        )
+                        .await;
 
                         match result {
                             Ok(()) => break,
@@ -1919,12 +2175,16 @@ impl NativeAgentRunner {
                                             ),
                                         });
 
-                                        // Wait before retrying
-                                        tokio::time::sleep(delay).await;
-
-                                        // Check if cancelled during wait
-                                        if cancel_token.is_cancelled() {
-                                            request_cancelled = true;
+                                        // Wait before retrying, but do not make
+                                        // shutdown wait for the backoff timer.
+                                        if !wait_for_retry_delay(
+                                            delay,
+                                            &cancel_token,
+                                            &shutdown_token,
+                                        )
+                                        .await
+                                        {
+                                            request_cancelled = cancel_token.is_cancelled();
                                             break;
                                         }
                                     }
@@ -2082,14 +2342,17 @@ impl NativeAgentRunner {
                     self.busy = true;
                     let cancel_token = CancellationToken::new();
                     self.set_active_request_cancel_token(Some(cancel_token.clone()));
+                    let shutdown_token = self.shutdown_token.clone();
+                    let active_cancellation = Arc::clone(&self.active_cancellation);
 
                     // Run the agent loop without adding a user message
-                    let result = tokio::select! {
-                        res = self.run_loop() => res,
-                        () = cancel_token.cancelled() => {
-                            Err(anyhow::anyhow!("Request cancelled"))
-                        }
-                    };
+                    let result = run_request_with_cancellation(
+                        self.run_loop(),
+                        &cancel_token,
+                        &shutdown_token,
+                        &active_cancellation,
+                    )
+                    .await;
 
                     if let Err(e) = result {
                         let msg = e.to_string();
@@ -2112,6 +2375,7 @@ impl NativeAgentRunner {
                 }
             }
         }
+        self.tool_executor.shutdown_background_processes().await;
     }
 
     /// Build request configuration
@@ -2159,7 +2423,7 @@ impl NativeAgentRunner {
         let mut answer = String::new();
         let mut usage = TokenUsage::default();
         let mut saw_usage = false;
-        let result: Result<()> = async {
+        let result = await_side_question_or_shutdown(&self.shutdown_token, async {
             let mut messages = self.messages.clone();
             messages.push(Message {
                 role: Role::User,
@@ -2205,8 +2469,9 @@ impl NativeAgentRunner {
                 }
             }
             Ok(())
-        }
-        .await;
+        })
+        .await
+        .unwrap_or_else(|| Err(anyhow::anyhow!("Side question cancelled during shutdown")));
 
         let _ = self.event_tx.send(FromAgent::SideQuestionEnd {
             side_id,
@@ -2879,7 +3144,7 @@ impl NativeAgentRunner {
                 while let Some(deferred_call) = deferred_tool_calls_iter.next() {
                     match deferred_call {
                         DeferredToolCall::AwaitApproval(mut call) => {
-                            let approval_cancel = CancellationToken::new();
+                            let approval_cancel = self.shutdown_token.child_token();
                             self.set_active_approval_cancel_token(Some(approval_cancel.clone()));
                             let response = wait_for_tool_response(
                                 &call.call_id,
@@ -3440,8 +3705,10 @@ impl NativeAgentRunner {
         call_id: &str,
         approved_inline_env: Option<&HashMap<String, String>>,
     ) -> ToolExecution {
-        let cancel = CancellationToken::new();
-        self.set_active_tool_cancel_token(Some(cancel.clone()));
+        let cancel = self.shutdown_token.child_token();
+        let terminal_drain_required =
+            native_tool_requires_terminal_drain(&self.tool_executor, tool_name, args);
+        self.set_active_tool_cancel_token(Some(cancel.clone()), terminal_drain_required);
         let execution = self
             .tool_executor
             .execute_with_receipt_cancellable_inline_env(
@@ -3453,7 +3720,7 @@ impl NativeAgentRunner {
                 approved_inline_env,
             )
             .await;
-        self.set_active_tool_cancel_token(None);
+        self.set_active_tool_cancel_token(None, false);
         execution
     }
 
@@ -3571,7 +3838,7 @@ impl NativeAgentRunner {
 
         let pending_calls = std::mem::take(pending);
         let cancel_token = CancellationToken::new();
-        self.set_active_tool_cancel_token(Some(cancel_token.clone()));
+        self.set_active_tool_cancel_token(Some(cancel_token.clone()), false);
         let mut results_by_call_id = execute_native_read_only_tool_wave(
             &self.config.cwd,
             self.credential_vault.clone(),
@@ -3580,7 +3847,7 @@ impl NativeAgentRunner {
             Some(cancel_token),
         )
         .await;
-        self.set_active_tool_cancel_token(None);
+        self.set_active_tool_cancel_token(None, false);
 
         for call in pending_calls {
             let result = results_by_call_id.remove(&call.call_id).unwrap_or_else(|| {
@@ -4182,6 +4449,29 @@ mod tests {
         Arc,
     };
 
+    #[tokio::test]
+    async fn retry_backoff_is_interrupted_by_request_cancellation() {
+        let cancel_token = CancellationToken::new();
+        let waiter_token = cancel_token.clone();
+        let shutdown_token = CancellationToken::new();
+        let waiter = tokio::spawn(async move {
+            wait_for_retry_delay(
+                std::time::Duration::from_mins(1),
+                &waiter_token,
+                &shutdown_token,
+            )
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        cancel_token.cancel();
+        let completed_delay = tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("cancellation must interrupt the retry backoff")
+            .expect("retry waiter task must not panic");
+        assert!(!completed_delay, "cancelled backoff must not begin a retry");
+    }
+
     struct StateDependentPreToolUseHook {
         block: Arc<AtomicBool>,
     }
@@ -4233,6 +4523,413 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn buffered_prompt_does_not_run_hooks_or_emit_prompt_events_after_shutdown() {
+        let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+        command_tx
+            .send(AgentCommand::Prompt {
+                content: "must not run".to_string(),
+                attachments: vec!["must-not-be-read.txt".to_string()],
+                kind: PromptKind::Prompt,
+                queue_id: None,
+            })
+            .expect("buffer prompt");
+
+        let shutdown_token = CancellationToken::new();
+        let worker_shutdown = shutdown_token.clone();
+        let acquired = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let worker_acquired = std::sync::Arc::clone(&acquired);
+        let worker_release = std::sync::Arc::clone(&release);
+        let (side_effect_tx, mut side_effect_rx) = mpsc::unbounded_channel();
+
+        let worker = tokio::spawn(async move {
+            let command = command_rx
+                .recv()
+                .await
+                .expect("buffered prompt should be acquired");
+            worker_acquired.wait().await;
+            worker_release.wait().await;
+
+            if let Some(AgentCommand::Prompt { .. }) =
+                command_after_shutdown_check(command, &worker_shutdown)
+            {
+                let _ = side_effect_tx.send("hook-marker");
+                let _ = side_effect_tx.send("prompt-event");
+            }
+        });
+
+        acquired.wait().await;
+        shutdown_token.cancel();
+        release.wait().await;
+        worker.await.expect("barrier worker should not panic");
+
+        assert!(
+            side_effect_rx.try_recv().is_err(),
+            "shutdown after buffered receive must gate hooks, attachment I/O, and prompt events"
+        );
+    }
+
+    #[cfg(unix)]
+    fn process_group_exists(process_group: i32) -> bool {
+        let result = unsafe { libc::kill(-process_group, 0) };
+        result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+
+    #[cfg(unix)]
+    async fn read_pid(path: &Path) -> i32 {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Ok(raw) = fs::read_to_string(path).await {
+                    if let Ok(pid) = raw.trim().parse::<i32>() {
+                        return pid;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("bash process should publish its pid")
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_cancels_native_bash_process_group_before_returning() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let parent_pid_path = workspace.path().join("parent.pid");
+        let child_pid_path = workspace.path().join("child.pid");
+        let sentinel_path = workspace.path().join("post-shutdown-sentinel");
+        let command = format!(
+            "printf '%s\\n' \"$$\" > '{}'; \
+             sleep 30 & child=$!; printf '%s\\n' \"$child\" > '{}'; \
+             (sleep 1; printf leaked > '{}') & wait \"$child\"",
+            parent_pid_path.display(),
+            child_pid_path.display(),
+            sentinel_path.display()
+        );
+
+        let executor = ToolExecutor::new(workspace.path().display().to_string());
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let shutdown_token = CancellationToken::new();
+        let worker_shutdown = shutdown_token.clone();
+        let tool_shutdown = worker_shutdown.child_token();
+        let request_cancel = CancellationToken::new();
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let execution = tokio::spawn(async move {
+            let active_cancellation = Arc::new(Mutex::new(ActiveCancellation {
+                terminal_drain_required: true,
+                ..ActiveCancellation::default()
+            }));
+            run_request_with_cancellation(
+                async move {
+                    let result = executor
+                        .execute_with_receipt_cancellable(
+                            "bash",
+                            &serde_json::json!({"command": command, "timeout": 60_000}),
+                            Some(&event_tx),
+                            "shutdown-bash",
+                            tool_shutdown,
+                        )
+                        .await;
+                    let _ = result_tx.send(result);
+                    Ok(())
+                },
+                &request_cancel,
+                &worker_shutdown,
+                &active_cancellation,
+            )
+            .await
+        });
+
+        let parent_pid = read_pid(&parent_pid_path).await;
+        let child_pid = read_pid(&child_pid_path).await;
+        assert!(parent_pid > 0);
+        assert!(child_pid > 0);
+        assert!(
+            process_group_exists(parent_pid),
+            "bash should lead a live process group before shutdown"
+        );
+
+        shutdown_token.cancel();
+        let run_result = tokio::time::timeout(std::time::Duration::from_secs(5), execution)
+            .await
+            .expect("shutdown must await process-tree termination")
+            .expect("native tool task should not panic");
+        assert!(run_result.is_ok());
+        let result = result_rx
+            .await
+            .expect("cancellable Bash future must finish before shutdown returns");
+        assert!(result.is_error());
+        assert!(result.model_content().to_lowercase().contains("cancel"));
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while process_group_exists(parent_pid) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("bash process group should be gone before shutdown completes");
+
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        assert!(
+            !sentinel_path.exists(),
+            "a descendant survived shutdown and mutated the workspace"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_awaits_terminal_outcome_beyond_the_old_drain_cutoff() {
+        let request_cancel = CancellationToken::new();
+        let shutdown_token = CancellationToken::new();
+        let shutdown = shutdown_token.clone();
+
+        let request = tokio::spawn(async move {
+            let active_cancellation = Arc::new(Mutex::new(ActiveCancellation {
+                terminal_drain_required: true,
+                ..ActiveCancellation::default()
+            }));
+            run_request_with_cancellation(
+                async {
+                    tokio::time::sleep(std::time::Duration::from_millis(2_100)).await;
+                    Ok(())
+                },
+                &request_cancel,
+                &shutdown_token,
+                &active_cancellation,
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+        shutdown.cancel();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), request)
+            .await
+            .expect("shutdown should await the active terminal outcome")
+            .expect("request task should not panic");
+        assert!(
+            result.is_ok(),
+            "shutdown must not replace a late successful terminal with cancellation"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_keeps_non_tool_request_bounded() {
+        let request_cancel = CancellationToken::new();
+        let shutdown_token = CancellationToken::new();
+        let shutdown = shutdown_token.clone();
+
+        let request = tokio::spawn(async move {
+            let active_cancellation = Arc::new(Mutex::new(ActiveCancellation::default()));
+            run_request_with_cancellation(
+                std::future::pending::<Result<()>>(),
+                &request_cancel,
+                &shutdown_token,
+                &active_cancellation,
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+        shutdown.cancel();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), request)
+            .await
+            .expect("non-tool shutdown must retain its bounded exit")
+            .expect("request task should not panic");
+        assert!(
+            result.is_err(),
+            "a non-terminating provider or legacy request must be dropped after the bound"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_preempts_retry_backoff() {
+        let request_cancel = CancellationToken::new();
+        let shutdown_token = CancellationToken::new();
+        let shutdown = shutdown_token.clone();
+
+        let waiting = tokio::spawn(async move {
+            wait_for_retry_delay(
+                std::time::Duration::from_mins(1),
+                &request_cancel,
+                &shutdown_token,
+            )
+            .await
+        });
+        shutdown.cancel();
+
+        let completed = tokio::time::timeout(std::time::Duration::from_millis(100), waiting)
+            .await
+            .expect("shutdown should preempt the retry timer")
+            .expect("retry wait task should not panic");
+        assert!(!completed);
+    }
+
+    #[tokio::test]
+    async fn shutdown_preempts_and_drops_attachment_loading() {
+        struct DropFlag(Arc<AtomicBool>);
+
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let request_cancel = CancellationToken::new();
+        let shutdown_token = CancellationToken::new();
+        let shutdown = shutdown_token.clone();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let entered_by_load = Arc::clone(&entered);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let dropped_by_load = Arc::clone(&dropped);
+
+        let loading = tokio::spawn(async move {
+            load_until_cancelled(
+                async move {
+                    let _drop_flag = DropFlag(dropped_by_load);
+                    entered_by_load.notify_one();
+                    std::future::pending::<Vec<ContentBlock>>().await
+                },
+                &request_cancel,
+                &shutdown_token,
+            )
+            .await
+        });
+
+        entered.notified().await;
+        shutdown.cancel();
+
+        let result = tokio::time::timeout(std::time::Duration::from_millis(100), loading)
+            .await
+            .expect("shutdown should preempt attachment loading")
+            .expect("attachment loading task should not panic");
+        assert!(matches!(result, CancellableLoad::Shutdown));
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "shutdown must drop the in-flight attachment future"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_the_runner_to_process_cancellation() {
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let (tool_response_tx, _tool_response_rx) = mpsc::unbounded_channel();
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let finished_in_runner = std::sync::Arc::clone(&finished);
+        let shutdown_token = CancellationToken::new();
+        let runner_shutdown_token = shutdown_token.clone();
+        let runner_task = tokio::spawn(async move {
+            runner_shutdown_token.cancelled().await;
+            finished_in_runner.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let agent = NativeAgent {
+            command_tx,
+            tool_response_tx,
+            active_cancellation: Arc::new(Mutex::new(ActiveCancellation::default())),
+            event_tx,
+            model_name: "test".to_string(),
+            provider_name: "test".to_string(),
+            shutdown_token,
+            runner_handle: Some(runner_task),
+        };
+
+        agent.shutdown().await;
+        assert!(finished.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_reaps_registered_background_bash_before_returning() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let parent_pid_path = workspace.path().join("background-parent.pid");
+        let child_pid_path = workspace.path().join("background-child.pid");
+        let sentinel_path = workspace.path().join("background-post-shutdown-sentinel");
+        let command = format!(
+            "printf '%s\n' \"$$\" > '{}'; \
+             (sleep 0.4; printf leaked > '{}') & child=$!; \
+             printf '%s\n' \"$child\" > '{}'; wait \"$child\"",
+            parent_pid_path.display(),
+            sentinel_path.display(),
+            child_pid_path.display(),
+        );
+        let shutdown_token = CancellationToken::new();
+        let executor = ToolExecutor::new(workspace.path().display().to_string());
+        let result = executor
+            .execute_with_receipt_cancellable(
+                "bash",
+                &serde_json::json!({
+                    "command": command,
+                    "description": "shutdown regression",
+                    "run_in_background": true
+                }),
+                None,
+                "background-shutdown",
+                shutdown_token.child_token(),
+            )
+            .await;
+        let legacy_result = result.to_legacy();
+        assert!(
+            legacy_result.success,
+            "background Bash should start: {result:?}"
+        );
+        let background_pid = legacy_result
+            .details
+            .as_ref()
+            .and_then(|details| details.get("pid"))
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok())
+            .expect("background Bash receipt should include its pid");
+        let parent_pid = read_pid(&parent_pid_path).await;
+        let child_pid = read_pid(&child_pid_path).await;
+        assert_ne!(
+            background_pid as i32, parent_pid,
+            "receipt PID should identify the outer supervisor, not the configured shell"
+        );
+        assert!(child_pid > 0);
+        assert!(
+            process_group_exists(background_pid as i32),
+            "outer supervisor should lead the background process group"
+        );
+        assert!(
+            crate::tools::process_registry::tracked_pids().contains(&background_pid),
+            "background Bash should be registered before shutdown"
+        );
+
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let (tool_response_tx, _tool_response_rx) = mpsc::unbounded_channel();
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let runner_shutdown_token = shutdown_token.clone();
+        let runner_task = tokio::spawn(async move {
+            runner_shutdown_token.cancelled().await;
+            executor.shutdown_background_processes().await;
+        });
+        let agent = NativeAgent {
+            command_tx,
+            tool_response_tx,
+            active_cancellation: Arc::new(Mutex::new(ActiveCancellation::default())),
+            event_tx,
+            model_name: "test".to_string(),
+            provider_name: "test".to_string(),
+            shutdown_token,
+            runner_handle: Some(runner_task),
+        };
+
+        agent.shutdown().await;
+        assert!(
+            !crate::tools::process_registry::tracked_pids().contains(&background_pid),
+            "shutdown must reap its registered background Bash process"
+        );
+        assert!(
+            !process_group_exists(background_pid as i32),
+            "background Bash process group must be gone before shutdown returns"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        assert!(
+            !sentinel_path.exists(),
+            "background Bash survived shutdown and mutated the workspace"
+        );
+    }
+
     #[test]
     fn test_config_default() {
         let config = NativeAgentConfig::default();
@@ -4242,8 +4939,8 @@ mod tests {
         assert_eq!(config.approval_mode, ApprovalMode::Selective);
     }
 
-    #[test]
-    fn agent_cancel_interrupts_a_blocked_runner_before_queue_processing() {
+    #[tokio::test]
+    async fn agent_cancel_interrupts_a_blocked_runner_before_queue_processing() {
         let request_token = CancellationToken::new();
         let tool_token = CancellationToken::new();
         let active = Arc::new(Mutex::new(ActiveCancellation {
@@ -4251,6 +4948,7 @@ mod tests {
             tool: Some(tool_token.clone()),
             approval: None,
             tool_batch_active: true,
+            terminal_drain_required: false,
             operation_interrupted: false,
         }));
         let (command_tx, mut command_rx) = mpsc::unbounded_channel();
@@ -4263,6 +4961,8 @@ mod tests {
             event_tx,
             model_name: "test-model".to_string(),
             provider_name: "test-provider".to_string(),
+            shutdown_token: CancellationToken::new(),
+            runner_handle: None,
         };
 
         agent.cancel_keep_queue();
@@ -4297,6 +4997,94 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn shutdown_preempts_buffered_prompts_and_awaits_runner_exit() {
+        let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+        command_tx
+            .send(AgentCommand::Prompt {
+                content: "queued-before-shutdown".to_string(),
+                attachments: Vec::new(),
+                kind: PromptKind::Prompt,
+                queue_id: Some(41),
+            })
+            .expect("queue prompt");
+        let (tool_response_tx, _tool_response_rx) = mpsc::unbounded_channel();
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let runner_exited = Arc::new(AtomicBool::new(false));
+        let runner_exited_in_task = Arc::clone(&runner_exited);
+        let shutdown_token = CancellationToken::new();
+        let runner_shutdown_token = shutdown_token.clone();
+        let runner_handle = tokio::spawn(async move {
+            assert!(
+                recv_command_or_shutdown(&runner_shutdown_token, &mut command_rx)
+                    .await
+                    .is_none(),
+                "priority shutdown must win over a buffered prompt"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            runner_exited_in_task.store(true, Ordering::SeqCst);
+        });
+        let agent = NativeAgent {
+            command_tx,
+            tool_response_tx,
+            active_cancellation: Arc::new(Mutex::new(ActiveCancellation::default())),
+            event_tx,
+            model_name: "test-model".to_string(),
+            provider_name: "test-provider".to_string(),
+            shutdown_token,
+            runner_handle: Some(runner_handle),
+        };
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), agent.shutdown())
+            .await
+            .expect("shutdown lifecycle barrier timed out");
+        assert!(
+            runner_exited.load(Ordering::SeqCst),
+            "shutdown returned before the runner exited"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_drops_an_in_flight_side_question() {
+        struct DropProbe(Arc<AtomicBool>);
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let shutdown = CancellationToken::new();
+        let trigger = shutdown.clone();
+        let started = Arc::new(AtomicBool::new(false));
+        let started_in_future = Arc::clone(&started);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let dropped_in_future = Arc::clone(&dropped);
+        let side_question = async move {
+            let _drop_probe = DropProbe(dropped_in_future);
+            started_in_future.store(true, Ordering::SeqCst);
+            std::future::pending::<()>().await;
+        };
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            trigger.cancel();
+        });
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            await_side_question_or_shutdown(&shutdown, side_question),
+        )
+        .await
+        .expect("side question shutdown must not wait for provider completion");
+
+        assert!(result.is_none());
+        assert!(started.load(Ordering::SeqCst));
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "shutdown must drop the provider stream future"
+        );
+    }
+
     #[test]
     fn agent_cancel_interrupts_an_approval_wait_without_dropping_the_request() {
         let request_token = CancellationToken::new();
@@ -4306,6 +5094,7 @@ mod tests {
             tool: None,
             approval: Some(approval_token.clone()),
             tool_batch_active: true,
+            terminal_drain_required: false,
             operation_interrupted: false,
         }));
         let (command_tx, mut command_rx) = mpsc::unbounded_channel();
@@ -4318,6 +5107,8 @@ mod tests {
             event_tx,
             model_name: "test-model".to_string(),
             provider_name: "test-provider".to_string(),
+            shutdown_token: CancellationToken::new(),
+            runner_handle: None,
         };
 
         agent.cancel_keep_queue();
@@ -4338,14 +5129,15 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn agent_cancel_keeps_tool_batch_cleanup_alive_between_operations() {
+    #[tokio::test]
+    async fn agent_cancel_keeps_tool_batch_cleanup_alive_between_operations() {
         let request_token = CancellationToken::new();
         let active = Arc::new(Mutex::new(ActiveCancellation {
             request: Some(request_token.clone()),
             tool: None,
             approval: None,
             tool_batch_active: true,
+            terminal_drain_required: false,
             operation_interrupted: false,
         }));
         let (command_tx, mut command_rx) = mpsc::unbounded_channel();
@@ -4358,6 +5150,8 @@ mod tests {
             event_tx,
             model_name: "test-model".to_string(),
             provider_name: "test-provider".to_string(),
+            shutdown_token: CancellationToken::new(),
+            runner_handle: None,
         };
 
         agent.cancel_keep_queue();
@@ -4459,6 +5253,7 @@ mod tests {
             tool: None,
             approval: None,
             tool_batch_active: true,
+            terminal_drain_required: false,
             operation_interrupted: false,
         }));
 
@@ -4475,6 +5270,93 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert!(!active.tool_batch_active);
         assert!(!active.operation_interrupted);
+    }
+
+    #[test]
+    fn mutating_tool_terminal_drain_sticks_until_batch_cleanup() {
+        let mut active = ActiveCancellation {
+            tool_batch_active: true,
+            ..ActiveCancellation::default()
+        };
+        active.set_tool(Some(CancellationToken::new()), true);
+        active.set_tool(None, false);
+
+        assert!(
+            active.terminal_drain_required,
+            "clearing the active token must not drop truthful terminal cleanup"
+        );
+
+        active.finish_tool_batch();
+        assert!(
+            !active.terminal_drain_required,
+            "the terminal drain boundary ends with batch cleanup"
+        );
+    }
+
+    #[test]
+    fn persistent_todo_requires_terminal_drain_without_approval() {
+        let executor = ToolExecutor::new(".");
+        let args = serde_json::json!({"goal": "ship", "items": []});
+
+        assert!(
+            native_tool_requires_terminal_drain(&executor, "todo", &args),
+            "todo persists its store even though it is auto-approved"
+        );
+    }
+
+    #[test]
+    fn legacy_bash_mutations_require_terminal_drain() {
+        let mut executor = ToolExecutor::new(".");
+        executor.pin_tool_version("bash", "legacy-1").unwrap();
+
+        for command in [
+            "find . -delete",
+            "git branch -D obsolete",
+            "git remote set-url origin https://example.invalid/repo.git",
+            "printf x | tee target",
+            "sed -i 's/a/b/' target",
+        ] {
+            let args = serde_json::json!({"command": command});
+            assert!(
+                native_tool_requires_terminal_drain(&executor, "bash", &args),
+                "current effect analysis must classify legacy mutation: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_only_background_wait_does_not_require_terminal_drain() {
+        let executor = ToolExecutor::new(".");
+        let args = serde_json::json!({
+            "action": "waitForRotation",
+            "taskId": "task-1",
+            "timeoutMs": 60_000
+        });
+
+        assert!(
+            !native_tool_requires_terminal_drain(&executor, "background_tasks", &args),
+            "bounded shutdown must not become an unbounded wait for observation-only actions"
+        );
+    }
+
+    #[test]
+    fn read_only_github_actions_do_not_require_terminal_drain() {
+        let executor = ToolExecutor::new(".");
+        for (tool, action) in [
+            ("gh_pr", "view"),
+            ("gh_pr", "list"),
+            ("gh_pr", "checks"),
+            ("gh_pr", "diff"),
+            ("gh_issue", "view"),
+            ("gh_issue", "list"),
+            ("gh_repo", "view"),
+        ] {
+            let args = serde_json::json!({"action": action});
+            assert!(
+                !native_tool_requires_terminal_drain(&executor, tool, &args),
+                "{tool} {action} is observation-only"
+            );
+        }
     }
 
     #[test]
@@ -4905,6 +5787,29 @@ mod tests {
 
         assert!(matches!(result, ToolResponseWait::Cancelled));
         assert!(pending.contains_key("id-1"));
+    }
+
+    #[tokio::test]
+    async fn shutdown_preempts_pending_tool_response_wait() {
+        let (_tx, mut rx) = mpsc::unbounded_channel();
+        let mut pending = HashMap::new();
+        let shutdown_token = CancellationToken::new();
+        let cancel = shutdown_token.child_token();
+
+        let waiting = tokio::spawn(async move {
+            let result = wait_for_tool_response("id-1", &mut rx, &mut pending, &cancel).await;
+            (result, pending)
+        });
+        tokio::task::yield_now().await;
+        shutdown_token.cancel();
+
+        let (result, pending) =
+            tokio::time::timeout(std::time::Duration::from_millis(100), waiting)
+                .await
+                .expect("shutdown should preempt an approval wait")
+                .expect("approval wait task should not panic");
+        assert!(matches!(result, ToolResponseWait::Cancelled));
+        assert!(pending.is_empty());
     }
 
     #[test]

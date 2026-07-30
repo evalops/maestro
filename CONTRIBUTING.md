@@ -7,10 +7,11 @@ Maestro is developed as one Rust workspace with a thin npm distribution wrapper.
 Install current Node and stable Rust with `rustfmt` and `clippy`, then run:
 
 ```bash
-npm install
 npm run build
 ./bin/maestro --version
 ```
+
+`package.json` has zero dependencies, so there is nothing for `npm install` to fetch — Node is only needed to run the `scripts/*` packaging and repository-check helpers.
 
 ## Development
 

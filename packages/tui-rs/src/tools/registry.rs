@@ -593,6 +593,11 @@ struct ToolExecutionContext<'a> {
 }
 
 impl ToolExecutor {
+    /// Stop and reap background Bash commands owned by this executor.
+    pub async fn shutdown_background_processes(&self) {
+        self.bash.shutdown_background_processes().await;
+    }
+
     /// Create a new tool executor with the given working directory
     ///
     /// # Arguments
@@ -1238,6 +1243,17 @@ impl ToolExecutor {
         }
     }
 
+    fn owns_cancellation_cleanup(&self, tool_name: &str) -> bool {
+        let tool_key = tool_name.to_lowercase();
+        tool_name.eq_ignore_ascii_case("bash")
+            || McpClient::is_mcp_tool(tool_name)
+            || self.inline_tools.contains_key(&tool_key)
+            || matches!(
+                tool_key.as_str(),
+                "write" | "edit" | "notebook_edit" | "todo" | "extract_document"
+            )
+    }
+
     /// Execute a tool by name with the given arguments
     ///
     /// This is the main entry point for tool execution. It dispatches to the appropriate
@@ -1389,6 +1405,25 @@ impl ToolExecutor {
             .map(|c| c.is_cacheable(tool_name))
             .unwrap_or(false);
 
+        if !self.owns_cancellation_cleanup(tool_name)
+            && execution_context
+                .cancel
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled)
+        {
+            let result = ToolResult::failure(format!("{tool_name} cancelled"))
+                .with_details(serde_json::json!({"cancelled": true}));
+            if let Some(tx) = event_tx {
+                let _ = tx.send(FromAgent::ToolEnd {
+                    call_id: call_id.to_string(),
+                    success: false,
+                    result: Some(result.clone()),
+                    receipt: None,
+                });
+            }
+            return result;
+        }
+
         if is_cacheable {
             if let Ok(mut cache) = self.cache.write() {
                 if let Some(cached) = cache.get(&cache_key) {
@@ -1428,23 +1463,50 @@ impl ToolExecutor {
             }
         }
 
-        // Execute the tool
-        let result = vault_tool_result_credentials(
-            &self.credential_vault,
+        // Process-owning tools must run their kill-and-reap paths after
+        // cancellation. Transactional file mutations must also finish so a
+        // dropped future cannot strand a target between backup and publish.
+        // Other tools can safely race their whole execution against the
+        // per-call token.
+        let cancellation = execution_context.cancel.clone();
+        let owns_cancellation_cleanup = self.owns_cancellation_cleanup(tool_name);
+        let execution = self.execute_impl(
+            tool_name,
+            args,
+            event_tx,
+            call_id,
             generation,
-            self.execute_impl(
-                tool_name,
-                args,
-                event_tx,
-                call_id,
-                generation,
-                execution_context,
-            )
-            .await,
+            execution_context,
         );
+        let (uncached_result, synthetically_cancelled) = match cancellation {
+            Some(token) if !owns_cancellation_cleanup => {
+                tokio::select! {
+                    biased;
+                    () = token.cancelled() => {
+                        let result = ToolResult::failure(format!("{tool_name} cancelled"))
+                            .with_details(serde_json::json!({"cancelled": true}));
+                        if let Some(tx) = event_tx {
+                            let _ = tx.send(FromAgent::ToolEnd {
+                                call_id: call_id.to_string(),
+                                success: false,
+                                result: Some(result.clone()),
+                                receipt: None,
+                            });
+                        }
+                        (result, true)
+                    }
+                    result = execution => (result, false),
+                }
+            }
+            _ => (execution.await, false),
+        };
+
+        // Execute the tool
+        let result =
+            vault_tool_result_credentials(&self.credential_vault, generation, uncached_result);
 
         // Store result in cache for cacheable tools
-        if is_cacheable && !result.is_cancelled() {
+        if is_cacheable && !synthetically_cancelled && !result.is_cancelled() {
             if let Ok(mut cache) = self.cache.write() {
                 let cached_result = CachedResult::new(
                     if result.success {
@@ -1620,10 +1682,11 @@ impl ToolExecutor {
                 execution_context,
             )
             .await;
+        let used_cache = cache_hit && !result.is_cancelled();
         let mut execution = ToolExecution::from_legacy(
             call_id,
             tool_name,
-            if cache_hit {
+            if used_cache {
                 ExecutionSource::Cache
             } else {
                 ExecutionSource::Native
@@ -1631,7 +1694,7 @@ impl ToolExecutor {
             result,
         )
         .with_duration(started.elapsed().as_millis() as u64);
-        if cache_hit {
+        if used_cache {
             execution.receipt.details = crate::agent::ToolReceiptDetails::Cached;
         }
         emit_typed_tool_end(event_tx, call_id, &execution);

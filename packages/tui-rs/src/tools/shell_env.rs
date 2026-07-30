@@ -1,7 +1,8 @@
 //! Shell environment policy for user-command execution.
 //!
 //! Filters the process environment before spawning shell commands to avoid
-//! leaking credential-like variables into arbitrary commands.
+//! leaking credential-like or loader-injection variables into arbitrary
+//! commands.
 
 use crate::config::{load_config, ShellEnvironmentPolicy, ShellInherit};
 use glob::Pattern;
@@ -12,7 +13,7 @@ const CORE_ENV_VARS: [&str; 9] = [
     "HOME", "LOGNAME", "PATH", "SHELL", "USER", "USERNAME", "TMPDIR", "TEMP", "TMP",
 ];
 
-const DEFAULT_EXCLUDES: [&str; 8] = [
+const DEFAULT_EXCLUDES: [&str; 10] = [
     "*KEY*",
     "*SECRET*",
     "*TOKEN*",
@@ -21,6 +22,10 @@ const DEFAULT_EXCLUDES: [&str; 8] = [
     "*CREDENTIAL*",
     "*PAT",
     "*AUTH*",
+    // Loader-injection variables; pre-main process hardening strips the same
+    // names from maestro's own environment (see `crate::process_hardening`).
+    "LD_*",
+    "DYLD_*",
 ];
 const PLATFORM_WORKER_SURFACE: &str = "platform-agent-runtime";
 const PLATFORM_TRUSTED_TOOL_ENV_FLAG: &str = "MAESTRO_PLATFORM_TRUSTED_TOOL_ENV";
@@ -274,6 +279,29 @@ mod tests {
     }
 
     #[test]
+    fn test_default_excludes_strip_loader_injection_vars() {
+        let base = env(&[
+            ("PATH", "/bin"),
+            ("LD_PRELOAD", "/tmp/evil.so"),
+            ("LD_PRELOAD_32", "/tmp/evil32.so"),
+            ("LD_PRELOAD_64", "/tmp/evil64.so"),
+            ("LD_AUDIT", "/tmp/audit.so"),
+            ("DYLD_INSERT_LIBRARIES", "/tmp/evil.dylib"),
+            ("DYLD_PRINT_LIBRARIES", "1"),
+            ("LD_LIBRARY_PATH", "/opt/custom/lib"),
+        ]);
+        let env = build_shell_environment(base, None, None);
+        assert_eq!(env.get("PATH"), Some(&"/bin".to_string()));
+        assert!(!env.contains_key("LD_PRELOAD"));
+        assert!(!env.contains_key("LD_PRELOAD_32"));
+        assert!(!env.contains_key("LD_PRELOAD_64"));
+        assert!(!env.contains_key("LD_AUDIT"));
+        assert!(!env.contains_key("DYLD_INSERT_LIBRARIES"));
+        assert!(!env.contains_key("DYLD_PRINT_LIBRARIES"));
+        assert!(!env.contains_key("LD_LIBRARY_PATH"));
+    }
+
+    #[test]
     fn test_default_excludes() {
         let base = env(&[
             ("PATH", "/bin"),
@@ -415,9 +443,9 @@ mod tests {
             context.get("BASH_ENV"),
             Some(&"/tmp/prelude.sh".to_string())
         );
-        assert_eq!(
-            context.get("LD_PRELOAD"),
-            Some(&"/tmp/inject.so".to_string())
+        assert!(
+            !context.contains_key("LD_PRELOAD"),
+            "loader-injection variables must remain excluded from trusted worker contexts"
         );
         assert_eq!(
             context.get("GIT_ASKPASS"),

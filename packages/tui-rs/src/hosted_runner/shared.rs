@@ -1,6 +1,8 @@
 use super::manifests::*;
 use super::*;
 
+const MAX_UNVERIFIED_PENDING_CONTROLLER_EVENTS: usize = 1024;
+
 impl SharedRunner {
     #[cfg(test)]
     pub(super) fn new(config: HostedRunnerConfig) -> Self {
@@ -26,6 +28,7 @@ impl SharedRunner {
             })
             .unwrap_or_else(|| config.runner_session_id.clone());
         let (events, _) = broadcast::channel(MAX_EVENTS);
+        let (controller_events, _) = broadcast::channel(MAX_EVENTS);
         let restored_snapshot = restore_manifest
             .as_ref()
             .map(|manifest| manifest.snapshot.clone());
@@ -68,14 +71,18 @@ impl SharedRunner {
                 last_error_type: restore_last_error_type,
                 restored_snapshot,
                 controller_connection_id: None,
+                controller_stream_cancellation: CancellationToken::new(),
                 connections: HashMap::new(),
                 subscriptions: HashMap::new(),
                 active_utility_commands: HashMap::new(),
                 active_file_watches: HashMap::new(),
                 active_response_ids: HashSet::new(),
                 envelopes: VecDeque::new(),
+                controller_envelopes: VecDeque::new(),
+                pending_controller_events: VecDeque::new(),
             })),
             events,
+            controller_events,
             message_executor,
         };
         if restore_manifest.is_some() {
@@ -84,7 +91,8 @@ impl SharedRunner {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.envelopes.push_back(envelope);
+            state.envelopes.push_back(envelope.clone());
+            state.controller_envelopes.push_back(envelope);
         }
         shared
     }
@@ -348,7 +356,115 @@ impl SharedRunner {
         }
     }
 
+    pub(super) fn public_snapshot(&self, state: &RunnerState) -> RuntimeSnapshot {
+        let mut snapshot = self.snapshot(state);
+        snapshot.state.controller_subscription_id = None;
+        snapshot
+    }
+
+    pub(super) fn controller_pending_events(
+        &self,
+        state: &mut RunnerState,
+    ) -> Vec<FromAgentMessage> {
+        let Some(agent_state) = self.prune_pending_controller_events(state) else {
+            return Vec::new();
+        };
+        agent_state
+            .pending_client_tools
+            .iter()
+            .filter_map(|pending| {
+                state
+                    .pending_controller_events
+                    .iter()
+                    .rev()
+                    .find(|message| pending_controller_event_matches(pending, message))
+                    .cloned()
+            })
+            .collect()
+    }
+
+    pub(super) fn prune_pending_controller_events(
+        &self,
+        state: &mut RunnerState,
+    ) -> Option<AgentState> {
+        let agent_state = self.message_executor.state().ok().flatten()?;
+        let live_pending = agent_state
+            .pending_client_tools
+            .iter()
+            .map(|pending| {
+                (
+                    (pending.call_id.as_str(), pending.request_id.as_deref()),
+                    pending,
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        state.pending_controller_events.retain(|message| {
+            pending_controller_event_identity(message)
+                .and_then(|identity| live_pending.get(&identity))
+                .is_some_and(|pending| pending_controller_event_matches(pending, message))
+        });
+        Some(agent_state)
+    }
+
+    pub(super) fn controller_stream_is_authorized(
+        &self,
+        authorization: &ControllerStreamAuthorization,
+    ) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.controller_connection_id.as_deref() != Some(authorization.connection_id.as_str()) {
+            return false;
+        }
+        if authorization.cancellation.is_cancelled() {
+            return false;
+        }
+        if !state
+            .connections
+            .get(&authorization.connection_id)
+            .is_some_and(|connection| connection.role == ConnectionRole::Controller)
+        {
+            return false;
+        }
+        state
+            .subscriptions
+            .get(&authorization.subscription_id)
+            .is_some_and(|subscription| {
+                subscription.attached
+                    && subscription.role == ConnectionRole::Controller
+                    && subscription.connection_id == authorization.connection_id
+            })
+    }
+
     pub(super) fn publish_message(&self, state: &mut RunnerState, message: FromAgentMessage) {
+        let agent_state = self.prune_pending_controller_events(state);
+        let matching_pending = agent_state.as_ref().and_then(|agent_state| {
+            agent_state
+                .pending_client_tools
+                .iter()
+                .find(|pending| pending_controller_event_matches(pending, &message))
+        });
+        if let Some(pending) = matching_pending {
+            state
+                .pending_controller_events
+                .retain(|existing| !pending_controller_event_matches(pending, existing));
+            // Authoritative pending state is the bound: every live request keeps
+            // exactly one raw event, regardless of the generic replay limit.
+            state.pending_controller_events.push_back(message.clone());
+        } else if agent_state.is_none() && pending_controller_event_key(&message).is_some() {
+            // If authoritative state is temporarily unavailable, retain a
+            // bounded best-effort copy until a later publish or attach can
+            // reconcile it against the live pending set.
+            state.pending_controller_events.retain(|existing| {
+                pending_controller_event_key(existing) != pending_controller_event_key(&message)
+            });
+            if state.pending_controller_events.len() >= MAX_UNVERIFIED_PENDING_CONTROLLER_EVENTS {
+                state.pending_controller_events.pop_front();
+            }
+            state.pending_controller_events.push_back(message.clone());
+        }
+
         match &message {
             FromAgentMessage::ResponseStart { response_id } => {
                 state.active_response_ids.insert(response_id.clone());
@@ -369,26 +485,44 @@ impl SharedRunner {
                 1
             },
         );
+        let controller_envelope = StreamEnvelope::Message {
+            cursor: state.cursor,
+            message: Box::new(crate::transcript::agent_message_for_controller(
+                message.clone(),
+            )),
+        };
         let envelope = StreamEnvelope::Message {
             cursor: state.cursor,
             message: Box::new(crate::transcript::redact_agent_message(message)),
         };
         state.envelopes.push_back(envelope.clone());
+        state
+            .controller_envelopes
+            .push_back(controller_envelope.clone());
         while state.envelopes.len() > MAX_EVENTS {
             state.envelopes.pop_front();
         }
+        while state.controller_envelopes.len() > MAX_EVENTS {
+            state.controller_envelopes.pop_front();
+        }
         let _ = self.events.send(envelope);
+        let _ = self.controller_events.send(controller_envelope);
     }
 
     pub(super) fn publish_snapshot(&self, state: &mut RunnerState) {
         let envelope = StreamEnvelope::Snapshot {
-            snapshot: self.snapshot(state),
+            snapshot: self.public_snapshot(state),
         };
         state.envelopes.push_back(envelope.clone());
+        state.controller_envelopes.push_back(envelope.clone());
         while state.envelopes.len() > MAX_EVENTS {
             state.envelopes.pop_front();
         }
-        let _ = self.events.send(envelope);
+        while state.controller_envelopes.len() > MAX_EVENTS {
+            state.controller_envelopes.pop_front();
+        }
+        let _ = self.events.send(envelope.clone());
+        let _ = self.controller_events.send(envelope);
     }
 
     pub(super) fn reset_envelope(&self, reason: impl Into<String>) -> StreamEnvelope {
@@ -406,7 +540,7 @@ impl SharedRunner {
     ) -> StreamEnvelope {
         StreamEnvelope::Reset {
             reason: reason.into(),
-            snapshot: self.snapshot(state),
+            snapshot: self.public_snapshot(state),
         }
     }
 
@@ -414,11 +548,30 @@ impl SharedRunner {
         &self,
         reason: impl Into<String>,
     ) -> (Vec<StreamEnvelope>, broadcast::Receiver<StreamEnvelope>) {
+        self.reset_and_subscribe_with(reason, false)
+    }
+
+    pub(super) fn reset_and_subscribe_controller(
+        &self,
+        reason: impl Into<String>,
+    ) -> (Vec<StreamEnvelope>, broadcast::Receiver<StreamEnvelope>) {
+        self.reset_and_subscribe_with(reason, true)
+    }
+
+    fn reset_and_subscribe_with(
+        &self,
+        reason: impl Into<String>,
+        controller: bool,
+    ) -> (Vec<StreamEnvelope>, broadcast::Receiver<StreamEnvelope>) {
         let state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let rx = self.events.subscribe();
+        let rx = if controller {
+            self.controller_events.subscribe()
+        } else {
+            self.events.subscribe()
+        };
         (vec![self.reset_envelope_from_state(&state, reason)], rx)
     }
 
@@ -426,12 +579,34 @@ impl SharedRunner {
         &self,
         cursor: u64,
     ) -> (Vec<StreamEnvelope>, broadcast::Receiver<StreamEnvelope>) {
+        self.subscribe_from_with(cursor, false)
+    }
+
+    pub(super) fn subscribe_controller_from(
+        &self,
+        cursor: u64,
+    ) -> (Vec<StreamEnvelope>, broadcast::Receiver<StreamEnvelope>) {
+        self.subscribe_from_with(cursor, true)
+    }
+
+    fn subscribe_from_with(
+        &self,
+        cursor: u64,
+        controller: bool,
+    ) -> (Vec<StreamEnvelope>, broadcast::Receiver<StreamEnvelope>) {
         let state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let rx = self.events.subscribe();
-        (self.replay_from_state(&state, cursor), rx)
+        let (envelopes, rx) = if controller {
+            (
+                &state.controller_envelopes,
+                self.controller_events.subscribe(),
+            )
+        } else {
+            (&state.envelopes, self.events.subscribe())
+        };
+        (self.replay_from_state(&state, envelopes, cursor), rx)
     }
 
     /// Coarse transcript filtering needs the retained response prefix to
@@ -443,32 +618,56 @@ impl SharedRunner {
         &self,
         cursor: u64,
     ) -> (Vec<StreamEnvelope>, broadcast::Receiver<StreamEnvelope>) {
+        self.subscribe_coarse_from_with(cursor, false)
+    }
+
+    pub(super) fn subscribe_controller_coarse_from(
+        &self,
+        cursor: u64,
+    ) -> (Vec<StreamEnvelope>, broadcast::Receiver<StreamEnvelope>) {
+        self.subscribe_coarse_from_with(cursor, true)
+    }
+
+    fn subscribe_coarse_from_with(
+        &self,
+        cursor: u64,
+        controller: bool,
+    ) -> (Vec<StreamEnvelope>, broadcast::Receiver<StreamEnvelope>) {
         let state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let rx = self.events.subscribe();
-        let requested = self.replay_from_state(&state, cursor);
+        let (envelopes, rx) = if controller {
+            (
+                &state.controller_envelopes,
+                self.controller_events.subscribe(),
+            )
+        } else {
+            (&state.envelopes, self.events.subscribe())
+        };
+        let requested = self.replay_from_state(&state, envelopes, cursor);
         if requested
             .iter()
             .any(|envelope| matches!(envelope, StreamEnvelope::Reset { .. }))
         {
             return (requested, rx);
         }
-        if !coarse_replay_has_complete_response_boundaries(
-            &state.envelopes,
-            &state.active_response_ids,
-        ) {
+        if !coarse_replay_has_complete_response_boundaries(envelopes, &state.active_response_ids) {
             return (
                 vec![self.reset_envelope_from_state(&state, "coarse_replay_incomplete")],
                 rx,
             );
         }
-        (state.envelopes.iter().cloned().collect(), rx)
+        (envelopes.iter().cloned().collect(), rx)
     }
 
-    fn replay_from_state(&self, state: &RunnerState, cursor: u64) -> Vec<StreamEnvelope> {
-        let first_cursor = state.envelopes.iter().find_map(|envelope| match envelope {
+    fn replay_from_state(
+        &self,
+        state: &RunnerState,
+        envelopes: &VecDeque<StreamEnvelope>,
+        cursor: u64,
+    ) -> Vec<StreamEnvelope> {
+        let first_cursor = envelopes.iter().find_map(|envelope| match envelope {
             StreamEnvelope::Message { cursor, .. } | StreamEnvelope::Heartbeat { cursor } => {
                 Some(*cursor)
             }
@@ -478,12 +677,11 @@ impl SharedRunner {
             if cursor > 0 && cursor < first_cursor.saturating_sub(1) {
                 return vec![StreamEnvelope::Reset {
                     reason: "replay_gap".to_string(),
-                    snapshot: self.snapshot(state),
+                    snapshot: self.public_snapshot(state),
                 }];
             }
         }
-        state
-            .envelopes
+        envelopes
             .iter()
             .filter(|envelope| match envelope {
                 StreamEnvelope::Message {
@@ -535,6 +733,78 @@ fn coarse_replay_has_complete_response_boundaries(
     live_active_responses
         .iter()
         .all(|response_id| active_responses.contains(response_id.as_str()))
+}
+
+fn pending_controller_event_identity(message: &FromAgentMessage) -> Option<(&str, Option<&str>)> {
+    match message {
+        FromAgentMessage::ClientToolRequest { call_id, .. } => Some((call_id, None)),
+        FromAgentMessage::ServerRequest {
+            request_id,
+            request_type: ServerRequestType::ClientTool,
+            call_id,
+            ..
+        } => Some((
+            call_id,
+            (request_id != call_id).then_some(request_id.as_str()),
+        )),
+        _ => None,
+    }
+}
+
+fn pending_controller_event_key(
+    message: &FromAgentMessage,
+) -> Option<(&str, Option<&str>, Option<&str>)> {
+    match message {
+        FromAgentMessage::ClientToolRequest {
+            call_id,
+            tool_execution_id,
+            ..
+        } => Some((call_id, None, tool_execution_id.as_deref())),
+        FromAgentMessage::ServerRequest {
+            request_id,
+            request_type: ServerRequestType::ClientTool,
+            call_id,
+            tool_execution_id,
+            ..
+        } => Some((
+            call_id,
+            (request_id != call_id).then_some(request_id.as_str()),
+            tool_execution_id.as_deref(),
+        )),
+        _ => None,
+    }
+}
+
+fn pending_controller_event_matches(
+    pending: &crate::headless::PendingApproval,
+    message: &FromAgentMessage,
+) -> bool {
+    match message {
+        FromAgentMessage::ClientToolRequest {
+            call_id,
+            tool_execution_id,
+            ..
+        } => {
+            pending.request_id.is_none()
+                && pending.call_id == *call_id
+                && pending.tool_execution_id == *tool_execution_id
+        }
+        FromAgentMessage::ServerRequest {
+            request_id,
+            request_type: ServerRequestType::ClientTool,
+            call_id,
+            tool_execution_id,
+            ..
+        } => {
+            let request_id = (request_id != call_id).then_some(request_id.as_str());
+            pending.call_id == *call_id
+                && pending.request_id.as_deref() == request_id
+                && tool_execution_id.as_ref().is_none_or(|raw_execution_id| {
+                    pending.tool_execution_id.as_ref() == Some(raw_execution_id)
+                })
+        }
+        _ => false,
+    }
 }
 
 fn redacted_pending_snapshot(

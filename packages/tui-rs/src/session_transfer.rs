@@ -531,6 +531,27 @@ mod tests {
     }
 
     #[test]
+    fn bundle_export_masks_process_local_vault_references() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.jsonl");
+        write_jsonl(
+            &source,
+            &entry(
+                "source",
+                None,
+                "Authorization: Bearer {{CRED:token:abcdef012345}}",
+            ),
+        )
+        .unwrap();
+
+        let redacted = portable_entries(&source, true).unwrap();
+        let serialized = serde_json::to_string(&redacted).unwrap();
+
+        assert!(!serialized.contains("{{CRED:"));
+        assert!(serialized.contains("[REDACTED:"));
+    }
+
+    #[test]
     fn imported_bundle_rewrites_conflicts_and_parent_links() {
         let root = tempfile::tempdir().unwrap();
         let manager = SessionManager::new(root.path().to_string_lossy());

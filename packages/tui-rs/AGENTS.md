@@ -208,6 +208,13 @@ cargo test test_name
 cargo test commands::
 ```
 
+- `tests/pty_e2e.rs` runs the real `maestro-tui` binary in a pseudo-terminal
+  against a mock OpenAI-compatible server (scripted SSE turns; no network, API
+  key, or display needed) and asserts on the captured terminal output. Add
+  interactive end-to-end scenarios there. The tests serialize on a shared
+  mutex — concurrent TUI spinners starve the PTY reader thread and get
+  keystrokes eaten by the app's per-frame cursor-position probes.
+
 ## Code Style
 
 - Use `rustfmt` defaults

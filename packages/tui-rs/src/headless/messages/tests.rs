@@ -45,6 +45,104 @@ fn tool_end_serializes_typed_receipt_additively() {
 }
 
 #[test]
+fn indeterminate_receipt_survives_headless_wire_and_state() {
+    let message = FromAgentMessage::ToolEnd {
+        call_id: "call-gh-write".to_string(),
+        tool_execution_id: Some("execution-gh-write".to_string()),
+        success: false,
+        tool: Some("gh_issue".to_string()),
+        details: None,
+        receipt: Some(ExecutionReceipt {
+            call_id: "call-gh-write".to_string(),
+            tool_name: "gh_issue".to_string(),
+            source: ExecutionSource::Native,
+            status: ExecutionStatus::Indeterminate,
+            duration_ms: Some(2_000),
+            details: ToolReceiptDetails::None,
+        }),
+    };
+
+    let encoded = serde_json::to_string(&message).expect("serialize indeterminate receipt");
+    let decoded: FromAgentMessage =
+        serde_json::from_str(&encoded).expect("deserialize indeterminate receipt");
+    let event = AgentState::default().handle_message(decoded);
+
+    assert!(matches!(
+        event,
+        Some(AgentEvent::ToolEnd {
+            tool_execution_id: Some(tool_execution_id),
+            receipt: Some(ExecutionReceipt {
+                status: ExecutionStatus::Indeterminate,
+                ..
+            }),
+            ..
+        }) if tool_execution_id == "execution-gh-write"
+    ));
+}
+
+#[test]
+fn tool_response_round_trips_governed_execution_id() {
+    let message = ToAgentMessage::ToolResponse {
+        call_id: "call-1".to_string(),
+        tool_execution_id: Some("tool-execution-1".to_string()),
+        approved: true,
+        result: None,
+    };
+
+    let encoded = serde_json::to_value(&message).expect("serialize tool response");
+    assert_eq!(encoded["tool_execution_id"], "tool-execution-1");
+
+    let decoded: ToAgentMessage =
+        serde_json::from_value(encoded).expect("deserialize tool response");
+    assert!(matches!(
+        decoded,
+        ToAgentMessage::ToolResponse {
+            call_id,
+            tool_execution_id: Some(tool_execution_id),
+            approved: true,
+            result: None,
+        } if call_id == "call-1" && tool_execution_id == "tool-execution-1"
+    ));
+}
+
+#[test]
+fn tool_response_omits_absent_execution_id() {
+    let message = ToAgentMessage::ToolResponse {
+        call_id: "call-1".to_string(),
+        tool_execution_id: None,
+        approved: false,
+        result: None,
+    };
+
+    let encoded = serde_json::to_value(&message).expect("serialize tool response");
+    assert_eq!(encoded.get("tool_execution_id"), None);
+}
+
+#[test]
+fn state_preserves_tool_execution_id_on_tool_end_event() {
+    let mut state = AgentState::default();
+
+    let event = state.handle_message(FromAgentMessage::ToolEnd {
+        call_id: "call-1".to_string(),
+        tool_execution_id: Some("tool-execution-1".to_string()),
+        success: true,
+        tool: Some("read".to_string()),
+        details: None,
+        receipt: None,
+    });
+
+    assert!(matches!(
+        event,
+        Some(AgentEvent::ToolEnd {
+            call_id,
+            tool_execution_id: Some(tool_execution_id),
+            success: true,
+            ..
+        }) if call_id == "call-1" && tool_execution_id == "tool-execution-1"
+    ));
+}
+
+#[test]
 fn parse_response_chunk() {
     let json =
         r#"{"type":"response_chunk","response_id":"abc","content":"Hello","is_thinking":false}"#;

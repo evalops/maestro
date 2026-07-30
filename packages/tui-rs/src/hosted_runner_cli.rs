@@ -765,12 +765,40 @@ mod tests {
             .await
             .expect("source connection json");
         assert_eq!(connection["connection_id"], "conn_restore");
+        let connection_capability = connection["connection_capability"]
+            .as_str()
+            .expect("source connection capability");
+        let subscription: serde_json::Value = client
+            .post(format!(
+                "{}/api/headless/sessions/sess_restore/subscribe",
+                source.base_url()
+            ))
+            .json(&json!({
+                "connectionId": "conn_restore",
+                "connectionCapability": connection_capability,
+                "connectionCapabilityRequired": true,
+                "role": "controller"
+            }))
+            .send()
+            .await
+            .expect("source subscription response")
+            .json()
+            .await
+            .expect("source subscription json");
+        let subscription_id = subscription["subscription_id"]
+            .as_str()
+            .expect("source subscription id");
         client
             .post(format!(
                 "{}/api/headless/sessions/sess_restore/messages",
                 source.base_url()
             ))
             .header("x-maestro-headless-connection-id", "conn_restore")
+            .header("x-maestro-headless-subscriber-id", subscription_id)
+            .header(
+                "x-maestro-headless-connection-capability",
+                connection_capability,
+            )
             .json(&json!({
                 "type": "hello",
                 "protocol_version": crate::headless::HEADLESS_PROTOCOL_VERSION
@@ -786,6 +814,11 @@ mod tests {
                 source.base_url()
             ))
             .header("x-maestro-headless-connection-id", "conn_restore")
+            .header("x-maestro-headless-subscriber-id", subscription_id)
+            .header(
+                "x-maestro-headless-connection-capability",
+                connection_capability,
+            )
             .json(&json!({
                 "type": "init",
                 "system_prompt": "restore system prompt",

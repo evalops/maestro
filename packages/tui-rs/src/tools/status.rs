@@ -14,8 +14,211 @@
 
 use serde::Deserialize;
 use serde_json::Value;
+use std::process::{Output, Stdio};
+use tokio::process::Command;
 
 use crate::agent::ToolResult;
+
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+#[cfg(windows)]
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+};
+#[cfg(windows)]
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{
+    OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
+};
+
+#[cfg(unix)]
+struct ProcessGroupGuard(Option<u32>);
+
+#[cfg(unix)]
+impl ProcessGroupGuard {
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            // SAFETY: a negative pid targets only the process group created
+            // for this child; SIGKILL requires no borrowed memory.
+            unsafe {
+                libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+struct OwnedWindowsHandle(HANDLE);
+
+#[cfg(windows)]
+unsafe impl Send for OwnedWindowsHandle {}
+
+#[cfg(windows)]
+impl Drop for OwnedWindowsHandle {
+    fn drop(&mut self) {
+        // SAFETY: this type exclusively owns the valid handle returned by
+        // the corresponding Win32 API call.
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(windows)]
+struct JobObjectGuard(OwnedWindowsHandle);
+
+#[cfg(windows)]
+impl JobObjectGuard {
+    fn assign(child: &tokio::process::Child) -> std::io::Result<Self> {
+        // SAFETY: null security attributes and name request an unnamed job
+        // object with default security.
+        let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if job.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let job = OwnedWindowsHandle(job);
+
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: limits has the layout and size required by this information
+        // class, and job remains valid for the call.
+        if unsafe {
+            SetInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_ref(&limits).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        let process_handle = child
+            .raw_handle()
+            .ok_or_else(|| std::io::Error::other("spawned process has no handle"))?
+            as HANDLE;
+        // SAFETY: Tokio owns a live process handle until child is dropped.
+        if unsafe { AssignProcessToJobObject(job.0, process_handle) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        Ok(Self(job))
+    }
+
+    fn disarm(&mut self) -> std::io::Result<()> {
+        let limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        // SAFETY: limits has the layout and size required by this information
+        // class, and this guard still owns a live job handle for the call.
+        if unsafe {
+            SetInformationJobObject(
+                self.0 .0,
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_ref(&limits).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn resume_suspended_process(child: &tokio::process::Child) -> std::io::Result<()> {
+    let pid = child
+        .id()
+        .ok_or_else(|| std::io::Error::other("spawned process has no pid"))?;
+    // SAFETY: the snapshot has no caller-owned backing storage.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    let snapshot = OwnedWindowsHandle(snapshot);
+    let mut entry = THREADENTRY32 {
+        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+        ..THREADENTRY32::default()
+    };
+    let mut resumed = 0usize;
+
+    // SAFETY: entry has the required structure size and remains valid while
+    // the snapshot is enumerated.
+    let mut has_entry = unsafe { Thread32First(snapshot.0, &mut entry) };
+    while has_entry != 0 {
+        if entry.th32OwnerProcessID == pid {
+            // SAFETY: the thread id came from the live system snapshot.
+            let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+            if thread.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let thread = OwnedWindowsHandle(thread);
+            // SAFETY: thread has THREAD_SUSPEND_RESUME access.
+            if unsafe { ResumeThread(thread.0) } == u32::MAX {
+                return Err(std::io::Error::last_os_error());
+            }
+            resumed += 1;
+        }
+        // SAFETY: same initialized snapshot and entry as above.
+        has_entry = unsafe { Thread32Next(snapshot.0, &mut entry) };
+    }
+
+    if resumed == 0 {
+        return Err(std::io::Error::other(
+            "spawned process had no resumable threads",
+        ));
+    }
+    Ok(())
+}
+
+/// Run `git status` so dropping the future on turn cancellation terminates the
+/// child and any subprocesses it spawned.
+async fn run_status_command(mut command: Command) -> std::io::Result<Output> {
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.as_std_mut().process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        // Suspend before git can spawn hooks or helpers, assign it to a
+        // kill-on-close job, then resume it below.
+        command.as_std_mut().creation_flags(CREATE_SUSPENDED);
+    }
+
+    let child = command.spawn()?;
+    #[cfg(unix)]
+    let mut process_group = ProcessGroupGuard(child.id());
+    #[cfg(windows)]
+    let mut job = JobObjectGuard::assign(&child)?;
+    #[cfg(windows)]
+    resume_suspended_process(&child)?;
+    let output = child.wait_with_output().await;
+    #[cfg(unix)]
+    process_group.disarm();
+    #[cfg(windows)]
+    if output.is_ok() {
+        job.disarm()?;
+    }
+    output
+}
 
 #[derive(Debug, Deserialize)]
 struct StatusArgs {
@@ -49,7 +252,7 @@ pub async fn git_status(args: Value, cwd: &str) -> ToolResult {
     let include_ignored = parsed.include_ignored.unwrap_or(false);
     let paths = normalize_paths(parsed.paths);
 
-    let mut cmd = tokio::process::Command::new("git");
+    let mut cmd = Command::new("git");
     cmd.arg("status").arg("--porcelain=v2").arg("-z");
     if branch_summary {
         cmd.arg("-b");
@@ -61,12 +264,9 @@ pub async fn git_status(args: Value, cwd: &str) -> ToolResult {
         cmd.arg("--");
         cmd.args(&paths);
     }
-    cmd.current_dir(cwd)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+    cmd.current_dir(cwd).stdin(Stdio::null());
 
-    let output = match cmd.output().await {
+    let output = match run_status_command(cmd).await {
         Ok(out) => out,
         Err(err) => return ToolResult::failure(format!("Failed to run git status: {err}")),
     };
@@ -159,6 +359,151 @@ pub async fn git_status(args: Value, cwd: &str) -> ToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_status_future_kills_spawned_process_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("child.pid");
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("sleep 60 & child=$!; echo \"$child\" > \"$1\"; wait")
+            .arg("sh")
+            .arg(&pid_file);
+
+        let task = tokio::spawn(run_status_command(command));
+        let pid: libc::pid_t = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Ok(contents) = std::fs::read_to_string(&pid_file) {
+                    if let Ok(pid) = contents.trim().parse() {
+                        break pid;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("subprocess must publish a complete child pid");
+
+        task.abort();
+        let _ = task.await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                // SAFETY: signal 0 only probes process existence.
+                if unsafe { libc::kill(pid, 0) } != 0
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("grandchild process {pid} survived cancellation"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn dropping_status_future_kills_spawned_job_tree() {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("child.pid");
+        let mut command = Command::new("powershell.exe");
+        command
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg(
+                "$child = Start-Process powershell.exe -ArgumentList '-NoProfile', \
+                 '-Command', 'Start-Sleep -Seconds 60' -PassThru; \
+                 Set-Content -LiteralPath $env:MAESTRO_TEST_PID_FILE -Value $child.Id; \
+                 $child.WaitForExit()",
+            )
+            .env("MAESTRO_TEST_PID_FILE", &pid_file);
+
+        let task = tokio::spawn(run_status_command(command));
+        for _ in 0..200 {
+            if pid_file.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let pid: u32 = std::fs::read_to_string(&pid_file)
+            .expect("status subprocess must publish child pid")
+            .trim()
+            .parse()
+            .unwrap();
+
+        task.abort();
+        let _ = task.await;
+        for _ in 0..200 {
+            // SAFETY: this opens a query-only handle to the pid published by
+            // the test child. A null result means the process no longer
+            // exists; any live handle is closed immediately.
+            let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+            if handle.is_null() {
+                return;
+            }
+            drop(OwnedWindowsHandle(handle));
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("status grandchild process {pid} survived cancellation");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn successful_status_command_keeps_spawned_descendant_alive() {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("child.pid");
+        let stdout_file = dir.path().join("child.stdout");
+        let stderr_file = dir.path().join("child.stderr");
+        let mut command = Command::new("powershell.exe");
+        command
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg(
+                "$child = Start-Process powershell.exe -ArgumentList '-NoProfile', \
+                 '-Command', 'Start-Sleep -Seconds 60' -RedirectStandardOutput \
+                 $env:MAESTRO_TEST_STDOUT_FILE -RedirectStandardError \
+                 $env:MAESTRO_TEST_STDERR_FILE -PassThru; \
+                 Set-Content -LiteralPath $env:MAESTRO_TEST_PID_FILE -Value $child.Id",
+            )
+            .env("MAESTRO_TEST_PID_FILE", &pid_file)
+            .env("MAESTRO_TEST_STDOUT_FILE", &stdout_file)
+            .env("MAESTRO_TEST_STDERR_FILE", &stderr_file);
+
+        let output = run_status_command(command).await.unwrap();
+        assert!(output.status.success());
+        let pid: u32 = std::fs::read_to_string(&pid_file)
+            .expect("status subprocess must publish child pid")
+            .trim()
+            .parse()
+            .unwrap();
+
+        // SAFETY: the pid was published by the successful test subprocess.
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+                0,
+                pid,
+            )
+        };
+        assert!(
+            !handle.is_null(),
+            "successful status command killed its descendant"
+        );
+        // SAFETY: handle grants PROCESS_TERMINATE and is exclusively closed
+        // by OwnedWindowsHandle below.
+        assert_ne!(unsafe { TerminateProcess(handle, 0) }, 0);
+        drop(OwnedWindowsHandle(handle));
+    }
 
     // ========================================================================
     // StatusArgs Deserialization Tests

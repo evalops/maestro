@@ -3,6 +3,7 @@ use tempfile::tempdir;
 
 use super::*;
 use crate::headless::messages::CodexSubagentContinuityEdge;
+use crate::headless::PendingApproval;
 use crate::headless::RemoteTransportConfig;
 
 #[test]
@@ -29,6 +30,54 @@ fn status_reason_covers_runner_error_statuses() {
     }
 }
 
+#[test]
+fn new_connection_adopts_private_capability_for_idempotent_retry() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    let mut state = shared.state.lock().expect("state");
+    let client_capability = "cap_00112233445566778899aabbccddeeff";
+    let upsert = |connection_capability: Option<&str>| ConnectionUpsert {
+        connection_id: "conn_idempotent".to_string(),
+        connection_capability: connection_capability.map(str::to_string),
+        connection_capability_required: true,
+        role: ConnectionRole::Viewer,
+        client_protocol_version: None,
+        client_info: None,
+        capabilities: None,
+        opt_out_notifications: vec![],
+        take_control: false,
+    };
+
+    let accepted = upsert_connection(&mut state, upsert(Some(client_capability)))
+        .expect("new connection should accept client-generated private authority");
+    assert_eq!(accepted.as_deref(), Some(client_capability));
+
+    let retried = upsert_connection(&mut state, upsert(Some(client_capability)))
+        .expect("same private authority should make creation retry idempotent");
+    assert_eq!(retried.as_deref(), Some(client_capability));
+
+    let attacker = upsert_connection(&mut state, upsert(None))
+        .expect_err("public connection id alone must not authorize a retry");
+    assert_eq!(attacker.code, HostedRunnerErrorCode::AccessDenied);
+
+    let downgrade = upsert_connection(
+        &mut state,
+        ConnectionUpsert {
+            connection_id: "conn_idempotent".to_string(),
+            connection_capability: None,
+            connection_capability_required: false,
+            role: ConnectionRole::Viewer,
+            client_protocol_version: Some("2026-04-02".to_string()),
+            client_info: None,
+            capabilities: None,
+            opt_out_notifications: vec![],
+            take_control: false,
+        },
+    )
+    .expect_err("secure connection authority must not downgrade to legacy");
+    assert_eq!(downgrade.code, HostedRunnerErrorCode::AccessDenied);
+}
+
 #[derive(Debug)]
 struct ScriptedRuntimeExecutor;
 
@@ -41,8 +90,41 @@ impl HostedRunnerHeadlessMessageExecutor for ScriptedRuntimeExecutor {
         match message {
             ToAgentMessage::Prompt { content, .. } => {
                 assert_eq!(context.session_id, "sess_test");
-                assert_eq!(context.connection_id, "conn_exec");
+                assert!(
+                    matches!(context.connection_id.as_str(), "conn_exec" | "conn_second"),
+                    "unexpected scripted executor connection: {}",
+                    context.connection_id
+                );
                 assert!(context.subscription_id.as_deref().is_some());
+                if content == "client-tool-boundary" {
+                    return Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+                        vec![
+                            FromAgentMessage::ClientToolRequest {
+                                call_id: "client-call".into(),
+                                tool_execution_id: None,
+                                tool: "bash".into(),
+                                args: serde_json::json!({
+                                    "command": "curl -H 'Authorization: Bearer client-execution-secret' example.test",
+                                    "nested": {"value": "client-byte-faithful"}
+                                }),
+                            },
+                            FromAgentMessage::ServerRequest {
+                                request_id: "server-client-tool".into(),
+                                request_type: ServerRequestType::ClientTool,
+                                call_id: "server-call".into(),
+                                tool_execution_id: None,
+                                tool: "bash".into(),
+                                args: serde_json::json!({
+                                    "command": "curl -H 'Authorization: Bearer server-execution-secret' example.test",
+                                    "nested": ["server-byte-faithful", 7]
+                                }),
+                                reason: "run on the authenticated controller".into(),
+                                started_at_ms: None,
+                            },
+                        ],
+                        "published executable client tool requests",
+                    ));
+                }
                 Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
                     vec![
                         FromAgentMessage::ResponseStart {
@@ -93,6 +175,42 @@ impl HostedRunnerHeadlessMessageExecutor for StatefulRuntimeExecutor {
         Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
             Vec::new(),
             "accepted by stateful runtime",
+        ))
+    }
+
+    fn state(&self) -> Result<Option<AgentState>, HostedRunnerError> {
+        Ok(Some(self.state.lock().expect("state").clone()))
+    }
+}
+
+struct CompletingRuntimeExecutor {
+    state: Mutex<AgentState>,
+}
+
+impl CompletingRuntimeExecutor {
+    fn new(state: AgentState) -> Self {
+        Self {
+            state: Mutex::new(state),
+        }
+    }
+}
+
+impl HostedRunnerHeadlessMessageExecutor for CompletingRuntimeExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        if let ToAgentMessage::ClientToolResult { call_id, .. } = message {
+            self.state
+                .lock()
+                .expect("state")
+                .pending_client_tools
+                .retain(|pending| pending.call_id != call_id);
+        }
+        Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+            Vec::new(),
+            "completed without outbound messages",
         ))
     }
 
@@ -614,6 +732,7 @@ fn coarse_stream_new_response_retires_orphaned_response() {
 fn hosted_replay_journal_stores_redacted_tool_events() {
     let workspace = tempdir().expect("workspace");
     let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    let (_, mut live_events) = shared.reset_and_subscribe("credential-redaction-test");
     let mut state = shared
         .state
         .lock()
@@ -624,8 +743,68 @@ fn hosted_replay_journal_stores_redacted_tool_events() {
             call_id: "call".into(),
             tool_execution_id: None,
             tool: "http".into(),
-            args: serde_json::json!({"headers":{"authorization":"Bearer secret"}}),
+            args: serde_json::json!({
+                "headers":{"authorization":"Bearer secret"},
+                "command":"curl -H 'Authorization: Bearer abc/inline+secret~==' example.test",
+                "basic":"curl -H 'Authorization: Basic dG9vbDp0b29sLXNlY3JldA==' example.test",
+                "negotiate":"curl -H 'Authorization: Negotiate TlRMTVNTUAAB' example.test",
+                "digest":"curl -H 'Authorization: Digest username=\"alice\", nonce=\"nonce-secret\", response=\"response-secret\"' example.test",
+                "sigv4":"curl -H 'Authorization: AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20260729/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=sigv4-signature-secret' example.test",
+                "quoted_password":"curl --data 'password=abc;remaining-secret' example.test",
+                "embedded_quoted_password":"curl --data 'user=x&password=abc;embedded-tail-secret' example.test",
+                "escaped_quote_password":"curl --data password=\"abc\\\"escaped-remaining-secret\" example.test",
+                "quoted_to_unquoted_password":"curl --data password='abc'raw-password-secret example.test",
+                "unquoted_to_quoted_password":"curl --data password=abc'remaining-secret' example.test",
+                "repeated_password_segments":"curl --data password=a'b'c\"d\"e example.test",
+                "source":"password: String\ntoken: Option<String>",
+                "vaulted":"curl -H 'Authorization: Bearer {{CRED:token:abcdef012345}}' example.test",
+                "vaulted_adjacent":"Authorization: Bearer {{CRED:token:abcdef012345}}raw-adjacent-secret",
+                "malformed_closed":"{{CRED:sk-ant-abcdefghijklmnopqrstuvwxyz123456}}",
+                "malformed_delimited":"{{CRED:password:abc,delimiter-tail-secret}}",
+                "malformed_whitespace":
+                    "{{CRED:password:abc whitespace-tail-secret}} preserved-tail"
+            }),
             requires_approval: false,
+        },
+    );
+    shared.publish_message(
+        &mut state,
+        FromAgentMessage::ToolCall {
+            call_id: "shell-call".into(),
+            tool_execution_id: None,
+            tool: "bash".into(),
+            args: serde_json::json!({
+                "command":"curl --data password=abc,comma-tail-secret; password=(array-secret other-secret); password=$(printf dynamic-secret); password=`printf legacy-secret`; printf '%s' 'foo\\'; password=abc; echo ok"
+            }),
+            requires_approval: false,
+        },
+    );
+    shared.publish_message(
+        &mut state,
+        FromAgentMessage::ClientToolRequest {
+            call_id: "client-call".into(),
+            tool_execution_id: None,
+            tool: "bash".into(),
+            args: serde_json::json!({
+                "command":"curl -H 'Authorization: Bearer client/inline+secret~==' example.test",
+                "basic":"curl -H 'Authorization: Basic Y2xpZW50OmNsaWVudC1zZWNyZXQ=' example.test"
+            }),
+        },
+    );
+    shared.publish_message(
+        &mut state,
+        FromAgentMessage::ServerRequest {
+            request_id: "approval".into(),
+            request_type: ServerRequestType::Approval,
+            call_id: "server-call".into(),
+            tool_execution_id: None,
+            tool: "bash".into(),
+            args: serde_json::json!({
+                "command":"curl -H 'Authorization: Bearer server/inline+secret~==' example.test",
+                "basic":"curl -H 'Authorization: Basic c2VydmVyOnNlcnZlci1zZWNyZXQ=' example.test"
+            }),
+            reason: "approval required".into(),
+            started_at_ms: None,
         },
     );
     shared.publish_message(
@@ -654,10 +833,673 @@ fn hosted_replay_journal_stores_redacted_tool_events() {
 
     let stored = serde_json::to_string(&state.envelopes).expect("serialize replay journal");
     assert!(!stored.contains("Bearer secret"));
+    assert!(!stored.contains("inline+secret"));
+    assert!(!stored.contains("client/inline+secret"));
+    assert!(!stored.contains("server/inline+secret"));
+    assert!(!stored.contains("dG9vbDp0b29sLXNlY3JldA"));
+    assert!(!stored.contains("TlRMTVNTUAAB"));
+    assert!(!stored.contains("nonce-secret"));
+    assert!(!stored.contains("response-secret"));
+    assert!(!stored.contains("20260729/us-east-1/s3/aws4_request"));
+    assert!(!stored.contains("sigv4-signature-secret"));
+    assert!(!stored.contains("Y2xpZW50OmNsaWVudC1zZWNyZXQ"));
+    assert!(!stored.contains("c2VydmVyOnNlcnZlci1zZWNyZXQ"));
+    assert!(!stored.contains("remaining-secret"));
+    assert!(!stored.contains("escaped-remaining-secret"));
+    assert!(!stored.contains("comma-tail-secret"));
+    assert!(!stored.contains("array-secret"));
+    assert!(!stored.contains("other-secret"));
+    assert!(!stored.contains("dynamic-secret"));
+    assert!(!stored.contains("legacy-secret"));
+    assert!(stored.contains("echo ok"));
+    assert!(!stored.contains("embedded-tail-secret"));
+    assert!(!stored.contains("delimiter-tail-secret"));
+    assert!(!stored.contains("whitespace-tail-secret"));
+    assert!(!stored.contains("{{CRED:password:abc "));
+    assert!(stored.contains("preserved-tail"));
+    assert!(!stored.contains("raw-password-secret"));
+    assert!(!stored.contains("a'b'c"));
+    assert!(!stored.contains("\"d\"e"));
+    let live = (0..4)
+        .map(|_| live_events.try_recv().expect("redacted live event"))
+        .collect::<Vec<_>>();
+    let live = serde_json::to_string(&live).expect("serialize live events");
+    assert!(!live.contains("inline+secret"));
+    assert!(!live.contains("client/inline+secret"));
+    assert!(!live.contains("server/inline+secret"));
+    assert!(!live.contains("dG9vbDp0b29sLXNlY3JldA"));
+    assert!(!live.contains("TlRMTVNTUAAB"));
+    assert!(!live.contains("nonce-secret"));
+    assert!(!live.contains("response-secret"));
+    assert!(!live.contains("20260729/us-east-1/s3/aws4_request"));
+    assert!(!live.contains("sigv4-signature-secret"));
+    assert!(!live.contains("Y2xpZW50OmNsaWVudC1zZWNyZXQ"));
+    assert!(!live.contains("c2VydmVyOnNlcnZlci1zZWNyZXQ"));
+    assert!(!live.contains("remaining-secret"));
+    assert!(!live.contains("escaped-remaining-secret"));
+    assert!(!live.contains("comma-tail-secret"));
+    assert!(!live.contains("array-secret"));
+    assert!(!live.contains("other-secret"));
+    assert!(!live.contains("dynamic-secret"));
+    assert!(!live.contains("legacy-secret"));
+    assert!(live.contains("echo ok"));
+    assert!(!live.contains("embedded-tail-secret"));
+    assert!(!live.contains("delimiter-tail-secret"));
+    assert!(!live.contains("whitespace-tail-secret"));
+    assert!(!live.contains("{{CRED:password:abc "));
+    assert!(live.contains("preserved-tail"));
+    assert!(!live.contains("raw-password-secret"));
+    assert!(!live.contains("a'b'c"));
+    assert!(!live.contains("\"d\"e"));
+    assert!(live.contains("[REDACTED:token:portable-export]"));
+    assert!(live.contains("[REDACTED:password:portable-export]"));
     assert!(!stored.contains("client_secret"));
     assert!(!stored.contains("prefixed-secret"));
     assert!(!stored.contains("private-key-material"));
     assert!(stored.contains("[REDACTED]"));
+    assert!(stored.contains("curl -H"));
+    assert!(!stored.contains("password: String"));
+    assert!(!stored.contains("token: Option<String>"));
+    assert!(stored.contains("[REDACTED:password:portable-export]"));
+    assert!(stored.contains("[REDACTED:token:portable-export]"));
+    assert!(stored.contains("Bearer {{CRED:token:abcdef012345}}"));
+    assert!(!stored.contains("raw-adjacent-secret"));
+    assert!(stored.contains("{{CRED:token:abcdef012345}}[REDACTED:token:portable-export]"));
+    assert!(!stored.contains("sk-ant-abcdefghijklmnopqrstuvwxyz123456"));
+    assert!(!stored.contains("{{CRED:sk-ant-"));
+    assert!(stored.contains("[REDACTED:credential_reference:portable-export]"));
+}
+
+#[test]
+fn controller_stream_preserves_only_executable_client_tool_arguments() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    let (_, mut observer_live) = shared.reset_and_subscribe("observer");
+    let (_, mut controller_live) = shared.reset_and_subscribe_controller("controller");
+    let client_args = serde_json::json!({
+        "command": "curl -H 'Authorization: Bearer client-execution-secret' example.test",
+        "nested": {"value": "client-byte-faithful"}
+    });
+    let server_args = serde_json::json!({
+        "command": "curl -H 'Authorization: Bearer server-execution-secret' example.test",
+        "nested": ["server-byte-faithful", 7]
+    });
+    let approval_args = serde_json::json!({
+        "command": "curl -H 'Authorization: Bearer approval-observer-secret' example.test"
+    });
+    let (observer_replay, controller_replay) = {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::ClientToolRequest {
+                call_id: "client-call".into(),
+                tool_execution_id: None,
+                tool: "bash".into(),
+                args: client_args.clone(),
+            },
+        );
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::ServerRequest {
+                request_id: "server-client-tool".into(),
+                request_type: ServerRequestType::ClientTool,
+                call_id: "server-call".into(),
+                tool_execution_id: None,
+                tool: "bash".into(),
+                args: server_args.clone(),
+                reason: "run on the authenticated controller".into(),
+                started_at_ms: None,
+            },
+        );
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::ServerRequest {
+                request_id: "approval".into(),
+                request_type: ServerRequestType::Approval,
+                call_id: "approval-call".into(),
+                tool_execution_id: None,
+                tool: "bash".into(),
+                args: approval_args,
+                reason: "approval required".into(),
+                started_at_ms: None,
+            },
+        );
+        (
+            state.envelopes.iter().cloned().collect::<Vec<_>>(),
+            state
+                .controller_envelopes
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    let observer_live = (0..3)
+        .map(|_| observer_live.try_recv().expect("observer event"))
+        .collect::<Vec<_>>();
+    let controller_live = (0..3)
+        .map(|_| controller_live.try_recv().expect("controller event"))
+        .collect::<Vec<_>>();
+
+    for observer_copy in [&observer_replay, &observer_live] {
+        let serialized = serde_json::to_string(observer_copy).expect("serialize observer stream");
+        assert!(!serialized.contains("client-execution-secret"));
+        assert!(!serialized.contains("server-execution-secret"));
+        assert!(!serialized.contains("approval-observer-secret"));
+        assert!(serialized.contains("[REDACTED:token:portable-export]"));
+    }
+    for controller_copy in [&controller_replay, &controller_live] {
+        let messages = controller_copy
+            .iter()
+            .filter_map(|envelope| match envelope {
+                StreamEnvelope::Message { message, .. } => Some(message.as_ref()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            messages.as_slice(),
+            [
+                FromAgentMessage::ClientToolRequest { args, .. },
+                FromAgentMessage::ServerRequest {
+                    request_type: ServerRequestType::ClientTool,
+                    args: server_request_args,
+                    ..
+                },
+                FromAgentMessage::ServerRequest {
+                    request_type: ServerRequestType::Approval,
+                    args: approval_request_args,
+                    ..
+                }
+            ] if args == &client_args
+                && server_request_args == &server_args
+                && serde_json::to_string(approval_request_args)
+                    .expect("serialize approval args")
+                    .contains("[REDACTED:token:portable-export]")
+        ));
+    }
+}
+
+#[test]
+fn controller_subscribe_returns_only_current_raw_pending_executable_events() {
+    let workspace = tempdir().expect("workspace");
+    let pending_args = serde_json::json!({
+        "command": "curl -H 'Authorization: Bearer pending-controller-secret' example.test",
+        "nested": {"value": "pending-byte-faithful"}
+    });
+    let completed_args = serde_json::json!({
+        "command": "curl -H 'Authorization: Bearer completed-controller-secret' example.test"
+    });
+    let mut agent_state = AgentState::default();
+    agent_state.pending_client_tools.push(PendingApproval {
+        call_id: "call_pending".to_string(),
+        tool_execution_id: Some("exec_pending".to_string()),
+        request_id: None,
+        tool: "bash".to_string(),
+        args: pending_args.clone(),
+        started_at_ms: None,
+    });
+    let shared = SharedRunner::new_with_message_executor_and_restore(
+        test_config(workspace.path().to_path_buf()),
+        Arc::new(StatefulRuntimeExecutor::new(agent_state)),
+        None,
+    );
+    {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::ClientToolRequest {
+                call_id: "call_pending".to_string(),
+                tool_execution_id: Some("exec_pending".to_string()),
+                tool: "bash".to_string(),
+                args: pending_args.clone(),
+            },
+        );
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::ClientToolRequest {
+                call_id: "call_completed".to_string(),
+                tool_execution_id: Some("exec_completed".to_string()),
+                tool: "bash".to_string(),
+                args: completed_args,
+            },
+        );
+        let public_snapshot = shared.public_snapshot(&state);
+        assert_eq!(
+            public_snapshot.state.pending_client_tools[0]["args"],
+            serde_json::json!({})
+        );
+        assert!(!serde_json::to_string(&public_snapshot)
+            .expect("serialize public snapshot")
+            .contains("pending-controller-secret"));
+
+        for index in 0..=MAX_EVENTS {
+            shared.publish_message(
+                &mut state,
+                FromAgentMessage::Status {
+                    message: format!("later event {index}"),
+                },
+            );
+        }
+        assert!(
+            !state.controller_envelopes.iter().any(|envelope| {
+                matches!(
+                    envelope,
+                    StreamEnvelope::Message { message, .. }
+                        if matches!(
+                            message.as_ref(),
+                            FromAgentMessage::ClientToolRequest { call_id, .. }
+                                if call_id == "call_pending"
+                        )
+                )
+            }),
+            "the bounded replay queue should have evicted the original raw request"
+        );
+        assert_eq!(
+            state.pending_controller_events.len(),
+            1,
+            "later non-executable traffic must not consume the pending-event bound"
+        );
+    }
+
+    let subscribe = |connection_id: &str, role: ConnectionRole| SubscribeRequest {
+        connection_id: Some(connection_id.to_string()),
+        subscription_id: None,
+        connection_capability: None,
+        connection_capability_required: false,
+        protocol_version: None,
+        client_info: None,
+        capabilities: None,
+        opt_out_notifications: Vec::new(),
+        role: Some(role),
+        take_control: false,
+    };
+    let response_json = |response| match response {
+        ResponseBody::Json { status, body } => {
+            assert_eq!(status, 200);
+            body
+        }
+        ResponseBody::Sse { .. } => panic!("expected JSON subscription response"),
+    };
+
+    let viewer = response_json(
+        handle_subscribe(
+            shared.clone(),
+            "sess_test",
+            subscribe("conn_viewer", ConnectionRole::Viewer),
+        )
+        .expect("viewer subscription"),
+    );
+    assert_eq!(viewer["controller_pending_events"], serde_json::json!([]));
+    assert!(!viewer.to_string().contains("pending-controller-secret"));
+
+    let controller = response_json(
+        handle_subscribe(
+            shared,
+            "sess_test",
+            subscribe("conn_controller", ConnectionRole::Controller),
+        )
+        .expect("controller subscription"),
+    );
+    let pending_events = controller["controller_pending_events"]
+        .as_array()
+        .expect("controller pending events");
+    assert_eq!(pending_events.len(), 1);
+    assert_eq!(pending_events[0]["type"], "client_tool_request");
+    assert_eq!(pending_events[0]["call_id"], "call_pending");
+    assert_eq!(pending_events[0]["tool_execution_id"], "exec_pending");
+    assert_eq!(pending_events[0]["args"], pending_args);
+    assert!(controller.to_string().contains("pending-controller-secret"));
+    assert!(!controller
+        .to_string()
+        .contains("completed-controller-secret"));
+
+    let controller_capability = controller["connection_capability"]
+        .as_str()
+        .expect("controller connection capability");
+    assert!(!controller["snapshot"]
+        .to_string()
+        .contains(controller_capability));
+    assert!(!controller["snapshot"]
+        .to_string()
+        .contains("pending-controller-secret"));
+}
+
+#[test]
+fn controller_recovers_every_live_pending_event_beyond_replay_capacity_once() {
+    const PENDING_COUNT: usize = 1025;
+
+    let workspace = tempdir().expect("workspace");
+    let mut agent_state = AgentState::default();
+    let mut pending_messages = Vec::with_capacity(PENDING_COUNT);
+    for index in 0..PENDING_COUNT {
+        let call_id = format!("call_{index}");
+        let tool_execution_id = format!("exec_{index}");
+        let args = serde_json::json!({
+            "command": format!("echo pending-controller-secret-{index}")
+        });
+        agent_state.pending_client_tools.push(PendingApproval {
+            call_id: call_id.clone(),
+            tool_execution_id: Some(tool_execution_id.clone()),
+            request_id: None,
+            tool: "bash".to_string(),
+            args: args.clone(),
+            started_at_ms: None,
+        });
+        pending_messages.push(FromAgentMessage::ClientToolRequest {
+            call_id,
+            tool_execution_id: Some(tool_execution_id),
+            tool: "bash".to_string(),
+            args,
+        });
+    }
+
+    let shared = SharedRunner::new_with_message_executor_and_restore(
+        test_config(workspace.path().to_path_buf()),
+        Arc::new(StatefulRuntimeExecutor::new(agent_state)),
+        None,
+    );
+    let recovered = {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for message in pending_messages {
+            shared.publish_message(&mut state, message);
+        }
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::ServerRequest {
+                request_id: "approval_only".to_string(),
+                request_type: ServerRequestType::Approval,
+                call_id: "approval_only".to_string(),
+                tool_execution_id: None,
+                tool: "bash".to_string(),
+                args: serde_json::json!({"secret": "non-client-secret"}),
+                reason: "approval only".to_string(),
+                started_at_ms: None,
+            },
+        );
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::ClientToolRequest {
+                call_id: "call_completed".to_string(),
+                tool_execution_id: Some("exec_completed".to_string()),
+                tool: "bash".to_string(),
+                args: serde_json::json!({"secret": "completed-controller-secret"}),
+            },
+        );
+
+        assert_eq!(
+            state.pending_controller_events.len(),
+            PENDING_COUNT,
+            "the dedicated queue must retain one event per authoritative live request"
+        );
+        assert!(
+            !state.controller_envelopes.iter().any(|envelope| {
+                matches!(
+                    envelope,
+                    StreamEnvelope::Message { message, .. }
+                        if matches!(
+                            message.as_ref(),
+                            FromAgentMessage::ClientToolRequest { call_id, .. }
+                                if call_id == "call_0"
+                        )
+                )
+            }),
+            "the generic replay queue should demonstrate that attach depends on dedicated retention"
+        );
+        let public_snapshot = shared.public_snapshot(&state);
+        assert_eq!(
+            public_snapshot.state.pending_client_tools.len(),
+            PENDING_COUNT
+        );
+        assert!(public_snapshot
+            .state
+            .pending_client_tools
+            .iter()
+            .all(|pending| pending["args"] == serde_json::json!({})));
+        assert!(!serde_json::to_string(&public_snapshot)
+            .expect("serialize public snapshot")
+            .contains("pending-controller-secret"));
+
+        shared.controller_pending_events(&mut state)
+    };
+
+    assert_eq!(recovered.len(), PENDING_COUNT);
+    let recovered_call_ids = recovered
+        .iter()
+        .filter_map(|message| match message {
+            FromAgentMessage::ClientToolRequest { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(recovered_call_ids.len(), PENDING_COUNT);
+    assert!(recovered_call_ids.contains("call_0"));
+    assert!(recovered_call_ids.contains("call_1024"));
+    let serialized = serde_json::to_string(&recovered).expect("serialize recovered events");
+    assert!(serialized.contains("pending-controller-secret-0"));
+    assert!(serialized.contains("pending-controller-secret-1024"));
+    assert!(!serialized.contains("non-client-secret"));
+    assert!(!serialized.contains("completed-controller-secret"));
+}
+
+#[tokio::test]
+async fn zero_message_completion_prunes_retained_controller_event_immediately() {
+    let workspace = tempdir().expect("workspace");
+    let pending = PendingApproval {
+        call_id: "call_completed_silently".to_string(),
+        tool_execution_id: Some("exec_completed_silently".to_string()),
+        request_id: None,
+        tool: "bash".to_string(),
+        args: serde_json::json!({"command": "echo retained-secret"}),
+        started_at_ms: None,
+    };
+    let mut agent_state = AgentState::default();
+    agent_state.pending_client_tools.push(pending.clone());
+    let shared = SharedRunner::new_with_message_executor_and_restore(
+        test_config(workspace.path().to_path_buf()),
+        Arc::new(CompletingRuntimeExecutor::new(agent_state)),
+        None,
+    );
+
+    let (connection_capability, headers) = {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        upsert_connection(
+            &mut state,
+            ConnectionUpsert {
+                connection_id: "conn_zero_message".to_string(),
+                connection_capability: None,
+                connection_capability_required: true,
+                role: ConnectionRole::Controller,
+                client_protocol_version: None,
+                client_info: None,
+                capabilities: None,
+                opt_out_notifications: vec![],
+                take_control: false,
+            },
+        )
+        .expect("controller connection");
+        let connection_capability = state
+            .connections
+            .get("conn_zero_message")
+            .expect("connection")
+            .connection_capability
+            .clone();
+        state.subscriptions.insert(
+            "sub_zero_message".to_string(),
+            SubscriptionRecord {
+                connection_id: "conn_zero_message".to_string(),
+                connection_capability: connection_capability.clone(),
+                authority_mode: ConnectionAuthorityMode::Capability,
+                role: ConnectionRole::Controller,
+                attached: true,
+            },
+        );
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::ClientToolRequest {
+                call_id: pending.call_id.clone(),
+                tool_execution_id: pending.tool_execution_id.clone(),
+                tool: pending.tool.clone(),
+                args: pending.args.clone(),
+            },
+        );
+        assert_eq!(state.pending_controller_events.len(), 1);
+        let headers = HashMap::from([
+            (
+                "x-maestro-headless-connection-id".to_string(),
+                "conn_zero_message".to_string(),
+            ),
+            (
+                "x-maestro-headless-subscriber-id".to_string(),
+                "sub_zero_message".to_string(),
+            ),
+            (
+                "x-maestro-headless-connection-capability".to_string(),
+                connection_capability.clone().expect("private capability"),
+            ),
+        ]);
+        (connection_capability, headers)
+    };
+
+    let response = handle_message(
+        shared.clone(),
+        "sess_test",
+        headers,
+        ToAgentMessage::ClientToolResult {
+            call_id: pending.call_id,
+            content: Vec::new(),
+            is_error: false,
+        },
+    )
+    .await
+    .expect("zero-message completion");
+    assert!(matches!(response, ResponseBody::Json { .. }));
+
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(state.pending_controller_events.is_empty());
+    assert!(shared.controller_pending_events(&mut state).is_empty());
+    assert_eq!(
+        state
+            .connections
+            .get("conn_zero_message")
+            .expect("connection")
+            .connection_capability,
+        connection_capability
+    );
+}
+
+#[test]
+fn pending_client_tool_server_request_uses_inherited_execution_identity() {
+    let workspace = tempdir().expect("workspace");
+    let tracked = FromAgentMessage::ToolCall {
+        call_id: "call_inherited".to_string(),
+        tool_execution_id: Some("exec_inherited".to_string()),
+        tool: "bash".to_string(),
+        args: serde_json::json!({"command": "prepare"}),
+        requires_approval: false,
+    };
+    let pending = FromAgentMessage::ServerRequest {
+        request_id: "request_pending".to_string(),
+        request_type: ServerRequestType::ClientTool,
+        call_id: "call_inherited".to_string(),
+        tool_execution_id: None,
+        tool: "bash".to_string(),
+        args: serde_json::json!({
+            "command": "curl -H 'Authorization: Bearer inherited-pending-secret' example.test"
+        }),
+        reason: "execute on controller".to_string(),
+        started_at_ms: None,
+    };
+    let non_client = FromAgentMessage::ServerRequest {
+        request_id: "request_pending".to_string(),
+        request_type: ServerRequestType::Approval,
+        call_id: "call_inherited".to_string(),
+        tool_execution_id: None,
+        tool: "bash".to_string(),
+        args: serde_json::json!({
+            "command": "curl -H 'Authorization: Bearer non-client-secret' example.test"
+        }),
+        reason: "approval only".to_string(),
+        started_at_ms: None,
+    };
+    let completed = FromAgentMessage::ServerRequest {
+        request_id: "request_completed".to_string(),
+        request_type: ServerRequestType::ClientTool,
+        call_id: "call_inherited".to_string(),
+        tool_execution_id: None,
+        tool: "bash".to_string(),
+        args: serde_json::json!({
+            "command": "curl -H 'Authorization: Bearer completed-request-secret' example.test"
+        }),
+        reason: "already completed".to_string(),
+        started_at_ms: None,
+    };
+
+    let mut agent_state = AgentState::default();
+    let _ = agent_state.handle_message(tracked.clone());
+    let _ = agent_state.handle_message(pending.clone());
+    assert_eq!(agent_state.pending_client_tools.len(), 1);
+    assert_eq!(
+        agent_state.pending_client_tools[0]
+            .tool_execution_id
+            .as_deref(),
+        Some("exec_inherited")
+    );
+    assert_eq!(
+        agent_state.pending_client_tools[0].request_id.as_deref(),
+        Some("request_pending")
+    );
+
+    let shared = SharedRunner::new_with_message_executor_and_restore(
+        test_config(workspace.path().to_path_buf()),
+        Arc::new(StatefulRuntimeExecutor::new(agent_state)),
+        None,
+    );
+    let pending_events = {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        shared.publish_message(&mut state, tracked);
+        shared.publish_message(&mut state, pending);
+        shared.publish_message(&mut state, non_client);
+        shared.publish_message(&mut state, completed);
+        shared.controller_pending_events(&mut state)
+    };
+
+    assert_eq!(pending_events.len(), 1);
+    assert!(matches!(
+        pending_events.as_slice(),
+        [FromAgentMessage::ServerRequest {
+            request_id,
+            request_type: ServerRequestType::ClientTool,
+            call_id,
+            tool_execution_id: None,
+            args,
+            ..
+        }] if request_id == "request_pending"
+            && call_id == "call_inherited"
+            && args
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|command| command.contains("inherited-pending-secret"))
+    ));
+    let serialized = serde_json::to_string(&pending_events).expect("serialize pending events");
+    assert!(!serialized.contains("non-client-secret"));
+    assert!(!serialized.contains("completed-request-secret"));
 }
 
 #[test]
@@ -1041,10 +1883,11 @@ fn connection_headers_accept_evalops_subscription_aliases() {
         ),
     ]);
 
-    let (connection_id, subscription_id) = connection_from_headers(&headers);
+    let (connection_id, subscription_id, connection_capability) = connection_from_headers(&headers);
 
     assert_eq!(connection_id.as_deref(), Some("conn_evalops"));
     assert_eq!(subscription_id.as_deref(), Some("sub_evalops"));
+    assert!(connection_capability.is_none());
 }
 
 #[tokio::test]
@@ -1243,6 +2086,32 @@ async fn drain_manifest_records_runtime_cursor_after_activity() {
         .await
         .expect("connection json");
     assert_eq!(connection["connection_id"], "conn_drain");
+    let subscription: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": "conn_drain",
+            "connectionCapability": connection["connection_capability"],
+            "connectionCapabilityRequired": true,
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("subscription response")
+        .json()
+        .await
+        .expect("subscription json");
+    assert!(subscription["controller_subscription_id"]
+        .as_str()
+        .is_some());
+    let subscription_id = subscription["subscription_id"]
+        .as_str()
+        .expect("subscription id");
+    let connection_capability = subscription["connection_capability"]
+        .as_str()
+        .expect("connection capability");
 
     let message: serde_json::Value = client
         .post(format!(
@@ -1250,6 +2119,11 @@ async fn drain_manifest_records_runtime_cursor_after_activity() {
             handle.base_url()
         ))
         .header("x-maestro-headless-connection-id", "conn_drain")
+        .header("x-maestro-headless-subscriber-id", subscription_id)
+        .header(
+            "x-maestro-headless-connection-capability",
+            connection_capability,
+        )
         .json(&json!({"type": "prompt", "content": "before drain"}))
         .send()
         .await
@@ -1277,6 +2151,8 @@ async fn drain_manifest_records_runtime_cursor_after_activity() {
         parse_snapshot_manifest_bytes(&manifest_bytes, workspace.path()).expect("typed manifest");
     let manifest: serde_json::Value =
         serde_json::from_slice(&manifest_bytes).expect("manifest json");
+    assert!(drain["manifest"]["snapshot"]["state"]["controller_subscription_id"].is_null());
+    assert!(manifest["snapshot"]["state"]["controller_subscription_id"].is_null());
     assert_eq!(manifest["runtime"]["flush_status"], "completed");
     assert_eq!(
         typed_manifest.runtime.flush_status,
@@ -1334,12 +2210,41 @@ async fn restore_manifest_seeds_runtime_state_and_replay_marker() {
         .expect("connection json");
     assert_eq!(connection["connection_id"], "conn_restore");
 
+    let subscription: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": "conn_restore",
+            "connectionCapability": connection["connection_capability"],
+            "connectionCapabilityRequired": true,
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("subscription response")
+        .json()
+        .await
+        .expect("subscription json");
     let message: serde_json::Value = client
         .post(format!(
             "{}/api/headless/sessions/sess_test/messages",
             handle.base_url()
         ))
         .header("x-maestro-headless-connection-id", "conn_restore")
+        .header(
+            "x-maestro-headless-subscriber-id",
+            subscription["subscription_id"]
+                .as_str()
+                .expect("subscription id"),
+        )
+        .header(
+            "x-maestro-headless-connection-capability",
+            subscription["connection_capability"]
+                .as_str()
+                .expect("connection capability"),
+        )
         .json(&json!({"type": "prompt", "content": "before restore"}))
         .send()
         .await
@@ -2115,12 +3020,41 @@ async fn failed_restore_manifest_stays_not_ready_and_rejects_attach() {
         .expect("connection json");
     assert_eq!(connection["connection_id"], "conn_partial_restore");
 
+    let subscription: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": "conn_partial_restore",
+            "connectionCapability": connection["connection_capability"],
+            "connectionCapabilityRequired": true,
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("subscription response")
+        .json()
+        .await
+        .expect("subscription json");
     let message: serde_json::Value = client
         .post(format!(
             "{}/api/headless/sessions/sess_test/messages",
             handle.base_url()
         ))
         .header("x-maestro-headless-connection-id", "conn_partial_restore")
+        .header(
+            "x-maestro-headless-subscriber-id",
+            subscription["subscription_id"]
+                .as_str()
+                .expect("subscription id"),
+        )
+        .header(
+            "x-maestro-headless-connection-capability",
+            subscription["connection_capability"]
+                .as_str()
+                .expect("connection capability"),
+        )
         .json(&json!({"type": "prompt", "content": "before interrupted restore"}))
         .send()
         .await
@@ -2414,6 +3348,8 @@ async fn message_executor_publishes_runtime_handled_events() {
         ))
         .json(&json!({
             "connectionId": "conn_exec",
+            "connectionCapability": connection["connection_capability"],
+            "connectionCapabilityRequired": true,
             "subscriptionId": "sub_exec",
             "role": "controller"
         }))
@@ -2426,6 +3362,10 @@ async fn message_executor_publishes_runtime_handled_events() {
     let subscription_id = subscription["subscription_id"]
         .as_str()
         .expect("subscription id")
+        .to_string();
+    let connection_capability = subscription["connection_capability"]
+        .as_str()
+        .expect("connection capability")
         .to_string();
     let viewer: serde_json::Value = client
         .post(format!("{}/api/headless/connections", handle.base_url()))
@@ -2449,6 +3389,8 @@ async fn message_executor_publishes_runtime_handled_events() {
         ))
         .json(&json!({
             "connectionId": "conn_off",
+            "connectionCapability": viewer["connection_capability"],
+            "connectionCapabilityRequired": true,
             "role": "viewer",
             "capabilities": {"transcriptGrade": "off"}
         }))
@@ -2470,6 +3412,10 @@ async fn message_executor_publishes_runtime_handled_events() {
         ))
         .header("x-maestro-headless-connection-id", "conn_exec")
         .header("x-maestro-headless-subscriber-id", &subscription_id)
+        .header(
+            "x-maestro-headless-connection-capability",
+            &connection_capability,
+        )
         .json(&json!({"type": "prompt", "content": "hello"}))
         .send()
         .await
@@ -2542,6 +3488,733 @@ async fn message_executor_publishes_runtime_handled_events() {
     assert!(!viewer_event_text.contains("\"content\":\"runtime: hello\""));
 
     handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn authenticated_current_controller_gets_byte_faithful_client_tool_arguments() {
+    let workspace = tempdir().expect("workspace");
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()).with_auth_token("controller-test-token"),
+        Arc::new(ScriptedRuntimeExecutor),
+    )
+    .await
+    .expect("start hosted runner");
+    let client = reqwest::Client::new();
+    let authorized = || ("authorization", "Bearer controller-test-token");
+
+    let connection: serde_json::Value = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .header(authorized().0, authorized().1)
+        .json(&json!({
+            "sessionId": "sess_test",
+            "connectionId": "conn_exec",
+            "role": "controller",
+            "capabilities": {"transcriptGrade": "delta"}
+        }))
+        .send()
+        .await
+        .expect("controller connection response")
+        .json()
+        .await
+        .expect("controller connection json");
+    assert_eq!(connection["controller_lease_granted"], true);
+    let controller_subscription: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .header(authorized().0, authorized().1)
+        .json(&json!({
+            "connectionId": "conn_exec",
+            "connectionCapability": connection["connection_capability"],
+            "connectionCapabilityRequired": true,
+            "subscriptionId": "sub_exec",
+            "role": "controller",
+            "capabilities": {"transcriptGrade": "delta"}
+        }))
+        .send()
+        .await
+        .expect("controller subscription response")
+        .json()
+        .await
+        .expect("controller subscription json");
+    let controller_subscription_id = controller_subscription["subscription_id"]
+        .as_str()
+        .expect("controller subscription id");
+    let controller_connection_capability = controller_subscription["connection_capability"]
+        .as_str()
+        .expect("controller connection capability");
+    assert_eq!(
+        controller_subscription["controller_subscription_id"],
+        controller_subscription_id
+    );
+    assert!(controller_subscription["snapshot"]["state"]["controller_subscription_id"].is_null());
+
+    let viewer_connection: serde_json::Value = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .header(authorized().0, authorized().1)
+        .json(&json!({
+            "sessionId": "sess_test",
+            "connectionId": "conn_viewer",
+            "role": "viewer",
+            "capabilities": {"transcriptGrade": "delta"}
+        }))
+        .send()
+        .await
+        .expect("viewer connection response")
+        .json()
+        .await
+        .expect("viewer connection json");
+    assert_eq!(viewer_connection["controller_lease_granted"], false);
+    let viewer_subscription: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .header(authorized().0, authorized().1)
+        .json(&json!({
+            "connectionId": "conn_viewer",
+            "connectionCapability": viewer_connection["connection_capability"],
+            "connectionCapabilityRequired": true,
+            "subscriptionId": "sub_viewer",
+            "role": "viewer",
+            "capabilities": {"transcriptGrade": "delta"}
+        }))
+        .send()
+        .await
+        .expect("viewer subscription response")
+        .json()
+        .await
+        .expect("viewer subscription json");
+    let viewer_subscription_id = viewer_subscription["subscription_id"]
+        .as_str()
+        .expect("viewer subscription id");
+    assert_eq!(viewer_subscription["role"], "viewer");
+    assert!(viewer_subscription["controller_subscription_id"].is_null());
+    assert!(viewer_subscription["snapshot"]["state"]["controller_subscription_id"].is_null());
+    assert_ne!(controller_subscription_id, viewer_subscription_id);
+
+    let publish: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/messages",
+            handle.base_url()
+        ))
+        .header(authorized().0, authorized().1)
+        .header("x-maestro-headless-connection-id", "conn_exec")
+        .header(
+            "x-maestro-headless-subscriber-id",
+            controller_subscription_id,
+        )
+        .header(
+            "x-maestro-headless-connection-capability",
+            controller_connection_capability,
+        )
+        .json(&json!({"type": "prompt", "content": "client-tool-boundary"}))
+        .send()
+        .await
+        .expect("message response")
+        .json()
+        .await
+        .expect("message json");
+    assert_eq!(publish["published_messages"], 2);
+
+    let read_replay = |subscription_id: &str| {
+        let client = client.clone();
+        let url = format!(
+            "{}/api/headless/sessions/sess_test/events?cursor=0&subscriptionId={subscription_id}",
+            handle.base_url()
+        );
+        async move {
+            let mut response = client
+                .get(url)
+                .header("authorization", "Bearer controller-test-token")
+                .send()
+                .await
+                .expect("events response");
+            assert_eq!(response.status(), StatusCode::OK);
+            let mut text = String::new();
+            for _ in 0..8 {
+                let chunk =
+                    tokio::time::timeout(std::time::Duration::from_secs(1), response.chunk())
+                        .await
+                        .expect("event chunk timeout")
+                        .expect("event chunk read");
+                let Some(chunk) = chunk else {
+                    break;
+                };
+                text.push_str(&String::from_utf8_lossy(&chunk));
+                if text.contains("\"request_id\":\"server-client-tool\"") {
+                    break;
+                }
+            }
+            text
+        }
+    };
+    let controller_events = read_replay(controller_subscription_id).await;
+    let viewer_events = read_replay(viewer_subscription_id).await;
+
+    assert!(controller_events.contains("client-execution-secret"));
+    assert!(controller_events.contains("client-byte-faithful"));
+    assert!(controller_events.contains("server-execution-secret"));
+    assert!(controller_events.contains("server-byte-faithful"));
+    assert!(!viewer_events.contains("client-execution-secret"));
+    assert!(!viewer_events.contains("server-execution-secret"));
+    assert!(viewer_events.contains("[REDACTED:token:portable-export]"));
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn upgraded_controller_keeps_existing_viewer_stream_redacted() {
+    let workspace = tempdir().expect("workspace");
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()).with_auth_token("controller-test-token"),
+        Arc::new(ScriptedRuntimeExecutor),
+    )
+    .await
+    .expect("start hosted runner");
+    let client = reqwest::Client::new();
+
+    let viewer_connection: serde_json::Value = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .header("authorization", "Bearer controller-test-token")
+        .json(&json!({
+            "sessionId": "sess_test",
+            "connectionId": "conn_second",
+            "role": "viewer",
+            "capabilities": {"transcriptGrade": "delta"}
+        }))
+        .send()
+        .await
+        .expect("viewer connection response")
+        .json()
+        .await
+        .expect("viewer connection json");
+    let connection_capability = viewer_connection["connection_capability"]
+        .as_str()
+        .expect("viewer connection capability");
+    let viewer_subscription: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .header("authorization", "Bearer controller-test-token")
+        .json(&json!({
+            "connectionId": "conn_second",
+            "connectionCapability": connection_capability,
+            "connectionCapabilityRequired": true,
+            "role": "viewer",
+            "capabilities": {"transcriptGrade": "delta"}
+        }))
+        .send()
+        .await
+        .expect("viewer subscription response")
+        .json()
+        .await
+        .expect("viewer subscription json");
+    let viewer_subscription_id = viewer_subscription["subscription_id"]
+        .as_str()
+        .expect("viewer subscription id");
+
+    let upgraded: serde_json::Value = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .header("authorization", "Bearer controller-test-token")
+        .json(&json!({
+            "sessionId": "sess_test",
+            "connectionId": "conn_second",
+            "connectionCapability": connection_capability,
+            "connectionCapabilityRequired": true,
+            "role": "controller",
+            "takeControl": true
+        }))
+        .send()
+        .await
+        .expect("controller upgrade response")
+        .json()
+        .await
+        .expect("controller upgrade json");
+    assert_eq!(upgraded["controller_lease_granted"], true);
+
+    let published: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/messages",
+            handle.base_url()
+        ))
+        .header("authorization", "Bearer controller-test-token")
+        .header("x-maestro-headless-connection-id", "conn_second")
+        .header("x-maestro-headless-subscriber-id", viewer_subscription_id)
+        .header(
+            "x-maestro-headless-connection-capability",
+            connection_capability,
+        )
+        .json(&json!({"type": "prompt", "content": "client-tool-boundary"}))
+        .send()
+        .await
+        .expect("message response")
+        .json()
+        .await
+        .expect("message json");
+    assert_eq!(published["published_messages"], 2);
+
+    let mut events = client
+        .get(format!(
+            "{}/api/headless/sessions/sess_test/events?cursor=0&subscriptionId={viewer_subscription_id}",
+            handle.base_url()
+        ))
+        .header("authorization", "Bearer controller-test-token")
+        .send()
+        .await
+        .expect("viewer events response");
+    assert_eq!(events.status(), StatusCode::OK);
+    let mut text = String::new();
+    for _ in 0..8 {
+        let chunk = tokio::time::timeout(std::time::Duration::from_secs(1), events.chunk())
+            .await
+            .expect("viewer event chunk timeout")
+            .expect("viewer event chunk read");
+        let Some(chunk) = chunk else {
+            break;
+        };
+        text.push_str(&String::from_utf8_lossy(&chunk));
+        if text.contains("\"request_id\":\"server-client-tool\"") {
+            break;
+        }
+    }
+    assert!(!text.contains("client-execution-secret"));
+    assert!(!text.contains("server-execution-secret"));
+    assert!(text.contains("[REDACTED:token:portable-export]"));
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn controller_event_stream_is_revoked_on_takeover() {
+    let workspace = tempdir().expect("workspace");
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()).with_auth_token("controller-test-token"),
+        Arc::new(ScriptedRuntimeExecutor),
+    )
+    .await
+    .expect("start hosted runner");
+    let client = reqwest::Client::new();
+
+    let subscribe =
+        |connection_id: &'static str, connection_capability: String, take_control: bool| {
+            let client = client.clone();
+            let url = format!(
+                "{}/api/headless/sessions/sess_test/subscribe",
+                handle.base_url()
+            );
+            async move {
+                client
+                    .post(url)
+                    .header("authorization", "Bearer controller-test-token")
+                    .json(&json!({
+                        "connectionId": connection_id,
+                        "connectionCapability": connection_capability,
+                        "connectionCapabilityRequired": true,
+                        "role": "controller",
+                        "takeControl": take_control,
+                        "capabilities": {"transcriptGrade": "delta"}
+                    }))
+                    .send()
+                    .await
+                    .expect("subscription response")
+                    .json::<serde_json::Value>()
+                    .await
+                    .expect("subscription json")
+            }
+        };
+
+    let first_connection: serde_json::Value = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .header("authorization", "Bearer controller-test-token")
+        .json(&json!({
+            "sessionId": "sess_test",
+            "connectionId": "conn_first",
+            "role": "controller",
+            "capabilities": {"transcriptGrade": "delta"}
+        }))
+        .send()
+        .await
+        .expect("first controller connection")
+        .json()
+        .await
+        .expect("first controller json");
+    let first_subscription = subscribe(
+        "conn_first",
+        first_connection["connection_capability"]
+            .as_str()
+            .expect("first connection capability")
+            .to_string(),
+        false,
+    )
+    .await;
+    let first_subscription_id = first_subscription["subscription_id"]
+        .as_str()
+        .expect("first subscription id");
+    let mut stale_stream = client
+        .get(format!(
+            "{}/api/headless/sessions/sess_test/events?cursor=0&subscriptionId={first_subscription_id}",
+            handle.base_url()
+        ))
+        .header("authorization", "Bearer controller-test-token")
+        .send()
+        .await
+        .expect("first controller events response");
+    assert_eq!(stale_stream.status(), StatusCode::OK);
+
+    let second_connection: serde_json::Value = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .header("authorization", "Bearer controller-test-token")
+        .json(&json!({
+            "sessionId": "sess_test",
+            "connectionId": "conn_second",
+            "role": "controller",
+            "takeControl": true,
+            "capabilities": {"transcriptGrade": "delta"}
+        }))
+        .send()
+        .await
+        .expect("second controller connection")
+        .json()
+        .await
+        .expect("second controller json");
+    let second_subscription = subscribe(
+        "conn_second",
+        second_connection["connection_capability"]
+            .as_str()
+            .expect("second connection capability")
+            .to_string(),
+        true,
+    )
+    .await;
+    let second_subscription_id = second_subscription["subscription_id"]
+        .as_str()
+        .expect("second subscription id");
+    let second_connection_capability = second_subscription["connection_capability"]
+        .as_str()
+        .expect("second connection capability");
+
+    let publish = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/messages",
+            handle.base_url()
+        ))
+        .header("authorization", "Bearer controller-test-token")
+        .header("x-maestro-headless-connection-id", "conn_second")
+        .header("x-maestro-headless-subscriber-id", second_subscription_id)
+        .header(
+            "x-maestro-headless-connection-capability",
+            second_connection_capability,
+        )
+        .json(&json!({"type": "prompt", "content": "client-tool-boundary"}))
+        .send()
+        .await
+        .expect("message response");
+    assert_eq!(publish.status(), StatusCode::OK);
+
+    let mut stale_text = String::new();
+    for _ in 0..8 {
+        let chunk =
+            tokio::time::timeout(std::time::Duration::from_millis(250), stale_stream.chunk()).await;
+        let Ok(Ok(Some(chunk))) = chunk else {
+            break;
+        };
+        stale_text.push_str(&String::from_utf8_lossy(&chunk));
+    }
+    assert!(!stale_text.contains("client-execution-secret"));
+    assert!(!stale_text.contains("server-execution-secret"));
+
+    let mut current_stream = client
+        .get(format!(
+            "{}/api/headless/sessions/sess_test/events?cursor=0&subscriptionId={second_subscription_id}",
+            handle.base_url()
+        ))
+        .header("authorization", "Bearer controller-test-token")
+        .send()
+        .await
+        .expect("second controller events response");
+    assert_eq!(current_stream.status(), StatusCode::OK);
+    let mut current_text = String::new();
+    for _ in 0..8 {
+        let chunk = tokio::time::timeout(std::time::Duration::from_secs(1), current_stream.chunk())
+            .await
+            .expect("current event chunk timeout")
+            .expect("current event chunk read");
+        let Some(chunk) = chunk else {
+            break;
+        };
+        current_text.push_str(&String::from_utf8_lossy(&chunk));
+        if current_text.contains("server-execution-secret") {
+            break;
+        }
+    }
+    assert!(current_text.contains("client-execution-secret"));
+    assert!(current_text.contains("server-execution-secret"));
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn controller_event_stream_is_revoked_on_hello_demotion() {
+    let workspace = tempdir().expect("workspace");
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()).with_auth_token("controller-test-token"),
+        Arc::new(ScriptedRuntimeExecutor),
+    )
+    .await
+    .expect("start hosted runner");
+    let client = reqwest::Client::new();
+
+    let first_connection: serde_json::Value = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .header("authorization", "Bearer controller-test-token")
+        .json(&json!({
+            "sessionId": "sess_test",
+            "connectionId": "conn_exec",
+            "role": "controller",
+            "capabilities": {"transcriptGrade": "delta"}
+        }))
+        .send()
+        .await
+        .expect("first controller connection")
+        .json()
+        .await
+        .expect("first controller json");
+    let first_subscription: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .header("authorization", "Bearer controller-test-token")
+        .json(&json!({
+            "connectionId": "conn_exec",
+            "connectionCapability": first_connection["connection_capability"],
+            "connectionCapabilityRequired": true,
+            "role": "controller",
+            "capabilities": {"transcriptGrade": "delta"}
+        }))
+        .send()
+        .await
+        .expect("first subscription response")
+        .json()
+        .await
+        .expect("first subscription json");
+    let first_subscription_id = first_subscription["subscription_id"]
+        .as_str()
+        .expect("first subscription id");
+    let first_connection_capability = first_subscription["connection_capability"]
+        .as_str()
+        .expect("first connection capability");
+    let mut stale_stream = client
+        .get(format!(
+            "{}/api/headless/sessions/sess_test/events?cursor=0&subscriptionId={first_subscription_id}",
+            handle.base_url()
+        ))
+        .header("authorization", "Bearer controller-test-token")
+        .send()
+        .await
+        .expect("first controller events response");
+    assert_eq!(stale_stream.status(), StatusCode::OK);
+
+    let demotion: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/messages",
+            handle.base_url()
+        ))
+        .header("authorization", "Bearer controller-test-token")
+        .header("x-maestro-headless-connection-id", "conn_exec")
+        .header("x-maestro-headless-subscriber-id", first_subscription_id)
+        .header(
+            "x-maestro-headless-connection-capability",
+            first_connection_capability,
+        )
+        .json(&json!({"type": "hello", "role": "viewer"}))
+        .send()
+        .await
+        .expect("demotion response")
+        .json()
+        .await
+        .expect("demotion json");
+    assert_eq!(demotion["ok"], true);
+    assert!(demotion["snapshot"]["state"]["controller_connection_id"].is_null());
+
+    let second_connection: serde_json::Value = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .header("authorization", "Bearer controller-test-token")
+        .json(&json!({
+            "sessionId": "sess_test",
+            "connectionId": "conn_second",
+            "role": "controller",
+            "capabilities": {"transcriptGrade": "delta"}
+        }))
+        .send()
+        .await
+        .expect("second controller connection")
+        .json()
+        .await
+        .expect("second controller json");
+    let second_subscription: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .header("authorization", "Bearer controller-test-token")
+        .json(&json!({
+            "connectionId": "conn_second",
+            "connectionCapability": second_connection["connection_capability"],
+            "connectionCapabilityRequired": true,
+            "role": "controller",
+            "capabilities": {"transcriptGrade": "delta"}
+        }))
+        .send()
+        .await
+        .expect("second subscription response")
+        .json()
+        .await
+        .expect("second subscription json");
+    let second_subscription_id = second_subscription["subscription_id"]
+        .as_str()
+        .expect("second subscription id");
+    let second_connection_capability = second_subscription["connection_capability"]
+        .as_str()
+        .expect("second connection capability");
+
+    let publish = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/messages",
+            handle.base_url()
+        ))
+        .header("authorization", "Bearer controller-test-token")
+        .header("x-maestro-headless-connection-id", "conn_second")
+        .header("x-maestro-headless-subscriber-id", second_subscription_id)
+        .header(
+            "x-maestro-headless-connection-capability",
+            second_connection_capability,
+        )
+        .json(&json!({"type": "prompt", "content": "client-tool-boundary"}))
+        .send()
+        .await
+        .expect("message response");
+    assert_eq!(publish.status(), StatusCode::OK);
+
+    let mut stale_text = String::new();
+    for _ in 0..8 {
+        let chunk =
+            tokio::time::timeout(std::time::Duration::from_millis(250), stale_stream.chunk()).await;
+        let Ok(Ok(Some(chunk))) = chunk else {
+            break;
+        };
+        stale_text.push_str(&String::from_utf8_lossy(&chunk));
+    }
+    assert!(!stale_text.contains("client-execution-secret"));
+    assert!(!stale_text.contains("server-execution-secret"));
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn controller_replay_write_is_cancelled_during_takeover() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    let authorization = {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        upsert_connection(
+            &mut state,
+            ConnectionUpsert {
+                connection_id: "conn_replay".to_string(),
+                connection_capability: None,
+                connection_capability_required: true,
+                role: ConnectionRole::Controller,
+                client_protocol_version: None,
+                client_info: None,
+                capabilities: None,
+                opt_out_notifications: vec![],
+                take_control: false,
+            },
+        )
+        .expect("controller connection");
+        let connection_capability = state
+            .connections
+            .get("conn_replay")
+            .expect("connection")
+            .connection_capability
+            .clone();
+        state.subscriptions.insert(
+            "sub_replay".to_string(),
+            SubscriptionRecord {
+                connection_id: "conn_replay".to_string(),
+                connection_capability,
+                authority_mode: ConnectionAuthorityMode::Capability,
+                role: ConnectionRole::Controller,
+                attached: true,
+            },
+        );
+        ControllerStreamAuthorization {
+            connection_id: "conn_replay".to_string(),
+            subscription_id: "sub_replay".to_string(),
+            cancellation: state.controller_stream_cancellation.clone(),
+        }
+    };
+
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("test listener");
+    let address = listener.local_addr().expect("listener address");
+    let client = tokio::spawn(async move {
+        TcpStream::connect(address)
+            .await
+            .expect("test client connection")
+    });
+    let (server, _) = listener.accept().await.expect("server connection");
+    let mut client = client.await.expect("client task");
+
+    let final_marker = "controller-replay-final-marker";
+    let envelope = StreamEnvelope::Message {
+        cursor: 1,
+        message: Box::new(FromAgentMessage::ClientToolRequest {
+            call_id: "large-replay".to_string(),
+            tool_execution_id: None,
+            tool: "bash".to_string(),
+            args: json!({
+                "command": "client execution",
+                "padding": format!("{}{}", "x".repeat(8 * 1024 * 1024), final_marker),
+            }),
+        }),
+    };
+    let writer_shared = shared.clone();
+    let writer = tokio::spawn(async move {
+        let mut server = server;
+        write_sse_event_if_authorized(&mut server, &writer_shared, Some(&authorization), &envelope)
+            .await
+            .expect("authorized replay write")
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        revoke_controller_streams(&mut state);
+        state.controller_connection_id = Some("conn_takeover".to_string());
+    }
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(1), writer)
+        .await
+        .expect("revoked replay writer should stop")
+        .expect("writer task");
+    assert!(!completed);
+
+    let mut delivered = Vec::new();
+    client
+        .read_to_end(&mut delivered)
+        .await
+        .expect("read partial replay");
+    assert!(!String::from_utf8_lossy(&delivered).contains(final_marker));
 }
 
 #[tokio::test]
@@ -2625,7 +4298,12 @@ async fn state_snapshot_redacts_sensitive_supervisor_state() {
             "{}/api/headless/sessions/sess_test/subscribe",
             handle.base_url()
         ))
-        .json(&json!({"connectionId": "conn_state", "role": "controller"}))
+        .json(&json!({
+            "connectionId": "conn_state",
+            "connectionCapability": controller["connection_capability"],
+            "connectionCapabilityRequired": true,
+            "role": "controller"
+        }))
         .send()
         .await
         .expect("subscribe response")
@@ -2636,9 +4314,8 @@ async fn state_snapshot_redacts_sensitive_supervisor_state() {
         subscribe["snapshot"]["state"]["controller_connection_id"],
         "conn_state"
     );
-    assert!(subscribe["snapshot"]["state"]["controller_subscription_id"]
-        .as_str()
-        .is_some());
+    assert!(subscribe["snapshot"]["state"]["controller_subscription_id"].is_null());
+    assert!(subscribe["controller_subscription_id"].as_str().is_some());
 
     let state: serde_json::Value = client
         .get(format!(
@@ -2767,6 +4444,19 @@ async fn remote_transport_attaches_and_receives_workspace_events() {
         .shutdown_and_wait()
         .await
         .expect("shutdown transport");
+    let state_after_disconnect: serde_json::Value = reqwest::Client::new()
+        .get(format!(
+            "{}/api/headless/sessions/sess_test/state",
+            handle.base_url()
+        ))
+        .send()
+        .await
+        .expect("state response")
+        .json()
+        .await
+        .expect("state json");
+    assert_eq!(state_after_disconnect["state"]["connection_count"], 0);
+    assert_eq!(state_after_disconnect["state"]["subscriber_count"], 0);
     handle.shutdown().await;
 }
 
@@ -2796,7 +4486,12 @@ async fn hosted_messages_reject_workspace_escape_before_file_work() {
             "{}/api/headless/sessions/sess_test/subscribe",
             handle.base_url()
         ))
-        .json(&json!({"connectionId": connection_id, "role": "controller"}))
+        .json(&json!({
+            "connectionId": connection_id,
+            "connectionCapability": connection["connection_capability"],
+            "connectionCapabilityRequired": true,
+            "role": "controller"
+        }))
         .send()
         .await
         .expect("subscription response")
@@ -2807,6 +4502,10 @@ async fn hosted_messages_reject_workspace_escape_before_file_work() {
         .as_str()
         .expect("subscription id")
         .to_string();
+    let connection_capability = subscription["connection_capability"]
+        .as_str()
+        .expect("connection capability")
+        .to_string();
 
     let response = client
         .post(format!(
@@ -2815,6 +4514,10 @@ async fn hosted_messages_reject_workspace_escape_before_file_work() {
         ))
         .header("x-maestro-headless-connection-id", connection_id)
         .header("x-maestro-headless-subscriber-id", subscription_id)
+        .header(
+            "x-maestro-headless-connection-capability",
+            connection_capability,
+        )
         .json(&json!({
             "type": "utility_file_read",
             "read_id": "escape",
@@ -2859,7 +4562,12 @@ async fn hosted_messages_reject_symlink_escape_for_missing_child() {
             "{}/api/headless/sessions/sess_test/subscribe",
             handle.base_url()
         ))
-        .json(&json!({"connectionId": connection_id, "role": "controller"}))
+        .json(&json!({
+            "connectionId": connection_id,
+            "connectionCapability": connection["connection_capability"],
+            "connectionCapabilityRequired": true,
+            "role": "controller"
+        }))
         .send()
         .await
         .expect("subscription response")
@@ -2870,6 +4578,10 @@ async fn hosted_messages_reject_symlink_escape_for_missing_child() {
         .as_str()
         .expect("subscription id")
         .to_string();
+    let connection_capability = subscription["connection_capability"]
+        .as_str()
+        .expect("connection capability")
+        .to_string();
 
     let response = client
         .post(format!(
@@ -2878,6 +4590,10 @@ async fn hosted_messages_reject_symlink_escape_for_missing_child() {
         ))
         .header("x-maestro-headless-connection-id", connection_id)
         .header("x-maestro-headless-subscriber-id", subscription_id)
+        .header(
+            "x-maestro-headless-connection-capability",
+            connection_capability,
+        )
         .json(&json!({
             "type": "utility_file_read",
             "read_id": "symlink-escape",
@@ -2922,31 +4638,88 @@ async fn duplicate_subscribe_preserves_disconnect_cleanup() {
         .await
         .expect("connection json");
     assert_eq!(connection["connection_id"], "conn_multi");
+    assert_eq!(connection["connection_capability_required"], false);
+    assert!(connection["connection_capability"].is_null());
     assert!(connection["lease_expires_at"].as_str().is_some());
 
-    let mut subscription_ids = Vec::new();
-    for _ in 0..2 {
-        let subscription = client
-            .post(format!(
-                "{}/api/headless/sessions/sess_test/subscribe",
-                handle.base_url()
-            ))
-            .json(&json!({
-                "connectionId": "conn_multi",
-                "role": "controller"
-            }))
-            .send()
-            .await
-            .expect("subscription response");
-        assert_eq!(subscription.status(), StatusCode::OK);
-        let subscription: serde_json::Value = subscription.json().await.expect("subscription json");
-        subscription_ids.push(
-            subscription["subscription_id"]
-                .as_str()
-                .expect("subscription id")
-                .to_string(),
-        );
-    }
+    let promotion = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": "conn_multi",
+            "connectionCapability": "cap_00112233445566778899aabbccddeeff",
+            "connectionCapabilityRequired": true,
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("legacy promotion response");
+    assert_eq!(promotion.status(), StatusCode::FORBIDDEN);
+
+    let initial_subscription = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": "conn_multi",
+            "connectionCapability": connection["connection_capability"],
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("initial subscription response");
+    assert_eq!(initial_subscription.status(), StatusCode::OK);
+    let initial_subscription: serde_json::Value = initial_subscription
+        .json()
+        .await
+        .expect("initial subscription json");
+    let initial_subscription_id = initial_subscription["subscription_id"]
+        .as_str()
+        .expect("initial subscription id")
+        .to_string();
+
+    let unproven_duplicate = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": "conn_multi",
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("unproven duplicate response");
+    assert_eq!(unproven_duplicate.status(), StatusCode::FORBIDDEN);
+
+    let proven_duplicate = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": "conn_multi",
+            "subscriptionId": initial_subscription_id,
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("proven duplicate response");
+    assert_eq!(proven_duplicate.status(), StatusCode::OK);
+    let proven_duplicate: serde_json::Value = proven_duplicate
+        .json()
+        .await
+        .expect("proven duplicate json");
+    let mut subscription_ids = [
+        initial_subscription_id,
+        proven_duplicate["subscription_id"]
+            .as_str()
+            .expect("proven duplicate subscription id")
+            .to_string(),
+    ];
     subscription_ids.sort();
 
     let state: serde_json::Value = client
@@ -2961,10 +4734,7 @@ async fn duplicate_subscribe_preserves_disconnect_cleanup() {
         .await
         .expect("state json");
     assert_eq!(state["state"]["subscriber_count"], 2);
-    assert_eq!(
-        state["state"]["controller_subscription_id"],
-        subscription_ids[0]
-    );
+    assert!(state["state"]["controller_subscription_id"].is_null());
     let connection_state = state["state"]["connections"]
         .as_array()
         .expect("connections")
@@ -2977,12 +4747,29 @@ async fn duplicate_subscribe_preserves_disconnect_cleanup() {
     assert_eq!(connection_state["capabilities"]["raw_agent_events"], true);
     assert!(connection_state["lease_expires_at"].as_str().is_some());
 
+    let legacy_message = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/messages",
+            handle.base_url()
+        ))
+        .header("x-maestro-headless-connection-id", "conn_multi")
+        .header("x-maestro-headless-subscriber-id", &subscription_ids[0])
+        .json(&json!({"type": "prompt", "content": "legacy-compatible"}))
+        .send()
+        .await
+        .expect("legacy message response");
+    assert_eq!(legacy_message.status(), StatusCode::OK);
+
     let heartbeat: serde_json::Value = client
         .post(format!(
             "{}/api/headless/sessions/sess_test/heartbeat",
             handle.base_url()
         ))
-        .json(&json!({"connectionId": "conn_multi"}))
+        .json(&json!({
+            "connectionId": "conn_multi",
+            "subscriptionId": subscription_ids[0],
+            "connectionCapability": connection["connection_capability"]
+        }))
         .send()
         .await
         .expect("heartbeat response")
@@ -2997,7 +4784,11 @@ async fn duplicate_subscribe_preserves_disconnect_cleanup() {
             "{}/api/headless/sessions/sess_test/disconnect",
             handle.base_url()
         ))
-        .json(&json!({"connectionId": "conn_multi"}))
+        .json(&json!({
+            "connectionId": "conn_multi",
+            "subscriptionId": subscription_ids[0],
+            "connectionCapability": connection["connection_capability"]
+        }))
         .send()
         .await
         .expect("disconnect response")
@@ -3117,12 +4908,42 @@ async fn controller_takeover_is_explicit_and_viewers_cannot_mutate() {
         .expect("accepted takeover json");
     assert_eq!(accepted_takeover["controller_connection_id"], "conn_second");
 
+    let controller_subscription: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": "conn_second",
+            "connectionCapability": accepted_takeover["connection_capability"],
+            "connectionCapabilityRequired": true,
+            "role": "controller",
+            "takeControl": true
+        }))
+        .send()
+        .await
+        .expect("controller subscription response")
+        .json()
+        .await
+        .expect("controller subscription json");
     let controller_message: serde_json::Value = client
         .post(format!(
             "{}/api/headless/sessions/sess_test/messages",
             handle.base_url()
         ))
         .header("x-maestro-headless-connection-id", "conn_second")
+        .header(
+            "x-maestro-headless-subscriber-id",
+            controller_subscription["subscription_id"]
+                .as_str()
+                .expect("controller subscription id"),
+        )
+        .header(
+            "x-maestro-headless-connection-capability",
+            controller_subscription["connection_capability"]
+                .as_str()
+                .expect("controller connection capability"),
+        )
         .json(&json!({"type": "prompt", "content": "cursor please"}))
         .send()
         .await
@@ -3138,6 +4959,7 @@ async fn controller_takeover_is_explicit_and_viewers_cannot_mutate() {
         .json(&json!({
             "sessionId": "sess_test",
             "connectionId": "conn_viewer",
+            "connectionCapabilityRequired": true,
             "role": "viewer"
         }))
         .send()
@@ -3154,6 +4976,8 @@ async fn controller_takeover_is_explicit_and_viewers_cannot_mutate() {
         ))
         .json(&json!({
             "connectionId": "conn_viewer",
+            "connectionCapability": viewer["connection_capability"],
+            "connectionCapabilityRequired": true,
             "role": "viewer"
         }))
         .send()
@@ -3172,11 +4996,326 @@ async fn controller_takeover_is_explicit_and_viewers_cannot_mutate() {
         ))
         .header("x-maestro-headless-connection-id", "conn_viewer")
         .header("x-maestro-headless-subscriber-id", viewer_subscription_id)
+        .header(
+            "x-maestro-headless-connection-capability",
+            viewer_subscription["connection_capability"]
+                .as_str()
+                .expect("viewer connection capability"),
+        )
         .json(&json!({"type": "prompt", "content": "nope"}))
         .send()
         .await
         .expect("viewer message response");
     assert_eq!(viewer_message.status(), StatusCode::FORBIDDEN);
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn controller_connection_id_cannot_be_replayed_to_mint_a_subscription() {
+    let workspace = tempdir().expect("workspace");
+    let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+        .await
+        .expect("start hosted runner");
+    let client = reqwest::Client::new();
+
+    let controller: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": "conn_private",
+            "connectionCapabilityRequired": true,
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("controller subscription response")
+        .json()
+        .await
+        .expect("controller subscription json");
+    assert_eq!(controller["controller_connection_id"], "conn_private");
+    let connection_capability = controller["connection_capability"]
+        .as_str()
+        .expect("connection capability");
+    let public_state: serde_json::Value = client
+        .get(format!(
+            "{}/api/headless/sessions/sess_test/state",
+            handle.base_url()
+        ))
+        .send()
+        .await
+        .expect("state response")
+        .json()
+        .await
+        .expect("state json");
+    assert!(!public_state.to_string().contains(connection_capability));
+
+    let replay = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": controller["controller_connection_id"],
+            "connectionCapabilityRequired": true,
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("replayed subscription response");
+    assert_eq!(replay.status(), StatusCode::FORBIDDEN);
+
+    let drain: serde_json::Value = client
+        .post(format!(
+            "{}/.well-known/evalops/remote-runner/drain",
+            handle.base_url()
+        ))
+        .json(&json!({"reason": "capability-redaction-check"}))
+        .send()
+        .await
+        .expect("drain response")
+        .json()
+        .await
+        .expect("drain json");
+    assert!(!drain.to_string().contains(connection_capability));
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn controller_messages_require_the_private_connection_capability() {
+    let workspace = tempdir().expect("workspace");
+    let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+        .await
+        .expect("start hosted runner");
+    let client = reqwest::Client::new();
+
+    let controller: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": "conn_private",
+            "connectionCapabilityRequired": true,
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("controller subscription response")
+        .json()
+        .await
+        .expect("controller subscription json");
+    let subscription_id = controller["subscription_id"]
+        .as_str()
+        .expect("controller subscription id");
+
+    let replay = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/messages",
+            handle.base_url()
+        ))
+        .header("x-maestro-headless-connection-id", "conn_private")
+        .header("x-maestro-headless-subscriber-id", subscription_id)
+        .json(&json!({"type": "prompt", "content": "replayed authority"}))
+        .send()
+        .await
+        .expect("replayed message response");
+    assert_eq!(replay.status(), StatusCode::FORBIDDEN);
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn controller_heartbeat_rejects_replayed_public_authority() {
+    let workspace = tempdir().expect("workspace");
+    let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+        .await
+        .expect("start hosted runner");
+    let client = reqwest::Client::new();
+
+    let controller: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": "conn_private",
+            "connectionCapabilityRequired": true,
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("controller subscription response")
+        .json()
+        .await
+        .expect("controller subscription json");
+
+    let replay = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/heartbeat",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": controller["controller_connection_id"]
+        }))
+        .send()
+        .await
+        .expect("replayed heartbeat response");
+    assert_eq!(replay.status(), StatusCode::FORBIDDEN);
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn controller_disconnect_rejects_replayed_public_authority() {
+    let workspace = tempdir().expect("workspace");
+    let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+        .await
+        .expect("start hosted runner");
+    let client = reqwest::Client::new();
+
+    let controller: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": "conn_private",
+            "connectionCapabilityRequired": true,
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("controller subscription response")
+        .json()
+        .await
+        .expect("controller subscription json");
+
+    let replay = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/disconnect",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": controller["controller_connection_id"]
+        }))
+        .send()
+        .await
+        .expect("replayed disconnect response");
+    assert_eq!(replay.status(), StatusCode::FORBIDDEN);
+
+    let state: serde_json::Value = client
+        .get(format!(
+            "{}/api/headless/sessions/sess_test/state",
+            handle.base_url()
+        ))
+        .send()
+        .await
+        .expect("state response")
+        .json()
+        .await
+        .expect("state json");
+    assert_eq!(state["state"]["controller_connection_id"], "conn_private");
+    assert_eq!(state["state"]["subscriber_count"], 1);
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn connection_only_controller_disconnect_requires_exact_private_capability() {
+    let workspace = tempdir().expect("workspace");
+    let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+        .await
+        .expect("start hosted runner");
+    let client = reqwest::Client::new();
+
+    let controller: serde_json::Value = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .json(&json!({
+            "sessionId": "sess_test",
+            "connectionId": "conn_cleanup",
+            "connectionCapabilityRequired": true,
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("controller connection response")
+        .json()
+        .await
+        .expect("controller connection json");
+    let connection_capability = controller["connection_capability"]
+        .as_str()
+        .expect("connection capability");
+
+    for body in [
+        json!({"connectionId": "conn_cleanup"}),
+        json!({
+            "connectionId": "conn_cleanup",
+            "connectionCapability": "cap_00000000000000000000000000000000"
+        }),
+    ] {
+        let rejected = client
+            .post(format!(
+                "{}/api/headless/sessions/sess_test/disconnect",
+                handle.base_url()
+            ))
+            .json(&body)
+            .send()
+            .await
+            .expect("rejected disconnect response");
+        assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
+    }
+
+    let retained: serde_json::Value = client
+        .get(format!(
+            "{}/api/headless/sessions/sess_test/state",
+            handle.base_url()
+        ))
+        .send()
+        .await
+        .expect("retained state response")
+        .json()
+        .await
+        .expect("retained state json");
+    assert_eq!(
+        retained["state"]["controller_connection_id"],
+        "conn_cleanup"
+    );
+    assert_eq!(retained["state"]["connection_count"], 1);
+
+    let disconnected: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/disconnect",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": "conn_cleanup",
+            "connectionCapability": connection_capability
+        }))
+        .send()
+        .await
+        .expect("authorized disconnect response")
+        .json()
+        .await
+        .expect("authorized disconnect json");
+    assert_eq!(disconnected["success"], true);
+
+    let state: serde_json::Value = client
+        .get(format!(
+            "{}/api/headless/sessions/sess_test/state",
+            handle.base_url()
+        ))
+        .send()
+        .await
+        .expect("disconnected state response")
+        .json()
+        .await
+        .expect("disconnected state json");
+    assert!(state["state"]["controller_connection_id"].is_null());
+    assert_eq!(state["state"]["connection_count"], 0);
 
     handle.shutdown().await;
 }

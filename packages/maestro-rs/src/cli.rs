@@ -1,57 +1,20 @@
 use std::ffi::OsString;
 
-const UTILITY_COMMANDS: &[&str] = &[
-    "acp",
-    "a2a",
-    "agents",
-    "anthropic",
-    "codex",
-    "config",
-    "context",
-    "doctor",
-    "cost",
-    "evalops",
-    "export",
-    "hooks",
-    "import",
-    "import-claude",
-    "init",
-    "memory",
-    "mcp",
-    "mission",
-    "models",
-    "modes",
-    "openai",
-    "operating-plane",
-    "painter",
-    "plugin",
-    "plugins",
-    "remote",
-    "run",
-    "scenario",
-    "search",
-    "sessions",
-    "skill",
-    "stats",
-    "status",
-    "update",
-    "value",
-];
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AgentMode {
-    Interactive,
-    Print,
-    Exec,
-    Headless,
-}
-
+/// The commands this binary decides directly (help/version text, the
+/// in-process control plane). Everything else is forwarded verbatim to
+/// `maestro_tui::run_cli`, which owns the real argv-to-target routing
+/// (TUI vs utility handler vs headless/exec/print) via the canonical
+/// command table in `packages/tui-rs/src/entrypoint.rs`. `classify` used to
+/// re-derive that routing here too (a second, independently maintained copy
+/// of the utility command list and the headless/exec/print flag matching)
+/// even though the result was discarded by `main`'s dispatch, which always
+/// forwarded the original argv regardless of which `Agent`/`HostedRunner`/
+/// `Utility` variant was produced. Collapsing those into one `Forward`
+/// variant removes that dead computation and the duplicated table.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     Web { port: Option<u16> },
-    Agent(AgentMode),
-    HostedRunner(Vec<OsString>),
-    Utility(Vec<OsString>),
+    Forward,
     Help,
     Version,
 }
@@ -69,7 +32,7 @@ where
     let first = strings.first().map(|value| value.as_ref());
 
     if first.is_none() {
-        return Ok(Command::Agent(AgentMode::Interactive));
+        return Ok(Command::Forward);
     }
     if matches!(first, Some("--version" | "-V" | "-v")) {
         return Ok(Command::Version);
@@ -108,32 +71,10 @@ where
         }
         return Ok(Command::Web { port });
     }
-    if first == Some("hosted-runner") {
-        return Ok(Command::HostedRunner(args));
-    }
-    if matches!(first, Some("headless" | "rpc"))
-        || strings
-            .iter()
-            .any(|arg| matches!(arg.as_ref(), "--headless" | "--rpc" | "--mode=headless"))
-        || strings
-            .windows(2)
-            .any(|pair| pair[0] == "--mode" && pair[1] == "headless")
-    {
-        return Ok(Command::Agent(AgentMode::Headless));
-    }
-    if first == Some("exec") {
-        return Ok(Command::Agent(AgentMode::Exec));
-    }
-    if first == Some("print")
-        || strings
-            .iter()
-            .any(|arg| matches!(arg.as_ref(), "--print" | "-p"))
-    {
-        return Ok(Command::Agent(AgentMode::Print));
-    }
-    if first.is_some_and(|command| UTILITY_COMMANDS.contains(&command)) {
-        return Ok(Command::Utility(args));
-    }
 
-    Ok(Command::Agent(AgentMode::Interactive))
+    // Every other invocation (interactive TUI, `exec`/`print`/`-p`,
+    // `--headless`/`--rpc`, hosted-runner, and every utility subcommand) is
+    // forwarded to `maestro_tui::run_cli` with the original argv, which
+    // makes the real dispatch decision.
+    Ok(Command::Forward)
 }

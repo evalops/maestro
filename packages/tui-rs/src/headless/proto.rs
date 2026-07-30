@@ -12,8 +12,10 @@ pub mod maestro {
 
 #[cfg(test)]
 mod tests {
+    use prost::Message;
+
     use super::maestro::v1::to_agent_envelope::Payload;
-    use super::maestro::v1::{HelloMessage, ToAgentEnvelope, ToolEndMessage};
+    use super::maestro::v1::{HelloMessage, ToAgentEnvelope, ToolEndMessage, ToolResponseMessage};
 
     #[test]
     fn generated_headless_proto_types_compile() {
@@ -35,5 +37,24 @@ mod tests {
             ..ToolEndMessage::default()
         };
         assert!(tool_end.receipt.is_some());
+    }
+
+    #[test]
+    fn tool_response_round_trips_tool_execution_id() {
+        let response = ToolResponseMessage {
+            call_id: "call-1".to_string(),
+            approved: false,
+            tool_execution_id: Some("tool-execution-1".to_string()),
+            ..ToolResponseMessage::default()
+        };
+
+        let encoded = response.encode_to_vec();
+        let decoded =
+            ToolResponseMessage::decode(encoded.as_slice()).expect("decode tool response");
+
+        assert_eq!(
+            decoded.tool_execution_id.as_deref(),
+            Some("tool-execution-1")
+        );
     }
 }

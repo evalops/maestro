@@ -17,6 +17,7 @@ use reqwest::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use super::async_transport::{AsyncTransportError, RemoteErrorKind};
 use super::messages::{
@@ -145,6 +146,13 @@ pub enum RemoteIncoming {
 struct RemoteSessionSubscribeRequest {
     #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
     connection_id: Option<String>,
+    #[serde(
+        rename = "connectionCapability",
+        skip_serializing_if = "Option::is_none"
+    )]
+    connection_capability: Option<String>,
+    #[serde(rename = "connectionCapabilityRequired")]
+    connection_capability_required: bool,
     #[serde(rename = "protocolVersion", skip_serializing_if = "Option::is_none")]
     protocol_version: Option<String>,
     #[serde(rename = "clientInfo", skip_serializing_if = "Option::is_none")]
@@ -166,8 +174,12 @@ struct RemoteSessionSubscribeRequest {
 #[derive(Debug, Deserialize)]
 struct RemoteSessionSubscriptionResponse {
     connection_id: String,
+    #[serde(default)]
+    connection_capability: Option<String>,
     subscription_id: String,
     heartbeat_interval_ms: u64,
+    #[serde(default)]
+    controller_pending_events: Vec<FromAgentMessage>,
     snapshot: RemoteRuntimeSnapshot,
 }
 
@@ -181,6 +193,13 @@ struct RemoteConnectionCreateRequest {
     session_id: Option<String>,
     #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
     connection_id: Option<String>,
+    #[serde(
+        rename = "connectionCapability",
+        skip_serializing_if = "Option::is_none"
+    )]
+    connection_capability: Option<String>,
+    #[serde(rename = "connectionCapabilityRequired")]
+    connection_capability_required: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     #[serde(rename = "thinkingLevel", skip_serializing_if = "Option::is_none")]
@@ -229,6 +248,8 @@ struct RemoteClientCapabilities {
 struct RemoteConnectionBootstrapResponse {
     session_id: String,
     connection_id: String,
+    #[serde(default)]
+    connection_capability: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -481,6 +502,7 @@ pub struct RemoteAgentTransport {
     connection_role: Option<ConnectionRole>,
     session_id: String,
     connection_id: String,
+    connection_capability: Option<String>,
     subscription_id: String,
     heartbeat_interval: Duration,
     state: AgentState,
@@ -490,14 +512,52 @@ pub struct RemoteAgentTransport {
     _heartbeat_handle: tokio::task::JoinHandle<()>,
 }
 
+#[derive(Clone)]
+pub(crate) struct RemoteConnectionResumeAuthority {
+    pub(crate) connection_id: String,
+    pub(crate) connection_capability: Option<String>,
+}
+
+pub(crate) struct RemoteConnectFailure {
+    pub(crate) error: AsyncTransportError,
+    pub(crate) resume_authority: Option<RemoteConnectionResumeAuthority>,
+}
+
+impl RemoteConnectFailure {
+    fn without_authority(error: AsyncTransportError) -> Self {
+        Self {
+            error,
+            resume_authority: None,
+        }
+    }
+
+    fn with_authority(
+        error: AsyncTransportError,
+        resume_authority: RemoteConnectionResumeAuthority,
+    ) -> Self {
+        Self {
+            error,
+            resume_authority: Some(resume_authority),
+        }
+    }
+}
+
 struct WriterLoopContext {
     client: Client,
     config: RemoteTransportConfig,
     session_id: String,
     connection_id: String,
+    connection_capability: Option<String>,
     subscription_id: String,
     event_tx: mpsc::UnboundedSender<Result<RemoteIncoming, AsyncTransportError>>,
     cancel: CancellationToken,
+}
+
+#[derive(Clone, Copy)]
+struct RemoteConnectionAuthority<'a> {
+    connection_id: &'a str,
+    connection_capability: Option<&'a str>,
+    subscription_id: &'a str,
 }
 
 struct HeartbeatLoopContext {
@@ -505,6 +565,7 @@ struct HeartbeatLoopContext {
     config: RemoteTransportConfig,
     session_id: String,
     connection_id: String,
+    connection_capability: Option<String>,
     subscription_id: String,
     event_tx: mpsc::UnboundedSender<Result<RemoteIncoming, AsyncTransportError>>,
     emit_success_heartbeat: bool,
@@ -529,24 +590,65 @@ enum RemoteRequestKind {
 impl RemoteAgentTransport {
     /// Connect to a remote headless session and begin streaming events.
     pub async fn connect(config: RemoteTransportConfig) -> Result<Self, AsyncTransportError> {
+        Self::connect_with_resume_authority(config, None)
+            .await
+            .map_err(|failure| failure.error)
+    }
+
+    pub(crate) async fn connect_with_resume_authority(
+        config: RemoteTransportConfig,
+        resume_authority: Option<RemoteConnectionResumeAuthority>,
+    ) -> Result<Self, RemoteConnectFailure> {
         let client = Client::builder()
             .build()
-            .map_err(|error| AsyncTransportError::Remote(error.to_string()))?;
+            .map_err(|error| AsyncTransportError::Remote(error.to_string()))
+            .map_err(RemoteConnectFailure::without_authority)?;
         let shutdown_context = Arc::new(RemoteShutdownContext {
             client: client.clone(),
             config: config.clone(),
         });
 
-        let bootstrap = create_or_attach_connection(&client, &config).await?;
+        let bootstrap_resume_authority = resume_authority.unwrap_or_else(|| {
+            let configured_connection_id = config.connection_id.clone();
+            RemoteConnectionResumeAuthority {
+                connection_id: configured_connection_id
+                    .clone()
+                    .unwrap_or_else(|| format!("conn_{}", Uuid::new_v4().simple())),
+                connection_capability: Some(
+                    configured_connection_id
+                        .and_then(|_| configured_connection_capability(&config))
+                        .unwrap_or_else(|| format!("cap_{}", Uuid::new_v4().simple())),
+                ),
+            }
+        });
+        let bootstrap =
+            create_or_attach_connection(&client, &config, Some(&bootstrap_resume_authority))
+                .await?;
+        let bootstrap_authority = RemoteConnectionResumeAuthority {
+            connection_id: bootstrap.connection_id.clone(),
+            connection_capability: bootstrap.connection_capability.clone(),
+        };
         let subscription = subscribe_to_session(
             &client,
             &config,
             &bootstrap.session_id,
             Some(&bootstrap.connection_id),
+            bootstrap.connection_capability.as_deref(),
         )
-        .await?;
+        .await
+        .map_err(|error| {
+            RemoteConnectFailure::with_authority(error, bootstrap_authority.clone())
+        })?;
         let (session_id, cursor, last_init, state) = subscription.snapshot.into_state();
         let connection_id = subscription.connection_id;
+        let connection_capability = subscription
+            .connection_capability
+            .or(bootstrap.connection_capability);
+        let effective_resume_authority = RemoteConnectionResumeAuthority {
+            connection_id: connection_id.clone(),
+            connection_capability: connection_capability.clone(),
+        };
+        let controller_pending_events = subscription.controller_pending_events;
         let subscription_id = subscription.subscription_id;
         let heartbeat_interval = Duration::from_millis(subscription.heartbeat_interval_ms.max(1));
 
@@ -556,6 +658,10 @@ impl RemoteAgentTransport {
         let reader_cancel = cancel_token.clone();
         let writer_cancel = cancel_token.clone();
         let heartbeat_cancel = cancel_token.clone();
+
+        for message in controller_pending_events {
+            let _ = event_tx.send(Ok(RemoteIncoming::Message(message)));
+        }
 
         let reader_handle = tokio::spawn(reader_loop(
             client.clone(),
@@ -572,6 +678,7 @@ impl RemoteAgentTransport {
                 config: config.clone(),
                 session_id: session_id.clone(),
                 connection_id: connection_id.clone(),
+                connection_capability: connection_capability.clone(),
                 subscription_id: subscription_id.clone(),
                 event_tx: event_tx.clone(),
                 cancel: writer_cancel,
@@ -581,10 +688,14 @@ impl RemoteAgentTransport {
         let heartbeat_handle = tokio::spawn(heartbeat_loop(HeartbeatLoopContext {
             client: Client::builder()
                 .build()
-                .map_err(|error| AsyncTransportError::Remote(error.to_string()))?,
+                .map_err(|error| AsyncTransportError::Remote(error.to_string()))
+                .map_err(|error| {
+                    RemoteConnectFailure::with_authority(error, effective_resume_authority.clone())
+                })?,
             config: config.clone(),
             session_id: session_id.clone(),
             connection_id: connection_id.clone(),
+            connection_capability: connection_capability.clone(),
             subscription_id: subscription_id.clone(),
             event_tx,
             emit_success_heartbeat: config
@@ -603,6 +714,7 @@ impl RemoteAgentTransport {
             connection_role: build_remote_connection_role(&config),
             session_id,
             connection_id,
+            connection_capability,
             subscription_id,
             heartbeat_interval,
             state,
@@ -612,7 +724,11 @@ impl RemoteAgentTransport {
             _heartbeat_handle: heartbeat_handle,
         };
         if transport.connection_role != Some(ConnectionRole::Viewer) {
-            transport.send(build_remote_hello_message(&config))?;
+            transport
+                .send(build_remote_hello_message(&config))
+                .map_err(|error| {
+                    RemoteConnectFailure::with_authority(error, effective_resume_authority)
+                })?;
         }
         Ok(transport)
     }
@@ -746,6 +862,7 @@ impl RemoteAgentTransport {
         let shutdown_context = Arc::clone(&self.shutdown_context);
         let session_id = self.session_id.clone();
         let connection_id = self.connection_id.clone();
+        let connection_capability = self.connection_capability.clone();
         let subscription_id = self.subscription_id.clone();
         let cancel = self.cancel_token.clone();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -755,6 +872,7 @@ impl RemoteAgentTransport {
                     &shutdown_context.config,
                     &session_id,
                     &connection_id,
+                    connection_capability.as_deref(),
                     Some(&subscription_id),
                 )
                 .await;
@@ -776,6 +894,7 @@ impl RemoteAgentTransport {
             connection_role: _connection_role,
             session_id,
             connection_id,
+            connection_capability,
             subscription_id,
             heartbeat_interval: _heartbeat_interval,
             state: _state,
@@ -791,6 +910,7 @@ impl RemoteAgentTransport {
                 &shutdown_context.config,
                 &session_id,
                 &connection_id,
+                connection_capability.as_deref(),
                 Some(&subscription_id),
             )
             .await;
@@ -841,6 +961,13 @@ impl RemoteAgentTransport {
 
     pub fn connection_id(&self) -> &str {
         &self.connection_id
+    }
+
+    pub(crate) fn resume_authority(&self) -> RemoteConnectionResumeAuthority {
+        RemoteConnectionResumeAuthority {
+            connection_id: self.connection_id.clone(),
+            connection_capability: self.connection_capability.clone(),
+        }
     }
 
     pub fn heartbeat_interval(&self) -> Duration {
@@ -977,9 +1104,35 @@ fn build_remote_hello_message(config: &RemoteTransportConfig) -> ToAgentMessage 
     }
 }
 
+fn configured_connection_capability(config: &RemoteTransportConfig) -> Option<String> {
+    config.headers.iter().find_map(|(name, value)| {
+        [
+            "x-maestro-headless-connection-capability",
+            "x-composer-headless-connection-capability",
+            "x-evalops-headless-connection-capability",
+        ]
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+        .then(|| value.clone())
+    })
+}
+
+#[cfg(test)]
 fn build_remote_connection_create_request(
     config: &RemoteTransportConfig,
     connection_id: Option<String>,
+) -> RemoteConnectionCreateRequest {
+    build_remote_connection_create_request_with_capability(
+        config,
+        connection_id,
+        configured_connection_capability(config),
+    )
+}
+
+fn build_remote_connection_create_request_with_capability(
+    config: &RemoteTransportConfig,
+    connection_id: Option<String>,
+    connection_capability: Option<String>,
 ) -> RemoteConnectionCreateRequest {
     RemoteConnectionCreateRequest {
         protocol_version: Some(super::HEADLESS_PROTOCOL_VERSION.to_string()),
@@ -989,6 +1142,8 @@ fn build_remote_connection_create_request(
         }),
         session_id: config.session_id.clone(),
         connection_id,
+        connection_capability,
+        connection_capability_required: true,
         model: config.model.clone(),
         thinking_level: config.thinking_level,
         approval_mode: config.approval_mode,
@@ -1009,40 +1164,105 @@ fn build_remote_connection_create_request(
 async fn create_or_attach_connection(
     client: &Client,
     config: &RemoteTransportConfig,
-) -> Result<RemoteConnectionBootstrapResponse, AsyncTransportError> {
+    resume_authority: Option<&RemoteConnectionResumeAuthority>,
+) -> Result<RemoteConnectionBootstrapResponse, RemoteConnectFailure> {
     let url = format!(
         "{}/api/headless/connections",
         config.base_url.trim_end_matches('/')
     );
+    let connection_id = resume_authority
+        .map(|authority| authority.connection_id.clone())
+        .or_else(|| config.connection_id.clone());
+    let connection_capability = resume_authority
+        .and_then(|authority| authority.connection_capability.clone())
+        .or_else(|| configured_connection_capability(config));
+    let known_connection_authority = connection_id.clone().zip(connection_capability.clone());
     let response = with_headers(
         client
             .post(&url)
-            .json(&build_remote_connection_create_request(
+            .json(&build_remote_connection_create_request_with_capability(
                 config,
-                config.connection_id.clone(),
+                connection_id.clone(),
+                connection_capability,
             )),
         config,
         true,
     )
     .send()
     .await
-    .map_err(|error| AsyncTransportError::Remote(error.to_string()))?;
+    .map_err(|error| AsyncTransportError::Remote(error.to_string()))
+    .map_err(|error| bootstrap_failure(error, known_connection_authority.clone()))?;
 
-    if response.status() == StatusCode::NOT_FOUND && config.connection_id.is_some() {
+    if response.status() == StatusCode::NOT_FOUND && connection_id.is_some() {
+        let fallback_authority = RemoteConnectionResumeAuthority {
+            connection_id: format!("conn_{}", Uuid::new_v4().simple()),
+            connection_capability: Some(format!("cap_{}", Uuid::new_v4().simple())),
+        };
+        let known_fallback_authority = fallback_authority
+            .connection_capability
+            .clone()
+            .map(|capability| (fallback_authority.connection_id.clone(), capability));
         let retry_response = with_headers(
             client
                 .post(url)
-                .json(&build_remote_connection_create_request(config, None)),
+                .json(&build_remote_connection_create_request_with_capability(
+                    config,
+                    Some(fallback_authority.connection_id),
+                    fallback_authority.connection_capability,
+                )),
             config,
             true,
         )
         .send()
         .await
-        .map_err(|error| AsyncTransportError::Remote(error.to_string()))?;
-        return decode_json_response(retry_response, RemoteRequestKind::Bootstrap).await;
+        .map_err(|error| AsyncTransportError::Remote(error.to_string()))
+        .map_err(|error| bootstrap_failure(error, known_fallback_authority.clone()))?;
+        let mut bootstrap: RemoteConnectionBootstrapResponse =
+            decode_json_response(retry_response, RemoteRequestKind::Bootstrap)
+                .await
+                .map_err(|error| bootstrap_failure(error, known_fallback_authority.clone()))?;
+        if let Some((fallback_connection_id, fallback_connection_capability)) =
+            known_fallback_authority
+        {
+            if bootstrap.connection_id == fallback_connection_id {
+                bootstrap.connection_capability = bootstrap
+                    .connection_capability
+                    .or(Some(fallback_connection_capability));
+            }
+        }
+        return Ok(bootstrap);
     }
 
-    decode_json_response(response, RemoteRequestKind::Bootstrap).await
+    let mut bootstrap: RemoteConnectionBootstrapResponse =
+        decode_json_response(response, RemoteRequestKind::Bootstrap)
+            .await
+            .map_err(|error| bootstrap_failure(error, known_connection_authority.clone()))?;
+    if let Some((known_connection_id, known_connection_capability)) = known_connection_authority {
+        if bootstrap.connection_id == known_connection_id {
+            bootstrap.connection_capability = bootstrap
+                .connection_capability
+                .or(Some(known_connection_capability));
+        }
+    }
+    Ok(bootstrap)
+}
+
+fn bootstrap_failure(
+    error: AsyncTransportError,
+    resume_authority: Option<(String, String)>,
+) -> RemoteConnectFailure {
+    if matches!(&error, AsyncTransportError::Remote(_)) {
+        if let Some((connection_id, connection_capability)) = resume_authority {
+            return RemoteConnectFailure::with_authority(
+                error,
+                RemoteConnectionResumeAuthority {
+                    connection_id,
+                    connection_capability: Some(connection_capability),
+                },
+            );
+        }
+    }
+    RemoteConnectFailure::without_authority(error)
 }
 
 async fn subscribe_to_session(
@@ -1050,6 +1270,7 @@ async fn subscribe_to_session(
     config: &RemoteTransportConfig,
     session_id: &str,
     connection_id: Option<&str>,
+    connection_capability: Option<&str>,
 ) -> Result<RemoteSessionSubscriptionResponse, AsyncTransportError> {
     let url = format!(
         "{}/api/headless/sessions/{session_id}/subscribe",
@@ -1057,6 +1278,8 @@ async fn subscribe_to_session(
     );
     let request = RemoteSessionSubscribeRequest {
         connection_id: connection_id.map(str::to_string),
+        connection_capability: connection_capability.map(str::to_string),
+        connection_capability_required: true,
         protocol_version: Some(super::HEADLESS_PROTOCOL_VERSION.to_string()),
         client_info: Some(ClientInfo {
             name: config.client_name.clone(),
@@ -1086,6 +1309,7 @@ async fn disconnect_connection(
     config: &RemoteTransportConfig,
     session_id: &str,
     connection_id: &str,
+    connection_capability: Option<&str>,
     subscription_id: Option<&str>,
 ) {
     let url = format!(
@@ -1093,10 +1317,11 @@ async fn disconnect_connection(
         config.base_url.trim_end_matches('/')
     );
     let _ignored = with_headers(
-        client.post(url).json(&serde_json::json!({
-            "connectionId": connection_id,
-            "subscriptionId": subscription_id,
-        })),
+        client.post(url).json(&connection_lifecycle_request(
+            connection_id,
+            connection_capability,
+            subscription_id,
+        )),
         config,
         true,
     )
@@ -1109,6 +1334,7 @@ async fn heartbeat_session(
     config: &RemoteTransportConfig,
     session_id: &str,
     connection_id: &str,
+    connection_capability: Option<&str>,
     subscription_id: &str,
 ) -> Result<(), AsyncTransportError> {
     let url = format!(
@@ -1116,10 +1342,11 @@ async fn heartbeat_session(
         config.base_url.trim_end_matches('/')
     );
     let response = with_headers(
-        client.post(url).json(&serde_json::json!({
-            "connectionId": connection_id,
-            "subscriptionId": subscription_id,
-        })),
+        client.post(url).json(&connection_lifecycle_request(
+            connection_id,
+            connection_capability,
+            Some(subscription_id),
+        )),
         config,
         true,
     )
@@ -1132,12 +1359,25 @@ async fn heartbeat_session(
     Ok(())
 }
 
+fn connection_lifecycle_request(
+    connection_id: &str,
+    connection_capability: Option<&str>,
+    subscription_id: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "connectionId": connection_id,
+        "subscriptionId": subscription_id,
+        "connectionCapability": connection_capability,
+    })
+}
+
 async fn writer_loop(context: WriterLoopContext, mut rx: mpsc::UnboundedReceiver<ToAgentMessage>) {
     let WriterLoopContext {
         client,
         config,
         session_id,
         connection_id,
+        connection_capability,
         subscription_id,
         event_tx,
         cancel,
@@ -1158,8 +1398,11 @@ async fn writer_loop(context: WriterLoopContext, mut rx: mpsc::UnboundedReceiver
                     &client,
                     &config,
                     &url,
-                    &connection_id,
-                    &subscription_id,
+                    RemoteConnectionAuthority {
+                        connection_id: &connection_id,
+                        connection_capability: connection_capability.as_deref(),
+                        subscription_id: &subscription_id,
+                    },
                     &message,
                     &cancel,
                 )
@@ -1197,8 +1440,7 @@ async fn send_message_with_retry(
     client: &Client,
     config: &RemoteTransportConfig,
     url: &str,
-    connection_id: &str,
-    subscription_id: &str,
+    authority: RemoteConnectionAuthority<'_>,
     message: &ToAgentMessage,
     cancel: &CancellationToken,
 ) -> Result<(), AsyncTransportError> {
@@ -1209,19 +1451,31 @@ async fn send_message_with_retry(
             return Err(AsyncTransportError::Cancelled);
         }
 
-        let result = with_headers(
-            client
-                .post(url)
-                .header("x-maestro-headless-connection-id", connection_id)
-                .header("x-composer-headless-connection-id", connection_id)
-                .header("x-maestro-headless-subscriber-id", subscription_id)
-                .header("x-composer-headless-subscriber-id", subscription_id)
-                .json(message),
-            config,
-            true,
-        )
-        .send()
-        .await;
+        let mut request = client
+            .post(url)
+            .header("x-maestro-headless-connection-id", authority.connection_id)
+            .header("x-composer-headless-connection-id", authority.connection_id)
+            .header(
+                "x-maestro-headless-subscriber-id",
+                authority.subscription_id,
+            )
+            .header(
+                "x-composer-headless-subscriber-id",
+                authority.subscription_id,
+            )
+            .json(message);
+        if let Some(connection_capability) = authority.connection_capability {
+            request = request
+                .header(
+                    "x-maestro-headless-connection-capability",
+                    connection_capability,
+                )
+                .header(
+                    "x-composer-headless-connection-capability",
+                    connection_capability,
+                );
+        }
+        let result = with_headers(request, config, true).send().await;
 
         match result {
             Ok(response) if response.status().is_success() => return Ok(()),
@@ -1259,6 +1513,7 @@ async fn heartbeat_loop(context: HeartbeatLoopContext) {
         config,
         session_id,
         connection_id,
+        connection_capability,
         subscription_id,
         event_tx,
         emit_success_heartbeat,
@@ -1277,6 +1532,7 @@ async fn heartbeat_loop(context: HeartbeatLoopContext) {
                     &config,
                     &session_id,
                     &connection_id,
+                    connection_capability.as_deref(),
                     &subscription_id,
                 )
                 .await {

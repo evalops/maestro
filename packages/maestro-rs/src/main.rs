@@ -3,6 +3,15 @@ use maestro::{classify, Command};
 use maestro_control_plane::{serve, ControlPlaneConfig};
 use std::path::{Path, PathBuf};
 
+// Process hardening must run before `main` — and therefore before the Tokio
+// runtime spawns worker threads — so the prctl/setrlimit calls and the
+// environment sanitization stay race-free. See
+// `maestro_tui::process_hardening` for details and the opt-out env var.
+#[ctor::ctor]
+fn pre_main_hardening() {
+    maestro_tui::process_hardening::pre_main_hardening();
+}
+
 fn web_static_root(executable: &Path) -> Option<PathBuf> {
     let executable_dir = executable.parent()?;
     let installed_assets = executable_dir.join("maestro-web");
@@ -49,6 +58,10 @@ fn main() -> Result<()> {
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        // Keep parity with the direct `maestro-tui` entry point. The
+        // interactive key-dispatch future exceeds Tokio's 2 MiB default
+        // worker stack in debug builds.
+        .thread_stack_size(8 * 1024 * 1024)
         .build()?
         .block_on(async move {
             match command {
@@ -59,9 +72,7 @@ fn main() -> Result<()> {
                     }
                     serve(ControlPlaneConfig::from_env()).await
                 }
-                Command::Agent(_) | Command::HostedRunner(_) | Command::Utility(_) => {
-                    maestro_tui::run_cli(raw_args).await
-                }
+                Command::Forward => maestro_tui::run_cli(raw_args).await,
                 Command::Help | Command::Version => unreachable!("handled before runtime startup"),
             }
         })
