@@ -121,7 +121,14 @@ jobs:
           RELEASE_BRANCH: ${{ steps.version.outputs.branch }}
         run: |
           set -euo pipefail
-          if git ls-remote --exit-code --heads origin "$RELEASE_BRANCH" >/dev/null 2>&1; then
+          # Fail closed on remote/auth errors: do not treat a failed ls-remote
+          # as "branch absent" (would skip an existing release branch).
+          remote_ref=""
+          if ! remote_ref="$(git ls-remote --heads origin "refs/heads/${RELEASE_BRANCH}")"; then
+            echo "::error::Failed to query release branch $RELEASE_BRANCH from origin."
+            exit 1
+          fi
+          if [[ -n "$remote_ref" ]]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
