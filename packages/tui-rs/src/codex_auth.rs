@@ -168,12 +168,28 @@ fn set_env_var(name: &str, value: &str) {
 /// construction). Safe to call multiple times.
 #[must_use]
 pub fn apply_codex_auth_to_process_env() -> CodexAuthApplyResult {
-    apply_codex_auth_snapshot(read_codex_auth())
+    apply_codex_auth_snapshot(read_codex_auth(), false)
+}
+
+/// Re-read `auth.json` and overwrite process Codex token env from disk.
+///
+/// Used after an API 401 so a refreshed ChatGPT access token written by
+/// `codex login` / Codex app-server is picked up without restarting Maestro.
+#[must_use]
+pub fn refresh_codex_auth_to_process_env() -> CodexAuthApplyResult {
+    apply_codex_auth_snapshot(read_codex_auth(), true)
 }
 
 /// Pure-ish apply used by tests: inject from an optional snapshot.
+///
+/// When `force` is true, overwrite existing `OPENAI_CODEX_TOKEN` /
+/// `OPENAI_API_KEY` from the file (refresh path). When false, never clobber
+/// user-provided env.
 #[must_use]
-pub fn apply_codex_auth_snapshot(snapshot: Option<CodexAuthSnapshot>) -> CodexAuthApplyResult {
+pub fn apply_codex_auth_snapshot(
+    snapshot: Option<CodexAuthSnapshot>,
+    force: bool,
+) -> CodexAuthApplyResult {
     let Some(snapshot) = snapshot else {
         return CodexAuthApplyResult::default();
     };
@@ -189,7 +205,7 @@ pub fn apply_codex_auth_snapshot(snapshot: Option<CodexAuthSnapshot>) -> CodexAu
 
     // Platform API key stored by Codex (apiKey auth mode).
     if let Some(api_key) = snapshot.api_key.as_deref() {
-        if !env_nonempty("OPENAI_API_KEY") {
+        if force || !env_nonempty("OPENAI_API_KEY") {
             set_env_var("OPENAI_API_KEY", api_key);
             result.injected_api_key = true;
         }
@@ -197,19 +213,28 @@ pub fn apply_codex_auth_snapshot(snapshot: Option<CodexAuthSnapshot>) -> CodexAu
 
     // ChatGPT subscription access token → openai-codex provider env.
     if let Some(token) = snapshot.access_token.as_deref() {
-        if !codex_token_env_already_set() {
+        if force || !codex_token_env_already_set() {
             set_env_var("OPENAI_CODEX_TOKEN", token);
             result.injected_codex_token = true;
         }
         // Optional account id for backends that need it (harmless if unused).
         if let Some(account_id) = snapshot.account_id.as_deref() {
-            if !env_nonempty("OPENAI_CODEX_ACCOUNT_ID") {
+            if force || !env_nonempty("OPENAI_CODEX_ACCOUNT_ID") {
                 set_env_var("OPENAI_CODEX_ACCOUNT_ID", account_id);
             }
         }
     }
 
     result
+}
+
+/// True when the model id routes through the openai-codex provider.
+#[must_use]
+pub fn model_uses_openai_codex(model: &str) -> bool {
+    let m = model.trim().to_ascii_lowercase();
+    m.starts_with("openai-codex/")
+        || m.starts_with("codex/")
+        || m.contains("codex") && !m.starts_with("openai/")
 }
 
 /// Resolve the interactive/default model: explicit `MAESTRO_MODEL`, else Codex
@@ -305,7 +330,7 @@ mod tests {
             account_id: Some("acct".into()),
             api_key: None,
         };
-        let result = apply_codex_auth_snapshot(Some(snap));
+        let result = apply_codex_auth_snapshot(Some(snap), false);
         assert!(result.auth_present);
         assert!(result.injected_codex_token);
         assert!(!result.injected_api_key);
@@ -333,13 +358,43 @@ mod tests {
             account_id: None,
             api_key: None,
         };
-        let result = apply_codex_auth_snapshot(Some(snap));
+        let result = apply_codex_auth_snapshot(Some(snap), false);
         assert!(result.auth_present);
         assert!(!result.injected_codex_token);
         assert_eq!(std::env::var("OPENAI_CODEX_TOKEN").unwrap(), "already-set");
         unsafe {
             std::env::remove_var("OPENAI_CODEX_TOKEN");
         }
+    }
+
+    #[test]
+    fn force_refresh_overwrites_stale_token() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("OPENAI_CODEX_TOKEN", "stale");
+            std::env::remove_var("OPENAI_CODEX_ACCESS_TOKEN");
+            std::env::remove_var("CODEX_API_KEY");
+        }
+        let snap = CodexAuthSnapshot {
+            auth_mode: Some("chatgpt".into()),
+            access_token: Some("fresh".into()),
+            account_id: None,
+            api_key: None,
+        };
+        let result = apply_codex_auth_snapshot(Some(snap), true);
+        assert!(result.injected_codex_token);
+        assert_eq!(std::env::var("OPENAI_CODEX_TOKEN").unwrap(), "fresh");
+        unsafe {
+            std::env::remove_var("OPENAI_CODEX_TOKEN");
+        }
+    }
+
+    #[test]
+    fn model_uses_openai_codex_detects_prefix() {
+        assert!(model_uses_openai_codex("openai-codex/gpt-5.5"));
+        assert!(model_uses_openai_codex("gpt-5.1-codex-max"));
+        assert!(!model_uses_openai_codex("openai/gpt-5.5"));
+        assert!(!model_uses_openai_codex("claude-sonnet-4-6"));
     }
 
     #[test]

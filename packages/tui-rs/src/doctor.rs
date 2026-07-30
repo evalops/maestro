@@ -363,7 +363,7 @@ async fn live_metadata_check(model: &SelectedModelReport) -> DoctorCheck {
 }
 
 /// Providers covered by the doctor auth health section.
-const AUTH_HEALTH_PROVIDERS: &[&str] = &["openai", "anthropic", "google", "xai"];
+const AUTH_HEALTH_PROVIDERS: &[&str] = &["openai", "openai-codex", "anthropic", "google", "xai"];
 
 /// Report credential availability for each well-known provider without ever
 /// printing secret values. `op://` references are actually resolved through
@@ -428,6 +428,17 @@ fn auth_health_check(provider_id: &str, env: &HashMap<String, String>) -> Doctor
             false,
         );
     }
+    if matches!(provider_id, "openai-codex" | "codex")
+        && crate::codex_auth::read_codex_auth().is_some_and(|s| s.has_usable_credential())
+    {
+        return check(
+            "auth_health",
+            CheckStatus::Pass,
+            format!("{provider_id}: CODEX_HOME/auth.json credential present"),
+            crate::codex_auth::codex_auth_path().map(|p| p.display().to_string()),
+            false,
+        );
+    }
     check(
         "auth_health",
         CheckStatus::Warning,
@@ -435,6 +446,35 @@ fn auth_health_check(provider_id: &str, env: &HashMap<String, String>) -> Doctor
         Some(descriptor.auth_env.join(", ")),
         false,
     )
+}
+
+/// Dedicated Codex login surface so doctor is not API-key-centric when the
+/// user is signed in via `maestro codex login`.
+fn codex_login_health_check() -> DoctorCheck {
+    match crate::codex_auth::read_codex_auth() {
+        Some(snap) if snap.has_usable_credential() => {
+            let mode = snap.auth_mode.as_deref().unwrap_or("unknown");
+            let via = if snap.access_token.is_some() {
+                "ChatGPT access token"
+            } else {
+                "API key in auth.json"
+            };
+            check(
+                "codex_login",
+                CheckStatus::Pass,
+                format!("Codex auth available ({mode}, {via})"),
+                crate::codex_auth::codex_auth_path().map(|p| p.display().to_string()),
+                false,
+            )
+        }
+        _ => check(
+            "codex_login",
+            CheckStatus::Warning,
+            "Codex auth not found — run `maestro codex login` for ChatGPT subscription models",
+            crate::codex_auth::codex_auth_path().map(|p| p.display().to_string()),
+            false,
+        ),
+    }
 }
 
 pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) -> DoctorReport {
@@ -516,6 +556,7 @@ pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) 
         ),
     });
     checks.extend(auth_health_checks(&env));
+    checks.push(codex_login_health_check());
     checks.push(if has_provider_mismatch(&requested) {
         check(
             "model_catalog",
@@ -925,10 +966,24 @@ mod tests {
             assert_eq!(item.status, CheckStatus::Warning, "{}", item.summary);
             assert!(item.summary.contains("no credential found"));
         }
-        // openai may additionally have a stored OAuth credential on disk; only
-        // assert that its check exists and never prints a secret.
+        // openai / openai-codex may additionally have stored credentials on
+        // disk; only assert those checks exist and never print a secret.
         assert!(checks
             .iter()
             .any(|check| check.summary.starts_with("openai:")));
+        assert!(checks
+            .iter()
+            .any(|check| check.summary.starts_with("openai-codex:")));
+        for check in &checks {
+            assert!(
+                !check.summary.contains("sk-")
+                    && check
+                        .detail
+                        .as_deref()
+                        .is_none_or(|d| !d.contains("sk-") && !d.contains("eyJ")),
+                "auth_health must not print secrets: {:?}",
+                check
+            );
+        }
     }
 }
