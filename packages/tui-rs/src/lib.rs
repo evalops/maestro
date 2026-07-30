@@ -157,6 +157,9 @@ pub mod clipboard;
 /// Interactive goal mode (create / pause / block / complete + auto-continue).
 pub mod goal;
 
+/// Second-model goal completion judge (drives auto-continue stop condition).
+pub mod goal_judge;
+
 /// Lightweight UI prefs (`~/.maestro/ui.json`), e.g. footer density.
 pub mod ui_prefs;
 

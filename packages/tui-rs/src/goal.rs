@@ -1,12 +1,15 @@
 //! Interactive goal mode (Kimi-inspired).
 //!
 //! One structured objective per session, with states that drive optional
-//! auto-continue while the agent is idle. Models complete goals via explicit
-//! user slash commands (or future tool hooks); free-text "done" does not clear
-//! the goal.
+//! auto-continue while the agent is idle.
 //!
-//! Auto-continue is capped by `max_turns` (default 8) so an active goal cannot
-//! re-prompt indefinitely.
+//! **Completion is measured by a second model** ([`crate::goal_judge`]), not by
+//! a fixed turn budget. After each worker turn, a different model judges
+//! whether the goal is complete, blocked, or still needs work. Auto-continue
+//! stops when that judge says `complete` or `blocked`.
+//!
+//! `max_turns` remains only as a safety circuit-breaker (default 50) so a
+//! stuck "continue" loop cannot run forever if the judge misbehaves.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,8 +18,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// Default auto-continue cap for a new goal.
-pub const DEFAULT_MAX_AUTO_CONTINUES: u32 = 8;
+/// Safety circuit-breaker: max auto-continue submissions if the judge keeps
+/// saying "continue". Not the primary completion measure.
+pub const DEFAULT_MAX_AUTO_CONTINUES: u32 = 50;
 
 /// Lifecycle state for a user goal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -70,13 +74,16 @@ pub struct Goal {
     /// prompt when the agent becomes idle.
     #[serde(default = "default_true")]
     pub auto_continue: bool,
-    /// Max auto-continue submissions for this goal (not counting the first
-    /// user-driven turn).
+    /// Safety cap on auto-continue submissions (circuit-breaker only).
+    /// Primary stop condition is the second-model judge.
     #[serde(default = "default_max_turns")]
     pub max_turns: u32,
     /// How many auto-continue prompts have already been submitted.
     #[serde(default)]
     pub auto_continue_count: u32,
+    /// Last judge decision summary for status display.
+    #[serde(default)]
+    pub last_judge_reason: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -134,7 +141,7 @@ impl GoalStore {
                 ""
             };
             let turns = if g.auto_continue {
-                format!(" {}/{}", g.auto_continue_count, g.max_turns)
+                format!(" n={}", g.auto_continue_count)
             } else {
                 String::new()
             };
@@ -183,6 +190,7 @@ impl GoalStore {
             auto_continue: true,
             max_turns,
             auto_continue_count: 0,
+            last_judge_reason: None,
         });
         self.save_default()?;
         Ok(self.current.as_ref().expect("just set"))
@@ -240,8 +248,8 @@ impl GoalStore {
     }
 
     /// Record that an auto-continue prompt was submitted. Disables further
-    /// auto-continue when `max_turns` is reached. Returns `true` if the cap
-    /// was just hit.
+    /// auto-continue when the safety `max_turns` circuit-breaker is reached.
+    /// Returns `true` if the cap was just hit.
     pub fn note_auto_continue_submitted(&mut self) -> Result<bool> {
         let goal = self.current.as_mut().context("no current goal")?;
         goal.auto_continue_count = goal.auto_continue_count.saturating_add(1);
@@ -249,9 +257,21 @@ impl GoalStore {
         let hit_cap = goal.auto_continue_count >= goal.max_turns;
         if hit_cap {
             goal.auto_continue = false;
+            goal.last_judge_reason = Some(format!(
+                "safety circuit-breaker: auto-continue hit max_turns={}",
+                goal.max_turns
+            ));
         }
         self.save_default()?;
         Ok(hit_cap)
+    }
+
+    /// Record the latest second-model judge reason (status / report).
+    pub fn set_last_judge_reason(&mut self, reason: impl Into<String>) -> Result<()> {
+        let goal = self.current.as_mut().context("no current goal")?;
+        goal.last_judge_reason = Some(reason.into());
+        goal.updated_at_unix = now_unix();
+        self.save_default()
     }
 
     /// Whether the TUI should submit a continuation prompt now.
@@ -267,24 +287,23 @@ impl GoalStore {
         if !self.should_auto_continue() {
             return None;
         }
-        let remaining = g.max_turns.saturating_sub(g.auto_continue_count);
         let mut prompt = format!(
             "Continue working toward the active goal (id {}).\n\nGoal: {}\n\
-             Auto-continue budget remaining after this turn: {} of {}.\n",
-            g.id,
-            g.text,
-            remaining.saturating_sub(1),
-            g.max_turns
+             A second model will judge completion after this turn; keep going until the goal is verified done.\n\
+             Auto-continue turns so far: {} (safety max {}).\n",
+            g.id, g.text, g.auto_continue_count, g.max_turns
         );
         if let Some(criteria) = &g.success_criteria {
             prompt.push_str(&format!("Success criteria: {criteria}\n"));
         }
+        if let Some(reason) = &g.last_judge_reason {
+            prompt.push_str(&format!("Last judge note: {reason}\n"));
+        }
         prompt.push_str(
             "\nRules:\n\
-             - Make progress on one coherent slice, then stop for the next turn if more remains.\n\
-             - If the goal is fully satisfied and verified, tell the user to run `/goal complete`.\n\
-             - If blocked on external input or an impossible constraint, tell the user to run `/goal block <reason>`.\n\
-             - Do not start unrelated work. Do not claim completion without verification.\n",
+             - Make progress on one coherent slice this turn.\n\
+             - Prefer verifiable outcomes (tests, files, commands) the judge can check.\n\
+             - Do not start unrelated work. Do not claim completion without evidence.\n",
         );
         Some(prompt)
     }
@@ -294,7 +313,8 @@ impl GoalStore {
             None => "No active goal. Create one with `/goal create <text>`.".to_string(),
             Some(g) => {
                 let mut out = format!(
-                    "## Goal {}\n\n**Status:** {}\n**Auto-continue:** {} ({}/{} used)\n\n{}\n",
+                    "## Goal {}\n\n**Status:** {}\n**Auto-continue:** {} ({} turns; safety max {})\n\
+                     **Completion:** second-model judge after each turn\n\n{}\n",
                     g.id,
                     g.status.as_str(),
                     if g.auto_continue { "on" } else { "off" },
@@ -308,8 +328,12 @@ impl GoalStore {
                 if let Some(r) = &g.block_reason {
                     out.push_str(&format!("\n**Block reason:** {r}\n"));
                 }
+                if let Some(j) = &g.last_judge_reason {
+                    out.push_str(&format!("\n**Last judge:** {j}\n"));
+                }
                 out.push_str(
-                    "\nCommands: `/goal pause` · `/goal resume` · `/goal block [reason]` · `/goal complete` · `/goal clear` · `/goal create --max-turns N <text>`\n",
+                    "\nCommands: `/goal pause` · `/goal resume` · `/goal block [reason]` · `/goal complete` · `/goal clear`\n\
+                     Safety: `/goal create --max-turns N <text>` sets the circuit-breaker only (default 50).\n",
                 );
                 out
             }
@@ -432,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn max_turns_stops_auto_continue() {
+    fn safety_max_turns_stops_auto_continue() {
         let mut store = GoalStore::default();
         store.create("ship it", None, false, Some(2)).unwrap();
         assert!(store.should_auto_continue());
@@ -442,6 +466,14 @@ mod tests {
         assert!(!store.should_auto_continue());
         assert_eq!(store.current.as_ref().unwrap().auto_continue_count, 2);
         assert!(!store.current.as_ref().unwrap().auto_continue);
+        assert!(store
+            .current
+            .as_ref()
+            .unwrap()
+            .last_judge_reason
+            .as_ref()
+            .unwrap()
+            .contains("safety"));
     }
 
     #[test]

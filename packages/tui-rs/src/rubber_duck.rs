@@ -533,7 +533,9 @@ async fn drain_events(
 /// prompt-injected diff (or the reviewer itself) cannot read files outside
 /// the repo (e.g. `~/.ssh`) and ship them to the review provider. Returns an
 /// error message when any path escapes or cannot be resolved.
-fn contain_tool_args(
+/// Contain tool args to the workspace for read-only second-opinion agents
+/// (rubber duck, goal judge). `pub(crate)` so sibling modules can reuse it.
+pub(crate) fn contain_tool_args(
     tool: &str,
     args: &serde_json::Value,
     workspace: &Path,

@@ -2640,9 +2640,14 @@ Manual snapshot: `/magic-trace stop`",
                 max_turns,
             } => match self.goal_store.create(text, criteria, replace, max_turns) {
                 Ok(goal) => {
+                    // First kickoff without a prior worker turn; later turns
+                    // are gated by the second-model completion judge.
                     self.goal_auto_continue_armed = goal.auto_continue;
                     self.state.add_system_message(format!(
-                        "Goal {} set (**{}**).\n\n{}\n\nAuto-continue re-prompts when idle (cap {}). Use `/goal pause` to stop. Skipped while `/loop` or queue is active.",
+                        "Goal {} set (**{}**).\n\n{}\n\n\
+                         Auto-continue: after each worker turn a **different model judges** whether the goal is complete. \
+                         Continues until that judge says complete or blocked (safety max_turns={}). \
+                         `/goal pause` stops. Skipped while `/loop` or queue is active.",
                         goal.id,
                         goal.status.as_str(),
                         goal.text,
