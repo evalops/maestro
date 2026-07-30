@@ -1715,10 +1715,12 @@ mod linux {
             // exists, but it omits the root itself. Landlock `Make*` on the
             // root lets a process create/unlink names there; it does **not**
             // grant `WriteFile`/`Truncate`, so writing content into a brand
-            // new root child (e.g. `printf x > Cargo.lock`) still fails
-            // closed. Existing non-excluded children get full RW above, so
-            // normal workspace work under `src/`, `target/`, etc. still
-            // works once those trees exist.
+            // new root child still fails closed. Shell redirection such as
+            // `printf x > Cargo.lock` may leave an empty file (MakeReg
+            // succeeded) while the write itself is denied. Existing
+            // non-excluded children get full RW above, so normal workspace
+            // work under `src/`, `target/`, etc. still works once those
+            // trees exist.
             //
             // Known Landlock granularity limitation: path rules apply
             // recursively, so `Make*` also permits creating/removing *new*
@@ -3027,6 +3029,10 @@ mod tests {
 
         // Writing content into a brand-new root child fails closed (no
         // WriteFile on the root under stage-1 make_remove_only).
+        //
+        // Shell redirection may still create an empty name via MakeReg before
+        // the write is denied; that empty path is allowed, content is not.
+        let lock_path = workspace.path().join("Cargo.lock");
         let child = match spawn_sandboxed_command(
             vec![
                 "sh".to_string(),
@@ -3047,7 +3053,14 @@ mod tests {
             !output.status.success(),
             "writing a new root child must fail closed without WriteFile on root"
         );
-        assert!(!workspace.path().join("Cargo.lock").exists());
+        if lock_path.exists() {
+            let body = std::fs::read(&lock_path).unwrap_or_default();
+            assert!(
+                body.is_empty(),
+                "stage-1 may create an empty root name via MakeReg, but WriteFile must stay denied (got {:?})",
+                String::from_utf8_lossy(&body)
+            );
+        }
 
         // Writing an existing file inside `.git` stays denied.
         let child = match spawn_sandboxed_command(

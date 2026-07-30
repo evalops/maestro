@@ -34,6 +34,89 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.56] - 2026-07-27
+
+### Added
+
+- Adopt defensive LLM goal evaluator for completion claims (#3087). <!-- maestro-release-note:a144d8b312b5 -->
+- Version bash tool behavior for session replay (#3089). <!-- maestro-release-note:7cc01d97a68b -->
+- Add Droid-style executable slash commands from .composer/commands (#3080). <!-- maestro-release-note:df504fac2948 -->
+- Add Droid-style -w/--worktree session worktrees (#3079). <!-- maestro-release-note:13dcfc57d1ec -->
+- Coalesce parallel tool-call approvals into one modal (#3081). <!-- maestro-release-note:f426147d2562 -->
+- Add /context token breakdown command (#3077). <!-- maestro-release-note:499607d62ef7 -->
+- Add @maestro PR-comment agent workflow (review/fill/security) (#3082). <!-- maestro-release-note:1a0a294a90f5 -->
+- Add maestro search full-text session search (#3078). <!-- maestro-release-note:e059e24103a0 -->
+- Ctrl+E full-output detail view for transcript and approval modal (#3084). <!-- maestro-release-note:fb1d9b112afd -->
+- Model selector focused slice, catalog metadata, set-as-default (#3083). <!-- maestro-release-note:5b2c4508156f -->
+- Live model catalog from models.dev with runtime overlay (#3075). <!-- maestro-release-note:be941ada1512 -->
+- Paste folding with unit-delete (#3065). <!-- maestro-release-note:116124075b52 -->
+- Deixic diagonal shimmer and welcome brand mark (#3216). <!-- maestro-release-note:dc9153fc5f33 -->
+- Trust UX, status badges, sandbox command, CLI cleanup (#3214). <!-- maestro-release-note:887ba7ee26f0 -->
+- Sandbox the interactive TUI by default (stage 1, internal gate) (#3144). <!-- maestro-release-note:7879da94290c -->
+- Wrap untrusted tool output in a provenance envelope (#3136). <!-- maestro-release-note:179015ab74ac -->
+- Guardian auto-adjudication of approval prompts (#3128). <!-- maestro-release-note:ebb9ba329661 -->
+- Session index, maestro fork, fast session switcher (#3129). <!-- maestro-release-note:df400136140e -->
+- Pre-main process hardening (core dumps, ptrace, loader vars) (#3127). <!-- maestro-release-note:8fbb30f150bb -->
+- Add native interoperability and extension workflows (#3187). <!-- maestro-release-note:ccc911586932 -->
+- Improve terminal input and frame rendering (#3182). <!-- maestro-release-note:d3a9bb7678f2 -->
+- Add advisory perf-baseline regression gate (#3093). <!-- maestro-release-note:e61920199dcf -->
+- Adopt grok-build crash handler for SIGSEGV/SIGBUS (#3094). <!-- maestro-release-note:f0088c876c76 -->
+- Pin replay executor to recorded bash tool version (#3098). <!-- maestro-release-note:e58d82b556bb -->
+
+### Changed
+
+- Add cargo-deny supply-chain scanning (advisories/licenses/bans/sources) (#3152). <!-- maestro-release-note:2d1013d39b02 -->
+- Add advisory cargo-llvm-cov coverage visibility (#3157). <!-- maestro-release-note:c339aef5ea27 -->
+- Extract AI provider client layer into maestro-ai crate (#3148). <!-- maestro-release-note:452afb3b9cce -->
+- Enable shellcheck inside actionlint and add a zizmor gate (#3130). <!-- maestro-release-note:0cbc43a8a8c8 -->
+- Close fail-open gaps in required-checks invariant, wire workflow footguns (#3103). <!-- maestro-release-note:2aed68aaeb4d -->
+- Drop unreachable pull_request runner ternaries from mirror workflows (#3132). <!-- maestro-release-note:24950042812c -->
+- Collapse the evals fan-out from three jobs to one (#3137). <!-- maestro-release-note:3df1f0366633 -->
+- Stop main-push ci runs from cancelling each other (#3120). <!-- maestro-release-note:9018334d85f4 -->
+- Remove duplicate Rust runtime lane (#3102). <!-- maestro-release-note:ba49600e8d74 -->
+- Stop per-run CARGO_HOME from voiding every Rust cache (#3135). <!-- maestro-release-note:6fcf2b962433 -->
+- Move trivial PR gates to ARC and put release runners behind vars (#3131). <!-- maestro-release-note:95dd31f7d83c -->
+- Bump org workflow pins and put Codex Rails and the review guard on ARC (#3168). <!-- maestro-release-note:a8bb5eaf14b4 -->
+- Deflake MarkItDown pid-file readiness waits in extract_document tests (#3217). <!-- maestro-release-note:312e532ba0b6 -->
+- Deflake background shell argv test by waiting for file contents (#3215). <!-- maestro-release-note:1f6f994a229f -->
+- Deflake six test issues (APFS filename, flock inheritance, pid-file races, rewind) (#3213). <!-- maestro-release-note:fe4c6cf89c5f -->
+- Structurally validate required setup-node step (#3208). <!-- maestro-release-note:dadeeab9b8c1 -->
+- Accept approved setup-node required-gate pins (#3205). <!-- maestro-release-note:c7eef9f3d17b -->
+- Require PyYAML 6.0.3 (#3206). <!-- maestro-release-note:68b015d8ebe8 -->
+- [maestro] add /rubber-duck second-opinion review with a different model (#3199). <!-- maestro-release-note:647b5e3f91ce -->
+- PTY e2e harness driving the real binary against a mock model (#3092). <!-- maestro-release-note:a881fd959866 -->
+- Collapse duplicated CLI dispatch surface into one routing path (#3116). <!-- maestro-release-note:66480f08daea -->
+- Prune orphaned scripts, fix stale runners and doc drift (#3105). <!-- maestro-release-note:ed4b3c5bbbb8 -->
+- Run auto-update regression in required gate. <!-- maestro-release-note:023dcff1aeb0 -->
+- Preserve crate seam snapshot provenance. <!-- maestro-release-note:f46c86c469fd -->
+
+### Fixed
+
+- Gate @maestro on write access and stop leaving credentials on runners (#3119). <!-- maestro-release-note:534148726139 -->
+- Nested pattern alternatives; fix(tui): batched approvals reachable (#3096). <!-- maestro-release-note:ac39403a61e3 -->
+- Bump pdf-extract past vulnerable lopdf, add advisory CI gate (#3140). <!-- maestro-release-note:fe29eb425b9a -->
+- Normalize hook-modified tool args. <!-- maestro-release-note:b7e4a84ea537 -->
+- Preserve native tool completion details. <!-- maestro-release-note:f0282533bb8d -->
+- Record native tool completions. <!-- maestro-release-note:2e0cbfea6523 -->
+- Normalize empty bash before native execution. <!-- maestro-release-note:511e84b5cf8c -->
+- Make the native agent the sole owner of tool approve/execute. <!-- maestro-release-note:16556faccb08 -->
+- Full provider error messages, /alerts command, stale-frame cleanup (#3076). <!-- maestro-release-note:878b392a390f -->
+- Bound network clients, harden session persistence and ambient agent (#3072). <!-- maestro-release-note:602c32d67135 -->
+- Repair orphaned tool calls in history after cancelled turns (#3074). <!-- maestro-release-note:de1a3d3c3aef -->
+- Close security holes in bash auto-approval, MCP trust, and shell env (#3070). <!-- maestro-release-note:50f19918901c -->
+- Use printf with newline in Landlock write test (#3212). <!-- maestro-release-note:f43c10841abe -->
+- Fast-path public sync and honest Landlock stage-1 tests (#3211). <!-- maestro-release-note:01ace8eaf0b5 -->
+- Disable external git diff helpers in rubber-duck (#3210). <!-- maestro-release-note:c791e18fe83a -->
+- Adopt fsync atomic writes for checkpoints, ui-state, headless run records (#3153). <!-- maestro-release-note:15da4eed396a -->
+- Fail closed when detecting remote branch (#3207). <!-- maestro-release-note:2ab879839a6e -->
+- Install clippy for version validation (#3204). <!-- maestro-release-note:4751cce2880a -->
+- Allow idempotent version refresh (#3203). <!-- maestro-release-note:1fd42da28373 -->
+- Surface swallowed persistence/IO failures in agent hot paths (#3141). <!-- maestro-release-note:a3178b2e1046 -->
+- Monitor fork shutdown lifecycle (#3202). <!-- maestro-release-note:78366ccb611b -->
+- Retain public RBE runner label (#3200). <!-- maestro-release-note:97ddf050f267 -->
+- Thread per-turn cancellation into the default tool path (#3163). <!-- maestro-release-note:45add4a95756 -->
+- Preserve controller client tool arguments (#3198). <!-- maestro-release-note:35ed084f491c -->
+
 ## [0.10.55] - 2026-07-23
 
 ### Added
