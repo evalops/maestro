@@ -1747,7 +1747,12 @@ rl.on("line", (line) => {
         tokio::time::sleep(Duration::from_millis(10)).await;
     };
     sender
-        .send((external_request_id, true, None))
+        .send((
+            external_request_id,
+            true,
+            None,
+            ExecutionSource::RemoteClient,
+        ))
         .expect("approval response should send");
     let result = run.await.expect("headless run should join");
 
@@ -1986,7 +1991,12 @@ rl.on("line", (line) => {
         .expect("approval wait should have a pending sender");
     drop(pending);
     sender
-        .send((external_request_id, true, None))
+        .send((
+            external_request_id,
+            true,
+            None,
+            ExecutionSource::RemoteClient,
+        ))
         .expect("approval response should send");
     let result = run.await.expect("headless run should join");
 

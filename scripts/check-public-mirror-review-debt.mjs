@@ -82,13 +82,22 @@ function fetchOpenMirrorPulls(repo, branch) {
 	);
 }
 
+/**
+ * Generated public mirror PRs are force-updated by automation from internal
+ * main. Bot review threads (Codex, Bugbot, etc.) on those PRs must not block
+ * the next sync: they reappear after every force-push and created a deadlock
+ * (sync fails → public stays stale → bots re-comment on the next attempt).
+ *
+ * Review debt is therefore advisory: we still report unresolved threads so
+ * operators can see them, but we never fail the sync job for them.
+ */
 export function evaluatePublicMirrorReviewDebt({
 	pulls,
 	reviewThreadsByPr,
 	bugbotFixedTitlesByPr,
 	repo = DEFAULT_REPO,
 }) {
-	const failures = [];
+	const advisories = [];
 
 	for (const pull of pulls) {
 		const fixedTitles = bugbotFixedTitlesByPr?.get(pull.number) ?? EMPTY_SET;
@@ -100,14 +109,16 @@ export function evaluatePublicMirrorReviewDebt({
 		}
 		const first = unresolved[0];
 		const firstComment = first?.comments?.nodes?.[0];
-		failures.push(
-			`${repo}#${pull.number} has ${unresolved.length} unresolved review thread(s); resolve or close ${pull.html_url} before force-updating the generated public mirror branch${firstComment?.url ? ` (${firstComment.url})` : ""}.`,
+		advisories.push(
+			`${repo}#${pull.number} has ${unresolved.length} unresolved review thread(s) on the generated mirror PR (advisory only; does not block sync): ${pull.html_url}${firstComment?.url ? ` (${firstComment.url})` : ""}.`,
 		);
 	}
 
 	return {
-		failures,
-		ok: failures.length === 0,
+		// Keep `failures` empty for callers that still check the old field.
+		failures: [],
+		advisories,
+		ok: true,
 	};
 }
 
@@ -143,18 +154,19 @@ function main() {
 		bugbotFixedTitlesByPr,
 	});
 
-	if (result.ok) {
+	if (result.advisories.length === 0) {
 		console.log(
 			`No unresolved review threads on ${pulls.length} open generated public mirror PR(s).`,
 		);
 		return;
 	}
 
-	console.error("Public mirror review debt blocks branch update:");
-	for (const failure of result.failures) {
-		console.error(`- ${failure}`);
+	console.log(
+		"Public mirror review debt is advisory only (generated PR threads do not block sync):",
+	);
+	for (const advisory of result.advisories) {
+		console.log(`- ${advisory}`);
 	}
-	process.exit(1);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

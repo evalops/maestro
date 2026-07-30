@@ -24,7 +24,7 @@ use super::messages::{AgentEvent, AgentState, FromAgentMessage, InitConfig, ToAg
 use super::remote_transport::{
     RemoteAgentTransport, RemoteConnectionResumeAuthority, RemoteIncoming, RemoteTransportConfig,
 };
-use super::session::{SessionReader, SessionRecorder, SessionReplay};
+use super::session::{SessionRecorder, SessionReplay};
 
 const MAX_STALE_REMOTE_REFERENCE_RETRIES: u32 = 3;
 const MIN_RECONNECT_SLEEP: Duration = Duration::from_millis(1);
@@ -1265,8 +1265,22 @@ impl SupervisorBuilder {
         sessions_dir: impl AsRef<Path>,
         session_id: &str,
     ) -> std::io::Result<Self> {
-        let replay = SessionReader::load(sessions_dir.as_ref(), session_id)?.replay();
+        // Build the replay snapshot from the recorder's own already-resolved
+        // state (`SessionRecorder::resume` already loaded and, if the
+        // session's metadata was corrupt, rotated it aside and rebuilt it
+        // from the JSONL log) rather than a second, independent
+        // `SessionReader::load`. A separate preliminary load here previously
+        // raced that rotation: it would rotate the corrupt metadata file
+        // aside itself, so by the time `SessionRecorder::resume` ran a
+        // moment later it saw a *missing* (not corrupt) file, skipped its
+        // own rebuild-from-JSONL path, and the next flush permanently reset
+        // the session's historical title, usage totals, and message count
+        // instead of preserving them.
         let recorder = SessionRecorder::resume(sessions_dir, session_id)?;
+        let replay = SessionReplay {
+            state: recorder.replay_state().clone(),
+            last_init: recorder.last_init().cloned(),
+        };
         self.session_replay = Some(replay);
         self.session_recorder = Some(recorder);
         Ok(self)

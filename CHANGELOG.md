@@ -8,6 +8,10 @@ versioning when releases are cut.
 
 ### Added
 
+- `/rubber-duck [model]` (alias `/duck`) in the native Rust TUI: reviews the
+  current uncommitted changes (`git diff HEAD`) with a different model than
+  the active session — a second-opinion review that runs in the background
+  with read-only tools and posts the result into the chat.
 - Web server boot probe for `maestro-tui`: error when the binary is missing for
   native web/headless defaults (`src/server/maestro-tui-boot-check.ts`).
   Force TypeScript with `MAESTRO_TS_AGENT=1` to skip the probe.

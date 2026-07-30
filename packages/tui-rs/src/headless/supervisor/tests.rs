@@ -2,7 +2,7 @@ use super::*;
 use crate::headless::messages::{
     ActiveFileWatch, ActiveUtilityCommand, PendingApproval, UtilityCommandTerminalMode,
 };
-use crate::headless::session::SessionEntry;
+use crate::headless::session::{SessionEntry, SessionReader};
 use crate::headless::{
     ActiveTool, HeadlessErrorType, StreamingResponse, TokenUsage, UtilityCommandShellMode,
 };
@@ -993,6 +993,53 @@ fn resume_recorded_session_restores_replay_and_recorder() {
             .and_then(|init| init.system_prompt.as_deref()),
         Some("Saved system prompt")
     );
+}
+
+/// Regression test: `resume_recorded_session` must build its replay
+/// snapshot from the already-resumed `SessionRecorder`, not a second,
+/// independent `SessionReader::load`. The old code loaded a `SessionReader`
+/// first (rotating aside the corrupt metadata file as a side effect of its
+/// own tolerant load), then called `SessionRecorder::resume`, which by then
+/// saw a *missing* -- not corrupt -- metadata file, skipped its own
+/// rebuild-from-JSONL path, and quietly reset the session's historical
+/// title and message count in the recorder's in-memory metadata, which the
+/// next `flush()` would then persist over the real history.
+#[test]
+fn resume_recorded_session_rebuilds_metadata_after_corruption() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let sessions_dir = temp.path();
+    let mut recorder = SessionRecorder::new(sessions_dir).expect("recorder");
+    let session_id = recorder.id().to_string();
+    recorder
+        .record_sent(&ToAgentMessage::Prompt {
+            content: "Recovered title".to_string(),
+            attachments: None,
+        })
+        .expect("record prompt");
+    recorder.flush().expect("flush");
+    drop(recorder);
+
+    // Simulate a crash mid-write of the metadata file: truncated, invalid
+    // JSON, exactly what `write_atomic` prevents going forward but a prior
+    // build (or a non-atomic-write code path) could have left behind.
+    let meta_path = sessions_dir.join(format!("{session_id}.meta.json"));
+    std::fs::write(&meta_path, "{\"id\":\"partial").expect("write torn metadata");
+
+    let supervisor = SupervisorBuilder::new()
+        .resume_recorded_session(sessions_dir, &session_id)
+        .expect("resume builder must tolerate corrupt metadata")
+        .build();
+
+    let recorder = supervisor
+        .session_recorder
+        .as_ref()
+        .expect("recorder must be present after resume");
+    assert_eq!(
+        recorder.metadata().title.as_deref(),
+        Some("Recovered title"),
+        "title must be rebuilt from the JSONL log, not reset to default"
+    );
+    assert_eq!(recorder.metadata().message_count, 1);
 }
 
 #[test]

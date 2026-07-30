@@ -76,6 +76,9 @@ impl ReceiptSummary {
                     bounded_text(tool, STRING_LIMIT)
                 )),
             ),
+            ToolReceiptDetails::Origin(origin) => {
+                ("origin", Some(bounded_text(origin, STRING_LIMIT)))
+            }
             ToolReceiptDetails::Cached => ("cached", None),
             ToolReceiptDetails::None => ("none", None),
         };

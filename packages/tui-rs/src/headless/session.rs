@@ -90,6 +90,8 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use crate::fs_atomic::create_dir_all_synced;
+
 use super::messages::{
     ActiveFileWatch, ActiveTool, AgentState, CodexSubagentContinuityEdge, FromAgentMessage,
     InitConfig, PendingApproval, ServerRequestType, StreamingResponse, ToAgentMessage, TokenUsage,
@@ -601,6 +603,111 @@ pub struct SessionRecorder {
 
 const CHECKPOINT_INTERVAL: usize = 25;
 
+/// Load `<id>.meta.json`, tolerating a corrupt or torn file left by a crash
+/// mid-write.
+///
+/// A missing file yields fresh default metadata (normal for a brand-new
+/// session). A file that exists but fails to parse is forensic evidence of
+/// real damage (the pre-atomic-write code path here used a direct
+/// `fs::write`, so a `kill -9` mid-write could truncate it); rather than
+/// silently discarding that evidence or hard-failing the caller, the file is
+/// rotated aside (`<id>.meta.json.corrupt.<millis>`) and fresh default
+/// metadata is returned so `resume`/`list_sessions` still see the session
+/// instead of treating it as gone. Only I/O errors (permissions, etc.) are
+/// propagated as hard errors.
+///
+/// The returned flag is `true` when the metadata was reconstructed after
+/// corruption, so callers can rebuild the lost fields from the still-intact
+/// JSONL log via [`rebuild_metadata`].
+fn load_metadata_tolerant(
+    metadata_path: &Path,
+    id: &str,
+) -> std::io::Result<(SessionMetadata, bool)> {
+    if !metadata_path.exists() {
+        return Ok((SessionMetadata::new(id), false));
+    }
+    // Read bytes, not `read_to_string`: a file torn mid-write by a crash
+    // (the whole reason this function tolerates a parse failure) can just
+    // as easily be torn in the middle of a multi-byte UTF-8 character as
+    // in the middle of a JSON token. `read_to_string` would then fail with
+    // `InvalidData` from the `?` above before the tolerant JSON-parsing
+    // branch below ever runs, hard-failing the caller instead of rotating
+    // the file aside and reconstructing defaults like every other kind of
+    // corruption here.
+    let content = fs::read(metadata_path)?;
+    match serde_json::from_slice(&content) {
+        Ok(metadata) => Ok((metadata, false)),
+        Err(err) => {
+            eprintln!(
+                "Corrupt session metadata at {}: {err}. Rotating aside and reconstructing defaults.",
+                metadata_path.display()
+            );
+            crate::fs_atomic::rotate_corrupt_aside(metadata_path);
+            Ok((SessionMetadata::new(id), true))
+        }
+    }
+}
+
+/// Reconstruct metadata by folding the JSONL log entries, mirroring the
+/// incremental updates `record_sent`/`record_received` apply. Used when the
+/// persisted metadata file was corrupt and had to be rotated aside, so the
+/// historical title, model, token totals, and message count are not
+/// permanently reset to defaults.
+fn rebuild_metadata(id: &str, entries: &[SessionEntry]) -> SessionMetadata {
+    let mut metadata = SessionMetadata::new(id);
+    if let Some(first) = entries.first() {
+        metadata.created_at = first.timestamp();
+    }
+    for entry in entries {
+        match entry {
+            SessionEntry::Sent { message, .. } => {
+                if let ToAgentMessage::Prompt { content, .. } = message {
+                    metadata.set_title_from_prompt(content);
+                }
+                metadata.message_count += 1;
+            }
+            SessionEntry::Received { message, .. } => {
+                match message {
+                    FromAgentMessage::Ready {
+                        protocol_version,
+                        model,
+                        provider,
+                        session_id,
+                    } => {
+                        metadata.model = Some(model.clone());
+                        metadata.provider = Some(provider.clone());
+                        metadata.protocol_version = protocol_version.clone();
+                        if session_id.is_some() {
+                            metadata.agent_session_id = session_id.clone();
+                        }
+                    }
+                    FromAgentMessage::SessionInfo {
+                        session_id,
+                        cwd,
+                        git_branch,
+                    } => {
+                        if session_id.is_some() {
+                            metadata.agent_session_id = session_id.clone();
+                        }
+                        metadata.cwd = Some(cwd.clone());
+                        metadata.git_branch = git_branch.clone();
+                    }
+                    FromAgentMessage::ResponseEnd {
+                        usage: Some(usage), ..
+                    } => {
+                        metadata.add_usage(usage);
+                    }
+                    _ => {}
+                }
+                metadata.message_count += 1;
+            }
+            SessionEntry::Checkpoint { .. } => {}
+        }
+        metadata.updated_at = entry.timestamp();
+    }
+    metadata
+}
+
 impl SessionRecorder {
     /// Create a new session recorder
     pub fn new(sessions_dir: impl AsRef<Path>) -> std::io::Result<Self> {
@@ -611,7 +718,7 @@ impl SessionRecorder {
     /// Create a session recorder with a specific ID
     pub fn with_id(sessions_dir: impl AsRef<Path>, id: &str) -> std::io::Result<Self> {
         let sessions_dir = sessions_dir.as_ref();
-        fs::create_dir_all(sessions_dir)?;
+        create_dir_all_synced(sessions_dir)?;
 
         let path = sessions_dir.join(format!("{id}.jsonl"));
         let metadata_path = sessions_dir.join(format!("{id}.meta.json"));
@@ -636,23 +743,25 @@ impl SessionRecorder {
     /// Resume an existing session
     pub fn resume(sessions_dir: impl AsRef<Path>, id: &str) -> std::io::Result<Self> {
         let sessions_dir = sessions_dir.as_ref();
+        create_dir_all_synced(sessions_dir)?;
         let path = sessions_dir.join(format!("{id}.jsonl"));
         let metadata_path = sessions_dir.join(format!("{id}.meta.json"));
 
         // Load existing metadata
-        let metadata = if metadata_path.exists() {
-            let content = fs::read_to_string(&metadata_path)?;
-            serde_json::from_str(&content)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
-        } else {
-            SessionMetadata::new(id)
-        };
+        let (mut metadata, reconstructed) = load_metadata_tolerant(&metadata_path, id)?;
 
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let writer = BufWriter::new(file);
-        let replay = SessionReader::load(sessions_dir, id)
-            .ok()
-            .map(|reader| reader.replay());
+        let reader = SessionReader::load(sessions_dir, id).ok();
+        if reconstructed {
+            // The corrupt metadata was rotated aside; rebuild what it held
+            // (title, model, usage, counts) from the still-intact JSONL log
+            // so the next flush doesn't permanently reset them to defaults.
+            if let Some(reader) = &reader {
+                metadata = rebuild_metadata(id, reader.entries());
+            }
+        }
+        let replay = reader.map(|reader| reader.replay());
 
         Ok(Self {
             id: id.to_string(),
@@ -831,6 +940,15 @@ impl SessionRecorder {
     /// Flush and save metadata
     pub fn flush(&mut self) -> std::io::Result<()> {
         self.writer.flush()?;
+        // Make the JSONL log itself durable *before* persisting metadata
+        // that describes it (message counts, usage totals, timestamps).
+        // `BufWriter::flush` only transfers bytes to the OS; `save_metadata`
+        // below now goes through `write_atomic`, which does fsync the
+        // metadata file. Without this, a power loss right after `flush()`
+        // returns could keep that durable metadata while losing the very
+        // log entries it describes, leaving metadata durably ahead of the
+        // actual session history on the next load.
+        self.writer.get_ref().sync_all()?;
         self.save_metadata()?;
         Ok(())
     }
@@ -839,7 +957,7 @@ impl SessionRecorder {
     fn save_metadata(&self) -> std::io::Result<()> {
         let json = serde_json::to_string_pretty(&self.metadata)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        fs::write(&self.metadata_path, json)?;
+        crate::fs_atomic::write_atomic(&self.metadata_path, json)?;
         Ok(())
     }
 }
@@ -931,6 +1049,12 @@ pub struct SessionReplay {
     pub last_init: Option<InitConfig>,
 }
 
+fn persist_rebuilt_metadata(path: &Path, metadata: &SessionMetadata) -> std::io::Result<()> {
+    let json = serde_json::to_string_pretty(metadata)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    crate::fs_atomic::write_atomic(path, json)
+}
+
 impl SessionReader {
     /// Load a session from disk
     pub fn load(sessions_dir: impl AsRef<Path>, id: &str) -> std::io::Result<Self> {
@@ -939,13 +1063,7 @@ impl SessionReader {
         let metadata_path = sessions_dir.join(format!("{id}.meta.json"));
 
         // Load metadata
-        let metadata = if metadata_path.exists() {
-            let content = fs::read_to_string(&metadata_path)?;
-            serde_json::from_str(&content)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
-        } else {
-            SessionMetadata::new(id)
-        };
+        let (metadata, reconstructed) = load_metadata_tolerant(&metadata_path, id)?;
 
         // Load entries
         let mut entries = Vec::new();
@@ -965,6 +1083,23 @@ impl SessionReader {
                 }
             }
         }
+
+        // `load_metadata_tolerant` already rotated the corrupt file aside
+        // above but, unlike `SessionRecorder::resume`, this is a read-only
+        // path with no later `flush()` to persist a replacement -- so
+        // without rebuilding and writing one back here, calling this
+        // function directly (rather than through `resume`) would both
+        // discard the title/usage/counts recoverable from these
+        // just-loaded entries (falling back to bare defaults) and leave
+        // the session with no `.meta.json` at all, making it invisible to
+        // a later `list_sessions` scan.
+        let metadata = if reconstructed {
+            let rebuilt = rebuild_metadata(id, &entries);
+            persist_rebuilt_metadata(&metadata_path, &rebuilt)?;
+            rebuilt
+        } else {
+            metadata
+        };
 
         Ok(Self {
             id: id.to_string(),
@@ -1106,17 +1241,53 @@ pub fn list_sessions(sessions_dir: impl AsRef<Path>) -> std::io::Result<Vec<Sess
     }
 
     let mut sessions = Vec::new();
-    for entry in fs::read_dir(sessions_dir)? {
-        let entry = entry?;
+    // Collect entries up front: a corrupt metadata file is rebuilt and
+    // re-persisted below, and a live directory iterator could observe the
+    // newly written file and list the session twice.
+    let entries = fs::read_dir(sessions_dir)?.collect::<std::io::Result<Vec<_>>>()?;
+    for entry in entries {
         let path = entry.path();
         if path.extension().is_some_and(|e| e == "json")
             && path
                 .file_name()
                 .is_some_and(|n| n.to_string_lossy().ends_with(".meta.json"))
         {
-            if let Ok(content) = fs::read_to_string(&path) {
-                if let Ok(meta) = serde_json::from_str::<SessionMetadata>(&content) {
-                    sessions.push(meta);
+            // Read bytes, not `read_to_string`: a `.meta.json` torn
+            // mid-write by a crash can be torn in the middle of a
+            // multi-byte UTF-8 character just as easily as in the middle
+            // of a JSON token, and `read_to_string` failing on that would
+            // otherwise skip this whole `if let` block (and, per the
+            // comment below, silently drop the session from the listing)
+            // without ever reaching the same rotate-and-rebuild recovery a
+            // JSON-parse failure already gets.
+            if let Ok(content) = fs::read(&path) {
+                match serde_json::from_slice::<SessionMetadata>(&content) {
+                    Ok(meta) => sessions.push(meta),
+                    Err(err) => {
+                        // Previously this silently dropped the session from
+                        // the listing, making a crash-torn metadata file
+                        // look identical to "session never existed". Rotate
+                        // the corrupt file aside, rebuild the metadata from
+                        // the still-intact JSONL log, and persist the
+                        // reconstruction so the session stays discoverable
+                        // in subsequent listings.
+                        let id = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .and_then(|n| n.strip_suffix(".meta.json"))
+                            .unwrap_or("unknown");
+                        eprintln!(
+                            "Corrupt session metadata at {}: {err}. Rotating aside and reconstructing from the JSONL log.",
+                            path.display()
+                        );
+                        crate::fs_atomic::rotate_corrupt_aside(&path);
+                        let meta = match SessionReader::load(sessions_dir, id) {
+                            Ok(reader) => rebuild_metadata(id, reader.entries()),
+                            Err(_) => SessionMetadata::new(id),
+                        };
+                        persist_rebuilt_metadata(&path, &meta)?;
+                        sessions.push(meta);
+                    }
                 }
             }
         }
@@ -1202,6 +1373,22 @@ mod tests {
             reader.metadata().agent_session_id.as_deref(),
             Some("sess_123")
         );
+    }
+
+    #[test]
+    fn recorder_entry_points_create_missing_session_directories() {
+        let tmp = TempDir::new().unwrap();
+        let new_sessions = tmp.path().join("new").join("sessions");
+        let resumed_sessions = tmp.path().join("resumed").join("sessions");
+
+        let new_recorder = SessionRecorder::with_id(&new_sessions, "new-session").unwrap();
+        assert!(new_sessions.is_dir());
+        assert!(new_recorder.path().exists());
+
+        let resumed_recorder =
+            SessionRecorder::resume(&resumed_sessions, "resumed-session").unwrap();
+        assert!(resumed_sessions.is_dir());
+        assert!(resumed_recorder.path().exists());
     }
 
     #[test]
@@ -1534,6 +1721,288 @@ mod tests {
         // Load and verify
         let reader = SessionReader::load(sessions_dir, &id).unwrap();
         assert_eq!(reader.prompts().len(), 2);
+    }
+
+    /// Regression test for a torn `.meta.json`: before the fix, both
+    /// `SessionRecorder::resume` and `SessionReader::load` hard-failed with
+    /// an `InvalidData` IO error on a corrupt metadata file, even though the
+    /// JSONL log (the actual conversation history) was fully intact. A user
+    /// hitting a crash right as metadata flushed would be unable to resume
+    /// a session that was otherwise perfectly recoverable.
+    #[test]
+    fn resume_tolerates_corrupt_metadata_instead_of_hard_failing() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path();
+
+        let mut recorder = SessionRecorder::new(sessions_dir).unwrap();
+        let id = recorder.id().to_string();
+        recorder
+            .record_sent(&ToAgentMessage::Prompt {
+                content: "Before the crash".to_string(),
+                attachments: None,
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        // Simulate a crash mid-`fs::write` of the metadata file: truncated,
+        // invalid JSON.
+        let meta_path = sessions_dir.join(format!("{id}.meta.json"));
+        fs::write(&meta_path, "{\"id\":\"partial").unwrap();
+
+        // resume() must succeed rather than propagating a parse error.
+        let mut recorder = SessionRecorder::resume(sessions_dir, &id)
+            .expect("resume must tolerate corrupt metadata, not hard-fail");
+        recorder
+            .record_sent(&ToAgentMessage::Prompt {
+                content: "After the resume".to_string(),
+                attachments: None,
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        // The corrupt file must be preserved as forensic evidence, not
+        // silently overwritten in place.
+        let rotated: Vec<_> = fs::read_dir(sessions_dir)
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".meta.json.corrupt.")
+            })
+            .collect();
+        assert_eq!(
+            rotated.len(),
+            1,
+            "corrupt metadata should be rotated aside, not discarded"
+        );
+
+        // The conversation history survived the crash even though metadata
+        // did not: both prompts (before and after) must still be present.
+        let reader = SessionReader::load(sessions_dir, &id).unwrap();
+        assert_eq!(reader.prompts().len(), 2);
+
+        // list_sessions must not hide a session just because its metadata
+        // was corrupt -- that would make a crash look identical to the
+        // session never having existed.
+        let sessions = list_sessions(sessions_dir).unwrap();
+        assert!(sessions.iter().any(|meta| meta.id == id));
+    }
+
+    /// Regression test: a `.meta.json` torn mid-write can just as easily be
+    /// torn in the middle of a multi-byte UTF-8 character as in the middle
+    /// of a JSON token. Before the fix, `load_metadata_tolerant` used
+    /// `fs::read_to_string`, which failed with `InvalidData` before the
+    /// tolerant JSON-parsing branch (exercised by
+    /// `resume_tolerates_corrupt_metadata_instead_of_hard_failing` above)
+    /// ever ran -- so this exact kind of corruption still hard-failed
+    /// `resume` and silently dropped the session from `list_sessions`,
+    /// even though the equivalent ASCII-corruption case was already fixed.
+    #[test]
+    fn resume_and_list_sessions_tolerate_invalid_utf8_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path();
+
+        let mut recorder = SessionRecorder::new(sessions_dir).unwrap();
+        let id = recorder.id().to_string();
+        recorder
+            .record_sent(&ToAgentMessage::Prompt {
+                content: "Before the crash".to_string(),
+                attachments: None,
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        // Simulate a crash mid-write torn in the middle of a multi-byte
+        // UTF-8 character: a valid JSON prefix followed by a lone
+        // continuation byte, which is invalid UTF-8 on its own.
+        let meta_path = sessions_dir.join(format!("{id}.meta.json"));
+        let mut torn = br#"{"id":"partial","title":"caf"#.to_vec();
+        torn.push(0xE9); // incomplete multi-byte sequence, not valid UTF-8
+        fs::write(&meta_path, &torn).unwrap();
+        assert!(
+            std::str::from_utf8(&torn).is_err(),
+            "test fixture must actually be invalid UTF-8"
+        );
+
+        let mut recorder = SessionRecorder::resume(sessions_dir, &id)
+            .expect("resume must tolerate invalid-UTF-8 metadata, not hard-fail");
+        recorder
+            .record_sent(&ToAgentMessage::Prompt {
+                content: "After the resume".to_string(),
+                attachments: None,
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let rotated: Vec<_> = fs::read_dir(sessions_dir)
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".meta.json.corrupt.")
+            })
+            .collect();
+        assert_eq!(
+            rotated.len(),
+            1,
+            "invalid-UTF-8 metadata should be rotated aside, not discarded"
+        );
+
+        let reader = SessionReader::load(sessions_dir, &id).unwrap();
+        assert_eq!(reader.prompts().len(), 2);
+
+        let sessions = list_sessions(sessions_dir).unwrap();
+        assert!(sessions.iter().any(|meta| meta.id == id));
+    }
+
+    /// When corrupt metadata is rotated aside on resume, the lost fields
+    /// (title, message count) are rebuilt from the still-intact JSONL log
+    /// instead of being permanently reset to defaults on the next flush.
+    #[test]
+    fn resume_rebuilds_corrupt_metadata_from_jsonl_log() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path();
+
+        let mut recorder = SessionRecorder::new(sessions_dir).unwrap();
+        let id = recorder.id().to_string();
+        recorder
+            .record_sent(&ToAgentMessage::Prompt {
+                content: "Recovered title".to_string(),
+                attachments: None,
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let meta_path = sessions_dir.join(format!("{id}.meta.json"));
+        fs::write(&meta_path, "{\"id\":\"partial").unwrap();
+
+        let mut recorder = SessionRecorder::resume(sessions_dir, &id).unwrap();
+        assert_eq!(
+            recorder.metadata().title.as_deref(),
+            Some("Recovered title"),
+            "title must be rebuilt from the JSONL log, not reset"
+        );
+        assert_eq!(recorder.metadata().message_count, 1);
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let reader = SessionReader::load(sessions_dir, &id).unwrap();
+        assert_eq!(reader.metadata().title.as_deref(), Some("Recovered title"));
+    }
+
+    /// Regression test: calling `SessionReader::load` directly (not through
+    /// `SessionRecorder::resume`) on a session with corrupt metadata must
+    /// also rebuild the lost fields from the JSONL log, not silently reset
+    /// them to defaults -- and must persist that rebuild, since this
+    /// read-only path has no later `flush()` to do so, and without it a
+    /// later `list_sessions` scan would find no `.meta.json` for this
+    /// session at all (it was rotated aside above, with nothing to replace
+    /// it) and treat a fully recoverable session as if it never existed.
+    #[test]
+    fn direct_session_reader_load_rebuilds_and_persists_corrupt_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path();
+
+        let mut recorder = SessionRecorder::new(sessions_dir).unwrap();
+        let id = recorder.id().to_string();
+        recorder
+            .record_sent(&ToAgentMessage::Prompt {
+                content: "Loaded directly".to_string(),
+                attachments: None,
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let meta_path = sessions_dir.join(format!("{id}.meta.json"));
+        fs::write(&meta_path, "{\"id\":\"partial").unwrap();
+
+        let reader = SessionReader::load(sessions_dir, &id)
+            .expect("load must tolerate corrupt metadata, not hard-fail");
+        assert_eq!(
+            reader.metadata().title.as_deref(),
+            Some("Loaded directly"),
+            "title must be rebuilt from the JSONL log via a direct load, not reset"
+        );
+        assert_eq!(reader.metadata().message_count, 1);
+
+        // The rebuild must be persisted, not just returned in memory: a
+        // later listing has to be able to find this session again.
+        assert!(
+            meta_path.exists(),
+            "rebuilt metadata must be persisted after a direct load, not left absent"
+        );
+        let sessions = list_sessions(sessions_dir).unwrap();
+        let found = sessions
+            .iter()
+            .find(|meta| meta.id == id)
+            .expect("session must still be discoverable after a direct load rebuilt its metadata");
+        assert_eq!(found.title.as_deref(), Some("Loaded directly"));
+    }
+
+    #[test]
+    fn rebuilt_metadata_persistence_errors_are_propagated() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("session.meta.json");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("occupied"), "keep").unwrap();
+
+        let metadata = SessionMetadata::new("session");
+        let err = persist_rebuilt_metadata(&target, &metadata)
+            .expect_err("replacing a non-empty directory must fail");
+
+        assert!(
+            !err.to_string().is_empty(),
+            "the replacement error must reach the caller"
+        );
+        assert!(target.join("occupied").exists());
+    }
+
+    /// After `list_sessions` rotates a corrupt metadata file aside, it
+    /// persists the rebuilt metadata so subsequent listings keep showing
+    /// the session instead of hiding it (no `.meta.json` left to match).
+    #[test]
+    fn list_sessions_persists_rebuilt_metadata_after_rotation() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path();
+
+        let mut recorder = SessionRecorder::new(sessions_dir).unwrap();
+        let id = recorder.id().to_string();
+        recorder
+            .record_sent(&ToAgentMessage::Prompt {
+                content: "Still here".to_string(),
+                attachments: None,
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let meta_path = sessions_dir.join(format!("{id}.meta.json"));
+        fs::write(&meta_path, "{\"id\":\"partial").unwrap();
+
+        let first = list_sessions(sessions_dir).unwrap();
+        assert!(first.iter().any(|meta| meta.id == id));
+        assert!(
+            meta_path.exists(),
+            "rebuilt metadata must be persisted after rotation"
+        );
+
+        let second = list_sessions(sessions_dir).unwrap();
+        let meta = second
+            .iter()
+            .find(|meta| meta.id == id)
+            .expect("session must stay discoverable in subsequent listings");
+        assert_eq!(meta.title.as_deref(), Some("Still here"));
+        assert_eq!(meta.message_count, 1);
     }
 
     #[test]

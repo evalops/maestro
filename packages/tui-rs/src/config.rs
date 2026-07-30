@@ -541,6 +541,64 @@ pub struct ComposerConfig {
     pub projects: Option<HashMap<String, ProjectSettings>>,
 }
 
+impl ComposerConfig {
+    /// Resolve `sandbox_mode`/`sandbox_workspace_write` into an enforceable
+    /// [`crate::sandbox::SandboxPolicy`]. Returns `None` for
+    /// `danger-full-access` (explicitly no sandbox).
+    ///
+    /// This is the persistent-config escape hatch: a project or global
+    /// `config.toml` with
+    ///
+    /// ```toml
+    /// sandbox_mode = "danger-full-access"
+    /// ```
+    ///
+    /// or
+    ///
+    /// ```toml
+    /// [sandbox_workspace_write]
+    /// network_access = false
+    /// writable_roots = ["/some/extra/path"]
+    /// ```
+    ///
+    /// changes what every subsequent session does, without needing a flag on
+    /// every invocation. Because these settings decide how much of the host
+    /// a session can touch, project-level values are only honored when the
+    /// workspace is trusted — see `load_config`. User-supplied
+    /// `writable_roots` are *added to* (not a replacement for) the curated
+    /// package-manager cache roots from
+    /// [`crate::sandbox::SandboxPolicy::dev_cache_writable_roots`], since
+    /// those are load-bearing for `cargo build`/`npm install` — see that
+    /// function's docs.
+    #[must_use]
+    pub fn resolved_sandbox_policy(&self) -> Option<crate::sandbox::SandboxPolicy> {
+        use crate::sandbox::SandboxPolicy;
+
+        match self.sandbox_mode.unwrap_or_default() {
+            SandboxMode::DangerFullAccess => None,
+            SandboxMode::ReadOnly => Some(SandboxPolicy::ReadOnly),
+            SandboxMode::WorkspaceWrite => match &self.sandbox_workspace_write {
+                None => Some(SandboxPolicy::workspace_write_default()),
+                Some(cfg) => {
+                    let mut writable_roots = SandboxPolicy::dev_cache_writable_roots();
+                    writable_roots.extend(
+                        cfg.writable_roots
+                            .iter()
+                            .flatten()
+                            .map(std::path::PathBuf::from),
+                    );
+                    Some(SandboxPolicy::WorkspaceWrite {
+                        writable_roots,
+                        network_access: cfg.network_access.unwrap_or(true),
+                        exclude_tmpdir_env_var: cfg.exclude_tmpdir_env_var.unwrap_or(false),
+                        exclude_slash_tmp: cfg.exclude_slash_tmp.unwrap_or(false),
+                    })
+                }
+            },
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────
 // Default Configuration
 // ─────────────────────────────────────────────────────────────
@@ -985,6 +1043,70 @@ fn apply_profile(config: &mut ComposerConfig, profile_name: &str) {
 /// Configuration loading is expensive (file I/O, parsing). We cache the result
 /// and only reload if the workspace or profile changes.
 ///
+/// Resolve the sandbox policy the *interactive TUI* should use for a session,
+/// in precedence order:
+///
+/// 1. `MAESTRO_SANDBOX_MODE` env var — an explicit, session-scoped request
+///    from the user (the same variable and grammar `maestro print`/`exec`
+///    already honor). This is always applied when set to a recognized value,
+///    regardless of the staged-rollout gate below: honoring an explicit,
+///    already-existing env var the user typed is a pure bugfix (today it is
+///    silently ignored by the interactive TUI), not a default-behavior change
+///    that needs staging.
+/// 2. The staged-rollout internal gate `MAESTRO_INTERNAL_TUI_SANDBOX_DEFAULT`
+///    (see `docs/CONVENTIONS/staged-rollout-registry.json`, entry
+///    `internal-gate:tui-sandbox-default`). While this is unset/false, the
+///    interactive TUI keeps its historical unsandboxed-by-default behavior —
+///    this ships the sandboxing mechanism as an enabling primitive, not as a
+///    default-behavior flip, until a follow-up PR promotes it after an
+///    internal soak period.
+/// 3. Once the gate is set, `ComposerConfig::resolved_sandbox_policy` (which
+///    itself defaults to [`crate::sandbox::SandboxPolicy::workspace_write_default`]
+///    unless the config says otherwise).
+#[must_use]
+pub fn resolve_interactive_sandbox_policy(
+    config: &ComposerConfig,
+) -> Option<crate::sandbox::SandboxPolicy> {
+    if let Ok(value) = std::env::var("MAESTRO_SANDBOX_MODE") {
+        if matches!(value.trim(), "workspace-write" | "native") {
+            let mut overridden = config.clone();
+            overridden.sandbox_mode = Some(SandboxMode::WorkspaceWrite);
+            return overridden.resolved_sandbox_policy();
+        }
+        if let Some(resolved) = parse_sandbox_mode_env_override(&value) {
+            return resolved;
+        }
+        // Empty or unrecognized: fall through rather than silently disabling
+        // the sandbox on a typo.
+    }
+    if !env_flag_enabled("MAESTRO_INTERNAL_TUI_SANDBOX_DEFAULT") {
+        return None;
+    }
+    config.resolved_sandbox_policy()
+}
+
+/// Parse `MAESTRO_SANDBOX_MODE`. `Some(None)` means "explicitly no sandbox"
+/// (`danger-full-access`); `None` means "not a recognized value, ignore it"
+/// (the caller falls through to the next precedence tier rather than
+/// treating a typo as an implicit opt-out).
+fn parse_sandbox_mode_env_override(value: &str) -> Option<Option<crate::sandbox::SandboxPolicy>> {
+    use crate::sandbox::SandboxPolicy;
+    match value.trim() {
+        "danger-full-access" => Some(None),
+        "read-only" => Some(Some(SandboxPolicy::ReadOnly)),
+        _ => None,
+    }
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 /// The `{ ... }` block creates a temporary scope. The read lock is released
 /// when `cache` goes out of scope at the end of the block. This allows us
 /// to acquire a write lock later without deadlock.
@@ -1030,6 +1152,54 @@ pub fn load_config(workspace_dir: &Path, profile_name: Option<&str>) -> Composer
             }
         } else {
             project_config.shell_environment_policy = None;
+            // Sandbox settings decide how much of the host a session can
+            // touch, so they are security-sensitive in the same way: an
+            // untrusted repository must not be able to check in
+            // `sandbox_mode = "danger-full-access"` (disabling the sandbox
+            // for everyone who opens it) or widen `sandbox_workspace_write`
+            // with sensitive absolute paths. Strip them — and any
+            // project-defined profile that could smuggle the same override
+            // back in — unless the workspace is trusted; the global config
+            // and env overrides remain authoritative.
+            project_config.sandbox_mode = None;
+            project_config.sandbox_workspace_write = None;
+            if let Some(profiles) = project_config.profiles.as_mut() {
+                for profile in profiles.values_mut() {
+                    profile.sandbox_mode = None;
+                }
+            }
+            // Stripping a project-defined profile's own `sandbox_mode`
+            // (above) only stops an untrusted repo from smuggling a
+            // dangerous profile IN. It does nothing to stop the repo from
+            // smuggling a dangerous profile SELECTION: `active_profile`
+            // below resolves from `config.profile` after this project
+            // config is merged in, and `apply_profile` looks that name up
+            // in the *merged* `profiles` map, which still includes every
+            // profile the user's own trusted global config defines. A repo
+            // checking in `profile = "unsandboxed"` in its
+            // `.composer/config.toml` could silently activate a profile the
+            // user only ever intended to opt into manually (e.g. via
+            // `maestro --profile unsandboxed`), bypassing the sandbox
+            // default without the user typing anything.
+            //
+            // Selecting a profile the *project itself* defines is fine: its
+            // `sandbox_mode` was just stripped above, so activating it
+            // can't touch the sandbox, and legitimate repo-local profiles
+            // (picking a project's preferred model, for instance) still
+            // work. Only a selector that resolves outside the project's own
+            // `profiles` table -- i.e. into the trusted global config's
+            // profiles -- is security-sensitive, so only that case is
+            // cleared.
+            let selects_only_a_project_owned_profile =
+                project_config.profile.as_deref().is_some_and(|name| {
+                    project_config
+                        .profiles
+                        .as_ref()
+                        .is_some_and(|profiles| profiles.contains_key(name))
+                });
+            if !selects_only_a_project_owned_profile {
+                project_config.profile = None;
+            }
         }
         deep_merge(&mut config, &project_config);
     }
@@ -1178,6 +1348,64 @@ mod tests {
         assert_eq!(config.model_provider.as_deref(), Some("openai"));
         assert_eq!(config.approval_policy, Some(ApprovalPolicy::Untrusted));
         assert_eq!(config.sandbox_mode, Some(SandboxMode::WorkspaceWrite));
+    }
+
+    #[test]
+    fn resolved_sandbox_policy_danger_full_access_disables_sandbox() {
+        let config = ComposerConfig {
+            sandbox_mode: Some(SandboxMode::DangerFullAccess),
+            ..Default::default()
+        };
+        assert!(config.resolved_sandbox_policy().is_none());
+    }
+
+    #[test]
+    fn resolved_sandbox_policy_read_only() {
+        let config = ComposerConfig {
+            sandbox_mode: Some(SandboxMode::ReadOnly),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.resolved_sandbox_policy(),
+            Some(crate::sandbox::SandboxPolicy::ReadOnly)
+        );
+    }
+
+    #[test]
+    fn resolved_sandbox_policy_workspace_write_defaults_to_network_on() {
+        let config = ComposerConfig {
+            sandbox_mode: Some(SandboxMode::WorkspaceWrite),
+            ..Default::default()
+        };
+        let policy = config
+            .resolved_sandbox_policy()
+            .expect("workspace-write must resolve to a policy");
+        assert!(policy.has_full_network_access());
+        assert!(!policy.has_full_disk_write_access());
+    }
+
+    #[test]
+    fn resolved_sandbox_policy_merges_user_roots_with_dev_cache_roots() {
+        let config = ComposerConfig {
+            sandbox_mode: Some(SandboxMode::WorkspaceWrite),
+            sandbox_workspace_write: Some(SandboxWorkspaceWriteConfig {
+                writable_roots: Some(vec!["/custom/extra/path".to_string()]),
+                network_access: Some(false),
+                exclude_tmpdir_env_var: None,
+                exclude_slash_tmp: None,
+            }),
+            ..Default::default()
+        };
+        let policy = config
+            .resolved_sandbox_policy()
+            .expect("workspace-write must resolve to a policy");
+        assert!(!policy.has_full_network_access());
+        let crate::sandbox::SandboxPolicy::WorkspaceWrite { writable_roots, .. } = &policy else {
+            panic!("expected WorkspaceWrite");
+        };
+        assert!(writable_roots
+            .iter()
+            .any(|root| root == std::path::Path::new("/custom/extra/path")));
     }
 
     #[test]
@@ -1390,6 +1618,83 @@ model_reasoning_effort = "high"
     }
 
     #[test]
+    fn resolve_interactive_sandbox_policy_precedence() {
+        // `MAESTRO_SANDBOX_MODE`/`MAESTRO_INTERNAL_TUI_SANDBOX_DEFAULT` are
+        // process-global env vars and `#[test]` functions run concurrently by
+        // default, so every scenario lives in one sequential test rather
+        // than racing separate tests against the same two env vars.
+        env::remove_var("MAESTRO_SANDBOX_MODE");
+        env::remove_var("MAESTRO_INTERNAL_TUI_SANDBOX_DEFAULT");
+
+        let workspace_write_config = ComposerConfig {
+            sandbox_mode: Some(SandboxMode::WorkspaceWrite),
+            ..Default::default()
+        };
+
+        // Stage 1: even though DEFAULT_CONFIG.sandbox_mode is already
+        // `WorkspaceWrite`, the interactive TUI must not enforce it until the
+        // internal gate is explicitly set — this is what makes the change an
+        // enabling primitive rather than an immediate default flip.
+        assert!(
+            resolve_interactive_sandbox_policy(&workspace_write_config).is_none(),
+            "gate off + no env override must stay unsandboxed"
+        );
+
+        // Once the internal gate is set, the config's resolved policy applies.
+        env::set_var("MAESTRO_INTERNAL_TUI_SANDBOX_DEFAULT", "1");
+        let gated_policy = resolve_interactive_sandbox_policy(&workspace_write_config);
+        assert!(gated_policy.is_some(), "gate on must resolve a policy");
+        assert!(gated_policy.unwrap().has_full_network_access());
+
+        // An explicit env override always wins over the gate + config.
+        env::set_var("MAESTRO_SANDBOX_MODE", "read-only");
+        assert_eq!(
+            resolve_interactive_sandbox_policy(&workspace_write_config),
+            Some(crate::sandbox::SandboxPolicy::ReadOnly)
+        );
+
+        env::set_var("MAESTRO_SANDBOX_MODE", "danger-full-access");
+        assert!(resolve_interactive_sandbox_policy(&workspace_write_config).is_none());
+
+        let restricted_config = ComposerConfig {
+            sandbox_mode: Some(SandboxMode::DangerFullAccess),
+            sandbox_workspace_write: Some(SandboxWorkspaceWriteConfig {
+                writable_roots: Some(vec!["/explicit-root".to_string()]),
+                network_access: Some(false),
+                exclude_tmpdir_env_var: Some(true),
+                exclude_slash_tmp: Some(true),
+            }),
+            ..Default::default()
+        };
+        env::set_var("MAESTRO_SANDBOX_MODE", "workspace-write");
+        let restricted = resolve_interactive_sandbox_policy(&restricted_config)
+            .expect("workspace-write env override should enable the configured policy");
+        assert!(!restricted.has_full_network_access());
+        assert!(matches!(
+            &restricted,
+            crate::sandbox::SandboxPolicy::WorkspaceWrite {
+                exclude_tmpdir_env_var: true,
+                exclude_slash_tmp: true,
+                ..
+            }
+        ));
+        let crate::sandbox::SandboxPolicy::WorkspaceWrite { writable_roots, .. } = restricted
+        else {
+            panic!("expected workspace-write policy");
+        };
+        assert!(writable_roots.contains(&std::path::PathBuf::from("/explicit-root")));
+
+        // A typo must not be silently treated as an opt-out; it falls
+        // through to the next precedence tier (gate still on here, so the
+        // config's resolved policy applies, same as if the env var were unset).
+        env::set_var("MAESTRO_SANDBOX_MODE", "not-a-real-mode");
+        assert!(resolve_interactive_sandbox_policy(&workspace_write_config).is_some());
+
+        env::remove_var("MAESTRO_SANDBOX_MODE");
+        env::remove_var("MAESTRO_INTERNAL_TUI_SANDBOX_DEFAULT");
+    }
+
+    #[test]
     fn test_parse_cli_override() {
         let (key, value) = parse_cli_override("model=gpt-4o").unwrap();
         assert_eq!(key, "model");
@@ -1490,6 +1795,125 @@ NODE_ENV = "development"
         // Untrusted workspaces must not apply a repository-controlled shell
         // environment policy at all.
         assert!(config.shell_environment_policy.is_none());
+    }
+
+    #[test]
+    fn test_sandbox_settings_ignored_for_untrusted_workspace() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join(".composer");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+sandbox_mode = "danger-full-access"
+
+[sandbox_workspace_write]
+writable_roots = ["/etc"]
+
+[profiles.escape]
+sandbox_mode = "danger-full-access"
+"#,
+        )
+        .unwrap();
+
+        clear_config_cache();
+        let config = load_config(temp_dir.path(), None);
+        // An untrusted repository must not be able to disable the sandbox or
+        // widen its writable roots via checked-in config — including through
+        // a project-defined profile. The `sandbox_mode` assertion only holds
+        // when no `MAESTRO_SANDBOX_MODE` override was in effect: that env
+        // var is process-global and another test mutates it concurrently,
+        // and an explicit user override legitimately wins over the strip.
+        if std::env::var_os("MAESTRO_SANDBOX_MODE").is_none() {
+            assert_ne!(config.sandbox_mode, Some(SandboxMode::DangerFullAccess));
+        }
+        assert!(config.sandbox_workspace_write.is_none());
+        assert_eq!(
+            config
+                .profiles
+                .as_ref()
+                .and_then(|profiles| profiles.get("escape"))
+                .and_then(|profile| profile.sandbox_mode),
+            None
+        );
+    }
+
+    #[test]
+    fn test_untrusted_workspace_cannot_select_a_profile_it_does_not_own() {
+        // Regression test for the review finding on #3144: clearing a
+        // project-defined profile's OWN `sandbox_mode` (the assertion in
+        // `test_sandbox_settings_ignored_for_untrusted_workspace` above)
+        // only stops an untrusted repo from smuggling a dangerous profile
+        // IN. It does nothing to stop the repo from smuggling a dangerous
+        // profile SELECTION: `active_profile` resolves from `config.profile`
+        // after the project config merges in, and `apply_profile` looks
+        // that name up in the *merged* `profiles` map -- which still
+        // includes every profile the user's own trusted global config
+        // defines. A repo checking in `profile = "some-global-profile-name"`
+        // (naming a profile the project itself never defines) could
+        // silently activate a profile the user only ever intended to opt
+        // into manually (e.g. `maestro --profile unsandboxed`).
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join(".composer");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+profile = "some-global-profile-name"
+"#,
+        )
+        .unwrap();
+
+        clear_config_cache();
+        let config = load_config(temp_dir.path(), None);
+
+        // The selector must not survive into the resolved config: it names
+        // a profile this untrusted project never defines itself, so it can
+        // only be trying to reach into the trusted global config.
+        assert_eq!(
+            config.profile, None,
+            "an untrusted project must not be able to select a profile it doesn't define itself"
+        );
+    }
+
+    #[test]
+    fn test_untrusted_workspace_can_still_select_a_profile_it_defines_itself() {
+        // The other half of the fix above: a project selecting a profile it
+        // *also defines*, for ordinary non-security-sensitive settings like
+        // its preferred model, must keep working -- this is exactly
+        // `test_profiles`'s scenario, and the profile's own `sandbox_mode`
+        // is already neutralized by the stripping loop regardless of who
+        // selects it.
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join(".composer");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+profile = "fast"
+
+[profiles.fast]
+model = "fast-model"
+sandbox_mode = "danger-full-access"
+"#,
+        )
+        .unwrap();
+
+        clear_config_cache();
+        let config = load_config(temp_dir.path(), None);
+
+        assert_eq!(config.profile.as_deref(), Some("fast"));
+        assert_eq!(config.model.as_deref(), Some("fast-model"));
+        // The project-owned profile's own sandbox_mode is still stripped,
+        // so selecting it (unlike selecting a global profile by name)
+        // cannot widen the sandbox even though the selector itself passes
+        // through.
+        if std::env::var_os("MAESTRO_SANDBOX_MODE").is_none() {
+            assert_ne!(config.sandbox_mode, Some(SandboxMode::DangerFullAccess));
+        }
     }
 
     #[test]

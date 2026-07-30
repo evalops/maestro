@@ -108,10 +108,14 @@ impl CheckpointStore {
 
     fn save(&self, checkpoint: &Checkpoint) -> io::Result<()> {
         let dir = self.root.join(&checkpoint.id);
-        fs::create_dir_all(&dir)?;
+        // Usually a no-op by the time this runs (`begin_turn` already
+        // created `dir` via the same synced path), but kept consistent
+        // with it rather than a bare `fs::create_dir_all` in case `save`
+        // is ever reached some other way.
+        crate::fs_atomic::create_dir_all_synced(&dir)?;
         let bytes = serde_json::to_vec_pretty(checkpoint)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-        fs::write(dir.join(MANIFEST_FILE), bytes)
+        crate::fs_atomic::write_atomic(dir.join(MANIFEST_FILE), bytes)
     }
 
     pub fn remove(&self, id: &str) -> io::Result<()> {
@@ -220,7 +224,15 @@ pub fn begin_turn(
         &uuid::Uuid::new_v4().simple().to_string()[..8]
     );
     let cp_dir = store.root.join(&id);
-    fs::create_dir_all(cp_dir.join("blobs")).ok()?;
+    // `create_dir_all_synced` (not a bare `fs::create_dir_all`) so this
+    // checkpoint directory's creation is itself durable: for a turn that
+    // only creates new files, `store_blob` below is never called, making
+    // this the *only* thing that creates `cp_dir` and its ancestors --
+    // a bare `fs::create_dir_all` here would let `write_atomic` later see
+    // an already-existing parent and skip its own new-directory fsync
+    // logic entirely, so a power loss right after `finalize_turn` returns
+    // could still make the whole checkpoint (and its manifest) disappear.
+    crate::fs_atomic::create_dir_all_synced(cp_dir.join("blobs")).ok()?;
 
     let mut pre_dirty = HashMap::new();
     let mut unreadable = HashSet::new();
@@ -416,10 +428,16 @@ pub fn restore_checkpoint(
             match &entry.pre_blob {
                 Some(hash) => {
                     let bytes = read_blob(&cp_dir, hash)?;
-                    if let Some(parent) = abs.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-                    fs::write(&abs, bytes)?;
+                    // Atomic: this overwrites a file in the user's working
+                    // tree, so a torn write here would corrupt their source
+                    // file, not just internal checkpoint state. `write_atomic`
+                    // itself preserves the existing file's permissions (e.g.
+                    // executable bits on a restored script) as part of its
+                    // own durability sync, so there is no separate
+                    // `set_permissions` step here that could itself be lost
+                    // to a crash between the write succeeding and the mode
+                    // change landing.
+                    crate::fs_atomic::write_atomic(&abs, &bytes)?;
                     report.restored.push(entry.path.clone());
                 }
                 None => {
@@ -534,7 +552,12 @@ fn store_blob(cp_dir: &Path, bytes: &[u8]) -> io::Result<String> {
     let hash = sha256(bytes);
     let blob_path = cp_dir.join("blobs").join(&hash);
     if !blob_path.exists() {
-        fs::write(&blob_path, bytes)?;
+        // The blob's filename *is* its content hash, so a torn write here
+        // (name present, content wrong) would be silently trusted by
+        // `read_blob` on a later restore and written back into the user's
+        // repo without any integrity check. Atomic write removes the torn
+        // half-write window entirely.
+        crate::fs_atomic::write_atomic(&blob_path, bytes)?;
     }
     Ok(hash)
 }
@@ -756,6 +779,59 @@ mod tests {
     }
 
     #[test]
+    fn restore_recreates_deleted_parent_tree_through_atomic_writer() {
+        let fx = git_fixture();
+        let nested = fx.repo.join("nested/deep/file.txt");
+        fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        fs::write(&nested, "original\n").unwrap();
+        run_git(&fx.repo, &["add", "nested/deep/file.txt"]);
+        run_git(&fx.repo, &["commit", "--quiet", "-m", "add nested file"]);
+
+        let pending =
+            begin_turn(&fx.repo, &fx.sessions, "session-1", "delete nested tree").unwrap();
+        fs::remove_file(&nested).unwrap();
+        fs::remove_dir(nested.parent().unwrap()).unwrap();
+        fs::remove_dir(fx.repo.join("nested")).unwrap();
+        finalize_turn(pending).unwrap().expect("checkpoint");
+
+        let report = restore_latest(&store(&fx)).unwrap().expect("restore");
+
+        assert_eq!(report.restored, vec!["nested/deep/file.txt".to_string()]);
+        assert_eq!(fs::read_to_string(&nested).unwrap(), "original\n");
+    }
+
+    /// Restoring a file replaces it via rename; the pre-existing file's
+    /// permissions (e.g. an executable script's mode) must survive.
+    #[cfg(unix)]
+    #[test]
+    fn restore_preserves_executable_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fx = git_fixture();
+        let script = fx.repo.join("run.sh");
+        fs::write(&script, "#!/bin/sh\necho original\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        run_git(&fx.repo, &["add", "run.sh"]);
+        run_git(&fx.repo, &["commit", "--quiet", "-m", "add script"]);
+
+        let pending = begin_turn(&fx.repo, &fx.sessions, "session-1", "edit script").unwrap();
+        fs::write(&script, "#!/bin/sh\necho agent edit\n").unwrap();
+        finalize_turn(pending).unwrap().expect("checkpoint");
+
+        let report = restore_latest(&store(&fx)).unwrap().expect("restore");
+        assert_eq!(report.restored, vec!["run.sh".to_string()]);
+        assert_eq!(
+            fs::read_to_string(&script).unwrap(),
+            "#!/bin/sh\necho original\n"
+        );
+        assert_eq!(
+            fs::metadata(&script).unwrap().permissions().mode() & 0o777,
+            0o755,
+            "restore must preserve the executable bits"
+        );
+    }
+
+    #[test]
     fn skips_files_the_user_edited_after_the_turn() {
         let fx = git_fixture();
         let pending = begin_turn(&fx.repo, &fx.sessions, "session-1", "edit").unwrap();
@@ -834,5 +910,35 @@ mod tests {
             fs::read_to_string(fx.repo.join("a.rs")).unwrap(),
             format!("round {}\n", MAX_CHECKPOINTS_PER_SESSION)
         );
+    }
+
+    #[test]
+    fn list_skips_a_torn_or_corrupt_manifest_without_panicking() {
+        let fx = git_fixture();
+
+        // A real checkpoint, finalized normally.
+        let pending = begin_turn(&fx.repo, &fx.sessions, "session-1", "good").unwrap();
+        fs::write(fx.repo.join("a.rs"), "changed\n").unwrap();
+        finalize_turn(pending).unwrap().expect("checkpoint");
+
+        // Simulate a crash mid-write of a second checkpoint's manifest: the
+        // directory exists (created before the manifest write) but
+        // checkpoint.json is truncated/invalid JSON.
+        let store = store(&fx);
+        let torn_dir = store.root().join("torn-checkpoint");
+        fs::create_dir_all(&torn_dir).unwrap();
+        fs::write(
+            torn_dir.join(MANIFEST_FILE),
+            "{\"id\": \"torn\", \"entries\":",
+        )
+        .unwrap();
+
+        let checkpoints = store.list();
+        assert_eq!(
+            checkpoints.len(),
+            1,
+            "the torn checkpoint must be skipped, not crash the whole list"
+        );
+        assert_ne!(checkpoints[0].id, "torn");
     }
 }

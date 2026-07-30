@@ -102,11 +102,11 @@ pub use credential_store::{CredentialStats, CredentialStore, CredentialType, Cre
 pub use message_queue::{
     MessageQueue, PendingMessage, PromptKind, QueueStats, MAX_PENDING_MESSAGES,
 };
-pub use native::{NativeAgent, NativeAgentConfig, ToolDefinition};
+pub use native::{NativeAgent, NativeAgentConfig, ToolDefinition, ToolResponseMessage};
 pub use protocol::{
-    DenialReason, ExecutionPhase, ExecutionReceipt, ExecutionSource, ExecutionStatus, FromAgent,
-    ToAgent, TokenUsage, ToolError, ToolExecution, ToolOutcome, ToolOutput, ToolReceiptDetails,
-    ToolResult,
+    ensure_untrusted_content_policy, DenialReason, ExecutionPhase, ExecutionReceipt,
+    ExecutionSource, ExecutionStatus, FromAgent, ToAgent, TokenUsage, ToolError, ToolExecution,
+    ToolOutcome, ToolOutput, ToolReceiptDetails, ToolResult, UNTRUSTED_CONTENT_POLICY,
 };
 pub use retry::{ErrorKind, RetryConfig, RetryDecision, RetryPolicy};
 pub use safety::{is_context_overflow, is_retryable_error, SafetyController, SafetyVerdict};

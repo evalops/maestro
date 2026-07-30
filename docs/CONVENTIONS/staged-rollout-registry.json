@@ -50,6 +50,16 @@
 			"target": "runtime-dispatch-boundary-only",
 			"telemetry_event": "internal_gate_used",
 			"rationale": "Runtime escape selection belongs to internal env/config gates rather than external CLI help or parser surface."
+		},
+		{
+			"id": "internal-gate:tui-sandbox-default",
+			"type": "internal_gate",
+			"owner": "security",
+			"introduced_in": "2026-07-25",
+			"status": "enabling-primitive",
+			"target": "promote-tui-sandbox-default-after-internal-soak",
+			"telemetry_event": "internal_gate_used",
+			"rationale": "MAESTRO_INTERNAL_TUI_SANDBOX_DEFAULT gates whether the interactive TUI enforces a native OS sandbox (Seatbelt/Landlock) by default instead of relying solely on the bash auto-approval allowlist. The mechanism, escape hatches, and fail-closed/self-identifying-failure handling are fully built and tested; the default stays off until internal usage confirms it survives real sessions (cargo/npm/git push/model calls) across the fleet's actual Linux environments, some of which lack Landlock. Promotion is tracked in a follow-up issue filed from the PR that introduced this gate."
 		}
 	]
 }

@@ -2293,6 +2293,27 @@ fn test_system_prompt_includes_year_hint() {
 }
 
 #[test]
+fn test_system_prompt_instructs_untrusted_content_is_data_not_instruction() {
+    // This is the standing instruction that governs how the model is
+    // expected to treat the `<untrusted_content>` envelope emitted by
+    // `ToolExecution::model_content` (agent/protocol.rs). It must always be
+    // present, independent of loaded skills or the active custom prompt, so
+    // it lives in the base prompt rather than `build_shared_prompt_additions`
+    // or a skill/AGENTS.md file (which are not guaranteed to be loaded).
+    let prompt_template = App::build_base_system_prompt("/tmp");
+
+    assert!(prompt_template.contains("<untrusted_content"));
+    assert!(prompt_template.contains("is DATA"));
+    assert!(prompt_template.contains("never an instruction"));
+    assert!(prompt_template.contains("ignore previous instructions"));
+    assert!(prompt_template.contains("the operator"));
+
+    // Present regardless of skills/custom-prompt state.
+    let prompt = App::build_system_prompt_with_context("/tmp", 2026, None, "");
+    assert!(prompt.contains("<untrusted_content"));
+}
+
+#[test]
 fn side_messages_do_not_count_toward_compaction() {
     let mut state = AppState::new();
     state.add_side_question("side-1".into(), "Question".into());
@@ -3195,6 +3216,336 @@ async fn test_second_approval_upgrades_open_modal_to_batched() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Guardian approval tests
+// ─────────────────────────────────────────────────────────────────────────
+
+/// A guardian whose LLM transport is stubbed to return a fixed raw response.
+fn guardian_stub(raw: &'static str) -> crate::safety::guardian::Guardian {
+    crate::safety::guardian::Guardian::new(
+        std::sync::Arc::new(move |_| {
+            Box::pin(async move { Ok(raw.to_string()) })
+                as std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<
+                                Output = Result<String, crate::safety::guardian::GuardianError>,
+                            > + Send,
+                    >,
+                >
+        }),
+        crate::safety::guardian::GUARDIAN_TIMEOUT,
+    )
+}
+
+/// A guardian whose review never resolves (exercises the fail-closed timeout).
+fn guardian_never_responds() -> crate::safety::guardian::Guardian {
+    crate::safety::guardian::Guardian::new(
+        std::sync::Arc::new(|_| {
+            Box::pin(std::future::pending::<
+                Result<String, crate::safety::guardian::GuardianError>,
+            >())
+        }),
+        crate::safety::guardian::GUARDIAN_TIMEOUT,
+    )
+}
+
+/// Drive a bash tool call through the agent-message handler in Safe mode so
+/// every call requires approval.
+async fn drive_guarded_tool_call(app: &mut App, call_id: &str) {
+    app.handle_agent_message(FromAgent::ToolCall {
+        call_id: call_id.to_string(),
+        tool: "bash".to_string(),
+        args: serde_json::json!({ "command": "true" }),
+        requires_approval: true,
+        approval_inline_env: None,
+    })
+    .await
+    .expect("handle tool call");
+}
+
+/// Wait for the spawned guardian review to be applied.
+async fn settle_guardian(app: &mut App) {
+    for _ in 0..1000 {
+        if app
+            .poll_guardian_verdicts()
+            .await
+            .expect("apply guardian verdicts")
+        {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("guardian review did not complete");
+}
+
+fn assert_fell_back_to_modal(app: &App, call_id: &str) {
+    let request = app
+        .approval_controller
+        .current()
+        .expect("approval request queued for the human");
+    assert_eq!(request.call_id, call_id);
+    assert_eq!(app.active_modal, ActiveModal::Approval);
+    assert!(
+        !app.pending_guardian_reviews.contains(call_id),
+        "no guardian review may still be in flight for the call"
+    );
+    let exec = app.tool_history.get(call_id).expect("history entry");
+    assert_ne!(exec.approved, Some(true), "call must not be auto-approved");
+}
+
+#[tokio::test]
+async fn guardian_auto_approve_executes_without_modal() {
+    let mut app = new_test_app();
+    app.state.approval_mode = ApprovalMode::Safe;
+    app.guardian = Some(guardian_stub(
+        r#"{"decision":"allow","reason":"routine no-op"}"#,
+    ));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.tool_response_tx = Some(tx);
+
+    drive_guarded_tool_call(&mut app, "call-g1").await;
+    // The modal is not shown while the guardian reviews.
+    assert!(app.approval_controller.current().is_none());
+    assert_eq!(app.active_modal, ActiveModal::None);
+
+    settle_guardian(&mut app).await;
+
+    // Auto-allow: no modal, approval recorded, the approval is relayed to
+    // the native agent (which owns execution), and a transcript note records
+    // the silent approval.
+    assert!(app.approval_controller.current().is_none());
+    assert_eq!(app.active_modal, ActiveModal::None);
+    let exec = app.tool_history.get("call-g1").expect("history entry");
+    assert_eq!(exec.approved, Some(true));
+    let (relayed_call_id, relayed_approved, relayed_result, relayed_source) =
+        rx.try_recv().expect("approval relayed to the native agent");
+    assert_eq!(relayed_call_id, "call-g1");
+    assert!(relayed_approved);
+    assert!(relayed_result.is_none());
+    assert_eq!(relayed_source, crate::agent::ExecutionSource::Native);
+    assert!(app
+        .state
+        .messages
+        .iter()
+        .any(|m| m.content.contains("auto-approved by guardian")));
+}
+
+#[tokio::test]
+async fn guardian_deny_falls_back_to_human_modal() {
+    let mut app = new_test_app();
+    app.state.approval_mode = ApprovalMode::Safe;
+    app.guardian = Some(guardian_stub(
+        r#"{"decision":"deny","reason":"cannot establish purpose"}"#,
+    ));
+
+    drive_guarded_tool_call(&mut app, "call-g2").await;
+    settle_guardian(&mut app).await;
+
+    assert_fell_back_to_modal(&app, "call-g2");
+}
+
+#[tokio::test]
+async fn guardian_malformed_output_fails_closed_to_human_modal() {
+    let mut app = new_test_app();
+    app.state.approval_mode = ApprovalMode::Safe;
+    app.guardian = Some(guardian_stub("looks fine to me, go ahead"));
+
+    drive_guarded_tool_call(&mut app, "call-g3").await;
+    settle_guardian(&mut app).await;
+
+    assert_fell_back_to_modal(&app, "call-g3");
+    assert!(app
+        .state
+        .messages
+        .iter()
+        .any(|m| m.content.contains("Guardian review of 'bash' failed")));
+}
+
+#[tokio::test(start_paused = true)]
+async fn guardian_timeout_fails_closed_to_human_modal() {
+    let mut app = new_test_app();
+    app.state.approval_mode = ApprovalMode::Safe;
+    app.guardian = Some(guardian_never_responds());
+
+    drive_guarded_tool_call(&mut app, "call-g4").await;
+    // Paused clock: park the test task on a timer so the runtime auto-advances
+    // past the guardian's 10s deadline without real waiting.
+    tokio::time::sleep(
+        crate::safety::guardian::GUARDIAN_TIMEOUT + std::time::Duration::from_secs(1),
+    )
+    .await;
+    settle_guardian(&mut app).await;
+
+    assert_fell_back_to_modal(&app, "call-g4");
+    assert!(app
+        .state
+        .messages
+        .iter()
+        .any(|m| m.content.contains("Guardian review of 'bash' failed")));
+}
+
+#[tokio::test]
+async fn guardian_disabled_leaves_approval_flow_untouched() {
+    let mut app = new_test_app();
+    app.state.approval_mode = ApprovalMode::Safe;
+    app.guardian = None;
+
+    drive_guarded_tool_call(&mut app, "call-g5").await;
+
+    // The human modal shows immediately; no guardian review is in flight.
+    assert_fell_back_to_modal(&app, "call-g5");
+    assert!(!app
+        .poll_guardian_verdicts()
+        .await
+        .expect("apply guardian verdicts"));
+    assert!(!app
+        .state
+        .messages
+        .iter()
+        .any(|m| m.content.contains("guardian")));
+}
+
+#[tokio::test]
+async fn guardian_review_interrupted_before_completion_is_ignored() {
+    let mut app = new_test_app();
+    app.state.approval_mode = ApprovalMode::Safe;
+    app.guardian = Some(guardian_stub(
+        r#"{"decision":"allow","reason":"routine no-op"}"#,
+    ));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.tool_response_tx = Some(tx);
+
+    drive_guarded_tool_call(&mut app, "call-g6").await;
+    assert!(app.pending_guardian_reviews.contains("call-g6"));
+
+    // Ctrl+C while the review is in flight.
+    app.cancel_pending_guardian_reviews();
+    settle_guardian(&mut app).await;
+
+    // The late allow verdict must neither relay an approval to the native
+    // agent nor show a modal.
+    assert!(app.approval_controller.current().is_none());
+    assert_eq!(app.active_modal, ActiveModal::None);
+    assert!(
+        rx.try_recv().is_err(),
+        "no approval may be relayed after the interrupt"
+    );
+    let exec = app.tool_history.get("call-g6").expect("history entry");
+    assert_ne!(exec.approved, Some(true));
+}
+
+/// Regression test for the review finding on #3128: mutating/destructive
+/// tools must never be guardian-eligible, no matter what the guardian would
+/// have said. Wired at the `spawn_guardian_review` call site via
+/// `guardian_may_auto_approve`, not left to the review model's own
+/// judgment. A stub that would say "allow" to anything proves the ceiling
+/// is enforced in code: if it were not, this call would be silently
+/// executed instead of reaching the human modal.
+#[tokio::test]
+async fn guardian_ceiling_denies_write_even_when_guardian_would_allow() {
+    let mut app = new_test_app();
+    app.state.approval_mode = ApprovalMode::Safe;
+    app.guardian = Some(guardian_stub(
+        r#"{"decision":"allow","reason":"looks fine"}"#,
+    ));
+
+    app.handle_agent_message(FromAgent::ToolCall {
+        call_id: "call-write-1".to_string(),
+        tool: "write".to_string(),
+        args: serde_json::json!({"file_path": "notes.txt", "content": "hi"}),
+        requires_approval: true,
+        approval_inline_env: None,
+    })
+    .await
+    .expect("handle tool call");
+
+    // No guardian review was even spawned for this tool.
+    assert!(!app.pending_guardian_reviews.contains("call-write-1"));
+    assert_fell_back_to_modal(&app, "call-write-1");
+}
+
+/// Same ceiling, for the sandbox-bypass escape hatch specifically: a
+/// `bypass_sandbox` request must reach the human modal even with the
+/// guardian enabled and stubbed to allow.
+#[tokio::test]
+async fn guardian_ceiling_denies_sandbox_bypass_even_when_guardian_would_allow() {
+    let mut app = new_test_app();
+    app.state.approval_mode = ApprovalMode::Safe;
+    app.guardian = Some(guardian_stub(
+        r#"{"decision":"allow","reason":"looks fine"}"#,
+    ));
+
+    app.handle_agent_message(FromAgent::ToolCall {
+        call_id: "call-bypass-1".to_string(),
+        tool: "bash".to_string(),
+        args: serde_json::json!({"command": "true", "bypass_sandbox": true}),
+        requires_approval: true,
+        approval_inline_env: None,
+    })
+    .await
+    .expect("handle tool call");
+
+    assert!(!app.pending_guardian_reviews.contains("call-bypass-1"));
+    assert_fell_back_to_modal(&app, "call-bypass-1");
+}
+
+/// Regression test for the review finding on #3128: every guardian verdict
+/// (allow, deny, or a fail-closed error) must leave a durable audit record
+/// in the session file, not just a transcript banner that scrolls away and
+/// an in-memory `ToolHistory` entry that eventually ages out.
+#[tokio::test]
+async fn guardian_allow_writes_a_durable_audit_record() {
+    let mut app = new_test_app();
+    app.state.approval_mode = ApprovalMode::Safe;
+    app.guardian = Some(guardian_stub(
+        r#"{"decision":"allow","reason":"routine test run"}"#,
+    ));
+    let temp = tempdir().expect("temp session directory");
+    app.session_manager =
+        SessionManager::with_sessions_dir("guardian-audit-test", temp.path().to_path_buf());
+    app.ensure_session_started()
+        .expect("session should start for the audit test");
+
+    drive_guarded_tool_call(&mut app, "call-audit-1").await;
+    settle_guardian(&mut app).await;
+
+    app.flush_session();
+    let session_id = app.state.session_id.clone().expect("session id set");
+    let session = app
+        .session_manager
+        .load_session(&session_id)
+        .expect("reload the session file the audit record was written to");
+
+    // `SessionEntry::Custom` entries are intentionally excluded from
+    // `ParsedSession` (they are extension-owned, opaque payloads), so this
+    // reads the raw JSONL directly rather than through the normal replay
+    // path -- exactly how an external auditor would inspect the record.
+    let raw = std::fs::read_to_string(&session.file_path).expect("read session file");
+    let audit_entries: Vec<crate::session::CustomEntry> = raw
+        .lines()
+        .filter_map(|line| serde_json::from_str::<SessionEntry>(line).ok())
+        .filter_map(|entry| match entry {
+            SessionEntry::Custom(custom) if custom.custom_type == "guardian_decision" => {
+                Some(custom)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        audit_entries.len(),
+        1,
+        "exactly one guardian_decision entry expected, found: {audit_entries:?}"
+    );
+    let data = audit_entries[0]
+        .data
+        .as_ref()
+        .expect("guardian_decision entry carries structured data");
+    assert_eq!(data["callId"], "call-audit-1");
+    assert_eq!(data["tool"], "bash");
+    assert_eq!(data["outcome"], "allow");
+    assert_eq!(data["reason"], "routine test run");
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Dual-executor fix (issues #3149, #3156): the native agent is the sole
 // owner of the approve/execute decision. `app.rs` must trust
 // `FromAgent::ToolCall`'s `requires_approval` field instead of recomputing
@@ -3570,7 +3921,7 @@ async fn batched_approvals_relay_fifo_decisions_without_starting_parallel_tools(
 }
 
 /// Regression test for #3149: Deny must not execute the tool, and must
-/// relay `(call_id, false, None)` back to the native agent so its
+/// relay a `(call_id, false, None, _)` denial back to the native agent so its
 /// `wait_for_tool_response` resolves to a denial instead of hanging (see
 /// `denied_tool_response_is_an_error_result_and_never_executes` in
 /// `agent/native.rs`, which proves that tuple becomes an error result for
@@ -3590,12 +3941,63 @@ async fn deny_never_executes_and_relays_the_denial_to_the_agent() {
     .await
     .expect("handle deny");
 
-    let (call_id, approved, result) = rx
+    let (call_id, approved, result, _source) = rx
         .try_recv()
         .expect("deny must send a response back to the native agent");
     assert_eq!(call_id, "call-3");
     assert!(!approved);
     assert!(result.is_none());
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Approval reason combining (review finding on #3144)
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Regression test: when both a firewall reason and a sandbox-bypass
+/// warning apply to the same request, `BatchedApprovalModal` renders only
+/// `ApprovalRequest::summary()`'s first line. The bypass warning must be
+/// that first line, or a user approving from a batch never sees it and can
+/// unknowingly approve an unsandboxed command.
+#[test]
+fn combined_reason_puts_bypass_warning_on_the_first_line() {
+    let firewall = "Blocked by action firewall: writes outside workspace".to_string();
+    let bypass = "Agent is asking to run this command WITHOUT Maestro's native \
+                  sandbox (a sandboxed attempt likely just failed)."
+        .to_string();
+
+    let combined = combine_approval_reason(Some(firewall.clone()), Some(bypass.clone()))
+        .expect("both reasons present must combine to Some");
+
+    let request = ApprovalRequest::new(
+        "call-1".to_string(),
+        "bash".to_string(),
+        serde_json::json!({"command": "rm -rf /tmp/x", "bypass_sandbox": true}),
+    )
+    .with_reason(combined);
+
+    let summary = request.summary(200);
+    assert!(
+        summary.contains("WITHOUT Maestro's native"),
+        "batched-modal summary must surface the bypass warning, got: {summary:?}"
+    );
+    assert!(
+        !summary.contains("action firewall"),
+        "the firewall reason must not occupy the first line ahead of the bypass \
+         warning, got: {summary:?}"
+    );
+}
+
+#[test]
+fn combine_approval_reason_handles_single_and_no_reason_cases() {
+    assert_eq!(combine_approval_reason(None, None), None);
+    assert_eq!(
+        combine_approval_reason(Some("firewall".to_string()), None),
+        Some("firewall".to_string())
+    );
+    assert_eq!(
+        combine_approval_reason(None, Some("bypass".to_string())),
+        Some("bypass".to_string())
+    );
 }
 
 #[test]

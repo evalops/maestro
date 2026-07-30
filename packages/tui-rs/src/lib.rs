@@ -66,6 +66,10 @@ pub use maestro_ai as ai;
 /// File-level checkpoints for `/rewind files` (restore files an agent turn modified).
 pub mod checkpoints;
 pub mod doctor;
+/// Shared atomic-write helper (temp file + fsync + rename + parent-dir fsync)
+/// for persisted JSON/text state. See module docs for crash-safety vs.
+/// power-loss-safety guarantees.
+pub mod fs_atomic;
 pub mod model_catalog;
 pub mod model_monitor;
 pub mod palette_resource;
@@ -219,6 +223,8 @@ pub mod process_hardening;
 pub mod prompts;
 pub mod remote_attach;
 pub mod remote_cli;
+/// Second-opinion review of uncommitted changes by a different model (`/rubber-duck`).
+pub mod rubber_duck;
 pub mod run_cli;
 pub mod scenario_cli;
 pub mod search_cli;

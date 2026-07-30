@@ -1,4 +1,4 @@
-use maestro_tui::agent::{FromAgent, NativeAgent, NativeAgentConfig, TokenUsage};
+use maestro_tui::agent::{ExecutionSource, FromAgent, NativeAgent, NativeAgentConfig, TokenUsage};
 use serde_json::Value;
 use std::env;
 use std::time::Duration;
@@ -149,6 +149,7 @@ pub(crate) async fn run_a2a_native_turn(
                         call_id.clone(),
                         auto_approve_tools,
                         None,
+                        ExecutionSource::RemoteClient,
                     ));
                     if !auto_approve_tools {
                         finish_tool_metadata(&mut output.tools, &call_id, false);

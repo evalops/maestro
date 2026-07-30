@@ -54,6 +54,7 @@
 mod bash_analyzer;
 mod dangerous_patterns;
 mod firewall;
+pub mod guardian;
 mod path_containment;
 mod policy;
 mod safe_mode;

@@ -1205,19 +1205,13 @@ fn yaml_quote(value: &str) -> String {
     )
 }
 
+/// Thin delegating alias over [`crate::fs_atomic::write_atomic`], kept so
+/// existing callers (`config_cli`, `mission_cli`, `skill_package_cli`, ...)
+/// don't need to change their imports. New callers should prefer
+/// `crate::fs_atomic::write_atomic` directly.
 pub(crate) fn write_atomic(path: &Path, content: &str) -> Result<()> {
-    let parent = path.parent().context("output path has no parent")?;
-    fs::create_dir_all(parent)?;
-    let temporary = parent.join(format!(
-        ".{}.{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("skill"),
-        std::process::id()
-    ));
-    fs::write(&temporary, content)?;
-    fs::rename(&temporary, path)?;
-    Ok(())
+    crate::fs_atomic::write_atomic(path, content)
+        .with_context(|| format!("failed to atomically write {}", path.display()))
 }
 
 fn scaffold(name: Option<&str>, args: &SkillArgs) -> Result<i32> {

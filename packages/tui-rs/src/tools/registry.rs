@@ -750,6 +750,23 @@ impl ToolExecutor {
         self
     }
 
+    /// Whether this registry may spawn a native language server.
+    ///
+    /// `NativeLspSession::start` launches `rust-analyzer` / `pyright` /
+    /// `MAESTRO_LSP_COMMAND` via a bare `tokio::process::Command` that is
+    /// never wrapped by Seatbelt or Landlock. Under any policy other than
+    /// `DangerFullAccess` (or "no policy"), that child would escape the
+    /// advertised containment — including the default network-enabled
+    /// `WorkspaceWrite` and implicit diagnostics on `read`/`write`/`edit`.
+    /// See the matching gate in `sandbox_policy_denial`.
+    #[must_use]
+    pub(crate) fn may_launch_native_language_server(&self) -> bool {
+        match self.sandbox_policy.as_ref() {
+            None | Some(SandboxPolicy::DangerFullAccess) => true,
+            Some(_) => false,
+        }
+    }
+
     /// Build the bash tool honoring the pinned behavior version and sandbox.
     fn build_bash_tool(&self) -> BashTool {
         let tool = BashTool::new(&self.cwd).with_version(self.resolved_bash_version());
@@ -861,6 +878,15 @@ impl ToolExecutor {
     }
 
     async fn ensure_mcp_client(&self) -> Result<Arc<McpClient>, String> {
+        if self
+            .sandbox_policy
+            .as_ref()
+            .is_some_and(|policy| !policy.has_full_network_access())
+        {
+            return Err(
+                "MCP blocked because the active sandbox policy disables network access".to_string(),
+            );
+        }
         let config = load_mcp_config(Some(Path::new(&self.cwd)));
         let servers: Vec<_> = config.enabled_servers().cloned().collect();
         let desired_configs: HashMap<String, crate::mcp::McpServerConfig> = servers
@@ -1218,6 +1244,11 @@ impl ToolExecutor {
     /// assert!(executor.requires_approval("bash", &unsafe_cmd));
     /// ```
     pub fn requires_approval(&self, name: &str, args: &serde_json::Value) -> bool {
+        // This check runs before the allowlist below on purpose.
+        if self.requires_sandbox_bypass_approval(name, args) {
+            return true;
+        }
+
         // Version-managed tools classify approval with their pinned behavior
         // version so replayed sessions reproduce the recorded decisions.
         if matches!(name, "bash" | "Bash") {
@@ -1229,6 +1260,27 @@ impl ToolExecutor {
             .get_inline_tool(name)
             .map_or(name, |tool| tool.definition.name.as_str());
         self.registry.requires_approval(registry_name, args)
+    }
+
+    /// Whether this tool call is asking to run a command outside the native
+    /// sandbox while a sandbox policy is active.
+    ///
+    /// A request to bypass the native sandbox always requires human
+    /// approval, regardless of the command allowlist: this is the
+    /// per-command sandbox escape hatch, and it must be a thing the user is
+    /// asked about, never something that silently slips through because the
+    /// command text happens to look safe. This is also the check approval
+    /// gates use when they would otherwise auto-approve unconditionally
+    /// (e.g. `ApprovalMode::Yolo`), so a bypass request can never be
+    /// auto-approved on any surface.
+    #[must_use]
+    pub fn requires_sandbox_bypass_approval(&self, name: &str, args: &serde_json::Value) -> bool {
+        name.eq_ignore_ascii_case("bash")
+            && self.sandbox_policy.is_some()
+            && args
+                .get("bypass_sandbox")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
     }
 
     /// Check a tool call against the action firewall.
@@ -1252,6 +1304,92 @@ impl ToolExecutor {
                 tool_key.as_str(),
                 "write" | "edit" | "notebook_edit" | "todo" | "extract_document"
             )
+    }
+
+    fn sandbox_policy_denial(&self, name: &str, args: &serde_json::Value) -> Option<String> {
+        let policy = self.sandbox_policy.as_ref()?;
+        let tool = name.to_ascii_lowercase();
+
+        let uses_mcp_transport = tool.starts_with("mcp_") || McpClient::is_mcp_tool(name);
+        if !policy.has_full_network_access()
+            && (uses_mcp_transport
+                || matches!(
+                    tool.as_str(),
+                    "web_fetch"
+                        | "websearch"
+                        | "codesearch"
+                        | "extract_document"
+                        | "gh_pr"
+                        | "gh_issue"
+                        | "gh_repo"
+                ))
+        {
+            return Some(format!(
+                "Tool '{name}' blocked because the active sandbox policy disables network access"
+            ));
+        }
+
+        if !matches!(policy, SandboxPolicy::DangerFullAccess) {
+            let action = args
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let unsandboxed_git_mutation = (tool == "gh_pr" && action == "checkout")
+                || (tool == "gh_repo" && action == "clone");
+            if unsandboxed_git_mutation {
+                return Some(format!(
+                    "Tool '{name}' blocked because its git mutation is not contained by the active sandbox policy"
+                ));
+            }
+        }
+
+        // The VS Code/JetBrains diagnostics/definition/references tools
+        // launch a language server (rust-analyzer, pyright, or
+        // MAESTRO_LSP_COMMAND) via `NativeLspSession::start` -- a bare
+        // `tokio::process::Command` that the OS-level sandbox never
+        // contains, with full write and network access. The same escape
+        // applies under default WorkspaceWrite (network on) and under
+        // ReadOnly: the child is never Seatbelt/Landlock-wrapped. Block
+        // every non-DangerFullAccess policy; implicit diagnostics on
+        // read/write/edit are gated the same way via
+        // `ToolRegistry::may_launch_native_language_server`.
+        let launches_native_language_server = matches!(
+            tool.as_str(),
+            "vscode_get_diagnostics"
+                | "jetbrains_get_diagnostics"
+                | "vscode_get_definition"
+                | "jetbrains_get_definition"
+                | "vscode_find_references"
+                | "jetbrains_find_references"
+        );
+        if launches_native_language_server && !matches!(policy, SandboxPolicy::DangerFullAccess) {
+            return Some(format!(
+                "Tool '{name}' blocked because it launches a language server outside the active sandbox policy"
+            ));
+        }
+
+        if matches!(policy, SandboxPolicy::ReadOnly) {
+            let action = args
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let mutates_files = matches!(tool.as_str(), "write" | "edit" | "notebook_edit")
+                || (tool == "background_tasks" && action == "start")
+                || tool == "extract_document"
+                // `todo` persists to ~/.composer/todos.json (or
+                // MAESTRO_TODO_FILE) via tools/todo.rs::save_store.
+                || tool == "todo"
+                // `screenshot` launches an unsandboxed capture program that
+                // writes a temp PNG (tools/image.rs).
+                || tool == "screenshot";
+            if mutates_files {
+                return Some(format!(
+                    "Tool '{name}' blocked by the active read-only sandbox policy"
+                ));
+            }
+        }
+
+        None
     }
 
     /// Execute a tool by name with the given arguments
@@ -1385,13 +1523,11 @@ impl ToolExecutor {
         generation: u64,
         execution_context: ToolExecutionContext<'_>,
     ) -> ToolResult {
+        if let Some(message) = self.sandbox_policy_denial(tool_name, args) {
+            return ToolResult::failure(message);
+        }
         if self.sandbox_policy.is_some() && self.get_inline_tool(tool_name).is_some() {
             return ToolResult::failure("Inline shell tools are disabled for sandboxed exec runs");
-        }
-        if matches!(self.sandbox_policy, Some(SandboxPolicy::ReadOnly))
-            && matches!(tool_name.to_lowercase().as_str(), "write" | "edit")
-        {
-            return ToolResult::failure("Tool blocked by read-only sandbox policy");
         }
         if let FirewallVerdict::Block { reason } = self.firewall_verdict(tool_name, args) {
             return ToolResult::failure(format!("Blocked by action firewall: {reason}"));
@@ -1623,25 +1759,18 @@ impl ToolExecutor {
         generation: u64,
         execution_context: ToolExecutionContext<'_>,
     ) -> ToolExecution {
+        if let Some(message) = self.sandbox_policy_denial(tool_name, args) {
+            let execution =
+                ToolExecution::denied(call_id, tool_name, DenialReason::SandboxPolicy { message });
+            emit_typed_tool_end(event_tx, call_id, &execution);
+            return execution;
+        }
         if self.sandbox_policy.is_some() && self.get_inline_tool(tool_name).is_some() {
             let execution = ToolExecution::denied(
                 call_id,
                 tool_name,
                 DenialReason::SandboxPolicy {
                     message: "Inline shell tools are disabled for sandboxed exec runs".to_string(),
-                },
-            );
-            emit_typed_tool_end(event_tx, call_id, &execution);
-            return execution;
-        }
-        if matches!(self.sandbox_policy, Some(SandboxPolicy::ReadOnly))
-            && matches!(tool_name.to_lowercase().as_str(), "write" | "edit")
-        {
-            let execution = ToolExecution::denied(
-                call_id,
-                tool_name,
-                DenialReason::SandboxPolicy {
-                    message: "Tool blocked by read-only sandbox policy".to_string(),
                 },
             );
             emit_typed_tool_end(event_tx, call_id, &execution);

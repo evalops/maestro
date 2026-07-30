@@ -81,11 +81,8 @@ pub fn save_queue_modes(steering_mode: QueueMode, follow_up_mode: QueueMode) -> 
         object.remove("queueMode");
     }
 
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
     let encoded = serde_json::to_string_pretty(&root)?;
-    fs::write(path, encoded)
+    crate::fs_atomic::write_atomic(path, encoded)
 }
 
 fn ui_state_path() -> Option<PathBuf> {

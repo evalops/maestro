@@ -23,6 +23,7 @@
 //!     ".".to_string(),
 //!     true,
 //!     None,
+//!     None,
 //! )
 //! .await?;
 //!
@@ -793,6 +794,10 @@ async fn drain_stream<R>(
 /// * `workspace_dir` - Workspace root for config resolution
 /// * `shell` - If true, run through the system shell (enables pipes, redirects)
 /// * `env` - Optional additional environment variables
+/// * `sandbox_policy` - If `Some`, the process is spawned under the native
+///   OS sandbox with this policy (same containment as a sandboxed `bash`
+///   call). Sandboxed spawns are not placed in their own process group, so
+///   `stop` relies on parent-PID sweeping rather than group kills.
 ///
 /// # Returns
 ///
@@ -803,6 +808,7 @@ pub async fn start(
     workspace_dir: String,
     shell: bool,
     env: Option<HashMap<String, String>>,
+    sandbox_policy: Option<crate::sandbox::SandboxPolicy>,
 ) -> Result<BackgroundTask, String> {
     // Apply the same dangerous-command analysis as the bash tool; background
     // tasks bypass approval flows, so high-severity commands must be blocked
@@ -829,38 +835,72 @@ pub async fn start(
     let log_writer = Arc::new(Mutex::new(log_writer));
     let observer = { log_writer.lock().await.observer() };
 
-    let mut cmd = if shell {
-        let (shell_path, shell_args) =
-            resolve_shell_config().map_err(|e| format!("Shell unavailable: {e}"))?;
-        let mut cmd = Command::new(shell_path);
-        cmd.args(shell_args).arg(command.clone());
-        cmd
-    } else {
-        let parts = shlex::split(&command)
-            .ok_or_else(|| "Failed to parse command arguments".to_string())?;
-        if parts.is_empty() {
-            return Err("Empty command".to_string());
-        }
-        let mut cmd = Command::new(&parts[0]);
-        if parts.len() > 1 {
-            cmd.args(&parts[1..]);
-        }
-        cmd
-    };
-
-    cmd.current_dir(&cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
     let resolved_env = resolve_shell_environment(Path::new(&workspace_dir), env.as_ref());
-    cmd.env_clear();
-    cmd.envs(resolved_env);
 
-    set_new_process_group(&mut cmd);
-
-    let mut child = cmd
-        .spawn()
+    let mut child = if let Some(policy) = &sandbox_policy {
+        // Spawn under the native OS sandbox, same as a sandboxed `bash`
+        // call: a session advertised as read-only or workspace-write must
+        // not be escapable by routing a long-lived command through
+        // `background_tasks` instead. `spawn_sandboxed_command` pipes all
+        // three stdio streams; stdin is dropped immediately so the child
+        // sees EOF, matching the unsandboxed `Stdio::null()` below.
+        let argv = if shell {
+            let (shell_path, shell_args) =
+                resolve_shell_config().map_err(|e| format!("Shell unavailable: {e}"))?;
+            let mut argv = vec![shell_path];
+            argv.extend(shell_args);
+            argv.push(command.clone());
+            argv
+        } else {
+            let parts = shlex::split(&command)
+                .ok_or_else(|| "Failed to parse command arguments".to_string())?;
+            if parts.is_empty() {
+                return Err("Empty command".to_string());
+            }
+            parts
+        };
+        let mut child = crate::sandbox::spawn_sandboxed_command(
+            argv,
+            PathBuf::from(&cwd),
+            policy,
+            resolved_env,
+        )
+        .await
         .map_err(|e| format!("Failed to spawn background task: {e}"))?;
+        drop(child.stdin.take());
+        child
+    } else {
+        let mut cmd = if shell {
+            let (shell_path, shell_args) =
+                resolve_shell_config().map_err(|e| format!("Shell unavailable: {e}"))?;
+            let mut cmd = Command::new(shell_path);
+            cmd.args(shell_args).arg(command.clone());
+            cmd
+        } else {
+            let parts = shlex::split(&command)
+                .ok_or_else(|| "Failed to parse command arguments".to_string())?;
+            if parts.is_empty() {
+                return Err("Empty command".to_string());
+            }
+            let mut cmd = Command::new(&parts[0]);
+            if parts.len() > 1 {
+                cmd.args(&parts[1..]);
+            }
+            cmd
+        };
+
+        cmd.current_dir(&cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd.env_clear();
+        cmd.envs(resolved_env);
+
+        set_new_process_group(&mut cmd);
+
+        cmd.spawn()
+            .map_err(|e| format!("Failed to spawn background task: {e}"))?
+    };
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -1248,6 +1288,7 @@ mod tests {
                 "/tmp".to_string(),
                 false,
                 None,
+                None,
             )
             .await;
             let err = result.expect_err("dangerous command must be blocked");
@@ -1265,6 +1306,7 @@ mod tests {
             "/tmp".to_string(),
             "/tmp".to_string(),
             true,
+            None,
             None,
         )
         .await;
@@ -1425,6 +1467,7 @@ mod tests {
             cwd.clone(),
             cwd,
             true,
+            None,
             None,
         )
         .await

@@ -35,6 +35,7 @@
 //! }
 //! ```
 
+use crate::agent::protocol::close_dangling_untrusted_content_envelope;
 use crate::agent::token_estimation::{self, IMAGE_TOKEN_ESTIMATE};
 use crate::ai::{ContentBlock, Message, MessageContent, Role};
 
@@ -487,7 +488,19 @@ impl ContextCompactor {
                                     } else {
                                         "succeeded"
                                     };
-                                    let truncated = truncate_text(content, 150);
+                                    // Truncating already-wrapped tool output
+                                    // (see `agent::protocol::wrap_untrusted_content`)
+                                    // can keep an opening `<untrusted_content>`
+                                    // tag while dropping its close, leaving the
+                                    // rest of this compacted summary --
+                                    // including its own closing
+                                    // `</context_summary>` tag and the "Please
+                                    // continue" instruction that follows --
+                                    // structurally inside a never-closed
+                                    // untrusted region. Repair it before use.
+                                    let truncated = close_dangling_untrusted_content_envelope(
+                                        &truncate_text(content, 150),
+                                    );
                                     tool_results.push(format!("Tool {status}: {truncated}"));
                                 }
                                 _ => {}
@@ -774,7 +787,12 @@ fn elide_block(block: ContentBlock, max_chars: usize) -> ContentBlock {
             is_error,
         } => ContentBlock::ToolResult {
             tool_use_id,
-            content: elide_text(&content, max_chars),
+            // Same dangling-envelope risk as the truncation in
+            // `generate_summary` (head/tail elision keeps the tail, so this
+            // is normally a no-op, but the head-only oversized-code-block
+            // path in `elide_oversized_code_blocks` doesn't guarantee the
+            // tail survives if the block itself sits at the very end).
+            content: close_dangling_untrusted_content_envelope(&elide_text(&content, max_chars)),
             is_error,
         },
         other => other,
@@ -966,6 +984,164 @@ mod tests {
         let text = "😀😀😀";
         let truncated = truncate_text(text, 5);
         assert_eq!(truncated, text);
+    }
+
+    // ========================================================================
+    // Regression: dangling `<untrusted_content>` after truncation/elision
+    //
+    // A head-only truncation of already-enveloped tool output (see
+    // `agent::protocol::wrap_untrusted_content`) can keep the opening tag
+    // and drop the closing one. Left unrepaired, everything folded into the
+    // `<context_summary>` after that point -- including the summary's own
+    // `</context_summary>` close tag and the "Please continue" instruction
+    // -- reads as still "inside" a never-closed untrusted region.
+    // ========================================================================
+
+    #[test]
+    fn test_close_dangling_untrusted_content_envelope_validates_every_opener() {
+        // Failed untrusted tools with partial output render two envelopes, so
+        // truncation can keep the first envelope complete while cutting inside
+        // the *second* opener. Checking only the first opener's `>` leaves the
+        // second one malformed.
+        let first = "<untrusted_content source=\"web_fetch\" origin=\"https://example.com/a\">\npartial output\n</untrusted_content>\nerror: ";
+        let second_opener_fragment =
+            "<untrusted_content source=\"web_fetch\" origin=\"https://example.com/a/very/long";
+        let truncated = format!("{first}{second_opener_fragment}");
+        let repaired = close_dangling_untrusted_content_envelope(&truncated);
+
+        assert!(
+            !repaired.contains(second_opener_fragment),
+            "the malformed second opener must be reconstructed, not left in place: {repaired}"
+        );
+        assert!(
+            repaired.contains("<untrusted_content>\n</untrusted_content>"),
+            "the cut opener must be replaced with a complete provenance-free envelope: {repaired}"
+        );
+        assert_eq!(
+            repaired.matches("<untrusted_content").count(),
+            repaired.matches("</untrusted_content>").count(),
+            "repaired text must be balanced: {repaired}"
+        );
+        // The first, intact envelope must survive untouched.
+        assert!(repaired.contains(first));
+    }
+
+    #[test]
+    fn test_close_dangling_untrusted_content_envelope_repairs_truncated_open_tag() {
+        let dangling = "<untrusted_content source=\"web_fetch\" origin=\"https://example.com\">\nfirst line of a much longer body that got cut off mid-sent";
+        let repaired = close_dangling_untrusted_content_envelope(dangling);
+        assert_eq!(
+            repaired.matches("<untrusted_content").count(),
+            repaired.matches("</untrusted_content>").count(),
+            "repaired text must have a matching close tag for every open tag: {repaired}"
+        );
+        assert!(repaired.ends_with("</untrusted_content>"));
+    }
+
+    #[test]
+    fn test_close_dangling_untrusted_content_envelope_reconstructs_partial_opener() {
+        let partial =
+            "<untrusted_content source=\"web_fetch\" origin=\"https://example.com/a/very/long";
+        let repaired = close_dangling_untrusted_content_envelope(partial);
+
+        assert_eq!(
+            repaired, "<untrusted_content>\n</untrusted_content>",
+            "a quoted attribute cut in half must not survive as malformed structure"
+        );
+    }
+
+    #[test]
+    fn test_close_dangling_untrusted_content_envelope_is_noop_when_already_balanced() {
+        let balanced = "<untrusted_content source=\"web_fetch\">complete body</untrusted_content>";
+        assert_eq!(
+            close_dangling_untrusted_content_envelope(balanced),
+            balanced
+        );
+    }
+
+    #[test]
+    fn test_close_dangling_untrusted_content_envelope_is_noop_for_unwrapped_text() {
+        let plain = "just a normal tool result with no envelope at all";
+        assert_eq!(close_dangling_untrusted_content_envelope(plain), plain);
+    }
+
+    #[test]
+    fn test_generate_summary_repairs_truncated_envelope_in_tool_result() {
+        let config = CompactionConfig {
+            summarize_tool_results: true,
+            ..Default::default()
+        };
+        let compactor = ContextCompactor::new(config);
+
+        // `generate_summary` only extracts `ToolResult` blocks from
+        // `Role::Assistant` messages (mirrors what the real agent loop
+        // produces: an assistant's `ToolUse` and its paired `ToolResult` in
+        // the same `Blocks` message) -- a `ToolResult` under a `Role::User`
+        // message (as `make_tool_result_message` builds, matching the wire
+        // shape) is never inspected here at all, only `as_text()`'d.
+        //
+        // Longer than the 150-char truncation budget `generate_summary`
+        // applies to tool results, so `truncate_text` cuts inside the body
+        // and the closing tag is dropped.
+        let long_wrapped_result = format!(
+            "<untrusted_content source=\"web_fetch\" origin=\"https://attacker.example/page\">\n{}\n</untrusted_content>",
+            "x".repeat(300)
+        );
+        let messages = vec![Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::ToolUse {
+                    id: "call-1".to_string(),
+                    name: "web_fetch".to_string(),
+                    input: serde_json::json!({"url": "https://attacker.example/page"}),
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "call-1".to_string(),
+                    content: long_wrapped_result,
+                    is_error: Some(false),
+                },
+            ]),
+        }];
+
+        let summary = compactor.generate_summary(&messages);
+
+        assert_eq!(
+            summary.matches("<untrusted_content").count(),
+            summary.matches("</untrusted_content>").count(),
+            "summary must not leave a dangling untrusted-content open tag: {summary}"
+        );
+    }
+
+    #[test]
+    fn test_generate_summary_reconstructs_envelope_when_long_origin_is_truncated() {
+        let config = CompactionConfig {
+            summarize_tool_results: true,
+            ..Default::default()
+        };
+        let compactor = ContextCompactor::new(config);
+        let long_origin = format!("https://attacker.example/{}", "segment/".repeat(30));
+        let wrapped_result = format!(
+            "<untrusted_content source=\"web_fetch\" origin=\"{long_origin}\">\nbody\n</untrusted_content>"
+        );
+        let messages = vec![Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "call-1".to_string(),
+                content: wrapped_result,
+                is_error: Some(false),
+            }]),
+        }];
+
+        let summary = compactor.generate_summary(&messages);
+        assert!(
+            summary.contains("<untrusted_content>\n</untrusted_content>"),
+            "summary must reconstruct a complete envelope when truncation cuts inside its opener: {summary}"
+        );
+        assert_eq!(
+            summary.matches("<untrusted_content").count(),
+            summary.matches("</untrusted_content>").count(),
+            "reconstructed envelope must remain balanced: {summary}"
+        );
     }
 
     #[test]

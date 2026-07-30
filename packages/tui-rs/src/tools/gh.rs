@@ -581,6 +581,23 @@ async fn resolve_default_branch(
         .ok_or_else(|| GhCommandError::Failed("Failed to read default_branch".to_string()))
 }
 
+/// Tag a successful `gh_*` result with the repository it came from.
+///
+/// GitHub issue/PR bodies, comments, and repo metadata (README/description)
+/// are free text authored by arbitrary GitHub users, not by this codebase or
+/// its operator. Attaching an `origin` lets
+/// `agent::protocol::ToolExecution::model_content()` show provenance in the
+/// untrusted-content envelope it wraps this output in. Only successful
+/// results carry remote content worth tagging; failures are already
+/// agent-authored error strings.
+fn with_repo_origin(result: ToolResult, repo: Option<&str>) -> ToolResult {
+    if !result.success {
+        return result;
+    }
+    let origin = repo.unwrap_or("(gh CLI default repository)");
+    result.with_details(serde_json::json!({ "origin": format!("github:{origin}") }))
+}
+
 async fn resolve_repo_full_name(
     gh_repo: Option<&str>,
     cancel: Option<&CancellationToken>,
@@ -637,7 +654,7 @@ pub(crate) async fn gh_pr(
 
     let _ = parsed.json.as_ref();
     let repo = parsed.repository.as_deref();
-    match parsed.action.as_str() {
+    let result = match parsed.action.as_str() {
         "create" => {
             let title = match parsed.title {
                 Some(val) => val,
@@ -947,7 +964,8 @@ pub(crate) async fn gh_pr(
             }
         }
         _ => ToolResult::failure("Unsupported gh_pr action".to_string()),
-    }
+    };
+    with_repo_origin(result, repo)
 }
 
 /// Execute a GitHub Issue operation.
@@ -975,7 +993,7 @@ pub(crate) async fn gh_issue(args: Value, cancel: Option<&CancellationToken>) ->
 
     let _ = parsed.json.as_ref();
     let repo = parsed.repository.as_deref();
-    match parsed.action.as_str() {
+    let result = match parsed.action.as_str() {
         "create" => {
             let title = match parsed.title {
                 Some(val) => val,
@@ -1097,7 +1115,8 @@ pub(crate) async fn gh_issue(args: Value, cancel: Option<&CancellationToken>) ->
             }
         }
         _ => ToolResult::failure("Unsupported gh_issue action".to_string()),
-    }
+    };
+    with_repo_origin(result, repo)
 }
 
 /// Execute a GitHub Repository operation.
@@ -1128,7 +1147,7 @@ pub(crate) async fn gh_repo(
 
     let _ = parsed.json.as_ref();
     let repo = parsed.repository.as_deref();
-    match parsed.action.as_str() {
+    let result = match parsed.action.as_str() {
         "view" => {
             match run_gh_api(
                 "repos/{owner}/{repo}",
@@ -1212,7 +1231,8 @@ pub(crate) async fn gh_repo(
             }
         }
         _ => ToolResult::failure("Unsupported gh_repo action".to_string()),
-    }
+    };
+    with_repo_origin(result, repo)
 }
 
 #[cfg(test)]
