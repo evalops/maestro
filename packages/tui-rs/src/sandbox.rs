@@ -3002,7 +3002,7 @@ mod tests {
             vec![
                 "sh".to_string(),
                 "-c".to_string(),
-                "printf after > src/lib.rs".to_string(),
+                "printf 'after\\n' > src/lib.rs".to_string(),
             ],
             workspace.path().to_path_buf(),
             &policy,
