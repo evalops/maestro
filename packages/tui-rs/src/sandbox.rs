@@ -259,10 +259,184 @@ impl Default for SandboxPolicy {
     /// - Allows writes to cwd, /tmp, and $TMPDIR
     /// - No network access
     /// - Read access to entire filesystem
+    ///
+    /// This is the conservative library default used by callers that don't
+    /// have a specific product surface in mind. Interactive and exec sessions
+    /// should use [`SandboxPolicy::workspace_write_default`] instead, which
+    /// additionally allows network access and a curated set of package-manager
+    /// cache directories — see that function's docs for the measurement
+    /// behind the difference.
     fn default() -> Self {
         Self::WorkspaceWrite {
             writable_roots: Vec::new(),
             network_access: false,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+        }
+    }
+}
+
+impl SandboxPolicy {
+    /// Curated, well-known package-manager/build-tool cache directories that
+    /// live outside both `cwd` and `/tmp` on a typical system, returned as
+    /// additional `writable_roots` for [`SandboxPolicy::workspace_write_default`].
+    ///
+    /// # Why this exists
+    ///
+    /// A `WorkspaceWrite` policy with an empty `writable_roots` list measurably
+    /// breaks ordinary agentic-coding sessions: `cargo build` fetching a
+    /// not-yet-cached dependency fails with `Permission denied` writing to
+    /// `$CARGO_HOME` (default `~/.cargo`), because that directory is outside
+    /// both the workspace and `/tmp`. This was reproduced and fixed during the
+    /// design of the interactive-TUI sandbox default — see the PR that
+    /// introduced this function for the before/after `cargo build` trace.
+    ///
+    /// # Why this is a curated list, not `$HOME`
+    ///
+    /// Granting all of `$HOME` would defeat the exact containment this
+    /// sandbox exists to provide: the two demonstrated allowlist bypasses
+    /// (`find -fprintf` and an `LD_PRELOAD`/`DYLD_INSERT_LIBRARIES`-injected
+    /// write) both target `$HOME` dotfiles (`~/.bashrc`, `~/.ssh/authorized_keys`).
+    /// This list only grants the specific, well-known cache directories that
+    /// package managers write to when fetching dependencies, and deliberately
+    /// excludes `~/.ssh`, `~/.aws`, `~/.config`, shell rc files, and the rest
+    /// of the home directory.
+    ///
+    /// Only directories that already exist (or, for the `$CARGO_HOME`
+    /// subdirectories, can be created -- see below) are included, so a fresh
+    /// machine without a Rust or Node toolchain installed does not get roots
+    /// it will never use.
+    ///
+    /// # `$CARGO_HOME` is *not* granted wholesale
+    ///
+    /// `$CARGO_HOME` is not only a cache: it also holds `config.toml`,
+    /// `credentials.toml`, and the installed executables under `bin/`.
+    /// Granting all of it writable would let a sandboxed command persist
+    /// cargo configuration or replace build tooling outside the workspace
+    /// (e.g. `find . -fprintf ~/.cargo/config.toml ...`), defeating the
+    /// containment this list exists to preserve. Instead, only the
+    /// subdirectories cargo actually writes while fetching and building
+    /// dependencies are granted: `registry/` and `git/`, plus the
+    /// `.package-cache`/`.global-cache` lock files cargo creates at the
+    /// `$CARGO_HOME` root when updating those caches. Configuration,
+    /// credentials, and `bin/` stay read-only.
+    ///
+    /// These four are pre-created (`create_dir_all`, best-effort) when
+    /// `$CARGO_HOME` itself exists, rather than only included when they
+    /// already happen to exist: the Landlock/Seatbelt translation requires
+    /// every writable root to exist up front (a rule for a missing path
+    /// fails to install, and Landlock's ruleset setup fails closed for the
+    /// *entire* sandboxed spawn, not just that one root -- see
+    /// `install_landlock_rules`). Without pre-creating them, a fresh or
+    /// cleared cache (`registry/`/`git/` not populated yet, even though
+    /// `$CARGO_HOME` and the Rust toolchain are installed) meant the very
+    /// first `cargo build` that needed to fetch a dependency -- the exact
+    /// case this function exists to support -- failed with a permission
+    /// error, because none of the four existed yet to be granted.
+    ///
+    /// # `$RUSTUP_HOME` is *not* granted at all
+    ///
+    /// `$RUSTUP_HOME` (default `~/.rustup`) holds `settings.toml` and the
+    /// installed compiler binaries under `toolchains/*/bin` (`rustc`,
+    /// `cargo`, `clippy-driver`, ...). Granting it recursive write access,
+    /// even to "just" fetch dependencies, would let a dependency's build
+    /// script (`build.rs`, which runs arbitrary code during `cargo build`)
+    /// overwrite an installed toolchain binary and gain persistent code
+    /// execution across every later sandboxed build, defeating the same
+    /// containment rationale that keeps `$CARGO_HOME/bin` read-only above.
+    /// Ordinary dependency fetching (what this list exists for) never
+    /// writes here, so it is omitted entirely rather than narrowed.
+    ///
+    /// # `$XDG_CACHE_HOME` is granted only known package-manager subdirectories
+    ///
+    /// The XDG cache root holds caches for every application on the
+    /// system, most of which have nothing to do with fetching build
+    /// dependencies -- including installed tool environments such as
+    /// `~/.cache/pre-commit/<env-hash>/.../bin/`. Granting the whole
+    /// directory would let a sandboxed command replace one of those
+    /// installed executables and gain code execution the next time the
+    /// user runs that tool *outside* Maestro entirely. Only `pip`'s and
+    /// `uv`'s own cache subdirectories -- the package-manager caches this
+    /// list exists to support -- are granted, each still gated on already
+    /// existing (unlike the `$CARGO_HOME` subdirectories above, a
+    /// first-ever `pip`/`uv` invocation creates its own cache directory
+    /// before writing into it, so there is no equivalent cold-cache case to
+    /// pre-create for).
+    #[must_use]
+    pub fn dev_cache_writable_roots() -> Vec<PathBuf> {
+        let Some(home) = dirs::home_dir() else {
+            return Vec::new();
+        };
+
+        let cargo_home = std::env::var_os("CARGO_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".cargo"));
+        let mut roots = Vec::new();
+        if cargo_home.exists() {
+            // `registry/` and `git/` are directories cargo writes fetched
+            // packages into; pre-create them so a fresh/cleared cache still
+            // supports the first fetch (see the doc comment above).
+            for subdir in ["registry", "git"] {
+                let path = cargo_home.join(subdir);
+                let _ = std::fs::create_dir_all(&path);
+                roots.push(path);
+            }
+            // `.package-cache`/`.global-cache` are lock *files*, not
+            // directories: `create_dir_all` would put a directory where
+            // cargo expects a file, so these two stay exists-gated by the
+            // `retain` below exactly as before, rather than pre-created.
+            roots.push(cargo_home.join(".global-cache"));
+            roots.push(cargo_home.join(".package-cache"));
+        }
+
+        let xdg_cache_home = std::env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".cache"));
+        roots.push(xdg_cache_home.join("pip"));
+        roots.push(xdg_cache_home.join("uv"));
+        let npm_home = home.join(".npm");
+        if npm_home.exists() {
+            for subdir in ["_cacache", "_logs"] {
+                let path = npm_home.join(subdir);
+                let _ = std::fs::create_dir_all(&path);
+                roots.push(path);
+            }
+        }
+
+        roots.retain(|root| root.exists());
+        roots
+    }
+
+    /// The default sandbox policy for interactive and exec sessions that do
+    /// not explicitly opt out.
+    ///
+    /// This differs from [`SandboxPolicy::default`] (the conservative library
+    /// default) in two measured ways:
+    ///
+    /// - **`network_access: true`.** Agentic coding sessions routinely need
+    ///   outbound network access: `cargo`/`npm` fetching dependencies from a
+    ///   registry, `git push`/`git fetch` against a remote, and calling the
+    ///   model provider API itself. A `network_access: false` default was
+    ///   measured to break all three immediately, which is exactly the
+    ///   "users disable it globally on day one" failure mode a sandbox
+    ///   default must avoid. This does mean network exfiltration is not
+    ///   contained by the default policy — that is a deliberate, documented
+    ///   trade-off, not an oversight; see the PR body for the reasoning and a
+    ///   follow-up issue for a possible allowlisted-network stage 2.
+    /// - **`writable_roots: dev_cache_writable_roots()`.** Without these,
+    ///   `cargo build` fails to fetch new dependencies (see that function's
+    ///   docs).
+    ///
+    /// Filesystem *writes* outside the workspace/tmp/cache roots remain
+    /// contained, which is what actually stops the two demonstrated
+    /// allowlist bypasses (`find -fprintf ~/.ssh/authorized_keys`-style
+    /// writes and `LD_PRELOAD`-injected writes to `~/.bashrc`-style targets):
+    /// both are filesystem-write attacks, not network-exfiltration attacks.
+    #[must_use]
+    pub fn workspace_write_default() -> Self {
+        Self::WorkspaceWrite {
+            writable_roots: Self::dev_cache_writable_roots(),
+            network_access: true,
             exclude_tmpdir_env_var: false,
             exclude_slash_tmp: false,
         }
@@ -278,8 +452,10 @@ impl Default for SandboxPolicy {
 /// # Platform Usage
 ///
 /// - **macOS**: Converted to Seatbelt (require-all (subpath root) (require-not (subpath ro)))
-/// - **Linux**: Landlock doesn't support exclusions natively, so `read_only_subpaths`
-///   are not enforced on Linux (limitation of Landlock LSM)
+/// - **Linux**: roots with exclusions are expanded to their existing
+///   non-excluded children before Landlock rules are installed. This keeps
+///   excluded metadata such as `.git` read-only, at the cost of disallowing
+///   creation of new entries directly in that writable root.
 #[derive(Debug, Clone)]
 pub struct WritableRoot {
     /// The root directory that should be writable
@@ -293,6 +469,27 @@ pub struct WritableRoot {
 }
 
 impl SandboxPolicy {
+    /// Kebab-case label for this policy's variant, matching the
+    /// `MAESTRO_SANDBOX_MODE`/`sandbox_mode` config grammar
+    /// (`"danger-full-access"` / `"read-only"` / `"workspace-write"`; see
+    /// `parse_sandbox_mode_env_override` in `config.rs`).
+    ///
+    /// Intended for user-facing messages that need to name the *actual*
+    /// active policy rather than assuming one -- e.g. a sandboxed command's
+    /// failure guidance. Hard-coding a mode name in that kind of message is
+    /// a trap: `MAESTRO_SANDBOX_MODE=read-only` is a real, documented
+    /// escape hatch, and a message that always says "workspace-write"
+    /// regardless of the actual policy misleads a `ReadOnly` session's user
+    /// into thinking in-workspace writes should have worked.
+    #[must_use]
+    pub fn mode_label(&self) -> &'static str {
+        match self {
+            Self::DangerFullAccess => "danger-full-access",
+            Self::ReadOnly => "read-only",
+            Self::WorkspaceWrite { .. } => "workspace-write",
+        }
+    }
+
     /// Check if policy allows full disk write access
     ///
     /// Returns true only for `DangerFullAccess` variant.
@@ -438,6 +635,311 @@ impl SandboxPolicy {
 
         roots
     }
+
+    /// Check whether `path` may be written under this policy, evaluated
+    /// against `cwd`.
+    ///
+    /// # Why this exists
+    ///
+    /// The OS-level sandbox (Seatbelt on macOS, Landlock on Linux) only
+    /// contains processes spawned through [`spawn_sandboxed_command`]. Tools
+    /// that mutate files *in the Maestro process itself* — `write`, `edit`,
+    /// `notebook_edit` — never go through that spawn path, so the kernel
+    /// sandbox provides them no containment at all. Those tools check this
+    /// method explicitly (via [`preflight_native_write`]) before any side
+    /// effects and then perform the mutation through
+    /// [`commit_native_write`], which revalidates this check against the
+    /// directory descriptor it writes through so a path swap between check
+    /// and write cannot redirect the mutation.
+    ///
+    /// # Behavior by policy
+    ///
+    /// - `DangerFullAccess`: always allowed.
+    /// - `ReadOnly`: never allowed.
+    /// - `WorkspaceWrite`: allowed only if `path` resolves under one of
+    ///   [`Self::get_writable_roots_with_cwd`]'s roots and not under one of
+    ///   that root's `read_only_subpaths` (e.g. `cwd/.git`).
+    ///
+    /// Paths are canonicalized with `dunce::canonicalize` (falling back to
+    /// the original path when the target does not exist yet, e.g. a new
+    /// file being created) so that symlinks and `..` segments cannot be
+    /// used to escape a writable root.
+    #[must_use]
+    pub fn allows_write_to(&self, cwd: &Path, path: &Path) -> bool {
+        match self {
+            Self::DangerFullAccess => true,
+            Self::ReadOnly => false,
+            Self::WorkspaceWrite { .. } => {
+                if contains_dangling_symlink(path) {
+                    return false;
+                }
+                let candidate = canonicalize_best_effort(path);
+                self.get_writable_roots_with_cwd(cwd).iter().any(|wr| {
+                    let root = canonicalize_best_effort(&wr.root);
+                    if !candidate.starts_with(&root) {
+                        return false;
+                    }
+                    !wr.read_only_subpaths.iter().any(|ro| {
+                        let ro = canonicalize_best_effort(ro);
+                        candidate.starts_with(&ro)
+                    })
+                })
+            }
+        }
+    }
+}
+
+fn contains_dangling_symlink(path: &Path) -> bool {
+    let mut current = Some(path);
+    while let Some(candidate) = current {
+        if std::fs::symlink_metadata(candidate).is_ok_and(|meta| meta.file_type().is_symlink())
+            && std::fs::metadata(candidate).is_err()
+        {
+            return true;
+        }
+        current = candidate.parent();
+    }
+    false
+}
+
+/// Canonicalize `path`, falling back to canonicalizing the longest existing
+/// ancestor and rejoining the remaining (not-yet-created) components when
+/// `path` itself does not exist.
+///
+/// [`allows_write_to`](SandboxPolicy::allows_write_to) is most often asked
+/// about a file the caller is about to *create* (e.g. `write` on a new
+/// file), so a plain `dunce::canonicalize(path)` — which requires every
+/// component to exist — would fail for the overwhelming common case. Falling
+/// back to the raw, uncanonicalized path in that case is unsound on systems
+/// where an *existing* ancestor is itself reached through a symlink (for
+/// example macOS's `/tmp` -> `/private/tmp` and `$TMPDIR` under
+/// `/var/folders` -> `/private/var/folders`): the writable root would
+/// canonicalize to the `/private/...` form while the candidate path would
+/// not, so `starts_with` would always fail even for legitimate in-root
+/// writes. Canonicalizing the nearest existing ancestor keeps the symlink
+/// resolution while still tolerating a path that doesn't exist yet.
+fn canonicalize_best_effort(path: &Path) -> PathBuf {
+    if let Ok(canonical) = dunce::canonicalize(path) {
+        return canonical;
+    }
+
+    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+    let mut current = path.to_path_buf();
+    while let Some(parent) = current.parent().map(Path::to_path_buf) {
+        if parent.as_os_str().is_empty() {
+            break;
+        }
+        if let Some(name) = current.file_name() {
+            suffix.push(name.to_os_string());
+        }
+        if let Ok(canonical_parent) = dunce::canonicalize(&parent) {
+            let mut resolved = canonical_parent;
+            for part in suffix.iter().rev() {
+                resolved.push(part);
+            }
+            return resolved;
+        }
+        current = parent;
+    }
+
+    path.to_path_buf()
+}
+
+// ─────────────────────────────────────────────────────────────
+// Atomic native (in-process) file writes
+// ─────────────────────────────────────────────────────────────
+
+/// Preflight check for a native (in-process) file mutation under `policy`.
+///
+/// Returns `Err` with a user-facing message when `policy` denies a write to
+/// `path`; `Ok(())` when there is no policy or the write is allowed. This is
+/// the early, good-error-message check — callers must still route the actual
+/// mutation through [`commit_native_write`], which re-validates against the
+/// directory it actually writes into (see its docs for why the preflight
+/// alone is not sufficient).
+pub(crate) fn preflight_native_write(
+    policy: Option<&SandboxPolicy>,
+    cwd: &Path,
+    path: &Path,
+) -> Result<(), String> {
+    let Some(policy) = policy else {
+        return Ok(());
+    };
+    if policy.allows_write_to(cwd, path) {
+        return Ok(());
+    }
+    Err(format!(
+        "Tool blocked by sandbox policy: {} is outside the sandbox's writable roots",
+        path.display()
+    ))
+}
+
+/// Atomically check-and-write `contents` to `path` under `policy`.
+///
+/// # Why this exists (TOCTOU)
+///
+/// [`preflight_native_write`] validates a *path*; the write that follows it
+/// is a separate filesystem operation. A background process can swap an
+/// in-workspace directory for a symlink pointing outside the writable roots
+/// between the two, and a plain `fs::write` would then follow the symlink
+/// and write outside the sandbox. To make check-and-write atomic, this
+/// function pins the parent directory with an `O_DIRECTORY | O_NOFOLLOW`
+/// descriptor, reads the descriptor's *actual* path back from the kernel,
+/// runs the policy check against that, and then performs the whole mutation
+/// (temp file + rename) relative to the pinned descriptor via
+/// `openat`/`renameat`. Swapping the path after the descriptor is opened
+/// cannot redirect the write: the directory the bytes land in is the exact
+/// directory that was validated.
+///
+/// With `policy: None` the descriptor-relative write still happens (it is
+/// also what gives the write its temp-file-plus-rename atomicity), but no
+/// containment check is applied.
+///
+/// On non-Unix platforms this falls back to a preflight check followed by a
+/// path-based temp-file write; the kernel sandbox is unsupported there
+/// anyway.
+pub(crate) fn commit_native_write(
+    policy: Option<&SandboxPolicy>,
+    cwd: &Path,
+    path: &Path,
+    contents: &[u8],
+) -> Result<(), String> {
+    commit_native_write_impl(policy, cwd, path, contents)
+}
+
+#[cfg(unix)]
+fn commit_native_write_impl(
+    policy: Option<&SandboxPolicy>,
+    cwd: &Path,
+    path: &Path,
+    contents: &[u8],
+) -> Result<(), String> {
+    use std::io::Write as _;
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| format!("path has no parent directory: {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("path has no file name: {}", path.display()))?;
+
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("Failed to create directory {}: {error}", parent.display()))?;
+
+    // Pin the parent directory. O_NOFOLLOW rejects a symlink in the final
+    // component; ancestor symlinks are resolved at open time and then
+    // validated below via the descriptor's real path.
+    let dir = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(parent)
+        .map_err(|error| format!("Failed to open directory {}: {error}", parent.display()))?;
+    let real_parent = fd_resolved_path(dir.as_raw_fd())
+        .map_err(|error| format!("Failed to resolve directory {}: {error}", parent.display()))?;
+
+    // The containment check runs against the directory we actually hold
+    // open, so a path swap racing the earlier preflight is caught here
+    // before any byte is written.
+    preflight_native_write(policy, cwd, &real_parent.join(file_name))?;
+
+    let dir_fd = dir.as_raw_fd();
+    let tmp_name = format!(
+        ".{}.{}.tmp",
+        file_name.to_string_lossy(),
+        uuid::Uuid::new_v4()
+    );
+    let tmp_c = std::ffi::CString::new(tmp_name.as_str())
+        .map_err(|_| "file name contains NUL byte".to_string())?;
+    let final_c = std::ffi::CString::new(file_name.as_bytes())
+        .map_err(|_| "file name contains NUL byte".to_string())?;
+
+    let write_result = (|| -> std::io::Result<()> {
+        // O_EXCL + O_NOFOLLOW: never follow or clobber anything that
+        // already exists at the temp name.
+        let raw = unsafe {
+            libc::openat(
+                dir_fd,
+                tmp_c.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o644,
+            )
+        };
+        if raw == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut file = unsafe { std::fs::File::from_raw_fd(raw) };
+        file.write_all(contents)?;
+        file.sync_all()?;
+        drop(file);
+        if unsafe { libc::renameat(dir_fd, tmp_c.as_ptr(), dir_fd, final_c.as_ptr()) } == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    })();
+
+    if let Err(error) = write_result {
+        unsafe { libc::unlinkat(dir_fd, tmp_c.as_ptr(), 0) };
+        return Err(format!("Failed to write file {}: {error}", path.display()));
+    }
+    Ok(())
+}
+
+/// Read the real, kernel-resolved path of an open descriptor back from the
+/// OS. Used by [`commit_native_write`] to validate the directory it pinned
+/// rather than the (raceable) path string it was opened from.
+#[cfg(target_os = "linux")]
+fn fd_resolved_path(fd: std::os::fd::RawFd) -> std::io::Result<PathBuf> {
+    std::fs::read_link(format!("/proc/self/fd/{fd}"))
+}
+
+#[cfg(target_os = "macos")]
+fn fd_resolved_path(fd: std::os::fd::RawFd) -> std::io::Result<PathBuf> {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let mut buf = vec![0u8; libc::PATH_MAX as usize];
+    if unsafe { libc::fcntl(fd, libc::F_GETPATH, buf.as_mut_ptr()) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let len = buf.iter().position(|&byte| byte == 0).unwrap_or(buf.len());
+    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..len])))
+}
+
+// Neither Seatbelt nor Landlock exists on other Unix targets; fall back to
+// canonicalizing the pinned descriptor's open path via /proc-less means.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn fd_resolved_path(_fd: std::os::fd::RawFd) -> std::io::Result<PathBuf> {
+    Err(std::io::Error::other(
+        "fd path resolution unsupported on this platform",
+    ))
+}
+
+#[cfg(not(unix))]
+fn commit_native_write_impl(
+    policy: Option<&SandboxPolicy>,
+    cwd: &Path,
+    path: &Path,
+    contents: &[u8],
+) -> Result<(), String> {
+    preflight_native_write(policy, cwd, path)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create directory {}: {error}", parent.display()))?;
+    }
+    let tmp = path.with_file_name(format!(
+        ".{}.{}.tmp",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::write(&tmp, contents)
+        .and_then(|()| std::fs::rename(&tmp, path))
+        .map_err(|error| {
+            let _ = std::fs::remove_file(&tmp);
+            format!("Failed to write file {}: {error}", path.display())
+        })
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -666,9 +1168,19 @@ const SEATBELT_BASE_POLICY: &str = r#"(version 1)
 ///
 /// # File Operations
 ///
-/// Allows writes to Darwin user cache directory for storing network-related
-/// data (DNS cache, certificate cache, etc.). The cache directory path is
-/// obtained via confstr(_`CS_DARWIN_USER_CACHE_DIR`).
+/// Network-only Seatbelt rules for policies with `network_access: true`.
+///
+/// Intentionally does **not** grant `file-write*` on the whole
+/// `DARWIN_USER_CACHE_DIR`: that root is shared with other apps on the Mac,
+/// so a recursive write grant would let a sandboxed command poison another
+/// process's cache outside every configured writable root (review finding
+/// on #3144). Network sockets and the mach/sysctl lookups below are enough
+/// for HTTPS; any process that needs a private cache must write under a
+/// workspace/tmp/curated writable root instead.
+///
+/// The cache directory path is still passed as `DARWIN_USER_CACHE_DIR` by
+/// the caller for any future scoped subpath grants; it is not used for a
+/// blanket write rule.
 #[allow(dead_code)] // Only used on macOS
 const SEATBELT_NETWORK_POLICY: &str = r#"
 ; Network access policies
@@ -689,10 +1201,6 @@ const SEATBELT_NETWORK_POLICY: &str = r#"
 
 (allow sysctl-read
   (sysctl-name-regex #"^net.routetable")
-)
-
-(allow file-write*
-  (subpath (param "DARWIN_USER_CACHE_DIR"))
 )
 "#;
 
@@ -901,11 +1409,18 @@ mod macos {
             }
         };
 
-        let file_read_policy = if policy.has_full_disk_read_access() {
-            "; allow read-only file operations\n(allow file-read*)"
-        } else {
-            ""
-        };
+        // Every `SandboxPolicy` variant allows reads everywhere; only writes
+        // are scoped by policy (see the enum's own docs: `ReadOnly` means
+        // "no writes allowed", not "no filesystem access"). This must not
+        // key off `has_full_disk_read_access()` -- despite its name, that
+        // method returns `false` specifically for `ReadOnly` (see its own
+        // "the name is slightly misleading" doc comment), which previously
+        // made this Seatbelt translation omit `(allow file-read*)` for
+        // `ReadOnly` and turn it into no-access-at-all on macOS: an
+        // ordinary `cat Cargo.toml` would fail under a policy documented,
+        // and correctly implemented on Linux (Landlock grants read access
+        // to `/` unconditionally), as read-only rather than no-access.
+        let file_read_policy = "; allow read-only file operations\n(allow file-read*)";
 
         let network_policy = if policy.has_full_network_access() {
             SEATBELT_NETWORK_POLICY
@@ -992,6 +1507,15 @@ mod macos {
         let child = Command::new(SEATBELT_EXECUTABLE)
             .args(&args)
             .current_dir(cwd)
+            // `Command` inherits the parent's full environment by default;
+            // without `env_clear()` here, `env` (the caller's filtered map,
+            // e.g. `resolve_shell_environment`'s output with secrets like
+            // `OPENAI_API_KEY`/`GITHUB_TOKEN` stripped) would only be
+            // overlaid on top of -- not replace -- every variable Maestro
+            // itself inherited, silently undoing that filtering for every
+            // "sandboxed" command. The unsandboxed bash path already does
+            // this (see `tools/bash/mod.rs`); sandboxed spawns must match.
+            .env_clear()
             .envs(env)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -1082,10 +1606,24 @@ mod linux {
     /// - Path rules cannot be created
     /// - Ruleset application fails
     /// - Ruleset status indicates NotEnforced
-    fn install_landlock_rules(writable_roots: Vec<PathBuf>) -> SandboxResult<()> {
+    fn install_landlock_rules(writable: LandlockWritablePaths) -> SandboxResult<()> {
         let abi = ABI::V5;
         let access_rw = AccessFs::from_all(abi);
         let access_ro = AccessFs::from_read(abi);
+        // Creation/removal rights only: permits making and deleting new
+        // entries in a directory but not opening or truncating any existing
+        // file for writing. Used for roots whose pre-existing entries are
+        // granted individually (see `writable_paths_without_exclusions`).
+        let access_make_remove = AccessFs::MakeReg
+            | AccessFs::MakeDir
+            | AccessFs::MakeSym
+            | AccessFs::MakeSock
+            | AccessFs::MakeFifo
+            | AccessFs::MakeChar
+            | AccessFs::MakeBlock
+            | AccessFs::RemoveFile
+            | AccessFs::RemoveDir
+            | AccessFs::Refer;
 
         let mut ruleset = Ruleset::default()
             .set_compatibility(CompatLevel::BestEffort)
@@ -1099,9 +1637,18 @@ mod linux {
             .map_err(|_| SandboxError::LandlockRestrict)?
             .no_new_privs(true);
 
-        if !writable_roots.is_empty() {
+        if !writable.full.is_empty() {
             ruleset = ruleset
-                .add_rules(landlock::path_beneath_rules(&writable_roots, access_rw))
+                .add_rules(landlock::path_beneath_rules(&writable.full, access_rw))
+                .map_err(|_| SandboxError::LandlockRestrict)?;
+        }
+
+        if !writable.make_remove_only.is_empty() {
+            ruleset = ruleset
+                .add_rules(landlock::path_beneath_rules(
+                    &writable.make_remove_only,
+                    access_make_remove,
+                ))
                 .map_err(|_| SandboxError::LandlockRestrict)?;
         }
 
@@ -1114,6 +1661,75 @@ mod linux {
         }
 
         Ok(())
+    }
+
+    /// The filesystem paths a Landlock sandbox must grant, split by right
+    /// set.
+    ///
+    /// - `full`: paths granted the full read-write right set.
+    /// - `make_remove_only`: directory roots granted only creation/removal
+    ///   rights (`Make*`/`Remove*`/`Refer`) so sandboxed commands can create
+    ///   and delete *new* direct children of the root (e.g. `cargo build`
+    ///   creating a missing `Cargo.lock`) without gaining write access to
+    ///   any pre-existing file beneath it.
+    pub(super) struct LandlockWritablePaths {
+        pub(super) full: Vec<PathBuf>,
+        pub(super) make_remove_only: Vec<PathBuf>,
+    }
+
+    pub(super) fn writable_paths_without_exclusions(
+        roots: Vec<WritableRoot>,
+    ) -> LandlockWritablePaths {
+        let mut paths = LandlockWritablePaths {
+            full: Vec::new(),
+            make_remove_only: Vec::new(),
+        };
+        for root in roots {
+            if root.read_only_subpaths.is_empty() {
+                paths.full.push(root.root);
+                continue;
+            }
+
+            let exclusions: Vec<PathBuf> = root
+                .read_only_subpaths
+                .iter()
+                .map(|path| canonicalize_best_effort(path))
+                .collect();
+            let Ok(entries) = std::fs::read_dir(&root.root) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+                    continue;
+                }
+                let candidate = canonicalize_best_effort(&entry.path());
+                if exclusions.iter().any(|excluded| {
+                    candidate.starts_with(excluded) || excluded.starts_with(&candidate)
+                }) {
+                    continue;
+                }
+                paths.full.push(candidate);
+            }
+
+            // The per-entry expansion above covers everything that already
+            // exists, but it omits the root itself. Landlock `Make*` on the
+            // root lets a process create/unlink names there; it does **not**
+            // grant `WriteFile`/`Truncate`, so writing content into a brand
+            // new root child (e.g. `printf x > Cargo.lock`) still fails
+            // closed. Existing non-excluded children get full RW above, so
+            // normal workspace work under `src/`, `target/`, etc. still
+            // works once those trees exist.
+            //
+            // Known Landlock granularity limitation: path rules apply
+            // recursively, so `Make*` also permits creating/removing *new*
+            // entries inside a read_only_subpath (e.g. `.git`) -- the
+            // subpath's existing contents remain unwritable without
+            // `WriteFile`, and carving create-rights out of the subpath
+            // while keeping them at the root needs a nested-ruleset redesign
+            // (stage-1 residual).
+            paths.make_remove_only.push(root.root);
+        }
+        paths
     }
 
     /// Apply seccomp filter to block network syscalls
@@ -1277,12 +1893,9 @@ mod linux {
         }
 
         if !policy.has_full_disk_write_access() {
-            let writable_roots: Vec<PathBuf> = policy
-                .get_writable_roots_with_cwd(cwd)
-                .into_iter()
-                .map(|wr| wr.root)
-                .collect();
-            install_landlock_rules(writable_roots)?;
+            let writable =
+                writable_paths_without_exclusions(policy.get_writable_roots_with_cwd(cwd));
+            install_landlock_rules(writable)?;
         }
 
         Ok(())
@@ -1375,6 +1988,12 @@ mod linux {
         let mut cmd = Command::new(&command[0]);
         cmd.args(&command[1..])
             .current_dir(&cwd)
+            // See the matching comment in `macos::spawn_under_seatbelt`:
+            // without `env_clear()`, the child inherits every variable in
+            // Maestro's own environment and `env` only adds to that set, so
+            // secrets filtered out of `env` leak into the "sandboxed" child
+            // anyway.
+            .env_clear()
             .envs(env)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -1459,6 +2078,44 @@ pub fn is_sandbox_available() -> bool {
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         false
+    }
+}
+
+/// Human-readable reason the native sandbox is unavailable, or `None` when
+/// [`is_sandbox_available`] returns `true`.
+///
+/// Callers that need to *enforce* sandboxing (rather than just report a
+/// status) should treat unavailability as requiring an explicit, visible
+/// decision from the user rather than a silent fallback — see the
+/// interactive-TUI sandbox default for how this is used to gate a fail-closed
+/// startup message instead of quietly running every command unsandboxed.
+#[must_use]
+pub fn sandbox_unavailable_reason() -> Option<String> {
+    if is_sandbox_available() {
+        return None;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Some(format!(
+            "{SEATBELT_EXECUTABLE} is missing. This is unexpected on macOS; \
+             check whether System Integrity Protection or an MDM profile \
+             removed it."
+        ))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Some(
+            "Landlock is not present in this kernel's active LSM list \
+             (/sys/kernel/security/lsm). This is common inside containers \
+             (Docker, LXC/Proxmox) and on hardened kernels that boot with a \
+             `security=`/`lsm=` parameter that excludes it."
+                .to_string(),
+        )
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        Some("This platform has no native sandbox implementation (Windows/BSD).".to_string())
     }
 }
 
@@ -1603,7 +2260,9 @@ pub async fn spawn_sandboxed_command(
 /// This function provides NO security isolation. The command has:
 /// - Full filesystem access (read and write)
 /// - Full network access
-/// - Access to all environment variables
+/// - Whatever environment variables the caller passes in `env` (the process
+///   environment is cleared first, matching the plain unsandboxed `bash`
+///   path -- callers are responsible for passing an already-filtered map)
 /// - Ability to spawn child processes
 ///
 /// Only use this for trusted commands or when sandboxing is impossible.
@@ -1639,6 +2298,14 @@ pub async fn spawn_unsandboxed_command(
     let child = tokio::process::Command::new(&command[0])
         .args(&command[1..])
         .current_dir(cwd)
+        // The only caller (`bash`'s `bypass_sandbox` path) passes the same
+        // filtered `resolve_shell_environment` map the plain unsandboxed
+        // branch uses, and expects the same "exactly this env, nothing
+        // inherited" semantics. Without `env_clear()`, the child would
+        // additionally inherit Maestro's full environment underneath that
+        // map, defeating the shell-environment-policy trust gate the caller
+        // already applied.
+        .env_clear()
         .envs(env)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -1655,6 +2322,254 @@ pub async fn spawn_unsandboxed_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `CARGO_HOME`/`XDG_CACHE_HOME` are process-global env vars read by
+    /// `dev_cache_writable_roots()`; guard tests that set them so they don't
+    /// race other tests reading the ambient values, matching the
+    /// `env_lock()` pattern used for this class of test elsewhere in the
+    /// crate (e.g. `config_cli.rs`).
+    fn dev_cache_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[test]
+    fn dev_cache_writable_roots_pre_creates_cold_cargo_cache_dirs() {
+        // Regression test for the review finding on #3144: a fresh or
+        // cleared Cargo cache (CARGO_HOME exists -- Rust is installed --
+        // but registry/git haven't been populated yet) must still get
+        // registry/git granted, or the first `cargo build` that fetches a
+        // dependency fails with a permission error under the sandbox --
+        // the exact case this function exists to support.
+        let _guard = dev_cache_env_lock();
+        let cargo_home = tempfile::tempdir().unwrap();
+        std::env::set_var("CARGO_HOME", cargo_home.path());
+        assert!(!cargo_home.path().join("registry").exists());
+        assert!(!cargo_home.path().join("git").exists());
+
+        let roots = SandboxPolicy::dev_cache_writable_roots();
+
+        std::env::remove_var("CARGO_HOME");
+
+        assert!(
+            roots.contains(&cargo_home.path().join("registry")),
+            "registry/ must be pre-created and granted: {roots:?}"
+        );
+        assert!(
+            roots.contains(&cargo_home.path().join("git")),
+            "git/ must be pre-created and granted: {roots:?}"
+        );
+        assert!(cargo_home.path().join("registry").is_dir());
+        assert!(cargo_home.path().join("git").is_dir());
+    }
+
+    #[test]
+    fn dev_cache_writable_roots_never_grants_reusable_npx_installations() {
+        let roots = SandboxPolicy::dev_cache_writable_roots();
+        assert!(roots.iter().all(|root| {
+            root.file_name().is_none_or(|name| name != ".npm")
+                && !root.components().any(|part| part.as_os_str() == "_npx")
+        }));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_writable_roots_exclude_git_metadata() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        let git = workspace.path().join(".git");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(git.join("hooks")).unwrap();
+
+        let roots = vec![WritableRoot {
+            root: workspace.path().to_path_buf(),
+            read_only_subpaths: vec![git.clone()],
+        }];
+        let writable = super::linux::writable_paths_without_exclusions(roots);
+
+        assert!(writable.full.iter().any(|path| path == &source));
+        assert!(writable.full.iter().all(|path| !path.starts_with(&git)));
+    }
+
+    /// Regression test for the review finding on #3144: when the workspace
+    /// contains `.git`, the read_only_subpaths exclusion expansion used to
+    /// grant only pre-existing entries, so a sandboxed command could not
+    /// create new direct children of the workspace root (e.g. `cargo build`
+    /// creating a missing `Cargo.lock`). The root itself must now also be
+    /// granted creation/removal rights (while `.git` keeps no write rights
+    /// to its existing contents).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_excluded_root_is_granted_creation_rights_for_new_children() {
+        let workspace = tempfile::tempdir().unwrap();
+        let git = workspace.path().join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+
+        let roots = vec![WritableRoot {
+            root: workspace.path().to_path_buf(),
+            read_only_subpaths: vec![git.clone()],
+        }];
+        let writable = super::linux::writable_paths_without_exclusions(roots);
+
+        assert!(
+            writable
+                .make_remove_only
+                .iter()
+                .any(|path| path == workspace.path()),
+            "the excluded root must be granted creation/removal rights"
+        );
+        assert!(
+            writable.full.iter().all(|path| !path.starts_with(&git)),
+            ".git must not gain full read-write access"
+        );
+        assert!(
+            !writable.full.iter().any(|path| path == workspace.path()),
+            "the root must not be granted full read-write access while .git is excluded"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_write_rejects_dangling_symlink_targets() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let link = workspace.path().join("escape.ipynb");
+        symlink(outside.path().join("created-outside.ipynb"), &link).unwrap();
+        let policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        };
+
+        assert!(!policy.allows_write_to(workspace.path(), &link));
+    }
+
+    #[test]
+    fn commit_native_write_creates_and_replaces_files_inside_the_workspace() {
+        let workspace = tempfile::tempdir().unwrap();
+        let policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        };
+        let target = workspace.path().join("nested").join("file.txt");
+
+        commit_native_write(Some(&policy), workspace.path(), &target, b"first").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "first");
+
+        commit_native_write(Some(&policy), workspace.path(), &target, b"second").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "second");
+    }
+
+    #[test]
+    fn commit_native_write_denies_a_path_outside_every_writable_root() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        };
+        let target = outside.path().join("escaped.txt");
+
+        let result = commit_native_write(Some(&policy), workspace.path(), &target, b"nope");
+        assert!(result.is_err());
+        assert!(!target.exists());
+    }
+
+    /// Regression test for the TOCTOU review finding on #3144: a preflight
+    /// path check and the write that follows it are separate filesystem
+    /// operations, so a directory swapped for a symlink to outside the
+    /// workspace between the two must still be denied. `commit_native_write`
+    /// pins the parent directory and revalidates the policy against the
+    /// directory descriptor it actually writes through.
+    #[cfg(unix)]
+    #[test]
+    fn commit_native_write_denies_a_parent_swapped_for_a_symlink_after_preflight() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        };
+
+        let subdir = workspace.path().join("sub");
+        std::fs::create_dir_all(&subdir).unwrap();
+        let target = subdir.join("escaped.txt");
+
+        // Preflight sees a legitimate in-workspace directory and passes.
+        preflight_native_write(Some(&policy), workspace.path(), &target).unwrap();
+
+        // The swap: a background task replaces the directory with a symlink
+        // pointing outside every writable root.
+        std::fs::remove_dir(&subdir).unwrap();
+        symlink(outside.path(), &subdir).unwrap();
+
+        let result = commit_native_write(Some(&policy), workspace.path(), &target, b"nope");
+        assert!(result.is_err(), "the swapped parent must be denied");
+        assert!(
+            !outside.path().join("escaped.txt").exists(),
+            "no byte may be written outside the workspace"
+        );
+    }
+
+    #[test]
+    fn dev_cache_writable_roots_narrows_xdg_cache_to_known_package_managers() {
+        // Regression test for the review finding on #3144: granting the
+        // whole XDG cache root would let a sandboxed command replace an
+        // installed tool environment's executable under e.g.
+        // `~/.cache/pre-commit/...` and persist code execution outside
+        // Maestro entirely. Only known package-manager subdirectories are
+        // granted; an unrelated cache directory must not be.
+        let _guard = dev_cache_env_lock();
+        let xdg_cache_home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(xdg_cache_home.path().join("pip")).unwrap();
+        std::fs::create_dir_all(xdg_cache_home.path().join("pre-commit")).unwrap();
+        std::env::set_var("XDG_CACHE_HOME", xdg_cache_home.path());
+        std::env::remove_var("CARGO_HOME");
+
+        let roots = SandboxPolicy::dev_cache_writable_roots();
+
+        std::env::remove_var("XDG_CACHE_HOME");
+
+        assert!(
+            roots.contains(&xdg_cache_home.path().join("pip")),
+            "pip's own cache subdirectory must still be granted: {roots:?}"
+        );
+        assert!(
+            !roots.contains(&xdg_cache_home.path().to_path_buf()),
+            "the whole XDG cache root must not be granted: {roots:?}"
+        );
+        assert!(
+            !roots.contains(&xdg_cache_home.path().join("pre-commit")),
+            "an unrelated cache subdirectory (e.g. pre-commit's installed hook \
+             environments) must not be granted: {roots:?}"
+        );
+    }
+
+    #[test]
+    fn mode_label_matches_the_config_grammar() {
+        assert_eq!(
+            SandboxPolicy::DangerFullAccess.mode_label(),
+            "danger-full-access"
+        );
+        assert_eq!(SandboxPolicy::ReadOnly.mode_label(), "read-only");
+        assert_eq!(
+            SandboxPolicy::workspace_write_default().mode_label(),
+            "workspace-write"
+        );
+    }
 
     #[test]
     fn test_sandbox_policy_defaults() {
@@ -1715,6 +2630,91 @@ mod tests {
     }
 
     #[test]
+    fn allows_write_to_danger_full_access_allows_anything() {
+        let policy = SandboxPolicy::DangerFullAccess;
+        assert!(policy.allows_write_to(Path::new("/workspace"), Path::new("/etc/shadow")));
+    }
+
+    #[test]
+    fn allows_write_to_read_only_denies_everything() {
+        let policy = SandboxPolicy::ReadOnly;
+        let workspace = tempfile::tempdir().unwrap();
+        assert!(!policy.allows_write_to(workspace.path(), &workspace.path().join("in_cwd.txt")));
+    }
+
+    #[test]
+    fn canonicalize_best_effort_resolves_ancestor_symlinks_for_nonexistent_targets() {
+        let real_dir = tempfile::tempdir().unwrap();
+        let link_dir = tempfile::tempdir().unwrap();
+        let link = link_dir.path().join("link-to-real");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(real_dir.path(), &link).unwrap();
+        #[cfg(not(unix))]
+        return;
+
+        // The target file does not exist yet, only its ancestor (the
+        // symlink) does. The resolved path must follow the symlink, matching
+        // what `dunce::canonicalize` would return if the file already
+        // existed.
+        let resolved = canonicalize_best_effort(&link.join("new_file.txt"));
+        let expected = dunce::canonicalize(real_dir.path())
+            .unwrap()
+            .join("new_file.txt");
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn allows_write_to_workspace_write_allows_cwd_and_denies_outside() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        };
+
+        assert!(policy.allows_write_to(workspace.path(), &workspace.path().join("src/main.rs")));
+        // A native write/edit tool call must not be able to escape the
+        // workspace via an absolute path outside every writable root, e.g.
+        // `~/.bashrc` or `~/.ssh/authorized_keys` (the exact bypasses
+        // flagged in review for #3144).
+        assert!(!policy.allows_write_to(workspace.path(), &outside.path().join("bashrc")));
+    }
+
+    #[test]
+    fn allows_write_to_denies_read_only_subpath_inside_writable_root() {
+        let workspace = tempfile::tempdir().unwrap();
+        let git_dir = workspace.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        let policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        };
+
+        // .git is writable-root territory but carved out as read-only.
+        assert!(!policy.allows_write_to(workspace.path(), &git_dir.join("HOOKS")));
+        // A sibling file in the same cwd remains writable.
+        assert!(policy.allows_write_to(workspace.path(), &workspace.path().join("README.md")));
+    }
+
+    #[test]
+    fn allows_write_to_workspace_write_allows_extra_writable_root() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![cache.path().to_path_buf()],
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        };
+
+        assert!(policy.allows_write_to(workspace.path(), &cache.path().join("registry/lock")));
+    }
+
+    #[test]
     fn test_sandbox_type() {
         let t = sandbox_type();
         #[cfg(target_os = "macos")]
@@ -1723,6 +2723,71 @@ mod tests {
         assert_eq!(t, "landlock");
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         assert_eq!(t, "none");
+    }
+
+    #[test]
+    fn test_sandbox_unavailable_reason_matches_availability() {
+        // The two functions must never disagree: `Some(reason)` iff the
+        // sandbox is unavailable. A future edit to either function that
+        // forgets to update the other should fail this test.
+        assert_eq!(
+            sandbox_unavailable_reason().is_none(),
+            is_sandbox_available()
+        );
+    }
+
+    #[test]
+    fn test_workspace_write_default_has_network_and_no_writable_roots_on_a_bare_machine() {
+        // dev_cache_writable_roots() only includes directories that already
+        // exist, so this assertion holds regardless of whether the test
+        // runner happens to have a Rust/Node toolchain installed.
+        let policy = SandboxPolicy::workspace_write_default();
+        assert!(policy.has_full_network_access());
+        assert!(!policy.has_full_disk_write_access());
+        let SandboxPolicy::WorkspaceWrite { writable_roots, .. } = &policy else {
+            panic!("workspace_write_default() must return WorkspaceWrite");
+        };
+        for root in writable_roots {
+            assert!(
+                root.exists(),
+                "dev_cache_writable_roots() must only return roots that exist: {root:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dev_cache_writable_roots_never_grants_rustup_home() {
+        // Regression guard for the review finding on #3144: granting
+        // $RUSTUP_HOME lets a sandboxed build script overwrite an installed
+        // toolchain binary (rustc, cargo, clippy-driver under
+        // toolchains/*/bin) and persist code execution across later
+        // sandboxed sessions. Ordinary dependency fetching never needs to
+        // write there, so it must never appear in this list, regardless of
+        // whether RUSTUP_HOME is set in the test environment.
+        let roots = SandboxPolicy::dev_cache_writable_roots();
+        if let Some(rustup_home) = std::env::var_os("RUSTUP_HOME") {
+            let rustup_home = PathBuf::from(rustup_home);
+            assert!(
+                !roots.iter().any(|root| root == &rustup_home),
+                "dev_cache_writable_roots() must not grant $RUSTUP_HOME: {roots:?}"
+            );
+        }
+        if let Some(home) = dirs::home_dir() {
+            let default_rustup_home = home.join(".rustup");
+            assert!(
+                !roots.iter().any(|root| root == &default_rustup_home),
+                "dev_cache_writable_roots() must not grant ~/.rustup: {roots:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_default_and_workspace_write_default_diverge_on_network_access() {
+        // Regression guard for the documented split between the conservative
+        // library `Default` (network off) and the product default used by
+        // interactive/exec sessions (network on) — see both doc comments.
+        assert!(!SandboxPolicy::default().has_full_network_access());
+        assert!(SandboxPolicy::workspace_write_default().has_full_network_access());
     }
 
     #[cfg(target_os = "macos")]
@@ -1747,6 +2812,34 @@ mod tests {
         assert!(args.contains(&"--".to_string()));
         assert!(args.contains(&"echo".to_string()));
         assert!(args.contains(&"hello".to_string()));
+    }
+
+    /// Regression test for the review finding on #3144: `ReadOnly` means
+    /// "no writes allowed", not "no filesystem access" (see the enum's own
+    /// docs), and must keep granting reads on macOS exactly as the Linux
+    /// Landlock implementation already does. Before this fix, the Seatbelt
+    /// translation omitted `(allow file-read*)` for `ReadOnly` because it
+    /// (wrongly) keyed the read allow off `has_full_disk_read_access()`,
+    /// which returns `false` specifically for `ReadOnly`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_seatbelt_read_only_still_allows_reads() {
+        use super::macos::create_seatbelt_args;
+
+        let cwd = std::env::temp_dir();
+        let args = create_seatbelt_args(
+            vec!["cat".to_string(), "Cargo.toml".to_string()],
+            &SandboxPolicy::ReadOnly,
+            &cwd,
+        );
+        let policy_text = args
+            .iter()
+            .find(|arg| arg.contains("allow file-read*"))
+            .expect("-p <policy> argument must contain the policy text");
+        assert!(
+            policy_text.contains("(allow file-read*)"),
+            "ReadOnly must still allow reads on macOS: {policy_text}"
+        );
     }
 
     #[test]
@@ -1869,6 +2962,117 @@ mod tests {
         assert!(!denied.exists());
     }
 
+    /// With `.git` carved out, existing non-git trees under the workspace
+    /// stay fully writable, `.git` content stays unwritable, and writing
+    /// content into a *brand new* root child fails closed.
+    ///
+    /// Landlock stage-1 grants only `Make*`/`Remove*` on the workspace root
+    /// (so names can be created) without `WriteFile`/`Truncate`. That means
+    /// `printf x > Cargo.lock` is correctly denied: granting `WriteFile` on
+    /// the root would also re-open writes to existing `.git` files. Nested
+    /// rulesets that allow root create+write without `.git` write are a
+    /// follow-up (stage-2), not this stage-1 internal gate.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_workspace_write_existing_children_ok_git_and_new_root_writes_denied() {
+        if !is_sandbox_available() {
+            return;
+        }
+
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join(".git")).unwrap();
+        std::fs::write(
+            workspace.path().join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .unwrap();
+        // Pre-existing non-git child: gets full RW via the per-entry expansion.
+        std::fs::create_dir_all(workspace.path().join("src")).unwrap();
+        std::fs::write(workspace.path().join("src").join("lib.rs"), "before\n").unwrap();
+
+        let policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        };
+
+        // Existing non-git child: write succeeds.
+        let child = match spawn_sandboxed_command(
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf after > src/lib.rs".to_string(),
+            ],
+            workspace.path().to_path_buf(),
+            &policy,
+            HashMap::new(),
+        )
+        .await
+        {
+            Ok(child) => child,
+            // Enforcement unavailable on this runner: skip rather than fail CI.
+            Err(_) => return,
+        };
+        let output = child.wait_with_output().await.unwrap();
+        assert!(
+            output.status.success(),
+            "writing an existing non-git child must work: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("src").join("lib.rs")).unwrap(),
+            "after\n"
+        );
+
+        // Writing content into a brand-new root child fails closed (no
+        // WriteFile on the root under stage-1 make_remove_only).
+        let child = match spawn_sandboxed_command(
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf lock > Cargo.lock".to_string(),
+            ],
+            workspace.path().to_path_buf(),
+            &policy,
+            HashMap::new(),
+        )
+        .await
+        {
+            Ok(child) => child,
+            Err(_) => return,
+        };
+        let output = child.wait_with_output().await.unwrap();
+        assert!(
+            !output.status.success(),
+            "writing a new root child must fail closed without WriteFile on root"
+        );
+        assert!(!workspace.path().join("Cargo.lock").exists());
+
+        // Writing an existing file inside `.git` stays denied.
+        let child = match spawn_sandboxed_command(
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf evil > .git/HEAD".to_string(),
+            ],
+            workspace.path().to_path_buf(),
+            &policy,
+            HashMap::new(),
+        )
+        .await
+        {
+            Ok(child) => child,
+            Err(_) => return,
+        };
+        let output = child.wait_with_output().await.unwrap();
+        assert!(!output.status.success());
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join(".git").join("HEAD")).unwrap(),
+            "ref: refs/heads/main\n"
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn linux_read_only_blocks_network_sockets() {
@@ -1927,5 +3131,100 @@ mod tests {
         };
         let output = child.wait_with_output().await.unwrap();
         assert!(!output.status.success());
+    }
+
+    /// Regression test for the review finding: `spawn_unsandboxed_command`
+    /// (the `bypass_sandbox` helper) must not leak variables filtered out of
+    /// its caller's `env` map by inheriting Maestro's own environment.
+    ///
+    /// This deliberately avoids `std::env::set_var`/`remove_var`: those
+    /// mutate real, process-wide state that every other test in this binary
+    /// shares, which is exactly the kind of cross-test race the existing
+    /// `env_lock()` helpers elsewhere in this crate (`config_cli.rs`,
+    /// `device_identity.rs`) exist to paper over. Instead this reads `HOME`,
+    /// a variable already guaranteed to be set in the process running the
+    /// test suite, without ever writing to the environment. `HOME` (unlike
+    /// `PATH`) has no shell-assigned fallback value, so an unset `$HOME`
+    /// inside the child unambiguously proves the environment was cleared
+    /// rather than merely overlaid.
+    #[tokio::test]
+    async fn spawn_unsandboxed_command_does_not_leak_process_environment() {
+        assert!(
+            std::env::var_os("HOME").is_some(),
+            "test precondition: HOME must be set in the current process"
+        );
+
+        let mut filtered_env = HashMap::new();
+        filtered_env.insert("ONLY_THIS_VAR".to_string(), "present".to_string());
+
+        let child = spawn_unsandboxed_command(
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf '%s|%s' \"${HOME:-absent}\" \"${ONLY_THIS_VAR:-absent}\"".to_string(),
+            ],
+            std::env::temp_dir(),
+            filtered_env,
+        )
+        .await
+        .unwrap();
+        let output = child.wait_with_output().await.unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "absent|present",
+            "spawn_unsandboxed_command must clear the parent environment before \
+             applying the caller's filtered env map (HOME must not leak through), \
+             not merely overlay the filtered map on top of it"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn spawn_sandboxed_command_does_not_leak_process_environment() {
+        if !is_sandbox_available() {
+            return;
+        }
+        assert!(
+            std::env::var_os("HOME").is_some(),
+            "test precondition: HOME must be set in the current process"
+        );
+
+        let workspace = tempfile::tempdir().unwrap();
+        let policy = SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        };
+        let mut filtered_env = HashMap::new();
+        filtered_env.insert("ONLY_THIS_VAR".to_string(), "present".to_string());
+
+        let child = spawn_sandboxed_command(
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf '%s|%s' \"${HOME:-absent}\" \"${ONLY_THIS_VAR:-absent}\"".to_string(),
+            ],
+            workspace.path().to_path_buf(),
+            &policy,
+            filtered_env,
+        )
+        .await;
+
+        let child = match child {
+            Ok(child) => child,
+            // Enforcement unavailable on this runner: skip rather than fail CI.
+            Err(_) => return,
+        };
+        let output = child.wait_with_output().await.unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "absent|present",
+            "a policy-sandboxed spawn must not inherit Maestro's own process \
+             environment underneath its filtered env map (HOME must not leak through)"
+        );
     }
 }

@@ -69,8 +69,8 @@ use tokio::sync::mpsc;
 
 use crate::agent::MAX_PENDING_MESSAGES;
 use crate::agent::{
-    CredentialVault, FromAgent, NativeAgent, NativeAgentConfig, PromptKind, ToolExecution,
-    ToolResult,
+    CredentialVault, ExecutionSource, FromAgent, NativeAgent, NativeAgentConfig, PromptKind,
+    ToolExecution, ToolResponseMessage, ToolResult,
 };
 use crate::ai::AiProvider;
 use crate::clipboard::ClipboardManager;
@@ -97,12 +97,14 @@ use crate::palette_resource::{PaletteResource, PaletteResourceKind};
 use crate::plugins::PluginRegistry;
 use crate::prompts::{parse_args, render_prompt, PromptDefinition};
 use crate::safety::{
-    check_model_allowed, check_path_allowed, check_session_limits, FirewallVerdict,
+    check_model_allowed, check_path_allowed, check_session_limits,
+    guardian::{GuardianError, GuardianVerdict},
+    FirewallVerdict,
 };
 use crate::session::{
-    AppMessage, CompactionEntry, ContentBlock as SessionContentBlock, MessageContent, MessageEntry,
-    ModelChange, ParsedSession, PlanReviewComment, PlanReviewEntry, PlanReviewEvent, SessionEntry,
-    SessionExporter, SessionHeader, SessionManager, SideQuestionEntry, ThinkingLevel,
+    AppMessage, CompactionEntry, ContentBlock as SessionContentBlock, CustomEntry, MessageContent,
+    MessageEntry, ModelChange, ParsedSession, PlanReviewComment, PlanReviewEntry, PlanReviewEvent,
+    SessionEntry, SessionExporter, SessionHeader, SessionManager, SideQuestionEntry, ThinkingLevel,
     ThinkingLevelChange, TokenCost, TokenUsage as SessionTokenUsage, ToolInfo,
 };
 use crate::skills::{skills_to_prompt, LoadedSkill, SkillLoadError, SkillLoader, SkillRegistry};
@@ -115,6 +117,10 @@ use chrono::{Datelike, Utc};
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// A finished guardian review: the pending approval request plus the verdict
+/// (or the failure that must fall back to the human modal).
+type GuardianReviewOutcome = (ApprovalRequest, Result<GuardianVerdict, GuardianError>);
 
 /// Active modal in the UI.
 ///
@@ -505,8 +511,9 @@ pub struct App {
 
     /// Channel sender for approval decisions back to the agent.
     /// The native agent owns ordered execution after approval.
-    /// Tuple: (`call_id`, approved, `optional_external_result`)
-    tool_response_tx: Option<mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>>,
+    /// [`ToolResponseMessage`]: (`call_id`, approved, `optional_external_result`,
+    /// provenance source).
+    tool_response_tx: Option<mpsc::UnboundedSender<ToolResponseMessage>>,
 
     /// Executes tools (bash commands, file reads, etc.) requested by the agent.
     ///
@@ -567,6 +574,32 @@ pub struct App {
 
     /// Handles tool execution approval flow.
     approval_controller: ApprovalController,
+
+    /// Native OS sandbox policy resolved at startup (see
+    /// `config::resolve_interactive_sandbox_policy`).
+    ///
+    /// Stored so `spawn_agent` can pass the *same* policy into
+    /// `NativeAgentConfig`: the native agent runner's own tool executor
+    /// (which actually runs every Yolo-mode call and every allowlisted
+    /// Selective-mode call) is entirely separate from `self.tool_executor`
+    /// below, which only ever runs approval-gated calls. Without this,
+    /// resolving a policy here and applying it only to `self.tool_executor`
+    /// sandboxes nothing for the common case (review finding on #3144).
+    sandbox_policy: Option<crate::sandbox::SandboxPolicy>,
+
+    /// Optional guardian: an independent LLM reviewer that auto-approves
+    /// routine tool calls silently and fails closed to the human modal.
+    /// Enabled via `MAESTRO_GUARDIAN=1`; see `safety::guardian`.
+    guardian: Option<crate::safety::guardian::Guardian>,
+
+    /// Completion channel for spawned guardian reviews; drained by the event
+    /// loop via `poll_guardian_verdicts`.
+    guardian_tx: mpsc::UnboundedSender<GuardianReviewOutcome>,
+    guardian_rx: mpsc::UnboundedReceiver<GuardianReviewOutcome>,
+
+    /// Call IDs with a guardian review in flight. Cleared on interrupt so a
+    /// review that finishes after Ctrl+C cannot auto-execute the tool.
+    pending_guardian_reviews: HashSet<String>,
 
     /// Manages session persistence (save/load conversations).
     session_manager: SessionManager,
@@ -671,6 +704,12 @@ pub struct App {
     /// Bounded actor and result channel for selected-model verification.
     model_monitor: crate::model_monitor::ModelMonitor,
     model_verification_rx: std::sync::mpsc::Receiver<crate::model_monitor::ModelVerificationEvent>,
+
+    /// Receiver for a background `/rubber-duck` review; polled by the event loop.
+    rubber_duck_rx: Option<std::sync::mpsc::Receiver<crate::rubber_duck::RubberDuckEvent>>,
+
+    /// True while a rubber-duck review task is running.
+    rubber_duck_running: bool,
 
     /// Cached git branch for session info updates.
     current_git_branch: Option<String>,
@@ -898,7 +937,44 @@ impl App {
             crate::exec_commands::discover_with_plugin_dirs(&workspace_dir, &plugin_command_dirs);
         let (model_monitor, model_verification_rx) = crate::model_monitor::spawn_model_monitor();
 
-        let tui_settings = crate::config::load_config(&workspace_dir, None).tui;
+        let app_config = crate::config::load_config(&workspace_dir, None);
+        let tui_settings = app_config.tui.clone();
+
+        // Native OS sandbox for the interactive session. See
+        // `config::resolve_interactive_sandbox_policy` for the precedence
+        // (explicit `MAESTRO_SANDBOX_MODE` > staged-rollout internal gate +
+        // persistent config > today's unsandboxed default) and
+        // `sandbox::SandboxPolicy::workspace_write_default` for what the
+        // resulting policy actually restricts.
+        //
+        // Stage-1 note: if a policy is requested but the sandbox is
+        // unavailable on this host (e.g. Landlock missing, as happens inside
+        // some containers), we do not silently fall back to the sandboxed
+        // spawn path (every command would fail closed with an opaque error)
+        // nor do we build a policy that pretends to work. We tell the user
+        // plainly and run the session unsandboxed, exactly as if no policy
+        // had been requested. Promoting the interactive default to "on" for
+        // everyone (stage 2) must replace this with an approval-gated
+        // must-acknowledge flow instead of an automatic fallback — tracked in
+        // the stage-2 follow-up issue referenced from the PR that introduced
+        // this comment.
+        let requested_sandbox_policy =
+            crate::config::resolve_interactive_sandbox_policy(&app_config);
+        let sandbox_policy = match requested_sandbox_policy {
+            Some(_policy) if !crate::sandbox::is_sandbox_available() => {
+                let reason = crate::sandbox::sandbox_unavailable_reason()
+                    .unwrap_or_else(|| "the native sandbox is unavailable".to_string());
+                state.add_system_message(format!(
+                    "Native sandboxing was requested for this session but is not available \
+                     here: {reason} Running WITHOUT the sandbox for this session instead of \
+                     failing every command closed. Fix the environment (or accept this) and \
+                     restart to try again."
+                ));
+                None
+            }
+            other => other,
+        };
+
         let terminal_notifier = crate::notifications::TerminalStateNotifier::from_config(
             tui_settings.as_ref().and_then(|tui| tui.tab_progress),
             tui_settings.as_ref().and_then(|tui| tui.title_updates),
@@ -917,17 +993,27 @@ impl App {
         }
         let command_registry = Arc::new(command_registry);
         let slash_matcher = SlashCommandMatcher::new(Arc::clone(&command_registry));
+        let (guardian_tx, guardian_rx) = mpsc::unbounded_channel();
         let (exec_command_tx, exec_command_rx) = std::sync::mpsc::channel();
+
+        // Cloned before being consumed below: `spawn_agent` needs the same
+        // policy to configure the native agent runner's own tool executor
+        // (see the `sandbox_policy` field doc on `App`).
+        let stored_sandbox_policy = sandbox_policy.clone();
+        let tool_executor = {
+            let executor = ToolExecutor::with_credential_vault(&cwd, credential_vault.clone());
+            match sandbox_policy {
+                Some(policy) => executor.with_sandbox_policy(policy),
+                None => executor,
+            }
+        };
 
         Self {
             state,
             native_agent: None,
             native_event_rx: None,
             tool_response_tx: None,
-            tool_executor: Arc::new(ToolExecutor::with_credential_vault(
-                &cwd,
-                credential_vault.clone(),
-            )),
+            tool_executor: Arc::new(tool_executor),
             credential_vault,
             terminal,
             terminal_events: None,
@@ -945,6 +1031,11 @@ impl App {
             session_switcher: SessionSwitcher::new(&cwd),
             operations: OperationsModal::new(&cwd),
             approval_controller: ApprovalController::new(),
+            sandbox_policy: stored_sandbox_policy,
+            guardian: crate::safety::guardian::Guardian::from_env(app_config.model),
+            guardian_tx,
+            guardian_rx,
+            pending_guardian_reviews: HashSet::new(),
             session_manager: SessionManager::new(&cwd),
             clipboard: ClipboardManager::new(),
             model_selector: ModelSelector::new(),
@@ -980,6 +1071,8 @@ impl App {
             pending_model_change: None,
             model_monitor,
             model_verification_rx,
+            rubber_duck_rx: None,
+            rubber_duck_running: false,
             current_git_branch: None,
             command_palette_binding: keybindings.command_palette,
             file_search_binding: keybindings.file_search,
@@ -1003,6 +1096,11 @@ impl App {
     }
 
     fn build_base_system_prompt(cwd: &str) -> String {
+        // The untrusted-content clause lives in
+        // `agent::protocol::UNTRUSTED_CONTENT_POLICY` (single source of
+        // truth, embedded here verbatim) so every native runtime sends the
+        // same policy — see `ensure_untrusted_content_policy`.
+        let policy = crate::agent::UNTRUSTED_CONTENT_POLICY;
         format!(
             r#"You are an AI assistant helping with software development tasks.
 
@@ -1019,6 +1117,8 @@ Tool-calling rules:
 - Always prefer read/write/glob/grep for filesystem; use bash only for commands that are not pure file ops.
 - Never emit a tool call without all required fields.
 - If a tool call is denied, immediately retry with corrected arguments instead of responding without action.
+
+{policy}
 
 Always use tools when they would be helpful. Be concise and direct in your responses."#
         )
@@ -1313,7 +1413,16 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 needs_redraw = true;
             }
 
+            // Apply finished guardian reviews (spawned per approval request).
+            if self.poll_guardian_verdicts().await? {
+                needs_redraw = true;
+            }
+
             if self.poll_model_verification() {
+                needs_redraw = true;
+            }
+
+            if self.poll_rubber_duck() {
                 needs_redraw = true;
             }
 
@@ -1483,6 +1592,12 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             thinking_budget,
             cwd: cwd.clone(),
             approval_mode: self.state.approval_mode,
+            // See the `sandbox_policy` field doc on `App`: without this,
+            // only calls that reach the human approval modal (via
+            // `self.tool_executor`, a separate executor) were ever
+            // sandboxed. Yolo mode and Selective mode's allowlisted calls
+            // run through the native agent runner's own executor instead.
+            sandbox_policy: self.sandbox_policy.clone(),
         };
 
         let policy_model = policy_model_id(&model);
@@ -1774,6 +1889,54 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             }
         }
         changed
+    }
+
+    /// Poll the background `/rubber-duck` review channel and post the finished
+    /// review (or failure) into the chat as a system message.
+    fn poll_rubber_duck(&mut self) -> bool {
+        let mut events = Vec::new();
+        let mut disconnected = false;
+        if let Some(rx) = &self.rubber_duck_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => events.push(event),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if events.is_empty() && !disconnected {
+            return false;
+        }
+        self.rubber_duck_rx = None;
+        self.rubber_duck_running = false;
+        self.state.status = None;
+        if events.is_empty() {
+            // Sender dropped without a result: the review task died early.
+            self.state.add_system_message(
+                "Rubber duck review failed: the review task exited without reporting a result."
+                    .to_string(),
+            );
+            return true;
+        }
+        for event in events {
+            match event {
+                crate::rubber_duck::RubberDuckEvent::Completed { model, review } => {
+                    self.state.add_system_message(format!(
+                        "## Rubber duck review (model: {model})\n\n{review}"
+                    ));
+                }
+                crate::rubber_duck::RubberDuckEvent::Failed { model, message } => {
+                    self.state.add_system_message(format!(
+                        "Rubber duck review failed (model: {model}): {message}"
+                    ));
+                }
+            }
+        }
+        true
     }
 
     fn update_mcp_badge_counts(&mut self, servers: &[crate::tools::McpServerStatus]) {
@@ -2334,8 +2497,28 @@ Add the required fields and retry.",
                 if *requires_approval {
                     let mut request =
                         ApprovalRequest::new(call_id.clone(), tool.clone(), args.clone());
-                    if let FirewallVerdict::RequireApproval { reason } = &firewall_verdict {
-                        request = request.with_reason(reason.clone());
+                    let firewall_reason = match &firewall_verdict {
+                        FirewallVerdict::RequireApproval { reason } => Some(reason.clone()),
+                        _ => None,
+                    };
+                    let bypass_requested = tool.eq_ignore_ascii_case("bash")
+                        && args
+                            .get("bypass_sandbox")
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(true);
+                    // Make the sandbox escape hatch a thing the user is
+                    // explicitly asked about, not a generic bash approval
+                    // that happens to look the same as any other — and never
+                    // let a firewall reason hide it: approving this call also
+                    // removes the native sandbox, which the modal must say
+                    // even when the firewall already gave a reason.
+                    let bypass_reason = bypass_requested.then(|| {
+                        "Agent is asking to run this command WITHOUT Maestro's native \
+                         sandbox (a sandboxed attempt likely just failed)."
+                            .to_string()
+                    });
+                    if let Some(reason) = combine_approval_reason(firewall_reason, bypass_reason) {
+                        request = request.with_reason(reason);
                     }
                     // Inline tools (`.composer/tools.json`) resolve their entire
                     // shell command from the tool's own config, not from the
@@ -2373,10 +2556,14 @@ was missing; retry to review the exact execution context."
                         return Ok(());
                     }
 
-                    // Queue approval
-                    self.approval_controller.enqueue(request);
-                    // Show approval modal
-                    self.active_modal = ActiveModal::Approval;
+                    // Guardian mode: an independent LLM reviews the request first;
+                    // allow executes silently, anything else falls back to the modal.
+                    if !self.spawn_guardian_review(&request) {
+                        // Queue approval
+                        self.approval_controller.enqueue(request);
+                        // Show approval modal
+                        self.active_modal = ActiveModal::Approval;
+                    }
                 } else {
                     // Already auto-executed inline by the native agent above;
                     // do not execute it again. Just record the approval flag
@@ -2452,6 +2639,128 @@ was missing; retry to review the exact execution context."
         self.persist_attachment_extract(call_id, tool, &result);
     }
 
+    /// Spawn a guardian review for a pending approval (guardian mode only).
+    ///
+    /// Returns false when the guardian is disabled, so the caller falls back
+    /// to the human modal unchanged. When true, the review runs on a spawned
+    /// task (like tool execution) and is applied by `poll_guardian_verdicts`,
+    /// so the event loop never blocks on the review call.
+    fn spawn_guardian_review(&mut self, request: &ApprovalRequest) -> bool {
+        use crate::safety::guardian::{
+            bounded_transcript, guardian_may_auto_approve, summarize_args, GuardianContext,
+            TranscriptItem,
+        };
+
+        let Some(guardian) = self.guardian.clone() else {
+            return false;
+        };
+        // Hard ceiling, enforced here rather than trusted to the review
+        // model's own judgment: mutating/destructive/privacy-sensitive tools
+        // (write, edit, background_tasks, gh_pr/issue/repo, screenshot, ...)
+        // and any sandbox-bypass request always go to the human modal. See
+        // `guardian_may_auto_approve`'s doc for why an allowlist here, not a
+        // denylist.
+        if !guardian_may_auto_approve(&request.tool, &request.args) {
+            return false;
+        }
+        let transcript_items: Vec<TranscriptItem> = self
+            .state
+            .messages
+            .iter()
+            .filter(|message| message.kind == MessageKind::Regular)
+            .map(|message| match message.role {
+                MessageRole::User => TranscriptItem::User(message.content.clone()),
+                MessageRole::Assistant => TranscriptItem::Assistant(message.content.clone()),
+            })
+            .collect();
+        let context = GuardianContext {
+            tool: request.tool.clone(),
+            args_summary: summarize_args(&request.args),
+            firewall_reason: request.reason.clone(),
+            transcript: bounded_transcript(&transcript_items),
+        };
+        let guardian_tx = self.guardian_tx.clone();
+        let request = request.clone();
+        self.pending_guardian_reviews
+            .insert(request.call_id.clone());
+        tokio::spawn(async move {
+            let verdict = guardian.evaluate(context).await;
+            let _ = guardian_tx.send((request, verdict));
+        });
+        true
+    }
+
+    /// Apply finished guardian reviews (non-blocking). Auto-allow relays the
+    /// approval to the native agent, which owns execution and runs the call
+    /// in model order (see `handle_tool_approval`); a deny verdict or any
+    /// failure fails closed to the human approval modal.
+    /// Returns true when any review was applied.
+    async fn poll_guardian_verdicts(&mut self) -> Result<bool> {
+        use crate::safety::guardian::GuardianDecision;
+
+        let mut outcomes = Vec::new();
+        while let Ok(outcome) = self.guardian_rx.try_recv() {
+            outcomes.push(outcome);
+        }
+        let had_outcomes = !outcomes.is_empty();
+        for (request, verdict) in outcomes {
+            // Ignore reviews that were interrupted (Ctrl+C) while in flight:
+            // the approval must not be relayed after the user cancelled.
+            if !self.pending_guardian_reviews.remove(&request.call_id) {
+                continue;
+            }
+            let args_summary = crate::safety::guardian::summarize_args(&request.args);
+            match verdict {
+                Ok(verdict) if verdict.decision == GuardianDecision::Allow => {
+                    self.record_guardian_decision(
+                        &request.call_id,
+                        &request.tool,
+                        &args_summary,
+                        "allow",
+                        &verdict.reason,
+                    );
+                    self.state.add_system_message(format!(
+                        "Tool '{}' auto-approved by guardian: {}",
+                        request.tool, verdict.reason
+                    ));
+                    self.handle_tool_approval(request.call_id, request.tool, request.args, true)
+                        .await?;
+                }
+                Ok(verdict) => {
+                    self.record_guardian_decision(
+                        &request.call_id,
+                        &request.tool,
+                        &args_summary,
+                        "deny",
+                        &verdict.reason,
+                    );
+                    self.state.add_system_message(format!(
+                        "Guardian declined to auto-approve '{}': {}. Requesting your approval.",
+                        request.tool, verdict.reason
+                    ));
+                    self.approval_controller.enqueue(request);
+                    self.active_modal = ActiveModal::Approval;
+                }
+                Err(error) => {
+                    self.record_guardian_decision(
+                        &request.call_id,
+                        &request.tool,
+                        &args_summary,
+                        "error",
+                        &error.to_string(),
+                    );
+                    self.state.add_system_message(format!(
+                        "Guardian review of '{}' failed ({error}). Requesting your approval.",
+                        request.tool
+                    ));
+                    self.approval_controller.enqueue(request);
+                    self.active_modal = ActiveModal::Approval;
+                }
+            }
+        }
+        Ok(had_outcomes)
+    }
+
     fn persist_attachment_extract(&mut self, call_id: &str, tool: &str, result: &ToolResult) {
         if tool.eq_ignore_ascii_case("extract_document") && result.success {
             let attachment_id = result
@@ -2466,6 +2775,13 @@ was missing; retry to review the exact execution context."
                 .save_attachment_extract(attachment_id, result.output.clone());
             self.flush_session();
         }
+    }
+
+    /// Drop in-flight guardian reviews (Ctrl+C interrupt): their outcomes are
+    /// ignored by `poll_guardian_verdicts`, so a review finishing after the
+    /// interrupt can neither relay an approval nor pop the approval modal.
+    pub(super) fn cancel_pending_guardian_reviews(&mut self) {
+        self.pending_guardian_reviews.clear();
     }
 
     /// Show help message
@@ -2973,6 +3289,30 @@ fn policy_model_id(model: &str) -> String {
 /// Handle presses and repeats (so held keys auto-repeat); ignore releases.
 fn should_handle_key_event(kind: KeyEventKind) -> bool {
     matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat)
+}
+
+/// Combine an action-firewall reason and a sandbox-bypass warning into the
+/// single reason string shown on an [`ApprovalRequest`].
+///
+/// # Ordering matters
+///
+/// `ApprovalRequest::summary()` (used by `BatchedApprovalModal` list rows)
+/// shows only the *first line* of the combined reason. When both a firewall
+/// reason and a bypass warning apply to the same call, the bypass warning
+/// must come first: it says approving the request also removes the native
+/// sandbox for this command, which is strictly more consequential than
+/// whatever tripped the firewall, and must not be hidden behind it when the
+/// user is approving from a batch (review finding on #3144).
+fn combine_approval_reason(
+    firewall_reason: Option<String>,
+    bypass_reason: Option<String>,
+) -> Option<String> {
+    match (firewall_reason, bypass_reason) {
+        (Some(firewall), Some(bypass)) => Some(format!("{bypass}\n\n{firewall}")),
+        (Some(firewall), None) => Some(firewall),
+        (None, Some(bypass)) => Some(bypass),
+        (None, None) => None,
+    }
 }
 
 fn uncurses_input_enabled(value: Option<&std::ffi::OsStr>) -> bool {

@@ -147,7 +147,7 @@ use crate::ai::Tool;
 use crate::safety::{
     analyze_bash_command, find_has_dangerous_predicate, git_args_are_mutating, tokenize,
 };
-use crate::sandbox::{spawn_sandboxed_command, SandboxPolicy};
+use crate::sandbox::{spawn_sandboxed_command, spawn_unsandboxed_command, SandboxPolicy};
 
 mod versions;
 
@@ -166,6 +166,15 @@ const MAX_TIMEOUT_MS: u64 = 600_000;
 const MAX_OUTPUT_SIZE: usize = 30_000;
 /// Maximum lines to show in truncated output
 const MAX_OUTPUT_LINES: usize = 500;
+
+/// Internal marker prefixed onto the stringified `io::Error` produced when
+/// `spawn_sandboxed_command` fails *before the command ran* (sandbox setup
+/// failure, e.g. Landlock unavailable) — as opposed to the command itself
+/// failing after a successful sandboxed spawn. This lets the spawn-error
+/// handler give a self-identifying message instead of a generic "Failed to
+/// spawn process" that looks like an ordinary bug. Not visible to users;
+/// stripped before the message is shown.
+const SANDBOX_SETUP_FAILURE_PREFIX: &str = "\u{0}sandbox-setup-failure\u{0}";
 
 #[cfg(unix)]
 async fn monitor_background_process_group(
@@ -1045,6 +1054,20 @@ pub struct BashArgs {
     /// Useful for dev servers, watchers, and other long-running processes.
     #[serde(default)]
     pub run_in_background: bool,
+
+    /// Request to run this exact command without Maestro's native sandbox.
+    ///
+    /// Only meaningful when a `sandbox_policy` is active. Setting this does
+    /// **not** silently bypass the sandbox: `ToolExecutor::requires_approval`
+    /// forces human approval for any bash call with `bypass_sandbox: true`,
+    /// regardless of the command allowlist or approval mode (including
+    /// `ApprovalMode::Yolo`), and non-interactive print/exec runs — which
+    /// have no approval UI — reject the request outright. The sandbox can
+    /// never be waived without the user seeing and answering an approval
+    /// prompt. Only use this to retry a command that just failed with a
+    /// sandbox-blocked result; it is not a general "run privileged" switch.
+    #[serde(default)]
+    pub bypass_sandbox: bool,
 }
 
 /// Bash command executor with process spawning and safety controls
@@ -1186,6 +1209,11 @@ impl BashTool {
                 "run_in_background": {
                     "type": "boolean",
                     "description": "Set to true to run in background",
+                    "default": false
+                },
+                "bypass_sandbox": {
+                    "type": "boolean",
+                    "description": "Only set to true when retrying a command that just failed with a sandbox-blocked result, to run it once without Maestro's native OS sandbox. Always requires human approval; never set this speculatively.",
                     "default": false
                 }
             },
@@ -1410,6 +1438,15 @@ impl BashTool {
         let start_time = Instant::now();
         let cwd_string = self.cwd.clone();
 
+        // A `bypass_sandbox` request only reaches execution after
+        // `ToolExecutor::requires_approval` has forced a human approval
+        // prompt for it (see that function) — by the time we're here, the
+        // user has already explicitly agreed to run this exact command
+        // unsandboxed. `sandbox_bypassed_this_call` also drives the
+        // self-identifying-failure footer below, so it stays accurate even
+        // though the effective spawn path is identical to "no policy".
+        let sandbox_bypassed_this_call = self.sandbox_policy.is_some() && args.bypass_sandbox;
+
         let background_launch_guard = if args.run_in_background {
             Some(self.background_launch_gate.lock().await)
         } else {
@@ -1439,9 +1476,23 @@ impl BashTool {
             let mut command = vec![self.shell.clone()];
             command.extend(self.shell_args.iter().cloned());
             command.push(args.command.clone());
-            spawn_sandboxed_command(command, PathBuf::from(&self.cwd), policy, env)
-                .await
-                .map_err(|error| std::io::Error::other(error.to_string()))
+            if args.bypass_sandbox {
+                spawn_unsandboxed_command(command, PathBuf::from(&self.cwd), env).await
+            } else {
+                spawn_sandboxed_command(command, PathBuf::from(&self.cwd), policy, env).await
+            }
+            .map_err(|error| {
+                // Tag spawn-time sandbox setup failures so the error handler
+                // below can tell "the sandbox itself couldn't be applied"
+                // apart from an ordinary spawn failure (missing binary,
+                // permission error unrelated to the sandbox, etc.) — see
+                // `SANDBOX_SETUP_FAILURE_PREFIX`.
+                if args.bypass_sandbox {
+                    std::io::Error::other(error.to_string())
+                } else {
+                    std::io::Error::other(format!("{SANDBOX_SETUP_FAILURE_PREFIX}{error}"))
+                }
+            })
         } else {
             #[cfg(unix)]
             let mut cmd = if args.run_in_background {
@@ -1499,12 +1550,26 @@ impl BashTool {
                         .with_cwd(cwd_string.clone())
                         .with_duration(start_time.elapsed().as_millis() as u64),
                 );
+                let message = e.to_string();
+                let user_message = match message.strip_prefix(SANDBOX_SETUP_FAILURE_PREFIX) {
+                    Some(detail) => format!(
+                        "Blocked by Maestro's native sandbox before the command ran ({detail}). \
+                         The command did NOT execute. This usually means the sandbox itself \
+                         could not be applied on this host (for example, Landlock is \
+                         unavailable) rather than your command being denied. To retry this \
+                         exact command once without the sandbox, ask again — the agent can \
+                         retry with `bypass_sandbox: true`, which still requires your approval. \
+                         To disable the sandbox for the whole session, set \
+                         `sandbox_mode = \"danger-full-access\"` in config or \
+                         `MAESTRO_SANDBOX_MODE=danger-full-access`."
+                    ),
+                    None => format!("Failed to spawn process: {message}"),
+                };
                 if let Some(ref desc) = args.description {
-                    return ToolResult::failure(format!("Failed to spawn process: {e}"))
+                    return ToolResult::failure(user_message)
                         .with_details(details.with_description(desc).to_json());
                 }
-                return ToolResult::failure(format!("Failed to spawn process: {e}"))
-                    .with_details(details.to_json());
+                return ToolResult::failure(user_message).with_details(details.to_json());
             }
         };
         drop(child.stdin.take());
@@ -1695,7 +1760,40 @@ impl BashTool {
                     error: if status.success() {
                         None
                     } else {
-                        Some(format!("Exit code: {exit_code}"))
+                        let mut message = format!("Exit code: {exit_code}");
+                        // Self-identifying failure: the sandbox denying a
+                        // write/network syscall looks like an ordinary
+                        // `Permission denied` from the child process, not a
+                        // distinct error type — the spawn itself succeeded,
+                        // so this can't be detected the way the sandbox-setup
+                        // failure above is. Always disclose that the command
+                        // ran sandboxed on failure so the user can tell "this
+                        // might be sandbox containment" from "this is a real
+                        // bug in my command", instead of guessing.
+                        if let Some(policy) = self
+                            .sandbox_policy
+                            .as_ref()
+                            .filter(|_| !sandbox_bypassed_this_call)
+                        {
+                            // Report the *actual* active policy, not an
+                            // assumed default: `MAESTRO_SANDBOX_MODE` is a
+                            // real, documented escape hatch to `read-only`
+                            // or `danger-full-access`, and hard-coding
+                            // "workspace-write" here would tell a
+                            // `read-only` session's user that in-workspace
+                            // writes should have worked, sending them
+                            // toward an unnecessary `bypass_sandbox` retry.
+                            message.push_str(&format!(
+                                "\n\n[sandbox] This command ran inside Maestro's native OS \
+                                 sandbox ({}). If this failure looks like an unexpected \
+                                 permission error, it may be the sandbox denying a write \
+                                 outside the workspace or a network call, rather than a \
+                                 problem with the command itself. Ask again to retry this exact \
+                                 command with `bypass_sandbox: true` (requires approval).",
+                                policy.mode_label()
+                            ));
+                        }
+                        Some(message)
                     },
                     details: Some(details.to_json()),
                 }
@@ -1792,6 +1890,7 @@ mod tests {
                     timeout: Some(60_000),
                     description: None,
                     run_in_background: false,
+                    bypass_sandbox: false,
                 },
                 Some(token),
             )
@@ -1821,11 +1920,108 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
         assert!(!result.success);
         assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn sandbox_denied_write_produces_self_identifying_message() {
+        let workspace = tempfile::tempdir().expect("workspace should be created");
+        let tool = BashTool::new(workspace.path().display().to_string())
+            .with_sandbox_policy(SandboxPolicy::ReadOnly);
+
+        let result = tool
+            .execute(BashArgs {
+                command: "touch sandbox-escape".to_string(),
+                timeout: None,
+                description: None,
+                run_in_background: false,
+                bypass_sandbox: false,
+            })
+            .await;
+
+        assert!(!result.success);
+        // Whether the sandbox denied the write at runtime (Landlock/Seatbelt
+        // available and enforcing) or the sandbox itself could not be
+        // applied on this host (e.g. Landlock unavailable, as on some
+        // container hosts), the failure must be self-identifying rather than
+        // a bare "Permission denied"/"Exit code: 1" the user can't attribute
+        // to Maestro's sandbox. See the two message variants in
+        // `execute_with_cancellation`.
+        let message = result.error.unwrap_or_default();
+        assert!(
+            message.to_lowercase().contains("sandbox"),
+            "expected a self-identifying sandbox message, got: {message}"
+        );
+    }
+
+    /// Regression test for the review finding on #3144: the self-identifying
+    /// sandbox failure message must name the *actual* active policy, not
+    /// assume `workspace-write`. A `read-only` session's user seeing "may be
+    /// the sandbox denying a write outside the workspace" wrongly implies
+    /// in-workspace writes should have worked, when under `ReadOnly` no
+    /// writes are permitted anywhere, including inside the workspace.
+    #[tokio::test]
+    async fn sandbox_denied_message_names_the_actual_active_policy() {
+        let workspace = tempfile::tempdir().expect("workspace should be created");
+        let tool = BashTool::new(workspace.path().display().to_string())
+            .with_sandbox_policy(SandboxPolicy::ReadOnly);
+
+        let result = tool
+            .execute(BashArgs {
+                command: "touch sandbox-escape".to_string(),
+                timeout: None,
+                description: None,
+                run_in_background: false,
+                bypass_sandbox: false,
+            })
+            .await;
+
+        assert!(!result.success);
+        let message = result.error.unwrap_or_default();
+        // Skip when the sandbox itself couldn't be applied on this host (see
+        // `sandbox_denied_write_produces_self_identifying_message` above):
+        // that path reports setup failure, not the self-identifying
+        // policy-name message this test targets.
+        if message.contains("[sandbox]") {
+            assert!(
+                message.contains("read-only"),
+                "expected the actual active policy name, got: {message}"
+            );
+            assert!(
+                !message.contains("workspace-write"),
+                "must not hard-code workspace-write for a read-only session, got: {message}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn bypass_sandbox_runs_without_sandbox_when_requested() {
+        let workspace = tempfile::tempdir().expect("workspace should be created");
+        let marker = workspace.path().join("sandbox-bypass-escape");
+        let tool = BashTool::new(workspace.path().display().to_string())
+            .with_sandbox_policy(SandboxPolicy::ReadOnly);
+
+        // In production this call only ever happens after
+        // `ToolExecutor::requires_approval` has forced a human approval
+        // prompt (see registry.rs); this test exercises the resulting spawn
+        // behavior directly.
+        let result = tool
+            .execute(BashArgs {
+                command: "touch sandbox-bypass-escape".to_string(),
+                timeout: None,
+                description: None,
+                run_in_background: false,
+                bypass_sandbox: true,
+            })
+            .await;
+
+        assert!(result.success, "bypassed command should run: {result:?}");
+        assert!(marker.exists());
     }
 
     #[tokio::test]
@@ -1837,6 +2033,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -1853,6 +2050,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -1869,6 +2067,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -1894,6 +2093,7 @@ mod tests {
                 timeout: Some(100), // 100ms timeout
                 description: Some("Test timeout".to_string()),
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -1911,6 +2111,7 @@ mod tests {
                 timeout: Some(999_999_999), // Way over max
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -1929,6 +2130,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -1945,6 +2147,7 @@ mod tests {
                 timeout: Some(0),
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -1967,6 +2170,7 @@ mod tests {
                 timeout: Some(5000),
                 description: Some("Large output test".to_string()),
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -1987,6 +2191,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -2004,6 +2209,7 @@ mod tests {
                 timeout: Some(5000),
                 description: Some("Tail truncation test".to_string()),
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -2226,6 +2432,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -2243,6 +2450,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -2260,6 +2468,7 @@ mod tests {
                 timeout: Some(5000),
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -2339,6 +2548,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -2534,6 +2744,7 @@ mod tests {
                 timeout: None,
                 description: Some("Background test".to_string()),
                 run_in_background: true,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -2576,6 +2787,7 @@ mod tests {
                 timeout: None,
                 description: Some("configured shell background regression".to_string()),
                 run_in_background: true,
+                bypass_sandbox: false,
             })
             .await;
         assert!(
@@ -2617,6 +2829,7 @@ mod tests {
                     timeout: None,
                     description: None,
                     run_in_background: true,
+                    bypass_sandbox: false,
                 },
                 Some(token),
             )
@@ -2644,6 +2857,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: true,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -2681,6 +2895,7 @@ mod tests {
                     timeout: None,
                     description: None,
                     run_in_background: true,
+                    bypass_sandbox: false,
                 })
                 .await
         });
@@ -2731,6 +2946,7 @@ mod tests {
                 timeout: None,
                 description: Some("session-detached background shutdown regression".to_string()),
                 run_in_background: true,
+                bypass_sandbox: false,
             })
             .await;
         assert!(
@@ -2810,6 +3026,7 @@ mod tests {
                 timeout: None,
                 description: Some("double-fork daemon shutdown regression".to_string()),
                 run_in_background: true,
+                bypass_sandbox: false,
             })
             .await;
         assert!(
@@ -2886,6 +3103,7 @@ mod tests {
                 timeout: None,
                 description: Some("orphaned background shutdown regression".to_string()),
                 run_in_background: true,
+                bypass_sandbox: false,
             })
             .await;
         assert!(
@@ -2948,6 +3166,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -2965,6 +3184,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -2987,6 +3207,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -3003,6 +3224,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -3019,6 +3241,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -3038,6 +3261,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -3082,6 +3306,7 @@ mod tests {
             timeout: Some(5000),
             description: Some("Test".to_string()),
             run_in_background: false,
+            bypass_sandbox: false,
         };
         let json = serde_json::to_string(&args).unwrap();
         assert!(json.contains("echo hello"));
@@ -3118,6 +3343,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -3135,6 +3361,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -3152,6 +3379,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -3167,6 +3395,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -3187,6 +3416,7 @@ mod tests {
                 timeout: None,
                 description: Some("Test command".to_string()),
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -3212,6 +3442,7 @@ mod tests {
                 timeout: None,
                 description: None,
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -3234,6 +3465,7 @@ mod tests {
                 timeout: Some(100), // 100ms timeout
                 description: Some("Should timeout".to_string()),
                 run_in_background: false,
+                bypass_sandbox: false,
             })
             .await;
 
@@ -3256,6 +3488,7 @@ mod tests {
                 timeout: None,
                 description: Some("Background task".to_string()),
                 run_in_background: true,
+                bypass_sandbox: false,
             })
             .await;
 

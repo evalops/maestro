@@ -1409,7 +1409,7 @@ async fn handle_codex_headless_approval_request(
     )
     .await?;
 
-    let Some((_call_id, approved, result)) = receiver.recv().await else {
+    let Some((_call_id, approved, result, _source)) = receiver.recv().await else {
         return Err("Codex headless approval request closed before decision".to_string());
     };
     write_codex_headless_message(

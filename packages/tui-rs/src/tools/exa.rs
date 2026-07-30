@@ -257,6 +257,7 @@ pub async fn websearch(args: Value) -> ToolResult {
 
     let details = serde_json::json!({
         "requestId": request_id,
+        "query": parsed.query,
         "resolvedSearchType": resolved_type,
         "resultsCount": results.len(),
         "costDollars": cost,

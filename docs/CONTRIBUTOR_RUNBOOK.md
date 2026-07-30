@@ -6,7 +6,7 @@ Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Tools Reference]
 ## 0. Clone and install
 
 - Install stable Rust and Node.js 22 or newer.
-- No `npm install` step is needed — `package.json` has zero dependencies; Node just runs the native packaging and repository-check scripts under `scripts/`.
+- `package.json` has zero runtime dependencies and one locked, test-only development dependency. Run `npm ci` before repository and workflow contract tests; Node otherwise runs the native packaging and repository-check scripts under `scripts/`.
 - Export provider keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.) or place them in `~/.maestro/keys.json`.
 
 ## 1. Build and verify

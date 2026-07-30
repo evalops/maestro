@@ -326,6 +326,9 @@ impl App {
             CommandAction::SetModel(model_id) => {
                 self.switch_model(&model_id, false);
             }
+            CommandAction::RubberDuck { model } => {
+                self.start_rubber_duck_review(model);
+            }
             CommandAction::SetDefaultModel(model_id) => {
                 self.switch_model(&model_id, true);
             }
@@ -1113,6 +1116,47 @@ impl App {
 
     fn plan_cwd(&self) -> String {
         self.state.cwd.clone().unwrap_or_else(|| ".".to_string())
+    }
+
+    /// Kick off a background `/rubber-duck` review of uncommitted changes with
+    /// a different model. The finished review arrives via `poll_rubber_duck`.
+    fn start_rubber_duck_review(&mut self, requested_model: Option<String>) {
+        if self.rubber_duck_running {
+            self.state
+                .add_system_message("A rubber duck review is already running.".to_string());
+            return;
+        }
+        let cwd = self.plan_cwd();
+        let cwd_path = std::path::Path::new(&cwd);
+        if !crate::git::is_git_repo(cwd_path) {
+            self.state
+                .add_system_message("Not a git repository; nothing to review.".to_string());
+            return;
+        }
+        let review_model = match crate::rubber_duck::pick_review_model(
+            &self.current_model,
+            requested_model.as_deref(),
+        ) {
+            Ok(model) => model,
+            Err(message) => {
+                self.state.add_system_message(message);
+                return;
+            }
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.rubber_duck_rx = Some(rx);
+        self.rubber_duck_running = true;
+        self.state.status = Some(format!("Rubber duck reviewing with {review_model}…"));
+        self.state.add_system_message(format!(
+            "Rubber duck review started with {review_model} (current model: {}). The result will appear here when done.",
+            self.current_model
+        ));
+        tokio::spawn(crate::rubber_duck::run_review(
+            review_model,
+            cwd,
+            self.current_model.clone(),
+            tx,
+        ));
     }
 
     pub(super) fn apply_plan_mode(&mut self, enabled: bool) {

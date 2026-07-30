@@ -243,6 +243,10 @@ pub enum ApprovalMode {
     /// Auto-approve ALL tool calls without asking.
     /// Fast but dangerous - a malicious prompt could run `rm -rf /`.
     /// Only use when you fully trust the conversation.
+    ///
+    /// The single exception: a `bypass_sandbox: true` bash call still asks,
+    /// because waiving the native sandbox must always be an explicit human
+    /// decision (see `ToolExecutor::requires_sandbox_bypass_approval`).
     Yolo,
 
     /// Approve based on tool/command risk (default).

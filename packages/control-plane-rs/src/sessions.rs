@@ -266,7 +266,15 @@ pub(super) async fn handle_pending_request_resume_endpoint(
             .await
             .insert(request_id.clone(), success);
     }
-    if sender.send((request_id.clone(), approved, result)).is_err() {
+    if sender
+        .send((
+            request_id.clone(),
+            approved,
+            result,
+            ExecutionSource::RemoteClient,
+        ))
+        .is_err()
+    {
         if completed_client_tool_result.is_some() {
             state
                 .completed_client_tool_results

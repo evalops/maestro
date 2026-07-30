@@ -772,6 +772,34 @@ impl ToolExecutor {
         }
     }
 
+    /// Deny a native-process file mutation (`write`/`edit`/`notebook_edit`)
+    /// that a sandbox policy would not permit.
+    ///
+    /// Unlike `bash`/`background_tasks`, these tools run their file I/O
+    /// directly in the Maestro process rather than through
+    /// `spawn_sandboxed_command`, so the OS-level sandbox (Seatbelt/Landlock)
+    /// never sees them and provides no containment. This is the explicit
+    /// preflight path check: it runs early with the fully resolved target
+    /// path so obviously-out-of-sandbox writes fail with a clear message
+    /// before any side effects (backups, temp files). The actual mutation
+    /// must then go through [`crate::sandbox::commit_native_write`], which
+    /// revalidates the policy against the directory descriptor it writes
+    /// through — the preflight alone is racy (a path swap between check and
+    /// write), the commit-time revalidation is not.
+    ///
+    /// Returns `Some(ToolResult::failure(..))` to deny, or `None` to allow
+    /// (either there is no active sandbox policy, or the policy permits a
+    /// write to `resolved_path`).
+    fn deny_native_write_outside_sandbox(&self, resolved_path: &str) -> Option<ToolResult> {
+        crate::sandbox::preflight_native_write(
+            self.sandbox_policy.as_ref(),
+            std::path::Path::new(&self.cwd),
+            std::path::Path::new(resolved_path),
+        )
+        .err()
+        .map(ToolResult::failure)
+    }
+
     /// Internal implementation of tool execution (without caching)
     pub(super) async fn execute_impl(
         &self,
@@ -1231,7 +1259,9 @@ impl ToolExecutor {
                     output = format!("```{fence_language}\n{output}\n```");
                 }
 
-                if with_diagnostics {
+                // Implicit diagnostics spawn an unsandboxed language server;
+                // skip them when the active policy cannot contain that launch.
+                if with_diagnostics && self.may_launch_native_language_server() {
                     if let Ok(diagnostics) = lsp::diagnostics_for_file(&self.cwd, &path).await {
                         if !diagnostics.is_empty() {
                             let errors: Vec<_> = diagnostics
@@ -1313,6 +1343,10 @@ impl ToolExecutor {
                     Err(message) => return ToolResult::failure(message),
                 };
 
+                if let Some(err) = self.deny_native_write_outside_sandbox(&path) {
+                    return err;
+                }
+
                 if let Err(err) = crate::plan_mode::gate_mutation(
                     "write",
                     Some(std::path::Path::new(&path)),
@@ -1346,49 +1380,52 @@ impl ToolExecutor {
                 if !begin_mutation_commit(cancel.as_ref()).await {
                     return cancelled_tool_result("write cancelled");
                 }
-                if let Some(parent) = std::path::Path::new(&path).parent() {
-                    if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                        let details = WriteDetails::new(path.clone())
-                            .with_duration(start_time.elapsed().as_millis() as u64);
-                        return ToolResult::failure(format!("Failed to create directory: {e}"))
-                            .with_details(details.to_json());
-                    }
-                }
 
+                // Backup and directory creation must not use path-based
+                // `create_dir_all` / `rename` / `write` before the pinned
+                // `commit_native_write`: a background process can swap an
+                // ancestor for a symlink after the preflight and those side
+                // effects would mutate outside the writable roots even if
+                // the later commit rejects the final write (review finding
+                // on #3144). Route the backup through the same atomic
+                // check-and-write API; parent creation is handled inside it.
                 let mut backup_path: Option<String> = None;
-                let mut backup_renamed = false;
                 if file_existed && backup {
-                    let backup_target = format!("{path}.bak");
-                    if tokio::fs::rename(&path, &backup_target).await.is_ok() {
-                        backup_renamed = true;
-                    } else if let Some(prev) = &previous_content {
-                        if let Err(error) = tokio::fs::write(&backup_target, prev).await {
-                            report_diagnostic_nonblocking(format!(
-                                "[write] failed to write fallback backup {backup_target}: {error}"
-                            ));
+                    if let Some(prev) = &previous_content {
+                        let backup_target = format!("{path}.bak");
+                        match crate::sandbox::commit_native_write(
+                            self.sandbox_policy.as_ref(),
+                            std::path::Path::new(&self.cwd),
+                            std::path::Path::new(&backup_target),
+                            prev.as_bytes(),
+                        ) {
+                            Ok(()) => backup_path = Some(backup_target),
+                            Err(error) => report_diagnostic_nonblocking(format!(
+                                "[write] failed to write backup {backup_target}: {error}"
+                            )),
                         }
                     }
-                    backup_path = Some(backup_target);
                 }
 
-                let tmp_path = format!("{}.{}.tmp", path, uuid::Uuid::new_v4());
-                let write_result = async {
-                    tokio::fs::write(&tmp_path, &content).await?;
-                    tokio::fs::rename(&tmp_path, &path).await?;
-                    Ok::<(), std::io::Error>(())
-                }
-                .await;
+                // Atomic check-and-write: revalidates the policy against the
+                // directory the bytes actually land in (see
+                // `sandbox::commit_native_write`), closing the
+                // check-then-write symlink-swap race.
+                let write_result = crate::sandbox::commit_native_write(
+                    self.sandbox_policy.as_ref(),
+                    std::path::Path::new(&self.cwd),
+                    std::path::Path::new(&path),
+                    content.as_bytes(),
+                );
 
                 if let Err(e) = write_result {
-                    let _ = tokio::fs::remove_file(&tmp_path).await;
-                    if backup_renamed {
-                        if let Err(error) = tokio::fs::rename(format!("{path}.bak"), &path).await {
-                            report_diagnostic_nonblocking(format!(
-                                "[write] failed to restore backup for {path}: {error}"
-                            ));
-                        }
-                    } else if let Some(prev) = &previous_content {
-                        if let Err(error) = tokio::fs::write(&path, prev).await {
+                    if let Some(prev) = &previous_content {
+                        if let Err(error) = crate::sandbox::commit_native_write(
+                            self.sandbox_policy.as_ref(),
+                            std::path::Path::new(&self.cwd),
+                            std::path::Path::new(&path),
+                            prev.as_bytes(),
+                        ) {
                             report_diagnostic_nonblocking(format!(
                                 "[write] failed to restore original content of {path}: {error}"
                             ));
@@ -1396,8 +1433,7 @@ impl ToolExecutor {
                     }
                     let details = WriteDetails::new(path.clone())
                         .with_duration(start_time.elapsed().as_millis() as u64);
-                    return ToolResult::failure(format!("Failed to write file: {e}"))
-                        .with_details(details.to_json());
+                    return ToolResult::failure(e).with_details(details.to_json());
                 }
 
                 // Mirror plan-mode plan files into the session plan location.
@@ -1424,20 +1460,23 @@ impl ToolExecutor {
 
                 let display_path = if raw_path.is_empty() { &path } else { raw_path };
                 let mut linter_output = String::new();
-                let lsp_diagnostics = match lsp::collect_diagnostics_for_paths(
-                    &self.cwd,
-                    std::slice::from_ref(&path),
-                )
-                .await
-                {
-                    Ok(map) => {
-                        if let Some(file_diags) = map.get(&path).or_else(|| map.get(display_path)) {
-                            linter_output =
-                                lsp::format_lsp_summary(display_path, file_diags.as_slice());
+                let lsp_diagnostics = if self.may_launch_native_language_server() {
+                    match lsp::collect_diagnostics_for_paths(&self.cwd, std::slice::from_ref(&path))
+                        .await
+                    {
+                        Ok(map) => {
+                            if let Some(file_diags) =
+                                map.get(&path).or_else(|| map.get(display_path))
+                            {
+                                linter_output =
+                                    lsp::format_lsp_summary(display_path, file_diags.as_slice());
+                            }
+                            Some(map)
                         }
-                        Some(map)
+                        Err(_) => None,
                     }
-                    Err(_) => None,
+                } else {
+                    None
                 };
 
                 let validators = match run_validators_with_diagnostics(
@@ -1448,16 +1487,13 @@ impl ToolExecutor {
                 {
                     Ok(results) => Some(results),
                     Err(err) => {
-                        if backup_renamed {
-                            if let Err(error) =
-                                tokio::fs::rename(format!("{path}.bak"), &path).await
-                            {
-                                report_diagnostic_nonblocking(format!(
-                                    "[write] failed to restore backup for {path}: {error}"
-                                ));
-                            }
-                        } else if let Some(prev) = &previous_content {
-                            if let Err(error) = tokio::fs::write(&path, prev).await {
+                        if let Some(prev) = &previous_content {
+                            if let Err(error) = crate::sandbox::commit_native_write(
+                                self.sandbox_policy.as_ref(),
+                                std::path::Path::new(&self.cwd),
+                                std::path::Path::new(&path),
+                                prev.as_bytes(),
+                            ) {
                                 report_diagnostic_nonblocking(format!(
                                     "[write] failed to restore original content of {path}: {error}"
                                 ));
@@ -1647,6 +1683,10 @@ impl ToolExecutor {
                     Err(message) => return ToolResult::failure(message),
                 };
 
+                if let Some(err) = self.deny_native_write_outside_sandbox(&path) {
+                    return err;
+                }
+
                 if let Err(err) = crate::plan_mode::gate_mutation(
                     "edit",
                     Some(std::path::Path::new(&path)),
@@ -1783,38 +1823,40 @@ impl ToolExecutor {
                 if !begin_mutation_commit(cancel.as_ref()).await {
                     return cancelled_tool_result("edit cancelled");
                 }
-                let tmp_path = format!("{}.{}.tmp", path, uuid::Uuid::new_v4());
-                let write_result = async {
-                    tokio::fs::write(&tmp_path, &new_content).await?;
-                    tokio::fs::rename(&tmp_path, &path).await?;
-                    Ok::<(), std::io::Error>(())
-                }
-                .await;
-
-                if let Err(e) = write_result {
-                    let _ = tokio::fs::remove_file(&tmp_path).await;
+                // Atomic check-and-write (see `sandbox::commit_native_write`):
+                // the policy is revalidated against the directory the bytes
+                // actually land in, closing the check-then-write
+                // symlink-swap race.
+                if let Err(e) = crate::sandbox::commit_native_write(
+                    self.sandbox_policy.as_ref(),
+                    std::path::Path::new(&self.cwd),
+                    std::path::Path::new(&path),
+                    new_content.as_bytes(),
+                ) {
                     let details = EditDetails::new(path.clone())
                         .with_duration(start_time.elapsed().as_millis() as u64);
-                    return ToolResult::failure(format!("Failed to write file: {e}"))
-                        .with_details(details.to_json());
+                    return ToolResult::failure(e).with_details(details.to_json());
                 }
 
                 let display_path = if raw_path.is_empty() { &path } else { raw_path };
                 let mut linter_output = String::new();
-                let lsp_diagnostics = match lsp::collect_diagnostics_for_paths(
-                    &self.cwd,
-                    std::slice::from_ref(&path),
-                )
-                .await
-                {
-                    Ok(map) => {
-                        if let Some(file_diags) = map.get(&path).or_else(|| map.get(display_path)) {
-                            linter_output =
-                                lsp::format_lsp_summary(display_path, file_diags.as_slice());
+                let lsp_diagnostics = if self.may_launch_native_language_server() {
+                    match lsp::collect_diagnostics_for_paths(&self.cwd, std::slice::from_ref(&path))
+                        .await
+                    {
+                        Ok(map) => {
+                            if let Some(file_diags) =
+                                map.get(&path).or_else(|| map.get(display_path))
+                            {
+                                linter_output =
+                                    lsp::format_lsp_summary(display_path, file_diags.as_slice());
+                            }
+                            Some(map)
                         }
-                        Some(map)
+                        Err(_) => None,
                     }
-                    Err(_) => None,
+                } else {
+                    None
                 };
 
                 let validators = match run_validators_with_diagnostics(
@@ -1860,6 +1902,12 @@ impl ToolExecutor {
                     .get("target")
                     .and_then(|v| v.as_str())
                     .unwrap_or("HEAD");
+                // `target` lands in argv right after `git diff` with no `--`
+                // separator; an option-like value (e.g. `--output=...`) would
+                // make git write to arbitrary files.
+                if target.starts_with('-') {
+                    return ToolResult::failure("diff target must be a git ref, not an option");
+                }
 
                 let path = args.get("path").and_then(|v| v.as_str());
                 let normalized_path = path.map(|raw_path| normalize_git_path(&self.cwd, raw_path));
@@ -2148,11 +2196,48 @@ impl ToolExecutor {
                                 )
                             }
                         };
-                        let cwd = args
-                            .get("cwd")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(&self.cwd)
-                            .to_string();
+                        let requested_cwd = args.get("cwd").and_then(|v| v.as_str());
+                        let cwd = match requested_cwd {
+                            Some(raw) if !raw.trim().is_empty() => {
+                                let raw = raw.trim();
+                                // Resolve relative to the session workspace
+                                // (not whatever directory the Maestro process
+                                // itself happens to be running from), so the
+                                // sandbox check below and the spawned
+                                // process see the same path.
+                                if std::path::Path::new(raw).is_absolute() {
+                                    raw.to_string()
+                                } else {
+                                    std::path::Path::new(&self.cwd)
+                                        .join(raw)
+                                        .to_string_lossy()
+                                        .to_string()
+                                }
+                            }
+                            _ => self.cwd.clone(),
+                        };
+                        // `background_tasks::start` passes `cwd` straight
+                        // through as the sandbox spawn cwd, and the sandbox
+                        // policy automatically treats a spawn's cwd as a
+                        // writable root (see `get_writable_roots_with_cwd`).
+                        // A model-supplied cwd must not be allowed to expand
+                        // the writable footprint beyond what the workspace
+                        // sandbox already grants -- otherwise `background_tasks
+                        // { cwd: "$HOME" }` silently makes the whole home
+                        // directory writable under a policy advertised as
+                        // workspace-write.
+                        if let Some(policy) = &self.sandbox_policy {
+                            if !policy.allows_write_to(
+                                std::path::Path::new(&self.cwd),
+                                std::path::Path::new(&cwd),
+                            ) {
+                                return ToolResult::failure(format!(
+                                    "background_tasks cwd '{cwd}' is outside the sandbox's \
+                                     writable roots; omit cwd to use the workspace or pick a \
+                                     directory the sandbox already allows"
+                                ));
+                            }
+                        }
                         let shell = args
                             .get("shell")
                             .and_then(serde_json::Value::as_bool)
@@ -2162,8 +2247,15 @@ impl ToolExecutor {
                                 .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
                                 .collect::<std::collections::HashMap<_, _>>()
                         });
-                        match background_tasks::start(command, cwd, self.cwd.clone(), shell, env)
-                            .await
+                        match background_tasks::start(
+                            command,
+                            cwd,
+                            self.cwd.clone(),
+                            shell,
+                            env,
+                            self.sandbox_policy.clone(),
+                        )
+                        .await
                         {
                             Ok(task) => {
                                 let details = serde_json::json!({
@@ -2276,10 +2368,30 @@ impl ToolExecutor {
                 extract_document::extract_document_with_cancellation(args.clone(), cancel).await
             }
             "notebook_edit" => {
+                // `notebook_edit` resolves its own `path` argument the same
+                // way (absolute path used as-is, otherwise joined to cwd);
+                // mirror that resolution here so the sandbox containment
+                // check below sees the exact path the tool will write to.
+                let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                let trimmed = raw_path.trim();
+                if !trimmed.is_empty() {
+                    let resolved = if std::path::Path::new(trimmed).is_absolute() {
+                        trimmed.to_string()
+                    } else {
+                        std::path::Path::new(&self.cwd)
+                            .join(trimmed)
+                            .to_string_lossy()
+                            .to_string()
+                    };
+                    if let Some(err) = self.deny_native_write_outside_sandbox(&resolved) {
+                        return err;
+                    }
+                }
                 notebook_edit::notebook_edit_with_cancellation(
                     args.clone(),
                     &self.cwd,
                     cancel.as_ref(),
+                    self.sandbox_policy.as_ref(),
                 )
                 .await
             }

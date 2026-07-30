@@ -71,6 +71,11 @@ impl App {
             // Quit
             KeyCode::Char('c') if ctrl => {
                 if self.state.busy {
+                    // Drop in-flight guardian reviews: a verdict arriving
+                    // after the interrupt must neither relay an approval nor
+                    // pop the approval modal.
+                    self.cancel_pending_guardian_reviews();
+
                     let has_queued_steering = self.state.queued_steering_count > 0;
                     self.submit_queued_steering_after_interrupt = has_queued_steering;
                     self.restore_queued_prompts_after_interrupt =
@@ -1040,7 +1045,7 @@ impl App {
             // execution here would let batched approvals run concurrently and
             // reorder a gated write/edit relative to later calls.
             if let Some(tx) = &self.tool_response_tx {
-                let _ = tx.send((call_id, true, None));
+                let _ = tx.send((call_id, true, None, ExecutionSource::Native));
             }
         } else {
             self.tool_history.fail(&call_id, "Denied".to_string());
@@ -1048,7 +1053,7 @@ impl App {
             self.state.fail_tool_call(&call_id, "Denied");
             // Send denial
             if let Some(tx) = &self.tool_response_tx {
-                let _ = tx.send((call_id, false, None));
+                let _ = tx.send((call_id, false, None, ExecutionSource::Native));
             }
         }
         Ok(())

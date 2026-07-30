@@ -31,7 +31,8 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 
 use crate::agent::{
-    CredentialVault, FromAgent, NativeAgent, NativeAgentConfig, PromptKind, ToolResult,
+    CredentialVault, ExecutionSource, FromAgent, NativeAgent, NativeAgentConfig, PromptKind,
+    ToolResponseMessage, ToolResult,
 };
 use crate::git;
 use crate::headless::messages::{
@@ -93,7 +94,7 @@ struct HeadlessState {
     history: Option<Vec<crate::headless::messages::HistoryMessage>>,
     meta: Arc<Mutex<RuntimeMeta>>,
     agent: Option<NativeAgent>,
-    tool_tx: Option<mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>>,
+    tool_tx: Option<mpsc::UnboundedSender<ToolResponseMessage>>,
     event_task: Option<tokio::task::JoinHandle<()>>,
     utility_commands: HashMap<String, mpsc::UnboundedSender<UtilityCommandControl>>,
     file_watches: HashMap<String, tokio::task::JoinHandle<()>>,
@@ -193,6 +194,13 @@ impl HeadlessState {
                 // marked `requires_approval`; preserve the prior (mode-unaware)
                 // per-tool heuristic here exactly so that decision is unchanged.
                 approval_mode: crate::state::ApprovalMode::Selective,
+                // The headless server has no sandbox-policy resolution of
+                // its own today (unlike the interactive TUI's
+                // `config::resolve_interactive_sandbox_policy` or print
+                // mode's `PrintModeOptions::sandbox_policy`); preserve that
+                // status quo explicitly rather than silently expanding this
+                // PR's scope to headless sandboxing.
+                sandbox_policy: None,
             };
             let (agent, mut event_rx) =
                 NativeAgent::new_with_credential_vault(config, self.credential_vault.clone())
@@ -489,7 +497,12 @@ pub async fn run_headless_server() -> Result<i32> {
                             | ServerRequestResolutionStatus::Skipped
                             | ServerRequestResolutionStatus::Aborted
                     ));
-                    let _ = tool_tx.send((request_id.clone(), approved, agent_result));
+                    let _ = tool_tx.send((
+                        request_id.clone(),
+                        approved,
+                        agent_result,
+                        ExecutionSource::RemoteClient,
+                    ));
                 }
                 emit(&FromAgentMessage::ServerRequestResolved {
                     request_id: request_id.clone(),
@@ -1148,7 +1161,7 @@ fn take_interrupted_tool_terminal_messages(
 async fn handle_agent_event(
     msg: FromAgent,
     meta: &Arc<Mutex<RuntimeMeta>>,
-    tool_tx: &mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>,
+    tool_tx: &mpsc::UnboundedSender<ToolResponseMessage>,
 ) -> Result<()> {
     match msg {
         FromAgent::Ready { model, provider } => {
@@ -1260,7 +1273,7 @@ async fn handle_agent_event(
             //
             // For approval-gated tools, honor Init approval_mode when set.
             if let Some(approved) = immediate_approval {
-                let _ = tool_tx.send((call_id, approved, None));
+                let _ = tool_tx.send((call_id, approved, None, ExecutionSource::RemoteClient));
             }
         }
         FromAgent::ToolStart { call_id } => {
@@ -1449,7 +1462,7 @@ fn headless_tool_result_to_agent(r: HeadlessToolResult) -> ToolResult {
 #[derive(Debug)]
 struct AcceptedToolResponse {
     messages: Vec<FromAgentMessage>,
-    agent_response: (String, bool, Option<ToolResult>),
+    agent_response: ToolResponseMessage,
 }
 
 fn prepare_tool_response(
@@ -1506,7 +1519,12 @@ fn prepare_tool_response(
 
     Ok(AcceptedToolResponse {
         messages,
-        agent_response: (call_id, approved, agent_result),
+        agent_response: (
+            call_id,
+            approved,
+            agent_result,
+            ExecutionSource::RemoteClient,
+        ),
     })
 }
 
@@ -1527,7 +1545,7 @@ fn prepare_client_tool_result(
     let result = client_content_to_agent_result(content, is_error);
     Ok(AcceptedToolResponse {
         messages: tool_lifecycle_messages(&call_id, None, None, &result),
-        agent_response: (call_id, true, Some(result)),
+        agent_response: (call_id, true, Some(result), ExecutionSource::RemoteClient),
     })
 }
 
@@ -1853,7 +1871,7 @@ mod tests {
             .expect("deliver first decision after lifecycle output");
         assert!(matches!(
             tool_rx.try_recv(),
-            Ok((call_id, true, None)) if call_id == "call-1"
+            Ok((call_id, true, None, ExecutionSource::RemoteClient)) if call_id == "call-1"
         ));
 
         let error = prepare_tool_response(
@@ -1896,7 +1914,7 @@ mod tests {
             .expect("deliver denial after terminal lifecycle");
         assert!(matches!(
             tool_rx.try_recv(),
-            Ok((call_id, false, None)) if call_id == "call-2"
+            Ok((call_id, false, None, ExecutionSource::RemoteClient)) if call_id == "call-2"
         ));
         assert!(
             prepare_tool_response(
@@ -1945,7 +1963,7 @@ mod tests {
             .expect("deliver completed result after lifecycle output");
         assert!(matches!(
             tool_rx.try_recv(),
-            Ok((call_id, true, Some(result)))
+            Ok((call_id, true, Some(result), ExecutionSource::RemoteClient))
                 if call_id == "call-completed" && result.success
         ));
 
@@ -1982,7 +2000,7 @@ mod tests {
             .expect("deliver distinct execution decision");
         assert!(matches!(
             tool_rx.try_recv(),
-            Ok((call_id, true, None)) if call_id == "call-1"
+            Ok((call_id, true, None, ExecutionSource::RemoteClient)) if call_id == "call-1"
         ));
 
         for _ in 0..2 {
