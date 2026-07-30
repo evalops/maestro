@@ -697,8 +697,15 @@ pub struct App {
     goal_store: GoalStore,
 
     /// When true and the agent is idle, fire one goal continuation prompt.
-    /// Armed on create/resume/auto-on and after a completed agent turn.
+    /// Armed on create/resume/auto-on, and when the second-model judge says
+    /// the goal still needs work.
     goal_auto_continue_armed: bool,
+
+    /// Receiver for background goal-completion judge results.
+    goal_judge_rx: Option<std::sync::mpsc::Receiver<crate::goal_judge::GoalJudgeEvent>>,
+
+    /// True while a goal judge agent is running.
+    goal_judge_running: bool,
 
     /// Status-bar density (`/footer rich|solo|history|clear`).
     footer_style: FooterStyle,
@@ -1085,6 +1092,8 @@ impl App {
             loop_schedule: None,
             goal_store: GoalStore::load_default(),
             goal_auto_continue_armed: false,
+            goal_judge_rx: None,
+            goal_judge_running: false,
             footer_style: crate::ui_prefs::UiPrefs::load_default().footer_style(),
             pending_attachments: Vec::new(),
             last_mcp_server_statuses: HashMap::new(),
@@ -1463,6 +1472,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 needs_redraw = true;
             }
 
+            if self.poll_goal_judge() {
+                needs_redraw = true;
+            }
+
             // Drain live MCP notifications so list changes refresh the UI
             // without waiting for a reconnect or a manual status check.
             if self.poll_mcp_updates().await {
@@ -1509,14 +1522,14 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 needs_redraw = true;
             }
 
-            // Goal auto-continue: one continuation prompt per idle cycle while
-            // the goal is active. Skip when busy, when a /loop is scheduled,
-            // or when prompts are already queued (steering / follow-up).
+            // Goal auto-continue: only after create/resume or a judge
+            // "continue" verdict. Skip when busy, judging, loop, or queue.
             let queue_or_loop_busy = self.loop_schedule.is_some()
                 || !self.queued_prompts.is_empty()
                 || self.queued_prompt_inflight.is_some()
                 || self.queued_prompt_active.is_some();
             if !self.state.busy
+                && !self.goal_judge_running
                 && !queue_or_loop_busy
                 && self.goal_auto_continue_armed
                 && self.goal_store.should_auto_continue()
@@ -1526,18 +1539,24 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     match self.goal_store.note_auto_continue_submitted() {
                         Ok(hit_cap) => {
                             if hit_cap {
+                                let max = self
+                                    .goal_store
+                                    .current
+                                    .as_ref()
+                                    .map(|g| g.max_turns)
+                                    .unwrap_or(0);
                                 self.state.status.replace(format!(
-                                    "Goal auto-continue (last of {})",
-                                    self.goal_store
-                                        .current
-                                        .as_ref()
-                                        .map(|g| g.max_turns)
-                                        .unwrap_or(0)
+                                    "Goal auto-continue stopped (safety max {max})"
+                                ));
+                                self.state.add_system_message(format!(
+                                    "Goal auto-continue hit safety max_turns={max}. \
+                                     Completion is normally judged by a second model; this cap only prevents runaway loops. \
+                                     Use `/goal resume` or `/goal auto on` to re-arm."
                                 ));
                             } else {
                                 self.state.status.replace("Goal auto-continue".to_string());
+                                self.submit_prompt(prompt).await?;
                             }
-                            self.submit_prompt(prompt).await?;
                             needs_redraw = true;
                         }
                         Err(e) => {
@@ -2026,6 +2045,192 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         true
     }
 
+    /// Start a second-model goal completion judge after a worker turn.
+    ///
+    /// The judge (not a fixed turn count) decides whether to auto-continue.
+    fn start_goal_judge(&mut self) {
+        if self.goal_judge_running {
+            return;
+        }
+        if !self.goal_store.should_auto_continue() {
+            return;
+        }
+        let Some(goal) = self.goal_store.current.clone() else {
+            return;
+        };
+        let worker = if self.current_model.is_empty() {
+            self.state
+                .model
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string())
+        } else {
+            self.current_model.clone()
+        };
+        let judge_model = match crate::rubber_duck::pick_review_model(&worker, None) {
+            Ok(model) => model,
+            Err(message) => {
+                self.goal_auto_continue_armed = false;
+                let _ = self.goal_store.set_auto_continue(false);
+                self.state.add_system_message(format!(
+                    "Goal judge unavailable ({message}). Auto-continue paused. \
+                     Configure another model, or use `/goal complete` / `/goal resume`."
+                ));
+                return;
+            }
+        };
+
+        let transcript = self.goal_transcript_excerpt();
+        let cwd = self.state.cwd.clone().unwrap_or_else(|| ".".to_string());
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.goal_judge_rx = Some(rx);
+        self.goal_judge_running = true;
+        self.state
+            .status
+            .replace(format!("Goal judge ({judge_model})…"));
+        self.state.add_system_message(format!(
+            "Goal judge started with **{judge_model}** (worker: {worker}). \
+             Auto-continue continues only if this model says the goal is incomplete."
+        ));
+        tokio::spawn(crate::goal_judge::run_judge(
+            crate::goal_judge::GoalJudgeRequest {
+                model: judge_model,
+                cwd,
+                worker_model: worker,
+                goal_id: goal.id,
+                goal_text: goal.text,
+                success_criteria: goal.success_criteria,
+                transcript,
+            },
+            tx,
+        ));
+    }
+
+    /// Recent user/assistant text for the goal judge prompt.
+    fn goal_transcript_excerpt(&self) -> String {
+        use crate::state::MessageRole;
+        let mut lines: Vec<(String, String)> = Vec::new();
+        for message in &self.state.messages {
+            if message.content.trim().is_empty() {
+                continue;
+            }
+            let role = match message.role {
+                MessageRole::User => "user",
+                MessageRole::Assistant if message.is_assistant_reply() => "assistant",
+                _ => continue,
+            };
+            // Skip the synthetic goal continuation system-ish prompts' noise is fine.
+            let content: String = message.content.chars().take(4_000).collect();
+            lines.push((role.to_string(), content));
+        }
+        // Keep the most recent ~30 role turns.
+        let start = lines.len().saturating_sub(30);
+        crate::goal_judge::format_transcript_lines(&lines[start..])
+    }
+
+    /// Apply finished goal-judge events: continue, complete, or block.
+    fn poll_goal_judge(&mut self) -> bool {
+        let mut events = Vec::new();
+        let mut disconnected = false;
+        if let Some(rx) = &self.goal_judge_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => events.push(event),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if events.is_empty() && !disconnected {
+            return false;
+        }
+        self.goal_judge_rx = None;
+        self.goal_judge_running = false;
+        if events.is_empty() {
+            self.goal_auto_continue_armed = false;
+            let _ = self.goal_store.set_auto_continue(false);
+            self.state.add_system_message(
+                "Goal judge failed: task exited without a result. Auto-continue paused.".into(),
+            );
+            return true;
+        }
+        for event in events {
+            match event {
+                crate::goal_judge::GoalJudgeEvent::Decided { model, verdict } => {
+                    let reason = if verdict.reason.is_empty() {
+                        "(no reason)".to_string()
+                    } else {
+                        verdict.reason.clone()
+                    };
+                    let _ = self
+                        .goal_store
+                        .set_last_judge_reason(format!("{}: {reason}", verdict.decision.as_str()));
+                    match verdict.decision {
+                        crate::goal_judge::GoalJudgeDecision::Continue => {
+                            self.state.add_system_message(format!(
+                                "## Goal judge ({model}): **continue**\n\n{reason}"
+                            ));
+                            if self.goal_store.should_auto_continue() {
+                                self.goal_auto_continue_armed = true;
+                                self.state
+                                    .status
+                                    .replace("Goal: judge says continue".into());
+                            }
+                        }
+                        crate::goal_judge::GoalJudgeDecision::Complete => {
+                            self.goal_auto_continue_armed = false;
+                            match self.goal_store.complete() {
+                                Ok(done) => {
+                                    self.state.add_system_message(format!(
+                                        "## Goal judge ({model}): **complete**\n\n{reason}\n\n\
+                                         Goal {} marked complete.\n\n{}",
+                                        done.id, done.text
+                                    ));
+                                    self.state
+                                        .status
+                                        .replace(format!("Goal {} complete (judge)", done.id));
+                                }
+                                Err(e) => {
+                                    self.state.error =
+                                        Some(format!("Judge said complete but store failed: {e}"));
+                                }
+                            }
+                        }
+                        crate::goal_judge::GoalJudgeDecision::Blocked => {
+                            self.goal_auto_continue_armed = false;
+                            match self.goal_store.block(Some(reason.clone())) {
+                                Ok(goal) => {
+                                    self.state.add_system_message(format!(
+                                        "## Goal judge ({model}): **blocked**\n\n{reason}"
+                                    ));
+                                    self.state
+                                        .status
+                                        .replace(format!("Goal {} blocked (judge)", goal.id));
+                                }
+                                Err(e) => {
+                                    self.state.error =
+                                        Some(format!("Judge said blocked but store failed: {e}"));
+                                }
+                            }
+                        }
+                    }
+                }
+                crate::goal_judge::GoalJudgeEvent::Failed { model, message } => {
+                    self.goal_auto_continue_armed = false;
+                    let _ = self.goal_store.set_auto_continue(false);
+                    self.state.add_system_message(format!(
+                        "Goal judge failed (model: {model}): {message}\n\n\
+                         Auto-continue paused. Use `/goal resume` to try again, or `/goal complete` / `/goal block`."
+                    ));
+                    self.state.status.replace("Goal judge failed".into());
+                }
+            }
+        }
+        true
+    }
+
     fn update_mcp_badge_counts(&mut self, servers: &[crate::tools::McpServerStatus]) {
         let connected = servers.iter().filter(|server| server.connected).count();
         let tool_count: usize = servers.iter().map(|server| server.tools.len()).sum();
@@ -2493,8 +2698,11 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     .map(|prompt| QueuedPromptCursor { id: prompt.id });
                 self.sync_queue_prompt_count();
                 needs_post_interrupt_queue = true;
+                // After a successful worker turn, a *different* model judges
+                // whether the goal is complete. That verdict (not turn count)
+                // decides whether to auto-continue.
                 if self.goal_store.should_auto_continue() {
-                    self.goal_auto_continue_armed = true;
+                    self.start_goal_judge();
                 }
             }
             FromAgent::ResponseEnd { .. } => {}
