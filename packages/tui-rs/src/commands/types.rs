@@ -301,8 +301,19 @@ pub enum CommandAction {
     Goal(GoalAction),
     /// Change status-bar footer density.
     SetFooterStyle(FooterStyle),
-    /// Attach a local path (image/video/file) to the next prompt.
-    AttachPath(String),
+    /// Manage files queued for the next prompt (`/attach`).
+    Attach(AttachAction),
+}
+
+/// `/attach` subcommands.
+#[derive(Debug, Clone)]
+pub enum AttachAction {
+    /// Queue a local path for the next prompt.
+    Add(String),
+    /// List pending attachments.
+    List,
+    /// Clear all pending attachments.
+    Clear,
 }
 
 /// Status bar density presets (Kimi-inspired `/footer`).
@@ -347,6 +358,8 @@ pub enum GoalAction {
         text: String,
         replace: bool,
         criteria: Option<String>,
+        /// Cap on auto-continue submissions; `None` uses the default (8).
+        max_turns: Option<u32>,
     },
     Status,
     Pause,

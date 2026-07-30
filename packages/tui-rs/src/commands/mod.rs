@@ -102,7 +102,7 @@ pub use registry::{
     CommandRegistry,
 };
 pub use types::{
-    A2aAction, BackgroundMonitorAction, Command, CommandAction, CommandArgument,
+    A2aAction, AttachAction, BackgroundMonitorAction, Command, CommandAction, CommandArgument,
     CommandArgumentType, CommandCategory, CommandContext, CommandError, CommandHandler,
     CommandOutput, CommandResult, ExportAction, FooterStyle, GoalAction, HistoryAction,
     HooksAction, LoopAction, MagicTraceAction, McpAction, ModalType, PlanReviewAction,

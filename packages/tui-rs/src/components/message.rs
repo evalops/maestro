@@ -1856,6 +1856,8 @@ pub struct StatusBarWidget<'a> {
     paste_note: Option<&'a str>,
     goal_badge: Option<&'a str>,
     footer_style: crate::commands::FooterStyle,
+    /// Pending `/attach` paths for the next prompt.
+    attach_count: usize,
 }
 
 impl<'a> StatusBarWidget<'a> {
@@ -1887,6 +1889,7 @@ impl<'a> StatusBarWidget<'a> {
             paste_note: None,
             goal_badge: None,
             footer_style: crate::commands::FooterStyle::default(),
+            attach_count: 0,
         }
     }
 
@@ -1899,6 +1902,12 @@ impl<'a> StatusBarWidget<'a> {
     #[must_use]
     pub fn with_footer_style(mut self, style: crate::commands::FooterStyle) -> Self {
         self.footer_style = style;
+        self
+    }
+
+    #[must_use]
+    pub fn with_attach_count(mut self, count: usize) -> Self {
+        self.attach_count = count;
         self
     }
 
@@ -2037,6 +2046,17 @@ impl Widget for StatusBarWidget<'_> {
                     Style::default().fg(Color::Yellow),
                 ));
             }
+        }
+
+        // Pending attachments (rich + solo)
+        if !history_only && self.attach_count > 0 {
+            if !spans.is_empty() {
+                spans.push(Span::raw(" | "));
+            }
+            spans.push(Span::styled(
+                format!("attach:{}", self.attach_count),
+                Style::default().fg(Color::Magenta),
+            ));
         }
 
         // Working directory + git (rich only)
@@ -2311,6 +2331,7 @@ pub struct ChatView<'a> {
     pending_approvals: usize,
     footer_style: crate::commands::FooterStyle,
     goal_badge: Option<&'a str>,
+    attach_count: usize,
 }
 
 impl<'a> ChatView<'a> {
@@ -2322,6 +2343,7 @@ impl<'a> ChatView<'a> {
             pending_approvals: 0,
             footer_style: crate::commands::FooterStyle::default(),
             goal_badge: None,
+            attach_count: 0,
         }
     }
 
@@ -2347,6 +2369,12 @@ impl<'a> ChatView<'a> {
     #[must_use]
     pub fn with_goal_badge(mut self, badge: Option<&'a str>) -> Self {
         self.goal_badge = badge;
+        self
+    }
+
+    #[must_use]
+    pub fn with_attach_count(mut self, count: usize) -> Self {
+        self.attach_count = count;
         self
     }
 }
@@ -2468,6 +2496,7 @@ impl Widget for ChatView<'_> {
             .with_paste_note(paste_note.as_deref())
             .with_goal_badge(self.goal_badge)
             .with_footer_style(self.footer_style)
+            .with_attach_count(self.attach_count)
             .with_shortcut_hints();
             status_widget.render(chunks[4], buf);
         }

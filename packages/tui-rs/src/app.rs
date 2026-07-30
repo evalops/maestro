@@ -1085,7 +1085,7 @@ impl App {
             loop_schedule: None,
             goal_store: GoalStore::load_default(),
             goal_auto_continue_armed: false,
-            footer_style: FooterStyle::default(),
+            footer_style: crate::ui_prefs::UiPrefs::load_default().footer_style(),
             pending_attachments: Vec::new(),
             last_mcp_server_statuses: HashMap::new(),
             config_watcher: build_mcp_config_watcher(),
@@ -1510,17 +1510,41 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             }
 
             // Goal auto-continue: one continuation prompt per idle cycle while
-            // the goal is active. Does not fire during a busy turn or while a
-            // /loop prompt is due (loop already submitted above).
+            // the goal is active. Skip when busy, when a /loop is scheduled,
+            // or when prompts are already queued (steering / follow-up).
+            let queue_or_loop_busy = self.loop_schedule.is_some()
+                || !self.queued_prompts.is_empty()
+                || self.queued_prompt_inflight.is_some()
+                || self.queued_prompt_active.is_some();
             if !self.state.busy
+                && !queue_or_loop_busy
                 && self.goal_auto_continue_armed
                 && self.goal_store.should_auto_continue()
             {
                 if let Some(prompt) = self.goal_store.continuation_prompt() {
                     self.goal_auto_continue_armed = false;
-                    self.state.status.replace("Goal auto-continue".to_string());
-                    self.submit_prompt(prompt).await?;
-                    needs_redraw = true;
+                    match self.goal_store.note_auto_continue_submitted() {
+                        Ok(hit_cap) => {
+                            if hit_cap {
+                                self.state.status.replace(format!(
+                                    "Goal auto-continue (last of {})",
+                                    self.goal_store
+                                        .current
+                                        .as_ref()
+                                        .map(|g| g.max_turns)
+                                        .unwrap_or(0)
+                                ));
+                            } else {
+                                self.state.status.replace("Goal auto-continue".to_string());
+                            }
+                            self.submit_prompt(prompt).await?;
+                            needs_redraw = true;
+                        }
+                        Err(e) => {
+                            self.state.error = Some(format!("Goal auto-continue failed: {e}"));
+                            needs_redraw = true;
+                        }
+                    }
                 } else {
                     self.goal_auto_continue_armed = false;
                 }
@@ -2946,6 +2970,7 @@ Slash Commands:
         let detail_view = &self.detail_view;
         let footer_style = self.footer_style;
         let goal_badge = self.goal_store.status_line();
+        let attach_count = self.pending_attachments.len();
 
         // DEC mode 2026 lets capable terminals present a whole Ratatui diff
         // atomically, eliminating visible partial-frame tearing. Unknown DEC
@@ -2969,7 +2994,8 @@ Slash Commands:
                 let view = ChatView::new(state)
                     .with_runtime_status(sandbox_label, workspace_trusted, pending_approvals)
                     .with_footer_style(footer_style)
-                    .with_goal_badge(goal_badge.as_deref());
+                    .with_goal_badge(goal_badge.as_deref())
+                    .with_attach_count(attach_count);
                 frame.render_widget(view, area);
 
                 // Show error if any. Wrap the full provider message across lines

@@ -3,6 +3,7 @@
 //! Install still goes through [`crate::plugins::install`]; this module only
 //! lists known entries with trust tiers for discovery.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -91,8 +92,18 @@ pub fn builtin_catalog() -> Vec<MarketplaceEntry> {
     ]
 }
 
+/// True when a discovered plugin name matches a catalog id or display name.
+pub fn is_installed(entry: &MarketplaceEntry, installed_names: &HashSet<String>) -> bool {
+    installed_names.iter().any(|name| {
+        name.eq_ignore_ascii_case(&entry.id) || name.eq_ignore_ascii_case(&entry.display_name)
+    })
+}
+
 /// Human-readable marketplace listing.
-pub fn format_catalog(entries: &[MarketplaceEntry]) -> String {
+///
+/// `installed_names` are discovered plugin directory/manifest names; matching
+/// catalog entries are marked **installed**.
+pub fn format_catalog(entries: &[MarketplaceEntry], installed_names: &HashSet<String>) -> String {
     let mut out = String::from("## Plugin marketplace\n\n");
     out.push_str(
         "Trust tiers: **official** (EvalOps) · **curated** (reviewed third-party) · **community**.\n",
@@ -101,8 +112,10 @@ pub fn format_catalog(entries: &[MarketplaceEntry]) -> String {
         "Remote installs require `/plugins marketplace install <id> --trust` (except pure local paths).\n\n",
     );
     for e in entries {
+        let installed = is_installed(e, installed_names);
+        let status = if installed { " · **installed**" } else { "" };
         out.push_str(&format!(
-            "- **{}** (`{}`) — *{}*\n  {}\n  source: `{}`\n",
+            "- **{}** (`{}`) — *{}*{status}\n  {}\n  source: `{}`\n",
             e.display_name,
             e.id,
             e.tier.as_str(),
@@ -160,8 +173,18 @@ mod tests {
 
     #[test]
     fn format_includes_trust_guidance() {
-        let text = format_catalog(&builtin_catalog());
+        let text = format_catalog(&builtin_catalog(), &HashSet::new());
         assert!(text.contains("official"));
         assert!(text.contains("--trust"));
+        assert!(!text.contains("**installed**"));
+    }
+
+    #[test]
+    fn format_marks_installed_by_id() {
+        let mut installed = HashSet::new();
+        installed.insert("superpowers".into());
+        let text = format_catalog(&builtin_catalog(), &installed);
+        assert!(text.contains("**installed**"));
+        assert!(text.contains("superpowers"));
     }
 }
