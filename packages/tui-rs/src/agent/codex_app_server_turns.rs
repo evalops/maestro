@@ -83,9 +83,10 @@ impl CodexAppServerTurnSession {
             extra.insert("dynamicTools".to_owned(), Value::Array(tools));
         }
         if let Some(instructions) = instructions.filter(|s| !s.trim().is_empty()) {
-            // Common app-server field names; unknown keys are ignored by Codex.
+            // `ThreadStartParams` (app-server-protocol v2) field for standing
+            // instructions. There is no `instructions` key, and setting
+            // `baseInstructions` would replace Codex's own base prompt.
             extra.insert("developerInstructions".to_owned(), json!(instructions));
-            extra.insert("instructions".to_owned(), json!(instructions));
         }
 
         let thread = client

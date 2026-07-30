@@ -2759,21 +2759,28 @@ impl NativeAgentRunner {
 
             match event {
                 TurnWaitEvent::Completed(result) => {
-                    // Prefer already-streamed deltas; only emit a completion
-                    // chunk when nothing was streamed (avoids duplicating text).
-                    let final_text = if !streamed_assistant.is_empty() {
-                        streamed_assistant
-                    } else if !result.assistant_text.is_empty() {
-                        let text = result.assistant_text;
+                    // `item/completed` agent messages carry the authoritative
+                    // full text (possibly including content never streamed as
+                    // deltas); fall back to what was streamed.
+                    let final_text = if result.assistant_text.is_empty() {
+                        streamed_assistant.clone()
+                    } else {
+                        result.assistant_text
+                    };
+                    // Emit only the tail not already streamed as deltas, so
+                    // completion text never duplicates streamed content. When
+                    // the streams diverge, keep the authoritative text for
+                    // history without re-emitting.
+                    let tail = final_text
+                        .strip_prefix(streamed_assistant.as_str())
+                        .unwrap_or("");
+                    if !tail.is_empty() {
                         let _ = self.event_tx.send(FromAgent::ResponseChunk {
                             response_id: response_id.clone(),
-                            content: text.clone(),
+                            content: tail.to_owned(),
                             is_thinking: false,
                         });
-                        text
-                    } else {
-                        String::new()
-                    };
+                    }
                     if !final_text.is_empty() {
                         self.messages.push(Message {
                             role: Role::Assistant,
