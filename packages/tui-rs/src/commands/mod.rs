@@ -106,5 +106,5 @@ pub use types::{
     CommandArgumentType, CommandCategory, CommandContext, CommandError, CommandHandler,
     CommandOutput, CommandResult, ExportAction, HistoryAction, HooksAction, LoopAction,
     MagicTraceAction, McpAction, ModalType, PlanReviewAction, PluginsAction, QueueAction,
-    QueueModeKind, SessionAction, SkillsAction, ToolHistoryAction, UsageAction,
+    QueueModeKind, SessionAction, SkillsAction, ToolHistoryAction, TrustAction, UsageAction,
 };

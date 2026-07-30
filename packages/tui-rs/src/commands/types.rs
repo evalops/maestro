@@ -281,6 +281,10 @@ pub enum CommandAction {
     ShowMemory,
     /// Session management actions
     Session(SessionAction),
+    /// Workspace trust (global config grant/revoke for project skills/plugins)
+    Trust(TrustAction),
+    /// Show the active interactive sandbox policy
+    ShowSandbox,
     /// Invoke a skill as a slash command (Grok-style `/skillname args`)
     InvokeSkill { name: String, args: String },
     /// Invoke a flat markdown prompt/command template as a slash command
@@ -342,6 +346,19 @@ pub enum SessionAction {
     ListCheckpoints,
     /// Continue the most recent session for this workspace
     Continue,
+    /// Show session id, path, model, sandbox, trust
+    Status,
+}
+
+/// Workspace trust actions (writes only global `~/.composer/config.toml`).
+#[derive(Debug, Clone)]
+pub enum TrustAction {
+    /// Show whether this workspace is trusted
+    Status,
+    /// Grant trust so project skills/plugins/hooks load
+    Grant,
+    /// Revoke trust
+    Revoke,
 }
 
 /// Structured plan review actions.

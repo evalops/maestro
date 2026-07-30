@@ -1370,18 +1370,63 @@ pub fn build_command_registry() -> CommandRegistry {
                             "Usage: /session rewind [n] [--dry-run] | /session rewind files | /session rewind checkpoints",
                         )?,
                     ))),
-                    "info" | "" => Ok(CommandOutput::Action(CommandAction::ShowDiagnostics)),
+                    "info" | "status" | "" => {
+                        Ok(CommandOutput::Action(CommandAction::Session(
+                            SessionAction::Status,
+                        )))
+                    }
                     _ => Ok(CommandOutput::Message(
-                        "Usage: /session [info|new|clear|fork|rewind|cleanup]".to_string(),
+                        "Usage: /session [status|info|new|clear|fork|rewind|cleanup]".to_string(),
                     )),
                 }
             }),
         )
         .alias("ss")
-        .usage("/session [info|new|clear|list|load|export|cleanup|fork|rewind]")
+        .usage("/session [status|info|new|clear|list|load|export|cleanup|fork|rewind]")
         .group(vec![
-            "info", "new", "clear", "list", "load", "export", "cleanup", "fork", "rewind",
+            "status", "info", "new", "clear", "list", "load", "export", "cleanup", "fork",
+            "rewind",
         ]),
+    );
+
+    // Workspace trust (global config only)
+    registry.register(
+        Command::new(
+            "trust",
+            "Grant or revoke trust so project skills/plugins/hooks can load",
+            CommandCategory::Safety,
+            Box::new(|ctx| {
+                let sub = ctx
+                    .raw_args
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_lowercase();
+                let action = match sub.as_str() {
+                    "" | "status" | "show" => crate::commands::TrustAction::Status,
+                    "grant" | "on" | "yes" | "true" => crate::commands::TrustAction::Grant,
+                    "revoke" | "off" | "no" | "false" => crate::commands::TrustAction::Revoke,
+                    _ => {
+                        return Ok(CommandOutput::Message(
+                            "Usage: /trust [status|grant|revoke]".to_string(),
+                        ));
+                    }
+                };
+                Ok(CommandOutput::Action(CommandAction::Trust(action)))
+            }),
+        )
+        .usage("/trust [status|grant|revoke]"),
+    );
+
+    // Sandbox status
+    registry.register(
+        Command::new(
+            "sandbox",
+            "Show the interactive sandbox policy for this session",
+            CommandCategory::Safety,
+            Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowSandbox))),
+        )
+        .usage("/sandbox"),
     );
 
     registry.register(Command::new(

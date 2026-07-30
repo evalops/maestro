@@ -414,6 +414,68 @@ pub fn workspace_trusted_in_global_config(workspace_dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Grant or revoke trust for `workspace_dir` in the global `~/.composer/config.toml`.
+///
+/// Only the global file is written: a repository must never be able to grant
+/// itself trust via project-local config. Creates `~/.composer` and the file
+/// when missing. Returns the path that was updated.
+///
+/// # Errors
+/// Returns a user-facing error string when the home directory is missing or
+/// when the config cannot be read/written/parsed.
+pub fn set_workspace_trust_in_global_config(
+    workspace_dir: &Path,
+    trusted: bool,
+) -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or_else(|| "home directory is unavailable".to_string())?;
+    let composer_dir = home.join(".composer");
+    std::fs::create_dir_all(&composer_dir)
+        .map_err(|error| format!("failed to create {}: {error}", composer_dir.display()))?;
+    let global_path = composer_dir.join("config.toml");
+
+    let mut root = if global_path.exists() {
+        let content = std::fs::read_to_string(&global_path)
+            .map_err(|error| format!("failed to read {}: {error}", global_path.display()))?;
+        content
+            .parse::<toml::Value>()
+            .map_err(|error| format!("failed to parse {}: {error}", global_path.display()))?
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+
+    let table = root
+        .as_table_mut()
+        .ok_or_else(|| format!("{} root must be a TOML table", global_path.display()))?;
+    let projects = table
+        .entry("projects")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or_else(|| "projects must be a TOML table".to_string())?;
+
+    let canonical =
+        dunce::canonicalize(workspace_dir).unwrap_or_else(|_| workspace_dir.to_path_buf());
+    let key = canonical.to_string_lossy().into_owned();
+    let project = projects
+        .entry(key)
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or_else(|| "project entry must be a TOML table".to_string())?;
+    project.insert(
+        "trust_level".to_string(),
+        toml::Value::String(if trusted {
+            "trusted".to_string()
+        } else {
+            "untrusted".to_string()
+        }),
+    );
+
+    let rendered = toml::to_string_pretty(&root)
+        .map_err(|error| format!("failed to serialize {}: {error}", global_path.display()))?;
+    std::fs::write(&global_path, rendered)
+        .map_err(|error| format!("failed to write {}: {error}", global_path.display()))?;
+    Ok(global_path)
+}
+
 /// Env var names that a project config must never inject into shell commands:
 /// they execute code or preload libraries on shell/process startup.
 fn is_dangerous_shell_env_override(key: &str) -> bool {
@@ -1943,6 +2005,28 @@ sandbox_mode = "danger-full-access"
             },
         )]));
         assert!(!workspace_trusted(&config, temp_dir.path()));
+    }
+
+    #[test]
+    fn test_set_workspace_trust_in_global_config_round_trip() {
+        let home = TempDir::new().unwrap();
+        let workspace = TempDir::new().unwrap();
+        // SAFETY: serial unit test isolating HOME for config path resolution.
+        let previous_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let path =
+            set_workspace_trust_in_global_config(workspace.path(), true).expect("grant trust");
+        assert!(path.ends_with(".composer/config.toml"));
+        assert!(workspace_trusted_in_global_config(workspace.path()));
+
+        set_workspace_trust_in_global_config(workspace.path(), false).expect("revoke trust");
+        assert!(!workspace_trusted_in_global_config(workspace.path()));
+
+        match previous_home {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
     }
 
     #[test]
