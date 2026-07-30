@@ -240,6 +240,9 @@ pub enum CommandAction {
     SetTheme(String),
     /// Set the current model
     SetModel(String),
+    /// Review uncommitted changes with a different model (second opinion).
+    /// `None` lets the app pick a model from a different provider.
+    RubberDuck { model: Option<String> },
     /// Set the current model and persist it as the user default
     SetDefaultModel(String),
     /// Compact conversation history (with optional custom instructions)

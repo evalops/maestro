@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-use crate::agent::{CredentialVault, FromAgent, NativeAgent, NativeAgentConfig};
+use crate::agent::{CredentialVault, ExecutionSource, FromAgent, NativeAgent, NativeAgentConfig};
 use crate::safety::FirewallVerdict;
 use crate::sandbox::SandboxPolicy;
 use crate::tools::ToolExecutor;
@@ -112,7 +112,7 @@ fn allowed_tools_from_env() -> Result<Option<HashSet<String>>> {
     Ok(Some(tools))
 }
 
-fn canonical_workspace_path(workspace: &Path, input: &str) -> Result<PathBuf> {
+pub(crate) fn canonical_workspace_path(workspace: &Path, input: &str) -> Result<PathBuf> {
     let canonical_workspace = dunce::canonicalize(workspace)
         .with_context(|| format!("canonicalize workspace {}", workspace.display()))?;
     let candidate = if Path::new(input).is_absolute() {
@@ -143,7 +143,7 @@ fn canonical_existing_ancestor(path: &Path) -> Result<PathBuf> {
         .with_context(|| format!("canonicalize tool path ancestor {}", ancestor.display()))
 }
 
-fn prepare_workspace_tool_args(
+pub(crate) fn prepare_workspace_tool_args(
     tool: &str,
     args: &serde_json::Value,
     workspace: &Path,
@@ -266,6 +266,13 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
         // (mode-unaware) per-tool heuristic exactly. `fail_on_approval`
         // above is this mode's own separate reject-instead-of-run policy.
         approval_mode: crate::state::ApprovalMode::Selective,
+        // The native agent runner's own tool executor -- which runs every
+        // call the per-tool heuristic above doesn't flag for approval --
+        // is a separate executor from the sandboxed one constructed below
+        // for this function's own bypass-approval check. Without this, only
+        // that local check was sandbox-aware; the actual execution wasn't
+        // (review finding on #3144).
+        sandbox_policy: options.sandbox_policy.clone(),
     };
 
     let credential_vault = CredentialVault::new();
@@ -392,9 +399,23 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
                 let denied =
                     approval_denied(&tool_executor, &tool, &resolved, options.fail_on_approval);
                 let rejection = limit_error.or(workspace_error).or_else(|| {
-                    denied.then(|| {
-                        format!("Tool `{tool}` requires approval, but approval mode is fail")
-                    })
+                    // A `bypass_sandbox` request can only ever run after a
+                    // human explicitly approves it, and print/exec has no
+                    // approval UI to collect that approval — so it is
+                    // rejected here rather than silently honored (which would
+                    // let the model waive the sandbox at will).
+                    if tool_executor.requires_sandbox_bypass_approval(&tool, &resolved) {
+                        Some(format!(
+                            "Tool `{tool}` requested `bypass_sandbox: true`, but running \
+                             outside the native sandbox requires human approval and this \
+                             non-interactive run cannot collect it. Retry without \
+                             `bypass_sandbox`."
+                        ))
+                    } else {
+                        denied.then(|| {
+                            format!("Tool `{tool}` requires approval, but approval mode is fail")
+                        })
+                    }
                 });
                 let result = if let Some(message) = &rejection {
                     crate::agent::ToolResult::failure(message)
@@ -421,7 +442,7 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
                 }
 
                 let approved = rejection.is_none() && !denied;
-                let _ = tool_tx.send((call_id, approved, Some(result)));
+                let _ = tool_tx.send((call_id, approved, Some(result), ExecutionSource::Native));
                 if rejection.is_some() {
                     exit_code = 1;
                     agent.cancel();

@@ -68,6 +68,9 @@
     "url": "git+https://github.com/evalops/maestro.git"
   },
   "packageManager": "npm@11.18.0",
+  "devDependencies": {
+    "yaml": "^2.9.0"
+  },
   "maestro": {
     "canonicalPackageName": "@evalops/maestro",
     "packageAliases": [

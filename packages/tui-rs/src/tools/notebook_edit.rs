@@ -120,6 +120,7 @@ pub async fn notebook_edit_with_cancellation(
     raw_args: Value,
     cwd: &str,
     cancellation: Option<&CancellationToken>,
+    sandbox_policy: Option<&crate::sandbox::SandboxPolicy>,
 ) -> ToolResult {
     let parsed: NotebookEditArgs = match serde_json::from_value(raw_args) {
         Ok(val) => val,
@@ -178,13 +179,14 @@ pub async fn notebook_edit_with_cancellation(
             return ToolResult::failure("notebook_edit cancelled")
                 .with_details(json!({"cancelled": true}));
         }
-        if let Some(parent) = path_buf.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
-        }
-        if let Err(err) =
-            tokio::fs::write(&path_buf, serde_json::to_string_pretty(&notebook).unwrap()).await
-        {
-            return ToolResult::failure(format!("Failed to write notebook: {err}"));
+        // Atomic check-and-write (see `sandbox::commit_native_write`).
+        if let Err(err) = crate::sandbox::commit_native_write(
+            sandbox_policy,
+            std::path::Path::new(cwd),
+            &path_buf,
+            serde_json::to_string_pretty(&notebook).unwrap().as_bytes(),
+        ) {
+            return ToolResult::failure(err);
         }
 
         let details = json!({
@@ -305,8 +307,14 @@ pub async fn notebook_edit_with_cancellation(
         return ToolResult::failure("notebook_edit cancelled")
             .with_details(json!({"cancelled": true}));
     }
-    if let Err(err) = tokio::fs::write(&path_buf, updated).await {
-        return ToolResult::failure(format!("Failed to write notebook: {err}"));
+    // Atomic check-and-write (see `sandbox::commit_native_write`).
+    if let Err(err) = crate::sandbox::commit_native_write(
+        sandbox_policy,
+        std::path::Path::new(cwd),
+        &path_buf,
+        updated.as_bytes(),
+    ) {
+        return ToolResult::failure(err);
     }
 
     if let Err(err) = run_validators(std::slice::from_ref(&path)).await {

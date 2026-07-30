@@ -4,7 +4,8 @@ use base64::{
     Engine as _,
 };
 use maestro_tui::agent::{
-    FromAgent, NativeAgent, NativeAgentConfig, TokenUsage, ToolDefinition, ToolResult,
+    ExecutionSource, FromAgent, NativeAgent, NativeAgentConfig, TokenUsage, ToolDefinition,
+    ToolResult,
 };
 use maestro_tui::ai::Tool;
 use serde::{Deserialize, Serialize};
@@ -120,7 +121,8 @@ const MAX_EXTRACT_INPUT_BYTES: usize = 50 * 1024 * 1024;
 const MAX_PROJECT_ONBOARDING_IMPRESSIONS: u8 = 4;
 static ATTACHMENT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
-type PendingToolResponseSender = mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>;
+type PendingToolResponseSender =
+    mpsc::UnboundedSender<(String, bool, Option<ToolResult>, ExecutionSource)>;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CliAction {

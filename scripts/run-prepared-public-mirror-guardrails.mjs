@@ -12,17 +12,19 @@ function parseTarget(argv) {
 	return resolve(target);
 }
 
+/**
+ * Lightweight checks on the prepared public tree before opening/updating the
+ * sync PR. Full `cargo test` / clippy / evals already ran on internal main for
+ * the same product sources; re-running a workspace cargo check here only burns
+ * minutes and still cannot catch public-runner skew. Keep the mirror-specific
+ * rust-only boundary check only.
+ */
 export function preparedPublicMirrorGuardrailCommands() {
 	return [
 		{
 			command: "npm",
 			args: ["run", "check:rust-only-runtime"],
 			label: "Rust-only source guard",
-		},
-		{
-			command: "cargo",
-			args: ["check", "--workspace", "--all-targets", "--locked"],
-			label: "Native package check",
 		},
 	];
 }

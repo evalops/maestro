@@ -1443,6 +1443,21 @@ async fn test_executor_diff_uses_direct_git_without_shell_pipeline_status() {
 }
 
 #[tokio::test]
+async fn test_executor_diff_rejects_option_like_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let args = serde_json::json!({
+        "target": "--output=/tmp/maestro-diff-option-target"
+    });
+    let result = executor
+        .execute("diff", &args, None, "diff-option-target")
+        .await;
+
+    assert!(!result.success, "option-like target must be rejected");
+    assert!(!std::path::Path::new("/tmp/maestro-diff-option-target").exists());
+}
+
+#[tokio::test]
 async fn test_executor_diff_enforces_limit_while_running_git_diff() {
     let dir = tempfile::tempdir().unwrap();
     std::process::Command::new("git")
@@ -1889,6 +1904,29 @@ async fn typed_execution_emits_one_receipt_bearing_tool_end() {
     )));
 }
 
+#[test]
+fn requires_approval_forces_prompt_for_sandbox_bypass_requests() {
+    let dir = tempfile::tempdir().unwrap();
+    let sandboxed = ToolExecutor::new(dir.path().to_str().unwrap())
+        .with_sandbox_policy(crate::sandbox::SandboxPolicy::ReadOnly);
+
+    // An ordinary safe, allowlisted command still auto-approves.
+    let safe = serde_json::json!({"command": "ls -la"});
+    assert!(!sandboxed.requires_approval("bash", &safe));
+
+    // The same command with `bypass_sandbox: true` must always require
+    // approval, even though "ls -la" alone would auto-approve: this is the
+    // per-command sandbox escape hatch, and it must never slip through the
+    // allowlist silently.
+    let bypass = serde_json::json!({"command": "ls -la", "bypass_sandbox": true});
+    assert!(sandboxed.requires_approval("bash", &bypass));
+
+    // Without an active sandbox policy, `bypass_sandbox` is meaningless and
+    // must not force approval on its own (the allowlist still governs).
+    let unsandboxed = ToolExecutor::new(dir.path().to_str().unwrap());
+    assert!(!unsandboxed.requires_approval("bash", &bypass));
+}
+
 #[tokio::test]
 async fn typed_execution_returns_denial_for_read_only_writes() {
     let dir = tempfile::tempdir().unwrap();
@@ -1906,6 +1944,359 @@ async fn typed_execution_returns_denial_for_read_only_writes() {
             reason: DenialReason::SandboxPolicy { .. }
         }
     ));
+}
+
+/// Regression test for the review finding on #3144: `write`, `edit`, and
+/// `notebook_edit` run their file I/O directly in the Maestro process, so
+/// the OS-level sandbox (Seatbelt/Landlock) never sees them and provides
+/// them no containment at all. Under a `WorkspaceWrite` policy, an absolute
+/// path outside every writable root (e.g. `~/.bashrc`, `~/.ssh/authorized_keys`)
+/// must be denied by an explicit path check, not silently written.
+#[tokio::test]
+async fn workspace_write_policy_denies_native_writes_outside_every_writable_root() {
+    let workspace = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(workspace.path().to_str().unwrap()).with_sandbox_policy(
+        crate::sandbox::SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        },
+    );
+    let escape_target = outside.path().join("escaped.txt");
+    assert!(!escape_target.exists());
+
+    let write_args = serde_json::json!({
+        "file_path": escape_target.to_string_lossy(),
+        "content": "escaped"
+    });
+    let write_result = executor
+        .execute("write", &write_args, None, "call-write")
+        .await;
+    assert!(
+        !write_result.success,
+        "write must be denied outside every writable root"
+    );
+    assert!(
+        !escape_target.exists(),
+        "write must not touch disk when denied"
+    );
+
+    let edit_args = serde_json::json!({
+        "file_path": escape_target.to_string_lossy(),
+        "oldText": "a",
+        "newText": "b"
+    });
+    let edit_result = executor
+        .execute("edit", &edit_args, None, "call-edit")
+        .await;
+    assert!(
+        !edit_result.success,
+        "edit must be denied outside every writable root"
+    );
+
+    let notebook_target = outside.path().join("escaped.ipynb");
+    let notebook_args = serde_json::json!({
+        "path": notebook_target.to_string_lossy(),
+        "edit_mode": "insert",
+        "new_source": "print('x')"
+    });
+    let notebook_result = executor
+        .execute("notebook_edit", &notebook_args, None, "call-notebook")
+        .await;
+    assert!(
+        !notebook_result.success,
+        "notebook_edit must be denied outside every writable root"
+    );
+    assert!(
+        !notebook_target.exists(),
+        "notebook_edit must not create a file when denied"
+    );
+
+    // Writes inside the workspace (a writable root by construction) remain
+    // allowed -- the policy still functions for its actual purpose.
+    let in_workspace = workspace.path().join("allowed.txt");
+    let allowed_write_args = serde_json::json!({
+        "file_path": in_workspace.to_string_lossy(),
+        "content": "ok"
+    });
+    let allowed = executor
+        .execute("write", &allowed_write_args, None, "call-allowed")
+        .await;
+    assert!(
+        allowed.success,
+        "writes inside the workspace must still succeed"
+    );
+    assert_eq!(
+        tokio::fs::read_to_string(&in_workspace).await.unwrap(),
+        "ok"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn workspace_write_policy_rejects_a_dangling_symlink_native_write() {
+    use std::os::unix::fs::symlink;
+
+    let workspace = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("escaped.ipynb");
+    let link = workspace.path().join("escape.ipynb");
+    symlink(&target, &link).unwrap();
+    let executor = ToolExecutor::new(workspace.path().to_str().unwrap()).with_sandbox_policy(
+        crate::sandbox::SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        },
+    );
+
+    let result = executor
+        .execute(
+            "notebook_edit",
+            &serde_json::json!({
+                "path": link.to_string_lossy(),
+                "edit_mode": "insert",
+                "new_source": "print('escaped')"
+            }),
+            None,
+            "call-dangling-link",
+        )
+        .await;
+
+    assert!(!result.success);
+    assert!(!target.exists());
+}
+
+#[tokio::test]
+async fn network_disabled_policy_denies_native_network_tools() {
+    let workspace = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(workspace.path().to_str().unwrap()).with_sandbox_policy(
+        crate::sandbox::SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        },
+    );
+
+    for (tool, args) in [
+        (
+            "web_fetch",
+            serde_json::json!({"url": "https://example.com"}),
+        ),
+        ("websearch", serde_json::json!({"query": "blocked"})),
+        ("codesearch", serde_json::json!({"query": "blocked"})),
+        ("gh_pr", serde_json::json!({"action": "list"})),
+        ("mcp_list_resources", serde_json::json!({})),
+        ("mcp__project_server__dangerous_tool", serde_json::json!({})),
+    ] {
+        let result = executor.execute(tool, &args, None, "call-network").await;
+        assert!(!result.success, "{tool} must respect network_access=false");
+        assert!(
+            result.error.unwrap_or_default().contains("network access"),
+            "{tool} denial should identify the policy"
+        );
+    }
+}
+
+#[tokio::test]
+async fn network_disabled_policy_blocks_mcp_initialization() {
+    let workspace = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(workspace.path().to_str().unwrap()).with_sandbox_policy(
+        crate::sandbox::SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        },
+    );
+
+    let error = executor
+        .mcp_status()
+        .await
+        .expect_err("MCP initialization must fail before starting any transport");
+    assert!(error.contains("disables network access"), "{error}");
+}
+
+#[tokio::test]
+async fn read_only_policy_denies_unsandboxed_native_mutations() {
+    let workspace = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(workspace.path().to_str().unwrap())
+        .with_sandbox_policy(crate::sandbox::SandboxPolicy::ReadOnly);
+
+    for (tool, args) in [
+        (
+            "gh_pr",
+            serde_json::json!({"action": "checkout", "number": 1}),
+        ),
+        (
+            "gh_repo",
+            serde_json::json!({"action": "clone", "repository": "owner/repo"}),
+        ),
+        (
+            "background_tasks",
+            serde_json::json!({"action": "start", "command": "true"}),
+        ),
+    ] {
+        let execution = executor
+            .execute_with_receipt(tool, &args, None, "call-read-only")
+            .await;
+        assert!(matches!(
+            execution.outcome,
+            ToolOutcome::Denied {
+                reason: DenialReason::SandboxPolicy { .. }
+            }
+        ));
+    }
+}
+
+/// Regression test for the review finding on #3144: `todo` has
+/// `requires_approval: false` yet persists to ~/.composer/todos.json (or
+/// MAESTRO_TODO_FILE), and `screenshot` launches an unsandboxed capture
+/// program writing a temp PNG. Both are native writers that must be inside
+/// the read-only policy boundary.
+#[tokio::test]
+async fn read_only_policy_denies_todo_and_screenshot() {
+    let workspace = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(workspace.path().to_str().unwrap())
+        .with_sandbox_policy(crate::sandbox::SandboxPolicy::ReadOnly);
+
+    for (tool, args) in [
+        ("todo", serde_json::json!({"action": "list"})),
+        ("screenshot", serde_json::json!({})),
+    ] {
+        let execution = executor
+            .execute_with_receipt(tool, &args, None, "call-read-only-writer")
+            .await;
+        assert!(
+            matches!(
+                execution.outcome,
+                ToolOutcome::Denied {
+                    reason: DenialReason::SandboxPolicy { .. }
+                }
+            ),
+            "{tool} must be denied under a read-only sandbox policy"
+        );
+    }
+}
+
+/// Regression test for the review finding on #3144: the
+/// diagnostics/definition/references tools launch rust-analyzer/pyright/
+/// MAESTRO_LSP_COMMAND via `NativeLspSession::start` -- a bare
+/// `tokio::process::Command` the OS-level sandbox never contains
+/// (write-anywhere + network). They must be denied under ReadOnly and under
+/// WorkspaceWrite without network access, consistent with the
+/// gh_pr/gh_repo/background_tasks handling.
+#[tokio::test]
+async fn restrictive_policies_deny_native_language_server_launches() {
+    let lsp_tools = [
+        "vscode_get_diagnostics",
+        "jetbrains_get_diagnostics",
+        "vscode_get_definition",
+        "jetbrains_get_definition",
+        "vscode_find_references",
+        "jetbrains_find_references",
+    ];
+
+    let workspace = tempfile::tempdir().unwrap();
+    let read_only = ToolExecutor::new(workspace.path().to_str().unwrap())
+        .with_sandbox_policy(crate::sandbox::SandboxPolicy::ReadOnly);
+    let no_network = ToolExecutor::new(workspace.path().to_str().unwrap()).with_sandbox_policy(
+        crate::sandbox::SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        },
+    );
+
+    for executor in [&read_only, &no_network] {
+        for tool in lsp_tools {
+            let result = executor
+                .execute(tool, &serde_json::json!({}), None, "call-lsp")
+                .await;
+            assert!(
+                !result.success,
+                "{tool} must be denied under a restrictive sandbox policy"
+            );
+            assert!(
+                result.error.unwrap_or_default().contains("language server"),
+                "{tool} denial must identify the language-server launch"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn workspace_write_policy_denies_unsandboxed_git_mutations() {
+    let workspace = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(workspace.path().to_str().unwrap()).with_sandbox_policy(
+        crate::sandbox::SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: true,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        },
+    );
+
+    for (tool, args) in [
+        (
+            "gh_pr",
+            serde_json::json!({"action": "checkout", "number": 1}),
+        ),
+        (
+            "gh_repo",
+            serde_json::json!({
+                "action": "clone",
+                "repository": "owner/repo",
+                "directory": "/tmp/outside-workspace"
+            }),
+        ),
+    ] {
+        let result = executor.execute(tool, &args, None, "call-git").await;
+        assert!(!result.success, "{tool} mutation must be denied");
+        assert!(
+            result.error.unwrap_or_default().contains("not contained"),
+            "{tool} denial must identify the missing sandbox containment"
+        );
+    }
+}
+
+/// Regression test for the review finding on #3144: `background_tasks`
+/// passes its `cwd` argument straight through as the sandbox spawn cwd, and
+/// the sandbox policy automatically treats a spawn's cwd as a writable
+/// root. A model-supplied `cwd` outside the workspace's existing writable
+/// footprint must not be allowed to silently expand that footprint (e.g.
+/// `{ cwd: "$HOME" }` making the whole home directory writable).
+#[tokio::test]
+async fn background_tasks_start_denies_a_cwd_outside_every_writable_root() {
+    let workspace = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(workspace.path().to_str().unwrap()).with_sandbox_policy(
+        crate::sandbox::SandboxPolicy::WorkspaceWrite {
+            writable_roots: Vec::new(),
+            network_access: false,
+            exclude_tmpdir_env_var: true,
+            exclude_slash_tmp: true,
+        },
+    );
+
+    let args = serde_json::json!({
+        "action": "start",
+        "command": "true",
+        "cwd": outside.path().to_string_lossy(),
+    });
+    let result = executor
+        .execute("background_tasks", &args, None, "call-bg")
+        .await;
+    assert!(
+        !result.success,
+        "background_tasks start must deny a cwd outside every writable root"
+    );
+    assert!(result.error.unwrap_or_default().contains("writable roots"));
 }
 
 #[tokio::test]

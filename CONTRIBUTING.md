@@ -11,7 +11,7 @@ npm run build
 ./bin/maestro --version
 ```
 
-`package.json` has zero dependencies, so there is nothing for `npm install` to fetch — Node is only needed to run the `scripts/*` packaging and repository-check helpers.
+`package.json` has zero runtime dependencies and one locked, test-only development dependency. Run `npm ci` before repository and workflow contract tests; Node otherwise runs the `scripts/*` packaging and repository-check helpers.
 
 ## Development
 

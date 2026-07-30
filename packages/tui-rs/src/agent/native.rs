@@ -61,7 +61,7 @@
 //!    - Agent sends events (response chunks, tool calls, errors)
 //!    - TUI receives and updates UI
 //!
-//! 3. **Tool response channel** (`mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>`):
+//! 3. **Tool response channel** (`mpsc::UnboundedSender<ToolResponseMessage>`):
 //!    - TUI sends user approval for tool execution
 //!    - Agent waits for approval before executing restricted tools
 //!
@@ -106,8 +106,8 @@ use super::message_queue::{MessageQueue, PendingMessage, PromptKind, MAX_PENDING
 use super::protocol::InlineToolApprovalContext;
 use super::safety::{SafetyController, SafetyVerdict};
 use super::{
-    CredentialVault, DenialReason, ExecutionPhase, ExecutionSource, FromAgent, TokenUsage,
-    ToolExecution, ToolResult,
+    ensure_untrusted_content_policy, CredentialVault, DenialReason, ExecutionPhase,
+    ExecutionSource, FromAgent, TokenUsage, ToolExecution, ToolResult,
 };
 use crate::ai::{
     provider_model_name, AiProvider, ContentBlock, ImageSource, Message, MessageContent,
@@ -123,6 +123,17 @@ use crate::state::{ApprovalMode, QueueMode};
 use crate::tools::{ToolExecutor, ToolRegistry};
 
 mod read_only_tools;
+
+/// Payload of the tool-response channel: `(call_id, approved, result,
+/// source)`. `source` records the provenance of a caller-supplied `result`:
+/// [`ExecutionSource::Native`] when the caller executed the tool locally on
+/// this process's behalf (the interactive TUI) and
+/// [`ExecutionSource::RemoteClient`] when a remote/headless client executed
+/// it. Preserving that provenance is what lets
+/// `ToolExecution::model_content` wrap client-authored results in the
+/// untrusted-content envelope without wrapping locally executed ones.
+/// Ignored when `result` is `None` (a bare approval/denial).
+pub type ToolResponseMessage = (String, bool, Option<ToolResult>, ExecutionSource);
 
 use self::read_only_tools::{
     execute_native_read_only_tool_wave, is_explicit_inline_read_only_tool,
@@ -220,6 +231,7 @@ fn emit_compaction_event(
 ///     thinking_budget: 20000,
 ///     cwd: "/path/to/project".to_string(),
 ///     approval_mode: ApprovalMode::Selective,
+///     sandbox_policy: None,
 /// };
 /// ```
 #[derive(Debug, Clone)]
@@ -270,6 +282,21 @@ pub struct NativeAgentConfig {
     /// selector via `NativeAgent::set_approval_mode` so the runner's
     /// auto-execute decision and the caller's approval UI never disagree.
     pub approval_mode: ApprovalMode,
+
+    /// Native OS sandbox policy applied to the runner's *own* tool executor.
+    ///
+    /// This is the executor that actually runs auto-approved calls: every
+    /// [`ApprovalMode::Yolo`] call, and every [`ApprovalMode::Selective`]
+    /// call the per-tool heuristic doesn't flag for approval, executes
+    /// through `NativeAgentRunner::execute_tool` (see `run_loop`), which
+    /// dispatches to this executor -- not to whatever separately-configured
+    /// executor a caller (the interactive TUI's `App`, `print_mode`, the
+    /// headless server) might use for its own approval-gated calls. A
+    /// caller that resolves a sandbox policy for itself but does not also
+    /// pass it here gets no sandboxing at all for the common case: only
+    /// calls that actually reach a human approval prompt would ever have
+    /// been sandboxed, and Yolo mode never asks a human anything.
+    pub sandbox_policy: Option<crate::sandbox::SandboxPolicy>,
 }
 
 impl Default for NativeAgentConfig {
@@ -283,6 +310,7 @@ impl Default for NativeAgentConfig {
             cwd: std::env::current_dir()
                 .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string()),
             approval_mode: ApprovalMode::default(),
+            sandbox_policy: None,
         }
     }
 }
@@ -449,7 +477,7 @@ pub struct NativeAgent {
     ///
     /// When the TUI approves or denies a tool execution, it sends the response
     /// via this channel. The agent waits for these responses before proceeding.
-    tool_response_tx: mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>,
+    tool_response_tx: mpsc::UnboundedSender<ToolResponseMessage>,
 
     /// Direct cancellation path shared with the background runner.
     active_cancellation: Arc<Mutex<ActiveCancellation>>,
@@ -586,6 +614,7 @@ impl NativeAgent {
     ///     thinking_enabled: true,
     ///     thinking_budget: 10000,
     ///     cwd: env::current_dir()?.to_string_lossy().to_string(),
+    ///     sandbox_policy: None,
     /// };
     ///
     /// let (agent, mut events) = NativeAgent::new(config)?;
@@ -691,9 +720,17 @@ impl NativeAgent {
             tools.insert(definition.tool.name.to_lowercase(), definition);
         }
 
-        // Create tool executor
-        let tool_executor =
-            ToolExecutor::with_credential_vault(&config.cwd, credential_vault.clone());
+        // Create tool executor. This is the executor that actually runs
+        // every auto-approved call (Yolo mode entirely, plus Selective
+        // mode's allowlisted calls) -- see the doc comment on
+        // `NativeAgentConfig::sandbox_policy`. It must receive the same
+        // policy a caller resolved for its own approval-gated executor, or
+        // the sandbox default silently does nothing for the common case.
+        let tool_executor = build_runner_tool_executor(
+            &config.cwd,
+            credential_vault.clone(),
+            config.sandbox_policy.clone(),
+        );
 
         // Load hook system from config files
         let mut hooks = IntegratedHookSystem::load_from_config(&config.cwd);
@@ -763,9 +800,7 @@ impl NativeAgent {
 
     /// Get the sender for tool responses
     #[must_use]
-    pub fn tool_response_sender(
-        &self,
-    ) -> mpsc::UnboundedSender<(String, bool, Option<ToolResult>)> {
+    pub fn tool_response_sender(&self) -> mpsc::UnboundedSender<ToolResponseMessage> {
         self.tool_response_tx.clone()
     }
 
@@ -1204,7 +1239,7 @@ struct NativeAgentRunner {
     ///
     /// When a tool requires approval, the runner waits on this channel for
     /// the user's decision (approve/deny).
-    tool_response_rx: mpsc::UnboundedReceiver<(String, bool, Option<ToolResult>)>,
+    tool_response_rx: mpsc::UnboundedReceiver<ToolResponseMessage>,
 
     /// Channel to receive commands
     ///
@@ -1277,7 +1312,7 @@ struct NativeAgentRunner {
     deferred_commands: VecDeque<AgentCommand>,
 
     /// Buffered tool approvals that arrived out of order
-    pending_tool_approvals: HashMap<String, (bool, Option<ToolResult>)>,
+    pending_tool_approvals: HashMap<String, (bool, Option<ToolResult>, ExecutionSource)>,
 
     /// Extra system prompt context for the current request
     ///
@@ -1668,8 +1703,9 @@ impl NativeAgentRunner {
     fn repair_orphaned_tool_calls(&mut self) {
         // Stash late results delivered after we stopped waiting (e.g. the app
         // still reports the outcome of a tool it cancelled).
-        while let Ok((id, approved, result)) = self.tool_response_rx.try_recv() {
-            self.pending_tool_approvals.insert(id, (approved, result));
+        while let Ok((id, approved, result, source)) = self.tool_response_rx.try_recv() {
+            self.pending_tool_approvals
+                .insert(id, (approved, result, source));
         }
         repair_orphaned_tool_calls(&mut self.messages, &mut self.pending_tool_approvals);
     }
@@ -2397,6 +2433,14 @@ impl NativeAgentRunner {
             (None, Some(extra)) if !extra.trim().is_empty() => Some(extra.clone()),
             _ => None,
         };
+
+        // Every runtime that can surface an `<untrusted_content>` envelope
+        // (the shared `ToolExecution::model_content` chokepoint) must also
+        // send the policy that gives the envelope its security meaning.
+        // Callers that supply their own system prompt — the headless server,
+        // the control-plane chat path — get it appended here; prompts that
+        // already embed it (the TUI base prompt) pass through unchanged.
+        let system = ensure_untrusted_content_policy(system);
 
         RequestConfig {
             model: provider_model_name(&self.config.model),
@@ -3159,7 +3203,7 @@ impl NativeAgentRunner {
                             )
                             .await;
                             self.set_active_approval_cancel_token(None);
-                            let (approved, result) = match response {
+                            let (approved, result, source) = match response {
                                 ToolResponseWait::Response(response) => response,
                                 ToolResponseWait::Cancelled => {
                                     self.take_active_operation_interruption();
@@ -3338,11 +3382,19 @@ impl NativeAgentRunner {
                                 }
                             }
                             let result = if approved {
+                                // `source` is whatever the responder on the
+                                // other end of the tool-response channel
+                                // actually sent (the TUI approval dialog sends
+                                // `ExecutionSource::Native`; a headless/remote
+                                // client sends `RemoteClient`) -- never
+                                // hardcoded here, so a locally-approved
+                                // batched tool call is not mislabeled as
+                                // remote-originated.
                                 result.map(|result| {
                                     ToolExecution::from_legacy(
                                         &call.call_id,
                                         &call.tool_name,
-                                        ExecutionSource::RemoteClient,
+                                        source,
                                         result,
                                     )
                                 })
@@ -3779,9 +3831,15 @@ impl NativeAgentRunner {
 
         if approved {
             // Execute hooks only for tools that were allowed to run.
-            let _post_result = self
-                .hooks
-                .execute_post_tool_use(&tool_name, &call_id, &args, &content, is_error);
+            // Hooks contract on raw tool output, not the model-facing
+            // envelope (see `ToolExecution::raw_content`).
+            let _post_result = self.hooks.execute_post_tool_use(
+                &tool_name,
+                &call_id,
+                &args,
+                &result.raw_content(),
+                is_error,
+            );
         }
 
         // Append injected context if any
@@ -3866,11 +3924,13 @@ impl NativeAgentRunner {
             let content = result.model_content();
             let is_error = result.is_error();
 
+            // Hooks contract on raw tool output, not the model-facing
+            // envelope (see `ToolExecution::raw_content`).
             let _post_result = self.hooks.execute_post_tool_use(
                 &call.tool_name,
                 &call.call_id,
                 &call.args,
-                &content,
+                &result.raw_content(),
                 is_error,
             );
 
@@ -3929,6 +3989,24 @@ fn normalize_post_hook_tool_args(
     (args, true)
 }
 
+/// Build the tool executor `NativeAgentRunner` uses for every call it
+/// executes itself: every [`ApprovalMode::Yolo`] call, and every
+/// [`ApprovalMode::Selective`] call the per-tool heuristic doesn't flag for
+/// approval (see [`NativeAgentConfig::sandbox_policy`]'s doc comment for why
+/// this executor -- not a caller's separately-configured one -- is the one
+/// that must carry the sandbox policy).
+fn build_runner_tool_executor(
+    cwd: &str,
+    credential_vault: CredentialVault,
+    sandbox_policy: Option<crate::sandbox::SandboxPolicy>,
+) -> ToolExecutor {
+    let executor = ToolExecutor::with_credential_vault(cwd, credential_vault);
+    match sandbox_policy {
+        Some(policy) => executor.with_sandbox_policy(policy),
+        None => executor,
+    }
+}
+
 /// Decide whether a tool call must wait for caller approval before the
 /// runner executes it, given the active `ApprovalMode`.
 ///
@@ -3943,9 +4021,12 @@ fn normalize_post_hook_tool_args(
 /// - `is_external_tool`: the caller owns execution and its own approval
 ///   policy for this tool (see [`NativeAgentRunner`]'s external-tools doc);
 ///   always requires approval regardless of mode.
-/// - [`ApprovalMode::Yolo`]: never require approval (including firewall soft
-///   holds; a hard [`FirewallVerdict::Block`] is handled separately and
-///   always denies regardless of mode).
+/// - [`ApprovalMode::Yolo`]: never require approval for ordinary calls
+///   (including firewall soft holds; a hard [`FirewallVerdict::Block`] is
+///   handled separately and always denies regardless of mode). The one
+///   exception is a `bypass_sandbox` request: waiving the native sandbox is
+///   the per-command escape hatch and must always be a decision a human
+///   explicitly makes, so it requires approval even in Yolo.
 /// - [`ApprovalMode::Safe`]: always require approval.
 /// - [`ApprovalMode::Selective`]: defer to the tool executor's static/dynamic
 ///   per-tool heuristic (e.g. `bash` inspects the command).
@@ -3958,7 +4039,7 @@ fn tool_requires_approval(
     args: &serde_json::Value,
 ) -> bool {
     let mode_requires_approval = match approval_mode {
-        ApprovalMode::Yolo => false,
+        ApprovalMode::Yolo => tool_executor.requires_sandbox_bypass_approval(tool_name, args),
         ApprovalMode::Safe => true,
         ApprovalMode::Selective => tool_executor.requires_approval(tool_name, args),
     };
@@ -4285,27 +4366,27 @@ fn cancel_deferred_suffix(
 
 fn discard_cancelled_tool_responses(
     cancelled_ids: &HashSet<String>,
-    rx: &mut mpsc::UnboundedReceiver<(String, bool, Option<ToolResult>)>,
-    pending: &mut HashMap<String, (bool, Option<ToolResult>)>,
+    rx: &mut mpsc::UnboundedReceiver<ToolResponseMessage>,
+    pending: &mut HashMap<String, (bool, Option<ToolResult>, ExecutionSource)>,
 ) {
     pending.retain(|call_id, _| !cancelled_ids.contains(call_id));
-    while let Ok((call_id, approved, result)) = rx.try_recv() {
+    while let Ok((call_id, approved, result, source)) = rx.try_recv() {
         if !cancelled_ids.contains(&call_id) {
-            pending.insert(call_id, (approved, result));
+            pending.insert(call_id, (approved, result, source));
         }
     }
 }
 
 enum ToolResponseWait {
-    Response((bool, Option<ToolResult>)),
+    Response((bool, Option<ToolResult>, ExecutionSource)),
     Cancelled,
     Closed,
 }
 
 async fn wait_for_tool_response(
     call_id: &str,
-    rx: &mut mpsc::UnboundedReceiver<(String, bool, Option<ToolResult>)>,
-    pending: &mut HashMap<String, (bool, Option<ToolResult>)>,
+    rx: &mut mpsc::UnboundedReceiver<ToolResponseMessage>,
+    pending: &mut HashMap<String, (bool, Option<ToolResult>, ExecutionSource)>,
     cancel: &CancellationToken,
 ) -> ToolResponseWait {
     if cancel.is_cancelled() {
@@ -4321,13 +4402,13 @@ async fn wait_for_tool_response(
             () = cancel.cancelled() => return ToolResponseWait::Cancelled,
             response = rx.recv() => response,
         };
-        let Some((id, approved, result)) = response else {
+        let Some((id, approved, result, source)) = response else {
             return ToolResponseWait::Closed;
         };
         if id == call_id {
-            return ToolResponseWait::Response((approved, result));
+            return ToolResponseWait::Response((approved, result, source));
         }
-        pending.insert(id, (approved, result));
+        pending.insert(id, (approved, result, source));
     }
 }
 
@@ -4343,7 +4424,7 @@ async fn wait_for_tool_response(
 /// "cancelled by user" failure is synthesized.
 fn repair_orphaned_tool_calls(
     messages: &mut Vec<Message>,
-    pending_tool_approvals: &mut HashMap<String, (bool, Option<ToolResult>)>,
+    pending_tool_approvals: &mut HashMap<String, (bool, Option<ToolResult>, ExecutionSource)>,
 ) {
     let mut answered: HashSet<String> = HashSet::new();
     for message in messages.iter() {
@@ -4383,21 +4464,16 @@ fn repair_orphaned_tool_calls(
             .into_iter()
             .map(|(id, name)| {
                 let (content, is_error) = match pending_tool_approvals.remove(&id) {
-                    Some((true, Some(result))) => {
-                        let execution = ToolExecution::from_legacy(
-                            &id,
-                            &name,
-                            ExecutionSource::RemoteClient,
-                            result,
-                        );
+                    Some((true, Some(result), source)) => {
+                        let execution = ToolExecution::from_legacy(&id, &name, source, result);
                         (execution.model_content(), execution.is_error())
                     }
-                    Some((approved, result)) => {
+                    Some((approved, result, source)) => {
                         let execution = if approved {
                             ToolExecution::from_legacy(
                                 &id,
                                 &name,
-                                ExecutionSource::Native,
+                                source,
                                 result.unwrap_or_else(|| {
                                     ToolResult::failure("Tool task did not return a result")
                                 }),
@@ -5496,6 +5572,73 @@ mod tests {
     }
 
     #[test]
+    fn yolo_mode_still_requires_approval_for_sandbox_bypass_requests() {
+        // Waiving the native sandbox must always be a decision a human
+        // explicitly makes, so a `bypass_sandbox` request is the one
+        // exception to Yolo's "auto-approve ALL tool calls" contract.
+        let executor =
+            ToolExecutor::new(".").with_sandbox_policy(crate::sandbox::SandboxPolicy::ReadOnly);
+        let bypass_args = serde_json::json!({"command": "ls -la", "bypass_sandbox": true});
+        assert!(tool_requires_approval(
+            ApprovalMode::Yolo,
+            false,
+            &FirewallVerdict::Allow,
+            &executor,
+            "bash",
+            &bypass_args,
+        ));
+
+        // Without an active sandbox policy the flag is meaningless and Yolo
+        // auto-approves as usual.
+        let unsandboxed = ToolExecutor::new(".");
+        assert!(!tool_requires_approval(
+            ApprovalMode::Yolo,
+            false,
+            &FirewallVerdict::Allow,
+            &unsandboxed,
+            "bash",
+            &bypass_args,
+        ));
+    }
+
+    /// Regression test for the review finding on #3144: `NativeAgentConfig`
+    /// carries a resolved sandbox policy, but only if
+    /// `build_runner_tool_executor` (used to build the executor the runner
+    /// actually executes every Yolo/allowlisted-Selective call through --
+    /// see `NativeAgentConfig::sandbox_policy`'s doc comment) applies it.
+    /// Before this fix the runner always built an unsandboxed executor
+    /// regardless of what a caller (the interactive TUI, print mode) passed
+    /// in `NativeAgentConfig`, so only calls that reached a *human* approval
+    /// prompt (through a caller's separately-configured executor) were ever
+    /// sandboxed -- Yolo mode and Selective mode's allowlisted calls got
+    /// unrestricted host access. `requires_sandbox_bypass_approval` is used
+    /// here only as an externally observable proxy for "this executor has an
+    /// active sandbox policy" (`ToolExecutor` does not expose that field
+    /// directly); the fix under test is the executor construction, not this
+    /// specific method.
+    #[test]
+    fn runner_tool_executor_carries_the_configured_sandbox_policy() {
+        let credential_vault = CredentialVault::new();
+        let bypass_args = serde_json::json!({"command": "ls -la", "bypass_sandbox": true});
+
+        let sandboxed = build_runner_tool_executor(
+            ".",
+            credential_vault.clone(),
+            Some(crate::sandbox::SandboxPolicy::ReadOnly),
+        );
+        assert!(
+            sandboxed.requires_sandbox_bypass_approval("bash", &bypass_args),
+            "a configured sandbox_policy must reach the runner's own executor"
+        );
+
+        let unsandboxed = build_runner_tool_executor(".", credential_vault, None);
+        assert!(
+            !unsandboxed.requires_sandbox_bypass_approval("bash", &bypass_args),
+            "no sandbox_policy configured must produce no sandbox awareness"
+        );
+    }
+
+    #[test]
     fn empty_bash_is_rewritten_before_approval_and_execution() {
         let (args, rewritten) =
             normalize_post_hook_tool_args("BASH", serde_json::json!({"command": " \n\t"}));
@@ -5769,22 +5912,36 @@ mod tests {
         let mut pending = HashMap::new();
         let cancel = CancellationToken::new();
 
-        tx.send(("id-2".to_string(), true, None)).unwrap();
-        tx.send(("id-1".to_string(), false, None)).unwrap();
+        tx.send(("id-2".to_string(), true, None, ExecutionSource::Native))
+            .unwrap();
+        tx.send((
+            "id-1".to_string(),
+            false,
+            None,
+            ExecutionSource::RemoteClient,
+        ))
+        .unwrap();
 
         let result = wait_for_tool_response("id-1", &mut rx, &mut pending, &cancel).await;
-        assert!(matches!(result, ToolResponseWait::Response((false, None))));
+        assert!(matches!(
+            result,
+            ToolResponseWait::Response((false, None, ExecutionSource::RemoteClient))
+        ));
         assert!(pending.contains_key("id-2"));
 
         let result = wait_for_tool_response("id-2", &mut rx, &mut pending, &cancel).await;
-        assert!(matches!(result, ToolResponseWait::Response((true, None))));
+        assert!(matches!(
+            result,
+            ToolResponseWait::Response((true, None, ExecutionSource::Native))
+        ));
         assert!(pending.is_empty());
     }
 
     #[tokio::test]
     async fn approval_wait_honors_cancellation_before_buffered_decisions() {
         let (_tx, mut rx) = mpsc::unbounded_channel();
-        let mut pending = HashMap::from([("id-1".to_string(), (true, None))]);
+        let mut pending =
+            HashMap::from([("id-1".to_string(), (true, None, ExecutionSource::Native))]);
         let cancel = CancellationToken::new();
         cancel.cancel();
 
@@ -6381,13 +6538,29 @@ mod tests {
             "call-cancelled-queued".to_string(),
         ]);
         let (tx, mut rx) = mpsc::unbounded_channel();
-        tx.send(("call-cancelled-queued".to_string(), true, None))
-            .expect("queue cancelled approval");
-        tx.send(("call-unrelated".to_string(), false, None))
-            .expect("queue unrelated approval");
+        tx.send((
+            "call-cancelled-queued".to_string(),
+            true,
+            None,
+            ExecutionSource::Native,
+        ))
+        .expect("queue cancelled approval");
+        tx.send((
+            "call-unrelated".to_string(),
+            false,
+            None,
+            ExecutionSource::Native,
+        ))
+        .expect("queue unrelated approval");
         let mut pending = HashMap::from([
-            ("call-cancelled-buffered".to_string(), (true, None)),
-            ("call-existing".to_string(), (false, None)),
+            (
+                "call-cancelled-buffered".to_string(),
+                (true, None, ExecutionSource::Native),
+            ),
+            (
+                "call-existing".to_string(),
+                (false, None, ExecutionSource::Native),
+            ),
         ]);
 
         discard_cancelled_tool_responses(&cancelled_ids, &mut rx, &mut pending);
@@ -6395,11 +6568,15 @@ mod tests {
         assert!(!pending.contains_key("call-cancelled-buffered"));
         assert!(!pending.contains_key("call-cancelled-queued"));
         assert_eq!(
-            pending.get("call-existing").map(|(approved, _)| *approved),
+            pending
+                .get("call-existing")
+                .map(|(approved, _, _)| *approved),
             Some(false)
         );
         assert_eq!(
-            pending.get("call-unrelated").map(|(approved, _)| *approved),
+            pending
+                .get("call-unrelated")
+                .map(|(approved, _, _)| *approved),
             Some(false)
         );
         assert!(rx.try_recv().is_err());
@@ -6615,7 +6792,11 @@ mod tests {
         let mut pending = HashMap::new();
         pending.insert(
             "call_1".to_string(),
-            (true, Some(ToolResult::failure("Command cancelled"))),
+            (
+                true,
+                Some(ToolResult::failure("Command cancelled")),
+                ExecutionSource::Native,
+            ),
         );
 
         repair_orphaned_tool_calls(&mut messages, &mut pending);
@@ -6634,7 +6815,7 @@ mod tests {
     fn test_repair_orphaned_tool_calls_records_denials() {
         let mut messages = vec![assistant_tool_use_message(&[("call_1", "write")])];
         let mut pending = HashMap::new();
-        pending.insert("call_1".to_string(), (false, None));
+        pending.insert("call_1".to_string(), (false, None, ExecutionSource::Native));
 
         repair_orphaned_tool_calls(&mut messages, &mut pending);
 

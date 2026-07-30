@@ -97,6 +97,43 @@ impl App {
         Ok(())
     }
 
+    /// Durably record a guardian auto-adjudication outcome.
+    ///
+    /// This is the audit record for every guardian review: without it, the
+    /// only trace of an auto-approved tool call was a transcript banner
+    /// (`state.add_system_message`) and an in-memory, size-bounded
+    /// `ToolHistory` entry that ages out and is never persisted -- neither
+    /// survives a restart or a `--replay`, and neither distinguishes "the
+    /// guardian allowed this silently" from an ordinary human approval or
+    /// static-allowlist auto-approval after the fact. Writing a
+    /// `SessionEntry::Custom("guardian_decision", ...)` entry makes the
+    /// decision, its stated reason, and the tool/args it covered part of
+    /// the same append-only session log everything else is audited through.
+    pub(super) fn record_guardian_decision(
+        &mut self,
+        call_id: &str,
+        tool: &str,
+        args_summary: &str,
+        outcome: &str,
+        reason: &str,
+    ) {
+        let entry = SessionEntry::Custom(CustomEntry {
+            id: Some(uuid::Uuid::new_v4().to_string()),
+            parent_id: None,
+            timestamp: Utc::now().to_rfc3339(),
+            custom_type: "guardian_decision".to_string(),
+            data: Some(serde_json::json!({
+                "callId": call_id,
+                "tool": tool,
+                "argsSummary": args_summary,
+                "outcome": outcome,
+                "reason": reason,
+            })),
+        });
+        self.write_session_entry(entry);
+        self.flush_session();
+    }
+
     pub(super) fn write_session_entry(&mut self, entry: SessionEntry) {
         let error = {
             let Some(writer) = self.session_manager.writer() else {

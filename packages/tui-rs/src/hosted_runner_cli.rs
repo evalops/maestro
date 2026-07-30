@@ -200,7 +200,6 @@ where
         &session_id,
     );
     let sessions_dir = config.runner.workspace_root.join(".maestro/sessions");
-    std::fs::create_dir_all(&sessions_dir)?;
     let mut recorder = SessionRecorder::resume(sessions_dir, &session_recorder_id(&session_id))?;
     if let Some(replay) = restore_replay.as_ref() {
         recorder.apply_snapshot(replay.state.clone(), replay.last_init.clone())?;

@@ -709,10 +709,12 @@ pub(crate) async fn handle_chat_endpoint(
                         .as_str()
                     {
                         "auto" => {
-                            let _ =
-                                agent
-                                    .tool_response_sender()
-                                    .send((call_id.clone(), true, None));
+                            let _ = agent.tool_response_sender().send((
+                                call_id.clone(),
+                                true,
+                                None,
+                                ExecutionSource::RemoteClient,
+                            ));
                             send_sse(
                                 &mut stream,
                                 &serde_json::json!({
@@ -723,10 +725,12 @@ pub(crate) async fn handle_chat_endpoint(
                             .await?;
                         }
                         "fail" => {
-                            let _ =
-                                agent
-                                    .tool_response_sender()
-                                    .send((call_id.clone(), false, None));
+                            let _ = agent.tool_response_sender().send((
+                                call_id.clone(),
+                                false,
+                                None,
+                                ExecutionSource::RemoteClient,
+                            ));
                             finish_tool_metadata(&mut assistant_tools, &call_id, false);
                             send_sse(&mut stream, &approval_blocked_tool_event(&call_id, &tool))
                                 .await?;
@@ -1345,10 +1349,12 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                         .as_str()
                     {
                         "auto" => {
-                            let _ =
-                                agent
-                                    .tool_response_sender()
-                                    .send((call_id.clone(), true, None));
+                            let _ = agent.tool_response_sender().send((
+                                call_id.clone(),
+                                true,
+                                None,
+                                ExecutionSource::RemoteClient,
+                            ));
                             send_ws_json(
                                 &mut stream,
                                 &serde_json::json!({
@@ -1359,10 +1365,12 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                             .await?;
                         }
                         "fail" => {
-                            let _ =
-                                agent
-                                    .tool_response_sender()
-                                    .send((call_id.clone(), false, None));
+                            let _ = agent.tool_response_sender().send((
+                                call_id.clone(),
+                                false,
+                                None,
+                                ExecutionSource::RemoteClient,
+                            ));
                             finish_tool_metadata(&mut assistant_tools, &call_id, false);
                             send_ws_json(
                                 &mut stream,

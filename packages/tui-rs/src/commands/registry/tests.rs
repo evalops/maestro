@@ -129,6 +129,43 @@ fn built_in_commands_exist() {
     assert!(registry.get("review").is_some());
     assert!(registry.get("a2a").is_some());
     assert!(registry.get("operations").is_some());
+    assert!(registry.get("rubber-duck").is_some());
+}
+
+#[test]
+fn rubber_duck_command_returns_action() {
+    let registry = build_command_registry();
+
+    let bare = registry
+        .execute("/rubber-duck", "/tmp", None, Some("gpt-5.5"))
+        .expect("parse");
+    assert!(matches!(
+        bare,
+        CommandOutput::Action(CommandAction::RubberDuck { model: None })
+    ));
+
+    let with_model = registry
+        .execute(
+            "/rubber-duck claude-opus-4-6",
+            "/tmp",
+            None,
+            Some("gpt-5.5"),
+        )
+        .expect("parse");
+    match with_model {
+        CommandOutput::Action(CommandAction::RubberDuck { model: Some(model) }) => {
+            assert_eq!(model, "claude-opus-4-6");
+        }
+        other => panic!("expected RubberDuck action with model, got {other:?}"),
+    }
+
+    let alias = registry
+        .execute("/duck", "/tmp", None, Some("gpt-5.5"))
+        .expect("parse");
+    assert!(matches!(
+        alias,
+        CommandOutput::Action(CommandAction::RubberDuck { model: None })
+    ));
 }
 
 #[test]

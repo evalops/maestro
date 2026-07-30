@@ -1313,6 +1313,31 @@ pub fn build_command_registry() -> CommandRegistry {
         .usage("/model [name | default <name>]"),
     );
 
+    // Rubber duck review command
+    registry.register(
+        Command::new(
+            "rubber-duck",
+            "Review uncommitted changes with a different model (second opinion)",
+            CommandCategory::Tools,
+            Box::new(|ctx| {
+                let model = ctx.raw_args.trim();
+                Ok(CommandOutput::Action(CommandAction::RubberDuck {
+                    model: if model.is_empty() {
+                        None
+                    } else {
+                        Some(model.to_string())
+                    },
+                }))
+            }),
+        )
+        .alias("duck")
+        .arg(CommandArgument::string(
+            "model",
+            "Model to review with (defaults to another provider's model)",
+        ))
+        .usage("/rubber-duck [model]"),
+    );
+
     // Session commands
     registry.register(
         Command::new(
