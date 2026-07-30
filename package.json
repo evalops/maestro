@@ -1,7 +1,7 @@
 {
   "name": "@evalops/maestro",
   "description": "Maestro by EvalOps — native Rust coding agent, CLI, TUI, and web control plane",
-  "version": "0.10.56",
+  "version": "0.10.57",
   "private": false,
   "type": "module",
   "bin": {

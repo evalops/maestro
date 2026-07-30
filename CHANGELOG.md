@@ -34,6 +34,16 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.57] - 2026-07-30
+
+### Added
+
+- Codex 401 refresh, doctor login check, install helper (#3220). <!-- maestro-release-note:eea54a44d3bd -->
+
+### Fixed
+
+- Auto-wire Codex ChatGPT auth for native agent startup (#3219). <!-- maestro-release-note:4aa06caddc9a -->
+
 ## [0.10.56] - 2026-07-27
 
 ### Added
