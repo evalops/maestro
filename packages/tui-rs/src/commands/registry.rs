@@ -76,8 +76,9 @@ use std::sync::Arc;
 use super::types::{
     A2aAction, ArgumentValue, BackgroundMonitorAction, Command, CommandAction, CommandArgument,
     CommandCategory, CommandContext, CommandError, CommandOutput, CommandResult, ExportAction,
-    HistoryAction, HooksAction, LoopAction, McpAction, ModalType, PlanReviewAction, PluginsAction,
-    QueueAction, QueueModeKind, SessionAction, SkillsAction, ToolHistoryAction, UsageAction,
+    FooterStyle, GoalAction, HistoryAction, HooksAction, LoopAction, McpAction, ModalType,
+    PlanReviewAction, PluginsAction, QueueAction, QueueModeKind, SessionAction, SkillsAction,
+    ToolHistoryAction, UsageAction,
 };
 use crate::git;
 use crate::keybindings::{
@@ -1955,12 +1956,34 @@ pub fn build_command_registry() -> CommandRegistry {
 
     registry.register(Command::new(
         "mcp-config",
-        "Configure MCP servers safely",
+        "Configure MCP servers safely (wizard, list, add-stdio, add-http, remove)",
         CommandCategory::Tools,
         Box::new(|ctx| {
+            let raw = ctx.raw_args.trim();
+            // Conversational wizard: guided next steps without mutating config yet.
+            if raw.is_empty()
+                || raw.eq_ignore_ascii_case("wizard")
+                || raw.eq_ignore_ascii_case("help")
+            {
+                return Ok(CommandOutput::Message(
+                    "## MCP config wizard\n\n\
+                     1. **List** current servers:\n\
+                     `/mcp-config list`\n\n\
+                     2. **Add stdio server** (local process):\n\
+                     `/mcp-config add-stdio <name> <command> [args…] --scope user|project|local`\n\n\
+                     3. **Add HTTP server**:\n\
+                     `/mcp-config add-http <name> <url> --scope user|project|local`\n\n\
+                     4. **Remove**:\n\
+                     `/mcp-config remove <name> --scope user|project|local`\n\n\
+                     5. **Check status**: `/mcp`\n\n\
+                     Secrets must use env references in user scope only. Project scope cannot store secrets.\n\
+                     After changing config, reload with `/mcp` or restart the session."
+                        .to_string(),
+                ));
+            }
             Ok(CommandOutput::Action(CommandAction::Mcp(
                 McpAction::Configure {
-                    args: tokenize_command_args(ctx.raw_args.trim()),
+                    args: tokenize_command_args(raw),
                 },
             )))
         }),
@@ -2031,11 +2054,23 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "footer",
-            "Change footer style",
+            "Change status-bar footer style (rich|solo|history|clear)",
             CommandCategory::Ui,
             Box::new(|ctx| {
-                let style = ctx.get_string("style").unwrap_or("rich");
-                Ok(CommandOutput::Message(format!("Footer style: {style}")))
+                let raw = ctx
+                    .get_string("style")
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        let t = ctx.raw_args.trim();
+                        (!t.is_empty()).then(|| t.to_string())
+                    })
+                    .unwrap_or_else(|| "rich".to_string());
+                let style = FooterStyle::parse(&raw).ok_or_else(|| {
+                    CommandError::new(format!(
+                        "Unknown footer style '{raw}'. Use: rich, solo, history, clear"
+                    ))
+                })?;
+                Ok(CommandOutput::Action(CommandAction::SetFooterStyle(style)))
             }),
         )
         .arg(CommandArgument::choice(
@@ -2044,6 +2079,42 @@ pub fn build_command_registry() -> CommandRegistry {
             vec!["rich", "solo", "history", "clear"],
         ))
         .usage("/footer [rich|solo|history|clear]"),
+    );
+
+    // Goal mode (Kimi-inspired structured objective + auto-continue)
+    registry.register(
+        Command::new(
+            "goal",
+            "Structured goal mode: create, pause, block, complete, auto-continue",
+            CommandCategory::Context,
+            Box::new(|ctx| {
+                Ok(CommandOutput::Action(CommandAction::Goal(parse_goal_action(
+                    &ctx.raw_args,
+                )?)))
+            }),
+        )
+        .usage(
+            "/goal [status|create|replace|pause|resume|block|complete|clear|auto on|auto off] [text]",
+        ),
+    );
+
+    // Attach path (image/video) for multimodal next prompt
+    registry.register(
+        Command::new(
+            "attach",
+            "Attach a local file (image/video/document) to the next prompt",
+            CommandCategory::Ui,
+            Box::new(|ctx| {
+                let path = ctx.raw_args.trim();
+                if path.is_empty() {
+                    return Err(CommandError::new("Usage: /attach <path-to-image-or-video>"));
+                }
+                Ok(CommandOutput::Action(CommandAction::AttachPath(
+                    path.to_string(),
+                )))
+            }),
+        )
+        .usage("/attach <path>"),
     );
 
     // Memory commands
@@ -2416,7 +2487,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "plugins",
-            "List discovered plugins (skills, commands, hooks, MCP packages)",
+            "List plugins, marketplace catalog, install/reload",
             CommandCategory::Tools,
             Box::new(|ctx| {
                 let raw_args = ctx.raw_args.trim();
@@ -2427,6 +2498,35 @@ pub fn build_command_registry() -> CommandRegistry {
                 let action = match sub.as_str() {
                     "" | "list" => PluginsAction::List,
                     "reload" | "refresh" => PluginsAction::Reload,
+                    "marketplace" | "market" | "catalog" => {
+                        let rest: Vec<&str> = raw_parts.iter().skip(1).copied().collect();
+                        match rest.first().map(|s| s.to_ascii_lowercase()).as_deref() {
+                            None | Some("list" | "ls") => PluginsAction::MarketplaceList,
+                            Some("install") => {
+                                let id = rest.get(1).copied().unwrap_or("").trim();
+                                if id.is_empty() {
+                                    return Err(CommandError::new(
+                                        "Usage: /plugins marketplace install <id> [--trust]",
+                                    ));
+                                }
+                                let trust = rest
+                                    .iter()
+                                    .any(|a| a.eq_ignore_ascii_case("--trust") || *a == "-t");
+                                PluginsAction::MarketplaceInstall {
+                                    id: id.to_string(),
+                                    trust,
+                                }
+                            }
+                            Some(other) => {
+                                return Err(CommandError::new(format!(
+                                    "Unknown marketplace subcommand: {other}"
+                                ))
+                                .with_hint(
+                                    "Usage: /plugins marketplace [list|install <id> [--trust]]",
+                                ));
+                            }
+                        }
+                    }
                     "info" | "show" => {
                         let name = raw_parts
                             .iter()
@@ -2453,12 +2553,73 @@ pub fn build_command_registry() -> CommandRegistry {
         .alias("plugin")
         .arg(CommandArgument::string(
             "action",
-            "list|info|reload or plugin name",
+            "list|info|reload|marketplace or plugin name",
         ))
-        .usage("/plugins [list|info|reload] [plugin-name]"),
+        .usage("/plugins [list|info|reload|marketplace [list|install <id> [--trust]]]"),
     );
 
     registry
+}
+
+fn parse_goal_action(raw: &str) -> Result<GoalAction, CommandError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("status") {
+        return Ok(GoalAction::Status);
+    }
+    let mut parts = trimmed.split_whitespace();
+    let sub = parts.next().unwrap_or("").to_ascii_lowercase();
+    let rest = parts.collect::<Vec<_>>().join(" ");
+    match sub.as_str() {
+        "create" | "set" | "start" => {
+            if rest.is_empty() {
+                return Err(CommandError::new("Usage: /goal create <text>"));
+            }
+            Ok(GoalAction::Create {
+                text: rest,
+                replace: false,
+                criteria: None,
+            })
+        }
+        "replace" => {
+            if rest.is_empty() {
+                return Err(CommandError::new("Usage: /goal replace <text>"));
+            }
+            Ok(GoalAction::Create {
+                text: rest,
+                replace: true,
+                criteria: None,
+            })
+        }
+        "pause" => Ok(GoalAction::Pause),
+        "resume" | "continue" => Ok(GoalAction::Resume),
+        "block" => Ok(GoalAction::Block {
+            reason: (!rest.is_empty()).then_some(rest),
+        }),
+        "complete" | "done" => Ok(GoalAction::Complete),
+        "clear" | "cancel" => Ok(GoalAction::Clear),
+        "auto" => {
+            let flag = rest.trim().to_ascii_lowercase();
+            let enabled = match flag.as_str() {
+                "on" | "true" | "1" | "enable" | "enabled" => true,
+                "off" | "false" | "0" | "disable" | "disabled" => false,
+                _ => {
+                    return Err(CommandError::new("Usage: /goal auto on|off"));
+                }
+            };
+            Ok(GoalAction::AutoContinue { enabled })
+        }
+        // Bare text → create without replace
+        other if rest.is_empty() && !other.is_empty() => Ok(GoalAction::Create {
+            text: trimmed.to_string(),
+            replace: false,
+            criteria: None,
+        }),
+        _ => Ok(GoalAction::Create {
+            text: trimmed.to_string(),
+            replace: false,
+            criteria: None,
+        }),
+    }
 }
 
 /// Built-ins + Grok-style skill/prompt slash extensions. Built-ins always win.

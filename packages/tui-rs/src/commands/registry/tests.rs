@@ -991,6 +991,99 @@ fn plugins_command_list_info_and_reload() {
         }
         other => panic!("expected Plugins::Info via alias, got {other:?}"),
     }
+
+    match registry
+        .execute("/plugins marketplace", "/tmp", None, None)
+        .expect("/plugins marketplace")
+    {
+        CommandOutput::Action(CommandAction::Plugins(PluginsAction::MarketplaceList)) => {}
+        other => panic!("expected MarketplaceList, got {other:?}"),
+    }
+
+    match registry
+        .execute(
+            "/plugins marketplace install superpowers --trust",
+            "/tmp",
+            None,
+            None,
+        )
+        .expect("/plugins marketplace install")
+    {
+        CommandOutput::Action(CommandAction::Plugins(PluginsAction::MarketplaceInstall {
+            id,
+            trust,
+        })) => {
+            assert_eq!(id, "superpowers");
+            assert!(trust);
+        }
+        other => panic!("expected MarketplaceInstall, got {other:?}"),
+    }
+}
+
+#[test]
+fn goal_footer_attach_commands_parse() {
+    use crate::commands::{FooterStyle, GoalAction};
+
+    let registry = build_command_registry();
+
+    match registry
+        .execute("/goal create Ship release", "/tmp", None, None)
+        .expect("/goal create")
+    {
+        CommandOutput::Action(CommandAction::Goal(GoalAction::Create {
+            text, replace, ..
+        })) => {
+            assert_eq!(text, "Ship release");
+            assert!(!replace);
+        }
+        other => panic!("expected Goal::Create, got {other:?}"),
+    }
+
+    match registry
+        .execute("/goal pause", "/tmp", None, None)
+        .expect("/goal pause")
+    {
+        CommandOutput::Action(CommandAction::Goal(GoalAction::Pause)) => {}
+        other => panic!("expected Goal::Pause, got {other:?}"),
+    }
+
+    match registry
+        .execute("/goal auto off", "/tmp", None, None)
+        .expect("/goal auto off")
+    {
+        CommandOutput::Action(CommandAction::Goal(GoalAction::AutoContinue { enabled: false })) => {
+        }
+        other => panic!("expected Goal::AutoContinue off, got {other:?}"),
+    }
+
+    match registry
+        .execute("/footer solo", "/tmp", None, None)
+        .expect("/footer solo")
+    {
+        CommandOutput::Action(CommandAction::SetFooterStyle(FooterStyle::Solo)) => {}
+        other => panic!("expected SetFooterStyle::Solo, got {other:?}"),
+    }
+
+    match registry
+        .execute("/attach /tmp/shot.png", "/tmp", None, None)
+        .expect("/attach")
+    {
+        CommandOutput::Action(CommandAction::AttachPath(path)) => {
+            assert_eq!(path, "/tmp/shot.png");
+        }
+        other => panic!("expected AttachPath, got {other:?}"),
+    }
+
+    match registry
+        .execute("/mcp-config", "/tmp", None, None)
+        .expect("/mcp-config wizard")
+    {
+        CommandOutput::Message(msg) => {
+            assert!(msg.contains("MCP config wizard"));
+            assert!(msg.contains("add-stdio"));
+        }
+        other => panic!("expected wizard message, got {other:?}"),
+    }
 }
 
 fn prefix_test_registry() -> CommandRegistry {

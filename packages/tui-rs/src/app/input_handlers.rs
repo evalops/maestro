@@ -330,9 +330,19 @@ impl App {
                 self.update_slash_state();
             }
 
-            // Paste from clipboard
+            // Paste from clipboard (image → temp PNG attachment, else text)
             KeyCode::Char('y') if ctrl => {
-                if let Ok(text) = self.clipboard.paste() {
+                if let Ok(path) = self.clipboard.paste_image_to_temp_file() {
+                    let path_str = path.display().to_string();
+                    self.pending_attachments.push(path_str.clone());
+                    // Surface the path in the composer so the operator sees it.
+                    let mention = format!("[image:{path_str}] ");
+                    self.state.insert_paste(&mention);
+                    self.state.status = Some(format!(
+                        "Pasted image → attached for next prompt: {path_str}"
+                    ));
+                    self.update_slash_state();
+                } else if let Ok(text) = self.clipboard.paste() {
                     // Insert text including newlines for multi-line support;
                     // large pastes are folded into a display chip.
                     self.state.insert_paste(&text);

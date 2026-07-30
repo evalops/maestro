@@ -1854,6 +1854,8 @@ pub struct StatusBarWidget<'a> {
     pending_approvals: usize,
     shortcut_hints: bool,
     paste_note: Option<&'a str>,
+    goal_badge: Option<&'a str>,
+    footer_style: crate::commands::FooterStyle,
 }
 
 impl<'a> StatusBarWidget<'a> {
@@ -1883,7 +1885,21 @@ impl<'a> StatusBarWidget<'a> {
             pending_approvals: 0,
             shortcut_hints: false,
             paste_note: None,
+            goal_badge: None,
+            footer_style: crate::commands::FooterStyle::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_goal_badge(mut self, badge: Option<&'a str>) -> Self {
+        self.goal_badge = badge;
+        self
+    }
+
+    #[must_use]
+    pub fn with_footer_style(mut self, style: crate::commands::FooterStyle) -> Self {
+        self.footer_style = style;
+        self
     }
 
     #[must_use]
@@ -1969,9 +1985,23 @@ impl Widget for StatusBarWidget<'_> {
             return;
         }
 
+        use crate::commands::FooterStyle;
+
+        // `/footer clear` leaves the status strip empty (zen still hides the row).
+        if matches!(self.footer_style, FooterStyle::Clear) {
+            return;
+        }
+
+        let show_chrome = matches!(self.footer_style, FooterStyle::Rich);
+        let show_location = matches!(self.footer_style, FooterStyle::Rich);
+        let show_shortcuts = self.shortcut_hints && matches!(self.footer_style, FooterStyle::Rich);
+        // History: only alerts / pending approvals. Solo: model + goal + key badges.
+        let history_only = matches!(self.footer_style, FooterStyle::History);
+        let solo = matches!(self.footer_style, FooterStyle::Solo);
+
         let mut spans = Vec::new();
 
-        if self.shortcut_hints {
+        if show_shortcuts {
             let hints = if area.width >= 72 {
                 "Shift+Tab:mode  │  Ctrl+C:cancel  │  F1:shortcuts"
             } else {
@@ -1980,64 +2010,102 @@ impl Widget for StatusBarWidget<'_> {
             spans.push(Span::styled(hints, Style::default().fg(Color::DarkGray)));
         }
 
-        // Model info
-        if let Some(model) = self.model {
-            if !spans.is_empty() {
-                spans.push(Span::raw(" | "));
-            }
-            spans.push(Span::styled(model, Style::default().fg(Color::Cyan)));
-            if let Some(provider) = self.provider {
-                spans.push(Span::raw(" via "));
-                spans.push(Span::styled(provider, Style::default().fg(Color::DarkGray)));
-            }
-        }
-
-        // Separator
-        if !spans.is_empty() && self.cwd.is_some() {
-            spans.push(Span::raw(" | "));
-        }
-
-        // Working directory
-        if let Some(cwd) = self.cwd {
-            // Show just the last component
-            let short_cwd = cwd.rsplit('/').next().unwrap_or(cwd);
-            spans.push(Span::styled(short_cwd, Style::default().fg(Color::Blue)));
-
-            // Git branch
-            if let Some(branch) = self.git_branch {
-                spans.push(Span::raw(" ("));
-                spans.push(Span::styled(branch, Style::default().fg(Color::Green)));
-                spans.push(Span::raw(")"));
+        // Model info (rich + solo)
+        if !history_only {
+            if let Some(model) = self.model {
+                if !spans.is_empty() {
+                    spans.push(Span::raw(" | "));
+                }
+                spans.push(Span::styled(model, Style::default().fg(Color::Cyan)));
+                if let Some(provider) = self.provider {
+                    if show_chrome {
+                        spans.push(Span::raw(" via "));
+                        spans.push(Span::styled(provider, Style::default().fg(Color::DarkGray)));
+                    }
+                }
             }
         }
 
-        // Hook status
-        if let Some(count) = self.hook_count {
-            if !spans.is_empty() {
-                spans.push(Span::raw(" | "));
-            }
-            if count > 0 {
+        // Goal badge (rich + solo)
+        if !history_only {
+            if let Some(goal) = self.goal_badge {
+                if !spans.is_empty() {
+                    spans.push(Span::raw(" | "));
+                }
                 spans.push(Span::styled(
-                    format!("hooks:{count}"),
-                    Style::default().fg(Color::Magenta),
+                    goal.to_string(),
+                    Style::default().fg(Color::Yellow),
                 ));
-            } else {
+            }
+        }
+
+        // Working directory + git (rich only)
+        if show_location {
+            if !spans.is_empty() && self.cwd.is_some() {
+                spans.push(Span::raw(" | "));
+            }
+            if let Some(cwd) = self.cwd {
+                let short_cwd = cwd.rsplit('/').next().unwrap_or(cwd);
+                spans.push(Span::styled(short_cwd, Style::default().fg(Color::Blue)));
+
+                if let Some(branch) = self.git_branch {
+                    spans.push(Span::raw(" ("));
+                    spans.push(Span::styled(branch, Style::default().fg(Color::Green)));
+                    spans.push(Span::raw(")"));
+                }
+            }
+        }
+
+        // Hook status (rich only)
+        if show_chrome {
+            if let Some(count) = self.hook_count {
+                if !spans.is_empty() {
+                    spans.push(Span::raw(" | "));
+                }
+                if count > 0 {
+                    spans.push(Span::styled(
+                        format!("hooks:{count}"),
+                        Style::default().fg(Color::Magenta),
+                    ));
+                } else {
+                    spans.push(Span::styled(
+                        "hooks:0",
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
+            }
+        }
+
+        // Folded-paste note (rich + solo)
+        if !history_only {
+            if let Some(note) = self.paste_note {
+                if !spans.is_empty() {
+                    spans.push(Span::raw(" | "));
+                }
                 spans.push(Span::styled(
-                    "hooks:0",
+                    note.to_string(),
                     Style::default().fg(Color::DarkGray),
                 ));
             }
         }
 
-        // Folded-paste note
-        if let Some(note) = self.paste_note {
-            if !spans.is_empty() {
-                spans.push(Span::raw(" | "));
+        // History mode: surface only alert / approval urgency on the left.
+        if history_only {
+            if self.pending_approvals > 0 {
+                spans.push(Span::styled(
+                    format!("approvals:{}", self.pending_approvals),
+                    Style::default().fg(Color::Yellow),
+                ));
             }
-            spans.push(Span::styled(
-                note.to_string(),
-                Style::default().fg(Color::DarkGray),
-            ));
+            if self.alert_count > 0 {
+                if !spans.is_empty() {
+                    spans.push(Span::raw(" | "));
+                }
+                spans.push(Span::styled(
+                    format!("alerts:{}", self.alert_count),
+                    Style::default().fg(Color::Red),
+                ));
+            }
         }
 
         let line = Line::from(spans);
@@ -2048,9 +2116,9 @@ impl Widget for StatusBarWidget<'_> {
         // Build right-side info (usage + terminal size)
         let mut usage_text: Option<String> = None;
 
-        // Token usage
+        // Token usage (rich only; solo keeps model/goal focus)
         let total_tokens = self.usage.input_tokens + self.usage.output_tokens;
-        if total_tokens > 0 {
+        if show_chrome && total_tokens > 0 {
             usage_text = Some(format!(
                 "↑{} ↓{}",
                 UsageSummary::format_tokens(self.usage.input_tokens),
@@ -2058,31 +2126,48 @@ impl Widget for StatusBarWidget<'_> {
             ));
         }
 
-        let badges = self.approval_mode.map(|mode| {
-            build_runtime_badges(RuntimeBadgeParams {
-                approval_mode: mode,
-                thinking_level: self.thinking_level.unwrap_or(ThinkingLevel::Off),
-                mcp_connected: self.mcp_connected,
-                mcp_tool_count: self.mcp_tool_count,
-                mcp_failed: self.mcp_failed,
-                alert_count: self.alert_count,
-                sandbox_policy: self.sandbox_policy.map(str::to_owned),
-                workspace_trusted: self.workspace_trusted,
-                pending_approvals: self.pending_approvals,
+        let badges = if history_only {
+            None
+        } else {
+            self.approval_mode.map(|mode| {
+                build_runtime_badges(RuntimeBadgeParams {
+                    approval_mode: mode,
+                    thinking_level: self.thinking_level.unwrap_or(ThinkingLevel::Off),
+                    mcp_connected: self.mcp_connected,
+                    mcp_tool_count: self.mcp_tool_count,
+                    mcp_failed: self.mcp_failed,
+                    alert_count: self.alert_count,
+                    sandbox_policy: self.sandbox_policy.map(str::to_owned),
+                    workspace_trusted: self.workspace_trusted,
+                    pending_approvals: self.pending_approvals,
+                })
             })
-        });
+        };
         let core_badges = badges
             .as_ref()
             .and_then(|b| (!b.core.is_empty()).then(|| b.core.join(" ")));
-        let env_badges = badges
-            .as_ref()
-            .and_then(|b| (!b.env.is_empty()).then(|| b.env.join(" ")));
+        // Solo: core badges only. Rich: core + env.
+        let env_badges = if solo {
+            None
+        } else {
+            badges
+                .as_ref()
+                .and_then(|b| (!b.env.is_empty()).then(|| b.env.join(" ")))
+        };
 
-        let queue_text = self.queue_badge.map(|badge| badge.to_string());
+        let queue_text = if show_chrome {
+            self.queue_badge.map(|badge| badge.to_string())
+        } else {
+            None
+        };
 
-        let term_text = crate::terminal::size()
-            .ok()
-            .map(|(cols, rows)| format!("{cols}x{rows}"));
+        let term_text = if show_chrome {
+            crate::terminal::size()
+                .ok()
+                .map(|(cols, rows)| format!("{cols}x{rows}"))
+        } else {
+            None
+        };
 
         let available_width = area.width.saturating_sub(left_width + 1);
 
@@ -2224,6 +2309,8 @@ pub struct ChatView<'a> {
     sandbox_policy: Option<&'a str>,
     workspace_trusted: bool,
     pending_approvals: usize,
+    footer_style: crate::commands::FooterStyle,
+    goal_badge: Option<&'a str>,
 }
 
 impl<'a> ChatView<'a> {
@@ -2233,6 +2320,8 @@ impl<'a> ChatView<'a> {
             sandbox_policy: None,
             workspace_trusted: false,
             pending_approvals: 0,
+            footer_style: crate::commands::FooterStyle::default(),
+            goal_badge: None,
         }
     }
 
@@ -2246,6 +2335,18 @@ impl<'a> ChatView<'a> {
         self.sandbox_policy = sandbox_policy;
         self.workspace_trusted = workspace_trusted;
         self.pending_approvals = pending_approvals;
+        self
+    }
+
+    #[must_use]
+    pub fn with_footer_style(mut self, style: crate::commands::FooterStyle) -> Self {
+        self.footer_style = style;
+        self
+    }
+
+    #[must_use]
+    pub fn with_goal_badge(mut self, badge: Option<&'a str>) -> Self {
+        self.goal_badge = badge;
         self
     }
 }
@@ -2346,21 +2447,28 @@ impl Widget for ChatView<'_> {
                 .folded_paste_lines()
                 .map(|lines| format!("pasted {lines} lines (folded)"));
 
-            let status_widget = StatusBarWidget::new(None, None, None, None)
-                .with_queue_badge(queue_badge.as_deref())
-                .with_approval_mode(self.state.approval_mode)
-                .with_thinking_level(self.state.thinking_level)
-                .with_mcp_status(
-                    self.state.mcp_connected,
-                    self.state.mcp_tool_count,
-                    self.state.mcp_failed,
-                )
-                .with_alert_count(alert_count)
-                .with_sandbox_policy(self.sandbox_policy)
-                .with_workspace_trusted(self.workspace_trusted)
-                .with_pending_approvals(self.pending_approvals)
-                .with_paste_note(paste_note.as_deref())
-                .with_shortcut_hints();
+            let status_widget = StatusBarWidget::new(
+                self.state.model.as_deref(),
+                self.state.provider.as_deref(),
+                self.state.cwd.as_deref(),
+                self.state.git_branch.as_deref(),
+            )
+            .with_queue_badge(queue_badge.as_deref())
+            .with_approval_mode(self.state.approval_mode)
+            .with_thinking_level(self.state.thinking_level)
+            .with_mcp_status(
+                self.state.mcp_connected,
+                self.state.mcp_tool_count,
+                self.state.mcp_failed,
+            )
+            .with_alert_count(alert_count)
+            .with_sandbox_policy(self.sandbox_policy)
+            .with_workspace_trusted(self.workspace_trusted)
+            .with_pending_approvals(self.pending_approvals)
+            .with_paste_note(paste_note.as_deref())
+            .with_goal_badge(self.goal_badge)
+            .with_footer_style(self.footer_style)
+            .with_shortcut_hints();
             status_widget.render(chunks[4], buf);
         }
     }

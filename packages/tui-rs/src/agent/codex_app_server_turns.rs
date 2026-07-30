@@ -10,8 +10,9 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::codex_app_server::{
-    agent_message_text_from_notifications, CodexAppServerClient, IncomingServerRequest,
-    InitializeOptions, Notification, ServerRequestWaitError, ThreadStartParams, TurnStartParams,
+    agent_message_completed_text, agent_message_text_from_notifications,
+    is_agent_message_notification, CodexAppServerClient, IncomingServerRequest, InitializeOptions,
+    Notification, ServerRequestWaitError, ThreadStartParams, TurnStartParams,
 };
 
 /// Result of a single text turn over Codex app-server.
@@ -138,6 +139,26 @@ impl CodexAppServerTurnSession {
         Ok(turn.turn_id)
     }
 
+    /// Drain assistant message notifications (streaming deltas + completed
+    /// agentMessage items) and return the best text we can assemble.
+    async fn take_assistant_text(&self) -> String {
+        let notes = self
+            .client
+            .take_notifications_where(is_agent_message_notification)
+            .await;
+        // Prefer fully-accumulated text from item/completed when present.
+        let mut completed_parts = Vec::new();
+        for n in &notes {
+            if let Some(text) = agent_message_completed_text(n) {
+                completed_parts.push(text);
+            }
+        }
+        if !completed_parts.is_empty() {
+            return completed_parts.join("");
+        }
+        agent_message_text_from_notifications(&notes)
+    }
+
     /// Wait until the turn completes; returns assistant text collected so far.
     pub async fn wait_turn_complete(
         &self,
@@ -150,11 +171,7 @@ impl CodexAppServerTurnSession {
             .await
             .context("wait for turn completion")?;
 
-        let deltas = self
-            .client
-            .take_notifications_where(|n| n.method.starts_with("item/agentMessage"))
-            .await;
-        let assistant_text = agent_message_text_from_notifications(&deltas);
+        let assistant_text = self.take_assistant_text().await;
 
         Ok(CodexAppServerTurnResult {
             thread_id: self.thread_id.clone(),
@@ -218,11 +235,7 @@ impl CodexAppServerTurnSession {
                 })
                 .await;
             if let Some(notification) = completed.into_iter().next() {
-                let deltas = self
-                    .client
-                    .take_notifications_where(|n| n.method.starts_with("item/agentMessage"))
-                    .await;
-                let assistant_text = agent_message_text_from_notifications(&deltas);
+                let assistant_text = self.take_assistant_text().await;
                 return Ok(TurnWaitEvent::Completed(CodexAppServerTurnResult {
                     thread_id: self.thread_id.clone(),
                     turn_id: turn_id.to_owned(),

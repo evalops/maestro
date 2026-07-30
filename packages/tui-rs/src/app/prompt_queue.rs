@@ -495,8 +495,13 @@ impl App {
             let cwd = self.state.cwd.clone().unwrap_or_else(|| ".".to_string());
             let agent_content =
                 crate::file_mentions::expand_file_mentions(&content, std::path::Path::new(&cwd));
+            let attachments = std::mem::take(&mut self.pending_attachments);
+            if !attachments.is_empty() {
+                self.state.status =
+                    Some(format!("Sending with {} attachment(s)", attachments.len()));
+            }
             if let Err(e) = agent
-                .prompt_with_kind(agent_content, vec![], kind, None)
+                .prompt_with_kind(agent_content, attachments, kind, None)
                 .await
             {
                 self.state.error = Some(format!("Failed to send prompt: {e}"));

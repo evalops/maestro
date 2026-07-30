@@ -1246,6 +1246,33 @@ pub fn agent_message_text_from_notifications(notifications: &[Notification]) -> 
     out
 }
 
+/// Full text carried by an `item/completed` notification for an agent
+/// message item (`ThreadItem::AgentMessage`).
+///
+/// Codex app-server (v2) delivers the authoritative, fully-accumulated
+/// assistant text this way; there is no `item/agentMessage/completed`
+/// method in the protocol.
+pub fn agent_message_completed_text(notification: &Notification) -> Option<String> {
+    if notification.method != "item/completed" {
+        return None;
+    }
+    let item = notification.params.as_ref()?.get("item")?;
+    if item.get("type").and_then(Value::as_str) != Some("agentMessage") {
+        return None;
+    }
+    item.get("text")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
+}
+
+/// True for notifications carrying assistant message content: streaming
+/// `item/agentMessage/delta` and completed agent message items.
+pub fn is_agent_message_notification(notification: &Notification) -> bool {
+    notification.method.starts_with("item/agentMessage")
+        || agent_message_completed_text(notification).is_some()
+}
+
 /// Resolve how to launch Codex app-server.
 pub fn resolve_spawn_command(command: Option<&str>, args: Option<&[String]>) -> SpawnCommand {
     resolve_spawn_command_with(command, args, resolve_bundled_codex_bin_path)

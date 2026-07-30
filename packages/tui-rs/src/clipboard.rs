@@ -164,6 +164,69 @@ impl ClipboardManager {
     pub fn copy_message(&mut self, content: &str) -> ClipboardResult<()> {
         self.copy(content)
     }
+
+    /// Paste an image from the system clipboard into a temporary PNG file.
+    ///
+    /// Returns the absolute path of the written file. Used by Ctrl+Y when the
+    /// clipboard holds image data instead of text (Kimi-style multimodal paste).
+    pub fn paste_image_to_temp_file(&mut self) -> ClipboardResult<std::path::PathBuf> {
+        #[cfg(feature = "clipboard")]
+        {
+            use std::io::Write;
+
+            let clipboard = self
+                .clipboard
+                .as_mut()
+                .ok_or_else(|| ClipboardError::NotAvailable("Clipboard not initialized".into()))?;
+
+            let image = clipboard
+                .get_image()
+                .map_err(|e| ClipboardError::AccessFailed(e.to_string()))?;
+
+            let width = u32::try_from(image.width)
+                .map_err(|_| ClipboardError::AccessFailed("image width does not fit u32".into()))?;
+            let height = u32::try_from(image.height).map_err(|_| {
+                ClipboardError::AccessFailed("image height does not fit u32".into())
+            })?;
+
+            let rgba = image::RgbaImage::from_raw(width, height, image.bytes.into_owned())
+                .ok_or_else(|| {
+                    ClipboardError::AccessFailed(
+                        "clipboard image bytes do not match width×height×4".into(),
+                    )
+                })?;
+
+            let dir = crate::path_utils::maestro_home_dir()
+                .unwrap_or_else(std::env::temp_dir)
+                .join("clipboard");
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| ClipboardError::AccessFailed(format!("create clipboard dir: {e}")))?;
+
+            let path = dir.join(format!(
+                "paste-{}.png",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
+            ));
+
+            let mut file = std::fs::File::create(&path).map_err(|e| {
+                ClipboardError::AccessFailed(format!("create {}: {e}", path.display()))
+            })?;
+            let dyn_img = image::DynamicImage::ImageRgba8(rgba);
+            dyn_img
+                .write_to(&mut file, image::ImageFormat::Png)
+                .map_err(|e| ClipboardError::AccessFailed(format!("encode png: {e}")))?;
+            file.flush()
+                .map_err(|e| ClipboardError::AccessFailed(format!("flush png: {e}")))?;
+            Ok(path)
+        }
+
+        #[cfg(not(feature = "clipboard"))]
+        {
+            Err(ClipboardError::FeatureDisabled)
+        }
+    }
 }
 
 /// Check if clipboard feature is compiled in.
