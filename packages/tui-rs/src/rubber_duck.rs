@@ -933,7 +933,24 @@ mod tests {
             .expect("git init");
         assert!(init.status.success());
         let name = std::ffi::OsString::from_vec(b"invalid-\xff.rs".to_vec());
-        std::fs::write(temp.path().join(name), "fn non_utf8() {}\n").expect("write file");
+        // APFS (the default macOS filesystem) rejects filenames that are not
+        // valid UTF-8 with EILSEQ, so the fixture cannot even be created
+        // there. Skip when the filesystem refuses the name, but only for
+        // that specific refusal: on Linux, where arbitrary non-NUL bytes are
+        // always valid in filenames, creation must succeed and any error
+        // fails the test.
+        if let Err(err) = std::fs::write(temp.path().join(&name), "fn non_utf8() {}\n") {
+            assert!(
+                std::env::consts::OS != "linux",
+                "creating a non-UTF-8 filename must succeed on Linux: {err}"
+            );
+            assert_eq!(
+                err.raw_os_error(),
+                Some(libc::EILSEQ),
+                "unexpected fixture-creation failure: {err}"
+            );
+            return;
+        }
 
         let diff = uncommitted_diff(temp.path()).expect("diff");
         assert!(diff.contains("fn non_utf8() {}"));

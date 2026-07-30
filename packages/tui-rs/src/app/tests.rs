@@ -2350,7 +2350,20 @@ fn rewind_is_blocked_while_busy() {
     app.state.add_user_message("keep me".into());
     app.state.busy = true;
     app.rewind_turns(1, false);
-    assert_eq!(app.state.messages.len(), 1);
+    // App construction may prepend system messages of its own (e.g. the
+    // sandbox-unavailable notice when a concurrently running config test
+    // sets MAESTRO_SANDBOX_MODE/MAESTRO_INTERNAL_TUI_SANDBOX_DEFAULT
+    // process-wide, or an untrusted-workspace notice), so an absolute
+    // message count is not stable. Assert the semantic invariant instead:
+    // the user message survives the blocked rewind and the busy status is
+    // shown.
+    assert!(
+        app.state
+            .messages
+            .iter()
+            .any(|message| message.content == "keep me"),
+        "a blocked rewind must not remove the user message"
+    );
     assert_eq!(
         app.state.status.as_deref(),
         Some("Wait for the active response to finish before rewinding.")

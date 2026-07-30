@@ -1341,8 +1341,17 @@ mod tests {
         let cancel_after_spawn = cancel.clone();
         let pid_file_for_cancel = pid_file.clone();
         tokio::spawn(async move {
+            // `echo $$ > pid` makes the file visible to `exists()` before the
+            // shell writes the pid into it, so waiting on existence alone can
+            // race the write and leave the assertions below reading an empty
+            // file. Wait for a complete, parseable pid instead.
             tokio::time::timeout(Duration::from_secs(2), async {
-                while !pid_file_for_cancel.exists() {
+                loop {
+                    if let Ok(contents) = std::fs::read_to_string(&pid_file_for_cancel) {
+                        if contents.trim().parse::<i32>().is_ok() {
+                            break;
+                        }
+                    }
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             })

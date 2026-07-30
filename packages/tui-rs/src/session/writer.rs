@@ -382,6 +382,24 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
+    /// Reacquiring a session lock right after its holder dropped can
+    /// transiently observe `Locked` when an unrelated test thread forks a
+    /// child while the lock fd is open: the child inherits that open file
+    /// description and keeps the flock held until its exec completes
+    /// (`O_CLOEXEC` only takes effect at exec). Poll briefly past that
+    /// window; a genuinely held lock still fails the test.
+    fn open_existing_after_release(path: &Path) -> SessionWriter {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match SessionWriter::open_existing(path) {
+                Err(SessionWriteError::Locked(_)) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                result => return result.expect("open existing session after writer drop"),
+            }
+        }
+    }
+
     #[test]
     fn writer_creates_file() {
         let dir = TempDir::new().unwrap();
@@ -520,7 +538,7 @@ mod tests {
         write!(file, r#"{{"type":"message","timestamp":"2024-01-15T10:30"#).unwrap();
         drop(file);
 
-        let mut writer = SessionWriter::open_existing(&path).unwrap();
+        let mut writer = open_existing_after_release(&path);
         writer
             .write_entry(SessionEntry::ThinkingLevelChange(
                 super::super::entries::ThinkingLevelChange {
@@ -625,7 +643,7 @@ mod tests {
         // Now the same torn tail left behind is a *real* crash signature
         // (no writer holds it anymore), so a resume must succeed and the
         // existing torn-tail recovery must still kick in.
-        let mut writer_b = SessionWriter::open_existing(&path).unwrap();
+        let mut writer_b = open_existing_after_release(&path);
         writer_b
             .write_entry(SessionEntry::ThinkingLevelChange(
                 super::super::entries::ThinkingLevelChange {
