@@ -899,6 +899,17 @@ test("current release workflow satisfies the parsed contract", async () => {
 	assert.deepEqual(await checkReleaseWorkflow(), []);
 });
 
+test("required actionlint lane runs the version workflow regression suite", async () => {
+	const actionlintWorkflow = await readFile(
+		new URL("./actionlint.yml", import.meta.url),
+		"utf8",
+	);
+	assert.match(
+		actionlintWorkflow,
+		/name: Run release workflow contract tests[\s\S]*?node --test scripts\/version\.test\.mjs/u,
+	);
+});
+
 test("versioned browser asset is present in the release source tree", async () => {
 	const html = await readFile(
 		new URL("../../packages/web/dist/index.html", import.meta.url),
