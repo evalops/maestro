@@ -87,6 +87,7 @@
 //! # }
 //! ```
 
+pub mod codex_app_server_turns;
 pub mod compaction;
 pub mod credential_store;
 pub mod message_queue;
@@ -97,6 +98,12 @@ pub mod safety;
 pub mod token_counting;
 pub mod token_estimation;
 
+pub use codex_app_server_turns::{
+    approval_decision, codex_thread_model_id, dynamic_tools_from_native,
+    model_should_use_app_server_turns, parse_tool_call_params, tool_call_error_result,
+    tool_call_success_result, CodexAppServerTurnResult, CodexAppServerTurnSession, DynamicToolSpec,
+    TurnWaitEvent,
+};
 pub use compaction::{CompactionConfig, CompactionResult, ContextCompactor, CutPoint};
 pub use credential_store::{CredentialStats, CredentialStore, CredentialType, CredentialVault};
 pub use message_queue::{

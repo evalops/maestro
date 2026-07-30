@@ -20,6 +20,8 @@ use tokio::time::timeout;
 
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_LOGIN_TIMEOUT_MS: u64 = 5 * 60_000;
+/// Turns can run for several minutes when tools are involved.
+const DEFAULT_TURN_TIMEOUT_MS: u64 = 10 * 60_000;
 const MAX_NOTIFICATION_HISTORY: usize = 100;
 const DEFAULT_CODEX_COMMAND: &str = "codex";
 const DEFAULT_CODEX_APP_SERVER_ARGS: &[&str] = &["app-server", "--listen", "stdio://"];
@@ -67,6 +69,45 @@ pub struct InitializeOptions {
 
 type PendingMap = HashMap<u64, oneshot::Sender<Result<Value>>>;
 
+/// Inbound JSON-RPC request from Codex app-server that Maestro must answer
+/// (dynamic tools, approvals). When external handling is enabled, these are
+/// queued for [`CodexAppServerClient::wait_for_server_request`] instead of
+/// auto-declining.
+pub struct IncomingServerRequest {
+    pub id: Value,
+    pub method: String,
+    pub params: Option<Value>,
+    reply: oneshot::Sender<Result<Value, String>>,
+}
+
+impl IncomingServerRequest {
+    pub fn respond(self, result: Value) {
+        let _ = self.reply.send(Ok(result));
+    }
+
+    pub fn reject(self, message: impl Into<String>) {
+        let _ = self.reply.send(Err(message.into()));
+    }
+}
+
+/// Typed wait outcome for [`CodexAppServerClient::wait_for_server_request`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerRequestWaitError {
+    Timeout,
+    Closed,
+}
+
+impl std::fmt::Display for ServerRequestWaitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Timeout => write!(f, "Timed out waiting for Codex app-server server-request"),
+            Self::Closed => write!(f, "Codex app-server client is closed"),
+        }
+    }
+}
+
+impl std::error::Error for ServerRequestWaitError {}
+
 #[derive(Debug, Clone)]
 pub struct AccountReadResult {
     pub account: Option<Value>,
@@ -78,6 +119,70 @@ pub struct LoginCompleted {
     pub login_id: Option<String>,
     pub success: bool,
     pub error: Option<String>,
+}
+
+/// Parameters for Codex app-server `thread/start`.
+#[derive(Debug, Clone)]
+pub struct ThreadStartParams {
+    pub model: String,
+    pub cwd: Option<String>,
+    pub approval_policy: Option<String>,
+    pub sandbox: Option<String>,
+    /// Extra JSON fields merged into the request params.
+    pub extra: Option<Value>,
+}
+
+impl ThreadStartParams {
+    pub fn new(model: impl Into<String>) -> Self {
+        Self {
+            model: model.into(),
+            cwd: None,
+            approval_policy: None,
+            sandbox: None,
+            extra: None,
+        }
+    }
+}
+
+/// Result of `thread/start`.
+#[derive(Debug, Clone)]
+pub struct ThreadStartResult {
+    pub thread_id: String,
+    pub raw: Value,
+}
+
+/// Parameters for Codex app-server `turn/start`.
+#[derive(Debug, Clone)]
+pub struct TurnStartParams {
+    pub thread_id: String,
+    /// Turn input items (typically `[{ "type": "text", "text": "..." }]`).
+    pub input: Value,
+    pub extra: Option<Value>,
+}
+
+impl TurnStartParams {
+    pub fn text(thread_id: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            thread_id: thread_id.into(),
+            input: json!([{ "type": "text", "text": text.into() }]),
+            extra: None,
+        }
+    }
+}
+
+/// Result of `turn/start`.
+#[derive(Debug, Clone)]
+pub struct TurnStartResult {
+    pub turn_id: String,
+    pub raw: Value,
+}
+
+/// Terminal turn notification payload.
+#[derive(Debug, Clone)]
+pub struct TurnCompleted {
+    pub turn_id: String,
+    pub method: String,
+    pub params: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -120,6 +225,10 @@ pub struct CodexAppServerClient {
     pending: Arc<Mutex<PendingMap>>,
     notifications: Arc<Mutex<VecDeque<Notification>>>,
     notify: Arc<Notify>,
+    /// When true, tool/approval server requests are queued for the native
+    /// agent instead of auto-declined.
+    external_server_requests: Arc<AtomicBool>,
+    server_requests: Arc<Mutex<VecDeque<IncomingServerRequest>>>,
     #[allow(dead_code)]
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
     reader_task: Option<tokio::task::JoinHandle<()>>,
@@ -309,6 +418,9 @@ impl CodexAppServerClient {
         let notify = Arc::new(Notify::new());
         let stderr_tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
         let closed = Arc::new(AtomicBool::new(false));
+        let external_server_requests = Arc::new(AtomicBool::new(false));
+        let server_requests: Arc<Mutex<VecDeque<IncomingServerRequest>>> =
+            Arc::new(Mutex::new(VecDeque::new()));
 
         let pending_r = Arc::clone(&pending);
         let notifications_r = Arc::clone(&notifications);
@@ -316,6 +428,8 @@ impl CodexAppServerClient {
         let stderr_r = Arc::clone(&stderr_tail);
         let closed_r = Arc::clone(&closed);
         let write_tx_r = io.write_tx.clone();
+        let external_r = Arc::clone(&external_server_requests);
+        let server_requests_r = Arc::clone(&server_requests);
         let command_label = io.command_label.clone();
 
         let reader_task = tokio::spawn(async move {
@@ -323,8 +437,16 @@ impl CodexAppServerClient {
             while let Some(event) = line_rx.recv().await {
                 match event {
                     IoEvent::Line(line) => {
-                        handle_line(&line, &pending_r, &notifications_r, &notify_r, &write_tx_r)
-                            .await;
+                        handle_line(
+                            &line,
+                            &pending_r,
+                            &notifications_r,
+                            &notify_r,
+                            &write_tx_r,
+                            &external_r,
+                            &server_requests_r,
+                        )
+                        .await;
                     }
                     IoEvent::Stderr(line) => {
                         let mut tail = stderr_r.lock().await;
@@ -378,10 +500,43 @@ impl CodexAppServerClient {
             pending,
             notifications,
             notify,
+            external_server_requests,
+            server_requests,
             stderr_tail,
             reader_task: Some(reader_task),
             writer_task,
             _child_holder: child_holder,
+        }
+    }
+
+    /// Enable queueing of tool/approval server-requests for external handling.
+    pub fn set_external_server_requests(&self, enabled: bool) {
+        self.external_server_requests
+            .store(enabled, Ordering::SeqCst);
+    }
+
+    /// Wait for the next inbound server-request (dynamic tool call / approval).
+    pub async fn wait_for_server_request(
+        &self,
+        timeout_ms: Option<u64>,
+    ) -> std::result::Result<IncomingServerRequest, ServerRequestWaitError> {
+        let wait_ms = timeout_ms.unwrap_or(DEFAULT_TURN_TIMEOUT_MS);
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms);
+        loop {
+            {
+                let mut queue = self.server_requests.lock().await;
+                if let Some(request) = queue.pop_front() {
+                    return Ok(request);
+                }
+            }
+            if self.closed.load(Ordering::SeqCst) {
+                return Err(ServerRequestWaitError::Closed);
+            }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(ServerRequestWaitError::Timeout);
+            }
+            let _ = timeout(remaining, self.notify.notified()).await;
         }
     }
 
@@ -564,6 +719,130 @@ impl CodexAppServerClient {
         Ok(())
     }
 
+    /// Start a Codex conversation thread (`thread/start`).
+    ///
+    /// Used by the openai-codex native-agent path so ChatGPT OAuth refresh and
+    /// model routing stay inside Codex app-server rather than Maestro's
+    /// Platform HTTP client (`UnifiedClient`).
+    pub async fn start_thread(
+        &self,
+        params: ThreadStartParams,
+        timeout_ms: Option<u64>,
+    ) -> Result<ThreadStartResult> {
+        let mut body = Map::new();
+        body.insert("model".to_owned(), json!(params.model));
+        if let Some(cwd) = params.cwd {
+            body.insert("cwd".to_owned(), json!(cwd));
+        }
+        if let Some(approval_policy) = params.approval_policy {
+            body.insert("approvalPolicy".to_owned(), json!(approval_policy));
+        }
+        if let Some(sandbox) = params.sandbox {
+            body.insert("sandbox".to_owned(), json!(sandbox));
+        }
+        if let Some(Value::Object(map)) = params.extra {
+            for (key, value) in map {
+                body.entry(key).or_insert(value);
+            }
+        }
+
+        let result = self
+            .request("thread/start", Some(Value::Object(body)), timeout_ms)
+            .await?;
+        let thread_id = extract_nested_id(&result, "thread")
+            .ok_or_else(|| anyhow!("thread/start response missing thread id: {result}"))?;
+        Ok(ThreadStartResult {
+            thread_id,
+            raw: result,
+        })
+    }
+
+    /// Start a turn on an existing thread (`turn/start`).
+    pub async fn start_turn(
+        &self,
+        params: TurnStartParams,
+        timeout_ms: Option<u64>,
+    ) -> Result<TurnStartResult> {
+        let mut body = Map::new();
+        body.insert("threadId".to_owned(), json!(params.thread_id));
+        body.insert("input".to_owned(), json!(params.input));
+        if let Some(Value::Object(map)) = params.extra {
+            for (key, value) in map {
+                body.entry(key).or_insert(value);
+            }
+        }
+
+        let result = self
+            .request("turn/start", Some(Value::Object(body)), timeout_ms)
+            .await?;
+        let turn_id = extract_nested_id(&result, "turn")
+            .ok_or_else(|| anyhow!("turn/start response missing turn id: {result}"))?;
+        Ok(TurnStartResult {
+            turn_id,
+            raw: result,
+        })
+    }
+
+    /// Wait for a turn to finish via app-server notifications.
+    ///
+    /// Recognizes common completion methods used by Codex app-server:
+    /// `turn/completed`, `turn/complete`, and `codex/event` with
+    /// `msg.type == "turn_complete"`.
+    pub async fn wait_for_turn_completion(
+        &self,
+        turn_id: &str,
+        timeout_ms: Option<u64>,
+    ) -> Result<TurnCompleted> {
+        let wait_ms = timeout_ms.unwrap_or(DEFAULT_TURN_TIMEOUT_MS);
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms);
+
+        loop {
+            {
+                let mut history = self.notifications.lock().await;
+                if let Some(index) = history.iter().position(|notification| {
+                    notification_matches_turn_complete(notification, turn_id)
+                }) {
+                    let notification = history.remove(index).expect("index valid");
+                    let params = notification.params.unwrap_or(Value::Null);
+                    return Ok(TurnCompleted {
+                        turn_id: turn_id.to_owned(),
+                        method: notification.method,
+                        params,
+                    });
+                }
+            }
+
+            if self.closed.load(Ordering::SeqCst) {
+                bail!("Codex app-server client is closed");
+            }
+
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                bail!("Timed out waiting for turn completion ({turn_id})");
+            }
+            let _ = timeout(remaining, self.notify.notified()).await;
+        }
+    }
+
+    /// Drain buffered notifications matching `method` (and optional predicate).
+    pub async fn take_notifications_where<F>(&self, mut predicate: F) -> Vec<Notification>
+    where
+        F: FnMut(&Notification) -> bool,
+    {
+        let mut history = self.notifications.lock().await;
+        let mut kept = VecDeque::new();
+        let mut taken = Vec::new();
+        while let Some(notification) = history.pop_front() {
+            if predicate(&notification) {
+                taken.push(notification);
+            } else {
+                kept.push_back(notification);
+            }
+        }
+        *history = kept;
+        taken
+    }
+
     pub fn close(&self) {
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
@@ -684,6 +963,8 @@ async fn handle_line(
     notifications: &Arc<Mutex<VecDeque<Notification>>>,
     notify: &Arc<Notify>,
     write_tx: &mpsc::UnboundedSender<String>,
+    external_server_requests: &Arc<AtomicBool>,
+    server_requests: &Arc<Mutex<VecDeque<IncomingServerRequest>>>,
 ) {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -749,6 +1030,53 @@ async fn handle_line(
                 }
             });
             let _ = write_tx.send(format!("{response}\n"));
+            return;
+        }
+
+        // Native agent owns tool calls and interactive approvals.
+        // Await the reply off the reader task so message deltas and
+        // turn/completed keep flowing while a tool or approval is outstanding.
+        if external_server_requests.load(Ordering::SeqCst) && is_externally_handled_method(method) {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            {
+                let mut queue = server_requests.lock().await;
+                queue.push_back(IncomingServerRequest {
+                    id: id.clone(),
+                    method: method.to_owned(),
+                    params: obj.get("params").cloned(),
+                    reply: reply_tx,
+                });
+            }
+            notify.notify_waiters();
+            let write_tx = write_tx.clone();
+            let method_owned = method.to_owned();
+            tokio::spawn(async move {
+                let response =
+                    match timeout(Duration::from_millis(DEFAULT_TURN_TIMEOUT_MS), reply_rx).await {
+                        Ok(Ok(Ok(result))) => json!({ "id": id, "result": result }),
+                        Ok(Ok(Err(message))) => json!({
+                            "id": id,
+                            "error": { "code": -32000, "message": message }
+                        }),
+                        Ok(Err(_)) => json!({
+                            "id": id,
+                            "error": {
+                                "code": -32000,
+                                "message": "Codex app-server server-request cancelled"
+                            }
+                        }),
+                        Err(_) => json!({
+                            "id": id,
+                            "error": {
+                                "code": -32000,
+                                "message": format!(
+                                    "Timed out waiting for Maestro to handle {method_owned}"
+                                )
+                            }
+                        }),
+                    };
+                let _ = write_tx.send(format!("{response}\n"));
+            });
             return;
         }
 
@@ -818,6 +1146,104 @@ fn default_server_request_response(method: &str) -> Option<Value> {
         "applyPatchApproval" | "execCommandApproval" => Some(json!({ "decision": "denied" })),
         _ => None,
     }
+}
+
+fn is_externally_handled_method(method: &str) -> bool {
+    matches!(
+        method,
+        "item/tool/call"
+            | "item/commandExecution/requestApproval"
+            | "item/fileChange/requestApproval"
+            | "item/permissions/requestApproval"
+            | "applyPatchApproval"
+            | "execCommandApproval"
+    )
+}
+
+fn extract_nested_id(result: &Value, object_key: &str) -> Option<String> {
+    // Prefer nested object: { thread: { id } } / { turn: { id } }
+    if let Some(id) = result
+        .get(object_key)
+        .and_then(|obj| obj.get("id"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
+        return Some(id.to_owned());
+    }
+    // Flat forms used by some app-server builds: { threadId } / { turnId }
+    let flat_key = format!("{object_key}Id");
+    if let Some(id) = result
+        .get(&flat_key)
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
+        return Some(id.to_owned());
+    }
+    // Bare { id } when the method scopes the object.
+    result
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+}
+
+fn notification_matches_turn_complete(notification: &Notification, turn_id: &str) -> bool {
+    let params = notification.params.as_ref();
+    let params_turn_id = params
+        .and_then(|p| {
+            p.get("turnId")
+                .or_else(|| p.get("turn").and_then(|t| t.get("id")))
+                .or_else(|| p.get("id"))
+        })
+        .and_then(Value::as_str);
+
+    match notification.method.as_str() {
+        "turn/completed" | "turn/complete" | "turn/completed/v2" => {
+            params_turn_id.is_none_or(|id| id == turn_id)
+        }
+        "codex/event" => {
+            let msg_type = params
+                .and_then(|p| p.get("msg"))
+                .and_then(|m| m.get("type"))
+                .and_then(Value::as_str);
+            msg_type == Some("turn_complete") && params_turn_id.is_none_or(|id| id == turn_id)
+        }
+        _ => false,
+    }
+}
+
+/// Collect assistant text deltas from a batch of app-server notifications.
+pub fn agent_message_text_from_notifications(notifications: &[Notification]) -> String {
+    let mut out = String::new();
+    for notification in notifications {
+        let Some(params) = notification.params.as_ref() else {
+            continue;
+        };
+        match notification.method.as_str() {
+            "item/agentMessage/delta" | "item/agentMessageDelta" => {
+                if let Some(delta) = params
+                    .get("delta")
+                    .or_else(|| params.get("text"))
+                    .and_then(Value::as_str)
+                {
+                    out.push_str(delta);
+                }
+            }
+            "item/agentMessage/completed" | "item/agentMessage" => {
+                if let Some(text) = params
+                    .get("text")
+                    .or_else(|| params.get("message").and_then(|m| m.get("text")))
+                    .and_then(Value::as_str)
+                {
+                    if out.is_empty() {
+                        out.push_str(text);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Resolve how to launch Codex app-server.
@@ -1123,5 +1549,96 @@ mod tests {
         );
         let completed = wait_task.await.unwrap().unwrap();
         assert!(completed.success);
+    }
+
+    #[tokio::test]
+    async fn starts_thread_and_turn_then_waits_for_completion() {
+        let (client, mock) = CodexAppServerClient::mock();
+        let client = Arc::new(client);
+
+        let client_thread = Arc::clone(&client);
+        let thread_task = tokio::spawn(async move {
+            client_thread
+                .start_thread(
+                    ThreadStartParams {
+                        model: "gpt-5.5".to_owned(),
+                        cwd: Some("/tmp/ws".to_owned()),
+                        approval_policy: Some("never".to_owned()),
+                        sandbox: Some("workspace-write".to_owned()),
+                        extra: None,
+                    },
+                    Some(1_000),
+                )
+                .await
+        });
+        let request = mock.next_request().await.expect("thread/start");
+        assert_eq!(request["method"], "thread/start");
+        assert_eq!(request["params"]["model"], "gpt-5.5");
+        assert_eq!(request["params"]["cwd"], "/tmp/ws");
+        mock.respond(
+            request["id"].as_u64().unwrap(),
+            json!({ "thread": { "id": "thr-1" } }),
+        );
+        let thread = thread_task.await.unwrap().expect("thread ok");
+        assert_eq!(thread.thread_id, "thr-1");
+
+        let client_turn = Arc::clone(&client);
+        let turn_task = tokio::spawn(async move {
+            client_turn
+                .start_turn(TurnStartParams::text("thr-1", "hello"), Some(1_000))
+                .await
+        });
+        let request = mock.next_request().await.expect("turn/start");
+        assert_eq!(request["method"], "turn/start");
+        assert_eq!(request["params"]["threadId"], "thr-1");
+        assert_eq!(request["params"]["input"][0]["text"], "hello");
+        mock.respond(
+            request["id"].as_u64().unwrap(),
+            json!({ "turn": { "id": "turn-9" } }),
+        );
+        let turn = turn_task.await.unwrap().expect("turn ok");
+        assert_eq!(turn.turn_id, "turn-9");
+
+        mock.notify(
+            "item/agentMessage/delta",
+            json!({ "turnId": "turn-9", "delta": "Hi " }),
+        );
+        mock.notify(
+            "item/agentMessage/delta",
+            json!({ "turnId": "turn-9", "delta": "there" }),
+        );
+        mock.notify(
+            "turn/completed",
+            json!({ "turnId": "turn-9", "status": "completed" }),
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let deltas = client
+            .take_notifications_where(|n| n.method.starts_with("item/agentMessage"))
+            .await;
+        assert_eq!(agent_message_text_from_notifications(&deltas), "Hi there");
+
+        let completed = client
+            .wait_for_turn_completion("turn-9", Some(500))
+            .await
+            .expect("turn complete");
+        assert_eq!(completed.turn_id, "turn-9");
+        assert_eq!(completed.method, "turn/completed");
+    }
+
+    #[test]
+    fn extract_nested_id_accepts_flat_and_nested_shapes() {
+        assert_eq!(
+            extract_nested_id(&json!({ "thread": { "id": "a" } }), "thread").as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            extract_nested_id(&json!({ "threadId": "b" }), "thread").as_deref(),
+            Some("b")
+        );
+        assert_eq!(
+            extract_nested_id(&json!({ "id": "c" }), "turn").as_deref(),
+            Some("c")
+        );
     }
 }

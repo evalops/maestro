@@ -452,10 +452,14 @@ impl SandboxPolicy {
 /// # Platform Usage
 ///
 /// - **macOS**: Converted to Seatbelt (require-all (subpath root) (require-not (subpath ro)))
-/// - **Linux**: roots with exclusions are expanded to their existing
-///   non-excluded children before Landlock rules are installed. This keeps
-///   excluded metadata such as `.git` read-only, at the cost of disallowing
-///   creation of new entries directly in that writable root.
+/// - **Linux (stage-1)**: roots with exclusions expand to existing non-excluded
+///   children for full RW, plus Make*/Remove* on the root itself. Landlock
+///   grants are OR'd within a layer (there is no "most specific wins" /
+///   deny-rule), so a RW grant on the root necessarily covers `.git`. Stage-1
+///   never grants WriteFile on the root, which keeps `.git` unwritable at the
+///   cost of new root children staying empty on content write (MakeReg may
+///   still create the name). True stage-2 (create+write new root children
+///   without `.git` write) needs bind-mount or a non-`path_beneath` design.
 #[derive(Debug, Clone)]
 pub struct WritableRoot {
     /// The root directory that should be writable
@@ -1614,6 +1618,11 @@ mod linux {
         // entries in a directory but not opening or truncating any existing
         // file for writing. Used for roots whose pre-existing entries are
         // granted individually (see `writable_paths_without_exclusions`).
+        //
+        // Landlock grants within a layer are OR'd (kernel docs): there is no
+        // "most specific wins" deny. WriteFile on the workspace root would
+        // therefore also grant WriteFile on `.git`. Stage-1 therefore never
+        // puts WriteFile on excluded roots.
         let access_make_remove = AccessFs::MakeReg
             | AccessFs::MakeDir
             | AccessFs::MakeSym
@@ -1670,8 +1679,9 @@ mod linux {
     /// - `make_remove_only`: directory roots granted only creation/removal
     ///   rights (`Make*`/`Remove*`/`Refer`) so sandboxed commands can create
     ///   and delete *new* direct children of the root (e.g. `cargo build`
-    ///   creating a missing `Cargo.lock`) without gaining write access to
-    ///   any pre-existing file beneath it.
+    ///   creating a missing `Cargo.lock` name) without gaining WriteFile on
+    ///   any pre-existing file beneath it — including excluded trees such as
+    ///   `.git`.
     pub(super) struct LandlockWritablePaths {
         pub(super) full: Vec<PathBuf>,
         pub(super) make_remove_only: Vec<PathBuf>,
@@ -1711,24 +1721,17 @@ mod linux {
                 paths.full.push(candidate);
             }
 
-            // The per-entry expansion above covers everything that already
-            // exists, but it omits the root itself. Landlock `Make*` on the
-            // root lets a process create/unlink names there; it does **not**
-            // grant `WriteFile`/`Truncate`, so writing content into a brand
-            // new root child still fails closed. Shell redirection such as
-            // `printf x > Cargo.lock` may leave an empty file (MakeReg
-            // succeeded) while the write itself is denied. Existing
-            // non-excluded children get full RW above, so normal workspace
-            // work under `src/`, `target/`, etc. still works once those
-            // trees exist.
+            // Stage-1: Make*/Remove* on the root lets processes create/unlink
+            // names there without WriteFile/Truncate. Shell redirection such
+            // as `printf x > Cargo.lock` may leave an empty file (MakeReg
+            // succeeded) while the write itself is denied. Existing non-
+            // excluded children get full RW above.
             //
-            // Known Landlock granularity limitation: path rules apply
-            // recursively, so `Make*` also permits creating/removing *new*
-            // entries inside a read_only_subpath (e.g. `.git`) -- the
-            // subpath's existing contents remain unwritable without
-            // `WriteFile`, and carving create-rights out of the subpath
-            // while keeping them at the root needs a nested-ruleset redesign
-            // (stage-1 residual).
+            // Stage-2 (create+write new root children without reopening
+            // `.git` write) is not expressible with path_beneath grants
+            // alone: WriteFile on the root ORs across the whole subtree,
+            // including exclusions. Follow-ups: bind-mount `.git` read-only
+            // before enforce, or drop the `.git` RO guarantee explicitly.
             paths.make_remove_only.push(root.root);
         }
         paths
@@ -2395,13 +2398,9 @@ mod tests {
         assert!(writable.full.iter().all(|path| !path.starts_with(&git)));
     }
 
-    /// Regression test for the review finding on #3144: when the workspace
-    /// contains `.git`, the read_only_subpaths exclusion expansion used to
-    /// grant only pre-existing entries, so a sandboxed command could not
-    /// create new direct children of the workspace root (e.g. `cargo build`
-    /// creating a missing `Cargo.lock`). The root itself must now also be
-    /// granted creation/removal rights (while `.git` keeps no write rights
-    /// to its existing contents).
+    /// Stage-1: when the workspace contains `.git`, expansion grants full RW
+    /// only to existing non-excluded children, plus Make*/Remove* on the root
+    /// (never WriteFile on the root — that would OR-grant write under `.git`).
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_excluded_root_is_granted_creation_rights_for_new_children() {
@@ -2964,16 +2963,10 @@ mod tests {
         assert!(!denied.exists());
     }
 
-    /// With `.git` carved out, existing non-git trees under the workspace
-    /// stay fully writable, `.git` content stays unwritable, and writing
-    /// content into a *brand new* root child fails closed.
-    ///
-    /// Landlock stage-1 grants only `Make*`/`Remove*` on the workspace root
-    /// (so names can be created) without `WriteFile`/`Truncate`. That means
-    /// `printf x > Cargo.lock` is correctly denied: granting `WriteFile` on
-    /// the root would also re-open writes to existing `.git` files. Nested
-    /// rulesets that allow root create+write without `.git` write are a
-    /// follow-up (stage-2), not this stage-1 internal gate.
+    /// Stage-1 residual: existing non-git trees stay fully writable, `.git`
+    /// content stays unwritable, and writing *content* into a brand-new root
+    /// child fails closed (no WriteFile on the root). Shell redirection may
+    /// still create an empty name via MakeReg.
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn linux_workspace_write_existing_children_ok_git_and_new_root_writes_denied() {
@@ -2988,7 +2981,6 @@ mod tests {
             "ref: refs/heads/main\n",
         )
         .unwrap();
-        // Pre-existing non-git child: gets full RW via the per-entry expansion.
         std::fs::create_dir_all(workspace.path().join("src")).unwrap();
         std::fs::write(workspace.path().join("src").join("lib.rs"), "before\n").unwrap();
 
@@ -2999,7 +2991,6 @@ mod tests {
             exclude_slash_tmp: true,
         };
 
-        // Existing non-git child: write succeeds.
         let child = match spawn_sandboxed_command(
             vec![
                 "sh".to_string(),
@@ -3013,7 +3004,6 @@ mod tests {
         .await
         {
             Ok(child) => child,
-            // Enforcement unavailable on this runner: skip rather than fail CI.
             Err(_) => return,
         };
         let output = child.wait_with_output().await.unwrap();
@@ -3027,11 +3017,6 @@ mod tests {
             "after\n"
         );
 
-        // Writing content into a brand-new root child fails closed (no
-        // WriteFile on the root under stage-1 make_remove_only).
-        //
-        // Shell redirection may still create an empty name via MakeReg before
-        // the write is denied; that empty path is allowed, content is not.
         let lock_path = workspace.path().join("Cargo.lock");
         let child = match spawn_sandboxed_command(
             vec![
@@ -3062,7 +3047,6 @@ mod tests {
             );
         }
 
-        // Writing an existing file inside `.git` stays denied.
         let child = match spawn_sandboxed_command(
             vec![
                 "sh".to_string(),

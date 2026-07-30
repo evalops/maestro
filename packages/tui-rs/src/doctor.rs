@@ -477,6 +477,61 @@ fn codex_login_health_check() -> DoctorCheck {
     }
 }
 
+/// Documents that `openai-codex/*` is the Codex app-server transport (not
+/// Platform API-key HTTP). Only when the selected model provider is
+/// openai-codex/codex (not merely because auth.json exists).
+fn codex_app_server_transport_check(selected_provider: &str) -> DoctorCheck {
+    if !matches!(selected_provider, "openai-codex" | "codex") {
+        return check(
+            "codex_app_server",
+            CheckStatus::Skipped,
+            "Codex app-server transport not selected (model is not openai-codex)",
+            None,
+            false,
+        );
+    }
+
+    let spawn = crate::codex_app_server::resolve_spawn_command(None, None);
+    let spawn_detail = match spawn.source {
+        crate::codex_app_server::SpawnSource::BundledPackage => {
+            format!(
+                "bundled {}",
+                spawn.args.first().cloned().unwrap_or_default()
+            )
+        }
+        crate::codex_app_server::SpawnSource::Path => {
+            format!("PATH binary `{}`", spawn.command)
+        }
+        crate::codex_app_server::SpawnSource::Override => {
+            format!("override `{}`", spawn.command)
+        }
+    };
+
+    let auth_ok =
+        crate::codex_auth::read_codex_auth().is_some_and(|snap| snap.has_usable_credential());
+    if auth_ok {
+        check(
+            "codex_app_server",
+            CheckStatus::Pass,
+            format!(
+                "openai-codex path: Codex app-server (`thread/start`, `turn/start`); ChatGPT auth owned by Codex ({spawn_detail})"
+            ),
+            Some(spawn_detail),
+            false,
+        )
+    } else {
+        check(
+            "codex_app_server",
+            CheckStatus::Warning,
+            format!(
+                "Codex app-server spawn resolved ({spawn_detail}) but ChatGPT auth missing — run `maestro codex login`"
+            ),
+            Some(spawn_detail),
+            false,
+        )
+    }
+}
+
 pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) -> DoctorReport {
     let config = crate::config::load_config(cwd, None);
     // load_config always merges DEFAULT_CONFIG.model = "gpt-5.5". When Codex
@@ -557,6 +612,7 @@ pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) 
     });
     checks.extend(auth_health_checks(&env));
     checks.push(codex_login_health_check());
+    checks.push(codex_app_server_transport_check(&selected_model.provider));
     checks.push(if has_provider_mismatch(&requested) {
         check(
             "model_catalog",
