@@ -568,6 +568,52 @@ impl ToolRegistry {
             },
         );
 
+        // Goal tools (Codex-aligned): same model marks complete/blocked.
+        tools.insert(
+            "get_goal".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "get_goal",
+                    "Get the current session goal (status, text, auto-continue usage).",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                })),
+                requires_approval: false,
+            },
+        );
+        tools.insert(
+            "update_goal".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "update_goal",
+                    "Mark the active goal complete or blocked. \
+                     Use complete only when the objective is achieved and verified against current state. \
+                     Use blocked only when the same blocker has recurred for multiple goal turns and you cannot progress without user input. \
+                     Do not mark complete merely because you are stopping work.",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "enum": ["complete", "blocked"],
+                            "description": "complete when done and verified; blocked when truly stuck"
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "Short reason (required for blocked; optional for complete)"
+                        }
+                    },
+                    "required": ["status"],
+                    "additionalProperties": false
+                })),
+                requires_approval: false,
+            },
+        );
+
         // Todo tool
         tools.insert(
             "todo".to_string(),
@@ -1151,7 +1197,7 @@ impl ToolRegistry {
     ///
     /// // Count tools
     /// let count = registry.tools().count();
-    /// assert_eq!(count, 38);  // includes search/parity tools + IDE stubs
+    /// assert_eq!(count, 40);  // includes search/parity tools + IDE stubs + goal tools
     ///
     /// // List tool names
     /// for tool_def in registry.tools() {

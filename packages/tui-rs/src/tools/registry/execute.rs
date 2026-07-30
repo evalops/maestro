@@ -2362,6 +2362,8 @@ impl ToolExecutor {
                     }
                 }
             }
+            "get_goal" => crate::tools::goal_tools::get_goal(),
+            "update_goal" => crate::tools::goal_tools::update_goal(args.clone()),
             "todo" => todo::todo_with_cancellation(args.clone(), cancel.as_ref()).await,
             "ask_user" => ask_user::ask_user(args.clone()),
             "extract_document" => {

@@ -1,15 +1,15 @@
-//! Interactive goal mode (Kimi-inspired).
+//! Interactive goal mode (Codex-aligned).
 //!
-//! One structured objective per session, with states that drive optional
-//! auto-continue while the agent is idle.
+//! One structured objective per session, with optional auto-continue while
+//! the agent is idle.
 //!
-//! **Completion is measured by a second model** ([`crate::goal_judge`]), not by
-//! a fixed turn budget. After each worker turn, a different model judges
-//! whether the goal is complete, blocked, or still needs work. Auto-continue
-//! stops when that judge says `complete` or `blocked`.
+//! **Completion is declared by the same worker model** via the `update_goal`
+//! tool (`complete` | `blocked`), matching OpenAI Codex
+//! (`codex-rs/ext/goal` + `update_goal`). There is no second-model call after
+//! each turn. The TUI reloads goal state from disk after turns and continues
+//! only while status is still `active`.
 //!
-//! `max_turns` remains only as a safety circuit-breaker (default 50) so a
-//! stuck "continue" loop cannot run forever if the judge misbehaves.
+//! `max_turns` is a safety circuit-breaker (default 50) only.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -75,13 +75,13 @@ pub struct Goal {
     #[serde(default = "default_true")]
     pub auto_continue: bool,
     /// Safety cap on auto-continue submissions (circuit-breaker only).
-    /// Primary stop condition is the second-model judge.
+    /// Primary stop is `update_goal` complete|blocked from the worker.
     #[serde(default = "default_max_turns")]
     pub max_turns: u32,
     /// How many auto-continue prompts have already been submitted.
     #[serde(default)]
     pub auto_continue_count: u32,
-    /// Last judge decision summary for status display.
+    /// Last status note (circuit-breaker or tool reason) for status display.
     #[serde(default)]
     pub last_judge_reason: Option<String>,
 }
@@ -266,14 +266,6 @@ impl GoalStore {
         Ok(hit_cap)
     }
 
-    /// Record the latest second-model judge reason (status / report).
-    pub fn set_last_judge_reason(&mut self, reason: impl Into<String>) -> Result<()> {
-        let goal = self.current.as_mut().context("no current goal")?;
-        goal.last_judge_reason = Some(reason.into());
-        goal.updated_at_unix = now_unix();
-        self.save_default()
-    }
-
     /// Whether the TUI should submit a continuation prompt now.
     pub fn should_auto_continue(&self) -> bool {
         self.current.as_ref().is_some_and(|g| {
@@ -281,29 +273,47 @@ impl GoalStore {
         })
     }
 
-    /// Prompt text injected when auto-continuing an active goal.
+    /// Reload from disk so agent `update_goal` tool mutations are visible.
+    pub fn reload_from_disk(&mut self) {
+        let path = self.persist_path.clone().unwrap_or_else(default_path);
+        if let Ok(mut loaded) = load_from_path(&path) {
+            loaded.persist_path = self.persist_path.clone().or(Some(path));
+            *self = loaded;
+        }
+    }
+
+    /// Prompt text injected when auto-continuing an active goal (Codex-style).
     pub fn continuation_prompt(&self) -> Option<String> {
         let g = self.current.as_ref()?;
         if !self.should_auto_continue() {
             return None;
         }
         let mut prompt = format!(
-            "Continue working toward the active goal (id {}).\n\nGoal: {}\n\
-             A second model will judge completion after this turn; keep going until the goal is verified done.\n\
+            "Continue working toward the active goal (id {}).\n\n\
+             <objective>\n{}\n</objective>\n\n\
              Auto-continue turns so far: {} (safety max {}).\n",
             g.id, g.text, g.auto_continue_count, g.max_turns
         );
         if let Some(criteria) = &g.success_criteria {
             prompt.push_str(&format!("Success criteria: {criteria}\n"));
         }
-        if let Some(reason) = &g.last_judge_reason {
-            prompt.push_str(&format!("Last judge note: {reason}\n"));
-        }
         prompt.push_str(
-            "\nRules:\n\
-             - Make progress on one coherent slice this turn.\n\
-             - Prefer verifiable outcomes (tests, files, commands) the judge can check.\n\
-             - Do not start unrelated work. Do not claim completion without evidence.\n",
+            "\nContinuation behavior:\n\
+             - This goal persists across turns. Ending this turn does not finish the goal.\n\
+             - Make concrete progress toward the full objective; do not redefine success smaller.\n\
+             - Use the current worktree as authoritative evidence.\n\
+             \n\
+             Completion audit (before calling update_goal):\n\
+             - Derive requirements from the objective and success criteria.\n\
+             - Verify each against current files, tests, or command output.\n\
+             - Uncertain evidence means not complete — keep working.\n\
+             - When (and only when) current evidence proves every requirement, call the tool \
+             `update_goal` with status \"complete\".\n\
+             - Call `update_goal` with status \"blocked\" and a reason only if the same blocker \
+             has repeated across multiple goal turns and you cannot progress without user input.\n\
+             - Do not mark complete merely because you are stopping work or the safety budget is low.\n\
+             - Do not call update_goal for pause/resume; those are user-controlled.\n\
+             - Use `get_goal` if you need the current goal record.\n",
         );
         Some(prompt)
     }
@@ -314,7 +324,7 @@ impl GoalStore {
             Some(g) => {
                 let mut out = format!(
                     "## Goal {}\n\n**Status:** {}\n**Auto-continue:** {} ({} turns; safety max {})\n\
-                     **Completion:** second-model judge after each turn\n\n{}\n",
+                     **Completion:** worker calls `update_goal` complete|blocked (same model; Codex-style)\n\n{}\n",
                     g.id,
                     g.status.as_str(),
                     if g.auto_continue { "on" } else { "off" },
@@ -329,10 +339,11 @@ impl GoalStore {
                     out.push_str(&format!("\n**Block reason:** {r}\n"));
                 }
                 if let Some(j) = &g.last_judge_reason {
-                    out.push_str(&format!("\n**Last judge:** {j}\n"));
+                    out.push_str(&format!("\n**Note:** {j}\n"));
                 }
                 out.push_str(
                     "\nCommands: `/goal pause` · `/goal resume` · `/goal block [reason]` · `/goal complete` · `/goal clear`\n\
+                     Agent tools: `get_goal`, `update_goal`.\n\
                      Safety: `/goal create --max-turns N <text>` sets the circuit-breaker only (default 50).\n",
                 );
                 out
