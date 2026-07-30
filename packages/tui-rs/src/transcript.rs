@@ -161,6 +161,13 @@ pub(crate) fn redact_agent_message(
         return message;
     };
     match &mut redacted_message {
+        crate::headless::messages::FromAgentMessage::ToolCall { tool, args, .. }
+        | crate::headless::messages::FromAgentMessage::ClientToolRequest { tool, args, .. }
+        | crate::headless::messages::FromAgentMessage::ServerRequest { tool, args, .. } => {
+            *args = crate::agent::credential_store::redact_tool_arguments_preserving_references(
+                tool, args,
+            );
+        }
         crate::headless::messages::FromAgentMessage::ToolOutput { content, .. }
         | crate::headless::messages::FromAgentMessage::UtilityCommandOutput { content, .. }
         | crate::headless::messages::FromAgentMessage::UtilityFileReadResult { content, .. } => {
@@ -169,6 +176,23 @@ pub(crate) fn redact_agent_message(
         _ => {}
     }
     redacted_message
+}
+
+pub(crate) fn agent_message_for_controller(
+    message: crate::headless::messages::FromAgentMessage,
+) -> crate::headless::messages::FromAgentMessage {
+    if matches!(
+        &message,
+        crate::headless::messages::FromAgentMessage::ClientToolRequest { .. }
+            | crate::headless::messages::FromAgentMessage::ServerRequest {
+                request_type: crate::headless::messages::ServerRequestType::ClientTool,
+                ..
+            }
+    ) {
+        message
+    } else {
+        redact_agent_message(message)
+    }
 }
 
 fn redact_output_content(content: &mut String) {
@@ -311,6 +335,126 @@ mod tests {
         let mut array = r#"["access_token=array-secret"]"#.to_string();
         redact_output_content(&mut array);
         assert_eq!(array, "[REDACTED]");
+    }
+
+    #[test]
+    fn redacts_credentials_embedded_in_tool_argument_strings() {
+        use crate::headless::messages::FromAgentMessage;
+
+        let call = redact_agent_message(FromAgentMessage::ToolCall {
+            call_id: "call".into(),
+            tool_execution_id: None,
+            tool: "bash".into(),
+            args: serde_json::json!({
+                "command": "curl -H 'Authorization: Bearer abc/remaining+secret~==' example.test; curl --data password=abc,comma-tail-secret; password=(array-secret other-secret); password=$(printf dynamic-secret); password=`printf legacy-secret`; printf '%s' 'foo\\'; password=abc; echo ok",
+                "basic": "curl -H 'Authorization: Basic dG9vbDp0b29sLXNlY3JldA==' example.test",
+                "negotiate": "curl -H 'Authorization: Negotiate TlRMTVNTUAAB' example.test",
+                "digest": "curl -H 'Authorization: Digest username=\"alice\", nonce=\"nonce-secret\", response=\"response-secret\"' example.test",
+                "sigv4": "curl -H 'Authorization: AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20260729/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=sigv4-signature-secret' example.test",
+                "quoted_password": "curl --data 'password=abc;remaining-secret' example.test",
+                "embedded_quoted_password": "curl --data 'user=x&password=abc;embedded-tail-secret' example.test",
+                "quoted_to_unquoted_password": "curl --data password='abc'raw-password-secret example.test",
+                "unquoted_to_quoted_password": "curl --data password=abc'remaining-secret' example.test",
+                "repeated_password_segments": "curl --data password=a'b'c\"d\"e example.test",
+                "source": "password: String\ntoken: Option<String>",
+                "vaulted": "curl -H 'Authorization: Bearer {{CRED:token:abcdef012345}}' example.test",
+                "vaulted_adjacent": "password={{CRED:token:abcdef012345}}raw-adjacent-secret",
+                "malformed_closed": "{{CRED:sk-ant-abcdefghijklmnopqrstuvwxyz123456}}",
+                "malformed_delimited": "{{CRED:password:abc,delimiter-tail-secret}}",
+                "malformed_whitespace":
+                    "{{CRED:password:abc whitespace-tail-secret}} preserved-tail"
+            }),
+            requires_approval: false,
+        });
+        let serialized = serde_json::to_string(&call).unwrap();
+        assert!(!serialized.contains("remaining+secret"));
+        assert!(!serialized.contains("dG9vbDp0b29sLXNlY3JldA"));
+        assert!(!serialized.contains("TlRMTVNTUAAB"));
+        assert!(!serialized.contains("nonce-secret"));
+        assert!(!serialized.contains("response-secret"));
+        assert!(!serialized.contains("20260729/us-east-1/s3/aws4_request"));
+        assert!(!serialized.contains("sigv4-signature-secret"));
+        assert!(!serialized.contains("abc;remaining-secret"));
+        assert!(!serialized.contains("remaining-secret"));
+        assert!(!serialized.contains("embedded-tail-secret"));
+        assert!(!serialized.contains("raw-password-secret"));
+        assert!(!serialized.contains("a'b'c"));
+        assert!(!serialized.contains("\"d\"e"));
+        assert!(!serialized.contains("comma-tail-secret"));
+        assert!(!serialized.contains("array-secret"));
+        assert!(!serialized.contains("other-secret"));
+        assert!(!serialized.contains("dynamic-secret"));
+        assert!(!serialized.contains("legacy-secret"));
+        assert!(serialized.contains("echo ok"), "{serialized}");
+        assert!(serialized.contains("curl -H"));
+        assert!(serialized.contains("[REDACTED:token:portable-export]"));
+        assert!(!serialized.contains("password: String"));
+        assert!(!serialized.contains("token: Option<String>"));
+        assert!(serialized.contains("[REDACTED:password:portable-export]"));
+        assert!(serialized.contains("[REDACTED:token:portable-export]"));
+        assert!(serialized.contains("Bearer {{CRED:token:abcdef012345}}"));
+        assert!(!serialized.contains("raw-adjacent-secret"));
+        assert!(
+            serialized.contains("{{CRED:token:abcdef012345}}[REDACTED:password:portable-export]")
+        );
+        assert!(!serialized.contains("sk-ant-abcdefghijklmnopqrstuvwxyz123456"));
+        assert!(!serialized.contains("{{CRED:sk-ant-"));
+        assert!(!serialized.contains("delimiter-tail-secret"));
+        assert!(!serialized.contains("whitespace-tail-secret"));
+        assert!(!serialized.contains("{{CRED:password:abc "));
+        assert!(serialized.contains("preserved-tail"));
+        assert!(serialized.contains("[REDACTED:credential_reference:portable-export]"));
+
+        let ordinary_command = redact_agent_message(FromAgentMessage::ToolCall {
+            call_id: "call".into(),
+            tool_execution_id: None,
+            tool: "bash".into(),
+            args: serde_json::json!({"command": "rg authorization packages"}),
+            requires_approval: false,
+        });
+        assert_eq!(
+            serde_json::to_value(ordinary_command).unwrap()["args"]["command"],
+            "rg authorization packages"
+        );
+    }
+
+    #[test]
+    fn redacts_credentials_in_all_argument_bearing_agent_messages() {
+        use crate::headless::messages::{FromAgentMessage, ServerRequestType};
+
+        let client_request = redact_agent_message(FromAgentMessage::ClientToolRequest {
+            call_id: "client-call".into(),
+            tool_execution_id: None,
+            tool: "bash".into(),
+            args: serde_json::json!({
+                "command": "curl -H 'Authorization: Bearer client/inline+secret~==' example.test",
+                "basic": "curl -H 'Authorization: Basic Y2xpZW50OmNsaWVudC1zZWNyZXQ=' example.test"
+            }),
+        });
+        let server_request = redact_agent_message(FromAgentMessage::ServerRequest {
+            request_id: "approval".into(),
+            request_type: ServerRequestType::Approval,
+            call_id: "server-call".into(),
+            tool_execution_id: None,
+            tool: "bash".into(),
+            args: serde_json::json!({
+                "command": "curl -H 'Authorization: Bearer server/inline+secret~==' example.test",
+                "basic": "curl -H 'Authorization: Basic c2VydmVyOnNlcnZlci1zZWNyZXQ=' example.test"
+            }),
+            reason: "approval required".into(),
+            started_at_ms: None,
+        });
+
+        let client = serde_json::to_string(&client_request).unwrap();
+        assert!(!client.contains("client/inline+secret"));
+        assert!(!client.contains("Y2xpZW50OmNsaWVudC1zZWNyZXQ"));
+        assert!(client.contains("[REDACTED:token:portable-export]"));
+        assert!(client.contains("[REDACTED:password:portable-export]"));
+        let server = serde_json::to_string(&server_request).unwrap();
+        assert!(!server.contains("server/inline+secret"));
+        assert!(!server.contains("c2VydmVyOnNlcnZlci1zZWNyZXQ"));
+        assert!(server.contains("[REDACTED:token:portable-export]"));
+        assert!(server.contains("[REDACTED:password:portable-export]"));
     }
 
     #[test]

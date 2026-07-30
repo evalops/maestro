@@ -807,6 +807,104 @@ impl App {
         }
     }
 
+    /// Restore a fully-loaded session into the TUI: visible transcript, plan
+    /// review state, model/thinking configuration, usage hydration, and an
+    /// append-ready session writer. Shared by the session switcher and the
+    /// `maestro fork` startup resume.
+    pub(crate) fn apply_resumed_session(&mut self, session: &crate::session::ParsedSession) {
+        let session_id = session.header.id.clone();
+        // Resuming a persisted transcript begins a new credential scope.
+        // Historical references intentionally cannot resolve after reload.
+        self.credential_vault.clear();
+        // Drop the old session's error surface and force a full repaint so
+        // its frames cannot linger beneath the restored transcript.
+        self.reset_rendered_viewport();
+        crate::plan_mode::set_active_session_id(None);
+        if let Some(agent) = &self.native_agent {
+            // Drop any active-session state before the new transcript and
+            // credential scope become visible.
+            agent.clear_history();
+        }
+        restore_visible_session_messages(&mut self.state, session);
+        self.plan_review_comments =
+            crate::session::reconstruct_plan_review(&session.plan_review_events);
+
+        self.state.session_id = Some(session_id.clone());
+        self.state.status = Some(format!("Resumed session: {session_id}"));
+
+        let mut model_applied = true;
+        let mut thinking_applied = true;
+        if let Some(agent) = &self.native_agent {
+            if let Err(e) = agent.set_model(&session.header.model) {
+                self.state.error = Some(format!("Failed to set model: {e}"));
+                model_applied = false;
+                thinking_applied = false;
+            } else {
+                let (enabled, budget) = session.header.thinking_level.to_config();
+                if let Err(e) = agent.set_thinking(enabled, budget) {
+                    self.state.error = Some(format!("Failed to set thinking: {e}"));
+                    thinking_applied = false;
+                }
+            }
+        }
+
+        self.session_started_at = chrono::DateTime::parse_from_rfc3339(&session.header.timestamp)
+            .ok()
+            .and_then(|dt| {
+                let secs = dt.timestamp();
+                if secs < 0 {
+                    None
+                } else {
+                    Some(UNIX_EPOCH + Duration::new(secs as u64, dt.timestamp_subsec_nanos()))
+                }
+            })
+            .unwrap_or_else(SystemTime::now);
+        self.hydrate_usage_from_session(session);
+
+        if model_applied {
+            self.current_model = session.header.model.clone();
+            self.state.model = Some(session.header.model.clone());
+            self.usage_tracker.set_model(session.header.model.clone());
+            if thinking_applied {
+                self.current_thinking_level = session.header.thinking_level;
+                self.state.thinking_level = self.current_thinking_level;
+            }
+        } else if !self.current_model.is_empty() {
+            self.usage_tracker.set_model(self.current_model.clone());
+        }
+
+        if let Err(err) = self
+            .session_manager
+            .resume_session_by_path(session_id.clone(), session.file_path.as_str())
+        {
+            self.session_manager.reset_session();
+            crate::plan_mode::set_active_session_id(None);
+            self.session_resume_failed = true;
+            self.state.error = Some(format!("Failed to resume session writer: {err}"));
+            self.state.status = Some(format!(
+                "Session resume failed ({session_id}); use /new to continue"
+            ));
+        } else {
+            self.session_resume_failed = false;
+            crate::plan_mode::set_active_session_id(Some(session_id.clone()));
+        }
+    }
+
+    /// Resume a specific session before the event loop starts.
+    ///
+    /// Used by `maestro fork` to continue a freshly forked session. At this
+    /// point the native agent has not spawned yet, so the agent-facing parts
+    /// of [`App::apply_resumed_session`] are no-ops; the forked session's
+    /// model is adopted through `MAESTRO_MODEL` by the caller instead.
+    pub fn resume_session_at_startup(&mut self, session_id: &str) {
+        match self.session_manager.load_session(session_id) {
+            Ok(session) => self.apply_resumed_session(&session),
+            Err(err) => {
+                self.state.error = Some(format!("Failed to load session: {err}"));
+            }
+        }
+    }
+
     /// List recently recorded alerts in the transcript and mark them seen.
     fn show_alerts(&mut self) {
         const MAX_LISTED: usize = 10;

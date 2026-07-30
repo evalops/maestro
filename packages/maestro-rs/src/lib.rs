@@ -1,3 +1,3 @@
 pub mod cli;
 
-pub use cli::{classify, AgentMode, Command};
+pub use cli::{classify, Command};

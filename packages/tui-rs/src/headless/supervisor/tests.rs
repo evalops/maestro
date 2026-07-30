@@ -99,7 +99,8 @@ async fn spawn_remote_headless_server(
     Arc<Mutex<Vec<Vec<(String, String)>>>>,
     Arc<Mutex<Vec<(String, String)>>>,
 ) {
-    spawn_remote_headless_server_with_options(snapshot_json, sse_events, None, None).await
+    spawn_remote_headless_server_with_options(snapshot_json, sse_events, None, None, false, false)
+        .await
 }
 
 async fn spawn_remote_headless_server_with_options(
@@ -107,6 +108,8 @@ async fn spawn_remote_headless_server_with_options(
     sse_events: Vec<String>,
     disconnect_response_delay: Option<Duration>,
     lifecycle_markers: Option<Arc<Mutex<Vec<String>>>>,
+    enforce_connection_capability: bool,
+    fail_disconnect: bool,
 ) -> (
     std::net::SocketAddr,
     Arc<Mutex<Vec<String>>>,
@@ -162,9 +165,32 @@ async fn spawn_remote_headless_server_with_options(
                         if let Some(markers) = lifecycle_markers.as_ref() {
                             markers.lock().await.push("bootstrap".to_string());
                         }
+                        let request = serde_json::from_str::<serde_json::Value>(&body)
+                            .expect("valid connection request");
+                        if enforce_connection_capability
+                            && request
+                                .get("connectionId")
+                                .and_then(serde_json::Value::as_str)
+                                == Some("conn_remote")
+                            && request
+                                .get("connectionCapability")
+                                .and_then(serde_json::Value::as_str)
+                                != Some("cap_remote")
+                        {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 403 Forbidden",
+                                "application/json",
+                                r#"{"error":"existing headless connection requires its private capability"}"#,
+                            )
+                            .await;
+                            return;
+                        }
                         let body = serde_json::json!({
                             "session_id": snapshot_session_id,
                             "connection_id": "conn_remote",
+                            "connection_capability": enforce_connection_capability
+                                .then_some("cap_remote"),
                             "controller_connection_id": "conn_remote",
                             "lease_expires_at": "2026-04-02T00:00:15Z",
                             "heartbeat_interval_ms": 15000,
@@ -190,6 +216,16 @@ async fn spawn_remote_headless_server_with_options(
                         if let Some(delay) = disconnect_response_delay {
                             tokio::time::sleep(delay).await;
                         }
+                        if fail_disconnect {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 503 Service Unavailable",
+                                "application/json",
+                                r#"{"error":"connection teardown unavailable"}"#,
+                            )
+                            .await;
+                            return;
+                        }
                         write_http_response(
                                 &mut socket,
                                 "HTTP/1.1 200 OK",
@@ -204,8 +240,27 @@ async fn spawn_remote_headless_server_with_options(
                     }
 
                     if path.starts_with("/api/headless/sessions/") && path.ends_with("/subscribe") {
+                        let request = serde_json::from_str::<serde_json::Value>(&body)
+                            .expect("valid subscription request");
+                        if enforce_connection_capability
+                            && request
+                                .get("connectionCapability")
+                                .and_then(serde_json::Value::as_str)
+                                != Some("cap_remote")
+                        {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 403 Forbidden",
+                                "application/json",
+                                r#"{"error":"existing headless connection requires its private capability"}"#,
+                            )
+                            .await;
+                            return;
+                        }
                         let body = serde_json::json!({
                             "connection_id": "conn_remote",
+                            "connection_capability": enforce_connection_capability
+                                .then_some("cap_remote"),
                             "subscription_id": "sub_remote",
                             "controller_connection_id": "conn_remote",
                             "lease_expires_at": "2026-04-02T00:00:15Z",
@@ -1107,6 +1162,21 @@ fn agent_event_to_message_preserves_headless_metadata() {
             ttft_ms: Some(150),
             ..
         }
+    ));
+
+    let tool_end = agent_event_to_message(&AgentEvent::ToolEnd {
+        call_id: "call_1".to_string(),
+        tool_execution_id: Some("tool-execution-1".to_string()),
+        success: true,
+        duration: None,
+        receipt: None,
+    });
+    assert!(matches!(
+        tool_end,
+        super::super::messages::FromAgentMessage::ToolEnd {
+            tool_execution_id: Some(ref tool_execution_id),
+            ..
+        } if tool_execution_id == "tool-execution-1"
     ));
 
     let error = agent_event_to_message(&AgentEvent::Error {
@@ -2233,7 +2303,15 @@ async fn remote_auto_reconnect_reuses_previous_connection_id_without_take_contro
         }
     });
     let (addr, _posted_bodies, _request_headers, request_bodies) =
-        spawn_remote_headless_server(snapshot.to_string(), vec![]).await;
+        spawn_remote_headless_server_with_options(
+            snapshot.to_string(),
+            vec![],
+            None,
+            None,
+            true,
+            true,
+        )
+        .await;
 
     let mut supervisor = SupervisorBuilder::new()
         .remote_base_url(format!("http://{addr}"))
@@ -2250,9 +2328,10 @@ async fn remote_auto_reconnect_reuses_previous_connection_id_without_take_contro
         }
     ));
 
-    for _ in 0..6 {
-        let _ = supervisor.recv().await.expect("supervisor event");
-    }
+    supervisor
+        .reconnect()
+        .await
+        .expect("reconnect with the server-minted private capability");
 
     let request_bodies = request_bodies.lock().await.clone();
     let connection_requests = request_bodies
@@ -2269,10 +2348,229 @@ async fn remote_auto_reconnect_reuses_previous_connection_id_without_take_contro
             .and_then(serde_json::Value::as_str),
         Some("conn_remote")
     );
+    assert_eq!(
+        connection_requests[1]
+            .get("connectionCapability")
+            .and_then(serde_json::Value::as_str),
+        Some("cap_remote")
+    );
     assert!(
             connection_requests[1].get("takeControl").is_none(),
             "unexpected remote reconnects should reclaim their prior connection id before forcing controller takeover"
         );
+
+    supervisor.disconnect();
+}
+
+#[tokio::test]
+async fn remote_reconnect_retains_fallback_authority_after_subscribe_failure() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let connection_requests = Arc::new(Mutex::new(Vec::new()));
+    let subscribe_attempts = Arc::new(AtomicUsize::new(0));
+    let fallback_authority = Arc::new(Mutex::new(None::<(String, String)>));
+
+    tokio::spawn({
+        let connection_requests = Arc::clone(&connection_requests);
+        let subscribe_attempts = Arc::clone(&subscribe_attempts);
+        let fallback_authority = Arc::clone(&fallback_authority);
+        async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let connection_requests = Arc::clone(&connection_requests);
+                let subscribe_attempts = Arc::clone(&subscribe_attempts);
+                let fallback_authority = Arc::clone(&fallback_authority);
+                tokio::spawn(async move {
+                    let Some((path, _headers, body)) = read_http_request(&mut socket).await else {
+                        return;
+                    };
+                    if path == "/api/headless/connections" {
+                        let request = serde_json::from_str::<serde_json::Value>(&body)
+                            .expect("valid connection request");
+                        connection_requests.lock().await.push(request.clone());
+                        let request_count = connection_requests.lock().await.len();
+                        let connection_id = request
+                            .get("connectionId")
+                            .and_then(serde_json::Value::as_str);
+                        let connection_capability = request
+                            .get("connectionCapability")
+                            .and_then(serde_json::Value::as_str);
+
+                        if connection_id == Some("conn_stale")
+                            && connection_capability == Some("cap_stale")
+                            && request_count == 1
+                        {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 404 Not Found",
+                                "application/json",
+                                r#"{"error":"Headless connection not found"}"#,
+                            )
+                            .await;
+                            return;
+                        }
+                        if request_count == 2
+                            && connection_id.is_some_and(|value| value != "conn_stale")
+                            && connection_capability.is_some_and(|value| value != "cap_stale")
+                        {
+                            let authority = (
+                                connection_id.expect("fallback connection id").to_string(),
+                                connection_capability
+                                    .expect("fallback connection capability")
+                                    .to_string(),
+                            );
+                            *fallback_authority.lock().await = Some(authority.clone());
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                &serde_json::json!({
+                                    "session_id": "sess_remote",
+                                    "connection_id": authority.0,
+                                    "connection_capability": authority.1,
+                                })
+                                .to_string(),
+                            )
+                            .await;
+                            return;
+                        }
+                        if request_count == 3
+                            && fallback_authority.lock().await.as_ref().is_some_and(
+                                |(fallback_connection_id, fallback_connection_capability)| {
+                                    connection_id == Some(fallback_connection_id.as_str())
+                                        && connection_capability
+                                            == Some(fallback_connection_capability.as_str())
+                                },
+                            )
+                        {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                &serde_json::json!({
+                                    "session_id": "sess_remote",
+                                    "connection_id": connection_id,
+                                    "connection_capability": connection_capability,
+                                })
+                                .to_string(),
+                            )
+                            .await;
+                            return;
+                        }
+
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 409 Conflict",
+                            "application/json",
+                            r#"{"error":"Controller lease is already held by another connection"}"#,
+                        )
+                        .await;
+                        return;
+                    }
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/subscribe") {
+                        let attempt = subscribe_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                        if attempt == 1 {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 503 Service Unavailable",
+                                "application/json",
+                                r#"{"error":"temporary subscription failure"}"#,
+                            )
+                            .await;
+                            return;
+                        }
+                        let authority = fallback_authority
+                            .lock()
+                            .await
+                            .clone()
+                            .expect("accepted fallback authority");
+                        let response = serde_json::json!({
+                            "connection_id": authority.0,
+                            "connection_capability": authority.1,
+                            "subscription_id": "sub_fresh",
+                            "heartbeat_interval_ms": 15000,
+                            "snapshot": {
+                                "protocolVersion": "2026-03-30",
+                                "session_id": "sess_remote",
+                                "cursor": 0,
+                                "state": {
+                                    "protocol_version": "2026-03-30",
+                                    "session_id": "sess_remote",
+                                    "pending_approvals": [],
+                                    "active_tools": [],
+                                    "active_utility_commands": [],
+                                    "active_file_watches": [],
+                                    "is_ready": true,
+                                    "is_responding": false
+                                }
+                            }
+                        })
+                        .to_string();
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            &response,
+                        )
+                        .await;
+                        return;
+                    }
+                    write_http_response(
+                        &mut socket,
+                        "HTTP/1.1 404 Not Found",
+                        "text/plain",
+                        "not found",
+                    )
+                    .await;
+                });
+            }
+        }
+    });
+
+    let mut supervisor = SupervisorBuilder::new()
+        .remote_base_url(format!("http://{addr}"))
+        .max_reconnect_attempts(2)
+        .reconnect_delay(Duration::from_millis(1))
+        .build();
+    supervisor.remote_resume_authority = Some(RemoteConnectionResumeAuthority {
+        connection_id: "conn_stale".to_string(),
+        connection_capability: Some("cap_stale".to_string()),
+    });
+
+    supervisor
+        .reconnect()
+        .await
+        .expect("retry should reclaim the freshly bootstrapped connection");
+
+    let connection_requests = connection_requests.lock().await.clone();
+    assert_eq!(connection_requests.len(), 3);
+    let fallback_authority = fallback_authority
+        .lock()
+        .await
+        .clone()
+        .expect("accepted fallback authority");
+    assert_eq!(
+        connection_requests[2]
+            .get("connectionId")
+            .and_then(serde_json::Value::as_str),
+        Some(fallback_authority.0.as_str())
+    );
+    assert_eq!(
+        connection_requests[2]
+            .get("connectionCapability")
+            .and_then(serde_json::Value::as_str),
+        Some(fallback_authority.1.as_str())
+    );
+    assert_ne!(fallback_authority.0, "conn_stale");
+    assert_ne!(fallback_authority.1, "cap_stale");
+    assert!(
+        connection_requests
+            .iter()
+            .all(|request| request.get("takeControl").is_none()),
+        "recovery must not take over a controller lease"
+    );
 
     supervisor.disconnect();
 }
@@ -2318,14 +2616,114 @@ async fn clean_remote_disconnect_does_not_force_take_control_on_manual_reconnect
         })
         .collect::<Vec<_>>();
     assert_eq!(connection_requests.len(), 2);
-    assert!(
-        connection_requests[1].get("connectionId").is_none(),
-        "clean disconnects clear the remembered connection id before a manual reconnect"
+    let first_connection_id = connection_requests[0]["connectionId"]
+        .as_str()
+        .expect("initial generated connection id");
+    let fresh_connection_id = connection_requests[1]["connectionId"]
+        .as_str()
+        .expect("fresh generated connection id");
+    let fresh_connection_capability = connection_requests[1]["connectionCapability"]
+        .as_str()
+        .expect("fresh generated connection capability");
+    assert_ne!(
+        fresh_connection_id, first_connection_id,
+        "clean disconnects must not reuse the remembered connection id"
     );
+    assert!(fresh_connection_id.starts_with("conn_"));
+    assert!(fresh_connection_capability.starts_with("cap_"));
     assert!(
         connection_requests[1].get("takeControl").is_none(),
         "clean disconnects should not force controller takeover on the next manual reconnect"
     );
+
+    supervisor.disconnect();
+}
+
+#[tokio::test]
+async fn explicit_disconnect_after_failed_reconnect_clears_private_resume_authority() {
+    let snapshot = serde_json::json!({
+        "protocolVersion": "2026-03-30",
+        "session_id": "sess_remote",
+        "cursor": 0,
+        "state": {
+            "protocol_version": "2026-03-30",
+            "model": "gpt-5.4",
+            "provider": "openai",
+            "session_id": "sess_remote",
+            "pending_approvals": [],
+            "active_tools": [],
+            "last_status": "Attached",
+            "is_ready": true,
+            "is_responding": false
+        }
+    });
+    let (addr, _, _, request_bodies) = spawn_remote_headless_server_with_options(
+        snapshot.to_string(),
+        vec![],
+        None,
+        None,
+        true,
+        true,
+    )
+    .await;
+    let base_url = format!("http://{addr}");
+
+    let mut supervisor = SupervisorBuilder::new()
+        .remote_base_url(base_url.clone())
+        .max_reconnect_attempts(1)
+        .reconnect_delay(Duration::from_millis(5))
+        .build();
+
+    supervisor.connect().await.expect("connect");
+    let disconnect = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
+    assert!(matches!(
+        disconnect,
+        SupervisorEvent::HealthChanged {
+            status: HealthStatus::Reconnecting
+        }
+    ));
+
+    supervisor
+        .config
+        .remote
+        .as_mut()
+        .expect("remote config")
+        .base_url = "http://127.0.0.1:1".to_string();
+    supervisor
+        .reconnect()
+        .await
+        .expect_err("reconnect should fail while the endpoint is unavailable");
+    supervisor
+        .config
+        .remote
+        .as_mut()
+        .expect("remote config")
+        .base_url = base_url;
+
+    supervisor.disconnect();
+    supervisor.connect().await.expect("fresh connect");
+
+    let connection_requests = request_bodies
+        .lock()
+        .await
+        .iter()
+        .filter(|(path, _body)| path == "/api/headless/connections")
+        .map(|(_path, body)| {
+            serde_json::from_str::<serde_json::Value>(body).expect("valid connection body")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(connection_requests.len(), 2);
+    let fresh_connection_id = connection_requests[1]["connectionId"]
+        .as_str()
+        .expect("fresh generated connection id");
+    let fresh_connection_capability = connection_requests[1]["connectionCapability"]
+        .as_str()
+        .expect("fresh generated connection capability");
+    assert_ne!(fresh_connection_id, "conn_remote");
+    assert_ne!(fresh_connection_capability, "cap_remote");
+    assert!(fresh_connection_id.starts_with("conn_"));
+    assert!(fresh_connection_capability.starts_with("cap_"));
+    assert!(connection_requests[1].get("takeControl").is_none());
 
     supervisor.disconnect();
 }
@@ -2456,6 +2854,8 @@ async fn auto_remote_reconnect_waits_for_disconnect_completion_before_next_boots
             vec![],
             Some(Duration::from_millis(50)),
             Some(Arc::clone(&lifecycle_markers)),
+            false,
+            false,
         )
         .await;
 

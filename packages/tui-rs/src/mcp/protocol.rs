@@ -10,6 +10,7 @@ pub const MCP_RESOURCES_LIST_CHANGED_METHOD: &str = "notifications/resources/lis
 pub const MCP_PROMPTS_LIST_CHANGED_METHOD: &str = "notifications/prompts/list_changed";
 pub const MCP_PROGRESS_METHOD: &str = "notifications/progress";
 pub const MCP_LOG_MESSAGE_METHOD: &str = "notifications/message";
+pub const MCP_CANCELLED_METHOD: &str = "notifications/cancelled";
 
 /// JSON-RPC request message
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,6 +157,19 @@ pub struct McpNotification {
 }
 
 impl McpNotification {
+    /// Notify a server that the client no longer wants an in-flight request.
+    #[must_use]
+    pub fn cancelled(request_id: u64, reason: impl Into<String>) -> Self {
+        Self {
+            jsonrpc: "2.0".to_string(),
+            method: MCP_CANCELLED_METHOD.to_string(),
+            params: Some(serde_json::json!({
+                "requestId": request_id,
+                "reason": reason.into(),
+            })),
+        }
+    }
+
     #[must_use]
     pub fn is_list_changed_notification(&self) -> bool {
         self.is_tools_list_changed()
@@ -615,6 +629,19 @@ mod tests {
         let req = McpRequest::call_tool(3, "my_tool", serde_json::json!({"arg": "value"}));
         assert_eq!(req.method, "tools/call");
         assert!(req.params.is_some());
+    }
+
+    #[test]
+    fn cancelled_notification_correlates_the_request() {
+        let notification = McpNotification::cancelled(42, "user interrupted");
+        let value = serde_json::to_value(notification).expect("serialize cancellation");
+        assert_eq!(value["method"], MCP_CANCELLED_METHOD);
+        assert_eq!(value["params"]["requestId"], 42);
+        assert_eq!(value["params"]["reason"], "user interrupted");
+        assert!(
+            value.get("id").is_none(),
+            "notifications have no response id"
+        );
     }
 
     #[test]

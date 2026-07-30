@@ -55,6 +55,7 @@ impl ReceiptSummary {
                     ExecutionPhase::Running => "running",
                 }),
             ),
+            ExecutionStatus::Indeterminate => ("indeterminate", None),
         };
         let source = match receipt.source {
             ExecutionSource::Native => "native",

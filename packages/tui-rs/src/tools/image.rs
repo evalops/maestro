@@ -408,14 +408,33 @@ fn get_image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     None
 }
 
+/// Run a screenshot helper without blocking the async runtime.
+///
+/// `kill_on_drop` ensures that cancelling the screenshot future also
+/// terminates an interactive helper such as macOS `screencapture -w`.
+async fn run_screenshot_command(
+    program: &str,
+    args: &[&str],
+) -> Result<std::process::Output, std::io::Error> {
+    let mut command = tokio::process::Command::new(program);
+    command.args(args).kill_on_drop(true);
+    command.output().await
+}
+
+fn screenshot_temp_path() -> Result<(tempfile::TempDir, std::path::PathBuf), String> {
+    let temp_dir = tempfile::Builder::new()
+        .prefix("composer_screenshot_")
+        .tempdir()
+        .map_err(|error| format!("Failed to create screenshot path: {error}"))?;
+    let temp_path = temp_dir.path().join("screenshot.png");
+    Ok((temp_dir, temp_path))
+}
+
 /// Capture screenshot on Linux using scrot or gnome-screenshot
 async fn capture_screenshot_linux(
     window_title: Option<&str>,
 ) -> Result<(Vec<u8>, &'static str), String> {
-    use std::env::temp_dir;
-    use std::process::Command;
-
-    let temp_path = temp_dir().join(format!("composer_screenshot_{}.png", std::process::id()));
+    let (_temp_dir, temp_path) = screenshot_temp_path()?;
     let temp_str = temp_path.to_string_lossy().to_string();
 
     // Try different screenshot tools
@@ -436,12 +455,11 @@ async fn capture_screenshot_linux(
             }
         }
 
-        match Command::new(tool).args(&args).output() {
+        match run_screenshot_command(tool, &args).await {
             Ok(output) if output.status.success() => {
                 // Read the captured image
-                match std::fs::read(&temp_path) {
+                match tokio::fs::read(&temp_path).await {
                     Ok(data) => {
-                        let _ = std::fs::remove_file(&temp_path);
                         return Ok((data, "image/png"));
                     }
                     Err(e) => {
@@ -472,10 +490,7 @@ async fn capture_screenshot_linux(
 async fn capture_screenshot_macos(
     window_title: Option<&str>,
 ) -> Result<(Vec<u8>, &'static str), String> {
-    use std::env::temp_dir;
-    use std::process::Command;
-
-    let temp_path = temp_dir().join(format!("composer_screenshot_{}.png", std::process::id()));
+    let (_temp_dir, temp_path) = screenshot_temp_path()?;
     let temp_str = temp_path.to_string_lossy().to_string();
 
     let mut args = vec!["-x"]; // Silent mode
@@ -486,12 +501,9 @@ async fn capture_screenshot_macos(
 
     args.push(&temp_str);
 
-    match Command::new("screencapture").args(&args).output() {
-        Ok(output) if output.status.success() => match std::fs::read(&temp_path) {
-            Ok(data) => {
-                let _ = std::fs::remove_file(&temp_path);
-                Ok((data, "image/png"))
-            }
+    match run_screenshot_command("screencapture", &args).await {
+        Ok(output) if output.status.success() => match tokio::fs::read(&temp_path).await {
+            Ok(data) => Ok((data, "image/png")),
             Err(e) => Err(format!("Failed to read screenshot: {e}")),
         },
         Ok(output) => Err(format!(
@@ -506,10 +518,7 @@ async fn capture_screenshot_macos(
 async fn capture_screenshot_windows(
     _window_title: Option<&str>,
 ) -> Result<(Vec<u8>, &'static str), String> {
-    use std::env::temp_dir;
-    use std::process::Command;
-
-    let temp_path = temp_dir().join(format!("composer_screenshot_{}.png", std::process::id()));
+    let (_temp_dir, temp_path) = screenshot_temp_path()?;
     let temp_str = temp_path.to_string_lossy().to_string();
 
     // PowerShell script to capture screen
@@ -527,15 +536,9 @@ async fn capture_screenshot_windows(
         temp_str.replace('\\', "\\\\").replace('\'', "''")
     );
 
-    match Command::new("powershell")
-        .args(["-Command", &script])
-        .output()
-    {
-        Ok(output) if output.status.success() => match std::fs::read(&temp_path) {
-            Ok(data) => {
-                let _ = std::fs::remove_file(&temp_path);
-                Ok((data, "image/png"))
-            }
+    match run_screenshot_command("powershell", &["-Command", &script]).await {
+        Ok(output) if output.status.success() => match tokio::fs::read(&temp_path).await {
+            Ok(data) => Ok((data, "image/png")),
             Err(e) => Err(format!("Failed to read screenshot: {e}")),
         },
         Ok(output) => Err(format!(
@@ -549,6 +552,68 @@ async fn capture_screenshot_windows(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screenshot_temp_path_is_nonexistent_and_guarded() {
+        let (temp_dir, temp_path) = screenshot_temp_path().expect("temporary path");
+        let directory = temp_dir.path().to_path_buf();
+
+        assert!(
+            !temp_path.exists(),
+            "the screenshot tool creates the output"
+        );
+        drop(temp_dir);
+        assert!(
+            !directory.exists(),
+            "dropping the guard cleans up the directory"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn screenshot_command_can_be_cancelled_without_blocking_the_runtime() {
+        use std::time::Duration;
+
+        let pid_path = std::env::temp_dir().join(format!(
+            "maestro_screenshot_command_test_{}.pid",
+            std::process::id()
+        ));
+        let command = format!("echo $$ > {}; exec sleep 2", pid_path.display());
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(200),
+            run_screenshot_command("sh", &["-c", &command]),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "the command should be cancelled by timeout"
+        );
+
+        let pid = tokio::fs::read_to_string(&pid_path)
+            .await
+            .expect("the child should record its pid");
+        let pid = pid.trim();
+        let mut alive = true;
+        for _ in 0..20 {
+            alive = std::process::Command::new("kill")
+                .args(["-0", pid])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if !alive {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        let _ = tokio::fs::remove_file(&pid_path).await;
+        assert!(
+            !alive,
+            "cancelling the future must terminate the child process"
+        );
+    }
 
     #[test]
     fn test_read_image_definition() {

@@ -716,6 +716,14 @@ fn send_approval_response(
     request: &PendingApproval,
     approved: bool,
 ) -> Result<()> {
+    send_message(
+        transport,
+        state,
+        approval_response_message(request, approved),
+    )
+}
+
+fn approval_response_message(request: &PendingApproval, approved: bool) -> ToAgentMessage {
     let result = if approved {
         Some(ToolResult {
             success: true,
@@ -733,30 +741,23 @@ fn send_approval_response(
     };
 
     if let Some(request_id) = request.request_id.as_ref() {
-        send_message(
-            transport,
-            state,
-            ToAgentMessage::ServerRequestResponse {
-                request_id: request_id.clone(),
-                request_type: ServerRequestType::Approval,
-                approved: Some(approved),
-                result,
-                content: None,
-                is_error: None,
-                decision_action: None,
-                reason: None,
-            },
-        )
+        ToAgentMessage::ServerRequestResponse {
+            request_id: request_id.clone(),
+            request_type: ServerRequestType::Approval,
+            approved: Some(approved),
+            result,
+            content: None,
+            is_error: None,
+            decision_action: None,
+            reason: None,
+        }
     } else {
-        send_message(
-            transport,
-            state,
-            ToAgentMessage::ToolResponse {
-                call_id: request.call_id.clone(),
-                approved,
-                result,
-            },
-        )
+        ToAgentMessage::ToolResponse {
+            call_id: request.call_id.clone(),
+            tool_execution_id: request.tool_execution_id.clone(),
+            approved,
+            result: if approved { None } else { result },
+        }
     }
 }
 
@@ -1047,5 +1048,27 @@ mod tests {
         let viewer_config = build_remote_attach_transport_config(&viewer);
         assert_eq!(viewer_config.role.as_deref(), Some("viewer"));
         assert!(!viewer_config.take_control);
+    }
+
+    #[test]
+    fn governed_legacy_approval_runs_the_native_tool() {
+        let request = PendingApproval {
+            call_id: "call-1".to_string(),
+            tool_execution_id: Some("tool-execution-1".to_string()),
+            request_id: None,
+            tool: "write".to_string(),
+            args: serde_json::json!({}),
+            started_at_ms: None,
+        };
+
+        assert!(matches!(
+            approval_response_message(&request, true),
+            ToAgentMessage::ToolResponse {
+                tool_execution_id: Some(tool_execution_id),
+                approved: true,
+                result: None,
+                ..
+            } if tool_execution_id == "tool-execution-1"
+        ));
     }
 }

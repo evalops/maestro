@@ -240,6 +240,7 @@ message ToolResponseMessage {
   string call_id = 1;
   bool approved = 2;
   ToolResponseResult result = 3;
+  optional string tool_execution_id = 4;
 }
 
 message ClientToolResultMessage {

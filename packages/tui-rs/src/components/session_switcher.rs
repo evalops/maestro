@@ -9,13 +9,20 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
 };
+use std::path::PathBuf;
+use std::time::{Duration, UNIX_EPOCH};
 
-use crate::session::{SessionInfo, SessionManager};
+use crate::session::{
+    IndexedSession, SessionInfo, SessionManager, SessionMeta, SessionReadError, SessionStats,
+    ThinkingLevel,
+};
 
 /// Session switcher modal state
 pub struct SessionSwitcher {
     /// Session manager
     manager: SessionManager,
+    /// Session index cache path (fast previews); None disables the fast path
+    index_path: Option<PathBuf>,
     /// Available sessions
     sessions: Vec<SessionInfo>,
     /// Selected index
@@ -39,6 +46,7 @@ impl SessionSwitcher {
     pub fn new(cwd: impl Into<String>) -> Self {
         Self {
             manager: SessionManager::new(cwd),
+            index_path: crate::session::default_index_path(),
             sessions: Vec::new(),
             selected: 0,
             visible: false,
@@ -73,7 +81,7 @@ impl SessionSwitcher {
 
     /// Refresh session list
     pub fn refresh(&mut self) {
-        match self.manager.list_sessions() {
+        match self.load_sessions() {
             Ok(sessions) => {
                 self.sessions = sessions;
                 self.loading = false;
@@ -84,6 +92,34 @@ impl SessionSwitcher {
                 self.loading = false;
             }
         }
+    }
+
+    /// List sessions for the current working directory, preferring the
+    /// session index (cached previews, no per-open parsing) and falling back
+    /// to header reads when the index yields nothing.
+    fn load_sessions(&self) -> Result<Vec<SessionInfo>, SessionReadError> {
+        let indexed = self.list_from_index();
+        if !indexed.is_empty() {
+            return Ok(indexed);
+        }
+        self.manager.list_sessions()
+    }
+
+    /// Read this directory's sessions from the shared session index. Returns
+    /// an empty list when the index is unavailable or has no entries here.
+    fn list_from_index(&self) -> Vec<SessionInfo> {
+        let Some(index_path) = self.index_path.as_deref() else {
+            return Vec::new();
+        };
+        let dir = self.manager.sessions_dir();
+        let Some(root) = dir.parent() else {
+            return Vec::new();
+        };
+        crate::session::collect_sessions(root, Some(index_path))
+            .iter()
+            .filter(|session| session.path.parent() == Some(dir))
+            .map(indexed_session_info)
+            .collect()
     }
 
     /// Insert a character in filter
@@ -363,6 +399,35 @@ impl Default for SessionSwitcher {
     }
 }
 
+/// Map a session-index entry onto the switcher's list model.
+///
+/// The index stores neither the model nor the per-role message breakdown, so
+/// `model` is left empty and the total count sits in `user_messages` — only
+/// `stats.total_messages()` is rendered here, and both fields are repopulated
+/// from the full file when a session is actually resumed.
+fn indexed_session_info(indexed: &IndexedSession) -> SessionInfo {
+    let entry = &indexed.entry;
+    SessionInfo {
+        id: entry.id.clone(),
+        path: indexed.path.clone(),
+        cwd: entry.cwd.clone(),
+        model: String::new(),
+        thinking_level: ThinkingLevel::default(),
+        timestamp: entry.started_at.clone(),
+        stats: SessionStats {
+            user_messages: entry.message_count,
+            ..SessionStats::default()
+        },
+        meta: Some(SessionMeta {
+            title: entry.title.clone(),
+            favorite: entry.favorite,
+            ..SessionMeta::default()
+        }),
+        preview: entry.preview.clone(),
+        modified: Some(UNIX_EPOCH + Duration::from_millis(indexed.modified_ms)),
+    }
+}
+
 /// Format a timestamp relative to now
 fn format_relative_time(timestamp: &str) -> String {
     // Try to parse ISO timestamp
@@ -420,5 +485,89 @@ mod tests {
 
         switcher.hide();
         assert!(!switcher.is_visible());
+    }
+
+    #[test]
+    fn refresh_reads_previews_from_session_index() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("sessions");
+        let dir = root.join("--tmp--");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("2024-01-15T10-30-00-000Z_session-1.jsonl");
+        let mut file = std::fs::File::create(&path).unwrap();
+        use std::io::Write;
+        writeln!(
+            file,
+            r#"{{"type":"session","id":"session-1","timestamp":"2024-01-15T10:30:00Z","cwd":"/tmp","model":"openai/gpt-5.2","thinkingLevel":"medium"}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"message","timestamp":"2024-01-15T10:30:01Z","message":{{"role":"user","content":"untangle the resume flow","timestamp":0}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"message","timestamp":"2024-01-15T10:30:02Z","message":{{"role":"assistant","content":[{{"type":"text","text":"On it."}}],"timestamp":1}}}}"#
+        )
+        .unwrap();
+        drop(file);
+
+        let index_path = temp.path().join("session-index.json");
+        let mut switcher = SessionSwitcher::new("/tmp");
+        switcher.manager = SessionManager::with_sessions_dir("/tmp", &dir);
+        switcher.index_path = Some(index_path.clone());
+
+        switcher.show();
+
+        assert_eq!(switcher.sessions.len(), 1);
+        let session = &switcher.sessions[0];
+        // The model is only filled by the header-read fallback; an empty model
+        // proves this row came from the index fast path.
+        assert!(session.model.is_empty());
+        assert_eq!(session.stats.total_messages(), 2);
+        assert_eq!(session.title(), "untangle the resume flow");
+        assert!(
+            index_path.exists(),
+            "refresh persisted the session index for the next open"
+        );
+
+        // Deleting the file prunes it from both the list and the index.
+        switcher.delete_selected().unwrap();
+        assert!(switcher.sessions.is_empty());
+        let raw = std::fs::read_to_string(&index_path).unwrap();
+        assert!(!raw.contains("session-1"));
+    }
+
+    #[test]
+    fn refresh_falls_back_to_header_reads_when_index_is_empty() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("sessions");
+        let dir = root.join("--tmp--");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("2024-01-15T10-30-00-000Z_session-2.jsonl");
+        let mut file = std::fs::File::create(&path).unwrap();
+        use std::io::Write;
+        writeln!(
+            file,
+            r#"{{"type":"session","id":"session-2","timestamp":"2024-01-15T10:30:00Z","cwd":"/tmp","model":"openai/gpt-5.2","thinkingLevel":"medium"}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"message","timestamp":"2024-01-15T10:30:01Z","message":{{"role":"user","content":"fallback path","timestamp":0}}}}"#
+        )
+        .unwrap();
+        drop(file);
+
+        let mut switcher = SessionSwitcher::new("/tmp");
+        switcher.manager = SessionManager::with_sessions_dir("/tmp", &dir);
+        // Index disabled: the header-read fallback must still list the session.
+        switcher.index_path = None;
+
+        switcher.show();
+
+        assert_eq!(switcher.sessions.len(), 1);
+        assert_eq!(switcher.sessions[0].model, "openai/gpt-5.2");
     }
 }

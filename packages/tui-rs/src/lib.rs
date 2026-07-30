@@ -212,6 +212,8 @@ pub mod painter_cli;
 pub mod plan_mode;
 pub mod plugins_cli;
 pub mod print_mode;
+/// Pre-main process hardening (core dumps, ptrace, loader-injection env vars).
+pub mod process_hardening;
 /// Custom prompt templates.
 /// User-defined prompts with argument substitution.
 pub mod prompts;

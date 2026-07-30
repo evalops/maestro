@@ -31,7 +31,7 @@ LOCAL_CEREBRO_REPO ?= ../cerebro
 
 .PHONY: help setup build build-all run-rs run-rs-debug \
         web test lint check fmt \
-        smoke cerebro-dev cerebro-env cerebro-e2e cerebro-e2e-doctor cerebro-e2e-trace evals verify clean db-up db-down db-migrate
+        smoke cerebro-dev cerebro-env cerebro-e2e cerebro-e2e-doctor cerebro-e2e-trace evals verify clean db-up db-down
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -62,7 +62,7 @@ web: ## Launch the native web control plane
 test: ## Full test suite
 	npm test
 
-lint: ## Rust formatting checks
+lint: ## Rust formatting + clippy checks
 	npm run lint
 
 check: lint test ## Full CI check (lint + test)
@@ -150,6 +150,3 @@ db-up: ## Start Redis + PostgreSQL (Docker)
 
 db-down: ## Stop Docker services
 	docker compose down
-
-db-migrate: ## Run DB migrations
-	npm run db:migrate

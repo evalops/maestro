@@ -13,6 +13,7 @@ anyhow = "1"
 base64 = "0.22"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
+ctor = "0.6.3"
 dirs = "6"
 dunce = "1"
 eventsource-stream = "0.2"
@@ -27,6 +28,7 @@ maestro-tui = { path = "packages/tui-rs" }
 # same version here so a security bump (e.g. the lopdf RUSTSEC-2026-0187
 # fix) can't land in one crate's Cargo.toml and silently miss the other.
 pdf-extract = "0.12"
+portable-pty = "0.9"
 regex = "1"
 reqwest = { version = "0.12", default-features = false }
 serde = { version = "1", features = ["derive"] }

@@ -92,7 +92,7 @@ use serde::{Deserialize, Serialize};
 
 use super::messages::{
     ActiveFileWatch, ActiveTool, AgentState, CodexSubagentContinuityEdge, FromAgentMessage,
-    InitConfig, PendingApproval, StreamingResponse, ToAgentMessage, TokenUsage,
+    InitConfig, PendingApproval, ServerRequestType, StreamingResponse, ToAgentMessage, TokenUsage,
 };
 
 /// A recorded session entry (either a sent or received message).
@@ -754,7 +754,7 @@ impl SessionRecorder {
 
     /// Record a received message
     pub fn record_received(&mut self, message: &FromAgentMessage) -> std::io::Result<()> {
-        let entry = SessionEntry::received(message.clone());
+        let entry = SessionEntry::received(portable_redacted_message(message));
         self.write_entry(&entry)?;
         let _ = self.replay_state.handle_message(message.clone());
         self.entries_since_checkpoint += 1;
@@ -811,7 +811,7 @@ impl SessionRecorder {
 
         let checkpoint = SessionEntry::Checkpoint {
             timestamp: current_timestamp(),
-            state: Box::new(AgentStateCheckpoint::from_state(&self.replay_state)),
+            state: Box::new(portable_redacted_checkpoint(&self.replay_state)),
             last_init: self.last_init.clone(),
         };
         self.write_entry(&checkpoint)?;
@@ -842,6 +842,35 @@ impl SessionRecorder {
         fs::write(&self.metadata_path, json)?;
         Ok(())
     }
+}
+
+fn portable_redacted_message(message: &FromAgentMessage) -> FromAgentMessage {
+    let mut redacted = message.clone();
+    let args = match &mut redacted {
+        FromAgentMessage::ClientToolRequest { args, .. }
+        | FromAgentMessage::ServerRequest {
+            request_type: ServerRequestType::ClientTool,
+            args,
+            ..
+        } => Some(args),
+        _ => None,
+    };
+    if let Some(args) = args {
+        *args = crate::agent::credential_store::redact_credentials_in_json(args);
+    }
+    redacted
+}
+
+fn portable_redacted_checkpoint(state: &AgentState) -> AgentStateCheckpoint {
+    let mut checkpoint = AgentStateCheckpoint::from_state(state);
+    for pending in checkpoint
+        .pending_client_tools
+        .iter_mut()
+        .chain(checkpoint.tracked_tools.iter_mut())
+    {
+        pending.args = crate::agent::credential_store::redact_credentials_in_json(&pending.args);
+    }
+    checkpoint
 }
 
 impl Drop for SessionRecorder {
@@ -1173,6 +1202,74 @@ mod tests {
             reader.metadata().agent_session_id.as_deref(),
             Some("sess_123")
         );
+    }
+
+    #[test]
+    fn received_executable_args_are_portable_redacted_before_persistence() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path();
+        let client_secret = "sk-ant-abcdefghijklmnopqrstuvwxyz123456";
+        let server_secret = "correct-horse-battery-staple";
+
+        let mut recorder = SessionRecorder::with_id(sessions_dir, "redacted-session").unwrap();
+        recorder
+            .record_received(&FromAgentMessage::ClientToolRequest {
+                call_id: "client-call".to_string(),
+                tool_execution_id: None,
+                tool: "bash".to_string(),
+                args: serde_json::json!({
+                    "command": format!(
+                        "curl -H 'Authorization: Bearer {client_secret}' example.test"
+                    )
+                }),
+            })
+            .unwrap();
+        recorder
+            .record_received(&FromAgentMessage::ServerRequest {
+                request_id: "server-request".to_string(),
+                request_type: ServerRequestType::ClientTool,
+                call_id: "server-call".to_string(),
+                tool_execution_id: None,
+                tool: "http".to_string(),
+                args: serde_json::json!({
+                    "payload": format!("password={server_secret}"),
+                }),
+                reason: "execute on client".to_string(),
+                started_at_ms: None,
+            })
+            .unwrap();
+
+        let live_args = serde_json::to_string(&recorder.replay_state().pending_client_tools)
+            .expect("serialize live pending client tools");
+        assert!(live_args.contains(client_secret));
+        assert!(live_args.contains(server_secret));
+        recorder.maybe_write_checkpoint(true).unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let jsonl =
+            fs::read_to_string(sessions_dir.join("redacted-session.jsonl")).expect("read JSONL");
+        assert!(!jsonl.contains(client_secret), "{jsonl}");
+        assert!(!jsonl.contains(server_secret), "{jsonl}");
+        assert!(
+            jsonl.contains("[REDACTED:token:portable-export]"),
+            "{jsonl}"
+        );
+        assert!(
+            jsonl.contains("[REDACTED:password:portable-export]"),
+            "{jsonl}"
+        );
+
+        let reader = SessionReader::load(sessions_dir, "redacted-session").unwrap();
+        let recorded =
+            serde_json::to_string(reader.received_messages().as_slice()).expect("serialize replay");
+        let replayed = serde_json::to_string(&reader.replay_state().pending_client_tools)
+            .expect("replay state");
+        for persisted in [&recorded, &replayed] {
+            assert!(!persisted.contains(client_secret), "{persisted}");
+            assert!(!persisted.contains(server_secret), "{persisted}");
+            assert!(persisted.contains("[REDACTED:"), "{persisted}");
+        }
     }
 
     #[test]

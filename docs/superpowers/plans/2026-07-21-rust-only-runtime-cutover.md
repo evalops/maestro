@@ -283,7 +283,7 @@ Commit: `feat(headless): complete native request parity`
 - Modify: `packages/tui-rs/src/run_cli.rs`
 - Modify: `packages/tui-rs/src/lsp.rs`
 - Create: `packages/tui-rs/tests/provider_matrix.rs`
-- Create: `packages/tui-rs/tests/command_parity.rs`
+- Create: `packages/tui-rs/tests/entrypoint.rs`
 
 **Interfaces:**
 - Consumes: `provider-matrix.json` and existing session/context fixtures.

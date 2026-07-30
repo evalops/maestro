@@ -159,6 +159,7 @@ async fn spawn_remote_headless_server(
                         let body = serde_json::json!({
                             "session_id": "sess_remote",
                             "connection_id": "conn_remote",
+                            "connection_capability": "cap_remote",
                             "controller_connection_id": "conn_remote",
                             "lease_expires_at": "2026-04-02T00:00:15Z",
                             "heartbeat_interval_ms": 15000,
@@ -177,14 +178,21 @@ async fn spawn_remote_headless_server(
                     }
 
                     if path.starts_with("/api/headless/sessions/") && path.ends_with("/subscribe") {
+                        let snapshot = serde_json::from_str::<serde_json::Value>(&snapshot_json)
+                            .expect("valid snapshot json");
+                        let controller_pending_events = snapshot
+                            .get("controller_pending_events")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!([]));
                         let body = serde_json::json!({
                             "connection_id": "conn_remote",
+                            "connection_capability": "cap_remote",
                             "subscription_id": "sub_remote",
                             "controller_connection_id": "conn_remote",
                             "lease_expires_at": "2026-04-02T00:00:15Z",
                             "heartbeat_interval_ms": 15000,
-                            "snapshot": serde_json::from_str::<serde_json::Value>(&snapshot_json)
-                                .expect("valid snapshot json"),
+                            "controller_pending_events": controller_pending_events,
+                            "snapshot": snapshot,
                         })
                         .to_string();
                         write_http_response(
@@ -500,6 +508,8 @@ fn remote_connection_create_request_serializes_client_tool_flags() {
         }),
         session_id: Some("sess_remote".to_string()),
         connection_id: Some("conn_remote".to_string()),
+        connection_capability: Some("cap_remote".to_string()),
+        connection_capability_required: true,
         model: Some("gpt-5.4".to_string()),
         thinking_level: Some(ThinkingLevel::Low),
         approval_mode: Some(ApprovalMode::Prompt),
@@ -522,6 +532,8 @@ fn remote_connection_create_request_serializes_client_tool_flags() {
     assert_eq!(json["clientInfo"]["version"], "0.1.0");
     assert_eq!(json["sessionId"], "sess_remote");
     assert_eq!(json["connectionId"], "conn_remote");
+    assert_eq!(json["connectionCapability"], "cap_remote");
+    assert_eq!(json["connectionCapabilityRequired"], true);
     assert_eq!(json["model"], "gpt-5.4");
     assert_eq!(json["thinkingLevel"], "low");
     assert_eq!(json["approvalMode"], "prompt");
@@ -554,9 +566,30 @@ fn remote_http_bootstrap_carries_the_negotiated_transcript_grade() {
 }
 
 #[test]
+fn remote_http_bootstrap_carries_configured_reconnect_capability() {
+    let request = build_remote_connection_create_request(
+        &RemoteTransportConfig {
+            connection_id: Some("conn_remote".to_string()),
+            headers: HashMap::from([(
+                "X-Maestro-Headless-Connection-Capability".to_string(),
+                "cap_remote".to_string(),
+            )]),
+            ..RemoteTransportConfig::default()
+        },
+        Some("conn_remote".to_string()),
+    );
+    let json = serde_json::to_value(request).expect("serialize request");
+
+    assert_eq!(json["connectionId"], "conn_remote");
+    assert_eq!(json["connectionCapability"], "cap_remote");
+}
+
+#[test]
 fn remote_session_subscribe_request_serializes_opt_out_notifications() {
     let request = RemoteSessionSubscribeRequest {
         connection_id: Some("conn_remote".to_string()),
+        connection_capability: Some("cap_remote".to_string()),
+        connection_capability_required: true,
         protocol_version: Some("2026-04-02".to_string()),
         client_info: Some(ClientInfo {
             name: "maestro-tui-rs".to_string(),
@@ -575,11 +608,23 @@ fn remote_session_subscribe_request_serializes_opt_out_notifications() {
 
     let json = serde_json::to_value(request).expect("serialize request");
     assert_eq!(json["connectionId"], "conn_remote");
+    assert_eq!(json["connectionCapability"], "cap_remote");
+    assert_eq!(json["connectionCapabilityRequired"], true);
     assert_eq!(json["role"], "viewer");
     assert_eq!(json["capabilities"]["rawAgentEvents"], true);
     assert_eq!(json["capabilities"]["transcriptGrade"], "block");
     assert_eq!(json["optOutNotifications"][0], "status");
     assert_eq!(json["optOutNotifications"][1], "heartbeat");
+}
+
+#[test]
+fn remote_lifecycle_requests_carry_bound_connection_authority() {
+    let request =
+        connection_lifecycle_request("conn_remote", Some("cap_remote"), Some("sub_remote"));
+
+    assert_eq!(request["connectionId"], "conn_remote");
+    assert_eq!(request["subscriptionId"], "sub_remote");
+    assert_eq!(request["connectionCapability"], "cap_remote");
 }
 
 #[test]
@@ -640,15 +685,17 @@ fn remote_hello_message_omits_interactive_server_requests_for_viewer() {
 }
 
 #[tokio::test]
-async fn remote_transport_retries_connection_bootstrap_without_stale_connection_id() {
+async fn remote_transport_reuses_fallback_authority_when_response_is_lost() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let bootstrap_attempt = Arc::new(AtomicUsize::new(0));
     let connection_requests = Arc::new(Mutex::new(Vec::new()));
+    let fallback_authority = Arc::new(Mutex::new(None::<(String, String)>));
 
     tokio::spawn({
         let bootstrap_attempt = Arc::clone(&bootstrap_attempt);
         let connection_requests = Arc::clone(&connection_requests);
+        let fallback_authority = Arc::clone(&fallback_authority);
         async move {
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else {
@@ -658,6 +705,7 @@ async fn remote_transport_retries_connection_bootstrap_without_stale_connection_
                 tokio::spawn({
                     let bootstrap_attempt = Arc::clone(&bootstrap_attempt);
                     let connection_requests = Arc::clone(&connection_requests);
+                    let fallback_authority = Arc::clone(&fallback_authority);
                     async move {
                         let Some((path, _headers, body)) = read_http_request(&mut socket).await
                         else {
@@ -669,12 +717,19 @@ async fn remote_transport_retries_connection_bootstrap_without_stale_connection_
                             connection_requests.lock().await.push(body.clone());
                             let request = serde_json::from_str::<serde_json::Value>(&body)
                                 .expect("valid connection request");
+                            assert!(request.get("takeControl").is_none());
                             if attempt == 1 {
                                 assert_eq!(
                                     request
                                         .get("connectionId")
                                         .and_then(serde_json::Value::as_str),
                                     Some("conn_stale")
+                                );
+                                assert_eq!(
+                                    request
+                                        .get("connectionCapability")
+                                        .and_then(serde_json::Value::as_str),
+                                    Some("cap_stale")
                                 );
                                 write_http_response(
                                     &mut socket,
@@ -685,10 +740,31 @@ async fn remote_transport_retries_connection_bootstrap_without_stale_connection_
                                 .await;
                                 return;
                             }
-                            assert!(request.get("connectionId").is_none());
+                            let connection_id = request
+                                .get("connectionId")
+                                .and_then(serde_json::Value::as_str)
+                                .expect("fresh fallback connection id")
+                                .to_string();
+                            let connection_capability = request
+                                .get("connectionCapability")
+                                .and_then(serde_json::Value::as_str)
+                                .expect("fresh fallback connection capability")
+                                .to_string();
+                            assert_ne!(connection_id, "conn_stale");
+                            assert_ne!(connection_capability, "cap_stale");
+                            if attempt == 2 {
+                                *fallback_authority.lock().await =
+                                    Some((connection_id, connection_capability));
+                                let _ = socket.shutdown().await;
+                                return;
+                            }
+                            assert_eq!(
+                                fallback_authority.lock().await.as_ref(),
+                                Some(&(connection_id.clone(), connection_capability))
+                            );
                             let body = serde_json::json!({
                                 "session_id": "sess_remote",
-                                "connection_id": "conn_fresh",
+                                "connection_id": connection_id,
                             })
                             .to_string();
                             write_http_response(
@@ -704,10 +780,19 @@ async fn remote_transport_retries_connection_bootstrap_without_stale_connection_
                         if path.starts_with("/api/headless/sessions/")
                             && path.ends_with("/subscribe")
                         {
+                            let request = serde_json::from_str::<serde_json::Value>(&body)
+                                .expect("valid subscribe request");
+                            let authority = fallback_authority
+                                .lock()
+                                .await
+                                .clone()
+                                .expect("accepted fallback authority");
+                            assert_eq!(request["connectionId"], authority.0);
+                            assert_eq!(request["connectionCapability"], authority.1);
                             let body = serde_json::json!({
-                                "connection_id": "conn_fresh",
+                                "connection_id": authority.0,
                                 "subscription_id": "sub_remote",
-                                "controller_connection_id": "conn_fresh",
+                                "controller_connection_id": authority.0,
                                 "lease_expires_at": "2026-04-02T00:00:15Z",
                                 "heartbeat_interval_ms": 15000,
                                 "snapshot": {
@@ -784,17 +869,486 @@ async fn remote_transport_retries_connection_bootstrap_without_stale_connection_
         }
     });
 
-    let transport = RemoteAgentTransport::connect(RemoteTransportConfig {
+    let config = RemoteTransportConfig {
         base_url: format!("http://{addr}"),
         session_id: Some("sess_remote".to_string()),
-        connection_id: Some("conn_stale".to_string()),
         ..RemoteTransportConfig::default()
-    })
-    .await
-    .expect("connect");
+    };
+    let stale_authority = RemoteConnectionResumeAuthority {
+        connection_id: "conn_stale".to_string(),
+        connection_capability: Some("cap_stale".to_string()),
+    };
 
-    assert_eq!(transport.connection_id(), "conn_fresh");
+    let failure = match RemoteAgentTransport::connect_with_resume_authority(
+        config.clone(),
+        Some(stale_authority),
+    )
+    .await
+    {
+        Ok(_) => panic!("lost fallback response should fail the first connect"),
+        Err(failure) => failure,
+    };
+    assert!(matches!(&failure.error, AsyncTransportError::Remote(_)));
+    let retained_authority = failure
+        .resume_authority
+        .expect("ambiguous fallback must retain fresh authority");
+    let fallback_authority = fallback_authority
+        .lock()
+        .await
+        .clone()
+        .expect("accepted fallback authority");
+    assert_eq!(retained_authority.connection_id, fallback_authority.0);
+    assert_eq!(
+        retained_authority.connection_capability.as_deref(),
+        Some(fallback_authority.1.as_str())
+    );
+
+    let transport =
+        RemoteAgentTransport::connect_with_resume_authority(config, Some(retained_authority))
+            .await
+            .unwrap_or_else(|failure| panic!("retry should connect: {}", failure.error));
+
+    assert_eq!(transport.connection_id(), fallback_authority.0);
+    assert_eq!(connection_requests.lock().await.len(), 3);
+
+    transport.shutdown().expect("shutdown");
+}
+
+#[tokio::test]
+async fn remote_transport_recovers_when_bootstrap_response_is_lost() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let bootstrap_attempt = Arc::new(AtomicUsize::new(0));
+    let connection_requests = Arc::new(Mutex::new(Vec::new()));
+    let accepted_connection_id = Arc::new(Mutex::new(None::<String>));
+    let accepted_capability = Arc::new(Mutex::new(None::<String>));
+
+    tokio::spawn({
+        let bootstrap_attempt = Arc::clone(&bootstrap_attempt);
+        let connection_requests = Arc::clone(&connection_requests);
+        let accepted_connection_id = Arc::clone(&accepted_connection_id);
+        let accepted_capability = Arc::clone(&accepted_capability);
+        async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let bootstrap_attempt = Arc::clone(&bootstrap_attempt);
+                let connection_requests = Arc::clone(&connection_requests);
+                let accepted_connection_id = Arc::clone(&accepted_connection_id);
+                let accepted_capability = Arc::clone(&accepted_capability);
+                tokio::spawn(async move {
+                    let Some((path, _headers, body)) = read_http_request(&mut socket).await else {
+                        return;
+                    };
+                    if path == "/api/headless/connections" {
+                        let attempt = bootstrap_attempt.fetch_add(1, Ordering::SeqCst) + 1;
+                        let request = serde_json::from_str::<serde_json::Value>(&body)
+                            .expect("valid connection request");
+                        connection_requests.lock().await.push(request.clone());
+                        assert!(request.get("takeControl").is_none());
+                        let connection_id = request
+                            .get("connectionId")
+                            .and_then(serde_json::Value::as_str)
+                            .expect("client-generated bootstrap connection id")
+                            .to_string();
+                        assert!(connection_id.starts_with("conn_"));
+                        let capability = request
+                            .get("connectionCapability")
+                            .and_then(serde_json::Value::as_str)
+                            .expect("client-generated bootstrap capability")
+                            .to_string();
+                        assert!(capability.starts_with("cap_"));
+
+                        if attempt == 1 {
+                            *accepted_connection_id.lock().await = Some(connection_id);
+                            *accepted_capability.lock().await = Some(capability);
+                            let _ = socket.shutdown().await;
+                            return;
+                        }
+
+                        assert_eq!(
+                            accepted_connection_id.lock().await.as_deref(),
+                            Some(connection_id.as_str()),
+                            "retry must reuse the accepted connection id"
+                        );
+                        assert_eq!(
+                            accepted_capability.lock().await.as_deref(),
+                            Some(capability.as_str()),
+                            "retry must reuse the accepted private authority"
+                        );
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            &serde_json::json!({
+                                "session_id": "sess_remote",
+                                "connection_id": connection_id,
+                            })
+                            .to_string(),
+                        )
+                        .await;
+                        return;
+                    }
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/subscribe") {
+                        let request = serde_json::from_str::<serde_json::Value>(&body)
+                            .expect("valid subscribe request");
+                        assert_eq!(
+                            request
+                                .get("connectionId")
+                                .and_then(serde_json::Value::as_str),
+                            accepted_connection_id.lock().await.as_deref()
+                        );
+                        assert_eq!(
+                            request
+                                .get("connectionCapability")
+                                .and_then(serde_json::Value::as_str),
+                            accepted_capability.lock().await.as_deref()
+                        );
+                        let response = serde_json::json!({
+                            "connection_id": accepted_connection_id
+                                .lock()
+                                .await
+                                .as_deref(),
+                            "subscription_id": "sub_remote",
+                            "heartbeat_interval_ms": 15000,
+                            "snapshot": {
+                                "protocolVersion": "2026-03-30",
+                                "session_id": "sess_remote",
+                                "cursor": 0,
+                                "state": {
+                                    "protocol_version": "2026-03-30",
+                                    "session_id": "sess_remote",
+                                    "pending_approvals": [],
+                                    "active_tools": [],
+                                    "active_utility_commands": [],
+                                    "active_file_watches": [],
+                                    "is_ready": true,
+                                    "is_responding": false
+                                }
+                            }
+                        })
+                        .to_string();
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            &response,
+                        )
+                        .await;
+                        return;
+                    }
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/messages") {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            r#"{"success":true}"#,
+                        )
+                        .await;
+                        return;
+                    }
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/disconnect")
+                    {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            r#"{"success":true,"connection_id":"conn_indeterminate","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
+                        )
+                        .await;
+                        return;
+                    }
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/heartbeat") {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            r#"{"connection_id":"conn_indeterminate","controller_lease_granted":true,"controller_connection_id":"conn_indeterminate","lease_expires_at":"2026-04-02T00:00:15Z","heartbeat_interval_ms":15000}"#,
+                        )
+                        .await;
+                        return;
+                    }
+                    if path.starts_with("/api/headless/sessions/") && path.contains("/events?") {
+                        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+                        let _ = socket.write_all(headers.as_bytes()).await;
+                        let _ = socket.shutdown().await;
+                        return;
+                    }
+                    {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 404 Not Found",
+                            "text/plain",
+                            "not found",
+                        )
+                        .await;
+                    }
+                });
+            }
+        }
+    });
+
+    let config = RemoteTransportConfig {
+        base_url: format!("http://{addr}"),
+        session_id: Some("sess_remote".to_string()),
+        ..RemoteTransportConfig::default()
+    };
+    let failure =
+        match RemoteAgentTransport::connect_with_resume_authority(config.clone(), None).await {
+            Ok(_) => panic!("lost bootstrap response should fail the first connect"),
+            Err(failure) => failure,
+        };
+    assert!(matches!(failure.error, AsyncTransportError::Remote(_)));
+    let retained_authority = failure
+        .resume_authority
+        .expect("ambiguous bootstrap must retain client-generated authority");
+    assert_eq!(
+        Some(retained_authority.connection_id.as_str()),
+        accepted_connection_id.lock().await.as_deref()
+    );
+    assert_eq!(
+        retained_authority.connection_capability.as_deref(),
+        accepted_capability.lock().await.as_deref()
+    );
+
+    let transport =
+        RemoteAgentTransport::connect_with_resume_authority(config, Some(retained_authority))
+            .await
+            .unwrap_or_else(|failure| panic!("retry should connect: {}", failure.error));
+    assert_eq!(
+        Some(transport.connection_id()),
+        accepted_connection_id.lock().await.as_deref()
+    );
+    assert_eq!(
+        transport
+            .resume_authority()
+            .connection_capability
+            .as_deref(),
+        accepted_capability.lock().await.as_deref()
+    );
     assert_eq!(connection_requests.lock().await.len(), 2);
+
+    transport.shutdown().expect("shutdown");
+}
+
+#[tokio::test]
+async fn remote_transport_preserves_known_capability_when_bootstrap_omits_it() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let connection_requests = Arc::new(Mutex::new(Vec::new()));
+    let subscribe_requests = Arc::new(Mutex::new(Vec::new()));
+    let subscribe_attempts = Arc::new(AtomicUsize::new(0));
+
+    tokio::spawn({
+        let connection_requests = Arc::clone(&connection_requests);
+        let subscribe_requests = Arc::clone(&subscribe_requests);
+        let subscribe_attempts = Arc::clone(&subscribe_attempts);
+        async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let connection_requests = Arc::clone(&connection_requests);
+                let subscribe_requests = Arc::clone(&subscribe_requests);
+                let subscribe_attempts = Arc::clone(&subscribe_attempts);
+                tokio::spawn(async move {
+                    let Some((path, _headers, body)) = read_http_request(&mut socket).await else {
+                        return;
+                    };
+                    if path == "/api/headless/connections" {
+                        let request = serde_json::from_str::<serde_json::Value>(&body)
+                            .expect("valid connection request");
+                        connection_requests.lock().await.push(request.clone());
+                        if request
+                            .get("connectionId")
+                            .and_then(serde_json::Value::as_str)
+                            != Some("conn_known")
+                            || request
+                                .get("connectionCapability")
+                                .and_then(serde_json::Value::as_str)
+                                != Some("cap_known")
+                        {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 403 Forbidden",
+                                "application/json",
+                                r#"{"error":"known connection authority required"}"#,
+                            )
+                            .await;
+                            return;
+                        }
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            r#"{"session_id":"sess_remote","connection_id":"conn_known"}"#,
+                        )
+                        .await;
+                        return;
+                    }
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/subscribe") {
+                        let request = serde_json::from_str::<serde_json::Value>(&body)
+                            .expect("valid subscribe request");
+                        subscribe_requests.lock().await.push(request.clone());
+                        if request
+                            .get("connectionCapability")
+                            .and_then(serde_json::Value::as_str)
+                            != Some("cap_known")
+                        {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 403 Forbidden",
+                                "application/json",
+                                r#"{"error":"known connection authority required"}"#,
+                            )
+                            .await;
+                            return;
+                        }
+                        let attempt = subscribe_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                        if attempt == 1 {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 503 Service Unavailable",
+                                "application/json",
+                                r#"{"error":"temporary subscription failure"}"#,
+                            )
+                            .await;
+                            return;
+                        }
+                        let response = serde_json::json!({
+                            "connection_id": "conn_known",
+                            "subscription_id": "sub_remote",
+                            "heartbeat_interval_ms": 15000,
+                            "snapshot": {
+                                "protocolVersion": "2026-03-30",
+                                "session_id": "sess_remote",
+                                "cursor": 0,
+                                "state": {
+                                    "protocol_version": "2026-03-30",
+                                    "session_id": "sess_remote",
+                                    "pending_approvals": [],
+                                    "active_tools": [],
+                                    "active_utility_commands": [],
+                                    "active_file_watches": [],
+                                    "is_ready": true,
+                                    "is_responding": false
+                                }
+                            }
+                        })
+                        .to_string();
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            &response,
+                        )
+                        .await;
+                        return;
+                    }
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/messages") {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            r#"{"success":true}"#,
+                        )
+                        .await;
+                        return;
+                    }
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/disconnect")
+                    {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            r#"{"success":true,"connection_id":"conn_known","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
+                        )
+                        .await;
+                        return;
+                    }
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/heartbeat") {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            r#"{"connection_id":"conn_known","controller_lease_granted":true,"controller_connection_id":"conn_known","lease_expires_at":"2026-04-02T00:00:15Z","heartbeat_interval_ms":15000}"#,
+                        )
+                        .await;
+                        return;
+                    }
+                    if path.starts_with("/api/headless/sessions/") && path.contains("/events?") {
+                        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+                        let _ = socket.write_all(headers.as_bytes()).await;
+                        let _ = socket.shutdown().await;
+                        return;
+                    }
+                    write_http_response(
+                        &mut socket,
+                        "HTTP/1.1 404 Not Found",
+                        "text/plain",
+                        "not found",
+                    )
+                    .await;
+                });
+            }
+        }
+    });
+
+    let config = RemoteTransportConfig {
+        base_url: format!("http://{addr}"),
+        session_id: Some("sess_remote".to_string()),
+        ..RemoteTransportConfig::default()
+    };
+    let initial_authority = RemoteConnectionResumeAuthority {
+        connection_id: "conn_known".to_string(),
+        connection_capability: Some("cap_known".to_string()),
+    };
+
+    let failure = match RemoteAgentTransport::connect_with_resume_authority(
+        config.clone(),
+        Some(initial_authority),
+    )
+    .await
+    {
+        Ok(_) => panic!("first subscribe should fail transiently"),
+        Err(failure) => failure,
+    };
+    assert!(
+        matches!(
+            &failure.error,
+            AsyncTransportError::RemoteStatus {
+                status: 503,
+                retryable: true,
+                ..
+            }
+        ),
+        "unexpected first failure: {:?}",
+        failure.error
+    );
+    let retained_authority = failure
+        .resume_authority
+        .expect("known authority should survive subscribe failure");
+    assert_eq!(retained_authority.connection_id, "conn_known");
+    assert_eq!(
+        retained_authority.connection_capability.as_deref(),
+        Some("cap_known")
+    );
+
+    let transport =
+        RemoteAgentTransport::connect_with_resume_authority(config, Some(retained_authority))
+            .await
+            .unwrap_or_else(|failure| panic!("retry should connect: {}", failure.error));
+
+    assert_eq!(
+        transport
+            .resume_authority()
+            .connection_capability
+            .as_deref(),
+        Some("cap_known")
+    );
+    assert_eq!(connection_requests.lock().await.len(), 2);
+    assert_eq!(subscribe_requests.lock().await.len(), 2);
 
     transport.shutdown().expect("shutdown");
 }
@@ -1514,6 +2068,23 @@ async fn remote_transport_connects_sends_and_receives_events() {
         "protocolVersion": "2026-03-30",
         "session_id": "sess_remote",
         "cursor": 1,
+        "controller_pending_events": [
+            {
+                "type": "client_tool_request",
+                "call_id": "pending_client_tool",
+                "tool": "artifacts",
+                "args": {"command": "create", "filename": "pending.txt"}
+            },
+            {
+                "type": "server_request",
+                "request_id": "pending_server_request",
+                "request_type": "client_tool",
+                "call_id": "pending_server_call",
+                "tool": "artifacts",
+                "args": {"command": "update", "filename": "pending.txt"},
+                "reason": "Client tool execution is pending"
+            }
+        ],
         "last_init": {
             "system_prompt": "Be terse",
             "thinking_level": "high",
@@ -1587,6 +2158,10 @@ async fn remote_transport_connects_sends_and_receives_events() {
     assert_eq!(transport.state().model.as_deref(), Some("gpt-5.4"));
     assert_eq!(transport.state().provider.as_deref(), Some("openai"));
     assert_eq!(transport.state().last_status.as_deref(), Some("Attached"));
+    assert!(
+        transport.state().pending_client_tools.is_empty(),
+        "raw controller backlog must not be exposed through the public snapshot state"
+    );
     assert_eq!(
         transport
             .last_init()
@@ -1613,6 +2188,44 @@ async fn remote_transport_connects_sends_and_receives_events() {
             ])
             && role == Some(ConnectionRole::Controller)
     ));
+
+    let incoming = transport
+        .recv_incoming()
+        .await
+        .expect("pending client tool request");
+    match incoming {
+        RemoteIncoming::Message(FromAgentMessage::ClientToolRequest {
+            call_id,
+            tool,
+            args,
+            ..
+        }) => {
+            assert_eq!(call_id, "pending_client_tool");
+            assert_eq!(tool, "artifacts");
+            assert_eq!(args["filename"], "pending.txt");
+        }
+        other => panic!("expected pending client tool request, got {other:?}"),
+    }
+
+    let incoming = transport
+        .recv_incoming()
+        .await
+        .expect("pending structured server request");
+    match incoming {
+        RemoteIncoming::Message(FromAgentMessage::ServerRequest {
+            request_id,
+            request_type,
+            call_id,
+            args,
+            ..
+        }) => {
+            assert_eq!(request_id, "pending_server_request");
+            assert_eq!(request_type, ServerRequestType::ClientTool);
+            assert_eq!(call_id, "pending_server_call");
+            assert_eq!(args["command"], "update");
+        }
+        other => panic!("expected pending structured server request, got {other:?}"),
+    }
 
     let incoming = transport.recv_incoming().await.expect("incoming hello_ok");
     match incoming {
@@ -1682,7 +2295,10 @@ async fn remote_transport_connects_sends_and_receives_events() {
     assert!(subscribe_headers
         .iter()
         .any(|(name, value)| { name == "x-maestro-headless-role" && value == "controller" }));
-    assert!(message_headers.is_some());
+    let message_headers = message_headers.expect("message request headers");
+    assert!(message_headers.iter().any(|(name, value)| {
+        name == "x-maestro-headless-connection-capability" && value == "cap_remote"
+    }));
 
     transport.shutdown().expect("shutdown");
 

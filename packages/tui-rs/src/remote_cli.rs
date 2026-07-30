@@ -25,6 +25,7 @@ use uuid::Uuid;
 const DEFAULT_BASE_URL: &str = "https://runner.evalops.dev";
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_MAX_ATTEMPTS: usize = 2;
+const VERIFY_ERROR_BODY_MAX_CHARS: usize = 512;
 const DEFAULT_WAIT_TIMEOUT_MS: u64 = 5 * 60 * 1000;
 const DEFAULT_POLL_MS: u64 = 5_000;
 const CONNECT_VERSION: &str = "1";
@@ -715,6 +716,7 @@ async fn verify_attach(minted: &Minted, session_id: &str, take_control: bool) ->
     let body = json!({
         "sessionId": session_id,
         "protocolVersion": HEADLESS_PROTOCOL_VERSION,
+        "connectionCapabilityRequired": true,
         "clientInfo": {"name": "maestro-remote-cli", "version": pkg_version()},
         "role": "controller",
         "takeControl": take_control,
@@ -753,6 +755,7 @@ async fn verify_attach(minted: &Minted, session_id: &str, take_control: bool) ->
         serde_json::from_str(&text).context("parse headless connect response")?
     };
     let connection_id = first_str(&payload, &["connection_id", "connectionId"]);
+    let disconnect_body = verify_disconnect_body(&payload);
     let runtime_session_id = first_str(&payload, &["session_id", "sessionId"]);
     if connection_id.is_some() || runtime_session_id.is_some() {
         let disconnect_id = runtime_session_id
@@ -763,14 +766,21 @@ async fn verify_attach(minted: &Minted, session_id: &str, take_control: bool) ->
             minted.gateway_base_url.trim_end_matches('/'),
             urlencoding::encode(&disconnect_id)
         );
-        let _ = client
+        let disconnect_response = client
             .post(disconnect_url)
             .bearer_auth(&minted.token_secret)
             .header("Content-Type", "application/json")
             .header("X-EvalOps-Runner-Attach-Token-Id", &minted.token.id)
-            .json(&json!({"connectionId": connection_id}))
+            .json(&disconnect_body)
             .send()
-            .await;
+            .await
+            .context("remote runner headless disconnect request failed")?;
+        let disconnect_status = disconnect_response.status();
+        let disconnect_text = disconnect_response
+            .text()
+            .await
+            .context("read remote runner headless disconnect response")?;
+        ensure_verify_disconnect_success(disconnect_status, &disconnect_text)?;
     }
     Ok(json!({
         "sessionId": runtime_session_id,
@@ -778,6 +788,38 @@ async fn verify_attach(minted: &Minted, session_id: &str, take_control: bool) ->
         "heartbeatIntervalMs": first_num(&payload, &["heartbeat_interval_ms", "heartbeatIntervalMs"]),
         "role": first_str(&payload, &["role"]),
     }))
+}
+
+fn verify_disconnect_body(payload: &Value) -> Value {
+    json!({
+        "connectionId": first_str(payload, &["connection_id", "connectionId"]),
+        "connectionCapability": first_str(payload, &["connection_capability", "connectionCapability"]),
+    })
+}
+
+fn ensure_verify_disconnect_success(status: StatusCode, body: &str) -> Result<()> {
+    if status.is_success() {
+        return Ok(());
+    }
+    let trimmed = body.trim();
+    let detail = if trimmed.is_empty() {
+        status.canonical_reason().unwrap_or("error").to_owned()
+    } else {
+        let mut chars = trimmed.chars();
+        let mut bounded = chars
+            .by_ref()
+            .take(VERIFY_ERROR_BODY_MAX_CHARS)
+            .collect::<String>();
+        if chars.next().is_some() {
+            bounded.push('…');
+        }
+        bounded
+    };
+    bail!(
+        "remote runner headless disconnect returned {}: {}",
+        status.as_u16(),
+        detail
+    )
 }
 
 async fn post(config: &Config, path: &str, body: Value) -> Result<Value> {
@@ -1551,6 +1593,40 @@ mod tests {
             AttachRole::Controller
         );
         assert_eq!(attach_connection_role(&[]), AttachRole::Controller);
+    }
+
+    #[test]
+    fn verify_disconnect_retains_private_connection_capability() {
+        let body = verify_disconnect_body(&json!({
+            "connection_id": "conn_verify",
+            "connection_capability": "cap_00112233445566778899aabbccddeeff",
+        }));
+
+        assert_eq!(body["connectionId"], "conn_verify");
+        assert_eq!(
+            body["connectionCapability"],
+            "cap_00112233445566778899aabbccddeeff"
+        );
+    }
+
+    #[test]
+    fn verify_disconnect_rejects_non_success_with_bounded_context() {
+        let long_body = format!("cleanup unavailable: {}", "x".repeat(1_024));
+        let error = ensure_verify_disconnect_success(StatusCode::BAD_GATEWAY, &long_body)
+            .expect_err("non-success cleanup must fail verification")
+            .to_string();
+
+        assert!(error.contains("headless disconnect returned 502"));
+        assert!(error.contains("cleanup unavailable"));
+        assert!(error.ends_with('…'));
+        assert!(error.chars().count() < VERIFY_ERROR_BODY_MAX_CHARS + 100);
+        assert!(ensure_verify_disconnect_success(StatusCode::NO_CONTENT, "").is_ok());
+        assert!(
+            ensure_verify_disconnect_success(StatusCode::BAD_GATEWAY, "")
+                .expect_err("empty error response must still fail")
+                .to_string()
+                .contains("Bad Gateway")
+        );
     }
 
     #[tokio::test]

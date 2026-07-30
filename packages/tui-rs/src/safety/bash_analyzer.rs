@@ -65,9 +65,15 @@ static SAFE_COMMANDS: std::sync::LazyLock<HashSet<&'static str>> = std::sync::La
         "man", "help", "info", // System info
         "date", "cal", "whoami", "id", "groups", "hostname", "uname", "env", "printenv",
         // Modern tools
-        "jq", "yq", "fzf", // Pipeline
-        "tee", "xargs", // Testing
-        "test", "[", "true", "false",
+        "jq", "yq", "fzf", // Testing
+        "test", "[", "true",
+        "false",
+        // NOTE: `tee` and `xargs` are intentionally NOT in this set. Both are
+        // always-writes-or-executes commands as bare program names: `tee`'s
+        // sole purpose is writing its arguments to files (there is no
+        // read-only invocation), and `xargs` executes whatever command is
+        // handed to it (including one built from piped-in, attacker-influenced
+        // data). See CONDITIONALLY_DANGEROUS below.
     ]
     .into_iter()
     .collect()
@@ -229,10 +235,46 @@ static CONDITIONALLY_DANGEROUS: std::sync::LazyLock<HashSet<&'static str>> =
     std::sync::LazyLock::new(|| {
         [
             "mv", "cp", "tar", "zip", "unzip", "gzip", "gunzip", "curl", "wget", "scp", "rsync",
+            "tee", "xargs",
         ]
         .into_iter()
         .collect()
     });
+
+/// GNU `find` predicates that cause `find` to write file contents, delete
+/// paths, or execute arbitrary commands. `find` itself is in `SAFE_COMMANDS`
+/// (it is a read-only directory walk by default), so any of these predicates
+/// slipping through here would let an attacker use "safe" `find` to write to
+/// or execute anything the process can reach -- see `-fprintf`/`-fprint`
+/// below, which write to an arbitrary path with no approval prompt and are
+/// not caught by path containment (containment only applies to the
+/// write/edit tools, never to bash).
+const FIND_DANGEROUS_PREDICATES: &[&str] = &[
+    // Execution
+    "-exec", "-execdir", "-ok", "-okdir", // Deletion
+    "-delete",
+    // Arbitrary-path file writes (the GNU `-f*` family writes to a target
+    // file named as the predicate's argument, independent of any shell
+    // redirection, so the existing "requires approval on `>`" redirect
+    // check never sees it).
+    "-fprintf", "-fprint", "-fprint0", "-fls",
+];
+
+/// True if any token in a `find` invocation's arguments is one of the
+/// predicates in [`FIND_DANGEROUS_PREDICATES`]. Tokens are matched
+/// case-insensitively and with trailing `find`-syntax punctuation
+/// (`;`, `+`, `\`) stripped so `-exec ... \;`/`-exec ... +` can't hide
+/// behind a suffix, mirroring the quoting-aware tokenization already used
+/// for command parsing.
+pub(crate) fn find_has_dangerous_predicate(tokens: &[String]) -> bool {
+    tokens.iter().any(|token| {
+        let normalized = token
+            .to_lowercase()
+            .trim_end_matches([';', '+', '\\'])
+            .to_string();
+        FIND_DANGEROUS_PREDICATES.contains(&normalized.as_str())
+    })
+}
 
 /// Analyze a bash command for safety
 #[must_use]
@@ -429,23 +471,12 @@ pub(crate) fn tokenize(input: &str) -> Vec<String> {
     tokens
 }
 
-/// Skip common command wrappers (env, nice, sudo, etc.)
+/// Skip common command wrappers (nice, command, etc.)
 fn skip_wrappers(tokens: &[String]) -> (&str, &[String]) {
     let mut idx = 0;
 
     while idx < tokens.len() {
         let token = &tokens[idx];
-
-        // Skip env with VAR=value patterns
-        if token == "env" {
-            idx += 1;
-            // Skip env's VAR=value patterns and flags
-            while idx < tokens.len() && (tokens[idx].contains('=') || tokens[idx].starts_with('-'))
-            {
-                idx += 1;
-            }
-            continue;
-        }
 
         // Skip nice with optional -n flag and priority
         if token == "nice" {
@@ -539,6 +570,17 @@ fn determine_risk(
             );
         }
 
+        // Environment variables are an open-ended extension surface for the
+        // wrapped program. A finite denylist cannot prove that an assignment
+        // is harmless (`LESSOPEN`, for example, executes a command inside an
+        // otherwise read-only `less`). Bare `env` only prints the environment,
+        // but every argument-bearing invocation therefore requires approval.
+        if program == "env" && !cmd.args.is_empty() {
+            highest_risk = CommandRisk::RequiresApproval;
+            reason = "env arguments can alter wrapped program behavior".to_string();
+            continue;
+        }
+
         // Check git subcommands
         if program == "git" && !cmd.args.is_empty() {
             let subcommand = cmd.args[0].to_lowercase();
@@ -555,6 +597,17 @@ fn determine_risk(
             } else if highest_risk == CommandRisk::Safe {
                 highest_risk = CommandRisk::RequiresApproval;
                 reason = format!("Unknown git subcommand: {subcommand}");
+            }
+            continue;
+        }
+
+        // `find` is in SAFE_COMMANDS (a bare directory walk is read-only),
+        // but several of its predicates write files, delete paths, or exec
+        // arbitrary commands. Those must not inherit `find`'s safe rating.
+        if program == "find" && find_has_dangerous_predicate(&cmd.args) {
+            if highest_risk == CommandRisk::Safe {
+                highest_risk = CommandRisk::RequiresApproval;
+                reason = "find uses a predicate that can write or execute".to_string();
             }
             continue;
         }
@@ -580,6 +633,9 @@ fn determine_risk(
         // Check if ALL commands in pipe are safe
         let all_safe = commands.iter().all(|cmd| {
             let program = cmd.program.to_lowercase();
+            if program == "find" && find_has_dangerous_predicate(&cmd.args) {
+                return false;
+            }
             SAFE_COMMANDS.contains(program.as_str())
                 || (program == "git"
                     && !cmd.args.is_empty()
@@ -739,23 +795,24 @@ mod tests {
 
     #[test]
     fn test_skip_wrappers() {
-        let tokens = tokenize("env VAR=value nice -n 10 myprogram arg1");
+        let tokens = tokenize("nice -n 10 command myprogram arg1");
         let (program, args) = skip_wrappers(&tokens);
         assert_eq!(program, "myprogram");
         assert_eq!(args, &["arg1"]);
     }
 
     #[test]
-    fn test_sudo_wrapper() {
+    fn test_sudo_and_env_are_not_skipped() {
         // sudo is NOT skipped because it's a privilege escalation indicator
         let tokens = tokenize("sudo -u root rm -rf /tmp/test");
         let (program, _) = skip_wrappers(&tokens);
         assert_eq!(program, "sudo");
 
-        // But env and nice ARE skipped
+        // env is also authority-bearing: assignments can change the behavior
+        // of the wrapped program in program-specific, open-ended ways.
         let tokens = tokenize("env VAR=value sudo rm -rf /tmp");
         let (program, _) = skip_wrappers(&tokens);
-        assert_eq!(program, "sudo");
+        assert_eq!(program, "env");
     }
 
     #[test]
@@ -769,5 +826,154 @@ mod tests {
         let analysis = analyze_bash_command("");
         assert_eq!(analysis.risk, CommandRisk::Safe);
         assert!(analysis.commands.is_empty());
+    }
+
+    // ========================================================================
+    // Security regressions: `env` assignment injection (root cause B)
+    // ========================================================================
+    //
+    // A finite list of loader/interpreter variables is not a proof that the
+    // remaining environment is safe. Programs have their own hooks: GNU
+    // `less`, for example, executes `LESSOPEN` while otherwise looking like a
+    // read-only command. Keep `env` as the parsed program and require approval
+    // for every argument-bearing invocation.
+
+    #[test]
+    fn test_env_arguments_do_not_resolve_to_wrapped_command() {
+        let tokens = tokenize("env LD_PRELOAD=/tmp/evil.so cat /etc/hostname");
+        let (program, args) = skip_wrappers(&tokens);
+        assert_eq!(program, "env");
+        assert_eq!(args[0], "LD_PRELOAD=/tmp/evil.so");
+
+        for command in [
+            "env LD_PRELOAD=/tmp/evil.so cat /etc/hostname",
+            "env LESSOPEN='|sh -c \"echo INJECTED\" %s' less /etc/hostname",
+            "env FOO=bar cat file",
+        ] {
+            let analysis = analyze_bash_command(command);
+            assert_eq!(analysis.risk, CommandRisk::RequiresApproval, "{command}");
+        }
+        assert_eq!(analyze_bash_command("env").risk, CommandRisk::Safe);
+    }
+
+    #[test]
+    fn test_env_dyld_insert_libraries_requires_approval() {
+        let analysis =
+            analyze_bash_command("env DYLD_INSERT_LIBRARIES=/tmp/evil.dylib cat /etc/hostname");
+        assert_eq!(analysis.risk, CommandRisk::RequiresApproval);
+    }
+
+    #[test]
+    fn test_env_other_loader_variables_require_approval() {
+        for cmd in [
+            "env BASH_ENV=/tmp/evil.sh cat file",
+            "env ENV=/tmp/evil.sh cat file",
+            "env PERL5OPT=-Mfoo perl -e 1",
+            "env PYTHONSTARTUP=/tmp/evil.py python -c 1",
+            "env PYTHONPATH=/tmp/evil python -c 1",
+            "env NODE_OPTIONS=--require=/tmp/evil.js node -e 1",
+            "env RUBYOPT=-r/tmp/evil ruby -e 1",
+            "env GIT_SSH_COMMAND=/tmp/evil.sh git log",
+            "env GIT_EDITOR=/tmp/evil.sh git log",
+            "env GIT_ASKPASS=/tmp/evil.sh git log",
+        ] {
+            let analysis = analyze_bash_command(cmd);
+            assert_eq!(
+                analysis.risk,
+                CommandRisk::RequiresApproval,
+                "expected approval for: {cmd}"
+            );
+        }
+    }
+
+    // ========================================================================
+    // Security regressions: `find` file-writing predicates (root cause A)
+    // ========================================================================
+    //
+    // GNU find's `-fprintf`/-fprint`/`-fprint0`/`-fls` write to an arbitrary
+    // path named as their own argument -- independent of shell redirection,
+    // so they bypass both the redirect-approval check and (since containment
+    // only applies to the write/edit tools, never to bash) path containment.
+
+    #[test]
+    fn test_find_write_predicates_require_approval() {
+        for cmd in [
+            "find . -maxdepth 0 -fprintf /home/developer/.bashrc x",
+            "find . -maxdepth 0 -fprint /home/developer/.ssh/authorized_keys",
+            "find . -fprint0 /tmp/out",
+            "find . -fls /tmp/out",
+        ] {
+            let analysis = analyze_bash_command(cmd);
+            assert_eq!(
+                analysis.risk,
+                CommandRisk::RequiresApproval,
+                "expected approval for: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_find_write_predicate_in_pipeline_requires_approval() {
+        // Exercises the separate pipe "all_safe" check (has_pipes branch),
+        // not just the main per-command loop.
+        let analysis = analyze_bash_command(
+            "echo start | find . -maxdepth 0 -fprintf /home/developer/.bashrc x",
+        );
+        assert_eq!(analysis.risk, CommandRisk::RequiresApproval);
+    }
+
+    #[test]
+    fn test_find_write_predicate_in_conjunction_requires_approval() {
+        let analysis =
+            analyze_bash_command("echo start && find . -fprintf /home/developer/.bashrc x");
+        assert_eq!(analysis.risk, CommandRisk::RequiresApproval);
+    }
+
+    #[test]
+    fn test_find_dangerous_predicate_case_and_terminator_insensitive() {
+        // Case-insensitive and with GNU find's `;`/`+` terminator punctuation
+        // attached, mirroring how `-exec ... ;` is already handled.
+        assert!(find_has_dangerous_predicate(&[
+            "-FPRINTF".to_string(),
+            "/tmp/x".to_string()
+        ]));
+        assert!(find_has_dangerous_predicate(&["-delete;".to_string()]));
+    }
+
+    #[test]
+    fn test_find_read_only_predicates_stay_safe() {
+        // These filter/print to stdout only; no filesystem write, so they
+        // must not be swept up by the dangerous-predicate check.
+        assert!(is_likely_safe("find . -newer /etc/passwd"));
+        assert!(is_likely_safe("find . -printf '%h\\n'"));
+        assert!(is_likely_safe("find . -files0-from /etc/passwd"));
+        assert!(!is_likely_safe("find . -delete"));
+    }
+
+    // ========================================================================
+    // Security regressions: `tee`/`xargs` are not safe as bare programs
+    // ========================================================================
+    //
+    // Both were previously in SAFE_COMMANDS with zero args-awareness. Gate 1
+    // (tools::bash::current_requires_approval) happens to omit both from its
+    // own allowlist today, which is why the end-to-end AND-combined system
+    // was not exploitable via these two -- but that made bash_analyzer's own
+    // classification a silent single point of failure. These regressions
+    // ensure this layer is sound on its own.
+
+    #[test]
+    fn test_tee_and_xargs_require_approval() {
+        for cmd in [
+            "tee /tmp/out",
+            "xargs rm -rf",
+            "echo hi | tee /etc/cron.d/backdoor",
+        ] {
+            let analysis = analyze_bash_command(cmd);
+            assert_eq!(
+                analysis.risk,
+                CommandRisk::RequiresApproval,
+                "expected approval for: {cmd}"
+            );
+        }
     }
 }

@@ -343,6 +343,12 @@ pub struct SessionInfo {
     /// None if no metadata entry exists in the session file.
     pub meta: Option<SessionMeta>,
 
+    /// First user message preview, when known.
+    ///
+    /// Only populated by the session-index fast path
+    /// ([`crate::session::collect_sessions`]); header-only listing leaves it None.
+    pub preview: Option<String>,
+
     /// File modification time from filesystem metadata.
     ///
     /// Used for sorting sessions by recency. None if metadata unavailable.
@@ -363,6 +369,11 @@ impl SessionInfo {
                     return format!("{}...", chars[..47].iter().collect::<String>());
                 }
                 return summary.clone();
+            }
+        }
+        if let Some(preview) = self.preview.as_deref().map(str::trim) {
+            if !preview.is_empty() {
+                return preview.to_string();
             }
         }
         format!("Session {}", &self.id[..8.min(self.id.len())])
@@ -528,6 +539,7 @@ impl SessionManager {
                             timestamp: header.timestamp,
                             stats,
                             meta,
+                            preview: None,
                             modified,
                         });
                     }
@@ -1433,6 +1445,7 @@ mod tests {
             timestamp: "2024-01-15T10:30:00Z".to_string(),
             stats: SessionStats::default(),
             meta: None,
+            preview: None,
             modified: None,
         };
 
@@ -1538,6 +1551,7 @@ mod tests {
                 tags: vec![],
                 favorite: false,
             }),
+            preview: None,
             modified: None,
         };
 
@@ -1565,6 +1579,7 @@ mod tests {
                 tags: vec![],
                 favorite: false,
             }),
+            preview: None,
             modified: None,
         };
 
@@ -1593,6 +1608,7 @@ mod tests {
                 tags: vec![],
                 favorite: false,
             }),
+            preview: None,
             modified: None,
         };
 
@@ -1612,6 +1628,7 @@ mod tests {
             timestamp: "2024-01-15T10:30:00Z".to_string(),
             stats: SessionStats::default(),
             meta: None,
+            preview: None,
             modified: None,
         };
 
@@ -1643,6 +1660,7 @@ mod tests {
             timestamp: "2024-01-15T10:30:00Z".to_string(),
             stats: SessionStats::default(),
             meta: None,
+            preview: None,
             modified: None,
         };
 
@@ -1661,6 +1679,7 @@ mod tests {
             timestamp: "2024-01-15T10:30:00Z".to_string(),
             stats: SessionStats::default(),
             meta: None,
+            preview: None,
             modified: None,
         };
 
@@ -1930,6 +1949,7 @@ mod tests {
             timestamp: "2024".to_string(),
             stats: SessionStats::default(),
             meta: None,
+            preview: None,
             modified: None,
         };
 
@@ -1949,6 +1969,7 @@ mod tests {
             timestamp: "2024".to_string(),
             stats: SessionStats::default(),
             meta: None,
+            preview: None,
             modified: None,
         };
 
@@ -2174,6 +2195,7 @@ mod tests {
             stats: SessionStats::default(),
             meta: None,
             modified: None,
+            preview: None,
         };
 
         let result = manager.remove_session_and_checkpoints(&session);
@@ -2233,6 +2255,7 @@ mod tests {
             stats: SessionStats::default(),
             meta: None,
             modified: None,
+            preview: None,
         };
 
         assert!(
@@ -2284,6 +2307,7 @@ mod tests {
             stats: SessionStats::default(),
             meta: None,
             modified: None,
+            preview: None,
         };
 
         assert!(manager.remove_session_and_checkpoints(&session).is_err());
@@ -2346,6 +2370,7 @@ mod tests {
             stats: SessionStats::default(),
             meta: None,
             modified: None,
+            preview: None,
         };
 
         manager

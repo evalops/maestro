@@ -2,6 +2,189 @@ use super::*;
 #[cfg(windows)]
 use crate::tools::bash::resolve_shell_config;
 use tokio::io::{AsyncRead, AsyncReadExt as _};
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+#[cfg(windows)]
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+};
+#[cfg(windows)]
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{
+    OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
+};
+
+async fn begin_mutation_commit(cancellation: Option<&CancellationToken>) -> bool {
+    match cancellation {
+        Some(token) => {
+            tokio::select! {
+                biased;
+                () = token.cancelled() => false,
+                () = std::future::ready(()) => true,
+            }
+        }
+        None => true,
+    }
+}
+
+pub(super) fn indeterminate_mcp_cancellation_result(error: &crate::mcp::McpError) -> ToolResult {
+    ToolResult::failure(format!(
+        "MCP cancellation did not produce an authoritative terminal outcome: {error}; remote \
+         outcome is unknown and must be reconciled before retry"
+    ))
+    .with_details(serde_json::json!({
+        "cancelled": true,
+        "remoteOutcome": "unknown",
+        "retryable": false,
+        "requiresReconciliation": true
+    }))
+}
+
+pub(super) async fn run_pure_blocking<F, T>(work: F) -> Result<T, tokio::task::JoinError>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(work).await
+}
+
+#[cfg(windows)]
+struct OwnedWindowsHandle(HANDLE);
+
+#[cfg(windows)]
+unsafe impl Send for OwnedWindowsHandle {}
+
+#[cfg(windows)]
+impl Drop for OwnedWindowsHandle {
+    fn drop(&mut self) {
+        // SAFETY: this type exclusively owns the valid handle returned by
+        // the corresponding Win32 API call.
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(windows)]
+struct ProcessJobObject(Option<OwnedWindowsHandle>);
+
+#[cfg(windows)]
+impl ProcessJobObject {
+    fn assign(child: &tokio::process::Child) -> std::io::Result<Self> {
+        // SAFETY: null security attributes and name request an unnamed job
+        // object with default security.
+        let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if job.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let job = OwnedWindowsHandle(job);
+
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: limits has the layout and size required by this information
+        // class, and job remains valid for the call.
+        if unsafe {
+            SetInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_ref(&limits).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        let process_handle = child
+            .raw_handle()
+            .ok_or_else(|| std::io::Error::other("spawned process has no handle"))?
+            as HANDLE;
+        // SAFETY: Tokio owns a live process handle until child is dropped.
+        if unsafe { AssignProcessToJobObject(job.0, process_handle) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        Ok(Self(Some(job)))
+    }
+
+    fn disarm(&mut self) -> std::io::Result<()> {
+        let Some(job) = self.0.as_ref() else {
+            return Ok(());
+        };
+        let limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        // SAFETY: limits has the layout and size required by this information
+        // class, and this guard still owns a live job handle for the call.
+        if unsafe {
+            SetInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_ref(&limits).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn terminate(&mut self) {
+        // Closing the kill-on-close handle terminates every process assigned
+        // to the job before callers wait on inherited stdout/stderr pipes.
+        self.0.take();
+    }
+}
+
+#[cfg(windows)]
+fn resume_suspended_process(child: &tokio::process::Child) -> std::io::Result<()> {
+    let pid = child
+        .id()
+        .ok_or_else(|| std::io::Error::other("spawned process has no pid"))?;
+    // SAFETY: the snapshot has no caller-owned backing storage.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    let snapshot = OwnedWindowsHandle(snapshot);
+    let mut entry = THREADENTRY32 {
+        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+        ..THREADENTRY32::default()
+    };
+    let mut resumed = 0usize;
+
+    // SAFETY: entry has the required structure size and remains valid while
+    // the snapshot is enumerated.
+    let mut has_entry = unsafe { Thread32First(snapshot.0, &mut entry) };
+    while has_entry != 0 {
+        if entry.th32OwnerProcessID == pid {
+            // SAFETY: the thread id came from the live system snapshot.
+            let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+            if thread.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let thread = OwnedWindowsHandle(thread);
+            // SAFETY: thread has THREAD_SUSPEND_RESUME access.
+            if unsafe { ResumeThread(thread.0) } == u32::MAX {
+                return Err(std::io::Error::last_os_error());
+            }
+            resumed += 1;
+        }
+        // SAFETY: same initialized snapshot and entry as above.
+        has_entry = unsafe { Thread32Next(snapshot.0, &mut entry) };
+    }
+
+    if resumed == 0 {
+        return Err(std::io::Error::other(
+            "spawned process had no resumable threads",
+        ));
+    }
+    Ok(())
+}
 
 pub(super) struct ProcessRunResult {
     pub(super) stdout: String,
@@ -236,10 +419,23 @@ pub(super) async fn run_process_limited_stdout_lines(
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     configure_process_group(&mut command);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        // Suspend before a shell can spawn descendants, assign it to a
+        // kill-on-close job after spawn, then resume it below.
+        command.as_std_mut().creation_flags(CREATE_SUSPENDED);
+    }
 
     let mut child = command
         .spawn()
         .map_err(|err| format!("Failed to start {program}: {err}"))?;
+    #[cfg(windows)]
+    let mut process_job = ProcessJobObject::assign(&child)
+        .map_err(|err| format!("Failed to contain {program} process tree: {err}"))?;
+    #[cfg(windows)]
+    resume_suspended_process(&child)
+        .map_err(|err| format!("Failed to resume {program} process: {err}"))?;
     let stdout = child
         .stdout
         .take()
@@ -260,6 +456,8 @@ pub(super) async fn run_process_limited_stdout_lines(
         let mut truncated = false;
         if line_limit == 0 {
             truncated = true;
+            #[cfg(windows)]
+            process_job.terminate();
             terminate_child(&mut child).await;
         }
         'read_stdout: loop {
@@ -274,6 +472,8 @@ pub(super) async fn run_process_limited_stdout_lines(
             for byte in &buffer[..read] {
                 if lines.len() >= line_limit {
                     truncated = true;
+                    #[cfg(windows)]
+                    process_job.terminate();
                     terminate_child(&mut child).await;
                     break 'read_stdout;
                 }
@@ -282,6 +482,8 @@ pub(super) async fn run_process_limited_stdout_lines(
                     current_line.clear();
                     if lines.len() >= line_limit {
                         truncated = true;
+                        #[cfg(windows)]
+                        process_job.terminate();
                         terminate_child(&mut child).await;
                         break 'read_stdout;
                     }
@@ -291,6 +493,8 @@ pub(super) async fn run_process_limited_stdout_lines(
                     truncated = true;
                     lines.push(lossy_line(&current_line));
                     current_line.clear();
+                    #[cfg(windows)]
+                    process_job.terminate();
                     terminate_child(&mut child).await;
                     break 'read_stdout;
                 }
@@ -301,6 +505,8 @@ pub(super) async fn run_process_limited_stdout_lines(
         if !current_line.is_empty() {
             if lines.len() >= line_limit {
                 truncated = true;
+                #[cfg(windows)]
+                process_job.terminate();
                 terminate_child(&mut child).await;
             } else {
                 lines.push(lossy_line(&current_line));
@@ -321,6 +527,8 @@ pub(super) async fn run_process_limited_stdout_lines(
             Ok(Ok(result)) => result,
             Ok(Err(err)) => return Err(err),
             Err(_) => {
+                #[cfg(windows)]
+                process_job.terminate();
                 terminate_child(&mut child).await;
                 let _ = child.wait().await;
                 let _ = stderr_task.await;
@@ -328,6 +536,10 @@ pub(super) async fn run_process_limited_stdout_lines(
             }
         };
     let stderr = stderr_task.await.unwrap_or_default();
+    #[cfg(windows)]
+    process_job
+        .disarm()
+        .map_err(|err| format!("Failed to release {program} process tree: {err}"))?;
 
     Ok(ProcessRunResult {
         stdout: lines.join("\n"),
@@ -590,13 +802,20 @@ impl ToolExecutor {
             };
 
             let call_result = match cancel.as_ref() {
-                Some(token) => tokio::select! {
-                    biased;
-                    () = token.cancelled() => {
-                        return cancelled_tool_result("MCP tool cancelled");
+                Some(token) => {
+                    match client
+                        .call_tool_with_metadata_cancellable(tool_name, args.clone(), token)
+                        .await
+                    {
+                        Err(crate::mcp::McpError::Cancelled) => {
+                            return cancelled_tool_result("MCP tool cancelled");
+                        }
+                        Err(error @ crate::mcp::McpError::Indeterminate(_)) => {
+                            return indeterminate_mcp_cancellation_result(&error);
+                        }
+                        result => result,
                     }
-                    result = client.call_tool_with_metadata(tool_name, args.clone()) => result,
-                },
+                }
                 None => {
                     client
                         .call_tool_with_metadata(tool_name, args.clone())
@@ -770,6 +989,20 @@ impl ToolExecutor {
 
                 if let Some(ext) = extension.as_deref() {
                     if ext == "pdf" {
+                        if let Ok(metadata) = tokio::fs::metadata(&path).await {
+                            let size_bytes = metadata.len();
+                            if size_bytes > MAX_READ_SIZE_BYTES {
+                                let size_mb = (size_bytes as f64) / (1024.0 * 1024.0);
+                                let details = ReadDetails::new(path.clone())
+                                    .with_size(size_bytes)
+                                    .with_mime_type("application/pdf")
+                                    .with_duration(start_time.elapsed().as_millis() as u64);
+                                return ToolResult::failure(format!(
+                                    "File is too large ({size_mb:.2}MB). Maximum size is 10MB."
+                                ))
+                                .with_details(details.to_json());
+                            }
+                        }
                         let bytes = match tokio::fs::read(&path).await {
                             Ok(data) => data,
                             Err(err) => {
@@ -779,14 +1012,29 @@ impl ToolExecutor {
                                     .with_details(details.to_json());
                             }
                         };
-                        let text = match pdf_extract::extract_text_from_mem(&bytes) {
-                            Ok(text) => text,
-                            Err(err) => {
+                        let size_bytes = bytes.len() as u64;
+                        let text = match run_pure_blocking(move || {
+                            pdf_extract::extract_text_from_mem(&bytes)
+                                .map_err(|err| err.to_string())
+                        })
+                        .await
+                        {
+                            Ok(Ok(text)) => text,
+                            Ok(Err(err)) => {
                                 let details = ReadDetails::new(path.clone())
                                     .with_duration(start_time.elapsed().as_millis() as u64)
                                     .with_mime_type("application/pdf");
                                 return ToolResult::failure(format!(
                                     "Failed to extract PDF: {err}"
+                                ))
+                                .with_details(details.to_json());
+                            }
+                            Err(err) => {
+                                let details = ReadDetails::new(path.clone())
+                                    .with_duration(start_time.elapsed().as_millis() as u64)
+                                    .with_mime_type("application/pdf");
+                                return ToolResult::failure(format!(
+                                    "PDF extraction worker failed: {err}"
                                 ))
                                 .with_details(details.to_json());
                             }
@@ -797,7 +1045,7 @@ impl ToolExecutor {
                             output = format!("```{fence_language}\n{output}\n```");
                         }
                         let details = ReadDetails::new(path.clone())
-                            .with_size(bytes.len() as u64)
+                            .with_size(size_bytes)
                             .with_mime_type("application/pdf")
                             .with_duration(start_time.elapsed().as_millis() as u64);
                         return ToolResult::success(output).with_details(details.to_json());
@@ -1094,6 +1342,9 @@ impl ToolExecutor {
                     }
                 }
 
+                if !begin_mutation_commit(cancel.as_ref()).await {
+                    return cancelled_tool_result("write cancelled");
+                }
                 if let Some(parent) = std::path::Path::new(&path).parent() {
                     if let Err(e) = tokio::fs::create_dir_all(parent).await {
                         let details = WriteDetails::new(path.clone())
@@ -1502,6 +1753,9 @@ impl ToolExecutor {
                     .with_details(details.to_json());
                 }
 
+                if !begin_mutation_commit(cancel.as_ref()).await {
+                    return cancelled_tool_result("edit cancelled");
+                }
                 let tmp_path = format!("{}.{}.tmp", path, uuid::Uuid::new_v4());
                 let write_result = async {
                     tokio::fs::write(&tmp_path, &new_content).await?;
@@ -1985,15 +2239,24 @@ impl ToolExecutor {
                     }
                 }
             }
-            "todo" => todo::todo(args.clone()).await,
+            "todo" => todo::todo_with_cancellation(args.clone(), cancel.as_ref()).await,
             "ask_user" => ask_user::ask_user(args.clone()),
-            "extract_document" => extract_document::extract_document(args.clone()).await,
-            "notebook_edit" => notebook_edit::notebook_edit(args.clone(), &self.cwd).await,
+            "extract_document" => {
+                extract_document::extract_document_with_cancellation(args.clone(), cancel).await
+            }
+            "notebook_edit" => {
+                notebook_edit::notebook_edit_with_cancellation(
+                    args.clone(),
+                    &self.cwd,
+                    cancel.as_ref(),
+                )
+                .await
+            }
             "websearch" => exa::websearch(args.clone()).await,
             "codesearch" => exa::codesearch(args.clone()).await,
-            "gh_pr" => gh::gh_pr(args.clone(), &self.cwd).await,
-            "gh_issue" => gh::gh_issue(args.clone()).await,
-            "gh_repo" => gh::gh_repo(args.clone(), &self.cwd).await,
+            "gh_pr" => gh::gh_pr(args.clone(), &self.cwd, cancel.as_ref()).await,
+            "gh_issue" => gh::gh_issue(args.clone(), cancel.as_ref()).await,
+            "gh_repo" => gh::gh_repo(args.clone(), &self.cwd, cancel.as_ref()).await,
             "mcp_list_resources" => {
                 let server_filter = args.get("server").and_then(|v| v.as_str());
                 let client = match self.ensure_mcp_client().await {
@@ -2492,9 +2755,10 @@ impl ToolExecutor {
                         &self.credential_vault,
                         generation,
                         self.inline_executor
-                            .execute_with_environment(
+                            .execute_cancellable_with_environment(
                                 inline_tool,
                                 args.clone(),
+                                cancel.as_ref(),
                                 approved_inline_env,
                             )
                             .await,

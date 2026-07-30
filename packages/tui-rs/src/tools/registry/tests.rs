@@ -1,14 +1,19 @@
 use super::*;
 use std::path::Path;
 
-use crate::agent::{DenialReason, ExecutionSource, ToolOutcome, ToolReceiptDetails};
+use crate::agent::{
+    DenialReason, ExecutionSource, ExecutionStatus, ToolExecution, ToolOutcome, ToolReceiptDetails,
+};
 use crate::tools::details;
 use crate::tools::inline::{InlineToolDef, InlineToolSource, ToolAnnotations};
 use crate::tools::registry::execute::{
     build_windows_grep_fallback_process_from_shell_config, build_windows_grep_shell_command,
     build_windows_list_shell_command, process_succeeded_or_truncated, run_grep_with_fallback,
-    run_process_limited_stdout_lines, MAX_PROCESS_STDERR_BYTES, MAX_PROCESS_STDOUT_LINE_BYTES,
+    run_process_limited_stdout_lines, run_pure_blocking, MAX_PROCESS_STDERR_BYTES,
+    MAX_PROCESS_STDOUT_LINE_BYTES,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
 /// Build a minimal `InlineTool` for tests, bypassing `.composer/tools.json`
 /// and the real workspace-trust check entirely.
@@ -64,6 +69,57 @@ fn write_mcp_config(config_dir: &Path, servers: Vec<serde_json::Value>) -> std::
         serde_json::to_string(&serde_json::json!({ "servers": servers }))
             .expect("serialize mcp config"),
     )
+}
+
+async fn read_http_request_body(socket: &mut TcpStream) -> Option<String> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0u8; 1024];
+    loop {
+        let read = socket.read(&mut buffer).await.ok()?;
+        if read == 0 {
+            return None;
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+        if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+
+    let header_end = bytes.windows(4).position(|window| window == b"\r\n\r\n")?;
+    let headers = String::from_utf8_lossy(&bytes[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    let body_start = header_end + 4;
+    while bytes.len() < body_start + content_length {
+        let read = socket.read(&mut buffer).await.ok()?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+    Some(String::from_utf8_lossy(&bytes[body_start..body_start + content_length]).into_owned())
+}
+
+async fn write_http_json(socket: &mut TcpStream, body: &serde_json::Value) {
+    let body = body.to_string();
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = socket.write_all(response.as_bytes()).await;
+}
+
+async fn write_http_accepted(socket: &mut TcpStream) {
+    let _ = socket
+        .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        .await;
 }
 
 fn collect_openai_schema_issues(value: &serde_json::Value, path: &str, issues: &mut Vec<String>) {
@@ -773,6 +829,63 @@ async fn test_executor_read_file_too_large() {
 }
 
 #[tokio::test]
+async fn test_executor_read_pdf_rejects_oversized_input_before_parsing() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("large.pdf");
+    let data = vec![b'a'; (MAX_READ_SIZE_BYTES + 1) as usize];
+    std::fs::write(&file_path, data).unwrap();
+
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let args = serde_json::json!({"file_path": file_path.to_str().unwrap()});
+    let result = executor.execute("read", &args, None, "test-call").await;
+
+    assert!(!result.success);
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .to_lowercase()
+        .contains("too large"));
+}
+
+#[tokio::test]
+async fn test_pure_pdf_parse_work_can_detach_on_cancellation() {
+    let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let worker_release = Arc::clone(&release);
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+
+    let task = tokio::spawn(async move {
+        run_pure_blocking(move || {
+            let _ = started_tx.send(());
+            let (lock, wake) = &*worker_release;
+            let mut released = lock.lock().unwrap();
+            while !*released {
+                released = wake.wait(released).unwrap();
+            }
+            let _ = finished_tx.send(());
+        })
+        .await
+    });
+    started_rx
+        .await
+        .expect("blocking parser fixture must start");
+
+    task.abort();
+    tokio::time::timeout(std::time::Duration::from_millis(250), task)
+        .await
+        .expect("cancelling read must not wait for pure PDF parsing")
+        .expect_err("parser task should be cancelled");
+
+    let (lock, wake) = &*release;
+    *lock.lock().unwrap() = true;
+    wake.notify_all();
+    tokio::time::timeout(std::time::Duration::from_secs(2), finished_rx)
+        .await
+        .expect("detached parser fixture should finish after release")
+        .expect("parser fixture completion channel should remain open");
+}
+
+#[tokio::test]
 async fn test_executor_write_file() {
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("output.txt");
@@ -1172,6 +1285,120 @@ async fn test_limited_process_reader_reaps_timed_out_process() {
         started.elapsed() < std::time::Duration::from_secs(2),
         "timeout path should return promptly after killing the child"
     );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn test_limited_process_reader_cancellation_kills_spawned_job_tree() {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("child.pid");
+    let pid_path = pid_file.to_string_lossy().replace('\'', "''");
+    let args = vec![
+        "-NoProfile".to_string(),
+        "-Command".to_string(),
+        format!(
+            "$child = Start-Process powershell.exe -ArgumentList '-NoProfile', \
+             '-Command', 'Start-Sleep -Seconds 60' -PassThru; \
+             Set-Content -LiteralPath '{pid_path}' -Value $child.Id; \
+             $child.WaitForExit()"
+        ),
+    ];
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let task = tokio::spawn(async move {
+        run_process_limited_stdout_lines("powershell.exe", &args, &cwd, 60_000, 10).await
+    });
+    for _ in 0..200 {
+        if pid_file.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let pid: u32 = std::fs::read_to_string(&pid_file)
+        .expect("list subprocess must publish descendant pid")
+        .trim()
+        .parse()
+        .unwrap();
+
+    task.abort();
+    let _ = task.await;
+    for _ in 0..200 {
+        // SAFETY: this opens a query-only handle to the pid published by the
+        // test child. A null result means the process no longer exists.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return;
+        }
+        // SAFETY: handle is a live query-only handle owned by this iteration.
+        unsafe {
+            CloseHandle(handle);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("list descendant process {pid} survived cancellation");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn test_successful_limited_process_reader_keeps_spawned_descendant_alive() {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("child.pid");
+    let stdout_file = dir.path().join("child.stdout");
+    let stderr_file = dir.path().join("child.stderr");
+    let pid_path = pid_file.to_string_lossy().replace('\'', "''");
+    let stdout_path = stdout_file.to_string_lossy().replace('\'', "''");
+    let stderr_path = stderr_file.to_string_lossy().replace('\'', "''");
+    let args = vec![
+        "-NoProfile".to_string(),
+        "-Command".to_string(),
+        format!(
+            "$child = Start-Process powershell.exe -ArgumentList '-NoProfile', \
+             '-Command', 'Start-Sleep -Seconds 60' -RedirectStandardOutput \
+             '{stdout_path}' -RedirectStandardError '{stderr_path}' -PassThru; \
+             Set-Content -LiteralPath '{pid_path}' -Value $child.Id"
+        ),
+    ];
+    let result = run_process_limited_stdout_lines(
+        "powershell.exe",
+        &args,
+        dir.path().to_str().unwrap(),
+        10_000,
+        10,
+    )
+    .await
+    .expect("successful list shell should exit");
+    assert!(process_succeeded_or_truncated(&result, &[0]));
+    let pid: u32 = std::fs::read_to_string(&pid_file)
+        .expect("list subprocess must publish descendant pid")
+        .trim()
+        .parse()
+        .unwrap();
+
+    // SAFETY: the pid was published by the successful test subprocess.
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+            0,
+            pid,
+        )
+    };
+    assert!(
+        !handle.is_null(),
+        "successful list shell killed its persistent descendant"
+    );
+    // SAFETY: handle grants PROCESS_TERMINATE and is closed below.
+    assert_ne!(unsafe { TerminateProcess(handle, 0) }, 0);
+    // SAFETY: handle is exclusively owned by this test.
+    unsafe {
+        CloseHandle(handle);
+    }
 }
 
 #[tokio::test]
@@ -2045,39 +2272,199 @@ async fn pinned_bash_version_flows_into_receipt_and_session_json() {
     );
 }
 
-/// Partial coverage for issue #3154: before this, `cancel` (already threaded
-/// generically through `execute_impl`) was only ever consumed by the bash
-/// arm, so Ctrl+C during a `web_fetch` call looked responsive (the turn
-/// ended) while the request kept running to its own timeout, detached, in
-/// the background. A pre-cancelled token must short-circuit the fetch
-/// instead of ever awaiting the real request.
-///
-/// This does not cover every other affected tool (`extract_document`, `exa`,
-/// `gh`, `read`, `write`, `edit`, `grep`, `glob`) -- those still ignore
-/// `cancel` and are tracked as a follow-up.
+/// Cancellation is enforced above every non-process-owning tool execution,
+/// so even tools whose implementation does not consume the token (including
+/// MCP calls) cannot hold shutdown open on an uncooperative remote request.
+/// A pre-cancelled token must win before a fast local tool can complete.
 #[tokio::test]
-async fn web_fetch_is_cancelled_instead_of_making_the_request() {
+async fn non_process_tool_is_cancelled_before_execution() {
     let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("cancel-me.txt"), "must not be returned")
+        .expect("write read fixture");
     let executor = ToolExecutor::new(dir.path().display().to_string());
     let cancel = CancellationToken::new();
     cancel.cancel();
 
     let execution = executor
         .execute_with_receipt_cancellable(
-            "web_fetch",
-            &serde_json::json!({"url": "https://example.invalid/should-not-be-fetched"}),
+            "read",
+            &serde_json::json!({"path": "cancel-me.txt"}),
             None,
-            "call-cancel-web-fetch",
+            "call-cancel-read",
             cancel,
         )
         .await;
 
     assert!(execution.is_error());
     assert!(execution.model_content().to_lowercase().contains("cancel"));
+
+    let first_real_attempt = executor
+        .execute(
+            "read",
+            &serde_json::json!({"path": "cancel-me.txt"}),
+            None,
+            "retry",
+        )
+        .await;
+    assert!(first_real_attempt.success);
+    assert!(first_real_attempt.output.contains("must not be returned"));
+    let stats = executor.cache_stats();
+    assert_eq!(
+        (stats.hits, stats.misses),
+        (0, 1),
+        "synthetic cancellation must bypass the cache entirely"
+    );
     assert!(matches!(
         execution.receipt.status,
         crate::agent::ExecutionStatus::Cancelled { .. }
     ));
+}
+
+#[tokio::test]
+async fn pre_cancelled_tool_does_not_return_a_warm_cached_success() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("cached.txt"), "cached content").expect("read fixture");
+    let executor = ToolExecutor::new(dir.path().display().to_string());
+    let args = serde_json::json!({"path":"cached.txt"});
+
+    let warm = executor
+        .execute_with_receipt("read", &args, None, "warm-cache")
+        .await;
+    assert!(!warm.is_error());
+
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let cancelled = executor
+        .execute_with_receipt_cancellable("read", &args, None, "cancelled-cache-hit", cancel)
+        .await;
+
+    assert!(matches!(
+        cancelled.receipt.status,
+        ExecutionStatus::Cancelled { .. }
+    ));
+    assert!(!matches!(cancelled.receipt.source, ExecutionSource::Cache));
+    let stats = executor.cache_stats();
+    assert_eq!(
+        (stats.hits, stats.misses),
+        (0, 1),
+        "pre-cancelled invocation must not consult the warm cache"
+    );
+}
+
+#[tokio::test]
+async fn pre_cancelled_mutations_do_not_start_filesystem_transactions() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let edit_path = dir.path().join("edit.txt");
+    let notebook_path = dir.path().join("fixture.ipynb");
+    std::fs::write(&edit_path, "before").expect("edit fixture");
+    std::fs::write(
+        &notebook_path,
+        r#"{"cells":[{"id":"one","cell_type":"code","source":["before"],"metadata":{},"execution_count":null,"outputs":[]}],"metadata":{},"nbformat":4,"nbformat_minor":5}"#,
+    )
+    .expect("notebook fixture");
+    let original_notebook = std::fs::read(&notebook_path).expect("read notebook fixture");
+    let executor = ToolExecutor::new(dir.path().display().to_string());
+
+    let cases = [
+        (
+            "write",
+            serde_json::json!({"path":"new/blocked.txt","content":"after"}),
+        ),
+        (
+            "edit",
+            serde_json::json!({"path":"edit.txt","oldText":"before","newText":"after"}),
+        ),
+        (
+            "notebook_edit",
+            serde_json::json!({
+                "path":"fixture.ipynb",
+                "cell_id":"one",
+                "new_source":"after",
+                "edit_mode":"replace"
+            }),
+        ),
+        ("todo", serde_json::json!({"goal":"must-not-persist"})),
+    ];
+
+    for (tool, args) in cases {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let execution = executor
+            .execute_with_receipt_cancellable(
+                tool,
+                &args,
+                None,
+                &format!("pre-cancel-{tool}"),
+                cancel,
+            )
+            .await;
+        assert!(
+            matches!(execution.receipt.status, ExecutionStatus::Cancelled { .. }),
+            "{tool} did not return a typed cancellation: {:?}",
+            execution.receipt.status
+        );
+    }
+
+    assert!(
+        !dir.path().join("new").exists(),
+        "write created its parent directory after cancellation"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&edit_path).unwrap(),
+        "before",
+        "edit changed its target after cancellation"
+    );
+    assert_eq!(
+        std::fs::read(&notebook_path).unwrap(),
+        original_notebook,
+        "notebook_edit changed its target after cancellation"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn inline_cancellation_produces_a_typed_cancelled_receipt() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let executor = ToolExecutor::with_inline_tools_for_test(
+        dir.path().display().to_string(),
+        vec![test_inline_tool("slow_inline", "sleep 10")],
+    );
+    let cancel = CancellationToken::new();
+    let trigger = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        trigger.cancel();
+    });
+
+    let execution = tokio::time::timeout(
+        Duration::from_secs(2),
+        executor.execute_with_receipt_cancellable(
+            "slow_inline",
+            &serde_json::json!({}),
+            None,
+            "call-cancel-inline",
+            cancel,
+        ),
+    )
+    .await
+    .expect("inline cancellation must not wait for the configured timeout");
+
+    assert!(matches!(
+        execution.receipt.status,
+        ExecutionStatus::Cancelled { .. }
+    ));
+}
+
+#[test]
+fn cancellation_cleanup_owners_finish_instead_of_being_dropped() {
+    let executor = ToolExecutor::new(".");
+    for tool in ["write", "edit", "notebook_edit", "todo", "extract_document"] {
+        assert!(
+            executor.owns_cancellation_cleanup(tool),
+            "{tool} must complete its cancellation cleanup"
+        );
+    }
+    assert!(!executor.owns_cancellation_cleanup("read"));
 }
 
 #[tokio::test]
@@ -2119,4 +2506,194 @@ async fn mcp_call_honors_cancellation_before_client_setup() {
         ),
         "a later uncancelled attempt must not reuse the cancellation result"
     );
+}
+
+#[test]
+fn failed_mcp_cancellation_delivery_is_indeterminate_and_non_retryable() {
+    let result = super::execute::indeterminate_mcp_cancellation_result(
+        &crate::mcp::McpError::ConnectionFailed(
+            "Timed out delivering cancellation notification".to_string(),
+        ),
+    );
+
+    assert_eq!(result.details.as_ref().unwrap()["remoteOutcome"], "unknown");
+    assert_eq!(result.details.as_ref().unwrap()["retryable"], false);
+    let execution = ToolExecution::from_legacy(
+        "call-indeterminate-mcp",
+        "mcp__example__mutate",
+        ExecutionSource::Native,
+        result,
+    );
+    assert!(
+        matches!(execution.receipt.status, ExecutionStatus::Indeterminate),
+        "failed cancellation delivery must block an automatic retry: {execution:?}"
+    );
+}
+
+#[tokio::test]
+async fn mcp_dispatch_propagates_cancellation_to_the_server() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
+    let addr = listener.local_addr().expect("server address");
+    let (call_tx, mut call_rx) = tokio::sync::mpsc::unbounded_channel::<u64>();
+    let (cancel_tx, mut cancel_rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+    let server_cancel = CancellationToken::new();
+    let side_effect_completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let server = tokio::spawn({
+        let server_cancel = server_cancel.clone();
+        let side_effect_completed = Arc::clone(&side_effect_completed);
+        async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.expect("accept request");
+                let call_tx = call_tx.clone();
+                let cancel_tx = cancel_tx.clone();
+                let server_cancel = server_cancel.clone();
+                let side_effect_completed = Arc::clone(&side_effect_completed);
+                tokio::spawn(async move {
+                    let body = read_http_request_body(&mut socket)
+                        .await
+                        .expect("request body");
+                    let request: serde_json::Value =
+                        serde_json::from_str(&body).expect("JSON-RPC request");
+                    let method = request["method"].as_str().unwrap_or_default();
+                    let id = request["id"].as_u64();
+
+                    match method {
+                        "initialize" => {
+                            write_http_json(
+                                &mut socket,
+                                &serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "result": {
+                                        "protocolVersion": "2024-11-05",
+                                        "capabilities": {"tools": {}},
+                                        "serverInfo": {"name": "cancel-test", "version": "1.0.0"}
+                                    }
+                                }),
+                            )
+                            .await;
+                        }
+                        "tools/list" => {
+                            write_http_json(
+                                &mut socket,
+                                &serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "result": {
+                                        "tools": [{
+                                            "name": "mutate",
+                                            "description": "test mutation",
+                                            "inputSchema": {"type": "object"}
+                                        }]
+                                    }
+                                }),
+                            )
+                            .await;
+                        }
+                        "resources/list" => {
+                            write_http_json(
+                                &mut socket,
+                                &serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "result": {"resources": []}
+                                }),
+                            )
+                            .await;
+                        }
+                        "prompts/list" => {
+                            write_http_json(
+                                &mut socket,
+                                &serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "result": {"prompts": []}
+                                }),
+                            )
+                            .await;
+                        }
+                        "tools/call" => {
+                            call_tx
+                                .send(id.expect("tool call id"))
+                                .expect("report call");
+                            tokio::select! {
+                                () = server_cancel.cancelled() => {}
+                                () = tokio::time::sleep(Duration::from_millis(250)) => {
+                                    side_effect_completed.store(true, std::sync::atomic::Ordering::SeqCst);
+                                }
+                            }
+                        }
+                        "notifications/cancelled" => {
+                            server_cancel.cancel();
+                            cancel_tx.send(request).expect("report cancellation");
+                            write_http_accepted(&mut socket).await;
+                        }
+                        _ => write_http_accepted(&mut socket).await,
+                    }
+                });
+            }
+        }
+    });
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config_dir = dir.path().join(".composer");
+    std::fs::create_dir_all(&config_dir).expect("create config dir");
+    write_mcp_config(
+        &config_dir,
+        vec![serde_json::json!({
+            "name": "cancel-routing",
+            "transport": "http",
+            "url": format!("http://{addr}"),
+            "timeout": 2_000,
+            "requiresProjectApproval": false
+        })],
+    )
+    .expect("write MCP config");
+
+    let executor = ToolExecutor::new(dir.path().display().to_string());
+    let cancel = CancellationToken::new();
+    let (call_id_tx, call_id_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn({
+        let cancel = cancel.clone();
+        async move {
+            let request_id = call_rx.recv().await.expect("server saw tool call");
+            call_id_tx.send(request_id).expect("report request id");
+            cancel.cancel();
+        }
+    });
+
+    let execution = tokio::time::timeout(
+        Duration::from_secs(3),
+        executor.execute_with_receipt_cancellable(
+            "mcp__cancel-routing__mutate",
+            &serde_json::json!({}),
+            None,
+            "call-cancel-routing",
+            cancel,
+        ),
+    )
+    .await
+    .expect("MCP cancellation must finish promptly");
+
+    assert!(matches!(
+        execution.receipt.status,
+        ExecutionStatus::Indeterminate
+    ));
+    let notification = tokio::time::timeout(Duration::from_secs(1), cancel_rx.recv())
+        .await
+        .expect("cancellation notification timeout")
+        .expect("server saw cancellation notification");
+    assert_eq!(notification["method"], "notifications/cancelled");
+    assert_eq!(
+        notification["params"]["requestId"],
+        call_id_rx.await.expect("tool request id")
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !side_effect_completed.load(std::sync::atomic::Ordering::SeqCst),
+        "the simulated remote mutation must stop when its correlated cancellation arrives"
+    );
+
+    server.abort();
 }

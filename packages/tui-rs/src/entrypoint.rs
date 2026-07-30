@@ -23,7 +23,7 @@
 // crates (packages) are declared in Cargo.toml, and we import specific
 // items from them.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 // `anyhow::Result` is a convenient error type that can hold any error.
 // It's shorthand for `Result<T, anyhow::Error>` and is great for applications
 // (as opposed to libraries) because it simplifies error handling.
@@ -43,11 +43,22 @@ use crate::tools::cleanup_background_processes;
 use crate::hosted_runner_cli::run_hosted_runner_cli_from_env;
 use crate::sandbox::SandboxPolicy;
 
+/// SIGINT/SIGTERM/SIGHUP (Unix) / console-event (Windows) handling for the
+/// interactive path: flushes the session writer, cleans up tracked
+/// background processes, and restores the terminal on an externally
+/// delivered shutdown signal. See its module docs for the full design.
+mod shutdown_signal;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER FUNCTIONS
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NATIVE_UTILITY_COMMANDS: [&str; 35] = [
+/// The canonical set of native utility subcommands. This is the single
+/// source of truth for which first-level argv tokens dispatch to the
+/// utility handler instead of the interactive TUI, headless server, or
+/// exec/print bridges; `packages/maestro-rs` no longer keeps an independent
+/// copy of this list (see `maestro::cli::classify`).
+pub const NATIVE_UTILITY_COMMANDS: [&str; 35] = [
     "acp",
     "sessions",
     "search",
@@ -114,7 +125,10 @@ const GLOBAL_FLAGS_WITH_VALUES: [&str; 26] = [
     "--record-scenario",
 ];
 
-fn native_utility_tokens(raw_args: &[std::ffi::OsString]) -> Option<Vec<String>> {
+/// Recognize a utility-subcommand invocation and reconstruct its forwarded
+/// tokens. Returns `None` when `raw_args` should instead reach the
+/// interactive TUI, headless server, or exec/print bridge.
+pub fn native_utility_tokens(raw_args: &[std::ffi::OsString]) -> Option<Vec<String>> {
     let mut forwarded_prefix = Vec::new();
     let mut index = 0;
     while index < raw_args.len() {
@@ -708,13 +722,17 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
     // Lightweight CLI helpers (no TUI / no full interactive loop). Utility
     // argument normalization lives here so the package shim can forward argv.
     if let Some(profile) = native_profile(&raw_args[1..]) {
-        // SAFETY: this process has not started worker threads yet. The profile is
-        // converted to the same environment contract used by Rust config loading.
+        // SAFETY: `run_cli` is the sole top-level future of this process's
+        // `#[tokio::main]` body and this runs before its first `.await` or
+        // `tokio::spawn`, so no other task can be concurrently reading or
+        // writing the environment even though the runtime's (idle) worker
+        // threads already exist. The profile is converted to the same
+        // environment contract used by Rust config loading.
         unsafe { std::env::set_var("MAESTRO_PROFILE", profile) };
     }
     let config_overrides = native_config_overrides(&raw_args[1..]);
     if !config_overrides.is_empty() {
-        // SAFETY: utility dispatch occurs before worker threads are started.
+        // SAFETY: see above — still before this task's first `.await` or spawn.
         unsafe {
             std::env::set_var(
                 "MAESTRO_CLI_CONFIG_OVERRIDES",
@@ -806,16 +824,100 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
     std::process::exit(exit_code);
 }
 
-/// Agent dispatch shared by the interactive TUI, exec, print, and headless
-/// modes. Returns the process exit code instead of exiting directly so the
-/// caller can run worktree teardown first.
-async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
+/// Which fast path (if any) `run_agent` takes before falling back to the
+/// full clap-derived `Args` parse. This is the single decision point for the
+/// `headless`/`rpc`/`fork`/`exec`/`print` subcommand words, consumed by `run_agent`
+/// and exercised directly by `tests/entrypoint.rs` so a routing change
+/// here can't silently drift from what the test matrix expects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentEntry {
+    /// First argv token is `headless` or `rpc`.
+    HeadlessSubcommand,
+    /// First argv token is `fork`.
+    ForkSubcommand,
+    /// First argv token is `exec` or `print`; carries the literal word for
+    /// the usage message.
+    ExecOrPrintSubcommand(&'static str),
+    /// Falls through to `Args::try_parse_from` (interactive TUI, `-p`,
+    /// `--headless`/`--rpc` flags, unknown commands, `--help`/`--version`
+    /// on the `maestro-tui` binary directly, or a parse error).
+    ClapParsed,
+}
+
+/// Classify the first argv token for `run_agent`'s subcommand fast path.
+pub fn classify_agent_entry(raw_args: &[std::ffi::OsString]) -> AgentEntry {
     if let Some(cmd) = raw_args.get(1).and_then(|a| a.to_str()) {
         if cmd == "headless" || cmd == "rpc" {
+            return AgentEntry::HeadlessSubcommand;
+        }
+        if cmd == "fork" {
+            return AgentEntry::ForkSubcommand;
+        }
+        if cmd == "exec" {
+            return AgentEntry::ExecOrPrintSubcommand("exec");
+        }
+        if cmd == "print" {
+            return AgentEntry::ExecOrPrintSubcommand("print");
+        }
+    }
+    AgentEntry::ClapParsed
+}
+
+/// What `AgentEntry::ClapParsed` resolves to once the argv is actually run
+/// through the real `Args` clap derive. Mirrors the branching `run_agent`
+/// performs on its own parsed `Args` (see the `args.headless || args.rpc`
+/// and `args.print` checks below); kept alongside `classify_agent_entry` so
+/// `tests/entrypoint.rs` exercises the production `Args` parser directly
+/// for flag-driven routing (`-p`, `--headless`, `--rpc`, `--mode=headless`)
+/// rather than re-describing clap's flag names in the test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClapDispatch {
+    /// Starts the headless server from either supported headless flag.
+    Headless,
+    /// Runs a single non-interactive prompt and prints its result.
+    Print,
+    /// Continues into the interactive agent path.
+    Interactive,
+    /// Rejects argv that the real clap parser does not accept.
+    ParseError,
+}
+
+/// Classify a `ClapParsed` argv (see [`AgentEntry`]) by running it through
+/// the real `Args::try_parse_from`.
+pub fn classify_clap_dispatch(raw_args: &[std::ffi::OsString]) -> ClapDispatch {
+    match Args::try_parse_from(raw_args) {
+        Ok(args) => {
+            if args.headless || args.rpc {
+                ClapDispatch::Headless
+            } else if args.print {
+                ClapDispatch::Print
+            } else {
+                ClapDispatch::Interactive
+            }
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) =>
+        {
+            ClapDispatch::Interactive
+        }
+        Err(_) => ClapDispatch::ParseError,
+    }
+}
+
+/// Agent dispatch shared by the interactive TUI, fork/resume, exec, print,
+/// and headless modes. Returns the process exit code instead of exiting
+/// directly so the caller can run worktree teardown first.
+async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
+    match classify_agent_entry(&raw_args) {
+        AgentEntry::HeadlessSubcommand => {
             let code = crate::headless_server::run_headless_server().await?;
             return Ok(code);
         }
-        if cmd == "print" || cmd == "exec" {
+        AgentEntry::ForkSubcommand => return run_fork(&raw_args[2..]).await,
+        AgentEntry::ExecOrPrintSubcommand(cmd) => {
             // maestro-tui print|exec [--json] [--model X] [--output-last-message P]
             //   [--output-schema S] <prompt...>
             let mut options = parse_native_exec_options(&raw_args[2..]);
@@ -863,6 +965,7 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
             .await?;
             return Ok(code);
         }
+        AgentEntry::ClapParsed => {}
     }
 
     // Parse command-line arguments using clap.
@@ -959,16 +1062,98 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
         return Ok(code);
     }
 
-    let app = App::new_with_initial_prompt(initial_prompt)?;
+    run_interactive_with_shutdown(move || App::new_with_initial_prompt(initial_prompt)).await
+}
 
-    // Run the application's main loop.
+/// Construct and run an interactive app under the complete shutdown lifecycle.
+///
+/// The constructor runs only after process signal receivers are registered,
+/// so both terminal initialization and any startup session restoration are
+/// covered by the same orderly signal path as the main event loop.
+async fn run_interactive_with_shutdown<F>(constructor: F) -> Result<i32>
+where
+    F: FnOnce() -> Result<App> + Send + 'static,
+{
+    // Register process signal streams before terminal initialization. Tokio
+    // keeps its process-wide signal disposition installed, so the monitor
+    // must retain active receivers from this point through final process exit.
+    let mut shutdown = shutdown_signal::ShutdownMonitor::register()
+        .context("Failed to register interactive shutdown signals")?;
+    let app = match shutdown_signal::construct_while_monitoring(&mut shutdown, constructor).await? {
+        Ok(app) => app,
+        Err((signal, construction)) => {
+            // `construction`'s closure cannot be cancelled now that
+            // `spawn_blocking` has started it, and it may still be mid-way
+            // through `terminal::init()` (raw mode / bracketed paste /
+            // mouse capture applied before the global TTY handle is
+            // published -- see `terminal/setup.rs::init`). Calling
+            // `terminal::restore()` without first waiting for it to finish
+            // would race that setup: the abandoned thread can re-enable
+            // modes after our restore call returns, and nothing runs a
+            // second restore before `run_cli`'s `std::process::exit` a few
+            // frames up the stack. Await it first so restore always runs
+            // strictly after whatever terminal setup already happened --
+            // this part must stay on the async worker. A wedged constructor
+            // is still bounded: `ShutdownMonitor`'s second-signal watchdog
+            // runs on its own detached task and force-exits on a repeated
+            // signal regardless of this await.
+            let construction_result = construction.await;
+            let (disable_theme_reporting, construction_error) = match construction_result {
+                Ok(Ok(mut app)) => {
+                    let disable_theme_reporting = app.prepare_terminal_restore();
+                    drop(app);
+                    (disable_theme_reporting, None)
+                }
+                Ok(Err(error)) => (false, Some(format!("{error:#}"))),
+                Err(error) => (false, Some(error.to_string())),
+            };
+
+            // Deliberately not `eprintln!`'d inline here, mirroring
+            // `run_with_shutdown` in shutdown_signal.rs: this arm runs on
+            // the async worker, and `eprintln!` takes stderr's process-
+            // global lock and performs a real (possibly blocking) write
+            // syscall -- on a full pipe or wedged terminal that would stall
+            // this worker with nothing left on a single-worker runtime to
+            // poll the repeat-signal monitor the escape hatch above depends
+            // on. All of this arm's diagnostics, plus the blocking terminal
+            // restore itself, now run together on a blocking thread, same
+            // as the run-loop shutdown branch.
+            tokio::task::spawn_blocking(move || {
+                eprintln!("[shutdown] received signal during app construction");
+                if let Some(error) = construction_error {
+                    eprintln!(
+                        "[shutdown] app construction task ended unexpectedly while waiting for it: {error}"
+                    );
+                }
+                if disable_theme_reporting {
+                    let _ = crate::terminal::disable_theme_reporting();
+                }
+                if let Err(error) = crate::terminal::restore() {
+                    eprintln!("[shutdown] failed to restore terminal: {error}");
+                }
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("shutdown cleanup task failed: {error}"))?;
+            shutdown.complete_platform_cleanup();
+            return Ok(signal.exit_code());
+        }
+    };
+
+    // Run the application's main loop, racing it against SIGINT/SIGTERM/
+    // SIGHUP (Unix) or the equivalent console events (Windows). An external
+    // termination now flushes the session writer, cleans up tracked
+    // background processes, and restores the terminal instead of hitting
+    // the OS default disposition (immediate exit, no `Drop`, no panic
+    // hook). See `shutdown_signal` for the full design, including why this
+    // cannot and does not change in-app Ctrl+C-as-keypress behavior.
     //
     // `.await` suspends this function until the Future completes.
     // The app handles all user interaction, AI communication, and rendering.
-    let exit_code = app.run().await?;
+    let exit_code = shutdown_signal::run_with_shutdown(app, shutdown).await?;
 
     // Final cleanup - the app should have already cleaned up, but this is a safety net.
     // This catches cases where the app returned without going through its normal exit path.
+    // (On the signal path above this is a no-op: cleanup already ran there.)
     let remaining = cleanup_background_processes();
     if remaining > 0 {
         eprintln!("[main] Final cleanup: {remaining} background process(es)");
@@ -977,6 +1162,86 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
     // Return the exit code to `run_cli`, which runs worktree teardown and
     // then terminates the process with it via `std::process::exit`.
     Ok(exit_code)
+}
+
+/// Parsed `maestro fork` arguments.
+#[derive(Debug)]
+enum ForkRequest {
+    Help,
+    Fork { session_id: Option<String> },
+}
+
+fn parse_fork_args(args: &[std::ffi::OsString]) -> std::result::Result<ForkRequest, String> {
+    let mut session_id: Option<String> = None;
+    for arg in args {
+        let token = arg.to_string_lossy();
+        if matches!(token.as_ref(), "help" | "--help" | "-h") {
+            return Ok(ForkRequest::Help);
+        }
+        if token.starts_with('-') {
+            return Err(format!("unknown fork flag: {token}"));
+        }
+        if session_id.is_some() {
+            return Err(format!("unexpected extra argument: {token}"));
+        }
+        session_id = Some(token.into_owned());
+    }
+    Ok(ForkRequest::Fork { session_id })
+}
+
+/// `maestro fork [session-id]`: copy a session JSONL under a new session id
+/// and continue it interactively, so a conversation can be branched for
+/// what-if experiments. Defaults to the most recent session for the current
+/// working directory.
+async fn run_fork(args: &[std::ffi::OsString]) -> Result<i32> {
+    let session_id = match parse_fork_args(args) {
+        Ok(ForkRequest::Help) => {
+            println!("Usage: maestro fork [session-id]");
+            println!();
+            println!("Copy a session (default: most recent for this directory) under a new");
+            println!("session id and continue it in the TUI. The fork starts with the full");
+            println!("history but records new messages independently of the source session.");
+            return Ok(0);
+        }
+        Ok(ForkRequest::Fork { session_id }) => session_id,
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
+
+    let cwd = std::env::current_dir()?;
+    let manager = crate::session::SessionManager::new(cwd.to_string_lossy().to_string());
+    let source = match session_id.as_deref() {
+        Some(id) => manager
+            .load_session(id)
+            .map_err(|err| anyhow::anyhow!("failed to load session {id}: {err}"))?,
+        None => manager
+            .most_recent_session()?
+            .ok_or_else(|| anyhow::anyhow!("no session to fork for {}", cwd.display()))?,
+    };
+    let forked = crate::session::fork_session_file(std::path::Path::new(&source.file_path))?;
+
+    // Continue with the model that recorded the source session unless the
+    // user already pinned one (`spawn_agent` reads MAESTRO_MODEL).
+    if std::env::var_os("MAESTRO_MODEL").is_none() && !source.header.model.is_empty() {
+        // SAFETY: the agent has not spawned worker threads yet.
+        unsafe { std::env::set_var("MAESTRO_MODEL", &source.header.model) };
+    }
+
+    println!(
+        "Forked session {} -> {} ({})",
+        source.header.id,
+        forked.id,
+        forked.path.display()
+    );
+
+    run_interactive_with_shutdown(move || {
+        let mut app = App::new_with_initial_prompt(None)?;
+        app.resume_session_at_startup(&forked.id);
+        Ok(app)
+    })
+    .await
 }
 
 fn raw_option_value(raw_args: &[std::ffi::OsString], names: &[&str]) -> Option<String> {
@@ -1075,17 +1340,43 @@ mod tests {
     }
 
     #[test]
-    fn hosted_runner_subcommand_is_reserved_before_prompt_capture() {
-        let raw_args = [
-            std::ffi::OsString::from("maestro-tui"),
-            std::ffi::OsString::from("hosted-runner"),
-            std::ffi::OsString::from("--runner-session-id"),
-            std::ffi::OsString::from("mrs_test"),
+    fn fork_args_parse_session_id_and_help() {
+        let empty: Vec<std::ffi::OsString> = Vec::new();
+        assert!(matches!(
+            parse_fork_args(&empty),
+            Ok(ForkRequest::Fork { session_id: None })
+        ));
+
+        let with_id = [std::ffi::OsString::from("abc123")];
+        match parse_fork_args(&with_id) {
+            Ok(ForkRequest::Fork { session_id }) => {
+                assert_eq!(session_id.as_deref(), Some("abc123"));
+            }
+            other => panic!("expected fork request, got {other:?}"),
+        }
+
+        let help = [std::ffi::OsString::from("--help")];
+        assert!(matches!(parse_fork_args(&help), Ok(ForkRequest::Help)));
+
+        let unknown_flag = [std::ffi::OsString::from("--json")];
+        assert!(parse_fork_args(&unknown_flag).is_err());
+
+        let extra = [
+            std::ffi::OsString::from("abc123"),
+            std::ffi::OsString::from("def456"),
         ];
-        assert_eq!(
-            raw_args.get(1).and_then(|arg| arg.to_str()),
-            Some("hosted-runner")
-        );
+        assert!(parse_fork_args(&extra).is_err());
+    }
+
+    #[test]
+    fn fork_is_not_dispatched_as_a_utility_command() {
+        // `maestro fork` must reach the agent path so it can launch the TUI;
+        // utility dispatch exits after running and would never resume.
+        let args = ["fork", "abc123"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>();
+        assert_eq!(native_utility_tokens(&args), None);
     }
 
     #[test]

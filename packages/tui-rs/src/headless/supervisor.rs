@@ -18,7 +18,9 @@ use tokio_util::sync::CancellationToken;
 use super::async_transport::RemoteErrorKind;
 use super::async_transport::{AsyncAgentTransport, AsyncTransportConfig, AsyncTransportError};
 use super::messages::{AgentEvent, AgentState, FromAgentMessage, InitConfig, ToAgentMessage};
-use super::remote_transport::{RemoteAgentTransport, RemoteIncoming, RemoteTransportConfig};
+use super::remote_transport::{
+    RemoteAgentTransport, RemoteConnectionResumeAuthority, RemoteIncoming, RemoteTransportConfig,
+};
 use super::session::{SessionReader, SessionRecorder, SessionReplay};
 
 const MAX_STALE_REMOTE_REFERENCE_RETRIES: u32 = 3;
@@ -190,15 +192,11 @@ impl ManagedTransport {
         }
     }
 
-    fn remote_connection_id(&self) -> Option<&str> {
+    fn remote_resume_authority(&self) -> Option<RemoteConnectionResumeAuthority> {
         match self {
             Self::Local(_) => None,
-            Self::Remote(transport) => Some(transport.connection_id()),
+            Self::Remote(transport) => Some(transport.resume_authority()),
         }
-    }
-
-    fn is_remote(&self) -> bool {
-        matches!(self, Self::Remote(_))
     }
 
     fn try_recv_incoming(&mut self) -> Option<Result<ManagedIncoming, AsyncTransportError>> {
@@ -301,6 +299,8 @@ pub struct AgentSupervisor {
     reconnect_attempts: u32,
     /// Consecutive retryable stale connection/subscriber failures.
     stale_reference_retries: u32,
+    /// Private authority required to reclaim a server-minted remote connection.
+    remote_resume_authority: Option<RemoteConnectionResumeAuthority>,
     /// Whether a reconnect should be attempted on the next async receive cycle
     pending_auto_reconnect: bool,
     /// Background teardown for a transport that must finish before the next connect/reconnect.
@@ -327,6 +327,7 @@ impl AgentSupervisor {
             last_response: None,
             reconnect_attempts: 0,
             stale_reference_retries: 0,
+            remote_resume_authority: None,
             pending_auto_reconnect: false,
             pending_transport_shutdown: None,
             session_recorder: None,
@@ -360,9 +361,20 @@ impl AgentSupervisor {
             if remote_config.session_id.is_none() {
                 remote_config.session_id = self.state.session_id.clone();
             }
-            RemoteAgentTransport::connect(remote_config.clone())
-                .await
-                .map(ManagedTransport::Remote)
+            match RemoteAgentTransport::connect_with_resume_authority(
+                remote_config.clone(),
+                self.remote_resume_authority.clone(),
+            )
+            .await
+            {
+                Ok(transport) => Ok(ManagedTransport::Remote(transport)),
+                Err(failure) => {
+                    if let Some(resume_authority) = failure.resume_authority {
+                        self.remote_resume_authority = Some(resume_authority);
+                    }
+                    Err(failure.error)
+                }
+            }
         } else {
             AsyncAgentTransport::spawn(self.config.transport.clone())
                 .await
@@ -386,10 +398,7 @@ impl AgentSupervisor {
 
     /// Disconnect from the agent
     pub fn disconnect(&mut self) {
-        let was_remote = self
-            .transport
-            .as_ref()
-            .is_some_and(ManagedTransport::is_remote);
+        let is_remote_supervisor = self.config.remote.is_some();
         if let Some(transport) = self.transport.take() {
             self.begin_transport_shutdown(transport);
         }
@@ -397,8 +406,8 @@ impl AgentSupervisor {
         self.last_response = None;
         self.pending_auto_reconnect = false;
         self.stale_reference_retries = 0;
-        if was_remote {
-            self.remember_remote_connection_id(None);
+        if is_remote_supervisor {
+            self.clear_remote_resume_authority();
         }
         self.health_status = HealthStatus::Unhealthy;
         let _ = self.event_tx.send(SupervisorEvent::Disconnected {
@@ -571,9 +580,10 @@ impl AgentSupervisor {
         }
     }
 
-    fn remember_remote_connection_id(&mut self, connection_id: Option<String>) {
+    fn clear_remote_resume_authority(&mut self) {
+        self.remote_resume_authority = None;
         if let Some(remote) = self.config.remote.as_mut() {
-            remote.connection_id = connection_id;
+            remote.connection_id = None;
         }
     }
 
@@ -587,7 +597,7 @@ impl AgentSupervisor {
 
     fn set_transport(&mut self, transport: ManagedTransport) -> Result<(), AsyncTransportError> {
         let remote_session_id = transport.remote_session_id().map(str::to_string);
-        let remote_connection_id = transport.remote_connection_id().map(str::to_string);
+        let remote_resume_authority = transport.remote_resume_authority();
         let should_replay_init = transport.needs_init_replay();
         let snapshot = transport.initial_snapshot();
         self.transport = Some(transport);
@@ -599,7 +609,7 @@ impl AgentSupervisor {
         self.remember_remote_session_id(
             remote_session_id.or_else(|| self.state.session_id.clone()),
         );
-        self.remember_remote_connection_id(remote_connection_id);
+        self.remote_resume_authority = remote_resume_authority;
         if should_replay_init {
             if let Err(error) = self.replay_saved_init() {
                 if let Some(transport) = self.transport.take() {
@@ -1278,12 +1288,13 @@ pub fn agent_event_to_message(event: &AgentEvent) -> FromAgentMessage {
         },
         AgentEvent::ToolEnd {
             call_id,
+            tool_execution_id,
             success,
             receipt,
             ..
         } => FromAgentMessage::ToolEnd {
             call_id: call_id.clone(),
-            tool_execution_id: None,
+            tool_execution_id: tool_execution_id.clone(),
             success: *success,
             tool: None,
             details: None,

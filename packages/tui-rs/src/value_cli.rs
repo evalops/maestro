@@ -1560,6 +1560,7 @@ mod tests {
             timestamp: "not-a-date".into(),
             stats: Default::default(),
             meta: None,
+            preview: None,
             modified: Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100)),
         };
         assert_eq!(session_timestamp_ms(&info), 100_000);

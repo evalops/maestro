@@ -62,6 +62,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
 
 use super::details::InlineToolDetails;
 use super::process_utils::{kill_process_tree, set_new_process_group};
@@ -553,18 +554,29 @@ impl InlineToolExecutor {
 
     /// Execute an inline tool with the given arguments
     pub async fn execute(&self, tool: &InlineTool, args: serde_json::Value) -> ToolResult {
-        self.execute_with_environment(tool, args, None).await
+        self.execute_cancellable_with_environment(tool, args, None, None)
+            .await
     }
 
-    /// Execute an inline tool using an already approved child environment.
-    ///
-    /// Approval-bound calls pass the exact snapshot rendered and validated by
-    /// the native runner. Other callers leave this unset and resolve the shell
-    /// environment at execution time as before.
-    pub(crate) async fn execute_with_environment(
+    /// Execute an inline tool, killing and reaping its process tree if the
+    /// owning turn is cancelled.
+    pub async fn execute_cancellable(
         &self,
         tool: &InlineTool,
         args: serde_json::Value,
+        cancel: Option<&CancellationToken>,
+    ) -> ToolResult {
+        self.execute_cancellable_with_environment(tool, args, cancel, None)
+            .await
+    }
+
+    /// Execute an inline tool using the exact approved environment while
+    /// retaining cancellation-driven process-tree cleanup.
+    pub(crate) async fn execute_cancellable_with_environment(
+        &self,
+        tool: &InlineTool,
+        args: serde_json::Value,
+        cancel: Option<&CancellationToken>,
         approved_environment: Option<&HashMap<String, String>>,
     ) -> ToolResult {
         let start_time = Instant::now();
@@ -619,22 +631,17 @@ impl InlineToolExecutor {
         // Capture PID for process tree killing on timeout
         let child_pid = child.id();
 
-        // Write args to stdin as JSON
-        if let Some(mut stdin) = child.stdin.take() {
-            if let Err(e) = stdin.write_all(args_json.as_bytes()).await {
-                eprintln!("Warning: Failed to write to stdin: {e}");
-            }
-            // stdin is dropped here, closing the pipe
-        }
-
-        // Take stdout/stderr handles before waiting
-        let stdout_handle = child.stdout.take();
-        let stderr_handle = child.stderr.take();
-
-        // Wait for completion with timeout
+        // Race the entire exchange, including a potentially backpressured
+        // stdin write, against both timeout and turn cancellation.
         let timeout_duration = Duration::from_millis(tool.definition.timeout);
-
-        let result = tokio::time::timeout(timeout_duration, async {
+        let execution = async {
+            if let Some(mut stdin) = child.stdin.take() {
+                if let Err(e) = stdin.write_all(args_json.as_bytes()).await {
+                    eprintln!("Warning: Failed to write to stdin: {e}");
+                }
+            }
+            let stdout_handle = child.stdout.take();
+            let stderr_handle = child.stderr.take();
             let stdout_fut = async {
                 if let Some(handle) = stdout_handle {
                     read_stream_with_limit(handle).await
@@ -652,11 +659,25 @@ impl InlineToolExecutor {
             };
 
             tokio::join!(stdout_fut, stderr_fut, child.wait())
-        })
-        .await;
+        };
+        let cancellation = async {
+            match cancel {
+                Some(token) => token.cancelled().await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        let result = tokio::select! {
+            biased;
+            () = cancellation => None,
+            result = tokio::time::timeout(timeout_duration, execution) => Some(result),
+        };
 
         match result {
-            Ok((Ok((stdout, stdout_truncated)), Ok((stderr, stderr_truncated)), Ok(status))) => {
+            Some(Ok((
+                Ok((stdout, stdout_truncated)),
+                Ok((stderr, stderr_truncated)),
+                Ok(status),
+            ))) => {
                 let duration_ms = start_time.elapsed().as_millis() as u64;
                 let stdout_text = String::from_utf8_lossy(&stdout).to_string();
                 let stderr_text = String::from_utf8_lossy(&stderr).to_string();
@@ -705,17 +726,17 @@ impl InlineToolExecutor {
                     }
                 }
             }
-            Ok((Err(e), _, _) | (_, Err(e), _)) => {
+            Some(Ok((Err(e), _, _) | (_, Err(e), _))) => {
                 let duration_ms = start_time.elapsed().as_millis() as u64;
                 details = details.with_duration(duration_ms);
                 ToolResult::failure(format!("IO error: {e}")).with_details(details.to_json())
             }
-            Ok((_, _, Err(e))) => {
+            Some(Ok((_, _, Err(e)))) => {
                 let duration_ms = start_time.elapsed().as_millis() as u64;
                 details = details.with_duration(duration_ms);
                 ToolResult::failure(format!("Process error: {e}")).with_details(details.to_json())
             }
-            Err(_) => {
+            Some(Err(_)) => {
                 // Timeout - kill the process tree to avoid orphan children
                 if let Some(pid) = child_pid {
                     kill_process_tree(pid);
@@ -733,6 +754,22 @@ impl InlineToolExecutor {
                     tool.definition.timeout
                 ))
                 .with_details(details.to_json())
+            }
+            None => {
+                if let Some(pid) = child_pid {
+                    kill_process_tree(pid);
+                } else {
+                    let _ = child.kill().await;
+                }
+                let _ = tokio::time::timeout(Duration::from_secs(1), child.wait()).await;
+
+                details = details.with_duration(start_time.elapsed().as_millis() as u64);
+                let mut cancelled_details = details.to_json();
+                if let Some(details) = cancelled_details.as_object_mut() {
+                    details.insert("cancelled".to_string(), serde_json::Value::Bool(true));
+                }
+                ToolResult::failure("Inline tool cancelled".to_string())
+                    .with_details(cancelled_details)
             }
         }
     }
@@ -1239,6 +1276,55 @@ mod tests {
         assert!(result.error.unwrap().contains("timed out"));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancellation_kills_inline_tool_before_configured_timeout() {
+        let temp = TempDir::new().unwrap();
+        let executor = InlineToolExecutor::new(temp.path());
+        let tool = InlineTool {
+            definition: InlineToolDef {
+                name: "cancel_test".to_string(),
+                description: "Cancellation test".to_string(),
+                command: "sleep 10".to_string(),
+                parameters: HashMap::new(),
+                timeout: 120_000,
+                cwd: None,
+                env: HashMap::new(),
+                annotations: ToolAnnotations::default(),
+            },
+            source_path: PathBuf::new(),
+            source: InlineToolSource::Project,
+        };
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            trigger.cancel();
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            executor.execute_cancellable(&tool, serde_json::json!({}), Some(&cancel)),
+        )
+        .await
+        .expect("cancellation must not wait for the 120-second tool timeout");
+
+        assert!(!result.success);
+        assert_eq!(
+            result
+                .details
+                .as_ref()
+                .and_then(|details| details.get("cancelled"))
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("cancelled"));
+    }
+
     #[tokio::test]
     async fn test_execute_with_cwd() {
         let temp = TempDir::new().unwrap();
@@ -1367,7 +1453,12 @@ mod tests {
             HashMap::from([("APPROVAL_SNAPSHOT_TEST".to_string(), "approved".to_string())]);
 
         let result = executor
-            .execute_with_environment(&tool, serde_json::json!({}), Some(&approved_env))
+            .execute_cancellable_with_environment(
+                &tool,
+                serde_json::json!({}),
+                None,
+                Some(&approved_env),
+            )
             .await;
 
         assert!(result.success, "{result:?}");

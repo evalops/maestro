@@ -145,6 +145,8 @@
 mod branching;
 mod entries;
 mod export;
+mod fork;
+mod index;
 mod manager;
 mod reader;
 mod wire_format_generated;
@@ -155,6 +157,8 @@ pub use branching::{
 };
 pub use entries::*;
 pub use export::{export_session_file, ExportFormat, ExportOptions, SessionExporter};
+pub use fork::{fork_session_file, ForkedSession};
+pub use index::{collect_sessions, default_index_path, IndexedSession, SessionIndexEntry};
 pub use manager::{SessionInfo, SessionManager};
-pub use reader::{ParsedSession, SessionReader};
+pub use reader::{ParsedSession, SessionReadError, SessionReader};
 pub use writer::SessionWriter;

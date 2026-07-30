@@ -15,9 +15,23 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 use crate::agent::ToolResult;
 use crate::safety::set_plan_satisfied;
+
+async fn begin_mutation_commit(cancellation: Option<&CancellationToken>) -> bool {
+    match cancellation {
+        Some(token) => {
+            tokio::select! {
+                biased;
+                () = token.cancelled() => false,
+                () = std::future::ready(()) => true,
+            }
+        }
+        None => true,
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct TodoArgs {
@@ -240,7 +254,10 @@ fn format_output(goal: &str, items: &[NormalizedTodo], include_summary: bool) ->
     lines.join("\n")
 }
 
-pub async fn todo(args: serde_json::Value) -> ToolResult {
+pub async fn todo_with_cancellation(
+    args: serde_json::Value,
+    cancellation: Option<&CancellationToken>,
+) -> ToolResult {
     let parsed: TodoArgs = match serde_json::from_value(args) {
         Ok(val) => val,
         Err(err) => return ToolResult::failure(format!("Invalid todo arguments: {err}")),
@@ -283,6 +300,10 @@ pub async fn todo(args: serde_json::Value) -> ToolResult {
     record.updated_at = chrono::Utc::now().to_rfc3339();
     store.insert(goal.clone(), record);
 
+    if !begin_mutation_commit(cancellation).await {
+        return ToolResult::failure("todo cancelled")
+            .with_details(serde_json::json!({"cancelled": true}));
+    }
     if let Err(err) = save_store(&store).await {
         return ToolResult::failure(err);
     }

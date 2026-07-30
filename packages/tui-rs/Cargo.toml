@@ -133,6 +133,16 @@ tiktoken-rs = { version = "0.12.0", default-features = false }
 landlock = "0.4.5"
 seccompiler = "0.4"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 [features]
 default = []
 clipboard = ["arboard"]
@@ -146,6 +156,7 @@ hooks-full = ["lua", "wasm", "hot-reload"]
 [dev-dependencies]
 pretty_assertions = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
+portable-pty.workspace = true
 # doctor.rs auth-health tests reuse maestro-ai's FakeOp `op://` test fixture.
 maestro-ai = { workspace = true, features = ["test-support"] }
 

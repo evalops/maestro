@@ -264,9 +264,14 @@ pub enum ToolOutcome {
     Cancelled {
         phase: ExecutionPhase,
     },
+    /// The local executor stopped without learning whether a remote write committed.
+    /// Callers must reconcile the remote operation before retrying.
+    Indeterminate {
+        reason: String,
+    },
 }
 
-/// Terminal classification persisted with a receipt without duplicating tool output.
+/// Lifecycle classification persisted with a receipt without duplicating tool output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ExecutionStatus {
@@ -274,6 +279,7 @@ pub enum ExecutionStatus {
     Failed,
     Denied,
     Cancelled { phase: ExecutionPhase },
+    Indeterminate,
 }
 
 impl ToolOutcome {
@@ -284,6 +290,7 @@ impl ToolOutcome {
             Self::Failed { .. } => ExecutionStatus::Failed,
             Self::Denied { .. } => ExecutionStatus::Denied,
             Self::Cancelled { phase } => ExecutionStatus::Cancelled { phase: *phase },
+            Self::Indeterminate { .. } => ExecutionStatus::Indeterminate,
         }
     }
 }
@@ -367,7 +374,19 @@ impl ToolExecution {
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false)
         });
-        let outcome = if cancelled {
+        let remote_outcome_unknown = result.details.as_ref().is_some_and(|details| {
+            details
+                .get("remoteOutcome")
+                .and_then(serde_json::Value::as_str)
+                == Some("unknown")
+        });
+        let outcome = if remote_outcome_unknown {
+            ToolOutcome::Indeterminate {
+                reason: result.error.unwrap_or_else(|| {
+                    "Remote write outcome is unknown and requires reconciliation".to_string()
+                }),
+            }
+        } else if cancelled {
             ToolOutcome::Cancelled {
                 phase: ExecutionPhase::Running,
             }
@@ -461,8 +480,26 @@ impl ToolExecution {
             },
             ToolOutcome::Denied { reason } => ToolResult::failure(reason.message()),
             ToolOutcome::Cancelled { phase } => {
-                ToolResult::failure(format!("Tool execution cancelled during {phase:?}"))
+                let message = if matches!(
+                    &self.receipt.details,
+                    ToolReceiptDetails::BuiltIn(ToolDetails::Bash(_))
+                ) {
+                    "Command cancelled".to_string()
+                } else {
+                    format!("Tool execution cancelled during {phase:?}")
+                };
+                let result = ToolResult::failure(message);
+                match details {
+                    Some(details) => result.with_details(details),
+                    None => result,
+                }
             }
+            ToolOutcome::Indeterminate { reason } => ToolResult::failure(reason.clone())
+                .with_details(serde_json::json!({
+                    "remoteOutcome": "unknown",
+                    "retryable": false,
+                    "requiresReconciliation": true
+                })),
         }
     }
 
@@ -490,6 +527,9 @@ impl ToolExecution {
             ToolOutcome::Denied { reason } => reason.message().to_string(),
             ToolOutcome::Cancelled { phase } => {
                 format!("Tool execution cancelled during {phase:?}")
+            }
+            ToolOutcome::Indeterminate { reason } => {
+                format!("Indeterminate remote outcome: {reason}. Reconcile before retrying.")
             }
         }
     }
@@ -1208,6 +1248,39 @@ mod tests {
                 phase: ExecutionPhase::Running
             }
         ));
+    }
+
+    #[test]
+    fn unknown_remote_write_becomes_non_retryable_indeterminate() {
+        let execution = ToolExecution::from_legacy(
+            "call-gh-write",
+            "gh_issue",
+            ExecutionSource::Native,
+            ToolResult::failure("GitHub write did not produce a terminal response before shutdown")
+                .with_details(serde_json::json!({
+                    "cancelled": true,
+                    "remoteOutcome": "unknown",
+                    "retryable": false,
+                    "requiresReconciliation": true
+                })),
+        );
+
+        assert_eq!(execution.receipt.status, ExecutionStatus::Indeterminate);
+        assert!(matches!(
+            execution.outcome,
+            ToolOutcome::Indeterminate { .. }
+        ));
+        let legacy = execution.to_legacy();
+        assert_eq!(
+            legacy
+                .details
+                .as_ref()
+                .and_then(|details| details.get("retryable")),
+            Some(&serde_json::Value::Bool(false))
+        );
+        assert!(execution
+            .model_content()
+            .contains("Reconcile before retrying"));
     }
 
     #[test]
