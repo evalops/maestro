@@ -314,6 +314,8 @@ pub enum AttachAction {
     List,
     /// Clear all pending attachments.
     Clear,
+    /// Drop one pending attachment by 1-based index.
+    Remove { index: usize },
 }
 
 /// Status bar density presets (Kimi-inspired `/footer`).

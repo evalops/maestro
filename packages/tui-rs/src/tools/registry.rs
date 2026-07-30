@@ -398,6 +398,10 @@ pub struct ToolExecutor {
     /// Native sandbox requested for this executor, if any.
     sandbox_policy: Option<SandboxPolicy>,
 
+    /// Whether successful write/edit calls may run process-global safe-mode
+    /// validators. Governed runtimes disable this and own validation separately.
+    ambient_mutation_validators_enabled: bool,
+
     /// Pinned behavior versions for version-managed tools (empty = all tools
     /// run their current behavior). Session replay populates this from the
     /// versions recorded in session-entry receipts.
@@ -645,6 +649,7 @@ impl ToolExecutor {
             credential_vault,
             bash: BashTool::new(&cwd),
             sandbox_policy: None,
+            ambient_mutation_validators_enabled: true,
             tool_versions: ToolVersionOverrides::default(),
             web_fetch: WebFetchTool::new(),
             image: ImageTool::new(),
@@ -685,6 +690,7 @@ impl ToolExecutor {
             credential_vault: CredentialVault::new(),
             bash: BashTool::new(&cwd),
             sandbox_policy: None,
+            ambient_mutation_validators_enabled: true,
             tool_versions: ToolVersionOverrides::default(),
             web_fetch: WebFetchTool::new(),
             image: ImageTool::new(),
@@ -729,6 +735,7 @@ impl ToolExecutor {
             credential_vault,
             bash: BashTool::new(&cwd),
             sandbox_policy: None,
+            ambient_mutation_validators_enabled: true,
             tool_versions: ToolVersionOverrides::default(),
             web_fetch: WebFetchTool::new(),
             image: ImageTool::new(),
@@ -749,6 +756,14 @@ impl ToolExecutor {
     pub fn with_sandbox_policy(mut self, policy: SandboxPolicy) -> Self {
         self.sandbox_policy = Some(policy);
         self.bash = self.build_bash_tool();
+        self
+    }
+
+    /// Disable process-global safe-mode validators for callers that own a
+    /// separate, bounded validation path.
+    #[must_use]
+    pub fn without_ambient_mutation_validators(mut self) -> Self {
+        self.ambient_mutation_validators_enabled = false;
         self
     }
 

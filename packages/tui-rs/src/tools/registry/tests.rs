@@ -71,6 +71,95 @@ fn write_mcp_config(config_dir: &Path, servers: Vec<serde_json::Value>) -> std::
     )
 }
 
+#[test]
+fn governed_executor_disables_configured_ambient_validators_without_global_env_mutation() {
+    const CHILD_FLAG: &str = "MAESTRO_TEST_GOVERNED_VALIDATOR_CHILD";
+    const ROOT_ENV: &str = "MAESTRO_TEST_GOVERNED_VALIDATOR_ROOT";
+    const SENTINEL_ENV: &str = "MAESTRO_TEST_GOVERNED_VALIDATOR_SENTINEL";
+
+    if std::env::var_os(CHILD_FLAG).is_some() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os(ROOT_ENV).expect("child workspace should be configured"),
+        );
+        let sentinel = std::path::PathBuf::from(
+            std::env::var_os(SENTINEL_ENV).expect("child sentinel should be configured"),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("child runtime");
+        runtime.block_on(async {
+            let ordinary = ToolExecutor::new(root.display().to_string());
+            let ordinary_result = ordinary
+                .execute(
+                    "write",
+                    &serde_json::json!({
+                        "path": root.join("ordinary.txt"),
+                        "content": "ordinary"
+                    }),
+                    None,
+                    "ordinary-write",
+                )
+                .await;
+            assert!(ordinary_result.success, "{ordinary_result:?}");
+            assert!(
+                sentinel.exists(),
+                "ordinary executors must preserve configured validator behavior"
+            );
+            std::fs::remove_file(&sentinel).expect("remove ordinary validator sentinel");
+
+            let governed =
+                ToolExecutor::new(root.display().to_string()).without_ambient_mutation_validators();
+            let governed_result = governed
+                .execute(
+                    "write",
+                    &serde_json::json!({
+                        "path": root.join("governed.txt"),
+                        "content": "governed"
+                    }),
+                    None,
+                    "governed-write",
+                )
+                .await;
+            assert!(governed_result.success, "{governed_result:?}");
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert!(
+                !sentinel.exists(),
+                "governed writes must never launch ambient validators"
+            );
+        });
+        return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sentinel = dir.path().join("validator-ran");
+    let quoted_sentinel = format!("'{}'", sentinel.to_string_lossy().replace('\'', "'\"'\"'"));
+    let output = std::process::Command::new(std::env::current_exe().expect("current test binary"))
+        .args([
+            "--exact",
+            "tools::registry::tests::governed_executor_disables_configured_ambient_validators_without_global_env_mutation",
+            "--nocapture",
+        ])
+        .env(CHILD_FLAG, "1")
+        .env(ROOT_ENV, dir.path())
+        .env(SENTINEL_ENV, &sentinel)
+        .env("MAESTRO_SAFE_MODE", "1")
+        .env("MAESTRO_SAFE_REQUIRE_PLAN", "0")
+        .env(
+            "MAESTRO_SAFE_VALIDATORS",
+            format!("sleep 0.2; printf validator-ran > {quoted_sentinel}"),
+        )
+        .output()
+        .expect("run isolated validator child");
+
+    assert!(
+        output.status.success(),
+        "isolated validator child failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 async fn read_http_request_body(socket: &mut TcpStream) -> Option<String> {
     let mut bytes = Vec::new();
     let mut buffer = [0u8; 1024];

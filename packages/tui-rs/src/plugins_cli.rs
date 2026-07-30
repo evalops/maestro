@@ -279,18 +279,26 @@ fn run_marketplace(positionals: &[String], trust: bool, json: bool) -> Result<i3
             }
             let source = crate::plugins::resolve_install_source(entry)?;
             let home = maestro_home_dir().context("could not resolve ~/.maestro")?;
-            let preview = crate::plugins::install(
+            let preview = crate::plugins::install_with_provenance(
                 &source,
                 &home.join("plugins"),
                 &home.join("plugin-state.json"),
                 trust || !entry.tier.requires_explicit_trust(),
+                Some(crate::plugins::InstallProvenance {
+                    marketplace_id: Some(entry.id.clone()),
+                    marketplace_tier: Some(entry.tier.as_str().to_string()),
+                }),
             )?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&preview)?);
             } else {
                 println!(
-                    "Installed {} from {} (capabilities: {:?})",
-                    preview.name, preview.source, preview.capabilities
+                    "Installed {} from {} (marketplace id={}, tier={}, capabilities: {:?})",
+                    preview.name,
+                    preview.source,
+                    entry.id,
+                    entry.tier.as_str(),
+                    preview.capabilities
                 );
             }
             Ok(0)

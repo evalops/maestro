@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use crate::codex_subagent_dispatch;
+use crate::a2a_skill_catalog::a2a_executable_subagent_dispatch_lanes;
 use crate::{
     a2a_agent_skills, a2a_public_base_url_for_config, trimmed_env, truthy_env, Config,
     A2A_PROTOCOL_VERSION, EVALOPS_A2A_EXTENSION_URI,
@@ -557,17 +557,13 @@ fn a2a_platform_capabilities() -> Vec<String> {
         "maestro:cli".to_string(),
         "maestro:subagents".to_string(),
     ];
-    for lane in codex_subagent_dispatch::CODEX_SUBAGENT_DISPATCH_LANES {
+    for lane in a2a_executable_subagent_dispatch_lanes() {
         capabilities.push(format!("maestro:{}", lane.lane_id));
         capabilities.extend(
             match lane.lane_id {
                 "code-writer" => ["code:write", "code:edit", "code:implement"].as_slice(),
                 "code-review" => ["code:review"].as_slice(),
-                "test-runner" => ["code:test", "test:run"].as_slice(),
-                "browser-qa" => ["product:qa", "browser:qa", "e2e:qa"].as_slice(),
-                "repo-explorer" => ["repo:explore", "code:search"].as_slice(),
-                "release-shepherd" => ["release:shepherd", "release:manage"].as_slice(),
-                _ => ["agent:delegate"].as_slice(),
+                _ => [].as_slice(),
             }
             .iter()
             .map(|value| (*value).to_string()),

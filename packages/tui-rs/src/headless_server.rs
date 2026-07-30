@@ -92,6 +92,8 @@ struct HeadlessState {
     credential_vault: CredentialVault,
     /// Seeded conversation history applied on agent creation / init.
     history: Option<Vec<crate::headless::messages::HistoryMessage>>,
+    /// Semantic provider history is meaningful only after an Init boundary.
+    init_applied: bool,
     meta: Arc<Mutex<RuntimeMeta>>,
     agent: Option<NativeAgent>,
     tool_tx: Option<mpsc::UnboundedSender<ToolResponseMessage>>,
@@ -135,6 +137,7 @@ impl HeadlessState {
             thinking_budget: 10_000,
             credential_vault: CredentialVault::new(),
             history: None,
+            init_applied: false,
             meta: Arc::new(Mutex::new(RuntimeMeta {
                 session_id,
                 approval_mode: None,
@@ -333,6 +336,7 @@ pub async fn run_headless_server() -> Result<i32> {
                 approval_mode,
                 history,
             } => {
+                state.init_applied = true;
                 if let Some(sp) = sp {
                     state.system_prompt = sp;
                 }
@@ -371,6 +375,33 @@ pub async fn run_headless_server() -> Result<i32> {
                 emit(&FromAgentMessage::Status {
                     message: "init applied".to_string(),
                 })?;
+            }
+            ToAgentMessage::RestoreConversation {
+                protocol_version,
+                messages,
+            } => {
+                if !state.init_applied {
+                    protocol_error(None, "semantic conversation restore requires a prior init")?;
+                    continue;
+                }
+                if protocol_version != crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL {
+                    protocol_error(
+                        None,
+                        format!(
+                            "unsupported semantic conversation protocol version: {protocol_version}"
+                        ),
+                    )?;
+                    continue;
+                }
+                match state.agent_mut() {
+                    Ok(agent) => agent.replace_history(messages),
+                    Err(error) => {
+                        protocol_error(
+                            None,
+                            format!("failed to restore semantic conversation: {error:#}"),
+                        )?;
+                    }
+                }
             }
             ToAgentMessage::Prompt {
                 content,
@@ -1164,6 +1195,15 @@ async fn handle_agent_event(
     tool_tx: &mpsc::UnboundedSender<ToolResponseMessage>,
 ) -> Result<()> {
     match msg {
+        FromAgent::ConversationSnapshot {
+            protocol_version,
+            messages,
+        } => {
+            emit(&FromAgentMessage::ConversationSnapshot {
+                protocol_version,
+                messages,
+            })?;
+        }
         FromAgent::Ready { model, provider } => {
             let session_id = meta
                 .lock()

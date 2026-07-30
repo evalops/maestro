@@ -6,6 +6,10 @@ pub(super) async fn write_snapshot_manifest(
     input: &DrainRequest,
 ) -> HostedResult<(PathBuf, serde_json::Value)> {
     let session_file = shared.message_executor.flush_session()?;
+    let replay_file = session_file
+        .as_ref()
+        .map(|session_file| session_file.with_extension("replay.json"))
+        .filter(|replay_file| replay_file.is_file());
     let root = shared.config.snapshot_root.clone().unwrap_or_else(|| {
         shared
             .config
@@ -71,6 +75,52 @@ pub(super) async fn write_snapshot_manifest(
             path_type: path_type.to_string(),
         });
     }
+    if let Some(replay_file) = &replay_file {
+        let canonical_workspace =
+            dunce::canonicalize(&shared.config.workspace_root).map_err(|error| {
+                HostedError::new(
+                    HostedRunnerErrorCode::RuntimeFailed,
+                    format!("failed to canonicalize workspace for replay sidecar: {error}"),
+                )
+            })?;
+        let canonical_replay_file = dunce::canonicalize(replay_file).map_err(|error| {
+            HostedError::new(
+                HostedRunnerErrorCode::RuntimeFailed,
+                format!("failed to canonicalize runtime replay sidecar: {error}"),
+            )
+        })?;
+        let relative_path = canonical_replay_file
+            .strip_prefix(&canonical_workspace)
+            .map_err(|_| {
+                HostedError::new(
+                    HostedRunnerErrorCode::RuntimeFailed,
+                    format!(
+                        "runtime replay sidecar is outside the workspace: {} not under {}",
+                        canonical_replay_file.display(),
+                        canonical_workspace.display()
+                    ),
+                )
+            })?
+            .to_str()
+            .ok_or_else(|| {
+                HostedError::new(
+                    HostedRunnerErrorCode::RuntimeFailed,
+                    "runtime replay sidecar path is not valid UTF-8",
+                )
+            })?
+            .to_owned();
+        if !workspace_export_paths
+            .iter()
+            .any(|path| path.relative_path == relative_path)
+        {
+            workspace_export_paths.push(WorkspaceExportPathManifest {
+                input: relative_path.clone(),
+                path: replay_file.clone(),
+                relative_path,
+                path_type: "file".to_owned(),
+            });
+        }
+    }
     let created_at = Utc::now().to_rfc3339();
     let runtime = RuntimeFlushManifest {
         flush_status: if has_runtime_activity {
@@ -81,6 +131,7 @@ pub(super) async fn write_snapshot_manifest(
         error: None,
         session_id: maestro_session_id.clone(),
         session_file,
+        replay_file,
         protocol_version: has_runtime_activity.then(|| HEADLESS_PROTOCOL_VERSION.to_string()),
         cursor: has_runtime_activity.then_some(snapshot.cursor),
     };

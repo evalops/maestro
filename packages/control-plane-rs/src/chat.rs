@@ -588,6 +588,7 @@ pub(crate) async fn handle_chat_endpoint(
     while let Some(event) = events.recv().await {
         match event {
             FromAgent::Ready { .. }
+            | FromAgent::ConversationSnapshot { .. }
             | FromAgent::ModelChanged { .. }
             | FromAgent::ModelChangeFailed { .. }
             | FromAgent::SessionInfo { .. } => {}
@@ -1242,6 +1243,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
     while let Some(event) = events.recv().await {
         match event {
             FromAgent::Ready { .. }
+            | FromAgent::ConversationSnapshot { .. }
             | FromAgent::ModelChanged { .. }
             | FromAgent::ModelChangeFailed { .. }
             | FromAgent::SessionInfo { .. } => {}

@@ -1,8 +1,10 @@
+use crate::a2a::{SUBAGENT_TASK_CAPSULE_MAX_RETRY_LIMIT, SUBAGENT_TASK_CAPSULE_VERSION};
 use crate::codex_subagent_dispatch::{CodexSubagentDispatchLane, CODEX_SUBAGENT_DISPATCH_LANES};
 use serde_json::Value;
 
 pub(crate) const A2A_SUBAGENT_KIND: &str = "maestro-subagent";
 pub(crate) const A2A_SUBAGENT_REQUEST_METADATA_PATH: &str = "evalops.subagentRequest";
+pub(crate) const A2A_EXECUTABLE_SUBAGENT_LANES: &[&str] = &["code-writer", "code-review"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct A2ASubagentSkillContract {
@@ -32,7 +34,7 @@ pub(crate) fn a2a_subagent_skill_contract(lane_id: &str) -> A2ASubagentSkillCont
         },
         "code-review" => A2ASubagentSkillContract {
             lane_id: "code-review",
-            required_context_grants: &["repo:read", "pull-request:read", "artifact:read"],
+            required_context_grants: &["repo:read"],
             required_artifact_kinds: &["review.summary"],
             optional_artifact_kinds: &["risk.finding", "test.plan"],
             allowed_task_classes: &["code.review", "risk.analysis"],
@@ -92,9 +94,19 @@ pub(crate) fn a2a_subagent_skill_contract(lane_id: &str) -> A2ASubagentSkillCont
     }
 }
 
-pub(crate) fn a2a_subagent_skills(operating_plane_extension_uri: &str) -> Vec<Value> {
+pub(crate) fn a2a_subagent_lane_is_executable(lane_id: &str) -> bool {
+    A2A_EXECUTABLE_SUBAGENT_LANES.contains(&lane_id)
+}
+
+pub(crate) fn a2a_executable_subagent_dispatch_lanes(
+) -> impl Iterator<Item = &'static CodexSubagentDispatchLane> {
     CODEX_SUBAGENT_DISPATCH_LANES
         .iter()
+        .filter(|lane| a2a_subagent_lane_is_executable(lane.lane_id))
+}
+
+pub(crate) fn a2a_subagent_skills(operating_plane_extension_uri: &str) -> Vec<Value> {
+    a2a_executable_subagent_dispatch_lanes()
         .map(|lane| a2a_subagent_skill(lane, operating_plane_extension_uri))
         .collect()
 }
@@ -122,6 +134,9 @@ fn a2a_subagent_skill(
             "evalopsSkillKind": A2A_SUBAGENT_KIND,
             "subagentLaneId": lane.lane_id,
             "requestMetadataPath": A2A_SUBAGENT_REQUEST_METADATA_PATH,
+            "taskCapsuleVersion": SUBAGENT_TASK_CAPSULE_VERSION,
+            "taskCapsuleMetadataPath": format!("{A2A_SUBAGENT_REQUEST_METADATA_PATH}.capsule"),
+            "taskCapsuleMaxRetryLimit": SUBAGENT_TASK_CAPSULE_MAX_RETRY_LIMIT,
             "operatingPlaneExtension": operating_plane_extension_uri
         },
         "metadata": {
@@ -129,6 +144,11 @@ fn a2a_subagent_skill(
             "subagentLaneId": lane.lane_id,
             "operatingPlaneExtension": operating_plane_extension_uri,
             "requestMetadataPath": A2A_SUBAGENT_REQUEST_METADATA_PATH,
+            "taskCapsuleVersion": SUBAGENT_TASK_CAPSULE_VERSION,
+            "taskCapsuleMetadataPath": format!("{A2A_SUBAGENT_REQUEST_METADATA_PATH}.capsule"),
+            "taskCapsuleMaxRetryLimit": SUBAGENT_TASK_CAPSULE_MAX_RETRY_LIMIT,
+            "reviewRequirement": "independent-code-review-for-material-lanes",
+            "completionPolicy": "server-generated-from-observed-outcome-and-artifacts",
             "approvalPolicy": "target-maestro-policy",
             "contextGrantPolicy": "bounded-policy-grants",
             "resultPolicy": "summary-and-artifacts",
@@ -142,17 +162,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a2a_subagent_skills_cover_dispatch_lanes() {
+    fn a2a_subagent_skills_only_advertise_executable_dispatch_lanes() {
         let skills = a2a_subagent_skills("urn:test:operating-plane");
         let skill_ids = skills
             .iter()
             .filter_map(|skill| skill.get("id").and_then(Value::as_str))
             .collect::<Vec<_>>();
 
-        assert_eq!(skill_ids.len(), CODEX_SUBAGENT_DISPATCH_LANES.len());
-        for lane in CODEX_SUBAGENT_DISPATCH_LANES {
-            assert!(skill_ids.contains(&lane.skill_id));
-        }
+        assert_eq!(
+            skill_ids,
+            vec![
+                "maestro.subagent.code-writer",
+                "maestro.subagent.code-review"
+            ]
+        );
     }
 
     #[test]
@@ -165,7 +188,7 @@ mod tests {
 
         assert_eq!(
             review["requiredContextGrants"],
-            serde_json::json!(["repo:read", "pull-request:read", "artifact:read"])
+            serde_json::json!(["repo:read"])
         );
         assert_eq!(
             review["requiredArtifactKinds"],
@@ -194,24 +217,10 @@ mod tests {
     }
 
     #[test]
-    fn a2a_subagent_skill_contracts_include_browser_qa_policy() {
+    fn a2a_subagent_skills_do_not_claim_browser_qa_without_an_executor() {
         let skills = a2a_subagent_skills("urn:test:operating-plane");
-        let browser_qa = skills
+        assert!(!skills
             .iter()
-            .find(|skill| skill["id"] == "maestro.subagent.browser-qa")
-            .expect("browser QA skill should exist");
-
-        assert_eq!(
-            browser_qa["requiredContextGrants"],
-            serde_json::json!(["browser:control", "artifact:write", "runtime:events:read"])
-        );
-        assert_eq!(
-            browser_qa["requiredArtifactKinds"],
-            serde_json::json!(["qa.repro-report"])
-        );
-        assert_eq!(
-            browser_qa["allowedTaskClasses"],
-            serde_json::json!(["product.qa", "browser.e2e", "ux.repro"])
-        );
+            .any(|skill| skill["id"] == "maestro.subagent.browser-qa"));
     }
 }

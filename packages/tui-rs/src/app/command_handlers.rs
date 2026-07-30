@@ -2556,17 +2556,25 @@ Manual snapshot: `/magic-trace stop`",
                         return;
                     }
                 };
-                match crate::plugins::install(
+                match crate::plugins::install_with_provenance(
                     &source,
                     &home.join("plugins"),
                     &home.join("plugin-state.json"),
                     trust || !entry.tier.requires_explicit_trust(),
+                    Some(crate::plugins::InstallProvenance {
+                        marketplace_id: Some(entry.id.clone()),
+                        marketplace_tier: Some(entry.tier.as_str().to_string()),
+                    }),
                 ) {
                     Ok(preview) => {
                         self.refresh_skills(true);
                         self.state.add_system_message(format!(
-                            "Installed marketplace plugin **{}** from `{}`.\nCapabilities: {:?}\n\nUse `/plugins list` to verify.",
-                            preview.name, preview.source, preview.capabilities
+                            "Installed marketplace plugin **{}** (`{}`, {}) from `{}`.\nCapabilities: {:?}\n\nUse `/plugins list` to verify. Provenance written to plugin-state.json.",
+                            preview.name,
+                            entry.id,
+                            entry.tier.as_str(),
+                            preview.source,
+                            preview.capabilities
                         ));
                         self.state.status = Some(format!("Installed plugin {}", preview.name));
                     }
@@ -2578,7 +2586,7 @@ Manual snapshot: `/magic-trace stop`",
         }
     }
 
-    /// Handle `/attach` add|list|clear.
+    /// Handle `/attach` add|list|clear|remove.
     pub(super) fn handle_attach_action(&mut self, action: AttachAction) {
         match action {
             AttachAction::List => {
@@ -2593,7 +2601,9 @@ Manual snapshot: `/magic-trace stop`",
                     for (i, path) in self.pending_attachments.iter().enumerate() {
                         msg.push_str(&format!("{}. `{path}`\n", i + 1));
                     }
-                    msg.push_str("\nSent with the next user prompt. `/attach clear` drops them.\n");
+                    msg.push_str(
+                        "\nSent with the next user prompt. `/attach clear` drops all; `/attach remove <n>` drops one (1-based).\n",
+                    );
                     self.state.add_system_message(msg);
                 }
             }
@@ -2603,6 +2613,20 @@ Manual snapshot: `/magic-trace stop`",
                 self.state.status = Some(format!("Cleared {n} attachment(s)"));
                 self.state
                     .add_system_message(format!("Cleared {n} pending attachment(s)."));
+            }
+            AttachAction::Remove { index } => {
+                if index == 0 || index > self.pending_attachments.len() {
+                    self.state.error = Some(format!(
+                        "No attachment at index {index}. Use `/attach list` (1-based indices)."
+                    ));
+                } else {
+                    let removed = self.pending_attachments.remove(index - 1);
+                    let n = self.pending_attachments.len();
+                    self.state.status = Some(format!("Detached #{index}; {n} remaining"));
+                    self.state.add_system_message(format!(
+                        "Removed attachment #{index}: `{removed}` ({n} remaining)."
+                    ));
+                }
             }
             AttachAction::Add(path) => {
                 let expanded = if let Some(rest) = path.strip_prefix("~/") {

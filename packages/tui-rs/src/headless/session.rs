@@ -83,7 +83,7 @@
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::SystemTime;
@@ -135,6 +135,8 @@ pub enum SessionEntry {
         state: Box<AgentStateCheckpoint>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last_init: Option<InitConfig>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        semantic_conversation: Option<SemanticConversationCheckpoint>,
     },
 }
 
@@ -174,6 +176,23 @@ pub struct ActiveToolCheckpoint {
     pub tool: String,
     pub output: String,
     pub elapsed_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticConversationCheckpoint {
+    protocol_version: String,
+    messages: Vec<maestro_ai::Message>,
+}
+
+/// Atomically replaced latest replay state. The JSONL remains the complete
+/// ordinary-event journal for readers; this sidecar is only the restore anchor
+/// so day-scale resumes do not deserialize historical checkpoints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ReplaySidecar {
+    tail_offset: u64,
+    state: AgentStateCheckpoint,
+    last_init: Option<InitConfig>,
+    semantic_conversation: Option<SemanticConversationCheckpoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -593,10 +612,14 @@ pub struct SessionRecorder {
     metadata: SessionMetadata,
     /// Path to metadata file
     metadata_path: PathBuf,
+    /// Atomically overwritten latest replay/semantic anchor.
+    replay_path: PathBuf,
     /// Reconstructed state including optimistic outbound actions.
     replay_state: AgentState,
     /// Last init message seen in the stream.
     last_init: Option<InitConfig>,
+    /// Latest private, sanitized provider conversation checkpoint.
+    semantic_conversation: Option<SemanticConversationCheckpoint>,
     /// Number of entries written since the last checkpoint.
     entries_since_checkpoint: usize,
 }
@@ -722,6 +745,7 @@ impl SessionRecorder {
 
         let path = sessions_dir.join(format!("{id}.jsonl"));
         let metadata_path = sessions_dir.join(format!("{id}.meta.json"));
+        let replay_path = sessions_dir.join(format!("{id}.replay.json"));
 
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let writer = BufWriter::new(file);
@@ -734,8 +758,10 @@ impl SessionRecorder {
             writer,
             metadata,
             metadata_path,
+            replay_path,
             replay_state: AgentState::default(),
             last_init: None,
+            semantic_conversation: None,
             entries_since_checkpoint: 0,
         })
     }
@@ -746,13 +772,18 @@ impl SessionRecorder {
         create_dir_all_synced(sessions_dir)?;
         let path = sessions_dir.join(format!("{id}.jsonl"));
         let metadata_path = sessions_dir.join(format!("{id}.meta.json"));
+        let replay_path = sessions_dir.join(format!("{id}.replay.json"));
 
         // Load existing metadata
         let (mut metadata, reconstructed) = load_metadata_tolerant(&metadata_path, id)?;
 
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
-        let writer = BufWriter::new(file);
-        let reader = SessionReader::load(sessions_dir, id).ok();
+        let sidecar_replay = load_replay_sidecar(&replay_path)
+            .and_then(|sidecar| replay_from_sidecar_tail(&path, sidecar).ok());
+        let reader = if sidecar_replay.is_none() || reconstructed {
+            SessionReader::load(sessions_dir, id).ok()
+        } else {
+            None
+        };
         if reconstructed {
             // The corrupt metadata was rotated aside; rebuild what it held
             // (title, model, usage, counts) from the still-intact JSONL log
@@ -761,7 +792,9 @@ impl SessionRecorder {
                 metadata = rebuild_metadata(id, reader.entries());
             }
         }
-        let replay = reader.map(|reader| reader.replay());
+        let replay = sidecar_replay.or_else(|| reader.map(|reader| reader.replay()));
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let writer = BufWriter::new(file);
 
         Ok(Self {
             id: id.to_string(),
@@ -769,10 +802,20 @@ impl SessionRecorder {
             writer,
             metadata,
             metadata_path,
+            replay_path,
             replay_state: replay
                 .as_ref()
                 .map_or_else(AgentState::default, |replay| replay.state.clone()),
-            last_init: replay.and_then(|replay| replay.last_init),
+            last_init: replay.as_ref().and_then(|replay| replay.last_init.clone()),
+            semantic_conversation: replay.and_then(|replay| {
+                replay
+                    .semantic_conversation
+                    .map(|messages| SemanticConversationCheckpoint {
+                        protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL
+                            .to_string(),
+                        messages,
+                    })
+            }),
             entries_since_checkpoint: 0,
         })
     }
@@ -807,6 +850,23 @@ impl SessionRecorder {
         self.last_init.as_ref()
     }
 
+    /// Return the current restore-ready session replay snapshot.
+    #[must_use]
+    pub fn replay(&self) -> SessionReplay {
+        SessionReplay {
+            state: self.replay_state.clone(),
+            last_init: self.last_init.clone(),
+            semantic_conversation: self
+                .semantic_conversation
+                .as_ref()
+                .filter(|checkpoint| {
+                    checkpoint.protocol_version
+                        == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL
+                })
+                .map(|checkpoint| checkpoint.messages.clone()),
+        }
+    }
+
     /// Replace the reconstructed replay state with a snapshot and persist it.
     pub fn apply_snapshot(
         &mut self,
@@ -825,6 +885,27 @@ impl SessionRecorder {
         self.metadata.git_branch = self.replay_state.git_branch.clone();
         self.metadata.updated_at = current_timestamp();
         self.maybe_write_checkpoint(true)
+    }
+
+    /// Record the newest private provider conversation for the next durable
+    /// checkpoint. The checkpoint payload is sanitized before it reaches disk.
+    pub fn record_semantic_conversation(
+        &mut self,
+        messages: Vec<maestro_ai::Message>,
+    ) -> std::io::Result<()> {
+        self.semantic_conversation = Some(SemanticConversationCheckpoint {
+            protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL.to_string(),
+            messages: portable_redacted_semantic_conversation(&sanitize_semantic_conversation(
+                &messages,
+            ))?,
+        });
+        Ok(())
+    }
+
+    /// Force a durable checkpoint, including any semantic conversation snapshot.
+    pub fn flush_checkpoint(&mut self) -> std::io::Result<()> {
+        self.maybe_write_checkpoint(true)?;
+        self.flush()
     }
 
     /// Record a sent message
@@ -863,7 +944,32 @@ impl SessionRecorder {
 
     /// Record a received message
     pub fn record_received(&mut self, message: &FromAgentMessage) -> std::io::Result<()> {
-        let entry = SessionEntry::received(portable_redacted_message(message));
+        let portable_message = portable_redacted_message(message)?;
+        if let FromAgentMessage::ConversationSnapshot {
+            protocol_version,
+            messages,
+        } = &portable_message
+        {
+            if protocol_version == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL {
+                self.semantic_conversation = Some(SemanticConversationCheckpoint {
+                    protocol_version: protocol_version.clone(),
+                    messages: messages.clone(),
+                });
+            } else {
+                // A present-but-unsupported version is not a facade-only
+                // snapshot. Clear stale provider history rather than replaying
+                // a transcript with unknown semantics after restart.
+                self.semantic_conversation = Some(SemanticConversationCheckpoint {
+                    protocol_version: protocol_version.clone(),
+                    messages: Vec::new(),
+                });
+            }
+            // Semantic snapshots are private checkpoint material, never an
+            // ordinary received event or transcript/SSE payload.
+            self.entries_since_checkpoint += 1;
+            return self.maybe_write_checkpoint(true);
+        }
+        let entry = SessionEntry::received(portable_message);
         self.write_entry(&entry)?;
         let _ = self.replay_state.handle_message(message.clone());
         self.entries_since_checkpoint += 1;
@@ -872,6 +978,7 @@ impl SessionRecorder {
             FromAgentMessage::ResponseEnd { .. }
                 | FromAgentMessage::Error { .. }
                 | FromAgentMessage::Compaction { .. }
+                | FromAgentMessage::ConversationSnapshot { .. }
         ))?;
 
         // Update metadata
@@ -918,14 +1025,36 @@ impl SessionRecorder {
             return Ok(());
         }
 
+        // Publish the new replay state before writing the semantic-free JSONL
+        // checkpoint. If this process dies after either write, the sidecar
+        // still contains the newest semantic boundary and its tail offset
+        // never skips it.
+        self.write_replay_sidecar()?;
         let checkpoint = SessionEntry::Checkpoint {
             timestamp: current_timestamp(),
             state: Box::new(portable_redacted_checkpoint(&self.replay_state)),
             last_init: self.last_init.clone(),
+            // Semantic history lives only in the atomically replaced sidecar;
+            // embedding it in every append-only checkpoint is quadratic.
+            semantic_conversation: None,
         };
         self.write_entry(&checkpoint)?;
         self.entries_since_checkpoint = 0;
         Ok(())
+    }
+
+    fn write_replay_sidecar(&mut self) -> std::io::Result<()> {
+        self.writer.flush()?;
+        self.writer.get_ref().sync_all()?;
+        let sidecar = ReplaySidecar {
+            tail_offset: self.writer.get_ref().metadata()?.len(),
+            state: portable_redacted_checkpoint(&self.replay_state),
+            last_init: self.last_init.clone(),
+            semantic_conversation: self.semantic_conversation.clone(),
+        };
+        let json = serde_json::to_string(&sidecar)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        crate::fs_atomic::write_atomic(&self.replay_path, json)
     }
 
     /// Write an entry to the JSONL file
@@ -962,7 +1091,7 @@ impl SessionRecorder {
     }
 }
 
-fn portable_redacted_message(message: &FromAgentMessage) -> FromAgentMessage {
+fn portable_redacted_message(message: &FromAgentMessage) -> std::io::Result<FromAgentMessage> {
     let mut redacted = message.clone();
     let args = match &mut redacted {
         FromAgentMessage::ClientToolRequest { args, .. }
@@ -976,7 +1105,88 @@ fn portable_redacted_message(message: &FromAgentMessage) -> FromAgentMessage {
     if let Some(args) = args {
         *args = crate::agent::credential_store::redact_credentials_in_json(args);
     }
-    redacted
+    if let FromAgentMessage::ConversationSnapshot { messages, .. } = &mut redacted {
+        *messages =
+            portable_redacted_semantic_conversation(&sanitize_semantic_conversation(messages))?;
+    }
+    Ok(redacted)
+}
+
+fn sanitize_semantic_conversation(messages: &[maestro_ai::Message]) -> Vec<maestro_ai::Message> {
+    use maestro_ai::{ContentBlock, Message, MessageContent};
+
+    messages
+        .iter()
+        .filter_map(|message| match &message.content {
+            MessageContent::Text(_) => Some(message.clone()),
+            MessageContent::Blocks(blocks) => {
+                let blocks: Vec<ContentBlock> = blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { .. } | ContentBlock::ToolUse { .. } => {
+                            Some(block.clone())
+                        }
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            is_error,
+                            ..
+                        } => Some(ContentBlock::ToolResult {
+                            tool_use_id: tool_use_id.clone(),
+                            content: "[tool result omitted from checkpoint]".to_owned(),
+                            is_error: *is_error,
+                        }),
+                        ContentBlock::Thinking { .. } | ContentBlock::Image { .. } => None,
+                    })
+                    .collect();
+                (!blocks.is_empty()).then_some(Message {
+                    role: message.role,
+                    content: MessageContent::Blocks(blocks),
+                })
+            }
+        })
+        .collect()
+}
+
+fn portable_redacted_semantic_conversation(
+    messages: &[maestro_ai::Message],
+) -> std::io::Result<Vec<maestro_ai::Message>> {
+    let serialized = serde_json::to_value(messages)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    serde_json::from_value(redact_semantic_checkpoint_value(
+        crate::agent::credential_store::redact_credentials_in_json(&serialized),
+    ))
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+fn redact_semantic_checkpoint_value(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(values) => serde_json::Value::Array(
+            values
+                .into_iter()
+                .map(redact_semantic_checkpoint_value)
+                .collect(),
+        ),
+        serde_json::Value::Object(values) => serde_json::Value::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| {
+                    let sensitive = matches!(
+                        key.to_ascii_lowercase().as_str(),
+                        "api_key" | "apikey" | "authorization" | "password" | "secret" | "token"
+                    );
+                    (
+                        key,
+                        if sensitive {
+                            serde_json::Value::String("[REDACTED]".to_string())
+                        } else {
+                            redact_semantic_checkpoint_value(value)
+                        },
+                    )
+                })
+                .collect(),
+        ),
+        value => value,
+    }
 }
 
 fn portable_redacted_checkpoint(state: &AgentState) -> AgentStateCheckpoint {
@@ -1047,12 +1257,115 @@ pub struct SessionReplay {
     pub state: AgentState,
     /// Most recent init configuration sent to the headless agent, if any.
     pub last_init: Option<InitConfig>,
+    /// Latest private provider conversation, if the session wrote a semantic
+    /// checkpoint using the supported snapshot protocol.
+    pub semantic_conversation: Option<Vec<maestro_ai::Message>>,
 }
 
 fn persist_rebuilt_metadata(path: &Path, metadata: &SessionMetadata) -> std::io::Result<()> {
     let json = serde_json::to_string_pretty(metadata)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
     crate::fs_atomic::write_atomic(path, json)
+}
+
+fn load_replay_sidecar(path: &Path) -> Option<ReplaySidecar> {
+    let json = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&json).ok()
+}
+
+fn replay_from_sidecar_tail(path: &Path, sidecar: ReplaySidecar) -> std::io::Result<SessionReplay> {
+    let mut state = sidecar.state.into_state();
+    let mut last_init = sidecar.last_init;
+    let mut semantic_conversation = sidecar.semantic_conversation.and_then(|checkpoint| {
+        (checkpoint.protocol_version == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL)
+            .then_some(checkpoint.messages)
+    });
+    if !path.exists() {
+        return Ok(SessionReplay {
+            state,
+            last_init,
+            semantic_conversation,
+        });
+    }
+    let mut file = File::open(path)?;
+    if sidecar.tail_offset > file.metadata()?.len() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "replay sidecar offset exceeds session journal",
+        ));
+    }
+    file.seek(SeekFrom::Start(sidecar.tail_offset))?;
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        if let Ok(entry) = serde_json::from_str::<SessionEntry>(&line) {
+            apply_replay_entry(
+                &entry,
+                &mut state,
+                &mut last_init,
+                &mut semantic_conversation,
+            );
+        }
+    }
+    Ok(SessionReplay {
+        state,
+        last_init,
+        semantic_conversation,
+    })
+}
+
+fn apply_replay_entry(
+    entry: &SessionEntry,
+    state: &mut AgentState,
+    last_init: &mut Option<InitConfig>,
+    semantic_conversation: &mut Option<Vec<maestro_ai::Message>>,
+) {
+    match entry {
+        SessionEntry::Sent { message, .. } => {
+            state.handle_sent_message(message);
+            if let ToAgentMessage::Init {
+                system_prompt,
+                append_system_prompt,
+                thinking_level,
+                approval_mode,
+                history,
+            } = message
+            {
+                *last_init = Some(InitConfig {
+                    system_prompt: system_prompt.clone(),
+                    append_system_prompt: append_system_prompt.clone(),
+                    thinking_level: *thinking_level,
+                    approval_mode: *approval_mode,
+                    history: history.clone(),
+                });
+            }
+        }
+        SessionEntry::Received { message, .. } => {
+            if let FromAgentMessage::ConversationSnapshot {
+                protocol_version,
+                messages,
+            } = message
+            {
+                *semantic_conversation = (protocol_version
+                    == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL)
+                    .then_some(messages.clone());
+            }
+            let _ = state.handle_message(message.clone());
+        }
+        SessionEntry::Checkpoint {
+            state: checkpoint,
+            last_init: checkpoint_init,
+            semantic_conversation: checkpoint_conversation,
+            ..
+        } => {
+            *state = checkpoint.as_ref().clone().into_state();
+            *last_init = checkpoint_init.clone();
+            if let Some(checkpoint) = checkpoint_conversation {
+                *semantic_conversation = (checkpoint.protocol_version
+                    == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL)
+                    .then_some(checkpoint.messages.clone());
+            }
+        }
+    }
 }
 
 impl SessionReader {
@@ -1177,20 +1490,40 @@ impl SessionReader {
         self.replay().state
     }
 
-    fn replay_parts(&self) -> (AgentState, Option<InitConfig>) {
+    fn replay_parts(
+        &self,
+    ) -> (
+        AgentState,
+        Option<InitConfig>,
+        Option<Vec<maestro_ai::Message>>,
+    ) {
         let mut state = AgentState::default();
         let mut last_init = None;
+        let mut semantic_conversation = None;
         let mut start_index = 0;
 
         for (index, entry) in self.entries.iter().enumerate() {
             if let SessionEntry::Checkpoint {
                 state: checkpoint,
                 last_init: checkpoint_init,
+                semantic_conversation: checkpoint_conversation,
                 ..
             } = entry
             {
                 state = checkpoint.as_ref().clone().into_state();
                 last_init = checkpoint_init.clone();
+                match checkpoint_conversation {
+                    Some(checkpoint)
+                        if checkpoint.protocol_version
+                            == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL =>
+                    {
+                        semantic_conversation = Some(checkpoint.messages.clone());
+                    }
+                    Some(_) => semantic_conversation = None,
+                    // A facade-only checkpoint does not supersede a durable
+                    // semantic checkpoint recorded earlier in the same log.
+                    None => {}
+                }
                 start_index = index + 1;
             }
         }
@@ -1217,19 +1550,36 @@ impl SessionReader {
                     }
                 }
                 SessionEntry::Received { message, .. } => {
+                    if let FromAgentMessage::ConversationSnapshot {
+                        protocol_version,
+                        messages,
+                    } = message
+                    {
+                        if protocol_version
+                            == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL
+                        {
+                            semantic_conversation = Some(messages.clone());
+                        } else {
+                            semantic_conversation = None;
+                        }
+                    }
                     let _ = state.handle_message(message.clone());
                 }
                 SessionEntry::Checkpoint { .. } => {}
             }
         }
-        (state, last_init)
+        (state, last_init, semantic_conversation)
     }
 
     /// Build a resumable snapshot from the recorded session log.
     #[must_use]
     pub fn replay(&self) -> SessionReplay {
-        let (state, last_init) = self.replay_parts();
-        SessionReplay { state, last_init }
+        let (state, last_init, semantic_conversation) = self.replay_parts();
+        SessionReplay {
+            state,
+            last_init,
+            semantic_conversation,
+        }
     }
 }
 
@@ -1326,7 +1676,286 @@ fn current_timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::{ContentBlock, Message, MessageContent, Role};
     use tempfile::TempDir;
+
+    fn semantic_tool_pair_fixture() -> Vec<Message> {
+        vec![
+            Message {
+                role: Role::User,
+                content: MessageContent::Text("inspect the workspace".to_string()),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                    id: "tool-call-1".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({ "command": "pwd" }),
+                }]),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool-call-1".to_string(),
+                    content: "/workspace".to_string(),
+                    is_error: None,
+                }]),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Text("The workspace is ready.".to_string()),
+            },
+        ]
+    }
+
+    fn credential_tool_fixture() -> Vec<Message> {
+        vec![Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: "tool-call-1".to_string(),
+                name: "http".to_string(),
+                input: serde_json::json!({ "api_key": "sk-secret-value" }),
+            }]),
+        }]
+    }
+
+    #[test]
+    fn test_session_replay_restores_semantic_provider_conversation_with_tool_pairs() {
+        let tmp = TempDir::new().unwrap();
+        let messages = semantic_tool_pair_fixture();
+        let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+        let id = recorder.id().to_string();
+        recorder
+            .record_semantic_conversation(messages.clone())
+            .unwrap();
+        recorder.flush_checkpoint().unwrap();
+
+        let replay = SessionRecorder::resume(tmp.path(), &id).unwrap().replay();
+        assert_eq!(
+            serde_json::to_value(replay.semantic_conversation).unwrap(),
+            serde_json::to_value(Some(sanitize_semantic_conversation(&messages))).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_semantic_snapshot_checkpoint_redacts_credentials() {
+        let tmp = TempDir::new().unwrap();
+        let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+        recorder
+            .record_semantic_conversation(credential_tool_fixture())
+            .unwrap();
+        recorder.flush_checkpoint().unwrap();
+
+        let jsonl = std::fs::read_to_string(recorder.path()).unwrap();
+        let sidecar =
+            std::fs::read_to_string(tmp.path().join(format!("{}.replay.json", recorder.id())))
+                .unwrap();
+        assert!(!jsonl.contains("sk-secret-value"));
+        assert!(!jsonl.contains("tool-call-1"));
+        assert!(!sidecar.contains("sk-secret-value"));
+        assert!(sidecar.contains("[REDACTED]"));
+        assert!(sidecar.contains("tool-call-1"));
+    }
+
+    #[test]
+    fn received_semantic_snapshot_is_checkpoint_only_and_strips_private_content() {
+        let tmp = TempDir::new().unwrap();
+        let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+        let id = recorder.id().to_owned();
+        recorder
+            .record_received(&FromAgentMessage::ConversationSnapshot {
+                protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL
+                    .to_owned(),
+                messages: vec![
+                    Message {
+                        role: Role::Assistant,
+                        content: MessageContent::Blocks(vec![
+                            ContentBlock::Thinking {
+                                thinking: "secret reasoning".to_owned(),
+                                signature: None,
+                            },
+                            ContentBlock::ToolUse {
+                                id: "call-private".to_owned(),
+                                name: "read".to_owned(),
+                                input: serde_json::json!({}),
+                            },
+                        ]),
+                    },
+                    Message {
+                        role: Role::User,
+                        content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                            tool_use_id: "call-private".to_owned(),
+                            content: "private tool output".to_owned(),
+                            is_error: None,
+                        }]),
+                    },
+                ],
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let reader = SessionReader::load(tmp.path(), &id).unwrap();
+        assert!(reader.received_messages().is_empty());
+        let jsonl = fs::read_to_string(tmp.path().join(format!("{id}.jsonl"))).unwrap();
+        let sidecar = fs::read_to_string(tmp.path().join(format!("{id}.replay.json"))).unwrap();
+        assert!(!jsonl.contains("secret reasoning"));
+        assert!(!jsonl.contains("private tool output"));
+        assert!(!jsonl.contains("call-private"));
+        assert!(!sidecar.contains("secret reasoning"));
+        assert!(!sidecar.contains("private tool output"));
+        assert!(sidecar.contains("call-private"));
+    }
+
+    #[test]
+    fn unsupported_semantic_checkpoint_clears_stale_provider_history() {
+        let tmp = TempDir::new().unwrap();
+        let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+        let id = recorder.id().to_owned();
+        recorder
+            .record_semantic_conversation(semantic_tool_pair_fixture())
+            .unwrap();
+        recorder.flush_checkpoint().unwrap();
+        recorder
+            .record_received(&FromAgentMessage::ConversationSnapshot {
+                protocol_version: "evalops.maestro.semantic-conversation.v999".to_owned(),
+                messages: vec![],
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        assert!(SessionReader::load(tmp.path(), &id)
+            .unwrap()
+            .replay()
+            .semantic_conversation
+            .is_none());
+    }
+
+    #[test]
+    fn replay_sidecar_bounds_semantic_persistence_as_history_grows() {
+        fn persisted_bytes(turns: usize) -> u64 {
+            let tmp = TempDir::new().unwrap();
+            let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+            let id = recorder.id().to_owned();
+            for turn in 0..turns {
+                let messages = (0..=turn)
+                    .map(|index| Message {
+                        role: Role::User,
+                        content: MessageContent::Text(format!("turn-{index}: {}", "x".repeat(256))),
+                    })
+                    .collect();
+                recorder.record_semantic_conversation(messages).unwrap();
+                recorder.flush_checkpoint().unwrap();
+            }
+            let journal = fs::metadata(recorder.path()).unwrap().len();
+            let sidecar = fs::metadata(tmp.path().join(format!("{id}.replay.json")))
+                .unwrap()
+                .len();
+            let journal_text = fs::read_to_string(recorder.path()).unwrap();
+            assert!(
+                !journal_text.contains("semantic_conversation"),
+                "semantic history must not be duplicated in append-only checkpoints"
+            );
+            journal + sidecar
+        }
+
+        let eight_turns = persisted_bytes(8);
+        let sixteen_turns = persisted_bytes(16);
+        assert!(
+            sixteen_turns < eight_turns * 3,
+            "latest-sidecar persistence should grow linearly, not quadratically: {eight_turns} -> {sixteen_turns}"
+        );
+    }
+
+    #[test]
+    fn resume_uses_latest_sidecar_anchor_and_applies_only_the_tail() {
+        let tmp = TempDir::new().unwrap();
+        let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+        let id = recorder.id().to_owned();
+        recorder
+            .record_sent(&ToAgentMessage::Init {
+                system_prompt: Some("historical init".to_owned()),
+                append_system_prompt: None,
+                thinking_level: None,
+                approval_mode: None,
+                history: None,
+            })
+            .unwrap();
+        recorder.flush_checkpoint().unwrap();
+        for index in 0..10 {
+            recorder
+                .record_received(&FromAgentMessage::Status {
+                    message: format!("historical status {index}"),
+                })
+                .unwrap();
+        }
+        recorder
+            .record_sent(&ToAgentMessage::Init {
+                system_prompt: Some("tail init".to_owned()),
+                append_system_prompt: None,
+                thinking_level: None,
+                approval_mode: None,
+                history: None,
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let replay = SessionRecorder::resume(tmp.path(), &id).unwrap().replay();
+        assert_eq!(
+            replay.last_init.and_then(|init| init.system_prompt),
+            Some("tail init".to_owned())
+        );
+    }
+
+    #[test]
+    fn sidecar_publish_before_checkpoint_preserves_new_semantic_snapshot_on_interruption() {
+        let tmp = TempDir::new().unwrap();
+        let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+        let id = recorder.id().to_owned();
+        let messages = semantic_tool_pair_fixture();
+        recorder
+            .record_semantic_conversation(messages.clone())
+            .unwrap();
+
+        // Simulate termination after the pre-checkpoint atomic publication and
+        // before the semantic-free journal checkpoint can be appended.
+        recorder.write_replay_sidecar().unwrap();
+        drop(recorder);
+
+        let replay = SessionRecorder::resume(tmp.path(), &id).unwrap().replay();
+        assert_eq!(
+            serde_json::to_value(replay.semantic_conversation).unwrap(),
+            serde_json::to_value(Some(sanitize_semantic_conversation(&messages))).unwrap()
+        );
+    }
+
+    #[test]
+    fn restore_manifest_uses_checkpoint_after_process_death() {
+        let tmp = TempDir::new().unwrap();
+        let messages = semantic_tool_pair_fixture();
+        let mut recorder = SessionRecorder::new(tmp.path()).unwrap();
+        let id = recorder.id().to_string();
+        recorder
+            .record_semantic_conversation(messages.clone())
+            .unwrap();
+        recorder.flush_checkpoint().unwrap();
+
+        // A later facade-only snapshot is the state saved in a drain manifest;
+        // it must not erase the durable provider checkpoint before restart.
+        recorder
+            .apply_snapshot(AgentState::default(), None)
+            .unwrap();
+        recorder.flush_checkpoint().unwrap();
+        drop(recorder);
+
+        let replay = SessionRecorder::resume(tmp.path(), &id).unwrap().replay();
+        assert_eq!(
+            serde_json::to_value(replay.semantic_conversation).unwrap(),
+            serde_json::to_value(Some(sanitize_semantic_conversation(&messages))).unwrap()
+        );
+    }
 
     #[test]
     fn test_session_record_and_load() {

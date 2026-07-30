@@ -1117,6 +1117,14 @@ fn goal_footer_attach_commands_parse() {
     }
 
     match registry
+        .execute("/attach remove 2", "/tmp", None, None)
+        .expect("/attach remove")
+    {
+        CommandOutput::Action(CommandAction::Attach(AttachAction::Remove { index: 2 })) => {}
+        other => panic!("expected Attach::Remove 2, got {other:?}"),
+    }
+
+    match registry
         .execute("/mcp-config", "/tmp", None, None)
         .expect("/mcp-config wizard")
     {

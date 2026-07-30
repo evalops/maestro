@@ -655,6 +655,7 @@ impl NativeAgent {
             definitions,
             credential_vault,
             Some(allowed_tools),
+            None,
         )
     }
 
@@ -682,6 +683,21 @@ impl NativeAgent {
             external_tool_definitions,
             credential_vault,
             None,
+            None,
+        )
+    }
+
+    #[cfg(test)]
+    fn new_with_test_client(
+        config: NativeAgentConfig,
+        client: UnifiedClient,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
+        Self::new_with_tools_and_credential_vault_filtered(
+            config,
+            Vec::new(),
+            CredentialVault::new(),
+            None,
+            Some(client),
         )
     }
 
@@ -690,13 +706,17 @@ impl NativeAgent {
         external_tool_definitions: Vec<ToolDefinition>,
         credential_vault: CredentialVault,
         allowed_tools: Option<&HashSet<String>>,
+        client_override: Option<UnifiedClient>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
         let policy_id = policy_model_id(&config.model);
         if let Some(reason) = check_model_allowed(&policy_id) {
             return Err(anyhow::anyhow!(reason));
         }
 
-        let client = UnifiedClient::from_model(&config.model)?;
+        let client = match client_override {
+            Some(client) => client,
+            None => UnifiedClient::from_model(&config.model)?,
+        };
         let provider = client.provider();
 
         let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -754,6 +774,8 @@ impl NativeAgent {
         let runner = NativeAgentRunner {
             client,
             codex_session: None,
+            codex_history_restore_prefix_len: None,
+            codex_current_prompt_started: false,
             config: config.clone(),
             messages: Vec::new(),
             tools,
@@ -1210,6 +1232,18 @@ struct NativeAgentRunner {
     /// `thread/start` / `turn/start` stay owned by Codex.
     codex_session: Option<super::codex_app_server_turns::CodexAppServerTurnSession>,
 
+    /// Number of restored messages owned by the next fresh Codex thread.
+    ///
+    /// Captured when history is replaced and consumed after a successful
+    /// `thread/inject_items`, so prompts appended before lazy session startup
+    /// remain live-turn input rather than restored history.
+    codex_history_restore_prefix_len: Option<usize>,
+
+    /// Whether the current live prompt crossed a successful Codex
+    /// `turn/start` boundary. Pre-turn failures may be retried, but a terminal
+    /// GiveUp must not persist an undelivered prompt as provider history.
+    codex_current_prompt_started: bool,
+
     /// Configuration
     ///
     /// Current agent settings. Updated via commands like `SetModel`,
@@ -1356,6 +1390,42 @@ where
 }
 
 impl NativeAgentRunner {
+    fn compact_codex_history_for_boundary(&mut self) {
+        if !super::codex_app_server_turns::model_should_use_app_server_turns(&self.config.model) {
+            return;
+        }
+
+        let result = self.compactor.compact_with_tokens(&self.messages);
+        if !result.was_compacted() {
+            return;
+        }
+
+        let status_message = format!(
+            "Codex history compacted: {} messages summarized, {} oversized messages bounded",
+            result.compacted_count, result.intra_compacted_count
+        );
+        emit_compaction_event(
+            &self.event_tx,
+            &self.messages,
+            result.summary.as_deref().unwrap_or(&status_message),
+            result.cut_point.as_ref(),
+            true,
+        );
+        self.messages = result.messages;
+        self.codex_session = None;
+        self.codex_history_restore_prefix_len = Some(self.messages.len());
+        let _ = self.event_tx.send(FromAgent::Status {
+            message: status_message,
+        });
+    }
+
+    fn emit_conversation_snapshot(&mut self) {
+        self.compact_codex_history_for_boundary();
+        if let Some(snapshot) = conversation_snapshot_event(&self.messages) {
+            let _ = self.event_tx.send(snapshot);
+        }
+    }
+
     fn set_active_request_cancel_token(&mut self, token: Option<CancellationToken>) {
         let mut active = self
             .active_cancellation
@@ -2057,6 +2127,7 @@ impl NativeAgentRunner {
                             response_id: "done".to_string(),
                             usage: None,
                         });
+                        self.emit_conversation_snapshot();
                         continue;
                     }
 
@@ -2081,6 +2152,7 @@ impl NativeAgentRunner {
                                 response_id: "blocked".to_string(),
                                 usage: None,
                             });
+                            self.emit_conversation_snapshot();
                             self.busy = false;
                             self.set_active_request_cancel_token(None);
                             self.prompt_context = None;
@@ -2115,6 +2187,7 @@ impl NativeAgentRunner {
                                 response_id: "blocked".to_string(),
                                 usage: None,
                             });
+                            self.emit_conversation_snapshot();
                             self.busy = false;
                             self.set_active_request_cancel_token(None);
                             self.prompt_context = None;
@@ -2174,10 +2247,18 @@ impl NativeAgentRunner {
                         MessageContent::Blocks(blocks)
                     };
 
+                    let current_prompt_index = self.messages.len();
                     self.messages.push(Message {
                         role: Role::User,
                         content,
                     });
+                    let current_prompt_uses_codex =
+                        super::codex_app_server_turns::model_should_use_app_server_turns(
+                            &self.config.model,
+                        );
+                    if current_prompt_uses_codex {
+                        self.codex_current_prompt_started = false;
+                    }
 
                     // Reset retry policy for new request
                     self.retry_policy.reset();
@@ -2189,6 +2270,7 @@ impl NativeAgentRunner {
                     // One-shot: re-read CODEX_HOME/auth.json after 401 and rebuild
                     // the client before treating auth failure as terminal.
                     let mut codex_auth_refreshed = false;
+                    let mut terminal_request_failure = false;
                     loop {
                         let result = run_request_with_cancellation(
                             self.run_loop(),
@@ -2201,7 +2283,10 @@ impl NativeAgentRunner {
                         match result {
                             Ok(()) => break,
                             Err(e) => {
-                                let msg = e.to_string();
+                                // Preserve the complete anyhow cause chain so
+                                // connect/inject/start errors retain provider
+                                // retry metadata hidden below their RPC context.
+                                let msg = format!("{e:#}");
                                 if msg == "Request cancelled" {
                                     request_cancelled = true;
                                     break;
@@ -2238,6 +2323,7 @@ impl NativeAgentRunner {
                                                     ),
                                                     fatal: false,
                                                 });
+                                                terminal_request_failure = true;
                                                 break;
                                             }
                                         }
@@ -2287,11 +2373,28 @@ impl NativeAgentRunner {
                                             message: format!("Agent error: {msg} ({reason}){hint}"),
                                             fatal: false,
                                         });
+                                        terminal_request_failure = true;
                                         break;
                                     }
                                 }
                             }
                         }
+                    }
+
+                    if current_prompt_uses_codex {
+                        if (terminal_request_failure || request_cancelled)
+                            && !self.codex_current_prompt_started
+                        {
+                            let current_prompt = self.messages.get(current_prompt_index);
+                            debug_assert!(
+                                current_prompt.is_some_and(|message| message.role == Role::User),
+                                "current Codex prompt index must still identify its user message"
+                            );
+                            if current_prompt.is_some_and(|message| message.role == Role::User) {
+                                self.messages.remove(current_prompt_index);
+                            }
+                        }
+                        self.codex_current_prompt_started = false;
                     }
 
                     if request_cancelled {
@@ -2307,11 +2410,14 @@ impl NativeAgentRunner {
                     self.set_active_request_cancel_token(None);
                     self.prompt_context = None;
 
+                    self.repair_orphaned_tool_calls();
+
                     // Signal that we're done (TUI can clear busy state)
                     let _ = self.event_tx.send(FromAgent::ResponseEnd {
                         response_id: "done".to_string(),
                         usage: None,
                     });
+                    self.emit_conversation_snapshot();
                 }
                 AgentCommand::Cancel { clear_pending } => {
                     if let Some(token) = &self.cancel_token {
@@ -2429,12 +2535,20 @@ impl NativeAgentRunner {
                 }
                 AgentCommand::ClearHistory => {
                     self.messages.clear();
+                    self.codex_session = None;
+                    self.codex_history_restore_prefix_len = None;
+                    self.codex_current_prompt_started = false;
                     self.pending_messages.clear();
                     self.safety.reset(); // Reset doom loop / rate limit state
                     self.credential_vault.clear();
                 }
                 AgentCommand::ReplaceHistory { messages } => {
+                    let restored_prefix_len = messages.len();
                     self.messages = messages;
+                    self.codex_session = None;
+                    self.codex_history_restore_prefix_len = Some(restored_prefix_len);
+                    self.codex_current_prompt_started = false;
+                    self.compact_codex_history_for_boundary();
                     self.pending_messages.clear();
                     self.safety.reset();
                     // Replacing history is used for session restore. References
@@ -2490,10 +2604,13 @@ impl NativeAgentRunner {
                     self.set_active_request_cancel_token(None);
                     self.prompt_context = None;
 
+                    self.repair_orphaned_tool_calls();
+
                     let _ = self.event_tx.send(FromAgent::ResponseEnd {
                         response_id: "continue".to_string(),
                         usage: None,
                     });
+                    self.emit_conversation_snapshot();
                 }
             }
         }
@@ -2668,6 +2785,8 @@ impl NativeAgentRunner {
             };
             ensure_untrusted_content_policy(system)
         };
+        let restored_prefix_len = self.codex_history_restore_prefix_len.unwrap_or(0);
+        let restored_messages = &self.messages[..restored_prefix_len.min(self.messages.len())];
         let session = super::codex_app_server_turns::CodexAppServerTurnSession::connect(
             model,
             Some(cwd),
@@ -2675,8 +2794,10 @@ impl NativeAgentRunner {
             sandbox,
             &dynamic_tools,
             instructions,
+            restored_messages,
         )
         .await?;
+        self.codex_history_restore_prefix_len = None;
         let _ = self.event_tx.send(FromAgent::Status {
             message: format!("Codex app-server thread ready ({})", session.thread_id()),
         });
@@ -2694,7 +2815,6 @@ impl NativeAgentRunner {
     ///   shell via those RPCs is effectively off unless Yolo.
     async fn run_loop_via_codex_app_server(&mut self) -> Result<()> {
         use super::codex_app_server_turns::TurnWaitEvent;
-        use crate::codex_app_server::agent_message_text_from_notifications;
 
         self.ensure_codex_session().await?;
 
@@ -2734,8 +2854,11 @@ impl NativeAgentRunner {
                 .context("Codex app-server session missing")?;
             session.start_text_turn(user_text, None).await?
         };
+        self.codex_current_prompt_started = true;
 
-        // Accumulate streamed text so completion does not re-emit deltas.
+        // Accumulate the current provider-history segment. Tool boundaries
+        // consume that segment's authoritative item before flushing it, so
+        // the terminal completion cannot repeat pre-tool assistant text.
         let mut streamed_assistant = String::new();
 
         loop {
@@ -2744,22 +2867,8 @@ impl NativeAgentRunner {
             }
 
             // Stream any agent message deltas that arrived since the last wait.
-            {
-                let session = self
-                    .codex_session
-                    .as_ref()
-                    .context("Codex app-server session missing")?;
-                let deltas = session.take_message_deltas().await;
-                let text = agent_message_text_from_notifications(&deltas);
-                if !text.is_empty() {
-                    streamed_assistant.push_str(&text);
-                    let _ = self.event_tx.send(FromAgent::ResponseChunk {
-                        response_id: response_id.clone(),
-                        content: text,
-                        is_thinking: false,
-                    });
-                }
-            }
+            self.drain_codex_assistant_deltas(&response_id, &mut streamed_assistant)
+                .await?;
 
             let event = {
                 let session = self
@@ -2773,28 +2882,24 @@ impl NativeAgentRunner {
 
             match event {
                 TurnWaitEvent::Completed(result) => {
-                    // `item/completed` agent messages carry the authoritative
-                    // full text (possibly including content never streamed as
-                    // deltas); fall back to what was streamed.
-                    let final_text = if result.assistant_text.is_empty() {
-                        streamed_assistant.clone()
-                    } else {
-                        result.assistant_text
-                    };
-                    // Emit only the tail not already streamed as deltas, so
-                    // completion text never duplicates streamed content. When
-                    // the streams diverge, keep the authoritative text for
-                    // history without re-emitting.
-                    let tail = final_text
-                        .strip_prefix(streamed_assistant.as_str())
-                        .unwrap_or("");
-                    if !tail.is_empty() {
+                    let (completion_delta, full_text) = Self::reconcile_codex_completion_text(
+                        &streamed_assistant,
+                        &result.assistant_text,
+                        result.assistant_text_is_full,
+                    );
+                    if !completion_delta.is_empty() {
+                        streamed_assistant.push_str(&completion_delta);
                         let _ = self.event_tx.send(FromAgent::ResponseChunk {
                             response_id: response_id.clone(),
-                            content: tail.to_owned(),
+                            content: completion_delta,
                             is_thinking: false,
                         });
                     }
+                    let final_text = Self::codex_terminal_assistant_text(
+                        streamed_assistant,
+                        full_text,
+                        result.assistant_text_is_full,
+                    );
                     if !final_text.is_empty() {
                         self.messages.push(Message {
                             role: Role::Assistant,
@@ -2808,10 +2913,113 @@ impl NativeAgentRunner {
                     return Ok(());
                 }
                 TurnWaitEvent::ServerRequest(request) => {
+                    // The server-request reader is ordered: any assistant
+                    // notification read before this request is already queued.
+                    // Drain that causal prefix now, before recording the tool
+                    // use/result, rather than depending on the next loop tick.
+                    self.drain_codex_assistant_deltas(&response_id, &mut streamed_assistant)
+                        .await?;
+                    self.reconcile_codex_completed_segment(&mut streamed_assistant)
+                        .await?;
+                    self.flush_codex_streamed_assistant(&mut streamed_assistant);
                     self.handle_codex_server_request(request).await?;
                 }
             }
         }
+    }
+
+    async fn drain_codex_assistant_deltas(
+        &self,
+        response_id: &str,
+        current_segment: &mut String,
+    ) -> Result<()> {
+        use crate::codex_app_server::agent_message_text_from_notifications;
+
+        let session = self
+            .codex_session
+            .as_ref()
+            .context("Codex app-server session missing")?;
+        let deltas = session.take_message_deltas().await;
+        let text = agent_message_text_from_notifications(&deltas);
+        if !text.is_empty() {
+            current_segment.push_str(&text);
+            let _ = self.event_tx.send(FromAgent::ResponseChunk {
+                response_id: response_id.to_owned(),
+                content: text,
+                is_thinking: false,
+            });
+        }
+        Ok(())
+    }
+
+    async fn reconcile_codex_completed_segment(&self, current_segment: &mut String) -> Result<()> {
+        let session = self
+            .codex_session
+            .as_ref()
+            .context("Codex app-server session missing")?;
+        let completed_text = session.take_completed_assistant_text().await;
+        if !completed_text.is_empty() {
+            let (_, authoritative_segment) =
+                Self::reconcile_codex_completion_text(current_segment, &completed_text, true);
+            *current_segment = authoritative_segment;
+        }
+        Ok(())
+    }
+
+    fn reconcile_codex_completion_text(
+        emitted_assistant: &str,
+        completion_text: &str,
+        completion_is_full: bool,
+    ) -> (String, String) {
+        if completion_text.is_empty() {
+            return (String::new(), emitted_assistant.to_owned());
+        }
+        if completion_is_full {
+            let tail = completion_text
+                .strip_prefix(emitted_assistant)
+                .unwrap_or_default()
+                .to_owned();
+            return (tail, completion_text.to_owned());
+        }
+
+        (
+            completion_text.to_owned(),
+            format!("{emitted_assistant}{completion_text}"),
+        )
+    }
+
+    fn codex_terminal_assistant_text(
+        streamed_assistant: String,
+        reconciled_full_text: String,
+        completion_is_full: bool,
+    ) -> String {
+        if completion_is_full {
+            reconciled_full_text
+        } else {
+            streamed_assistant
+        }
+    }
+
+    fn flush_codex_streamed_assistant(&mut self, streamed_assistant: &mut String) {
+        if !streamed_assistant.is_empty() {
+            self.messages.push(Message {
+                role: Role::Assistant,
+                content: MessageContent::Text(std::mem::take(streamed_assistant)),
+            });
+        }
+    }
+
+    fn record_codex_tool_use(&mut self, call_id: &str, tool_name: &str, args: &Value) {
+        append_codex_tool_use(
+            &mut self.messages,
+            call_id,
+            tool_name,
+            self.credential_vault.vault_in_json(args),
+        );
+    }
+
+    fn record_codex_tool_result(&mut self, call_id: &str, content: String, is_error: bool) {
+        append_codex_tool_result(&mut self.messages, call_id, content, is_error);
     }
 
     async fn handle_codex_server_request(
@@ -2847,6 +3055,7 @@ impl NativeAgentRunner {
                     .unwrap_or_else(|| tool_name.to_lowercase());
 
                 let tool_key = registry_name.to_lowercase();
+                self.record_codex_tool_use(&call_id, &registry_name, &args);
                 let is_external_tool = self.external_tools.contains(&tool_key);
                 let annotations = self.tool_executor.tool_annotations(&tool_key);
                 let workflow_snapshot = self.workflow_state.snapshot();
@@ -2866,9 +3075,9 @@ impl NativeAgentRunner {
                         message: reason.clone(),
                         fatal: false,
                     });
-                    request.respond(tool_call_error_result(format!(
-                        "Tool blocked by action firewall: {reason}"
-                    )));
+                    let error = format!("Tool blocked by action firewall: {reason}");
+                    self.record_codex_tool_result(&call_id, error.clone(), true);
+                    request.respond(tool_call_error_result(error));
                     return Ok(());
                 }
 
@@ -2897,24 +3106,27 @@ impl NativeAgentRunner {
                             }
                             Some(_) => continue,
                             None => {
-                                request.respond(tool_call_error_result(
-                                    "Tool approval channel closed",
-                                ));
+                                let error = "Tool approval channel closed".to_owned();
+                                self.record_codex_tool_result(&call_id, error.clone(), true);
+                                request.respond(tool_call_error_result(error));
                                 return Ok(());
                             }
                         }
                     };
                     if !approved {
-                        request.respond(tool_call_error_result("Tool denied by user"));
+                        let error = "Tool denied by user".to_owned();
+                        self.record_codex_tool_result(&call_id, error.clone(), true);
+                        request.respond(tool_call_error_result(error));
                         return Ok(());
                     }
                     if let Some(result) = provided_result {
                         if result.success {
+                            self.record_codex_tool_result(&call_id, result.output.clone(), false);
                             request.respond(tool_call_success_result(result.output));
                         } else {
-                            request.respond(tool_call_error_result(
-                                result.error.unwrap_or_else(|| result.output.clone()),
-                            ));
+                            let error = result.error.unwrap_or_else(|| result.output.clone());
+                            self.record_codex_tool_result(&call_id, error.clone(), true);
+                            request.respond(tool_call_error_result(error));
                         }
                         return Ok(());
                     }
@@ -2933,8 +3145,10 @@ impl NativeAgentRunner {
                     .await;
                 let text = execution.model_content();
                 if execution.is_error() {
+                    self.record_codex_tool_result(&call_id, text.clone(), true);
                     request.respond(tool_call_error_result(text));
                 } else {
+                    self.record_codex_tool_result(&call_id, text.clone(), false);
                     request.respond(tool_call_success_result(text));
                 }
                 Ok(())
@@ -3154,6 +3368,7 @@ impl NativeAgentRunner {
                                     message: status_msg,
                                 });
                                 self.messages = result.messages;
+                                self.emit_conversation_snapshot();
                             }
                             // Hooks can also handle overflow
                             if self.hooks.handle_overflow() {
@@ -4160,6 +4375,7 @@ impl NativeAgentRunner {
                         message: status_msg,
                     });
                     self.messages = result.messages;
+                    self.emit_conversation_snapshot();
                 }
             }
 
@@ -4395,6 +4611,118 @@ impl NativeAgentRunner {
         }
 
         Ok(())
+    }
+}
+
+fn append_codex_tool_use(
+    messages: &mut Vec<Message>,
+    call_id: &str,
+    tool_name: &str,
+    input: Value,
+) {
+    messages.push(Message {
+        role: Role::Assistant,
+        content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+            id: call_id.to_owned(),
+            name: tool_name.to_owned(),
+            input,
+        }]),
+    });
+}
+
+fn append_codex_tool_result(
+    messages: &mut Vec<Message>,
+    call_id: &str,
+    content: String,
+    is_error: bool,
+) {
+    messages.push(Message {
+        role: Role::User,
+        content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+            tool_use_id: call_id.to_owned(),
+            content,
+            is_error: Some(is_error),
+        }]),
+    });
+}
+
+fn conversation_snapshot_event(messages: &[Message]) -> Option<FromAgent> {
+    let serialized = serde_json::to_value(sanitize_semantic_conversation(messages)).ok()?;
+    let messages = serde_json::from_value(redact_semantic_snapshot_json(
+        crate::agent::credential_store::redact_credentials_in_json(&serialized),
+    ))
+    .ok()?;
+    Some(FromAgent::ConversationSnapshot {
+        protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL.to_string(),
+        messages,
+    })
+}
+
+/// Private semantic checkpoints may retain provider-visible structure, but not
+/// hidden reasoning or arbitrary tool output. Keep the tool IDs so restored
+/// histories preserve the call/result relationship while replacing the output
+/// body with a bounded marker.
+fn sanitize_semantic_conversation(messages: &[Message]) -> Vec<Message> {
+    messages
+        .iter()
+        .filter_map(|message| match &message.content {
+            MessageContent::Text(_) => Some(message.clone()),
+            MessageContent::Blocks(blocks) => {
+                let blocks: Vec<ContentBlock> = blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { .. } | ContentBlock::ToolUse { .. } => {
+                            Some(block.clone())
+                        }
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            is_error,
+                            ..
+                        } => Some(ContentBlock::ToolResult {
+                            tool_use_id: tool_use_id.clone(),
+                            content: "[tool result omitted from checkpoint]".to_string(),
+                            is_error: *is_error,
+                        }),
+                        ContentBlock::Thinking { .. } | ContentBlock::Image { .. } => None,
+                    })
+                    .collect();
+                (!blocks.is_empty()).then_some(Message {
+                    role: message.role,
+                    content: MessageContent::Blocks(blocks),
+                })
+            }
+        })
+        .collect()
+}
+
+fn redact_semantic_snapshot_json(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(values) => serde_json::Value::Array(
+            values
+                .into_iter()
+                .map(redact_semantic_snapshot_json)
+                .collect(),
+        ),
+        serde_json::Value::Object(values) => serde_json::Value::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| {
+                    let sensitive = matches!(
+                        key.to_ascii_lowercase().as_str(),
+                        "api_key" | "apikey" | "authorization" | "password" | "secret" | "token"
+                    );
+                    (
+                        key,
+                        if sensitive {
+                            serde_json::Value::String("[REDACTED]".to_string())
+                        } else {
+                            redact_semantic_snapshot_json(value)
+                        },
+                    )
+                })
+                .collect(),
+        ),
+        value => value,
     }
 }
 
@@ -4959,10 +5287,1049 @@ fn repair_orphaned_tool_calls(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
     use std::sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn read_scripted_provider_request(
+        stream: &mut tokio::net::TcpStream,
+    ) -> serde_json::Value {
+        let mut buffer = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            let read = stream.read(&mut chunk).await.expect("read request");
+            assert!(read > 0, "provider request closed before headers");
+            buffer.extend_from_slice(&chunk[..read]);
+            if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let header_end = buffer
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("header end");
+        let headers = String::from_utf8_lossy(&buffer[..header_end]);
+        let content_length = headers
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            .find_map(|(_, value)| value.trim().parse::<usize>().ok())
+            .expect("content length");
+        let body_start = header_end + 4;
+        while buffer.len() - body_start < content_length {
+            let read = stream.read(&mut chunk).await.expect("read request body");
+            assert!(read > 0, "provider request closed before body");
+            buffer.extend_from_slice(&chunk[..read]);
+        }
+        serde_json::from_slice(&buffer[body_start..body_start + content_length])
+            .expect("provider request json")
+    }
+
+    fn chat_sse_response(id: &str, content: &str, tool_call: bool) -> String {
+        let mut events = vec![serde_json::json!({
+            "id": id, "object": "chat.completion.chunk", "created": 0,
+            "model": "gpt-4o", "choices": [{"index": 0,
+                "delta": {"role": "assistant", "content": content}, "finish_reason": null}]
+        })];
+        if tool_call {
+            events.push(serde_json::json!({
+                "id": id, "object": "chat.completion.chunk", "created": 0,
+                "model": "gpt-4o", "choices": [{"index": 0,
+                    "delta": {"tool_calls": [{"index": 0, "id": "call-native-1", "type": "function",
+                        "function": {"name": "read", "arguments": "{\"path\":\"Cargo.toml\"}"}}]},
+                    "finish_reason": "tool_calls"}]
+            }));
+        } else {
+            events.push(serde_json::json!({
+                "id": id, "object": "chat.completion.chunk", "created": 0,
+                "model": "gpt-4o", "choices": [{"index": 0,
+                    "delta": {}, "finish_reason": "stop"}]
+            }));
+        }
+        let mut body = String::new();
+        for event in events {
+            write!(body, "data: {event}\n\n").expect("write SSE event");
+        }
+        body.push_str("data: [DONE]\n\n");
+        body
+    }
+
+    async fn scripted_native_provider() -> (String, Arc<Mutex<Vec<serde_json::Value>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind provider");
+        let address = listener.local_addr().expect("provider address");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&requests);
+        tokio::spawn(async move {
+            for (index, response) in [
+                chat_sse_response("first-tool", "I will read it.", true),
+                chat_sse_response("first-final", "The first turn is complete.", false),
+                chat_sse_response("second-final", "Continuation observed.", false),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let (mut stream, _) = listener.accept().await.expect("provider accept");
+                let request = read_scripted_provider_request(&mut stream).await;
+                captured.lock().unwrap().push(request);
+                let wire = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.len(), response
+                );
+                stream
+                    .write_all(wire.as_bytes())
+                    .await
+                    .expect("provider response");
+                if index == 2 {
+                    break;
+                }
+            }
+        });
+        (format!("http://{address}/v1"), requests)
+    }
+
+    #[tokio::test]
+    async fn native_provider_checkpoint_survives_process_death_and_restores_tool_continuity() {
+        let (base_url, requests) = scripted_native_provider().await;
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::write(
+            workspace.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\n",
+        )
+        .expect("fixture file");
+        let config = NativeAgentConfig {
+            model: "openai/gpt-4o".to_owned(),
+            cwd: workspace.path().display().to_string(),
+            approval_mode: ApprovalMode::Yolo,
+            ..NativeAgentConfig::default()
+        };
+        let source_client = UnifiedClient::OpenAI(
+            crate::ai::OpenAiClient::with_base_url("test-key", base_url.clone())
+                .expect("source client"),
+        );
+        let (source, mut source_events) =
+            NativeAgent::new_with_test_client(config.clone(), source_client).expect("source agent");
+        source
+            .prompt("first turn".to_owned(), vec![])
+            .await
+            .expect("source prompt");
+
+        let sessions = tempfile::tempdir().expect("sessions");
+        let mut recorder =
+            crate::headless::SessionRecorder::new(sessions.path()).expect("session recorder");
+        let snapshot = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match source_events.recv().await {
+                    Some(FromAgent::ConversationSnapshot { messages, .. }) => break messages,
+                    Some(FromAgent::Error { message, .. }) => {
+                        panic!("fixture agent error: {message}")
+                    }
+                    Some(_) => continue,
+                    None => panic!("source event channel closed before snapshot"),
+                }
+            }
+        })
+        .await
+        .expect("runtime snapshot timeout");
+        recorder
+            .record_received(
+                &crate::headless::messages::FromAgentMessage::ConversationSnapshot {
+                    protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL
+                        .to_owned(),
+                    messages: snapshot,
+                },
+            )
+            .expect("persist runtime snapshot");
+        let session_id = recorder.id().to_owned();
+        drop(recorder);
+        source.shutdown().await;
+
+        let restored_history =
+            crate::headless::SessionRecorder::resume(sessions.path(), &session_id)
+                .expect("resume runtime checkpoint")
+                .replay()
+                .semantic_conversation
+                .expect("restored semantic history");
+        let restored_client = UnifiedClient::OpenAI(
+            crate::ai::OpenAiClient::with_base_url("test-key", base_url).expect("restored client"),
+        );
+        let (restored, mut restored_events) =
+            NativeAgent::new_with_test_client(config, restored_client).expect("restored agent");
+        restored.replace_history(restored_history);
+        restored
+            .prompt("second turn".to_owned(), vec![])
+            .await
+            .expect("second prompt");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while let Some(event) = restored_events.recv().await {
+                if matches!(event, FromAgent::ConversationSnapshot { .. }) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("second terminal snapshot timeout");
+        restored.shutdown().await;
+
+        let captured = requests.lock().unwrap();
+        assert_eq!(captured.len(), 3);
+        let continuation = serde_json::to_string(&captured[2]).expect("continuation request json");
+        assert!(continuation.contains("first turn"), "{continuation}");
+        assert!(continuation.contains("call-native-1"), "{continuation}");
+        assert!(continuation.contains("second turn"), "{continuation}");
+    }
+
+    #[test]
+    fn semantic_checkpoint_excludes_thinking_and_raw_tool_output_but_keeps_tool_pair_ids() {
+        let checkpoint = sanitize_semantic_conversation(&[
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![
+                    ContentBlock::Thinking {
+                        thinking: "hidden chain of thought".to_owned(),
+                        signature: Some("signature".to_owned()),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call-1".to_owned(),
+                        name: "read".to_owned(),
+                        input: serde_json::json!({ "path": "src/lib.rs" }),
+                    },
+                ]),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-1".to_owned(),
+                    content: "unbounded private file content".to_owned(),
+                    is_error: Some(false),
+                }]),
+            },
+        ]);
+
+        let json = serde_json::to_string(&checkpoint).unwrap();
+        assert!(!json.contains("hidden chain of thought"));
+        assert!(!json.contains("unbounded private file content"));
+        assert!(json.contains("call-1"));
+        assert!(json.contains("[tool result omitted from checkpoint]"));
+    }
+
+    #[test]
+    fn terminal_snapshot_event_is_emitted_with_the_public_continue_terminal_shape() {
+        let event = conversation_snapshot_event(&[Message {
+            role: Role::User,
+            content: MessageContent::text("continue from this context"),
+        }])
+        .expect("snapshot event");
+
+        assert!(matches!(
+            event,
+            FromAgent::ConversationSnapshot { messages, .. }
+                if messages.len() == 1 && messages[0].content.as_text() == Some("continue from this context")
+        ));
+    }
+
+    #[test]
+    fn codex_dynamic_tool_pair_is_retained_in_ordered_terminal_snapshot() {
+        let mut messages = vec![Message {
+            role: Role::Assistant,
+            content: MessageContent::text("I'll inspect that first."),
+        }];
+        append_codex_tool_use(
+            &mut messages,
+            "codex-call-1",
+            "read",
+            serde_json::json!({ "path": "src/lib.rs" }),
+        );
+        append_codex_tool_result(
+            &mut messages,
+            "codex-call-1",
+            "simulated tool failure".to_owned(),
+            true,
+        );
+
+        let FromAgent::ConversationSnapshot { messages, .. } =
+            conversation_snapshot_event(&messages).expect("snapshot")
+        else {
+            panic!("expected semantic snapshot");
+        };
+        assert_eq!(messages.len(), 3);
+        assert_eq!(
+            messages[0].content.as_text(),
+            Some("I'll inspect that first.")
+        );
+        assert!(matches!(
+            &messages[1].content,
+            MessageContent::Blocks(blocks)
+                if matches!(&blocks[0], ContentBlock::ToolUse { id, .. } if id == "codex-call-1")
+        ));
+        assert!(matches!(
+            &messages[2].content,
+            MessageContent::Blocks(blocks)
+                if matches!(&blocks[0], ContentBlock::ToolResult { tool_use_id, is_error: Some(true), .. } if tool_use_id == "codex-call-1")
+        ));
+    }
+
+    #[test]
+    fn codex_completion_delta_is_emitted_once_and_reaches_terminal_snapshot() {
+        let (visible_completion, full_text) =
+            NativeAgentRunner::reconcile_codex_completion_text("prefix ", "suffix", false);
+        assert_eq!(visible_completion, "suffix");
+        assert_eq!(full_text, "prefix suffix");
+
+        let FromAgent::ConversationSnapshot { messages, .. } =
+            conversation_snapshot_event(&[Message {
+                role: Role::Assistant,
+                content: MessageContent::Text(full_text),
+            }])
+            .expect("terminal snapshot")
+        else {
+            panic!("expected semantic snapshot");
+        };
+        assert_eq!(messages[0].content.as_text(), Some("prefix suffix"));
+    }
+
+    #[test]
+    fn codex_completion_reconciliation_accepts_suffix_or_authoritative_full_text() {
+        assert_eq!(
+            NativeAgentRunner::reconcile_codex_completion_text("prefix ", "suffix", false),
+            ("suffix".to_owned(), "prefix suffix".to_owned())
+        );
+        assert_eq!(
+            NativeAgentRunner::reconcile_codex_completion_text("prefix ", "prefix suffix", true),
+            ("suffix".to_owned(), "prefix suffix".to_owned())
+        );
+    }
+
+    #[test]
+    fn codex_divergent_authoritative_completion_reaches_terminal_snapshot() {
+        let (visible_completion, full_text) =
+            NativeAgentRunner::reconcile_codex_completion_text("partial", "full answer", true);
+        assert!(visible_completion.is_empty());
+
+        let final_text =
+            NativeAgentRunner::codex_terminal_assistant_text("partial".to_owned(), full_text, true);
+        let FromAgent::ConversationSnapshot { messages, .. } =
+            conversation_snapshot_event(&[Message {
+                role: Role::Assistant,
+                content: MessageContent::Text(final_text),
+            }])
+            .expect("terminal snapshot")
+        else {
+            panic!("expected semantic snapshot");
+        };
+        assert_eq!(messages[0].content.as_text(), Some("full answer"));
+    }
+
+    #[test]
+    fn codex_authoritative_segments_preserve_tool_boundaries_without_duplication() {
+        let (_, before) =
+            NativeAgentRunner::reconcile_codex_completion_text("draft before", "before", true);
+        let mut messages = vec![Message {
+            role: Role::Assistant,
+            content: MessageContent::Text(before),
+        }];
+        append_codex_tool_use(
+            &mut messages,
+            "call-1",
+            "read",
+            serde_json::json!({ "path": "src/lib.rs" }),
+        );
+        append_codex_tool_result(&mut messages, "call-1", "tool output".to_owned(), false);
+        let (_, after) =
+            NativeAgentRunner::reconcile_codex_completion_text("draft after", "after", true);
+        messages.push(Message {
+            role: Role::Assistant,
+            content: MessageContent::Text(after),
+        });
+
+        let FromAgent::ConversationSnapshot { messages, .. } =
+            conversation_snapshot_event(&messages).expect("terminal snapshot")
+        else {
+            panic!("expected semantic snapshot");
+        };
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].content.as_text(), Some("before"));
+        assert_eq!(messages[3].content.as_text(), Some("after"));
+        assert!(!messages[3]
+            .content
+            .as_text()
+            .expect("final assistant text")
+            .contains("before"));
+    }
+
+    #[tokio::test]
+    async fn codex_process_continuation_fixture() {
+        let Ok(role) = std::env::var("MAESTRO_CODEX_FIXTURE_ROLE") else {
+            return;
+        };
+        let workspace = std::path::PathBuf::from(
+            std::env::var("MAESTRO_CODEX_FIXTURE_WORKSPACE").expect("fixture workspace"),
+        );
+        let checkpoint = std::path::PathBuf::from(
+            std::env::var("MAESTRO_CODEX_FIXTURE_CHECKPOINT").expect("fixture checkpoint"),
+        );
+        let config = NativeAgentConfig {
+            model: "openai-codex/gpt-5.5".to_owned(),
+            cwd: workspace.display().to_string(),
+            approval_mode: ApprovalMode::Yolo,
+            ..NativeAgentConfig::default()
+        };
+        let (agent, mut events) = NativeAgent::new(config).expect("Codex fixture agent");
+        if role == "restore" {
+            let history =
+                serde_json::from_slice(&std::fs::read(&checkpoint).expect("hydrated checkpoint"))
+                    .expect("checkpoint messages");
+            agent.replace_history(history);
+        } else if std::env::var_os("MAESTRO_CODEX_FIXTURE_OVERSIZED").is_some() {
+            let mut history = vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("older context".to_owned()),
+            }];
+            append_codex_tool_use(
+                &mut history,
+                "bounded-call-1",
+                "read",
+                serde_json::json!({ "payload": "x".repeat(500_000) }),
+            );
+            append_codex_tool_result(
+                &mut history,
+                "bounded-call-1",
+                "bounded tool result".to_owned(),
+                false,
+            );
+            agent.replace_history(history);
+        }
+        agent
+            .prompt(
+                if role == "source" {
+                    "first prompt".to_owned()
+                } else {
+                    "second prompt".to_owned()
+                },
+                vec![],
+            )
+            .await
+            .expect("fixture prompt");
+        let snapshot = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+            loop {
+                match events.recv().await {
+                    Some(FromAgent::ConversationSnapshot { messages, .. }) => break messages,
+                    Some(_) => continue,
+                    None => panic!("fixture closed before terminal snapshot"),
+                }
+            }
+        })
+        .await
+        .expect("fixture snapshot timeout");
+        if role == "source" {
+            std::fs::write(
+                &checkpoint,
+                serde_json::to_vec(&snapshot).expect("snapshot json"),
+            )
+            .expect("persist runtime checkpoint");
+        }
+        agent.shutdown().await;
+    }
+
+    async fn receive_codex_fixture_snapshot(
+        events: &mut mpsc::UnboundedReceiver<FromAgent>,
+    ) -> (Vec<Message>, Vec<String>, Vec<String>) {
+        tokio::time::timeout(std::time::Duration::from_secs(12), async {
+            let mut errors = Vec::new();
+            let mut statuses = Vec::new();
+            loop {
+                match events.recv().await {
+                    Some(FromAgent::Error { message, .. }) => errors.push(message),
+                    Some(FromAgent::Status { message }) => statuses.push(message),
+                    Some(FromAgent::ConversationSnapshot { messages, .. }) => {
+                        break (messages, errors, statuses);
+                    }
+                    Some(_) => {}
+                    None => panic!("fixture closed before terminal snapshot"),
+                }
+            }
+        })
+        .await
+        .expect("fixture snapshot timeout")
+    }
+
+    #[tokio::test]
+    async fn codex_pre_turn_failure_fixture() {
+        let Ok(scenario) = std::env::var("MAESTRO_CODEX_FAILURE_SCENARIO") else {
+            return;
+        };
+        let workspace = std::path::PathBuf::from(
+            std::env::var("MAESTRO_CODEX_FIXTURE_WORKSPACE").expect("fixture workspace"),
+        );
+        let checkpoint = std::path::PathBuf::from(
+            std::env::var("MAESTRO_CODEX_FIXTURE_CHECKPOINT").expect("fixture checkpoint"),
+        );
+        let history: Vec<Message> =
+            serde_json::from_slice(&std::fs::read(&checkpoint).expect("fixture checkpoint"))
+                .expect("checkpoint messages");
+        let config = NativeAgentConfig {
+            model: "openai-codex/gpt-5.5".to_owned(),
+            cwd: workspace.display().to_string(),
+            approval_mode: ApprovalMode::Yolo,
+            ..NativeAgentConfig::default()
+        };
+        let (agent, mut events) = NativeAgent::new(config).expect("Codex fixture agent");
+        agent.replace_history(history);
+
+        let prompts: &[&str] = match scenario.as_str() {
+            "transient-inject" => &["retry prompt"],
+            "exhausted-start" => &["failed prompt", "second prompt"],
+            "cancelled-start" => &["cancelled prompt"],
+            "malformed-spawn" => &["malformed prompt"],
+            "restart" => &["restart prompt"],
+            other => panic!("unsupported failure scenario: {other}"),
+        };
+        let mut final_snapshot = Vec::new();
+        for (index, prompt) in prompts.iter().enumerate() {
+            agent
+                .prompt((*prompt).to_owned(), vec![])
+                .await
+                .expect("fixture prompt");
+            if scenario == "cancelled-start" {
+                let marker = std::path::PathBuf::from(
+                    std::env::var("MAESTRO_CODEX_FAILURE_MARKER").expect("failure marker"),
+                );
+                tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                    while !marker.exists() {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("turn/start observation barrier");
+                agent.cancel();
+            }
+            let (snapshot, errors, statuses) = receive_codex_fixture_snapshot(&mut events).await;
+            if scenario == "exhausted-start" && index == 0 {
+                assert!(
+                    errors
+                        .iter()
+                        .any(|error| error.contains("Exhausted 3 retry attempts")),
+                    "terminal GiveUp must remain visible: {errors:?}"
+                );
+                assert!(
+                    !snapshot
+                        .iter()
+                        .any(|message| message.content.as_text() == Some("failed prompt")),
+                    "an undelivered prompt must not enter the semantic snapshot: {snapshot:?}"
+                );
+            }
+            if scenario == "cancelled-start" {
+                assert!(
+                    !snapshot
+                        .iter()
+                        .any(|message| message.content.as_text() == Some("cancelled prompt")),
+                    "a prompt cancelled before turn/start acceptance must not enter provider history: {snapshot:?}"
+                );
+            }
+            if scenario == "malformed-spawn" {
+                assert!(
+                    errors.iter().any(|error| {
+                        error.contains("invalid MAESTRO_CODEX_APP_SERVER_ARGS_JSON")
+                            && error.contains("column 429")
+                            && error.contains("Unknown error - not retrying")
+                            && !error.contains("Exhausted")
+                    }),
+                    "malformed local config must fail immediately as non-retryable: {errors:?}"
+                );
+                assert!(
+                    !statuses.iter().any(|status| status.contains("Retrying")),
+                    "malformed local config must GiveUp immediately: {statuses:?}"
+                );
+            }
+            final_snapshot = snapshot;
+        }
+
+        std::fs::write(
+            &checkpoint,
+            serde_json::to_vec(&final_snapshot).expect("snapshot json"),
+        )
+        .expect("persist fixture checkpoint");
+        agent.shutdown().await;
+    }
+
+    #[test]
+    fn codex_pre_turn_failures_preserve_retry_prompt_and_discard_terminal_give_up() {
+        let root = tempfile::tempdir().expect("fixture root");
+        let script = root.path().join("app-server.js");
+        std::fs::write(
+            &script,
+            r"const rl=require('readline').createInterface({input:process.stdin});
+const fs=require('fs');
+const scenario=process.env.MAESTRO_CODEX_FAILURE_SCENARIO;
+const log=process.env.MAESTRO_CODEX_FAILURE_LOG;
+const observed=process.env.MAESTRO_CODEX_FAILURE_ITEMS;
+const marker=process.env.MAESTRO_CODEX_FAILURE_MARKER;
+function send(x){fs.appendFileSync(log,'OUT '+JSON.stringify(x)+'\n');process.stdout.write(JSON.stringify(x)+'\n')}
+function fail(x){send({id:x.id,error:{code:-32000,message:'429 rate limit retry-after: 0 seconds'}})}
+rl.on('line',line=>{fs.appendFileSync(log,line+'\n');const x=JSON.parse(line);
+if(x.method==='initialize'){send({id:x.id,result:{protocolVersion:'2025-01-01',capabilities:{}}})}
+else if(x.method==='thread/start'){send({id:x.id,result:{thread:{id:'thread'}}})}
+else if(x.method==='thread/inject_items'){
+  if(scenario==='transient-inject'&&!fs.existsSync(marker)){fs.writeFileSync(marker,'failed');fail(x)}
+  else{fs.writeFileSync(observed,JSON.stringify(x.params.items));send({id:x.id,result:{}})}
+}
+else if(x.method==='turn/start'){
+  const wire=JSON.stringify(x);
+  if(scenario==='cancelled-start'){fs.writeFileSync(marker,'turn observed')}
+  else if(scenario==='exhausted-start'&&wire.includes('failed prompt')){fail(x)}
+  else{fs.appendFileSync(log,'ACCEPT '+wire+'\n');send({id:x.id,result:{turn:{id:'turn'}}});send({method:'turn/completed',params:{turnId:'turn'}})}
+}
+});",
+        )
+        .expect("app-server script");
+        let current = std::env::current_exe().expect("current test binary");
+
+        let run_child = |scenario: &str,
+                         workspace: &std::path::Path,
+                         checkpoint: &std::path::Path,
+                         log: &std::path::Path,
+                         items: &std::path::Path,
+                         marker: &std::path::Path| {
+            std::fs::create_dir_all(workspace).expect("fixture workspace");
+            let spawn_args = if scenario == "malformed-spawn" {
+                format!("[\"{}\"", "x".repeat(426))
+            } else {
+                serde_json::to_string(&vec![script.display().to_string()]).expect("script args")
+            };
+            let output = std::process::Command::new(&current)
+                .arg("agent::native::tests::codex_pre_turn_failure_fixture")
+                .arg("--exact")
+                .arg("--nocapture")
+                .env("MAESTRO_CODEX_FAILURE_SCENARIO", scenario)
+                .env("MAESTRO_CODEX_FIXTURE_WORKSPACE", workspace)
+                .env("MAESTRO_CODEX_FIXTURE_CHECKPOINT", checkpoint)
+                .env("MAESTRO_CODEX_FAILURE_LOG", log)
+                .env("MAESTRO_CODEX_FAILURE_ITEMS", items)
+                .env("MAESTRO_CODEX_FAILURE_MARKER", marker)
+                .env("MAESTRO_CODEX_APP_SERVER_COMMAND", "node")
+                .env("OPENAI_CODEX_TOKEN", "fixture-token")
+                .env("RUST_BACKTRACE", "1")
+                .env("RUST_MIN_STACK", "16777216")
+                .env("MAESTRO_CODEX_APP_SERVER_ARGS_JSON", spawn_args)
+                .output()
+                .expect("spawn fixture child");
+            assert!(
+                output.status.success(),
+                "{scenario} fixture failed: {}; stdout: {}; stderr: {}; app-server log: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+                std::fs::read_to_string(log).unwrap_or_default(),
+            );
+        };
+
+        let initial_history = serde_json::to_vec(&vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("restored context".to_owned()),
+        }])
+        .expect("initial history");
+
+        let malformed = root.path().join("malformed");
+        std::fs::create_dir_all(&malformed).expect("malformed root");
+        let malformed_checkpoint = malformed.join("checkpoint.json");
+        let malformed_log = malformed.join("app-server.log");
+        let malformed_items = malformed.join("items.json");
+        let malformed_marker = malformed.join("unused-marker");
+        std::fs::write(&malformed_checkpoint, &initial_history).expect("malformed checkpoint");
+        run_child(
+            "malformed-spawn",
+            &malformed.join("workspace"),
+            &malformed_checkpoint,
+            &malformed_log,
+            &malformed_items,
+            &malformed_marker,
+        );
+
+        let transient = root.path().join("transient");
+        std::fs::create_dir_all(&transient).expect("transient root");
+        let transient_checkpoint = transient.join("checkpoint.json");
+        let transient_log = transient.join("app-server.log");
+        let transient_items = transient.join("items.json");
+        let transient_marker = transient.join("failed-once");
+        std::fs::write(&transient_checkpoint, &initial_history).expect("transient checkpoint");
+        run_child(
+            "transient-inject",
+            &transient.join("workspace"),
+            &transient_checkpoint,
+            &transient_log,
+            &transient_items,
+            &transient_marker,
+        );
+        let transient_log = std::fs::read_to_string(&transient_log).expect("transient log");
+        assert_eq!(
+            transient_log
+                .matches("\"method\":\"thread/inject_items\"")
+                .count(),
+            2,
+            "the frozen restore prefix must survive one failed injection: {transient_log}"
+        );
+        assert_eq!(
+            transient_log.matches("ACCEPT ").count(),
+            1,
+            "the retried prompt must cross turn/start exactly once: {transient_log}"
+        );
+        assert!(
+            transient_log
+                .lines()
+                .any(|line| line.starts_with("ACCEPT ") && line.contains("retry prompt")),
+            "the retried prompt must remain the same pending live input: {transient_log}"
+        );
+        assert!(
+            !std::fs::read_to_string(&transient_items)
+                .expect("transient injected items")
+                .contains("retry prompt"),
+            "the live retry prompt must not leak into injected history"
+        );
+
+        let cancelled = root.path().join("cancelled");
+        std::fs::create_dir_all(&cancelled).expect("cancelled root");
+        let cancelled_checkpoint = cancelled.join("checkpoint.json");
+        let cancelled_log = cancelled.join("app-server.log");
+        let cancelled_items = cancelled.join("items.json");
+        let cancelled_marker = cancelled.join("turn-observed");
+        std::fs::write(&cancelled_checkpoint, &initial_history).expect("cancelled checkpoint");
+        run_child(
+            "cancelled-start",
+            &cancelled.join("workspace"),
+            &cancelled_checkpoint,
+            &cancelled_log,
+            &cancelled_items,
+            &cancelled_marker,
+        );
+        let cancelled_snapshot =
+            std::fs::read_to_string(&cancelled_checkpoint).expect("cancelled snapshot");
+        assert!(
+            !cancelled_snapshot.contains("cancelled prompt"),
+            "pre-start cancellation must not persist the prompt: {cancelled_snapshot}"
+        );
+
+        let exhausted = root.path().join("exhausted");
+        std::fs::create_dir_all(&exhausted).expect("exhausted root");
+        let exhausted_checkpoint = exhausted.join("checkpoint.json");
+        let exhausted_log = exhausted.join("app-server.log");
+        let exhausted_items = exhausted.join("items.json");
+        let exhausted_marker = exhausted.join("unused-marker");
+        std::fs::write(&exhausted_checkpoint, &initial_history).expect("exhausted checkpoint");
+        run_child(
+            "exhausted-start",
+            &exhausted.join("workspace"),
+            &exhausted_checkpoint,
+            &exhausted_log,
+            &exhausted_items,
+            &exhausted_marker,
+        );
+        run_child(
+            "restart",
+            &exhausted.join("restored-workspace"),
+            &exhausted_checkpoint,
+            &exhausted_log,
+            &exhausted_items,
+            &exhausted_marker,
+        );
+        let exhausted_log = std::fs::read_to_string(&exhausted_log).expect("exhausted log");
+        assert_eq!(
+            exhausted_log.matches("ACCEPT ").count(),
+            2,
+            "only the second and post-restart prompts may be accepted: {exhausted_log}"
+        );
+        let restored_items =
+            std::fs::read_to_string(&exhausted_items).expect("post-GiveUp restored items");
+        assert!(
+            !restored_items.contains("failed prompt"),
+            "the undelivered prompt must never be injected after restart: {restored_items}"
+        );
+        assert!(
+            restored_items.contains("second prompt"),
+            "the successfully started prompt must remain provider history: {restored_items}"
+        );
+    }
+
+    #[test]
+    fn codex_process_death_restores_split_delta_tool_history() {
+        let root = tempfile::tempdir().expect("fixture root");
+        let source_workspace = root.path().join("source");
+        let restored_workspace = root.path().join("restored");
+        std::fs::create_dir_all(&source_workspace).expect("source workspace");
+        std::fs::create_dir_all(&restored_workspace).expect("restored workspace");
+        std::fs::write(
+            source_workspace.join("Cargo.toml"),
+            "[package]\nname='fixture'\n",
+        )
+        .expect("source tool file");
+        let checkpoint = source_workspace.join("checkpoint.json");
+        let observed_items = root.path().join("restored-items.json");
+        let script_log = root.path().join("app-server.log");
+        let script = root.path().join("app-server.js");
+        std::fs::write(
+            &script,
+            format!(
+                r"const rl=require('readline').createInterface({{input:process.stdin}});
+const fs=require('fs'); const source=process.env.MAESTRO_CODEX_FIXTURE_ROLE==='source'; const log='{}'; fs.appendFileSync(log,'started\n');
+function send(x){{fs.appendFileSync(log,'OUT '+JSON.stringify(x)+'\n');process.stdout.write(JSON.stringify(x)+'\n')}}
+rl.on('line', line=>{{fs.appendFileSync(log,line+'\n'); const x=JSON.parse(line); if(!x.method){{if(x.id==='tool-1')setTimeout(()=>{{send({{method:'item/agentMessage/delta',params:{{turnId:'turn',delta:'suffix'}}}});send({{method:'turn/completed',params:{{turnId:'turn'}}}})}},10);return}} if(x.method==='initialize'){{send({{id:x.id,result:{{protocolVersion:'2025-01-01',capabilities:{{}}}}}})}}
+else if(x.method==='thread/start'){{send({{id:x.id,result:{{thread:{{id:'thread'}}}}}})}}
+else if(x.method==='thread/inject_items'){{fs.writeFileSync('{}',JSON.stringify(x.params.items));send({{id:x.id,result:{{}}}})}}
+else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}); if(source){{setTimeout(()=>{{send({{method:'item/agentMessage/delta',params:{{turnId:'turn',delta:'prefix '}}}});send({{id:'tool-1',method:'item/tool/call',params:{{tool:'read',callId:'call-codex-1',arguments:{{path:'Cargo.toml'}}}}}})}},10)}} else {{setTimeout(()=>send({{method:'turn/completed',params:{{turnId:'turn'}}}}),10)}}}}
+}});",
+                script_log.display(),
+                observed_items.display()
+            ),
+        )
+        .expect("app-server script");
+        let current = std::env::current_exe().expect("current test binary");
+        let run_child = |role: &str, workspace: &std::path::Path, checkpoint: &std::path::Path| {
+            let output = std::process::Command::new(&current)
+                .arg("agent::native::tests::codex_process_continuation_fixture")
+                .arg("--exact")
+                .arg("--nocapture")
+                .env("MAESTRO_CODEX_FIXTURE_ROLE", role)
+                .env("MAESTRO_CODEX_FIXTURE_WORKSPACE", workspace)
+                .env("MAESTRO_CODEX_FIXTURE_CHECKPOINT", checkpoint)
+                .env("MAESTRO_CODEX_APP_SERVER_COMMAND", "node")
+                .env("OPENAI_CODEX_TOKEN", "fixture-token")
+                .env("RUST_BACKTRACE", "1")
+                .env("RUST_MIN_STACK", "16777216")
+                .env(
+                    "MAESTRO_CODEX_APP_SERVER_ARGS_JSON",
+                    serde_json::to_string(&vec![script.display().to_string()])
+                        .expect("script args"),
+                )
+                .output()
+                .expect("spawn fixture child");
+            assert!(
+                output.status.success(),
+                "{role} fixture failed: {}; stdout: {}; stderr: {}; app-server log: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+                std::fs::read_to_string(&script_log).unwrap_or_default(),
+            );
+        };
+        run_child("source", &source_workspace, &checkpoint);
+        std::fs::copy(&checkpoint, restored_workspace.join("checkpoint.json"))
+            .expect("hydrate runtime-generated checkpoint");
+        run_child(
+            "restore",
+            &restored_workspace,
+            &restored_workspace.join("checkpoint.json"),
+        );
+        let restored_items_text = std::fs::read_to_string(&observed_items).expect("restored items");
+        let restored_items: Vec<serde_json::Value> =
+            serde_json::from_str(&restored_items_text).expect("restored item JSON");
+        let item_shape: Vec<(&str, Option<&str>)> = restored_items
+            .iter()
+            .map(|item| {
+                let kind = item["type"].as_str().expect("item type");
+                let value = match kind {
+                    "message" => item["content"][0]["text"].as_str(),
+                    "function_call" | "function_call_output" => item["call_id"].as_str(),
+                    other => panic!("unexpected restored item type: {other}"),
+                };
+                (kind, value)
+            })
+            .collect();
+        assert_eq!(
+            item_shape,
+            vec![
+                ("message", Some("first prompt")),
+                ("message", Some("prefix ")),
+                ("function_call", Some("call-codex-1")),
+                ("function_call_output", Some("call-codex-1")),
+                ("message", Some("suffix")),
+            ],
+            "provider-visible chronology changed: {restored_items_text}"
+        );
+        assert!(
+            !restored_items_text.contains("second prompt"),
+            "{restored_items_text}"
+        );
+        let app_server_log = std::fs::read_to_string(&script_log).expect("app-server log");
+        assert_eq!(
+            app_server_log.matches("second prompt").count(),
+            1,
+            "the live prompt must appear exactly once in turn/start: {app_server_log}"
+        );
+    }
+
+    #[test]
+    fn codex_semantic_history_is_bounded_before_snapshot_and_reinjection() {
+        let root = tempfile::tempdir().expect("fixture root");
+        let source_workspace = root.path().join("source");
+        let restored_workspace = root.path().join("restored");
+        std::fs::create_dir_all(&source_workspace).expect("source workspace");
+        std::fs::create_dir_all(&restored_workspace).expect("restored workspace");
+        let checkpoint = source_workspace.join("checkpoint.json");
+        let observed_items = root.path().join("restored-items.json");
+        let script_log = root.path().join("app-server.log");
+        let script = root.path().join("app-server.js");
+        std::fs::write(
+            &script,
+            format!(
+                r"const rl=require('readline').createInterface({{input:process.stdin}});
+const fs=require('fs'); const log='{}';
+function send(x){{fs.appendFileSync(log,'OUT '+JSON.stringify(x)+'\n');process.stdout.write(JSON.stringify(x)+'\n')}}
+rl.on('line', line=>{{fs.appendFileSync(log,line+'\n'); const x=JSON.parse(line);
+if(x.method==='initialize'){{send({{id:x.id,result:{{protocolVersion:'2025-01-01',capabilities:{{}}}}}})}}
+else if(x.method==='thread/start'){{send({{id:x.id,result:{{thread:{{id:'thread'}}}}}})}}
+else if(x.method==='thread/inject_items'){{fs.writeFileSync('{}',JSON.stringify(x.params.items));send({{id:x.id,result:{{}}}})}}
+else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}});setTimeout(()=>send({{method:'turn/completed',params:{{turnId:'turn'}}}}),10)}}
+}});",
+                script_log.display(),
+                observed_items.display()
+            ),
+        )
+        .expect("app-server script");
+
+        let current = std::env::current_exe().expect("current test binary");
+        let run_child = |role: &str,
+                         workspace: &std::path::Path,
+                         checkpoint: &std::path::Path,
+                         oversized: bool| {
+            let mut command = std::process::Command::new(&current);
+            command
+                .arg("agent::native::tests::codex_process_continuation_fixture")
+                .arg("--exact")
+                .arg("--nocapture")
+                .env("MAESTRO_CODEX_FIXTURE_ROLE", role)
+                .env("MAESTRO_CODEX_FIXTURE_WORKSPACE", workspace)
+                .env("MAESTRO_CODEX_FIXTURE_CHECKPOINT", checkpoint)
+                .env("MAESTRO_CODEX_APP_SERVER_COMMAND", "node")
+                .env("OPENAI_CODEX_TOKEN", "fixture-token")
+                .env("RUST_BACKTRACE", "1")
+                .env("RUST_MIN_STACK", "16777216")
+                .env(
+                    "MAESTRO_CODEX_APP_SERVER_ARGS_JSON",
+                    serde_json::to_string(&vec![script.display().to_string()])
+                        .expect("script args"),
+                );
+            if oversized {
+                command.env("MAESTRO_CODEX_FIXTURE_OVERSIZED", "1");
+            }
+            let output = command.output().expect("spawn fixture child");
+            assert!(
+                output.status.success(),
+                "{role} fixture failed: {}; stdout: {}; stderr: {}; app-server log: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+                std::fs::read_to_string(&script_log).unwrap_or_default(),
+            );
+        };
+
+        run_child("source", &source_workspace, &checkpoint, true);
+        let snapshot_bytes = std::fs::read(&checkpoint).expect("semantic snapshot");
+        let snapshot: Vec<Message> =
+            serde_json::from_slice(&snapshot_bytes).expect("snapshot messages");
+        let compaction_config = super::super::compaction::CompactionConfig::default();
+        let token_budget = compaction_config.max_context_tokens;
+        let compactor = super::super::compaction::ContextCompactor::new(compaction_config);
+        assert!(
+            compactor.estimate_tokens(&snapshot) <= token_budget,
+            "semantic snapshot exceeded configured token budget: {} > {token_budget}",
+            compactor.estimate_tokens(&snapshot)
+        );
+        assert!(
+            snapshot_bytes.len() as u64
+                <= token_budget * crate::agent::token_estimation::BYTES_PER_TOKEN as u64,
+            "serialized semantic snapshot exceeded the configured byte-derived bound"
+        );
+        assert!(
+            snapshot
+                .iter()
+                .any(|message| message.content.as_text() == Some("first prompt")),
+            "the most recent live prompt must survive compaction"
+        );
+        let snapshot_blocks: Vec<&ContentBlock> = snapshot
+            .iter()
+            .filter_map(|message| match &message.content {
+                MessageContent::Blocks(blocks) => Some(blocks.iter()),
+                MessageContent::Text(_) => None,
+            })
+            .flatten()
+            .collect();
+        let snapshot_tool_use_index = snapshot_blocks
+            .iter()
+            .position(|block| {
+                matches!(
+                    block,
+                    ContentBlock::ToolUse { id, name, .. }
+                        if id == "bounded-call-1" && name == "read"
+                )
+            })
+            .expect("snapshot tool use");
+        let snapshot_tool_result_index = snapshot_blocks
+            .iter()
+            .position(|block| {
+                matches!(
+                    block,
+                    ContentBlock::ToolResult { tool_use_id, .. }
+                        if tool_use_id == "bounded-call-1"
+                )
+            })
+            .expect("snapshot tool result");
+        assert!(
+            snapshot_tool_use_index < snapshot_tool_result_index,
+            "snapshot tool use/result pair must remain valid and ordered"
+        );
+
+        std::fs::copy(&checkpoint, restored_workspace.join("checkpoint.json"))
+            .expect("hydrate bounded checkpoint");
+        run_child(
+            "restore",
+            &restored_workspace,
+            &restored_workspace.join("checkpoint.json"),
+            false,
+        );
+
+        let restored_items_bytes = std::fs::read(&observed_items).expect("restored provider items");
+        assert!(
+            restored_items_bytes.len() as u64
+                <= token_budget * crate::agent::token_estimation::BYTES_PER_TOKEN as u64,
+            "reinjected provider items exceeded the configured byte-derived bound"
+        );
+        let restored_items: Vec<serde_json::Value> =
+            serde_json::from_slice(&restored_items_bytes).expect("provider items json");
+        let tool_use_index = restored_items
+            .iter()
+            .position(|item| {
+                item.get("type").and_then(serde_json::Value::as_str) == Some("function_call")
+                    && item.get("call_id").and_then(serde_json::Value::as_str)
+                        == Some("bounded-call-1")
+            })
+            .expect("bounded tool use");
+        let tool_result_index = restored_items
+            .iter()
+            .position(|item| {
+                item.get("type").and_then(serde_json::Value::as_str) == Some("function_call_output")
+                    && item.get("call_id").and_then(serde_json::Value::as_str)
+                        == Some("bounded-call-1")
+            })
+            .expect("bounded tool result");
+        assert!(
+            tool_use_index < tool_result_index,
+            "tool use/result pair must remain ordered: {restored_items:?}"
+        );
+        assert!(
+            !String::from_utf8_lossy(&restored_items_bytes).contains("second prompt"),
+            "live prompt leaked into restored provider items"
+        );
+        let app_server_log = std::fs::read_to_string(&script_log).expect("app-server log");
+        assert_eq!(
+            app_server_log.matches("second prompt").count(),
+            1,
+            "the post-restore prompt must appear once in turn/start: {app_server_log}"
+        );
+    }
 
     #[tokio::test]
     async fn retry_backoff_is_interrupted_by_request_cancellation() {
@@ -7208,6 +8575,18 @@ mod tests {
             assert_eq!(*is_error, Some(true));
         }
         assert_tool_call_pairing(&messages);
+
+        // The cancellation terminal path repairs before emitting its durable
+        // snapshot, so the next process never restores an orphaned ToolUse.
+        let snapshot = conversation_snapshot_event(&messages).expect("snapshot event");
+        let FromAgent::ConversationSnapshot {
+            messages: snapshot_messages,
+            ..
+        } = snapshot
+        else {
+            panic!("expected semantic snapshot");
+        };
+        assert_tool_call_pairing(&snapshot_messages);
 
         // A subsequent prompt must not leave the orphaned call in the middle
         // of the history: the pairing still holds after it is appended.

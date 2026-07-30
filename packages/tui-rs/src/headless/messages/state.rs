@@ -665,6 +665,7 @@ impl AgentState {
                 }];
             }
             ToAgentMessage::Init { .. } => {}
+            ToAgentMessage::RestoreConversation { .. } => {}
             ToAgentMessage::Prompt { .. } => {
                 self.current_response = None;
                 self.last_error = None;
@@ -762,6 +763,9 @@ impl AgentState {
     /// Handle an incoming message and update state
     pub fn handle_message(&mut self, msg: FromAgentMessage) -> Option<AgentEvent> {
         match msg {
+            // A provider conversation snapshot is durable private runtime state,
+            // not a customer-visible protocol event.
+            FromAgentMessage::ConversationSnapshot { .. } => None,
             FromAgentMessage::HelloOk {
                 protocol_version,
                 connection_id: _connection_id,

@@ -52,6 +52,7 @@ impl HostedRunnerHandle {
     }
 
     pub async fn shutdown(self) {
+        let _ = self.shared.stop_event_pump().await;
         self.shutdown.cancel();
         let _ = self.task.await;
     }

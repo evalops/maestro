@@ -1,4 +1,6 @@
 use reqwest::StatusCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Condvar;
 use tempfile::tempdir;
 
 use super::*;
@@ -80,6 +82,27 @@ fn new_connection_adopts_private_capability_for_idempotent_retry() {
 
 #[derive(Debug)]
 struct ScriptedRuntimeExecutor;
+
+struct SessionArtifactExecutor {
+    session_file: std::path::PathBuf,
+}
+
+impl HostedRunnerHeadlessMessageExecutor for SessionArtifactExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        _message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        Ok(HostedRunnerHeadlessMessageResult::transport_only(
+            Vec::new(),
+            "session artifact fixture does not execute agent messages",
+        ))
+    }
+
+    fn flush_session(&self) -> Result<Option<std::path::PathBuf>, HostedRunnerError> {
+        Ok(Some(self.session_file.clone()))
+    }
+}
 
 impl HostedRunnerHeadlessMessageExecutor for ScriptedRuntimeExecutor {
     fn execute(
@@ -185,6 +208,117 @@ impl HostedRunnerHeadlessMessageExecutor for StatefulRuntimeExecutor {
 
 struct CompletingRuntimeExecutor {
     state: Mutex<AgentState>,
+}
+
+#[derive(Debug, Default)]
+struct PumpOnlyRuntimeExecutor {
+    queued: Arc<Mutex<Vec<FromAgentMessage>>>,
+}
+
+#[derive(Debug)]
+struct BlockedPromptRuntimeExecutor {
+    started: Arc<AtomicBool>,
+    release: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl BlockedPromptRuntimeExecutor {
+    fn new() -> Self {
+        Self {
+            started: Arc::new(AtomicBool::new(false)),
+            release: Arc::new((Mutex::new(false), Condvar::new())),
+        }
+    }
+
+    fn release(&self) {
+        let (released, wake) = &*self.release;
+        *released.lock().expect("release state") = true;
+        wake.notify_all();
+    }
+}
+
+impl HostedRunnerHeadlessMessageExecutor for BlockedPromptRuntimeExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        if matches!(message, ToAgentMessage::Prompt { .. }) {
+            self.started.store(true, Ordering::SeqCst);
+            let (released, wake) = &*self.release;
+            let mut released = released.lock().expect("release state");
+            while !*released {
+                released = wake.wait(released).expect("release state");
+            }
+            return Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+                vec![FromAgentMessage::ResponseStart {
+                    response_id: "response-blocked".to_string(),
+                }],
+                "released blocked prompt",
+            ));
+        }
+        Ok(HostedRunnerHeadlessMessageResult::transport_only(
+            Vec::new(),
+            "ignored by blocked prompt executor",
+        ))
+    }
+}
+
+#[derive(Debug)]
+struct FailingPumpRuntimeExecutor;
+
+impl HostedRunnerHeadlessMessageExecutor for FailingPumpRuntimeExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        _message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        Ok(HostedRunnerHeadlessMessageResult::transport_only(
+            Vec::new(),
+            "ignored by failing pump executor",
+        ))
+    }
+
+    fn drain(&self) -> Result<Vec<FromAgentMessage>, HostedRunnerError> {
+        Err(HostedRunnerError::internal("pump drain failed"))
+    }
+}
+
+impl HostedRunnerHeadlessMessageExecutor for PumpOnlyRuntimeExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        if matches!(message, ToAgentMessage::Prompt { .. }) {
+            self.queued.lock().expect("queued messages").extend([
+                FromAgentMessage::ResponseStart {
+                    response_id: "response-1".to_string(),
+                },
+                FromAgentMessage::ResponseChunk {
+                    response_id: "response-1".to_string(),
+                    content: "persisted".to_string(),
+                    is_thinking: false,
+                },
+                FromAgentMessage::ResponseEnd {
+                    response_id: "response-1".to_string(),
+                    usage: None,
+                    tools_summary: None,
+                    duration_ms: None,
+                    ttft_ms: None,
+                },
+            ]);
+        }
+        Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+            Vec::new(),
+            "queued events for the hosted runner event pump",
+        ))
+    }
+
+    fn drain(&self) -> Result<Vec<FromAgentMessage>, HostedRunnerError> {
+        Ok(std::mem::take(
+            &mut *self.queued.lock().expect("queued messages"),
+        ))
+    }
 }
 
 impl CompletingRuntimeExecutor {
@@ -2188,6 +2322,58 @@ async fn drain_manifest_records_runtime_cursor_after_activity() {
 }
 
 #[tokio::test]
+async fn drain_manifest_exports_typed_replay_sidecar_with_narrowed_paths() {
+    let workspace = tempdir().expect("workspace");
+    std::fs::write(workspace.path().join("notes.md"), "notes").expect("workspace file");
+    let sessions = workspace.path().join(".maestro/sessions");
+    std::fs::create_dir_all(&sessions).expect("sessions directory");
+    let session_file = sessions.join("sess_test.jsonl");
+    std::fs::write(&session_file, "{}\n").expect("session journal");
+    let replay_file = session_file.with_extension("replay.json");
+    std::fs::write(&replay_file, "{\"semantic_conversation\":[]}").expect("replay sidecar");
+    assert!(
+        replay_file.starts_with(workspace.path()),
+        "{} is outside {}",
+        replay_file.display(),
+        workspace.path().display()
+    );
+
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        Arc::new(SessionArtifactExecutor {
+            session_file: session_file.clone(),
+        }),
+    )
+    .await
+    .expect("start hosted runner");
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/.well-known/evalops/remote-runner/drain",
+            handle.base_url()
+        ))
+        .json(&json!({ "export_paths": ["notes.md"] }))
+        .send()
+        .await
+        .expect("drain request");
+    let status = response.status();
+    let response_body = response.text().await.expect("drain response body");
+    assert_eq!(status, StatusCode::OK, "{response_body}");
+    let drain: serde_json::Value = serde_json::from_str(&response_body).expect("drain json");
+
+    assert_eq!(
+        drain["manifest"]["runtime"]["replay_file"],
+        serde_json::Value::String(replay_file.display().to_string())
+    );
+    let export_paths = drain["manifest"]["workspace_export"]["paths"]
+        .as_array()
+        .expect("workspace export paths");
+    assert!(export_paths.iter().any(|path| {
+        path["relative_path"] == ".maestro/sessions/sess_test.replay.json" && path["type"] == "file"
+    }));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn restore_manifest_seeds_runtime_state_and_replay_marker() {
     let workspace = tempdir().expect("workspace");
     let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
@@ -3487,6 +3673,408 @@ async fn message_executor_publishes_runtime_handled_events() {
     assert!(!viewer_event_text.contains("\"type\":\"response_chunk\""));
     assert!(!viewer_event_text.contains("\"content\":\"runtime: hello\""));
 
+    handle.shutdown().await;
+}
+
+async fn next_sse_message_type(response: &mut reqwest::Response, buffered: &mut String) -> String {
+    loop {
+        if let Some(event_end) = buffered.find("\n\n") {
+            let event = buffered[..event_end].to_string();
+            buffered.drain(..event_end + 2);
+            let payload = event.strip_prefix("data: ").expect("SSE data event");
+            let envelope: serde_json::Value = serde_json::from_str(payload).expect("SSE envelope");
+            return envelope["message"]["type"]
+                .as_str()
+                .expect("agent event type")
+                .to_string();
+        }
+
+        let chunk = tokio::time::timeout(std::time::Duration::from_millis(250), response.chunk())
+            .await
+            .expect("response event should arrive without another HTTP request")
+            .expect("event chunk read")
+            .expect("event stream remained open");
+        buffered.push_str(&String::from_utf8_lossy(&chunk));
+    }
+}
+
+async fn wait_for_condition(mut condition: impl FnMut() -> bool) {
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !condition() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("condition should become true");
+}
+
+#[tokio::test]
+async fn event_pump_publishes_agent_events_without_a_follow_up_http_request() {
+    let workspace = tempdir().expect("workspace");
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        Arc::new(PumpOnlyRuntimeExecutor::default()),
+    )
+    .await
+    .expect("start hosted runner");
+    let client = reqwest::Client::new();
+
+    let connection: serde_json::Value = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .json(&json!({
+            "sessionId": "sess_test",
+            "connectionId": "conn_event_pump",
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("connection response")
+        .json()
+        .await
+        .expect("connection json");
+    let connection_capability = connection["connection_capability"]
+        .as_str()
+        .expect("connection capability")
+        .to_string();
+    let subscription: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": "conn_event_pump",
+            "connectionCapability": connection_capability,
+            "connectionCapabilityRequired": true,
+            "subscriptionId": "sub_event_pump",
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("subscription response")
+        .json()
+        .await
+        .expect("subscription json");
+    let subscription_id = subscription["subscription_id"]
+        .as_str()
+        .expect("subscription id");
+
+    let mut events = client
+        .get(format!(
+            "{}/api/headless/sessions/sess_test/events?cursor=0&subscriptionId={subscription_id}",
+            handle.base_url()
+        ))
+        .send()
+        .await
+        .expect("events response");
+    assert_eq!(events.status(), StatusCode::OK);
+    let mut buffered = String::new();
+    assert_eq!(
+        next_sse_message_type(&mut events, &mut buffered).await,
+        "connection_info"
+    );
+
+    let prompt: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/messages",
+            handle.base_url()
+        ))
+        .header("x-maestro-headless-connection-id", "conn_event_pump")
+        .header("x-maestro-headless-subscriber-id", subscription_id)
+        .header(
+            "x-maestro-headless-connection-capability",
+            connection["connection_capability"]
+                .as_str()
+                .expect("connection capability"),
+        )
+        .json(&json!({"type": "prompt", "content": "remember this"}))
+        .send()
+        .await
+        .expect("prompt response")
+        .json()
+        .await
+        .expect("prompt json");
+    assert_eq!(prompt["published_messages"], 0);
+
+    assert_eq!(
+        next_sse_message_type(&mut events, &mut buffered).await,
+        "response_start"
+    );
+    assert_eq!(
+        next_sse_message_type(&mut events, &mut buffered).await,
+        "response_chunk"
+    );
+    assert_eq!(
+        next_sse_message_type(&mut events, &mut buffered).await,
+        "response_end"
+    );
+
+    handle.shutdown().await;
+}
+
+async fn start_pump_race_runner() -> (HostedRunnerHandle, tempfile::TempDir) {
+    let workspace = tempdir().expect("workspace");
+    let executor = Arc::new(PumpOnlyRuntimeExecutor::default());
+    executor
+        .queued
+        .lock()
+        .expect("queued messages")
+        .push(FromAgentMessage::ResponseStart {
+            response_id: "response-race".to_string(),
+        });
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor,
+    )
+    .await
+    .expect("start hosted runner");
+    (handle, workspace)
+}
+
+#[tokio::test]
+async fn drain_stops_event_pump_before_snapshotting() {
+    let (handle, _workspace) = start_pump_race_runner().await;
+    let shared = handle.shared.clone();
+
+    let manifest = handle
+        .drain_for_shutdown("test drain", "hosted runner test")
+        .await
+        .expect("drain hosted runner");
+
+    assert_eq!(
+        manifest["manifest"]["snapshot"]["cursor"],
+        shared.last_published_cursor()
+    );
+    assert!(shared.event_pump_is_finished());
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn shutdown_awaits_event_pump() {
+    let (handle, _workspace) = start_pump_race_runner().await;
+    let shared = handle.shared.clone();
+
+    handle.shutdown().await;
+
+    assert!(shared.event_pump_is_finished());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn drain_fences_in_flight_prompts_and_serializes_repeated_drains() {
+    let workspace = tempdir().expect("workspace");
+    let executor = Arc::new(BlockedPromptRuntimeExecutor::new());
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+    )
+    .await
+    .expect("start hosted runner");
+    {
+        let mut state = handle.shared.state.lock().expect("runner state");
+        state.connections.insert(
+            "conn_drain_fence".to_string(),
+            ConnectionRecord {
+                id: "conn_drain_fence".to_string(),
+                connection_capability: None,
+                authority_mode: ConnectionAuthorityMode::LegacySubscription,
+                role: ConnectionRole::Controller,
+                client_protocol_version: None,
+                client_info: None,
+                capabilities: None,
+                opt_out_notifications: Vec::new(),
+                subscription_ids: HashSet::from(["sub_drain_fence".to_string()]),
+                last_seen_at: Utc::now(),
+            },
+        );
+        state.subscriptions.insert(
+            "sub_drain_fence".to_string(),
+            SubscriptionRecord {
+                connection_id: "conn_drain_fence".to_string(),
+                connection_capability: None,
+                authority_mode: ConnectionAuthorityMode::LegacySubscription,
+                role: ConnectionRole::Controller,
+                attached: true,
+            },
+        );
+        state.controller_connection_id = Some("conn_drain_fence".to_string());
+    }
+
+    let prompt_shared = handle.shared.clone();
+    let prompt = tokio::spawn(async move {
+        handle_message(
+            prompt_shared,
+            "sess_test",
+            HashMap::from([
+                (
+                    "x-maestro-headless-connection-id".to_string(),
+                    "conn_drain_fence".to_string(),
+                ),
+                (
+                    "x-maestro-headless-subscriber-id".to_string(),
+                    "sub_drain_fence".to_string(),
+                ),
+            ]),
+            ToAgentMessage::Prompt {
+                content: "finish before drain".to_string(),
+                attachments: None,
+            },
+        )
+        .await
+    });
+    wait_for_condition(|| executor.started.load(Ordering::SeqCst)).await;
+
+    let first_shared = handle.shared.clone();
+    let first_drain = tokio::spawn(async move {
+        handle_drain(
+            first_shared,
+            DrainRequest {
+                reason: Some("test drain".to_string()),
+                requested_by: Some("hosted runner test".to_string()),
+                export_paths: Some(vec![".".to_string()]),
+            },
+        )
+        .await
+    });
+    let second_shared = handle.shared.clone();
+    let second_drain = tokio::spawn(async move {
+        handle_drain(
+            second_shared,
+            DrainRequest {
+                reason: Some("second test drain".to_string()),
+                requested_by: Some("hosted runner test".to_string()),
+                export_paths: Some(vec![".".to_string()]),
+            },
+        )
+        .await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    executor.release();
+
+    let prompt = prompt.await.expect("prompt task").expect("prompt result");
+    assert!(matches!(prompt, ResponseBody::Json { status: 200, .. }));
+    let first = first_drain.await.expect("first drain task");
+    let second = second_drain.await.expect("second drain task");
+    let mut manifest = None;
+    for response in [first, second].into_iter().flatten() {
+        assert!(manifest.is_none(), "only one drain may compose a manifest");
+        manifest = Some(response);
+    }
+    let first = manifest.expect("one drain manifest");
+
+    let ResponseBody::Json { body: manifest, .. } = first else {
+        panic!("drain must return a JSON manifest");
+    };
+    assert_eq!(
+        manifest["manifest"]["snapshot"]["cursor"],
+        handle.shared.last_published_cursor()
+    );
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn utility_command_completion_after_drain_does_not_mutate_snapshot_state() {
+    let workspace = tempdir().expect("workspace");
+    let release_path = workspace.path().join("release-utility-command");
+    let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+        .await
+        .expect("start hosted runner");
+    let command_id = "utility-drain-fence".to_string();
+    let utility_command_task = run_utility_command(
+        handle.shared.clone(),
+        UtilityCommandInvocation {
+            connection_id: None,
+            command_id: command_id.clone(),
+            command: format!(
+                "while [ ! -f {} ]; do sleep 0.01; done; echo settled",
+                release_path.display(),
+            ),
+            cwd: None,
+            env: HashMap::new(),
+            shell_mode: UtilityCommandShellMode::Shell,
+            terminal_mode: UtilityCommandTerminalMode::Pipe,
+            columns: None,
+            rows: None,
+        },
+    )
+    .await
+    .expect("start blocked utility command");
+    assert!(handle
+        .shared
+        .state
+        .lock()
+        .expect("runner state")
+        .active_utility_commands
+        .contains_key(&command_id));
+
+    let manifest = handle
+        .drain_for_shutdown("test drain", "hosted runner test")
+        .await
+        .expect("drain hosted runner");
+    let cursor = handle.shared.last_published_cursor();
+    let replay_count = handle
+        .shared
+        .state
+        .lock()
+        .expect("runner state")
+        .envelopes
+        .len();
+
+    tokio::fs::write(&release_path, b"release")
+        .await
+        .expect("release utility command");
+    tokio::time::timeout(std::time::Duration::from_secs(1), utility_command_task)
+        .await
+        .expect("utility command task should settle")
+        .expect("utility command task should not panic");
+
+    {
+        let state = handle.shared.state.lock().expect("runner state");
+        assert_eq!(manifest["manifest"]["snapshot"]["cursor"], cursor);
+        assert_eq!(state.cursor, cursor);
+        assert_eq!(state.envelopes.len(), replay_count);
+        assert!(state.active_utility_commands.contains_key(&command_id));
+    }
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn event_pump_failure_marks_runner_not_ready_and_rejects_admission() {
+    let workspace = tempdir().expect("workspace");
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        Arc::new(FailingPumpRuntimeExecutor),
+    )
+    .await
+    .expect("start hosted runner");
+    wait_for_condition(|| !handle.shared.identity().ready).await;
+    let client = reqwest::Client::new();
+
+    let ready = client
+        .get(format!("{}/readyz", handle.base_url()))
+        .send()
+        .await
+        .expect("ready response");
+    assert_eq!(ready.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let admission = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .json(&json!({"sessionId": "sess_test", "role": "controller"}))
+        .send()
+        .await
+        .expect("connection response");
+    assert_eq!(admission.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let (events, _) = handle.shared.subscribe_from(0);
+    assert!(matches!(
+        events.last(),
+        Some(StreamEnvelope::Message {
+            message,
+            ..
+        }) if matches!(message.as_ref(), FromAgentMessage::Error {
+            fatal: true,
+            error_type: Some(crate::headless::messages::HeadlessErrorType::Fatal),
+            ..
+        })
+    ));
     handle.shutdown().await;
 }
 

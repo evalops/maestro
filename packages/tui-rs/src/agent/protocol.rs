@@ -1069,6 +1069,11 @@ pub struct InlineToolApprovalContext {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromAgent {
+    /// Private durable checkpoint of the compacted provider conversation.
+    ConversationSnapshot {
+        protocol_version: String,
+        messages: Vec<maestro_ai::Message>,
+    },
     /// Agent is ready to receive prompts
     ///
     /// Emitted once at startup to indicate the agent is initialized and ready.
