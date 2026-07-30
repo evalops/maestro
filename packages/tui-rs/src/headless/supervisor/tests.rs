@@ -1022,6 +1022,101 @@ fn session_recorder_keeps_last_init_in_sync_with_sent_messages() {
 }
 
 #[test]
+fn session_recorder_failures_are_reported_once_until_a_write_recovers() {
+    let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
+
+    assert!(supervisor
+        .session_recorder_error_to_report(Err(std::io::Error::other("disk full")))
+        .is_some());
+    assert!(supervisor
+        .session_recorder_error_to_report(Err(std::io::Error::other("disk still full")))
+        .is_none());
+    assert!(supervisor
+        .session_recorder_error_to_report(Ok(()))
+        .is_none());
+    assert!(supervisor
+        .session_recorder_error_to_report(Err(std::io::Error::other("disk full again")))
+        .is_some());
+}
+
+/// Regression test for the recorder-diagnostic blocking finding: a plain
+/// `writeln!(std::io::stderr(), ...)` on this hot path takes stderr's
+/// process-global lock and performs a real write syscall, which blocks the
+/// caller (here, `send`/`apply_snapshot`/etc.) if a headless parent pipes
+/// stderr and stops draining it. Diagnostics use bounded `try_send`, so even
+/// a full queue must return immediately rather than waiting for queue space.
+#[test]
+fn report_diagnostic_nonblocking_drops_when_its_queue_is_full() {
+    let (sender, _receiver) = std::sync::mpsc::sync_channel(1);
+    assert!(enqueue_diagnostic(&sender, "fills queue".to_string()));
+
+    let start = std::time::Instant::now();
+    assert!(!enqueue_diagnostic(&sender, "must be dropped".to_string()));
+    assert!(
+        start.elapsed() < std::time::Duration::from_millis(100),
+        "a full diagnostic queue must not block the caller"
+    );
+}
+
+#[test]
+fn dropped_recorder_diagnostic_rearms_failure_reporting() {
+    let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
+    let reports = std::cell::Cell::new(0);
+
+    supervisor.report_session_recorder_result_with(
+        Err(std::io::Error::other("disk full")),
+        "record sent message",
+        |_: String| {
+            reports.set(reports.get() + 1);
+            false
+        },
+    );
+    supervisor.report_session_recorder_result_with(
+        Err(std::io::Error::other("disk still full")),
+        "record sent message",
+        |_: String| {
+            reports.set(reports.get() + 1);
+            true
+        },
+    );
+    supervisor.report_session_recorder_result_with(
+        Err(std::io::Error::other("disk remains full")),
+        "record sent message",
+        |_: String| {
+            reports.set(reports.get() + 1);
+            true
+        },
+    );
+
+    assert_eq!(reports.get(), 2, "a dropped diagnostic must rearm once");
+}
+
+#[test]
+fn report_diagnostic_nonblocking_reuses_one_process_worker() {
+    let first = diagnostic_sender().expect("diagnostic worker should start");
+    let second = diagnostic_sender().expect("diagnostic worker should be reused");
+    assert!(std::ptr::eq(first, second));
+}
+
+#[test]
+fn terminal_diagnostics_strip_control_sequences() {
+    let message = "write failed for \u{1b}]0;spoofed\u{7}path\rforged\nline".to_string();
+    assert_eq!(
+        prepare_diagnostic_for_stderr(message, true),
+        "write failed for ]0;spoofedpath\\rforged\\nline"
+    );
+}
+
+#[test]
+fn redirected_diagnostics_preserve_machine_readable_bytes() {
+    let message = "write failed for \u{1b}]0;spoofed\u{7}path".to_string();
+    assert_eq!(
+        prepare_diagnostic_for_stderr(message.clone(), false),
+        message
+    );
+}
+
+#[test]
 fn apply_snapshot_keeps_session_recorder_state_in_sync() {
     let temp = tempfile::tempdir().expect("tempdir");
     let sessions_dir = temp.path();
