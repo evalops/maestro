@@ -34,6 +34,19 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.58] - 2026-07-30
+
+### Added
+
+- Native openai-codex via app-server; fix Landlock stage-2 nest. <!-- maestro-release-note:f3efe0db153a -->
+- Landlock stage-2 + Codex app-server turn client. <!-- maestro-release-note:2333a34440f4 -->
+
+### Fixed
+
+- Address #3225 review — Landlock stage-1 + app-server gaps. <!-- maestro-release-note:fd4c98074eb6 -->
+- Enforce Landlock stage-2 write carve-out with FullyEnforced domain. <!-- maestro-release-note:4ce3897e93c6 -->
+- Use canonicalize_best_effort in Landlock stage-2 tests. <!-- maestro-release-note:6228dd5fc02c -->
+
 ## [0.10.57] - 2026-07-30
 
 ### Added
