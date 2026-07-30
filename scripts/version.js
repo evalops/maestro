@@ -58,10 +58,10 @@ function rustVersionFiles() {
 function updateRustVersion(newVersion, backups) {
 	for (const entry of rustVersionFiles()) {
 		const original = readFileSync(entry.path, "utf8");
-		const updated = original.replace(entry.pattern, `$1${newVersion}$2`);
-		if (updated === original) {
+		if (!entry.pattern.test(original)) {
 			throw new Error(`Unable to update Rust package version in ${entry.path}`);
 		}
+		const updated = original.replace(entry.pattern, `$1${newVersion}$2`);
 		backups.push({ path: entry.path, original });
 		writeFileSync(entry.path, updated);
 	}
