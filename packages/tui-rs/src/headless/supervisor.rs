@@ -5,7 +5,10 @@
 //! - Health monitoring with heartbeats
 //! - Graceful degradation
 
+use std::io::Write as _;
 use std::path::Path;
+use std::sync::mpsc::{self as std_mpsc, SyncSender};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use rand::Rng as _;
@@ -50,6 +53,101 @@ fn jittered_reconnect_delay(base_delay: Duration, jitter_factor: f64) -> Duratio
 
     let mut rng = rand::rng();
     jittered_reconnect_delay_for_sample(base_delay, jitter_factor, rng.random_range(-1.0..=1.0))
+}
+
+/// Report a diagnostic to stderr without blocking the caller.
+///
+/// A plain `writeln!(std::io::stderr(), ...)` on a hot or otherwise
+/// blocking-sensitive path (this supervisor's `send`, `apply_snapshot`,
+/// `apply_agent_message`, `persist_session_snapshot`; also reused by
+/// `tools::registry::execute` for write/edit rollback diagnostics and
+/// `agent::native`'s `NativeAgentRunner` for its MCP-init diagnostic, all
+/// part of the same swallowed-result audit) takes stderr's process-global
+/// lock and performs a real write syscall; if a headless parent pipes
+/// stderr and stops draining it, that write blocks until the pipe drains
+/// or the process dies. Recorder-failure diagnostics are already
+/// rate-limited (see `session_recorder_error_to_report`) to avoid log
+/// spam, but even one occurrence stalling a caller's hot path (and,
+/// transitively, whatever `await`s it) is a real regression versus the
+/// swallowed-error status quo this audit exists to fix. A single process-wide
+/// OS thread drains a bounded queue through an independently duplicated stderr
+/// handle, so a blocked write never holds Rust's process-global stderr lock.
+/// Enqueue is nonblocking and drops diagnostics when the queue is full, so a
+/// wedged stderr can consume at most one worker thread and a fixed amount of
+/// memory. The worker does not depend on a Tokio runtime being current, so it
+/// works uniformly whether or not the caller is itself async.
+pub(crate) fn report_diagnostic_nonblocking(message: String) {
+    let _ = try_report_diagnostic_nonblocking(message);
+}
+
+fn try_report_diagnostic_nonblocking(message: String) -> bool {
+    if let Some(sender) = diagnostic_sender() {
+        return enqueue_diagnostic(sender, message);
+    }
+
+    false
+}
+
+fn enqueue_diagnostic(sender: &SyncSender<String>, message: String) -> bool {
+    sender.try_send(message).is_ok()
+}
+
+fn prepare_diagnostic_for_stderr(message: String, is_terminal: bool) -> String {
+    if is_terminal {
+        crate::output_sanitize::sanitize_control_chars(&message)
+            .replace('\r', "\\r")
+            .replace('\n', "\\n")
+    } else {
+        message
+    }
+}
+
+#[cfg(unix)]
+fn duplicate_stderr_writer() -> std::io::Result<std::fs::File> {
+    use std::os::fd::AsFd as _;
+
+    let stderr = std::io::stderr();
+    stderr.as_fd().try_clone_to_owned().map(std::fs::File::from)
+}
+
+#[cfg(windows)]
+fn duplicate_stderr_writer() -> std::io::Result<std::fs::File> {
+    use std::os::windows::io::AsHandle as _;
+
+    let stderr = std::io::stderr();
+    stderr
+        .as_handle()
+        .try_clone_to_owned()
+        .map(std::fs::File::from)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn duplicate_stderr_writer() -> std::io::Result<std::fs::File> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "independent stderr handles are unavailable on this platform",
+    ))
+}
+
+fn diagnostic_sender() -> Option<&'static SyncSender<String>> {
+    static SENDER: OnceLock<Option<SyncSender<String>>> = OnceLock::new();
+    SENDER
+        .get_or_init(|| {
+            let mut stderr = duplicate_stderr_writer().ok()?;
+            let stderr_is_terminal = crate::terminal_info::is_stderr_tty();
+            let (sender, receiver) = std_mpsc::sync_channel::<String>(64);
+            std::thread::Builder::new()
+                .name("supervisor-diagnostic".to_string())
+                .spawn(move || {
+                    for message in receiver {
+                        let message = prepare_diagnostic_for_stderr(message, stderr_is_terminal);
+                        let _ = writeln!(stderr, "{message}");
+                    }
+                })
+                .ok()
+                .map(|_| sender)
+        })
+        .as_ref()
 }
 
 /// Supervisor configuration
@@ -307,6 +405,8 @@ pub struct AgentSupervisor {
     pending_transport_shutdown: Option<JoinHandle<()>>,
     /// Session recorder (optional)
     session_recorder: Option<SessionRecorder>,
+    /// Whether the current run of session-recorder failures was already reported.
+    session_recorder_error_reported: bool,
     /// Cancellation token
     cancel_token: CancellationToken,
 }
@@ -331,6 +431,7 @@ impl AgentSupervisor {
             pending_auto_reconnect: false,
             pending_transport_shutdown: None,
             session_recorder: None,
+            session_recorder_error_reported: false,
             cancel_token: CancellationToken::new(),
         }
     }
@@ -339,7 +440,47 @@ impl AgentSupervisor {
     #[must_use]
     pub fn with_session_recorder(mut self, recorder: SessionRecorder) -> Self {
         self.session_recorder = Some(recorder);
+        self.session_recorder_error_reported = false;
         self
+    }
+
+    fn session_recorder_error_to_report(
+        &mut self,
+        result: std::io::Result<()>,
+    ) -> Option<std::io::Error> {
+        match result {
+            Ok(()) => {
+                self.session_recorder_error_reported = false;
+                None
+            }
+            Err(_) if self.session_recorder_error_reported => None,
+            Err(error) => {
+                self.session_recorder_error_reported = true;
+                Some(error)
+            }
+        }
+    }
+
+    fn report_session_recorder_result_with<F>(
+        &mut self,
+        result: std::io::Result<()>,
+        operation: &str,
+        reporter: F,
+    ) where
+        F: FnOnce(String) -> bool,
+    {
+        if let Some(error) = self.session_recorder_error_to_report(result) {
+            self.session_recorder_error_reported =
+                reporter(format!("[supervisor] failed to {operation}: {error}"));
+        }
+    }
+
+    fn report_session_recorder_result(&mut self, result: std::io::Result<()>, operation: &str) {
+        self.report_session_recorder_result_with(
+            result,
+            operation,
+            try_report_diagnostic_nonblocking,
+        );
     }
 
     /// Seed the supervisor with a replayed session snapshot.
@@ -503,12 +644,12 @@ impl AgentSupervisor {
         transport.send(msg.clone())?;
         self.last_response = Some(Instant::now());
         if let Some(ref mut recorder) = self.session_recorder {
-            let _ = recorder.record_sent(&msg);
-            self.state = recorder.replay_state().clone();
-            self.last_init = recorder
-                .last_init()
-                .cloned()
-                .or_else(|| self.last_init.clone());
+            let result = recorder.record_sent(&msg);
+            let replay_state = recorder.replay_state().clone();
+            let recorder_last_init = recorder.last_init().cloned();
+            self.report_session_recorder_result(result, "record sent message");
+            self.state = replay_state;
+            self.last_init = recorder_last_init.or_else(|| self.last_init.clone());
         } else {
             self.state.handle_sent_message(&msg);
             if let ToAgentMessage::Init {
@@ -637,7 +778,8 @@ impl AgentSupervisor {
         self.last_init = resolved_last_init.clone();
         self.remember_remote_session_id(self.state.session_id.clone());
         if let Some(ref mut recorder) = self.session_recorder {
-            let _ = recorder.apply_snapshot(self.state.clone(), resolved_last_init.clone());
+            let result = recorder.apply_snapshot(self.state.clone(), resolved_last_init.clone());
+            self.report_session_recorder_result(result, "record session snapshot");
         }
         let _ = self.event_tx.send(SupervisorEvent::StateHydrated {
             session_id: self.state.session_id.clone(),
@@ -647,7 +789,8 @@ impl AgentSupervisor {
     fn apply_agent_message(&mut self, message: FromAgentMessage) -> Option<SupervisorEvent> {
         let event = self.state.handle_message(message.clone());
         if let Some(ref mut recorder) = self.session_recorder {
-            let _ = recorder.record_received(&message);
+            let result = recorder.record_received(&message);
+            self.report_session_recorder_result(result, "record received message");
         }
         event.map(|event| SupervisorEvent::Agent(Box::new(event)))
     }
@@ -665,7 +808,8 @@ impl AgentSupervisor {
 
     fn persist_session_snapshot(&mut self) {
         if let Some(ref mut recorder) = self.session_recorder {
-            let _ = recorder.apply_snapshot(self.state.clone(), self.last_init.clone());
+            let result = recorder.apply_snapshot(self.state.clone(), self.last_init.clone());
+            self.report_session_recorder_result(result, "persist session snapshot");
         }
     }
 
@@ -686,7 +830,14 @@ impl AgentSupervisor {
 
     async fn wait_for_pending_transport_shutdown(&mut self) {
         if let Some(handle) = self.pending_transport_shutdown.take() {
-            let _ = handle.await;
+            // This handle was just taken from `self` and nothing else holds a
+            // reference to abort it, so an `Err` here is a genuine panic in
+            // the background shutdown task, not a routine cancellation.
+            if let Err(error) = handle.await {
+                report_diagnostic_nonblocking(format!(
+                    "[supervisor] transport shutdown task failed to join: {error}"
+                ));
+            }
         }
     }
 

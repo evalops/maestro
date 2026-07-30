@@ -113,6 +113,7 @@ use crate::ai::{
     provider_model_name, AiProvider, ContentBlock, ImageSource, Message, MessageContent,
     RequestConfig, Role, StreamEvent, ThinkingConfig, Tool, UnifiedClient,
 };
+use crate::headless::report_diagnostic_nonblocking;
 use crate::hooks::{HookResult, IntegratedHookSystem};
 use crate::safety::{
     apply_workflow_state_hooks, check_model_allowed, ActionFirewall, FirewallContext,
@@ -2952,7 +2953,11 @@ impl NativeAgentRunner {
                     let workflow_snapshot = self.workflow_state.snapshot();
                     // Ensure MCP annotations are loaded before firewall check
                     if crate::mcp::McpClient::is_mcp_tool(&tool_key) {
-                        let _ = self.tool_executor.ensure_mcp_annotations().await;
+                        if let Err(error) = self.tool_executor.ensure_mcp_annotations().await {
+                            report_diagnostic_nonblocking(format!(
+                                "[agent] failed to refresh MCP annotations for {tool_key}: {error}"
+                            ));
+                        }
                     }
                     let is_external_tool = self.external_tools.contains(&tool_key);
                     let annotations = self.tool_executor.tool_annotations(&tool_key);
