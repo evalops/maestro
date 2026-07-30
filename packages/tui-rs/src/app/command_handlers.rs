@@ -2640,14 +2640,15 @@ Manual snapshot: `/magic-trace stop`",
                 max_turns,
             } => match self.goal_store.create(text, criteria, replace, max_turns) {
                 Ok(goal) => {
-                    // First kickoff without a prior worker turn; later turns
-                    // are gated by the second-model completion judge.
+                    // Kick off work; later turns continue while the goal stays
+                    // active. The same worker model ends the loop via
+                    // `update_goal` complete|blocked (Codex-style).
                     self.goal_auto_continue_armed = goal.auto_continue;
                     self.state.add_system_message(format!(
                         "Goal {} set (**{}**).\n\n{}\n\n\
-                         Auto-continue: after each worker turn a **different model judges** whether the goal is complete. \
-                         Continues until that judge says complete or blocked (safety max_turns={}). \
-                         `/goal pause` stops. Skipped while `/loop` or queue is active.",
+                         Auto-continue (Codex-style): after each turn, if the goal is still active the TUI injects a continuation prompt. \
+                         Mark done with the **`update_goal`** tool (`complete` or `blocked`) — same model, no second-model call. \
+                         Safety max_turns={}. `/goal pause` stops. Skipped while `/loop` or queue is active.",
                         goal.id,
                         goal.status.as_str(),
                         goal.text,

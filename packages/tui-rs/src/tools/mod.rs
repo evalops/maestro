@@ -84,6 +84,7 @@ pub mod details;
 mod exa;
 mod extract_document;
 mod gh;
+pub(crate) mod goal_tools;
 mod history;
 mod image;
 pub mod inline;

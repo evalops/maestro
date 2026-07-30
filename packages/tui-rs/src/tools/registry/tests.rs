@@ -541,7 +541,7 @@ async fn test_mcp_status_clears_removed_server_state() {
 fn test_registry_tool_count() {
     let registry = ToolRegistry::new();
     let count = registry.tools().count();
-    assert_eq!(count, 38); // includes parity tools + IDE stubs
+    assert_eq!(count, 40); // includes parity tools + IDE stubs + get_goal/update_goal
 }
 
 #[test]
