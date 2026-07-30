@@ -1668,4 +1668,39 @@ mod tests {
             Some("c")
         );
     }
+
+    #[test]
+    fn agent_message_completed_text_reads_item_completed_agent_messages() {
+        let completed = Notification {
+            method: "item/completed".to_owned(),
+            params: Some(json!({
+                "threadId": "thr-1",
+                "turnId": "turn-9",
+                "item": { "id": "msg-1", "type": "agentMessage", "text": "full answer" }
+            })),
+        };
+        assert_eq!(
+            agent_message_completed_text(&completed).as_deref(),
+            Some("full answer")
+        );
+        assert!(is_agent_message_notification(&completed));
+
+        // Other completed item types are not assistant text.
+        let tool_item = Notification {
+            method: "item/completed".to_owned(),
+            params: Some(json!({
+                "item": { "id": "tool-1", "type": "commandExecution", "text": "ls" }
+            })),
+        };
+        assert_eq!(agent_message_completed_text(&tool_item), None);
+        assert!(!is_agent_message_notification(&tool_item));
+
+        // Deltas carry no completed text but are assistant notifications.
+        let delta = Notification {
+            method: "item/agentMessage/delta".to_owned(),
+            params: Some(json!({ "turnId": "turn-9", "delta": "Hi" })),
+        };
+        assert_eq!(agent_message_completed_text(&delta), None);
+        assert!(is_agent_message_notification(&delta));
+    }
 }
