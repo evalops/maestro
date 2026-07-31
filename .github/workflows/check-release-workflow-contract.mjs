@@ -264,8 +264,15 @@ export function validateReleaseWorkflow(source) {
 			failures.push(`${name} permissions must be exactly contents: read`);
 		}
 	}
-	if (!hasExactPermissions(publish.permissions, { contents: "read" })) {
-		failures.push("publish permissions must be exactly contents: read");
+	if (
+		!hasExactPermissions(publish.permissions, {
+			contents: "read",
+			"id-token": "write",
+		})
+	) {
+		failures.push(
+			"publish permissions must be exactly contents: read and id-token: write",
+		);
 	}
 	if (!hasExactPermissions(release.permissions, { contents: "write" })) {
 		failures.push("github-release permissions must be exactly contents: write");
@@ -290,8 +297,10 @@ export function validateReleaseWorkflow(source) {
 		["github-release", release],
 		["post-publish-canary", canary],
 	]) {
-		if (job.runsOn !== "${{ vars.INTERNAL_CONFIRMATION_RUNNER }}") {
-			failures.push(`${name} must run on INTERNAL_CONFIRMATION_RUNNER`);
+		if (job.runsOn !== "${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}") {
+			failures.push(
+				`${name} must run on PUBLIC_RELEASE_RUNNER with an ubuntu-latest fallback`,
+			);
 		}
 	}
 
@@ -482,28 +491,41 @@ export function validateReleaseWorkflow(source) {
 	) {
 		failures.push("token-backed npm publication must not be bypassed");
 	}
-	const tokenCalls = publishLines.filter(
+	const oidcCalls = topLevelPublishLines.filter(
+		(line) => line === "if publish_or_verify publish_with_oidc; then",
+	).length;
+	const tokenCalls = topLevelPublishLines.filter(
 		(line) => line === "publish_or_verify publish_with_token",
 	).length;
+	const oidcCallIndex = topLevelPublishLines.indexOf(
+		"if publish_or_verify publish_with_oidc; then",
+	);
 	const npmPublishLines = publishLines.filter((line) =>
-		line.startsWith("command npm publish "),
+		line.startsWith("npx --yes npm@11.10.0 publish "),
 	);
 	const expectedPublishLines = new Set([
-		'command npm publish "${{ steps.pack.outputs.tarball }}" --access public --registry "$NPM_CONFIG_REGISTRY"',
+		'npx --yes npm@11.10.0 publish "$TARBALL" --access public --registry "$NPM_CONFIG_REGISTRY"',
 	]);
 	if (
+		oidcCalls !== 1 ||
 		tokenCalls !== 1 ||
+		oidcCallIndex < 0 ||
+		tokenPublishIndex <= oidcCallIndex ||
+		!publishLines.includes("publish_with_oidc() {") ||
+		!publishLines.includes("publish_with_token() {") ||
+		!publishLines.includes('if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then') ||
 		publishLines.some(
 			(line) =>
-				line.includes("trusted_publisher") ||
 				line.includes("NPM_PUBLISH_AUTH_MODE") ||
 				line.includes("--provenance"),
 		)
 	) {
-		failures.push("the self-hosted release lane must use token-backed npm publication only");
+		failures.push(
+			"the public release lane must publish OIDC-first with a token-backed npm publication fallback",
+		);
 	}
 	if (
-		npmPublishLines.length !== expectedPublishLines.size ||
+		npmPublishLines.length !== 2 ||
 		npmPublishLines.some((line) => !expectedPublishLines.has(line))
 	) {
 		failures.push("trusted and token modes must execute exact unswallowed npm publish commands");
@@ -530,6 +552,7 @@ export function validateReleaseWorkflow(source) {
 			PACKAGE_NAME: "${{ needs.prepare.outputs.package_name }}",
 			PACKED_INTEGRITY: "${{ steps.pack.outputs.integrity }}",
 			RELEASE_VERSION: "${{ needs.prepare.outputs.release_version }}",
+			TARBALL: "${{ steps.pack.outputs.tarball }}",
 			NPM_CONFIG_FETCH_RETRIES: "1",
 			NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000",
 			NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000",
