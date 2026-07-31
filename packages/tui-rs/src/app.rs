@@ -1518,6 +1518,15 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 || !self.queued_prompts.is_empty()
                 || self.queued_prompt_inflight.is_some()
                 || self.queued_prompt_active.is_some();
+            // Reload before the idle decision so a worker `update_goal` that
+            // completed while we still hold a stale Active snapshot cannot
+            // re-arm another continuation (and rewrite goals.json as Active).
+            if !self.state.busy && !queue_or_loop_busy && self.goal_auto_continue_armed {
+                self.goal_store.reload_from_disk();
+                if !self.goal_store.should_auto_continue() {
+                    self.goal_auto_continue_armed = false;
+                }
+            }
             if !self.state.busy
                 && !queue_or_loop_busy
                 && self.goal_auto_continue_armed
@@ -2101,7 +2110,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             }
             None => {
                 self.goal_auto_continue_armed = false;
-                // `complete()` clears current from the store.
+                // Older builds cleared `current` on complete; keep the message
+                // for that disk shape. Current `complete()` keeps status complete.
                 if prev_id.is_some()
                     && matches!(
                         prev_status,
