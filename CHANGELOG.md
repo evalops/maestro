@@ -34,6 +34,19 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.60] - 2026-07-31
+
+### Added
+
+- Persist autonomous mission threads. <!-- maestro-release-note:111122b9fe8d -->
+- Attach remove + marketplace install provenance (#3237). <!-- maestro-release-note:566313c46fdb -->
+
+### Fixed
+
+- Billable goal tokens and smaller default tool payload (#3242). <!-- maestro-release-note:b6543669a113 -->
+- Goal complete clobber + bugbash status/slash/prompt (#3241). <!-- maestro-release-note:1bc0ae82cb83 -->
+- Do not burn goal auto-continue without an agent (#3239). <!-- maestro-release-note:d0e581889607 -->
+
 ## [0.10.59] - 2026-07-30
 
 ### Added
