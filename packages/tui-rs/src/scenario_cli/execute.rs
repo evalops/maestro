@@ -29,9 +29,9 @@ use maestro_ai::{ScriptedBlock, ScriptedClient, ScriptedResponse, StopReason, Un
 use super::{load_workspace_manifest, ScriptedScenario};
 use crate::agent::{FromAgent, NativeAgent, NativeAgentConfig};
 use crate::session::{
-    generate_session_filename, sessions_dir, AppMessage, ContentBlock as SessionContentBlock,
-    CustomEntry, MessageContent, MessageEntry, SessionEntry, SessionHeader, SessionWriter,
-    ToolInfo,
+    generate_session_filename, sanitize_path_for_dirname, sessions_dir, AppMessage,
+    ContentBlock as SessionContentBlock, CustomEntry, MessageContent, MessageEntry, SessionEntry,
+    SessionHeader, SessionWriter, ToolInfo,
 };
 use crate::state::ApprovalMode;
 
@@ -265,6 +265,26 @@ fn normalize_json_for_transcript(value: &Value, workspace: &Path) -> Value {
     }
 }
 
+/// Optional overrides for [`execute_scripted_scenario`].
+#[derive(Debug, Default, Clone)]
+pub struct ExecuteOptions {
+    /// Session-store home override. Tests use this to keep the recorded
+    /// session inside a temp dir instead of mutating the process-wide `HOME`
+    /// env var (which races other tests that read it).
+    pub session_home: Option<PathBuf>,
+}
+
+fn session_dir_for(cwd: &str, session_home: Option<&Path>) -> PathBuf {
+    match session_home {
+        Some(home) => home
+            .join(".composer")
+            .join("agent")
+            .join("sessions")
+            .join(format!("--{}--", sanitize_path_for_dirname(cwd))),
+        None => sessions_dir(cwd),
+    }
+}
+
 /// Run the scenario through the real agent loop and return the execution
 /// evidence. The session JSONL is written to the standard session store
 /// (`~/.composer/agent/sessions/--<workspace>--/`), so
@@ -272,6 +292,15 @@ fn normalize_json_for_transcript(value: &Value, workspace: &Path) -> Value {
 pub async fn execute_scripted_scenario(
     scenario: &ScriptedScenario,
     base_dir: &Path,
+) -> Result<ScenarioExecution> {
+    execute_scripted_scenario_with_options(scenario, base_dir, &ExecuteOptions::default()).await
+}
+
+/// [`execute_scripted_scenario`] with explicit [`ExecuteOptions`].
+pub async fn execute_scripted_scenario_with_options(
+    scenario: &ScriptedScenario,
+    base_dir: &Path,
+    options: &ExecuteOptions,
 ) -> Result<ScenarioExecution> {
     let responses = scenario_to_scripted_responses(scenario)?;
     let (workspace, workspace_guard) = hydrate_workspace(scenario, base_dir)?;
@@ -301,7 +330,7 @@ pub async fn execute_scripted_scenario(
 
     // Real session JSONL in the standard store.
     let session_id = uuid::Uuid::new_v4().to_string();
-    let session_dir = sessions_dir(&cwd);
+    let session_dir = session_dir_for(&cwd, options.session_home.as_deref());
     std::fs::create_dir_all(&session_dir)
         .with_context(|| format!("create session dir {}", session_dir.display()))?;
     let session_path = session_dir.join(generate_session_filename(&session_id));

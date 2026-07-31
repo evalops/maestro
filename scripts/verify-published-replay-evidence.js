@@ -17,7 +17,7 @@ const SCRIPTED_SCENARIO_RESULT_SCHEMA =
 	"evalops.maestro.scripted-scenario-result.v1";
 const AGENT_RUNTIME_LEDGER_SCHEMA = "evalops.maestro.agent-runtime-ledger.v1";
 const AGENT_RUNTIME_COMPLETION_GATE = "maestro_agent_runtime_ledger_recorded";
-const SCENARIO_RUNNER = "maestro scenario run";
+const SCENARIO_RUNNER = "maestro scenario run --execute";
 const SCENARIO_ID = "maestro-published-replay";
 const AUDIT_EVENT_TYPE = "maestro.scenario.replay.ready";
 const REQUIRED_INSTALLERS = ["npm"];
@@ -32,21 +32,26 @@ const REQUIRED_RELEASE_GATE_CHECKS = [
 	"deterministicReplayEvidence",
 	"scenarioAssertionEvidence",
 	"toolEvidence",
+	"toolExecutionEvidence",
+	"sessionEvidence",
+	"searchEvidence",
 	"auditEventEvidence",
 	"errorTraceEvidence",
 	"queryableObservabilityIndex",
-	"agentRuntimeInspection",
+	"agentRuntimeLedger",
 	"finalStatus",
 ];
-const REQUIRED_ASSERTION_IDS = [
+const BASE_ASSERTION_IDS = [
 	"read-tool-called",
-	"search-tool-called",
 	"write-artifact-tool-called",
 	"manifest-exists",
 	"manifest-contains-search-pattern",
+	"artifact-exists",
+	"artifact-contents",
 	"bash-tool-not-called",
 	"audit-event-tagged",
 ];
+const SEARCH_ASSERTION_ID = "search-tool-called";
 const TERMINAL_AGENT_RUNTIME_STATES = new Set([
 	"succeeded",
 	"failed",
@@ -56,22 +61,30 @@ const TERMINAL_AGENT_RUNTIME_STATES = new Set([
 const TOOL_CALL_ID = "call-read-package-json";
 const SEARCH_TOOL_CALL_ID = "call-search-package-manifest";
 const WRITE_TOOL_CALL_ID = "call-write-published-artifact";
-const REQUIRED_TOOL_EXECUTION_SPECS = [
-	{ id: TOOL_CALL_ID, name: "read", inputPath: "package.json" },
-	{ id: SEARCH_TOOL_CALL_ID, name: "search", inputPath: "package.json" },
-	{
-		id: WRITE_TOOL_CALL_ID,
-		name: "write",
-		inputPath: "published-replay-artifact.json",
-	},
-];
+const READ_TOOL_SPEC = { id: TOOL_CALL_ID, name: "read", inputPath: "package.json" };
+const SEARCH_TOOL_SPEC = {
+	id: SEARCH_TOOL_CALL_ID,
+	name: "search",
+	inputPath: "package.json",
+};
+const WRITE_TOOL_SPEC = {
+	id: WRITE_TOOL_CALL_ID,
+	name: "write",
+	inputPath: "published-replay-artifact.json",
+};
 const ARTIFACT_PATH = "published-replay-artifact.json";
-const SCRIPTED_REPLAY_TOOL_ALLOWLIST = ["read", "search", "write"];
 const SCRIPTED_REPLAY_APPROVAL_MODE = "auto";
+const SEARCH_SKIP_REASON = "rg-not-found";
 const EXPECTED_FINAL_TEXT_SHA256 =
 	"b1623066f0894eaf01ec8155297fa424a825ccfb65a82dfc406125d677662aff";
-const EXPECTED_SCENARIO_SHA256 =
-	"3e3a49877168e6c429ca47f0053f3c6232171df144fb10622c641ecb6cd87654";
+// The smoke generates one of two scenario variants depending on whether the
+// ripgrep binary is available on PATH (the native `search` tool shells out
+// to rg). Both hashes are pinned; the hash determines which evidence shape
+// the verifier requires.
+const EXPECTED_SCENARIO_SHA256_WITH_SEARCH =
+	"57fa2783a7e1f062dfa8673f9b90c6d08d0df9de14690f492388697e2579909f";
+const EXPECTED_SCENARIO_SHA256_NO_SEARCH =
+	"04d2dc217b51f091272cfa6b96616624a12bf75cc3078150af07a518d8bfa0c0";
 const PUBLISHED_REPLAY_EVIDENCE_REF_PREFIXES = [
 	"tool-call:",
 	"scenario-assertion:",
@@ -145,22 +158,36 @@ function filterPublishedReplayEvidenceRefs(refs) {
 	);
 }
 
-function queryIndexEntryForTrace(queryIndex, traceType) {
-	return Array.isArray(queryIndex)
-		? queryIndex.find((entry) => entry?.traceType === traceType)
-		: undefined;
+function searchExecutedForScenarioSha(scenarioSha256) {
+	if (scenarioSha256 === EXPECTED_SCENARIO_SHA256_WITH_SEARCH) {
+		return true;
+	}
+	if (scenarioSha256 === EXPECTED_SCENARIO_SHA256_NO_SEARCH) {
+		return false;
+	}
+	return null;
 }
 
-function queryIndexEntryHasRequiredModes(entry) {
-	return countModesWith(entry?.modes, REQUIRED_REPLAY_MODES) ===
-		REQUIRED_REPLAY_MODES.length;
+function toolSpecsForSearch(searchExecuted) {
+	return searchExecuted
+		? [READ_TOOL_SPEC, SEARCH_TOOL_SPEC, WRITE_TOOL_SPEC]
+		: [READ_TOOL_SPEC, WRITE_TOOL_SPEC];
 }
 
-function releaseQueryDescriptorIsValid(entry, traceType) {
-	return releaseObservabilityQueryDescriptorIsValid(entry, traceType);
+function assertionIdsForSearch(searchExecuted) {
+	return searchExecuted
+		? [
+				BASE_ASSERTION_IDS[0],
+				SEARCH_ASSERTION_ID,
+				...BASE_ASSERTION_IDS.slice(1),
+			]
+		: [...BASE_ASSERTION_IDS];
 }
 
-function scenarioConfigIsValid(scenarioConfig, scenarioSha256) {
+function scenarioConfigIsValid(scenarioConfig, scenarioSha256, searchExecuted) {
+	const searchTool = isObject(scenarioConfig?.searchTool)
+		? scenarioConfig.searchTool
+		: {};
 	return (
 		isObject(scenarioConfig) &&
 		scenarioConfig.runner === SCENARIO_RUNNER &&
@@ -173,9 +200,13 @@ function scenarioConfigIsValid(scenarioConfig, scenarioSha256) {
 		scenarioConfig.approvalMode === SCRIPTED_REPLAY_APPROVAL_MODE &&
 		typeof scenarioConfig.sandboxMode === "string" &&
 		scenarioConfig.sandboxMode.length > 0 &&
-		SCRIPTED_REPLAY_TOOL_ALLOWLIST.every((toolName) =>
-			stringArray(scenarioConfig.toolAllowlist).includes(toolName),
-		)
+		toolSpecsForSearch(searchExecuted).every((spec) =>
+			stringArray(scenarioConfig.toolAllowlist).includes(spec.name),
+		) &&
+		(searchExecuted
+			? searchTool.status === "executed"
+			: searchTool.status === "skipped" &&
+				searchTool.reason === SEARCH_SKIP_REASON)
 	);
 }
 
@@ -207,7 +238,7 @@ function determinismIsValid(determinism) {
 		isObject(determinism) &&
 		determinism.runs === 2 &&
 		determinism.identical === true &&
-		isSha256(determinism.resultSha256)
+		isSha256(determinism.transcriptSha256)
 	);
 }
 
@@ -231,7 +262,8 @@ function transcriptCoversRequiredModes(transcript) {
 	);
 }
 
-function transcriptIsValid(transcript, scenarioSha256) {
+function transcriptIsValid(transcript, scenarioSha256, searchExecuted) {
+	const specs = toolSpecsForSearch(searchExecuted);
 	if (
 		!isObject(transcript) ||
 		transcript.schemaVersion !== TRANSCRIPT_SCHEMA ||
@@ -247,9 +279,7 @@ function transcriptIsValid(transcript, scenarioSha256) {
 	if (
 		countModesWith(coverageModes, REQUIRED_REPLAY_MODES) !==
 			REQUIRED_REPLAY_MODES.length ||
-		REQUIRED_TOOL_EXECUTION_SPECS.some(
-			(spec) => !coverageToolCallIds.includes(spec.id),
-		) ||
+		specs.some((spec) => !coverageToolCallIds.includes(spec.id)) ||
 		transcript?.coverage?.finalStatus?.ok !== REQUIRED_REPLAY_MODES.length
 	) {
 		return false;
@@ -259,7 +289,7 @@ function transcriptIsValid(transcript, scenarioSha256) {
 		return (
 			isObject(mode) &&
 			mode.scenarioSha256 === scenarioSha256 &&
-			REQUIRED_TOOL_EXECUTION_SPECS.every((spec) => {
+			specs.every((spec) => {
 				const toolCall = transcriptToolCall(mode, spec.id);
 				return (
 					toolCall?.name === spec.name &&
@@ -270,54 +300,59 @@ function transcriptIsValid(transcript, scenarioSha256) {
 			mode?.final?.status === "ok" &&
 			mode?.final?.containsExpectedText === true &&
 			mode?.final?.textSha256 === EXPECTED_FINAL_TEXT_SHA256 &&
-			isSha256(mode?.output?.sha256) &&
-			Number.isFinite(mode?.output?.bytes) &&
-			mode.output.bytes > 0
+			typeof mode?.session?.sessionId === "string" &&
+			mode.session.sessionId.length > 0 &&
+			Number.isFinite(mode?.session?.jsonlFileCount) &&
+			mode.session.jsonlFileCount > 0 &&
+			Number.isFinite(mode?.session?.bytes) &&
+			mode.session.bytes > 0 &&
+			isSha256(mode?.session?.sha256)
 		);
 	});
 }
 
-function transcriptObservabilityIsValid(observabilityTranscript, scenarioSha256) {
+function transcriptObservabilityIsValid(
+	observabilityTranscript,
+	scenarioSha256,
+	searchExecuted,
+) {
 	return (
 		isObject(observabilityTranscript) &&
 		observabilityTranscript.schemaVersion === TRANSCRIPT_SCHEMA &&
 		observabilityTranscript.scenarioSha256 === scenarioSha256 &&
 		countModesWith(observabilityTranscript.modes, REQUIRED_REPLAY_MODES) ===
 			REQUIRED_REPLAY_MODES.length &&
-		REQUIRED_TOOL_EXECUTION_SPECS.every((spec) =>
+		toolSpecsForSearch(searchExecuted).every((spec) =>
 			stringArray(observabilityTranscript.toolCallIds).includes(spec.id),
 		) &&
 		observabilityTranscript?.finalStatus?.ok === REQUIRED_REPLAY_MODES.length
 	);
 }
 
-function agentRuntimeInspectionIsValid(inspection) {
-	if (!isObject(inspection)) {
+function agentRuntimeLedgerIsValid(ledger, searchExecuted) {
+	if (!isObject(ledger)) {
 		return false;
 	}
-	const terminalStates = isObject(inspection?.outcomes?.terminalStates)
-		? Object.entries(inspection.outcomes.terminalStates)
+	const terminalStates = isObject(ledger?.outcomes?.terminalStates)
+		? Object.entries(ledger.outcomes.terminalStates)
 		: [];
-	const toolCallEvidence = Array.isArray(inspection?.toolCallEvidence)
-		? inspection.toolCallEvidence.filter(isObject)
+	const toolCallEvidence = Array.isArray(ledger?.toolCallEvidence)
+		? ledger.toolCallEvidence.filter(isObject)
 		: [];
 	return (
-		inspection.fixture === true &&
-		inspection.ledgerSchemaVersion === AGENT_RUNTIME_LEDGER_SCHEMA &&
-		typeof inspection.sessionId === "string" &&
-		inspection.sessionId.length > 0 &&
-		inspection.replayDeterministic === true &&
-		inspection.hasHandleTrigger === true &&
-		inspection.hasRecordRunStep === true &&
-		inspection.hasRecordRunWorkItem === true &&
-		inspection.hasTerminalOperation === true &&
-		inspection.completionGate === AGENT_RUNTIME_COMPLETION_GATE &&
-		Number.isFinite(inspection?.counts?.entries) &&
-		inspection.counts.entries > 0 &&
-		Number.isFinite(inspection?.counts?.promotionOperations) &&
-		inspection.counts.promotionOperations > 0 &&
-		Number.isFinite(inspection?.counts?.terminalOperations) &&
-		inspection.counts.terminalOperations > 0 &&
+		ledger.schemaVersion === AGENT_RUNTIME_LEDGER_SCHEMA &&
+		ledger.replayDeterministic === true &&
+		ledger.hasHandleTrigger === true &&
+		ledger.hasRecordRunStep === true &&
+		ledger.hasRecordRunWorkItem === true &&
+		ledger.hasTerminalOperation === true &&
+		ledger.completionGate === AGENT_RUNTIME_COMPLETION_GATE &&
+		Number.isFinite(ledger?.counts?.entries) &&
+		ledger.counts.entries > 0 &&
+		Number.isFinite(ledger?.counts?.promotionOperations) &&
+		ledger.counts.promotionOperations > 0 &&
+		Number.isFinite(ledger?.counts?.terminalOperations) &&
+		ledger.counts.terminalOperations > 0 &&
 		terminalStates.some(
 			([state, count]) =>
 				TERMINAL_AGENT_RUNTIME_STATES.has(state) &&
@@ -325,28 +360,39 @@ function agentRuntimeInspectionIsValid(inspection) {
 				Number.isFinite(count) &&
 				count > 0,
 		) &&
-		toolCallEvidence.length > 0 &&
-		toolCallEvidence.every(
-			(entry) =>
-				typeof entry?.toolName === "string" &&
-				entry.toolName.length > 0 &&
-				typeof entry?.toolCallId === "string" &&
-				entry.toolCallId.length > 0 &&
-				entry?.completionGate === AGENT_RUNTIME_COMPLETION_GATE &&
-				stringArray(entry?.evidenceKinds).includes("tool_call"),
+		toolSpecsForSearch(searchExecuted).every((spec) =>
+			toolCallEvidence.some(
+				(entry) =>
+					entry?.toolName === spec.name &&
+					entry?.toolCallId === spec.id &&
+					entry?.completionGate === AGENT_RUNTIME_COMPLETION_GATE &&
+					stringArray(entry?.evidenceKinds).includes("tool_call"),
+			),
 		) &&
-		inspection?.durability?.reconstructable === true &&
-		inspection?.durability?.replayDeterministic === true &&
-		inspection?.durability?.sessionFilePresent === true &&
-		typeof inspection?.durability?.promotionIdempotencyKey === "string" &&
-		inspection.durability.promotionIdempotencyKey.length > 0 &&
-		stringArray(inspection?.evidenceRefs).includes(
-			`inspection-session:${inspection.sessionId}`,
-		)
+		ledger?.durability?.reconstructable === true &&
+		ledger?.durability?.replayDeterministic === true &&
+		ledger?.durability?.sessionFilePresent === true &&
+		typeof ledger?.durability?.promotionIdempotencyKey === "string" &&
+		ledger.durability.promotionIdempotencyKey.length > 0
 	);
 }
 
-function queryableObservabilityIndexIsValid({ observability }) {
+function queryIndexEntryForTrace(queryIndex, traceType) {
+	return Array.isArray(queryIndex)
+		? queryIndex.find((entry) => entry?.traceType === traceType)
+		: undefined;
+}
+
+function queryIndexEntryHasRequiredModes(entry) {
+	return countModesWith(entry?.modes, REQUIRED_REPLAY_MODES) ===
+		REQUIRED_REPLAY_MODES.length;
+}
+
+function releaseQueryDescriptorIsValid(entry, traceType) {
+	return releaseObservabilityQueryDescriptorIsValid(entry, traceType);
+}
+
+function queryableObservabilityIndexIsValid({ observability, searchExecuted }) {
 	const queryIndex = Array.isArray(observability?.queryIndex)
 		? observability.queryIndex
 		: [];
@@ -366,6 +412,7 @@ function queryableObservabilityIndexIsValid({ observability }) {
 	}
 
 	const installEntry = queryIndexEntryForTrace(queryIndex, "install");
+	const sessionEntry = queryIndexEntryForTrace(queryIndex, "session");
 	const scenarioEntry = queryIndexEntryForTrace(queryIndex, "scenario");
 	const toolEntry = queryIndexEntryForTrace(queryIndex, "tool");
 	const errorEntry = queryIndexEntryForTrace(queryIndex, "error");
@@ -374,32 +421,32 @@ function queryableObservabilityIndexIsValid({ observability }) {
 	const toolRefs = stringArray(toolEntry?.evidenceRefs);
 	const scenarioRefs = stringArray(scenarioEntry?.evidenceRefs);
 	const inspectionRefs = stringArray(inspectionEntry?.evidenceRefs);
+	const specs = toolSpecsForSearch(searchExecuted);
+	const assertionIds = assertionIdsForSearch(searchExecuted);
 
 	return (
 		isObject(installEntry?.counts) &&
 		installEntry.counts.forbiddenReferences === 0 &&
 		installEntry.counts.workspaceProtocolReferences === 0 &&
+		queryIndexEntryHasRequiredModes(sessionEntry) &&
+		Number.isFinite(sessionEntry?.counts?.jsonlFileCount) &&
+		sessionEntry.counts.jsonlFileCount >= REQUIRED_REPLAY_MODES.length &&
 		queryIndexEntryHasRequiredModes(scenarioEntry) &&
 		stringArray(scenarioEntry?.ids).includes(SCENARIO_ID) &&
 		scenarioEntry?.counts?.failed === 0 &&
-		Number.isFinite(scenarioEntry?.counts?.passed) &&
-		scenarioEntry.counts.passed === REQUIRED_ASSERTION_IDS.length &&
+		scenarioEntry?.counts?.passed === assertionIds.length &&
 		scenarioRefs.includes(`audit-event:${AUDIT_EVENT_TYPE}`) &&
-		REQUIRED_ASSERTION_IDS.every((id) =>
+		assertionIds.every((id) =>
 			scenarioRefs.includes(`scenario-assertion:${id}`),
 		) &&
 		queryIndexEntryHasRequiredModes(toolEntry) &&
-		REQUIRED_TOOL_EXECUTION_SPECS.every((spec) =>
-			stringArray(toolEntry?.ids).includes(spec.id),
-		) &&
-		REQUIRED_TOOL_EXECUTION_SPECS.every((spec) =>
-			toolRefs.includes(`tool-call:${spec.id}`),
-		) &&
+		specs.every((spec) => stringArray(toolEntry?.ids).includes(spec.id)) &&
+		specs.every((spec) => toolRefs.includes(`tool-call:${spec.id}`)) &&
 		errorEntry?.counts?.count === 0 &&
 		errorEntry?.counts?.expectedCount === 0 &&
 		inspectionEntry?.status === "ok" &&
+		queryIndexEntryHasRequiredModes(inspectionEntry) &&
 		inspectionRefs.some((ref) => ref.startsWith("inspection-session:")) &&
-		agentRuntimeInspectionIsValid(observability?.agentRuntimeInspection) &&
 		queryIndexEntryHasRequiredModes(finalStatusEntry) &&
 		finalStatusEntry?.counts?.ok === REQUIRED_REPLAY_MODES.length
 	);
@@ -460,21 +507,29 @@ export function readPublishedReplayEvidence(filePath) {
 	}
 }
 
-function validateModeEvidence(errors, mode) {
+function validateModeEvidence(errors, mode, scenarioSha256, searchExecuted) {
 	const modeName = typeof mode?.mode === "string" ? mode.mode : "unknown";
+	const specs = toolSpecsForSearch(searchExecuted);
+	const assertionIds = assertionIdsForSearch(searchExecuted);
 	pushUnless(errors, mode?.status === "ok", `${modeName}.status must be ok`);
 	pushUnless(
 		errors,
 		mode?.scenario?.id === SCENARIO_ID &&
 			mode?.scenario?.schemaVersion === SCRIPTED_SCENARIO_SCHEMA &&
-			mode?.scenario?.sha256 === EXPECTED_SCENARIO_SHA256,
+			mode?.scenario?.sha256 === scenarioSha256,
 		`${modeName}.scenario must reference the pinned published replay scenario`,
 	);
 	const toolFields = [
-		["tool", REQUIRED_TOOL_EXECUTION_SPECS[0], "read-tool-called"],
-		["searchTool", REQUIRED_TOOL_EXECUTION_SPECS[1], "search-tool-called"],
-		["artifactTool", REQUIRED_TOOL_EXECUTION_SPECS[2], "write-artifact-tool-called"],
+		["tool", READ_TOOL_SPEC, "read-tool-called"],
+		["artifactTool", WRITE_TOOL_SPEC, "write-artifact-tool-called"],
 	];
+	if (searchExecuted) {
+		toolFields.splice(1, 0, [
+			"searchTool",
+			SEARCH_TOOL_SPEC,
+			"search-tool-called",
+		]);
+	}
 	for (const [field, spec, assertionId] of toolFields) {
 		pushUnless(
 			errors,
@@ -502,6 +557,13 @@ function validateModeEvidence(errors, mode) {
 			`${modeName}.${field}.assertionId must be ${assertionId}`,
 		);
 	}
+	if (!searchExecuted) {
+		pushUnless(
+			errors,
+			mode?.searchTool === undefined,
+			`${modeName}.searchTool must be absent when the search leg is skipped`,
+		);
+	}
 	pushUnless(errors, mode?.final?.status === "ok", `${modeName}.final.status must be ok`);
 	pushUnless(
 		errors,
@@ -523,6 +585,41 @@ function validateModeEvidence(errors, mode) {
 		Number.isFinite(mode?.output?.bytes) && mode.output.bytes > 0,
 		`${modeName}.output.bytes must be positive`,
 	);
+	pushUnless(
+		errors,
+		typeof mode?.session?.sessionId === "string" &&
+			mode.session.sessionId.length > 0,
+		`${modeName}.session.sessionId must be a non-empty string`,
+	);
+	pushUnless(
+		errors,
+		Number.isFinite(mode?.session?.jsonlFileCount) &&
+			mode.session.jsonlFileCount > 0,
+		`${modeName}.session.jsonlFileCount must be positive`,
+	);
+	pushUnless(
+		errors,
+		Number.isFinite(mode?.session?.bytes) && mode.session.bytes > 0,
+		`${modeName}.session.bytes must be positive`,
+	);
+	pushUnless(
+		errors,
+		isSha256(mode?.session?.sha256),
+		`${modeName}.session.sha256 must be a 64 character hex string`,
+	);
+	pushUnless(
+		errors,
+		mode?.session?.containsFinalText === true &&
+			mode?.session?.containsToolCallId === true &&
+			mode?.session?.containsWriteToolCallId === true &&
+			mode?.session?.containsSearchToolCallId === searchExecuted,
+		`${modeName}.session must record the final text and executed tool call ids`,
+	);
+	pushUnless(
+		errors,
+		agentRuntimeLedgerIsValid(mode?.agentRuntimeLedger, searchExecuted),
+		`${modeName}.agentRuntimeLedger must include completion-gated ledger operations, tool_call evidence, and durable idempotent promotion`,
+	);
 
 	if (modeName === "json") {
 		pushUnless(
@@ -537,31 +634,59 @@ function validateModeEvidence(errors, mode) {
 		);
 		pushUnless(
 			errors,
-			mode?.result?.assertionsPassed === REQUIRED_ASSERTION_IDS.length &&
+			mode?.result?.assertionsPassed === assertionIds.length &&
 				mode?.result?.assertionsFailed === 0,
 			"json.result must record every assertion passing",
 		);
 		pushUnless(
 			errors,
-			isSha256(mode?.result?.resultSha256),
-			"json.result.resultSha256 must be a 64 character hex string",
+			determinismIsValid(mode?.determinism),
+			"json.determinism must prove identical transcripts across two runs",
 		);
 		pushUnless(
 			errors,
-			determinismIsValid(mode?.determinism),
-			"json.determinism must prove identical results across two runs",
+			mode?.execution?.sessionId === mode?.session?.sessionId,
+			"json.execution.sessionId must match the recorded session evidence",
+		);
+		pushUnless(
+			errors,
+			mode?.execution?.finalText ===
+				"Published package golden path completed with manifest evidence.",
+			"json.execution.finalText must match the scenario final frame",
+		);
+		pushUnless(
+			errors,
+			isSha256(mode?.execution?.transcriptSha256) &&
+				mode?.execution?.transcriptSha256 ===
+					mode?.determinism?.transcriptSha256,
+			"json.execution.transcriptSha256 must match the determinism evidence",
+		);
+		pushUnless(
+			errors,
+			specs.every((spec) =>
+				(Array.isArray(mode?.execution?.toolExecutions)
+					? mode.execution.toolExecutions
+					: []
+				).some(
+					(entry) =>
+						entry?.callId === spec.id &&
+						entry?.tool === spec.name &&
+						entry?.success === true,
+				),
+			),
+			"json.execution.toolExecutions must record every tool call succeeding",
 		);
 	}
 	if (modeName === "junit") {
 		pushUnless(
 			errors,
-			mode?.junit?.tests === REQUIRED_ASSERTION_IDS.length &&
+			mode?.junit?.tests === assertionIds.length &&
 				mode?.junit?.failures === 0,
 			"junit.junit must record every assertion with zero failures",
 		);
 		pushUnless(
 			errors,
-			REQUIRED_ASSERTION_IDS.every((id) =>
+			assertionIds.every((id) =>
 				stringArray(mode?.junit?.testcaseNames).includes(id),
 			),
 			"junit.junit.testcaseNames must cover every assertion",
@@ -582,13 +707,11 @@ function crossModeConsistencyIsValid(evidence) {
 	if (!isObject(jsonMode)) {
 		return false;
 	}
-	const determinismSha = evidence?.replay?.determinism?.resultSha256;
 	if (
 		JSON.stringify(canonicalJson(evidence?.replay?.determinism)) !==
 			JSON.stringify(canonicalJson(jsonMode.determinism)) ||
-		determinismSha !== jsonMode?.determinism?.resultSha256 ||
-		determinismSha !== jsonMode?.result?.resultSha256 ||
-		determinismSha !== jsonMode?.output?.sha256
+		evidence?.replay?.determinism?.transcriptSha256 !==
+			jsonMode?.execution?.transcriptSha256
 	) {
 		return false;
 	}
@@ -602,7 +725,9 @@ function crossModeConsistencyIsValid(evidence) {
 		return (
 			isObject(transcriptMode) &&
 			transcriptMode?.output?.sha256 === mode?.output?.sha256 &&
-			transcriptMode?.output?.bytes === mode?.output?.bytes
+			transcriptMode?.output?.bytes === mode?.output?.bytes &&
+			transcriptMode?.session?.sessionId === mode?.session?.sessionId &&
+			transcriptMode?.session?.sha256 === mode?.session?.sha256
 		);
 	});
 }
@@ -626,6 +751,20 @@ export function validatePublishedReplayEvidence(
 			`installer must be ${expectedInstaller}`,
 		);
 	}
+
+	const scenarioSha256 =
+		typeof evidence?.replay?.scenario?.sha256 === "string"
+			? evidence.replay.scenario.sha256
+			: "";
+	const searchExecuted = searchExecutedForScenarioSha(scenarioSha256);
+	pushUnless(
+		errors,
+		searchExecuted !== null,
+		"replay.scenario.sha256 must match a pinned published replay scenario variant",
+	);
+	const searchVariant = searchExecuted === true;
+	const specs = toolSpecsForSearch(searchVariant);
+	const assertionIds = assertionIdsForSearch(searchVariant);
 
 	const packageInfo = isObject(evidence?.package) ? evidence.package : {};
 	const installMetadata = isObject(packageInfo.installMetadata)
@@ -710,30 +849,39 @@ export function validatePublishedReplayEvidence(
 		errors,
 		evidence?.replay?.scenario?.id === SCENARIO_ID &&
 			evidence?.replay?.scenario?.schemaVersion === SCRIPTED_SCENARIO_SCHEMA &&
-			evidence?.replay?.scenario?.sha256 === EXPECTED_SCENARIO_SHA256,
+			evidence?.replay?.scenario?.sha256 === scenarioSha256,
 		"replay.scenario must reference the pinned published replay scenario",
 	);
 	pushUnless(
 		errors,
 		scenarioConfigIsValid(
 			evidence?.replay?.scenarioConfig,
-			EXPECTED_SCENARIO_SHA256,
+			scenarioSha256,
+			searchVariant,
 		),
-		"replay.scenarioConfig must describe the deterministic scenario runner configuration",
+		"replay.scenarioConfig must describe the deterministic scenario execution configuration",
+	);
+	pushUnless(
+		errors,
+		searchVariant
+			? evidence?.replay?.searchTool?.status === "executed"
+			: evidence?.replay?.searchTool?.status === "skipped" &&
+				evidence?.replay?.searchTool?.reason === SEARCH_SKIP_REASON,
+		"replay.searchTool must record the search leg as executed or explicitly skipped",
 	);
 	pushUnless(
 		errors,
 		determinismIsValid(evidence?.replay?.determinism),
-		"replay.determinism must prove identical scenario results across two runs",
+		"replay.determinism must prove identical transcripts across two runs",
 	);
 	pushUnless(
 		errors,
 		crossModeConsistencyIsValid(evidence),
-		"replay.determinism, json mode result, and transcript outputs must be hash-consistent",
+		"replay.determinism, json mode execution, and transcript sessions must be consistent",
 	);
 	pushUnless(
 		errors,
-		transcriptIsValid(evidence?.transcript, EXPECTED_SCENARIO_SHA256),
+		transcriptIsValid(evidence?.transcript, scenarioSha256, searchVariant),
 		"transcript must include queryable published replay transcript evidence for text, json, and junit",
 	);
 
@@ -745,7 +893,7 @@ export function validatePublishedReplayEvidence(
 		`modes must exactly cover ${REQUIRED_REPLAY_MODES.join(", ")}`,
 	);
 	for (const mode of modes) {
-		validateModeEvidence(errors, mode);
+		validateModeEvidence(errors, mode, scenarioSha256, searchVariant);
 	}
 
 	try {
@@ -809,7 +957,8 @@ export function validatePublishedReplayEvidence(
 		errors,
 		scenarioConfigIsValid(
 			observability?.scenarioConfig,
-			EXPECTED_SCENARIO_SHA256,
+			scenarioSha256,
+			searchVariant,
 		) &&
 			scenarioConfigsMatch(
 				observability?.scenarioConfig,
@@ -821,17 +970,18 @@ export function validatePublishedReplayEvidence(
 		errors,
 		transcriptObservabilityIsValid(
 			observability?.transcript,
-			EXPECTED_SCENARIO_SHA256,
+			scenarioSha256,
+			searchVariant,
 		),
 		"observability.transcript must summarize transcript modes, tool calls, and final status",
 	);
 	pushUnless(
 		errors,
 		observability?.scenario?.id === SCENARIO_ID &&
-			observability?.scenario?.sha256 === EXPECTED_SCENARIO_SHA256 &&
+			observability?.scenario?.sha256 === scenarioSha256 &&
 			observability?.scenario?.observedOutcome === "pass" &&
 			observability?.scenario?.failed === 0 &&
-			observability?.scenario?.passed === REQUIRED_ASSERTION_IDS.length,
+			observability?.scenario?.passed === assertionIds.length,
 		"observability.scenario must record a passing run of the pinned scenario",
 	);
 	pushUnless(
@@ -842,7 +992,7 @@ export function validatePublishedReplayEvidence(
 			stringArray(observability?.scenario?.evidenceRefs).includes(
 				`audit-event:${AUDIT_EVENT_TYPE}`,
 			) &&
-			REQUIRED_ASSERTION_IDS.every((id) =>
+			assertionIds.every((id) =>
 				stringArray(observability?.scenario?.evidenceRefs).includes(
 					`scenario-assertion:${id}`,
 				),
@@ -851,12 +1001,25 @@ export function validatePublishedReplayEvidence(
 	);
 	pushUnless(
 		errors,
-		observability?.tools?.names?.includes?.("read") === true &&
-			observability?.tools?.names?.includes?.("search") === true &&
-			observability?.tools?.names?.includes?.("write") === true,
-		"observability.tools.names must include read, search, and write",
+		countModesWith(observability?.sessions?.modes, REQUIRED_REPLAY_MODES) ===
+			REQUIRED_REPLAY_MODES.length &&
+			Number.isFinite(observability?.sessions?.jsonlFileCount) &&
+			observability.sessions.jsonlFileCount >= REQUIRED_REPLAY_MODES.length &&
+			REQUIRED_REPLAY_MODES.every(
+				(mode) =>
+					typeof observability?.sessions?.sha256ByMode?.[mode] === "string" &&
+					observability.sessions.sha256ByMode[mode].length === 64,
+			),
+		"observability.sessions must record a session JSONL for every replay mode",
 	);
-	for (const spec of REQUIRED_TOOL_EXECUTION_SPECS) {
+	pushUnless(
+		errors,
+		specs.every(
+			(spec) => observability?.tools?.names?.includes?.(spec.name) === true,
+		),
+		"observability.tools.names must include every executed tool",
+	);
+	for (const spec of specs) {
 		pushUnless(
 			errors,
 			observability?.tools?.callIds?.includes?.(spec.id) === true,
@@ -872,18 +1035,31 @@ export function validatePublishedReplayEvidence(
 	}
 	pushUnless(
 		errors,
-		agentRuntimeInspectionIsValid(evidence?.agentRuntimeInspection),
-		"agentRuntimeInspection must include fixture AgentRuntime ledger, durability, and completion gate evidence",
+		countModesWith(
+			observability?.agentRuntimeLedger?.modes,
+			REQUIRED_REPLAY_MODES,
+		) === REQUIRED_REPLAY_MODES.length &&
+			countModesWith(
+				observability?.agentRuntimeLedger?.replayDeterministicModes,
+				REQUIRED_REPLAY_MODES,
+			) === REQUIRED_REPLAY_MODES.length &&
+			countModesWith(
+				observability?.agentRuntimeLedger?.durabilityModes,
+				REQUIRED_REPLAY_MODES,
+			) === REQUIRED_REPLAY_MODES.length &&
+			observability?.agentRuntimeLedger?.completionGate ===
+				AGENT_RUNTIME_COMPLETION_GATE &&
+			specs.every((spec) =>
+				stringArray(observability?.agentRuntimeLedger?.toolCallIds).includes(
+					spec.id,
+				),
+			),
+		"observability.agentRuntimeLedger must summarize completion-gated ledger evidence for every replay mode",
 	);
 	pushUnless(
 		errors,
-		agentRuntimeInspectionIsValid(observability?.agentRuntimeInspection),
-		"observability.agentRuntimeInspection must summarize the fixture AgentRuntime inspection",
-	);
-	pushUnless(
-		errors,
-		queryableObservabilityIndexIsValid({ observability }),
-		"observability.queryIndex must provide queryable install, scenario, tool, error, inspection, and final-status traces with release query descriptors",
+		queryableObservabilityIndexIsValid({ observability, searchExecuted: searchVariant }),
+		"observability.queryIndex must provide queryable install, session, scenario, tool, error, inspection, and final-status traces with release query descriptors",
 	);
 
 	if (errors.length > 0) {
