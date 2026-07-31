@@ -123,6 +123,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Verify with the smoke scripts from the release tag, not main:
+          # the published binary only supports what its own version shipped,
+          # so main's newer smoke must not run against an older binary.
+          ref: ${{ needs.tag-current-version.outputs.release_tag }}
 
       - name: Setup registry install smoke tools
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
