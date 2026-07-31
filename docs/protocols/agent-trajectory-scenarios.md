@@ -51,10 +51,12 @@ Scripted replay scenarios may also include executable assertions:
 maestro scenario validate ./test/fixtures/agent-trajectory-scenarios/local-diagnostic-success.json
 maestro scenario run ./test/fixtures/agent-trajectory-scenarios/local-diagnostic-success.json --junit ./tmp/local-diagnostic-success.xml
 maestro scenario run ./test/fixtures/scripted-replay/basic-tool-call.json --junit ./tmp/basic-tool-call.xml
-maestro --replay ./test/fixtures/scripted-replay/basic-tool-call.json
+maestro scenario run ./test/fixtures/scripted-replay/read-write-execute.json --execute --junit ./tmp/read-write-execute.xml
 ```
 
 `maestro scenario run` exits nonzero when the observed outcome is `fail` for both offline acceptance scenarios and scripted replay scenarios. The fixture checkers allow intentional negative fixtures by requiring `expectedOutcome: "fail"` and verifying that the observed outcome is also `fail`. JUnit output is supported for both scenario families.
+
+`maestro scenario run --execute <path>` replays an `evalops.maestro.scripted-scenario.v1` scenario through the real agent loop instead of evaluating it offline: the scenario's frames are served by the deterministic `scripted-replay/maestro-replay-v1` provider (`UnifiedClient::Scripted`), and the runtime executes the recorded tool calls for real under auto approval in the scenario workspace. When the scenario declares a workspace manifest with files, those files are hydrated into a fresh temp workspace first, so writes never touch the fixture directory. The run records a real session JSONL (tagged with a `scenario_replay` custom entry) that `maestro run inspect <session-id> --json` can reconstruct, and the result JSON carries an `execution` block with the session id/path, the executed tool calls, the final text, and a normalized transcript hash that is identical across runs of the same scenario. The `search` tool requires the `rg` binary on PATH. Note: `file_exists`/`file_contents` assertions check the execution workspace under `--execute`, so fixtures that assert on the scenario file itself (an offline-mode idiom) need their asserted files listed in the workspace manifest.
 
 `maestro --replay <path|uri>` opens a real agent session using the synthetic `scripted-replay/maestro-replay-v1` model. It accepts local files, HTTPS signed URLs, and `gs://` GCS object URLs readable by `gcloud storage cat`. It sets `MAESTRO_SCENARIO_PATH`, bypasses external model credentials, emits zero-cost model usage, and tags the saved session with a `scenario_replay` custom entry containing `{ replay: true, scenarioId, path }`.
 Headless clients receive `executor_type: "replay"` on the initial `ready`

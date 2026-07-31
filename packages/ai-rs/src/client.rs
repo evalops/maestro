@@ -11,6 +11,7 @@ use super::anthropic::AnthropicClient;
 use super::google::GoogleClient;
 use super::openai::OpenAiClient;
 use super::providers::{ProviderProtocol, ProviderRegistry, ResolvedProvider};
+use super::scripted::ScriptedClient;
 use super::types::{Message, RequestConfig, StreamEvent};
 use super::vertex::VertexAiClient;
 
@@ -37,6 +38,10 @@ pub enum AiProvider {
     MiniMax,
     /// Z.ai / Zhipu GLM - OpenAI-compatible API (api.z.ai)
     Zai,
+    /// Deterministic scripted replay (no network, no credentials). Drives
+    /// `maestro scenario run --execute`; never constructed from the provider
+    /// registry -- injected directly as `UnifiedClient::Scripted`.
+    Scripted,
 }
 
 impl AiProvider {
@@ -97,6 +102,7 @@ impl AiProvider {
             Some("dashscope" | "qwen") => return AiProvider::Qwen,
             Some("minimax") => return AiProvider::MiniMax,
             Some("zai" | "zhipu") => return AiProvider::Zai,
+            Some("scripted-replay" | "scripted") => return AiProvider::Scripted,
             _ => {}
         }
 
@@ -212,6 +218,9 @@ pub enum UnifiedClient {
     MiniMax(OpenAiClient),
     /// Z.ai / Zhipu GLM uses `OpenAI` client with custom base URL
     Zai(OpenAiClient),
+    /// Deterministic scripted replay client (`scripted.rs`). Not resolvable
+    /// through `from_model` -- callers inject it explicitly.
+    Scripted(ScriptedClient),
 }
 
 impl UnifiedClient {
@@ -284,6 +293,9 @@ impl UnifiedClient {
             AiProvider::Qwen => Self::qwen(),
             AiProvider::MiniMax => Self::minimax(),
             AiProvider::Zai => Self::zai(),
+            AiProvider::Scripted => anyhow::bail!(
+                "scripted-replay clients are constructed directly (ScriptedClient), not from the provider registry"
+            ),
         }
     }
 
@@ -393,6 +405,7 @@ impl UnifiedClient {
             Self::Qwen(_) => AiProvider::Qwen,
             Self::MiniMax(_) => AiProvider::MiniMax,
             Self::Zai(_) => AiProvider::Zai,
+            Self::Scripted(_) => AiProvider::Scripted,
         }
     }
 
@@ -452,6 +465,7 @@ impl UnifiedClient {
             Self::Qwen(client) => client.stream(messages, config).await,
             Self::MiniMax(client) => client.stream(messages, config).await,
             Self::Zai(client) => client.stream(messages, config).await,
+            Self::Scripted(client) => client.stream(messages, config).await,
         }
     }
 }

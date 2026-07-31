@@ -1,0 +1,41 @@
+{
+	"schemaVersion": "evalops.maestro.scenario-workspace-manifest.v1",
+	"id": "workspace-scripted-read-write-execute-1",
+	"recordedAt": "2026-05-23T00:00:00.000Z",
+	"source": "fixture",
+	"workspaceRoot": "/workspaces/scripted-read-write-execute",
+	"hydration": {
+		"mode": "fixture_workspace",
+		"rootPath": "workspaces/read-write-execute"
+	},
+	"files": [
+		{
+			"path": "package.json",
+			"purpose": "Frozen package manifest read and searched by the executed tool calls."
+		}
+	],
+	"toolAdapters": [
+		{
+			"tool": "read",
+			"mode": "sandboxed",
+			"rationale": "Executed for real against the hydrated workspace."
+		},
+		{
+			"tool": "search",
+			"mode": "sandboxed",
+			"rationale": "Executed for real against the hydrated workspace."
+		},
+		{
+			"tool": "write",
+			"mode": "sandboxed",
+			"rationale": "Executed for real into the hydrated workspace."
+		}
+	],
+	"redaction": {
+		"secretsRemoved": true,
+		"rawPromptsIncluded": false,
+		"notes": [
+			"Fixture workspace contains only package metadata needed by the deterministic executed tool calls."
+		]
+	}
+}
