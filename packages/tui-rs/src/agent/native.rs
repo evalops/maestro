@@ -178,6 +178,28 @@ fn is_tool_result_only_user_message(message: &Message) -> bool {
         )
 }
 
+/// Drop legacy-alias properties from the model-facing tool schema.
+///
+/// Execution still accepts aliases in the tool handlers; they are only omitted
+/// from the request payload to shrink every-turn tool definitions.
+fn compact_tool_for_model(mut tool: Tool) -> Tool {
+    let Some(properties) = tool
+        .input_schema
+        .get_mut("properties")
+        .and_then(|value| value.as_object_mut())
+    else {
+        return tool;
+    };
+    properties.retain(|_name, schema| {
+        let description = schema
+            .get("description")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        !description.to_ascii_lowercase().contains("legacy alias")
+    });
+    tool
+}
+
 fn count_transcript_entries_before(messages: &[Message], first_kept_index: usize) -> usize {
     messages
         .iter()
@@ -2621,18 +2643,33 @@ impl NativeAgentRunner {
     fn build_config(&self) -> RequestConfig {
         // Codex-style: only expose goal tools while a goal record exists.
         let goal_tools_visible = crate::goal::GoalStore::load_default().tools_visible();
+        // IDE LSP stubs are never wired in the terminal agent; sending their
+        // schemas every turn costs tokens for tools that only error. Opt in
+        // with MAESTRO_INCLUDE_IDE_TOOLS=1 for IDE-bridge experiments.
+        let include_ide_tools = std::env::var("MAESTRO_INCLUDE_IDE_TOOLS")
+            .map(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false);
         let tools: Vec<Tool> = self
             .tools
             .values()
             .filter(|d| {
                 let name = d.tool.name.as_str();
                 if matches!(name, "get_goal" | "update_goal") {
-                    goal_tools_visible
-                } else {
-                    true
+                    return goal_tools_visible;
                 }
+                if !include_ide_tools
+                    && (name.starts_with("vscode_") || name.starts_with("jetbrains_"))
+                {
+                    return false;
+                }
+                true
             })
-            .map(|d| d.tool.clone())
+            .map(|d| compact_tool_for_model(d.tool.clone()))
             .collect();
 
         let thinking = if self.config.thinking_enabled {
@@ -7570,6 +7607,24 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         let cloned = tool_def.clone();
         assert_eq!(cloned.tool.name, "test");
         assert!(cloned.requires_approval);
+    }
+
+    #[test]
+    fn compact_tool_for_model_strips_legacy_alias_properties() {
+        let tool = Tool::new("read", "Read a file").with_schema(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Path to the file" },
+                "file_path": { "type": "string", "description": "Legacy alias for path" },
+                "offset": { "type": "number", "description": "Start line" }
+            },
+            "required": ["path"]
+        }));
+        let compact = compact_tool_for_model(tool);
+        let props = compact.input_schema["properties"].as_object().unwrap();
+        assert!(props.contains_key("path"));
+        assert!(props.contains_key("offset"));
+        assert!(!props.contains_key("file_path"));
     }
 
     #[test]

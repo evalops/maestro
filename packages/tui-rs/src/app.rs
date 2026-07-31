@@ -2781,17 +2781,23 @@ was missing; retry to review the exact execution context."
         }
 
         if let Some((response_id, usage)) = response_end_info {
+            // Sentinel / control ResponseEnds must not move the goal budget.
+            let account_goal = response_id != "done" && response_id != "continue";
             if let Some(ref usage) = usage {
                 let headless_usage = to_headless_usage(usage);
-                let turn_tokens = headless_usage
-                    .input_tokens
-                    .saturating_add(headless_usage.output_tokens);
-                if self.goal_store.current.is_some() && turn_tokens > 0 {
+                // Goal budget tracks billable (non-cached) tokens only so
+                // multi-step tool loops do not exhaust on repeated cache hits.
+                let turn_tokens = crate::goal::GoalStore::billable_tokens(
+                    headless_usage.input_tokens,
+                    headless_usage.output_tokens,
+                    headless_usage.cache_read_tokens,
+                );
+                if account_goal && self.goal_store.current.is_some() && turn_tokens > 0 {
                     match self.goal_store.account_tokens(turn_tokens) {
                         Ok(true) => {
                             self.goal_auto_continue_armed = false;
                             self.state.add_system_message(format!(
-                                "Goal token budget exhausted after this turn (+{turn_tokens} tokens). Auto-continue stopped."
+                                "Goal token budget exhausted after this turn (+{turn_tokens} billable tokens). Auto-continue stopped."
                             ));
                         }
                         Ok(false) => {}
