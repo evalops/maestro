@@ -16,8 +16,10 @@ use std::time::Duration;
 use chrono::{DateTime, Duration as ChronoDuration, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpListener;
+#[cfg(test)]
+use tokio::net::TcpStream;
 use tokio::process::Command;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -36,6 +38,7 @@ mod handle;
 mod manifests;
 mod shared;
 mod snapshots;
+mod workload_identity;
 
 pub use config::{HostedRunnerConfig, HostedRunnerConfigError};
 pub use handle::{HostedRunnerHandle, HostedRunnerIdentity};
@@ -476,18 +479,39 @@ pub async fn start_hosted_runner_with_message_executor(
 
     let mut config = config;
     config.auth_token = normalize_auth_token(config.auth_token.as_deref()).map(str::to_string);
-    if !config.bind_addr.ip().is_loopback() && config.auth_token.is_none() {
+    if !config.bind_addr.ip().is_loopback()
+        && config.auth_token.is_none()
+        && config.workload_identity.is_none()
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "maestro hosted-runner requires auth_token when binding to non-loopback interfaces",
+            "maestro hosted-runner requires auth_token or workload identity when binding to non-loopback interfaces",
         ));
     }
     config.workspace_root = workspace_root;
     let restore_manifest = load_restore_manifest(&config).await?;
+    let identity_runtime = if let Some(identity_config) = config.workload_identity.clone() {
+        let exchanger = Arc::new(
+            workload_identity::WorkloadIdentityExchanger::try_new(
+                identity_config,
+                config.runner_session_id.clone(),
+            )
+            .map_err(io::Error::other)?,
+        );
+        let identity = exchanger
+            .exchange_once(Utc::now())
+            .await
+            .map_err(io::Error::other)?;
+        Some((
+            exchanger,
+            workload_identity::ReloadableServerIdentity::new(identity),
+        ))
+    } else {
+        None
+    };
     let listener = TcpListener::bind(config.bind_addr).await?;
     let local_addr = listener.local_addr()?;
     let shutdown = CancellationToken::new();
-    let server_shutdown = shutdown.clone();
     let shared = SharedRunner::new_with_message_executor_and_restore(
         config,
         message_executor,
@@ -495,15 +519,32 @@ pub async fn start_hosted_runner_with_message_executor(
     );
     shared.start_event_pump();
     let server_shared = shared.clone();
-    let task = tokio::spawn(async move {
-        serve(listener, server_shared, server_shutdown).await;
-    });
+    let (task, identity_task, tls) = if let Some((exchanger, identity)) = identity_runtime {
+        let server_shutdown = shutdown.clone();
+        let server_identity = identity.clone();
+        let task = tokio::spawn(async move {
+            serve_mtls(listener, server_shared, server_identity, server_shutdown).await;
+        });
+        let rotation_shutdown = shutdown.clone();
+        let identity_task = tokio::spawn(async move {
+            workload_identity::rotate_server_identity(exchanger, identity, rotation_shutdown).await;
+        });
+        (task, Some(identity_task), true)
+    } else {
+        let server_shutdown = shutdown.clone();
+        let task = tokio::spawn(async move {
+            serve(listener, server_shared, server_shutdown).await;
+        });
+        (task, None, false)
+    };
 
     Ok(HostedRunnerHandle {
         local_addr,
         shared,
         shutdown,
         task,
+        identity_task,
+        tls,
     })
 }
 
@@ -768,11 +809,58 @@ async fn serve(listener: TcpListener, shared: SharedRunner, shutdown: Cancellati
     }
 }
 
-async fn handle_socket(
-    mut socket: TcpStream,
+async fn serve_mtls(
+    listener: TcpListener,
+    shared: SharedRunner,
+    identity: workload_identity::ReloadableServerIdentity,
+    shutdown: CancellationToken,
+) {
+    loop {
+        tokio::select! {
+            () = shutdown.cancelled() => break,
+            accepted = listener.accept() => {
+                let Ok((socket, peer_addr)) = accepted else {
+                    continue;
+                };
+                let shared = shared.clone();
+                let identity = identity.clone();
+                let connection_shutdown = shutdown.clone();
+                tokio::spawn(async move {
+                    let Some((tls_config, identity_changed)) =
+                        identity.snapshot(Utc::now()).await
+                    else {
+                        return;
+                    };
+                    let acceptor = tokio_rustls::TlsAcceptor::from(tls_config);
+                    let socket = tokio::select! {
+                        () = connection_shutdown.cancelled() => return,
+                        () = identity_changed.cancelled() => return,
+                        result = acceptor.accept(socket) => {
+                            let Ok(socket) = result else {
+                                return;
+                            };
+                            socket
+                        }
+                    };
+                    tokio::select! {
+                        () = connection_shutdown.cancelled() => {}
+                        () = identity_changed.cancelled() => {}
+                        _ = handle_socket(socket, shared, peer_addr) => {}
+                    }
+                });
+            }
+        }
+    }
+}
+
+async fn handle_socket<S>(
+    mut socket: S,
     shared: SharedRunner,
     peer_addr: SocketAddr,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let Some(request) = read_request(&mut socket).await? else {
         return Ok(());
     };
@@ -878,12 +966,15 @@ struct ControllerStreamAuthorization {
     cancellation: CancellationToken,
 }
 
-async fn write_sse_event_if_authorized(
-    socket: &mut TcpStream,
+async fn write_sse_event_if_authorized<S>(
+    socket: &mut S,
     shared: &SharedRunner,
     authorization: Option<&ControllerStreamAuthorization>,
     envelope: &StreamEnvelope,
-) -> io::Result<bool> {
+) -> io::Result<bool>
+where
+    S: AsyncWrite + Unpin,
+{
     let Some(authorization) = authorization else {
         write_sse_event(socket, envelope).await?;
         return Ok(true);
@@ -2729,7 +2820,10 @@ fn json_response<T: Serialize>(status: u16, body: T) -> HostedResult<ResponseBod
     Ok(ResponseBody::Json { status, body })
 }
 
-async fn read_request(socket: &mut TcpStream) -> io::Result<Option<HttpRequest>> {
+async fn read_request<S>(socket: &mut S) -> io::Result<Option<HttpRequest>>
+where
+    S: AsyncRead + Unpin,
+{
     let mut buffer = Vec::new();
     let mut header_end = None;
     loop {
@@ -2809,17 +2903,19 @@ fn parse_target(target: &str) -> (String, HashMap<String, String>) {
     (path.to_string(), query)
 }
 
-async fn write_json_value(
-    socket: &mut TcpStream,
-    status: u16,
-    body: serde_json::Value,
-) -> io::Result<()> {
+async fn write_json_value<S>(socket: &mut S, status: u16, body: serde_json::Value) -> io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
     let bytes = serde_json::to_vec(&body)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     write_response(socket, status, "application/json", &bytes).await
 }
 
-async fn write_error(socket: &mut TcpStream, error: HostedError) -> io::Result<()> {
+async fn write_error<S>(socket: &mut S, error: HostedError) -> io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
     let code = error.code.as_str();
     let body = serde_json::to_vec(&json!({
         "error": error.message,
@@ -2830,12 +2926,15 @@ async fn write_error(socket: &mut TcpStream, error: HostedError) -> io::Result<(
     write_response(socket, error.status, "application/json", &body).await
 }
 
-async fn write_response(
-    socket: &mut TcpStream,
+async fn write_response<S>(
+    socket: &mut S,
     status: u16,
     content_type: &str,
     body: &[u8],
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
     let reason = status_reason(status);
     let headers = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -2845,7 +2944,10 @@ async fn write_response(
     socket.write_all(body).await
 }
 
-async fn write_sse_headers(socket: &mut TcpStream) -> io::Result<()> {
+async fn write_sse_headers<S>(socket: &mut S) -> io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
     socket
         .write_all(
             b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n",
@@ -2853,7 +2955,10 @@ async fn write_sse_headers(socket: &mut TcpStream) -> io::Result<()> {
         .await
 }
 
-async fn write_sse_event(socket: &mut TcpStream, envelope: &StreamEnvelope) -> io::Result<()> {
+async fn write_sse_event<S>(socket: &mut S, envelope: &StreamEnvelope) -> io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
     let payload = serde_json::to_string(envelope)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     socket.write_all(b"data: ").await?;

@@ -366,6 +366,7 @@ fn test_config(workspace_root: PathBuf) -> HostedRunnerConfig {
         maestro_session_id: Some("sess_test".to_string()),
         attach_audience: None,
         auth_token: None,
+        workload_identity: None,
     }
 }
 
@@ -380,6 +381,37 @@ fn base_hosted_runner_env(workspace_root: &Path) -> HashMap<String, String> {
             workspace_root.display().to_string(),
         ),
     ])
+}
+
+fn add_workload_identity_env(env: &mut HashMap<String, String>, token_file: &Path) {
+    env.extend([
+        (
+            "MAESTRO_KUBERNETES_TOKEN_FILE".to_string(),
+            token_file.display().to_string(),
+        ),
+        (
+            "MAESTRO_IDENTITY_TLS_CA_FILE".to_string(),
+            token_file
+                .with_file_name("identity-ca.crt")
+                .display()
+                .to_string(),
+        ),
+        (
+            "MAESTRO_IDENTITY_EXCHANGE_URL".to_string(),
+            "https://identity.evalops.svc/internal/v1/kubernetes-workload-certificates/exchange"
+                .to_string(),
+        ),
+        ("MAESTRO_ORGANIZATION_ID".to_string(), "org-123".to_string()),
+        (
+            "MAESTRO_WORKSPACE_ID".to_string(),
+            "workspace-123".to_string(),
+        ),
+        (
+            "MAESTRO_SANDBOX_ID".to_string(),
+            "01234567-89ab-cdef-0123-456789abcdef".to_string(),
+        ),
+        ("MAESTRO_PLACEMENT_GENERATION".to_string(), "7".to_string()),
+    ]);
 }
 
 #[tokio::test]
@@ -1757,6 +1789,76 @@ fn rejects_default_env_only_wildcard_bind_without_auth_token() {
     assert!(error
         .to_string()
         .contains("MAESTRO_HOSTED_RUNNER_AUTH_TOKEN"));
+}
+
+#[test]
+fn projected_workload_identity_replaces_static_auth_on_non_loopback_bind() {
+    let workspace = tempdir().expect("workspace");
+    let token_file = workspace.path().join("projected-token");
+    let mut env = base_hosted_runner_env(workspace.path());
+    add_workload_identity_env(&mut env, &token_file);
+
+    let config = HostedRunnerConfig::from_env_map(&env)
+        .expect("complete projected identity should secure the wildcard listener");
+
+    assert_eq!(config.bind_addr, "0.0.0.0:8080".parse().unwrap());
+    assert!(config.auth_token.is_none());
+}
+
+#[test]
+fn projected_workload_identity_forbids_static_bearer_fallback() {
+    let workspace = tempdir().expect("workspace");
+    let token_file = workspace.path().join("projected-token");
+    let mut env = base_hosted_runner_env(workspace.path());
+    add_workload_identity_env(&mut env, &token_file);
+    env.insert(
+        "MAESTRO_HOSTED_RUNNER_AUTH_TOKEN".to_string(),
+        "long-lived-secret".to_string(),
+    );
+
+    let error = HostedRunnerConfig::from_env_map(&env)
+        .expect_err("secure mode must not retain a static bearer alternate");
+
+    assert!(error.to_string().contains("forbids static bearer"));
+}
+
+#[test]
+fn projected_workload_identity_rejects_external_runner_client_ca() {
+    let workspace = tempdir().expect("workspace");
+    let token_file = workspace.path().join("projected-token");
+    let mut env = base_hosted_runner_env(workspace.path());
+    add_workload_identity_env(&mut env, &token_file);
+    env.insert(
+        "MAESTRO_RUNNER_CLIENT_CA_FILE".to_string(),
+        workspace
+            .path()
+            .join("ambient-client-ca.crt")
+            .display()
+            .to_string(),
+    );
+
+    let error = HostedRunnerConfig::from_env_map(&env)
+        .expect_err("client trust must come only from the signed exchange response");
+
+    assert!(error.to_string().contains("not supported"));
+}
+
+#[test]
+fn projected_workload_identity_rejects_partial_binding() {
+    let workspace = tempdir().expect("workspace");
+    let token_file = workspace.path().join("projected-token");
+    let mut env = base_hosted_runner_env(workspace.path());
+    add_workload_identity_env(&mut env, &token_file);
+    env.remove("MAESTRO_SANDBOX_ID");
+    env.insert(
+        "MAESTRO_HOSTED_RUNNER_AUTH_TOKEN".to_string(),
+        "legacy-secret".to_string(),
+    );
+
+    let error = HostedRunnerConfig::from_env_map(&env)
+        .expect_err("partial workload identity must fail closed");
+
+    assert!(error.to_string().contains("MAESTRO_SANDBOX_ID"));
 }
 
 #[test]

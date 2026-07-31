@@ -149,7 +149,7 @@ where
     let runner = HostedRunnerConfig::from_env_map(&merged_env)?;
     let auth_required =
         first_env(&merged_env, &["MAESTRO_WEB_REQUIRE_KEY"]).as_deref() != Some("0");
-    if auth_required && runner.auth_token.is_none() {
+    if auth_required && runner.auth_token.is_none() && runner.workload_identity.is_none() {
         anyhow::bail!(
             "maestro hosted-runner requires MAESTRO_HOSTED_RUNNER_AUTH_TOKEN or MAESTRO_WEB_API_KEY; set MAESTRO_WEB_REQUIRE_KEY=0 only for local testing"
         );
