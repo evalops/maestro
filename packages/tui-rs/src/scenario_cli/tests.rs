@@ -637,30 +637,13 @@ fn event_forbidden_passes_when_the_forbidden_event_never_happened() {
 // ---------------------------------------------------------------------------
 
 mod execute_tests {
-    use super::super::execute;
+    use super::super::execute::{self, ExecuteOptions};
     use super::*;
-    use crate::session::{sessions_dir, SessionReader};
+    use crate::session::SessionReader;
 
-    static ENV_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-    struct HomeGuard {
-        previous: Option<String>,
-    }
-
-    impl HomeGuard {
-        fn set(path: &Path) -> Self {
-            let previous = std::env::var("HOME").ok();
-            std::env::set_var("HOME", path);
-            Self { previous }
-        }
-    }
-
-    impl Drop for HomeGuard {
-        fn drop(&mut self) {
-            match &self.previous {
-                Some(value) => std::env::set_var("HOME", value),
-                None => std::env::remove_var("HOME"),
-            }
+    fn options_for(home: &Path) -> ExecuteOptions {
+        ExecuteOptions {
+            session_home: Some(home.to_path_buf()),
         }
     }
 
@@ -726,9 +709,7 @@ mod execute_tests {
 
     #[tokio::test]
     async fn execute_runs_real_tool_calls_and_records_a_real_session() {
-        let _lock = ENV_MUTEX.lock().await;
         let home = tempfile::tempdir().expect("home");
-        let _home_guard = HomeGuard::set(home.path());
         let workspace = tempfile::tempdir().expect("workspace");
         fs::write(
             workspace.path().join("package.json"),
@@ -737,9 +718,13 @@ mod execute_tests {
         .expect("seed package.json");
 
         let scenario = parse_execute_scenario(read_write_scenario());
-        let execution = execute::execute_scripted_scenario(&scenario, workspace.path())
-            .await
-            .expect("execute scenario");
+        let execution = execute::execute_scripted_scenario_with_options(
+            &scenario,
+            workspace.path(),
+            &options_for(home.path()),
+        )
+        .await
+        .expect("execute scenario");
 
         // The write tool really wrote into the workspace.
         let artifact = fs::read_to_string(execution.workspace.join("executed-artifact.json"))
@@ -764,11 +749,15 @@ mod execute_tests {
         assert_eq!(execution.final_text, "Execute replay completed.");
         assert_eq!(execution.transcript_sha256.len(), 64);
 
-        // A real session JSONL landed in the standard session store and the
-        // native session reader parses it, tool results included.
+        // A real session JSONL landed in the session store rooted at the
+        // injected home, and the native session reader parses it, tool
+        // results included.
         assert!(execution.session_path.exists());
-        let session_dir = sessions_dir(&execution.workspace.display().to_string());
-        assert!(execution.session_path.starts_with(&session_dir));
+        assert!(execution.session_path.starts_with(home.path()));
+        assert!(execution
+            .session_path
+            .to_string_lossy()
+            .contains(".composer/agent/sessions"));
         let parsed = SessionReader::read_file(&execution.session_path)
             .expect("session parses with the native reader");
         assert_eq!(parsed.header.id, execution.session_id);
@@ -781,9 +770,7 @@ mod execute_tests {
 
     #[tokio::test]
     async fn execute_is_deterministic_across_runs() {
-        let _lock = ENV_MUTEX.lock().await;
         let home = tempfile::tempdir().expect("home");
-        let _home_guard = HomeGuard::set(home.path());
 
         let mut hashes = Vec::new();
         for _ in 0..2 {
@@ -794,9 +781,13 @@ mod execute_tests {
             )
             .expect("seed package.json");
             let scenario = parse_execute_scenario(read_write_scenario());
-            let execution = execute::execute_scripted_scenario(&scenario, workspace.path())
-                .await
-                .expect("execute scenario");
+            let execution = execute::execute_scripted_scenario_with_options(
+                &scenario,
+                workspace.path(),
+                &options_for(home.path()),
+            )
+            .await
+            .expect("execute scenario");
             hashes.push(execution.transcript_sha256);
         }
         assert_eq!(
@@ -807,9 +798,7 @@ mod execute_tests {
 
     #[tokio::test]
     async fn execute_hydrates_the_workspace_from_the_manifest() {
-        let _lock = ENV_MUTEX.lock().await;
         let home = tempfile::tempdir().expect("home");
-        let _home_guard = HomeGuard::set(home.path());
         let fixture_root = tempfile::tempdir().expect("fixture root");
         let hydration = fixture_root.path().join("workspaces/exec");
         fs::create_dir_all(&hydration).expect("hydration dir");
@@ -834,9 +823,13 @@ mod execute_tests {
         let mut raw = read_write_scenario();
         raw["workspaceManifestPath"] = json!("workspace-manifest.json");
         let scenario = parse_execute_scenario(raw);
-        let execution = execute::execute_scripted_scenario(&scenario, fixture_root.path())
-            .await
-            .expect("execute scenario");
+        let execution = execute::execute_scripted_scenario_with_options(
+            &scenario,
+            fixture_root.path(),
+            &options_for(home.path()),
+        )
+        .await
+        .expect("execute scenario");
 
         // Execution ran in a hydrated temp workspace, not the fixture root.
         assert_ne!(
@@ -853,16 +846,18 @@ mod execute_tests {
 
     #[tokio::test]
     async fn execute_rejects_scenarios_without_frames() {
-        let _lock = ENV_MUTEX.lock().await;
         let home = tempfile::tempdir().expect("home");
-        let _home_guard = HomeGuard::set(home.path());
         let workspace = tempfile::tempdir().expect("workspace");
         let mut raw = execute_scenario_json(json!({"kind": "end", "reason": "complete"}));
         raw["frames"] = json!([]);
         let scenario = parse_execute_scenario(raw);
-        let error = execute::execute_scripted_scenario(&scenario, workspace.path())
-            .await
-            .expect_err("frameless scenario must fail");
+        let error = execute::execute_scripted_scenario_with_options(
+            &scenario,
+            workspace.path(),
+            &options_for(home.path()),
+        )
+        .await
+        .expect_err("frameless scenario must fail");
         assert!(error.to_string().contains("no frames to execute"));
     }
 }

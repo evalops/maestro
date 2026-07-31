@@ -6,6 +6,7 @@ export const RELEASE_OBSERVABILITY_QUERY_SCHEMA =
 
 export const REQUIRED_OBSERVABILITY_QUERY_TRACES = [
 	"install",
+	"session",
 	"scenario",
 	"tool",
 	"error",
@@ -18,6 +19,11 @@ export const RELEASE_OBSERVABILITY_QUERY_DESCRIPTORS = {
 		subjects: ["maestro.events.install_check.completed"],
 		platformConsumers: ["release.maestro-install-smoke"],
 		filterFields: ["packageSpec", "installer", "installable"],
+	},
+	session: {
+		subjects: ["maestro.sessions.session.closed"],
+		platformConsumers: ["release.maestro-session-final-state"],
+		filterFields: ["sessionId", "mode", "finalStatus"],
 	},
 	scenario: {
 		subjects: ["maestro.scenario.replay.ready"],

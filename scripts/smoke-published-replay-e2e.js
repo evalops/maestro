@@ -9,7 +9,9 @@ import {
 	mkdtempSync,
 	realpathSync,
 	readFileSync,
+	readdirSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -52,11 +54,6 @@ const FINAL_TEXT =
 const TOOL_CALL_ID = "call-read-package-json";
 const SEARCH_TOOL_CALL_ID = "call-search-package-manifest";
 const WRITE_TOOL_CALL_ID = "call-write-published-artifact";
-const REQUIRED_TOOL_EXECUTION_SPECS = [
-	{ id: TOOL_CALL_ID, name: "read", inputPath: "package.json" },
-	{ id: SEARCH_TOOL_CALL_ID, name: "search", inputPath: "package.json" },
-	{ id: WRITE_TOOL_CALL_ID, name: "write", inputPath: "published-replay-artifact.json" },
-];
 const ARTIFACT_PATH = "published-replay-artifact.json";
 const ARTIFACT_TEXT = JSON.stringify({
 	source: "smoke-published-replay-e2e",
@@ -64,15 +61,6 @@ const ARTIFACT_TEXT = JSON.stringify({
 });
 const SEARCH_PATTERN = "maestro-published";
 const REQUIRED_REPLAY_MODES = ["text", "json", "junit"];
-const REQUIRED_ASSERTION_IDS = [
-	"read-tool-called",
-	"search-tool-called",
-	"write-artifact-tool-called",
-	"manifest-exists",
-	"manifest-contains-search-pattern",
-	"bash-tool-not-called",
-	"audit-event-tagged",
-];
 const DETERMINISM_RUNS = 2;
 const TERMINAL_AGENT_RUNTIME_STATES = new Set([
 	"succeeded",
@@ -99,9 +87,9 @@ const replaySandboxModes = [
 	"local",
 	"none",
 ];
-// The native `maestro scenario run` surface has no sandbox flag; the release
-// workflow still exports MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE, so keep
-// validating it and record it as informational metadata in the evidence.
+// The native `maestro scenario run --execute` surface has no sandbox flag;
+// the release workflow still exports MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE,
+// so keep validating it and record it as informational metadata.
 const replaySandboxMode =
 	process.env.MAESTRO_PUBLISHED_REPLAY_SANDBOX_MODE?.trim() ||
 	"workspace-write";
@@ -120,6 +108,35 @@ if (!replaySandboxModes.includes(replaySandboxMode)) {
 		`Allowed values: ${replaySandboxModes.join(", ")}`,
 	);
 }
+
+// The built-in `search` tool shells out to ripgrep. When rg is unavailable
+// the smoke still proves read/write execution and records the search leg as
+// explicitly skipped instead of failing the whole canary.
+function detectRipgrep() {
+	const result = spawnSync("rg", ["--version"], { encoding: "utf8" });
+	return result.status === 0 && !result.error;
+}
+const ripgrepAvailable = detectRipgrep();
+const SEARCH_SKIP_REASON = "rg-not-found";
+
+const REQUIRED_TOOL_EXECUTION_SPECS = [
+	{ id: TOOL_CALL_ID, name: "read", inputPath: "package.json" },
+	...(ripgrepAvailable
+		? [{ id: SEARCH_TOOL_CALL_ID, name: "search", inputPath: "package.json" }]
+		: []),
+	{ id: WRITE_TOOL_CALL_ID, name: "write", inputPath: ARTIFACT_PATH },
+];
+const REQUIRED_ASSERTION_IDS = [
+	"read-tool-called",
+	...(ripgrepAvailable ? ["search-tool-called"] : []),
+	"write-artifact-tool-called",
+	"manifest-exists",
+	"manifest-contains-search-pattern",
+	"artifact-exists",
+	"artifact-contents",
+	"bash-tool-not-called",
+	"audit-event-tagged",
+];
 
 function parseArgs(argv) {
 	/** @type {{packageName: string; version: string; cliCommand: string; installRoot: string; evidencePath: string; evidenceDir: string; installer: string}} */
@@ -275,27 +292,23 @@ function filterPublishedReplayEvidenceRefs(refs) {
 		: [];
 }
 
-function toolSpecByCallId(callId) {
-	return REQUIRED_TOOL_EXECUTION_SPECS.find((spec) => spec.id === callId);
-}
-
 function toolEvidenceForMode(modeEvidence) {
 	return [modeEvidence?.tool, modeEvidence?.searchTool, modeEvidence?.artifactTool]
 		.filter((tool) => tool && typeof tool === "object");
 }
 
-function scenarioConfigSatisfiesReleaseGate(scenarioConfig) {
+function scenarioConfigSatisfiesReleaseGate(scenarioConfig, scenarioSha256) {
 	return (
+		scenarioConfig?.runner === "maestro scenario run --execute" &&
 		scenarioConfig?.scenarioSchemaVersion === SCRIPTED_SCENARIO_SCHEMA &&
 		scenarioConfig?.scenarioId === SCENARIO_ID &&
-		typeof scenarioConfig?.scenarioSha256 === "string" &&
-		scenarioConfig.scenarioSha256.length === 64 &&
+		scenarioConfig?.scenarioSha256 === scenarioSha256 &&
 		scenarioConfig?.deterministic === true &&
 		scenarioConfig?.externalCredentialsRequired === false &&
 		scenarioConfig?.externalNetworkRequired === false &&
 		Array.isArray(scenarioConfig?.toolAllowlist) &&
-		SCRIPTED_REPLAY_TOOL_ALLOWLIST.every((toolName) =>
-			scenarioConfig.toolAllowlist.includes(toolName),
+		REQUIRED_TOOL_EXECUTION_SPECS.every((spec) =>
+			scenarioConfig.toolAllowlist.includes(spec.name),
 		) &&
 		scenarioConfig?.approvalMode === SCRIPTED_REPLAY_APPROVAL_MODE &&
 		typeof scenarioConfig?.sandboxMode === "string" &&
@@ -340,9 +353,11 @@ function transcriptSatisfiesReleaseGate(transcript, scenarioSha256) {
 			}) &&
 			mode?.final?.status === "ok" &&
 			mode?.final?.containsExpectedText === true &&
-			typeof mode?.output?.sha256 === "string" &&
-			mode.output.sha256.length === 64 &&
-			finiteNumber(mode?.output?.bytes) > 0
+			typeof mode?.session?.sessionId === "string" &&
+			mode.session.sessionId.length > 0 &&
+			finiteNumber(mode?.session?.jsonlFileCount) > 0 &&
+			typeof mode?.session?.sha256 === "string" &&
+			mode.session.sha256.length === 64
 		);
 	});
 }
@@ -350,11 +365,9 @@ function transcriptSatisfiesReleaseGate(transcript, scenarioSha256) {
 function buildPublishedReplayTranscript({ modes, scenario }) {
 	const transcriptModes = modes.map((modeEvidence) => {
 		const toolCalls = REQUIRED_TOOL_EXECUTION_SPECS.map((spec) => {
-			const explicitTool = [
-				modeEvidence?.tool,
-				modeEvidence?.searchTool,
-				modeEvidence?.artifactTool,
-			].find((tool) => tool?.callId === spec.id);
+			const explicitTool = toolEvidenceForMode(modeEvidence).find(
+				(tool) => tool?.callId === spec.id,
+			);
 			return {
 				id: spec.id,
 				name: typeof explicitTool?.name === "string" ? explicitTool.name : spec.name,
@@ -380,6 +393,18 @@ function buildPublishedReplayTranscript({ modes, scenario }) {
 				sha256:
 					typeof modeEvidence?.output?.sha256 === "string"
 						? modeEvidence.output.sha256
+						: "",
+			},
+			session: {
+				sessionId:
+					typeof modeEvidence?.session?.sessionId === "string"
+						? modeEvidence.session.sessionId
+						: "",
+				jsonlFileCount: finiteNumber(modeEvidence?.session?.jsonlFileCount),
+				bytes: finiteNumber(modeEvidence?.session?.bytes),
+				sha256:
+					typeof modeEvidence?.session?.sha256 === "string"
+						? modeEvidence.session.sha256
 						: "",
 			},
 			toolCalls,
@@ -441,16 +466,49 @@ function buildPublishedReplayTranscriptObservability(transcript) {
 			typeof transcript?.scenario?.sha256 === "string"
 				? transcript.scenario.sha256
 				: "",
-		outputSha256ByMode: Object.fromEntries(
+		sessionSha256ByMode: Object.fromEntries(
 			modes
 				.filter(
 					(mode) =>
 						typeof mode?.mode === "string" &&
-						typeof mode?.output?.sha256 === "string",
+						typeof mode?.session?.sha256 === "string",
 				)
-				.map((mode) => [mode.mode, mode.output.sha256]),
+				.map((mode) => [mode.mode, mode.session.sha256]),
 		),
 	};
+}
+
+function agentRuntimeLedgerSatisfiesReleaseGate(ledger) {
+	if (!ledger || typeof ledger !== "object") {
+		return false;
+	}
+	return (
+		ledger.schemaVersion === AGENT_RUNTIME_LEDGER_SCHEMA &&
+		ledger.replayDeterministic === true &&
+		ledger.hasHandleTrigger === true &&
+		ledger.hasRecordRunStep === true &&
+		ledger.hasRecordRunWorkItem === true &&
+		ledger.hasTerminalOperation === true &&
+		finiteNumber(ledger?.counts?.entries) > 0 &&
+		finiteNumber(ledger?.counts?.promotionOperations) > 0 &&
+		ledger.completionGate === AGENT_RUNTIME_COMPLETION_GATE &&
+		Array.isArray(ledger.toolCallEvidence) &&
+		REQUIRED_TOOL_EXECUTION_SPECS.every((spec) =>
+			ledger.toolCallEvidence.some(
+				(entry) =>
+					entry?.toolName === spec.name &&
+					entry?.toolCallId === spec.id &&
+					entry?.completionGate === AGENT_RUNTIME_COMPLETION_GATE &&
+					Array.isArray(entry?.evidenceKinds) &&
+					entry.evidenceKinds.includes("tool_call"),
+			),
+		) &&
+		ledger.durability?.reconstructable === true &&
+		ledger.durability?.replayDeterministic === true &&
+		ledger.durability?.sessionFilePresent === true &&
+		typeof ledger.durability?.promotionIdempotencyKey === "string" &&
+		ledger.durability.promotionIdempotencyKey.length > 0
+	);
 }
 
 function queryIndexEntry({
@@ -494,6 +552,19 @@ function buildPublishedReplayObservabilityQueryIndex(observability) {
 			},
 		}),
 		queryIndexEntry({
+			key: "sessions",
+			traceType: "session",
+			status: includesRequiredModes(observability.sessions.modes)
+				? "ok"
+				: "failed",
+			modes: observability.sessions.modes,
+			ids: observability.sessions.sessionIds,
+			counts: {
+				jsonlFileCount: observability.sessions.jsonlFileCount,
+				bytes: observability.sessions.bytes,
+			},
+		}),
+		queryIndexEntry({
 			key: "scenario",
 			traceType: "scenario",
 			status: includesRequiredModes(observability.scenario.modes)
@@ -512,11 +583,14 @@ function buildPublishedReplayObservabilityQueryIndex(observability) {
 			key: "tools",
 			traceType: "tool",
 			status:
-				SCRIPTED_REPLAY_TOOL_ALLOWLIST.every((name) =>
-					observability.tools.names.includes(name),
+				REQUIRED_TOOL_EXECUTION_SPECS.every((spec) =>
+					observability.tools.names.includes(spec.name),
 				) &&
 				REQUIRED_TOOL_EXECUTION_SPECS.every((spec) =>
 					observability.tools.callIds.includes(spec.id),
+				) &&
+				REQUIRED_TOOL_EXECUTION_SPECS.every((spec) =>
+					observability.tools.evidenceRefs.includes(`tool-call:${spec.id}`),
 				) &&
 				includesRequiredModes(observability.replay.modes)
 					? "ok"
@@ -543,21 +617,25 @@ function buildPublishedReplayObservabilityQueryIndex(observability) {
 			},
 		}),
 		queryIndexEntry({
-			key: "agentRuntimeInspection",
+			key: "agentRuntimeLedger",
 			traceType: "inspection",
-			status: agentRuntimeInspectionSatisfiesReleaseGate(
-				observability.agentRuntimeInspection,
-			)
-				? "ok"
-				: "failed",
-			evidenceRefs: observability.agentRuntimeInspection.evidenceRefs,
-			ids: [observability.agentRuntimeInspection.sessionId],
+			status:
+				includesRequiredModes(observability.agentRuntimeLedger.modes) &&
+				includesRequiredModes(
+					observability.agentRuntimeLedger.replayDeterministicModes,
+				) &&
+				includesRequiredModes(observability.agentRuntimeLedger.durabilityModes)
+					? "ok"
+					: "failed",
+			modes: observability.agentRuntimeLedger.modes,
+			evidenceRefs: observability.agentRuntimeLedger.evidenceRefs,
+			ids: observability.agentRuntimeLedger.sessionIds,
 			counts: {
-				entries: observability.agentRuntimeInspection.counts.entries,
+				entries: observability.agentRuntimeLedger.counts.entries,
 				promotionOperations:
-					observability.agentRuntimeInspection.counts.promotionOperations,
+					observability.agentRuntimeLedger.counts.promotionOperations,
 				terminalOperations:
-					observability.agentRuntimeInspection.counts.terminalOperations,
+					observability.agentRuntimeLedger.counts.terminalOperations,
 			},
 		}),
 		queryIndexEntry({
@@ -599,6 +677,7 @@ function queryableObservabilityIndexSatisfiesReleaseGate(observability) {
 	}
 
 	const installEntry = queryIndexEntryForTrace(queryIndex, "install");
+	const sessionEntry = queryIndexEntryForTrace(queryIndex, "session");
 	const scenarioEntry = queryIndexEntryForTrace(queryIndex, "scenario");
 	const toolEntry = queryIndexEntryForTrace(queryIndex, "tool");
 	const errorEntry = queryIndexEntryForTrace(queryIndex, "error");
@@ -617,6 +696,9 @@ function queryableObservabilityIndexSatisfiesReleaseGate(observability) {
 	return (
 		installEntry?.counts?.forbiddenReferences === 0 &&
 		installEntry?.counts?.workspaceProtocolReferences === 0 &&
+		includesRequiredModes(sessionEntry?.modes) &&
+		finiteNumber(sessionEntry?.counts?.jsonlFileCount) >=
+			REQUIRED_REPLAY_MODES.length &&
 		includesRequiredModes(scenarioEntry?.modes) &&
 		scenarioEntry?.ids?.includes?.(SCENARIO_ID) &&
 		finiteNumber(scenarioEntry?.counts?.failed) === 0 &&
@@ -632,60 +714,10 @@ function queryableObservabilityIndexSatisfiesReleaseGate(observability) {
 		errorEntry?.counts?.count === 0 &&
 		errorEntry?.counts?.expectedCount === 0 &&
 		inspectionEntry?.status === "ok" &&
+		includesRequiredModes(inspectionEntry?.modes) &&
 		inspectionRefs.some((ref) => ref.startsWith("inspection-session:")) &&
-		agentRuntimeInspectionSatisfiesReleaseGate(
-			observability.agentRuntimeInspection,
-		) &&
 		includesRequiredModes(finalStatusEntry?.modes) &&
 		finalStatusEntry?.counts?.ok === REQUIRED_REPLAY_MODES.length
-	);
-}
-
-function agentRuntimeInspectionSatisfiesReleaseGate(inspection) {
-	if (!inspection || typeof inspection !== "object") {
-		return false;
-	}
-	const terminalStates =
-		inspection?.outcomes?.terminalStates &&
-		typeof inspection.outcomes.terminalStates === "object" &&
-		!Array.isArray(inspection.outcomes.terminalStates)
-			? Object.entries(inspection.outcomes.terminalStates)
-			: [];
-	return (
-		inspection.fixture === true &&
-		inspection.ledgerSchemaVersion === AGENT_RUNTIME_LEDGER_SCHEMA &&
-		typeof inspection.sessionId === "string" &&
-		inspection.sessionId.length > 0 &&
-		inspection.replayDeterministic === true &&
-		inspection.hasHandleTrigger === true &&
-		inspection.hasRecordRunStep === true &&
-		inspection.hasRecordRunWorkItem === true &&
-		inspection.hasTerminalOperation === true &&
-		finiteNumber(inspection?.counts?.entries) > 0 &&
-		finiteNumber(inspection?.counts?.promotionOperations) > 0 &&
-		terminalStates.some(
-			([state, count]) =>
-				TERMINAL_AGENT_RUNTIME_STATES.has(state) &&
-				typeof count === "number" &&
-				Number.isFinite(count) &&
-				count > 0,
-		) &&
-		inspection.completionGate === AGENT_RUNTIME_COMPLETION_GATE &&
-		Array.isArray(inspection.toolCallEvidence) &&
-		inspection.toolCallEvidence.length > 0 &&
-		inspection.toolCallEvidence.every(
-			(entry) =>
-				typeof entry?.toolName === "string" &&
-				typeof entry?.toolCallId === "string" &&
-				entry?.completionGate === AGENT_RUNTIME_COMPLETION_GATE &&
-				Array.isArray(entry?.evidenceKinds) &&
-				entry.evidenceKinds.includes("tool_call"),
-		) &&
-		inspection.durability?.reconstructable === true &&
-		inspection.durability?.replayDeterministic === true &&
-		inspection.durability?.sessionFilePresent === true &&
-		typeof inspection.durability?.promotionIdempotencyKey === "string" &&
-		inspection.durability.promotionIdempotencyKey.length > 0
 	);
 }
 
@@ -696,7 +728,6 @@ function buildPublishedReplayObservability({
 	scenarioConfig,
 	transcript,
 	scenarioResult,
-	agentRuntimeInspection,
 }) {
 	const modeNames = modes.map(modeName);
 	const scenarioEvidenceRefs = uniqueValues([
@@ -705,6 +736,9 @@ function buildPublishedReplayObservability({
 	]);
 	const toolEvidenceRefs = uniqueValues(
 		REQUIRED_TOOL_EXECUTION_SPECS.map((spec) => `tool-call:${spec.id}`),
+	);
+	const ledgerModes = modes.filter((modeEvidence) =>
+		agentRuntimeLedgerSatisfiesReleaseGate(modeEvidence?.agentRuntimeLedger),
 	);
 
 	const observability = {
@@ -725,8 +759,11 @@ function buildPublishedReplayObservability({
 		replay: {
 			requiredModes: REQUIRED_REPLAY_MODES,
 			modes: uniqueValues(modeNames),
-			runner: "maestro scenario run",
+			runner: "maestro scenario run --execute",
 			sandboxMode: replaySandboxMode,
+			searchTool: ripgrepAvailable
+				? { status: "executed" }
+				: { status: "skipped", reason: SEARCH_SKIP_REASON },
 		},
 		scenarioConfig: cloneJson(scenarioConfig),
 		transcript: buildPublishedReplayTranscriptObservability(transcript),
@@ -747,6 +784,37 @@ function buildPublishedReplayObservability({
 				: [],
 			evidenceRefs: scenarioEvidenceRefs,
 		},
+		sessions: {
+			modes: uniqueValues(
+				modes
+					.filter(
+						(modeEvidence) =>
+							modeEvidence?.session?.containsFinalText === true &&
+							modeEvidence?.session?.containsToolCallId === true &&
+							modeEvidence?.session?.containsWriteToolCallId === true &&
+							(!ripgrepAvailable ||
+								modeEvidence?.session?.containsSearchToolCallId === true),
+					)
+					.map(modeName),
+			),
+			sessionIds: uniqueValues(
+				modes.map((modeEvidence) => modeEvidence?.session?.sessionId),
+			),
+			jsonlFileCount: modes.reduce(
+				(total, modeEvidence) =>
+					total + finiteNumber(modeEvidence?.session?.jsonlFileCount),
+				0,
+			),
+			bytes: modes.reduce(
+				(total, modeEvidence) => total + finiteNumber(modeEvidence?.session?.bytes),
+				0,
+			),
+			sha256ByMode: Object.fromEntries(
+				modes
+					.filter((modeEvidence) => typeof modeEvidence?.session?.sha256 === "string")
+					.map((modeEvidence) => [modeName(modeEvidence), modeEvidence.session.sha256]),
+			),
+		},
 		tools: {
 			names: uniqueValues(
 				modes.flatMap((modeEvidence) =>
@@ -764,6 +832,72 @@ function buildPublishedReplayObservability({
 				),
 			),
 			evidenceRefs: toolEvidenceRefs,
+		},
+		agentRuntimeLedger: {
+			modes: uniqueValues(ledgerModes.map(modeName)),
+			replayDeterministicModes: uniqueValues(
+				ledgerModes
+					.filter(
+						(modeEvidence) =>
+							modeEvidence?.agentRuntimeLedger?.replayDeterministic === true,
+					)
+					.map(modeName),
+			),
+			durabilityModes: uniqueValues(
+				ledgerModes
+					.filter(
+						(modeEvidence) =>
+							modeEvidence?.agentRuntimeLedger?.durability?.reconstructable ===
+								true &&
+							modeEvidence?.agentRuntimeLedger?.durability
+								?.replayDeterministic === true &&
+							typeof modeEvidence?.agentRuntimeLedger?.durability
+								?.promotionIdempotencyKey === "string",
+					)
+					.map(modeName),
+			),
+			sessionIds: uniqueValues(
+				modes.map((modeEvidence) => modeEvidence?.session?.sessionId),
+			),
+			completionGate: AGENT_RUNTIME_COMPLETION_GATE,
+			toolCallIds: uniqueValues(
+				ledgerModes.flatMap((modeEvidence) =>
+					(Array.isArray(modeEvidence?.agentRuntimeLedger?.toolCallEvidence)
+						? modeEvidence.agentRuntimeLedger.toolCallEvidence
+						: []
+					).map((entry) => entry?.toolCallId),
+				),
+			),
+			counts: {
+				entries: ledgerModes.reduce(
+					(total, modeEvidence) =>
+						total + finiteNumber(modeEvidence?.agentRuntimeLedger?.counts?.entries),
+					0,
+				),
+				promotionOperations: ledgerModes.reduce(
+					(total, modeEvidence) =>
+						total +
+						finiteNumber(
+							modeEvidence?.agentRuntimeLedger?.counts?.promotionOperations,
+						),
+					0,
+				),
+				terminalOperations: ledgerModes.reduce(
+					(total, modeEvidence) =>
+						total +
+						finiteNumber(
+							modeEvidence?.agentRuntimeLedger?.counts?.terminalOperations,
+						),
+					0,
+				),
+			},
+			evidenceRefs: uniqueValues(
+				modes.flatMap((modeEvidence) =>
+					typeof modeEvidence?.session?.sessionId === "string"
+						? [`inspection-session:${modeEvidence.session.sessionId}`]
+						: [],
+				),
+			),
 		},
 		errors: {
 			queryable: true,
@@ -787,7 +921,6 @@ function buildPublishedReplayObservability({
 				),
 			byStatus: countBy(modes.map((modeEvidence) => modeEvidence?.final?.status)),
 		},
-		agentRuntimeInspection: cloneJson(agentRuntimeInspection),
 	};
 	return {
 		...observability,
@@ -802,7 +935,6 @@ function buildPublishedReplayReleaseGate({
 	scenarioConfig,
 	transcript,
 	determinism,
-	agentRuntimeInspection,
 }) {
 	const modeSet = new Set(observability.replay.modes);
 	const checks = {
@@ -811,7 +943,10 @@ function buildPublishedReplayReleaseGate({
 			observability.install.forbiddenReferences.length === 0,
 		noWorkspaceProtocolReferences:
 			observability.install.workspaceProtocolReferences.length === 0,
-		scenarioConfig: scenarioConfigSatisfiesReleaseGate(scenarioConfig),
+		scenarioConfig: scenarioConfigSatisfiesReleaseGate(
+			scenarioConfig,
+			scenario.sha256,
+		),
 		requiredReplayModes: REQUIRED_REPLAY_MODES.every((mode) => modeSet.has(mode)),
 		transcriptEvidence: transcriptSatisfiesReleaseGate(
 			transcript,
@@ -820,8 +955,8 @@ function buildPublishedReplayReleaseGate({
 		deterministicReplayEvidence:
 			determinism?.runs === DETERMINISM_RUNS &&
 			determinism?.identical === true &&
-			typeof determinism?.resultSha256 === "string" &&
-			determinism.resultSha256.length === 64,
+			typeof determinism?.transcriptSha256 === "string" &&
+			determinism.transcriptSha256.length === 64,
 		scenarioAssertionEvidence:
 			observability.scenario.observedOutcome === "pass" &&
 			observability.scenario.failed === 0 &&
@@ -847,6 +982,42 @@ function buildPublishedReplayReleaseGate({
 					);
 				}),
 			),
+		toolExecutionEvidence:
+			modes.length > 0 &&
+			modes.every((modeEvidence) =>
+				REQUIRED_TOOL_EXECUTION_SPECS.every((spec) =>
+					(Array.isArray(modeEvidence?.agentRuntimeLedger?.toolCallEvidence)
+						? modeEvidence.agentRuntimeLedger.toolCallEvidence
+						: []
+					).some(
+						(entry) =>
+							entry?.toolName === spec.name &&
+							entry?.toolCallId === spec.id &&
+							entry?.completionGate === AGENT_RUNTIME_COMPLETION_GATE,
+					),
+				),
+			),
+		sessionEvidence:
+			modes.length > 0 &&
+			modes.every(
+				(modeEvidence) =>
+					typeof modeEvidence?.session?.sessionId === "string" &&
+					modeEvidence.session.sessionId.length > 0 &&
+					modeEvidence?.session?.containsFinalText === true &&
+					modeEvidence?.session?.containsToolCallId === true &&
+					modeEvidence?.session?.containsWriteToolCallId === true &&
+					(!ripgrepAvailable ||
+						modeEvidence?.session?.containsSearchToolCallId === true) &&
+					finiteNumber(modeEvidence?.session?.jsonlFileCount) > 0,
+			),
+		searchEvidence: ripgrepAvailable
+			? observability.tools.names.includes("search") &&
+				observability.tools.callIds.includes(SEARCH_TOOL_CALL_ID) &&
+				observability.tools.evidenceRefs.includes(
+					`tool-call:${SEARCH_TOOL_CALL_ID}`,
+				)
+			: observability.replay.searchTool?.status === "skipped" &&
+				observability.replay.searchTool?.reason === SEARCH_SKIP_REASON,
 		auditEventEvidence:
 			observability.scenario.auditEvents.includes(AUDIT_EVENT_TYPE) &&
 			observability.scenario.evidenceRefs.includes(
@@ -859,10 +1030,10 @@ function buildPublishedReplayReleaseGate({
 			Array.isArray(observability.errors.modes),
 		queryableObservabilityIndex:
 			queryableObservabilityIndexSatisfiesReleaseGate(observability),
-		agentRuntimeInspection:
-			agentRuntimeInspectionSatisfiesReleaseGate(agentRuntimeInspection) &&
-			agentRuntimeInspectionSatisfiesReleaseGate(
-				observability.agentRuntimeInspection,
+		agentRuntimeLedger:
+			modes.length > 0 &&
+			modes.every((modeEvidence) =>
+				agentRuntimeLedgerSatisfiesReleaseGate(modeEvidence?.agentRuntimeLedger),
 			),
 		finalStatus: observability.finalStatus.allOk === true,
 	};
@@ -911,49 +1082,105 @@ export function resolvePublishedReplayEvidencePath({
 
 function createScenario(runDir) {
 	const scenarioPath = join(runDir, `${SCENARIO_ID}.json`);
+	const frameZeroStatements = [
+		{
+			kind: "text",
+			text: "I will inspect the published package manifest.",
+		},
+		{
+			kind: "tool_call",
+			id: TOOL_CALL_ID,
+			tool: "read",
+			input: {
+				path: "package.json",
+			},
+			expectedResult: "success",
+		},
+	];
+	if (ripgrepAvailable) {
+		frameZeroStatements.push({
+			kind: "tool_call",
+			id: SEARCH_TOOL_CALL_ID,
+			tool: "search",
+			input: {
+				pattern: SEARCH_PATTERN,
+				paths: "package.json",
+				outputMode: "content",
+				literal: true,
+			},
+			expectedResult: "success",
+		});
+	}
+	const assertions = [
+		{
+			id: "read-tool-called",
+			kind: "tool_called",
+			tool: "read",
+		},
+	];
+	if (ripgrepAvailable) {
+		assertions.push({
+			id: "search-tool-called",
+			kind: "tool_called",
+			tool: "search",
+		});
+	}
+	assertions.push(
+		{
+			id: "write-artifact-tool-called",
+			kind: "tool_called",
+			tool: "write",
+		},
+		{
+			id: "manifest-exists",
+			kind: "file_exists",
+			path: "package.json",
+		},
+		{
+			id: "manifest-contains-search-pattern",
+			kind: "file_contents",
+			path: "package.json",
+			contains: SEARCH_PATTERN,
+		},
+		{
+			id: "artifact-exists",
+			kind: "file_exists",
+			path: ARTIFACT_PATH,
+		},
+		{
+			id: "artifact-contents",
+			kind: "file_contents",
+			path: ARTIFACT_PATH,
+			contains: "smoke-published-replay-e2e",
+		},
+		{
+			id: "bash-tool-not-called",
+			kind: "tool_not_called",
+			tool: "bash",
+		},
+		{
+			id: "audit-event-tagged",
+			kind: "audit_event_emitted",
+			eventType: AUDIT_EVENT_TYPE,
+		},
+	);
 	const content = `${JSON.stringify(
 		{
 			schemaVersion: SCRIPTED_SCENARIO_SCHEMA,
 			id: SCENARIO_ID,
 			description:
-				"Published package replay with recorded read/search/write tool calls, real manifest file assertions, audit event evidence, and a final assistant response.",
+				"Published package replay executed through the real agent loop: recorded read/search/write tool calls run for real in the workspace, with manifest and artifact file assertions, audit event evidence, and a final assistant response.",
 			metadata: {
 				recordedFrom: "smoke-published-replay-e2e",
 				recordedAt: "2026-05-23T00:00:00.000Z",
 				modelOriginal: "maestro-replay-v1",
-				toolsExpected: ["read", "search", "write"],
+				toolsExpected: REQUIRED_TOOL_EXECUTION_SPECS.map((spec) => spec.name),
 				auditEvents: [AUDIT_EVENT_TYPE],
 			},
 			frames: [
 				{
 					index: 0,
-					statements: [
-						{
-							kind: "text",
-							text: "I will inspect the published package manifest.",
-						},
-						{
-							kind: "tool_call",
-							id: TOOL_CALL_ID,
-							tool: "read",
-							input: {
-								path: "package.json",
-							},
-							expectedResult: "success",
-						},
-						{
-							kind: "tool_call",
-							id: SEARCH_TOOL_CALL_ID,
-							tool: "search",
-							input: {
-								pattern: SEARCH_PATTERN,
-								paths: "package.json",
-								outputMode: "content",
-								literal: true,
-							},
-							expectedResult: "success",
-						},
-					],
+					statements: frameZeroStatements,
 				},
 				{
 					index: 1,
@@ -990,44 +1217,7 @@ function createScenario(runDir) {
 					],
 				},
 			],
-			assertions: [
-				{
-					id: "read-tool-called",
-					kind: "tool_called",
-					tool: "read",
-				},
-				{
-					id: "search-tool-called",
-					kind: "tool_called",
-					tool: "search",
-				},
-				{
-					id: "write-artifact-tool-called",
-					kind: "tool_called",
-					tool: "write",
-				},
-				{
-					id: "manifest-exists",
-					kind: "file_exists",
-					path: "package.json",
-				},
-				{
-					id: "manifest-contains-search-pattern",
-					kind: "file_contents",
-					path: "package.json",
-					contains: SEARCH_PATTERN,
-				},
-				{
-					id: "bash-tool-not-called",
-					kind: "tool_not_called",
-					tool: "bash",
-				},
-				{
-					id: "audit-event-tagged",
-					kind: "audit_event_emitted",
-					eventType: AUDIT_EVENT_TYPE,
-				},
-			],
+			assertions,
 		},
 		null,
 		2,
@@ -1069,10 +1259,263 @@ function createRunContext(label) {
 	};
 }
 
+function rustSessionDirForContext(context) {
+	const cwd = realpathSync(context.runDir);
+	const sanitized = cwd.replace(/[/\\:]/g, "-").replace(/^-+|-+$/g, "");
+	return join(
+		context.env.HOME,
+		".composer",
+		"agent",
+		"sessions",
+		`--${sanitized}--`,
+	);
+}
+
+function collectFiles(dir) {
+	if (!existsSync(dir)) return [];
+	const files = [];
+	const pending = [dir];
+	while (pending.length > 0) {
+		const current = pending.pop();
+		if (!current) break;
+		for (const entry of readdirSync(current)) {
+			const path = join(current, entry);
+			const stats = statSync(path);
+			if (stats.isDirectory()) {
+				pending.push(path);
+			} else if (stats.isFile()) {
+				files.push(path);
+			}
+		}
+	}
+	return files;
+}
+
+function sessionIdFromEvidenceText(sessionText) {
+	for (const line of sessionText.split(/\r?\n/)) {
+		if (!line.trim()) continue;
+		try {
+			const entry = JSON.parse(line);
+			if (entry?.type === "session" && typeof entry?.id === "string") {
+				return entry.id;
+			}
+		} catch {
+			// Ignore non-JSON fragments; the missing-session-id check below
+			// reports the actionable failure with the evidence label.
+		}
+	}
+	return "";
+}
+
+// Real session evidence: `--execute` records a session JSONL in the standard
+// session store for the scenario workspace. Verify the recording carries the
+// final text and every executed tool call id. When `expectedSessionId` is
+// given (the json mode runs the scenario twice), the evidence is anchored to
+// that specific session file while the file count still covers every
+// recorded session.
+function sessionEvidenceForContext(context, label, expectedSessionId = "") {
+	const sessionDir = rustSessionDirForContext(context);
+	let sessionFiles = collectFiles(sessionDir).filter((path) =>
+		path.endsWith(".jsonl"),
+	);
+	if (sessionFiles.length === 0) {
+		fail(`${label} did not write a session JSONL file in ${sessionDir}.`);
+	}
+	if (expectedSessionId) {
+		const matching = sessionFiles.filter((path) =>
+			readFileSync(path, "utf8").includes(`"id":"${expectedSessionId}"`),
+		);
+		if (matching.length === 0) {
+			fail(
+				`${label} did not record the execution session ${expectedSessionId} in ${sessionDir}.`,
+			);
+		}
+		sessionFiles = matching;
+	}
+	const sessionText = sessionFiles
+		.map((path) => readFileSync(path, "utf8"))
+		.join("\n");
+	const requiredFragments = [FINAL_TEXT, TOOL_CALL_ID, WRITE_TOOL_CALL_ID];
+	if (ripgrepAvailable) {
+		requiredFragments.push(SEARCH_TOOL_CALL_ID);
+	}
+	for (const fragment of requiredFragments) {
+		if (!sessionText.includes(fragment)) {
+			fail(`${label} session evidence is missing "${fragment}".`);
+		}
+	}
+	const sessionId = sessionIdFromEvidenceText(sessionText);
+	if (!sessionId) {
+		fail(`${label} session evidence is missing a session header id.`);
+	}
+	if (expectedSessionId && sessionId !== expectedSessionId) {
+		fail(
+			`${label} session id ${sessionId} did not match the execution session ${expectedSessionId}.`,
+		);
+	}
+	return {
+		sessionId,
+		jsonlFileCount: sessionFiles.length,
+		bytes: Buffer.byteLength(sessionText),
+		sha256: sha256(sessionText),
+		containsFinalText: true,
+		containsToolCallId: true,
+		containsSearchToolCallId: ripgrepAvailable,
+		containsWriteToolCallId: true,
+	};
+}
+
+// AgentRuntime evidence: reconstruct the *real* replay session with the
+// published binary's own `run inspect` and require the completion-gated
+// ledger operations, tool_call evidence refs, and durable idempotent
+// promotion summary.
+function agentRuntimeLedgerForSession(binPath, context, sessionId, label) {
+	const result = spawnSync(binPath, ["run", "inspect", sessionId, "--json"], {
+		cwd: context.runDir,
+		encoding: "utf8",
+		env: context.env,
+		timeout: timeoutMs,
+	});
+	if (result.error) {
+		fail(`${label} AgentRuntime ledger inspection failed to launch.`, result.error.stack);
+	}
+	if (result.status !== 0) {
+		fail(
+			`${label} AgentRuntime ledger inspection exited with ${result.status}.`,
+			[result.stdout, result.stderr].filter(Boolean).join("\n\n"),
+		);
+	}
+	let report;
+	try {
+		report = JSON.parse(result.stdout);
+	} catch (error) {
+		fail(
+			`${label} AgentRuntime ledger inspection did not emit JSON.`,
+			`${result.stdout}\n${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	const ledger = report?.agentRuntimeLedger;
+	if (ledger?.schemaVersion !== AGENT_RUNTIME_LEDGER_SCHEMA) {
+		fail(`${label} AgentRuntime ledger schema was not emitted.`);
+	}
+	const durability = report?.durability;
+	if (durability?.reconstructable !== true) {
+		fail(`${label} run inspection did not prove reconstructable durability.`);
+	}
+	if (durability?.replayDeterministic !== true) {
+		fail(`${label} run inspection did not carry deterministic replay durability.`);
+	}
+	if (durability?.agentRuntimeLedgerEntries !== ledger?.counts?.entries) {
+		fail(`${label} durability summary did not match AgentRuntime ledger entries.`);
+	}
+	if (typeof durability?.promotionIdempotencyKey !== "string") {
+		fail(`${label} durability summary is missing the promotion idempotency key.`);
+	}
+	if (ledger?.replay?.deterministic !== true) {
+		fail(`${label} AgentRuntime ledger replay was not deterministic.`);
+	}
+	const operations = Array.isArray(ledger?.promotion?.operations)
+		? ledger.promotion.operations
+		: [];
+	const hasHandleTrigger = operations.some(
+		(operation) => operation?.operation === "handle_trigger",
+	);
+	const hasRecordRunStep = operations.some(
+		(operation) => operation?.operation === "record_run_step",
+	);
+	const hasRecordRunWorkItem = operations.some(
+		(operation) => operation?.operation === "record_run_work_item",
+	);
+	const terminalOperations = operations.filter(
+		(operation) =>
+			operation?.operation === "complete_run" ||
+			operation?.operation === "fail_run",
+	);
+	if (
+		!hasHandleTrigger ||
+		!hasRecordRunStep ||
+		!hasRecordRunWorkItem ||
+		terminalOperations.length === 0
+	) {
+		fail(`${label} AgentRuntime promotion plan is missing required operations.`);
+	}
+	const workItems = operations.filter(
+		(operation) => operation?.operation === "record_run_work_item",
+	);
+	for (const workItem of workItems) {
+		if (workItem?.payload?.completionGate !== AGENT_RUNTIME_COMPLETION_GATE) {
+			fail(`${label} AgentRuntime work item is missing the completion gate.`);
+		}
+	}
+	const runSteps = operations.filter(
+		(operation) => operation?.operation === "record_run_step",
+	);
+	const toolCallEvidence = REQUIRED_TOOL_EXECUTION_SPECS.map((spec) => {
+		const workItem = workItems.find((candidate) =>
+			Array.isArray(candidate?.payload?.evidenceRefs)
+				? candidate.payload.evidenceRefs.some(
+						(ref) => ref?.kind === "tool_call" && ref?.id === spec.id,
+					)
+				: false,
+		);
+		if (!workItem) {
+			fail(`${label} AgentRuntime ledger is missing tool_call evidence for ${spec.id}.`);
+		}
+		const runStep = runSteps.find(
+		(candidate) => candidate?.ledgerEntryId === workItem?.ledgerEntryId,
+		);
+		return {
+			toolName:
+				typeof runStep?.payload?.toolName === "string"
+					? runStep.payload.toolName
+					: spec.name,
+			toolCallId: spec.id,
+			completionGate: workItem?.payload?.completionGate,
+			evidenceKinds: uniqueValues(
+				(Array.isArray(workItem?.payload?.evidenceRefs)
+					? workItem.payload.evidenceRefs
+					: []
+				).map((ref) => ref?.kind),
+			),
+		};
+	});
+	return {
+		schemaVersion: ledger.schemaVersion,
+		replayDeterministic: true,
+		hasHandleTrigger,
+		hasRecordRunStep,
+		hasRecordRunWorkItem,
+		hasTerminalOperation: terminalOperations.length > 0,
+		completionGate: AGENT_RUNTIME_COMPLETION_GATE,
+		counts: {
+			entries: finiteNumber(ledger?.counts?.entries),
+			promotionOperations: finiteNumber(
+				ledger?.counts?.promotionOperations ?? operations.length,
+			),
+			terminalOperations: terminalOperations.length,
+		},
+		outcomes: {
+			terminalStates: countBy(
+				terminalOperations.map((operation) => operation?.payload?.state),
+			),
+			terminalEventTypes: uniqueValues(
+				terminalOperations.map((operation) => operation?.payload?.eventType),
+			),
+		},
+		toolCallEvidence,
+		durability: {
+			reconstructable: true,
+			sessionFilePresent: durability.sessionFilePresent === true,
+			replayDeterministic: true,
+			promotionIdempotencyKey: durability.promotionIdempotencyKey,
+		},
+	};
+}
+
 function spawnScenarioRun(binPath, context, extraArgs, label) {
 	const result = spawnSync(
 		binPath,
-		["scenario", "run", context.scenario.path, ...extraArgs],
+		["scenario", "run", context.scenario.path, "--execute", ...extraArgs],
 		{
 			cwd: context.runDir,
 			encoding: "utf8",
@@ -1099,7 +1542,7 @@ function spawnScenarioRun(binPath, context, extraArgs, label) {
 }
 
 function baseModeEvidence(mode, context, output) {
-	return {
+	const evidence = {
 		mode,
 		status: "ok",
 		scenario: {
@@ -1114,13 +1557,6 @@ function baseModeEvidence(mode, context, output) {
 			resultStatus: "success",
 			assertionId: "read-tool-called",
 		},
-		searchTool: {
-			name: "search",
-			callId: SEARCH_TOOL_CALL_ID,
-			inputPath: "package.json",
-			resultStatus: "success",
-			assertionId: "search-tool-called",
-		},
 		artifactTool: {
 			name: "write",
 			callId: WRITE_TOOL_CALL_ID,
@@ -1132,10 +1568,20 @@ function baseModeEvidence(mode, context, output) {
 			status: "ok",
 			textSha256: sha256(FINAL_TEXT),
 			containsExpectedText: true,
-			source: "scenario-definition",
+			source: "execution",
 		},
 		output,
 	};
+	if (ripgrepAvailable) {
+		evidence.searchTool = {
+			name: "search",
+			callId: SEARCH_TOOL_CALL_ID,
+			inputPath: "package.json",
+			resultStatus: "success",
+			assertionId: "search-tool-called",
+		};
+	}
+	return evidence;
 }
 
 function parseScenarioResult(stdout, label) {
@@ -1200,25 +1646,16 @@ function assertScenarioResult(result, context, label) {
 		).find((candidate) =>
 			Array.isArray(candidate?.evidence)
 				? candidate.evidence.some(
-						(entry) => entry?.kind === "tool_call" && entry?.id === spec.id,
+						(entry) =>
+							entry?.kind === "tool_execution" && entry?.id === spec.id,
 					)
 				: false,
 		);
 		if (!assertion) {
-			fail(`${label} is missing tool_call assertion evidence for ${spec.id}.`);
+			fail(
+				`${label} is missing real tool-execution assertion evidence for ${spec.id}.`,
+			);
 		}
-	}
-	const manifestAssertion = assertionById(
-		result,
-		"manifest-contains-search-pattern",
-	);
-	if (
-		!Array.isArray(manifestAssertion?.evidence) ||
-		!manifestAssertion.evidence.some(
-			(entry) => entry?.kind === "file" && entry?.id === "package.json",
-		)
-	) {
-		fail(`${label} is missing real manifest file_contents evidence.`);
 	}
 	const auditAssertion = assertionById(result, "audit-event-tagged");
 	if (
@@ -1235,6 +1672,40 @@ function assertScenarioResult(result, context, label) {
 	) {
 		fail(`${label} did not surface the ${AUDIT_EVENT_TYPE} audit event.`);
 	}
+	const execution = result?.execution;
+	if (!execution || typeof execution !== "object") {
+		fail(`${label} did not emit the execution evidence block.`);
+	}
+	if (
+		execution.provider !== "scripted-replay" ||
+		execution.approvalMode !== SCRIPTED_REPLAY_APPROVAL_MODE ||
+		execution.deterministic !== true
+	) {
+		fail(`${label} execution block has unexpected provider configuration.`);
+	}
+	if (execution.finalText !== FINAL_TEXT) {
+		fail(`${label} execution final text did not match the scenario frame.`);
+	}
+	for (const spec of REQUIRED_TOOL_EXECUTION_SPECS) {
+		const toolExecution = Array.isArray(execution.toolExecutions)
+			? execution.toolExecutions.find(
+					(entry) => entry?.callId === spec.id && entry?.tool === spec.name,
+				)
+			: undefined;
+		if (toolExecution?.success !== true) {
+			fail(`${label} execution block is missing a successful ${spec.name} execution.`);
+		}
+	}
+	if (
+		typeof execution.sessionId !== "string" ||
+		execution.sessionId.length === 0 ||
+		typeof execution.sessionPath !== "string" ||
+		execution.sessionPath.length === 0 ||
+		typeof execution.transcriptSha256 !== "string" ||
+		execution.transcriptSha256.length !== 64
+	) {
+		fail(`${label} execution block is missing session or transcript evidence.`);
+	}
 	return result;
 }
 
@@ -1245,7 +1716,7 @@ function runTextMode(binPath) {
 		const result = spawnScenarioRun(binPath, context, [], label);
 		const stdout = result.stdout ?? "";
 		const summaryPattern = new RegExp(
-			`Scripted scenario ${SCENARIO_ID}: ${REQUIRED_ASSERTION_IDS.length}/${REQUIRED_ASSERTION_IDS.length} passed, 0 failed`,
+			`Scripted scenario ${SCENARIO_ID} \\(executed in agent loop\\): ${REQUIRED_ASSERTION_IDS.length}/${REQUIRED_ASSERTION_IDS.length} passed, 0 failed`,
 		);
 		if (!summaryPattern.test(stdout)) {
 			fail(`${label} did not print the scenario pass summary.`, stdout);
@@ -1255,12 +1726,22 @@ function runTextMode(binPath) {
 				fail(`${label} did not print a PASS line for ${assertionId}.`, stdout);
 			}
 		}
+		const session = sessionEvidenceForContext(context, label);
+		const agentRuntimeLedger = agentRuntimeLedgerForSession(
+			binPath,
+			context,
+			session.sessionId,
+			label,
+		);
 		console.log("Published text replay smoke passed.");
-		return baseModeEvidence("text", context, {
+		const evidence = baseModeEvidence("text", context, {
 			bytes: Buffer.byteLength(stdout),
 			sha256: sha256(stdout),
 			containsSummary: true,
 		});
+		evidence.session = session;
+		evidence.agentRuntimeLedger = agentRuntimeLedger;
+		return evidence;
 	} finally {
 		rmSync(context.runDir, { recursive: true, force: true });
 	}
@@ -1271,34 +1752,64 @@ function runJsonMode(binPath) {
 	const context = createRunContext("replay-json");
 	try {
 		const outputs = [];
+		const results = [];
 		for (let run = 0; run < DETERMINISM_RUNS; run += 1) {
-			const result = spawnScenarioRun(binPath, context, ["--json"], label);
-			outputs.push(result.stdout ?? "");
+			const runResult = spawnScenarioRun(binPath, context, ["--json"], label);
+			outputs.push(runResult.stdout ?? "");
+			results.push(
+				assertScenarioResult(
+					parseScenarioResult(runResult.stdout ?? "", label),
+					context,
+					label,
+				),
+			);
 		}
-		const identical = outputs.every((output) => output === outputs[0]);
+		const transcriptHashes = results.map(
+			(result) => result.execution.transcriptSha256,
+		);
+		const identical = transcriptHashes.every((hash) => hash === transcriptHashes[0]);
 		if (!identical) {
-			fail(`${label} was not deterministic across ${DETERMINISM_RUNS} runs.`);
+			fail(
+				`${label} was not deterministic across ${DETERMINISM_RUNS} runs.`,
+				transcriptHashes.join("\n"),
+			);
 		}
-		const scenarioResult = assertScenarioResult(
-			parseScenarioResult(outputs[0], label),
+		const scenarioResult = results[0];
+		const session = sessionEvidenceForContext(
 			context,
+			label,
+			scenarioResult.execution.sessionId,
+		);
+		const agentRuntimeLedger = agentRuntimeLedgerForSession(
+			binPath,
+			context,
+			scenarioResult.execution.sessionId,
 			label,
 		);
 		const evidence = baseModeEvidence("json", context, {
 			bytes: Buffer.byteLength(outputs[0]),
 			sha256: sha256(outputs[0]),
 		});
+		evidence.session = session;
+		evidence.agentRuntimeLedger = agentRuntimeLedger;
 		evidence.result = {
 			schemaVersion: scenarioResult.schemaVersion,
 			observedOutcome: scenarioResult.scenario.observedOutcome,
 			assertionsPassed: finiteNumber(scenarioResult.counts?.passed),
 			assertionsFailed: finiteNumber(scenarioResult.counts?.failed),
-			resultSha256: sha256(outputs[0]),
+		};
+		evidence.execution = {
+			sessionId: scenarioResult.execution.sessionId,
+			sessionPath: scenarioResult.execution.sessionPath,
+			workspace: scenarioResult.execution.workspace,
+			toolExecutions: scenarioResult.execution.toolExecutions,
+			finalText: scenarioResult.execution.finalText,
+			transcriptSha256: scenarioResult.execution.transcriptSha256,
 		};
 		evidence.determinism = {
 			runs: DETERMINISM_RUNS,
 			identical: true,
-			resultSha256: sha256(outputs[0]),
+			transcriptSha256: scenarioResult.execution.transcriptSha256,
 		};
 		console.log("Published JSON replay smoke passed.");
 		return { evidence, scenarioResult };
@@ -1338,326 +1849,26 @@ function runJunitMode(binPath) {
 				fail(`${label} JUnit report is missing testcase ${assertionId}.`, junit);
 			}
 		}
+		const session = sessionEvidenceForContext(context, label);
+		const agentRuntimeLedger = agentRuntimeLedgerForSession(
+			binPath,
+			context,
+			session.sessionId,
+			label,
+		);
 		console.log("Published JUnit replay smoke passed.");
 		const evidence = baseModeEvidence("junit", context, {
 			bytes: Buffer.byteLength(junit),
 			sha256: sha256(junit),
 		});
+		evidence.session = session;
+		evidence.agentRuntimeLedger = agentRuntimeLedger;
 		evidence.junit = {
 			tests: Number.parseInt(tests, 10),
 			failures: 0,
 			testcaseNames: [...REQUIRED_ASSERTION_IDS],
 		};
 		return evidence;
-	} finally {
-		rmSync(context.runDir, { recursive: true, force: true });
-	}
-}
-
-function rustSessionDirForContext(context) {
-	const cwd = realpathSync(context.runDir);
-	const sanitized = cwd.replace(/[/\\:]/g, "-").replace(/^-+|-+$/g, "");
-	return join(
-		context.env.HOME,
-		".composer",
-		"agent",
-		"sessions",
-		`--${sanitized}--`,
-	);
-}
-
-// Writes a disclosed fixture session so the published binary's native
-// `maestro run inspect` reconstruction pipeline (timeline, AgentRuntime
-// ledger, durability) can be audited end to end. This does not stand in for
-// replay-produced sessions: the fixture provenance is recorded in the
-// evidence via agentRuntimeInspection.fixture === true.
-function writeAgentRuntimeInspectionFixtureSession(context) {
-	const sessionId = "published-inspection-fixture";
-	const cwd = realpathSync(context.runDir);
-	const readCallId = "call-inspect-read-package-json";
-	const writeCallId = "call-inspect-write-artifact";
-	const entries = [
-		{
-			type: "session",
-			version: 2,
-			id: sessionId,
-			timestamp: "2026-05-23T00:00:00.000Z",
-			cwd,
-			model: "maestro-replay-v1",
-		},
-		{
-			type: "message",
-			id: "user-inspection-1",
-			parentId: null,
-			timestamp: "2026-05-23T00:00:01.000Z",
-			message: {
-				role: "user",
-				content: "Replay the published package golden path.",
-				timestamp: 1779494401000,
-			},
-		},
-		{
-			type: "message",
-			id: "assistant-inspection-1",
-			parentId: "user-inspection-1",
-			timestamp: "2026-05-23T00:00:02.000Z",
-			message: {
-				role: "assistant",
-				content: [
-					{ type: "text", text: "I will inspect the published package manifest." },
-					{
-						type: "toolCall",
-						id: readCallId,
-						name: "read",
-						arguments: { path: "package.json" },
-					},
-				],
-				api: "scripted-replay",
-				provider: "scripted-replay",
-				model: "maestro-replay-v1",
-				stopReason: "toolUse",
-				timestamp: 1779494402000,
-			},
-		},
-		{
-			type: "message",
-			id: "tool-inspection-read",
-			parentId: "assistant-inspection-1",
-			timestamp: "2026-05-23T00:00:03.000Z",
-			message: {
-				role: "toolResult",
-				toolCallId: readCallId,
-				toolName: "read",
-				content: [{ type: "text", text: "{\"name\":\"maestro-published\"}" }],
-				isError: false,
-				timestamp: 1779494403000,
-				details: { toolExecutionId: "tool-exec-inspection-read" },
-			},
-		},
-		{
-			type: "message",
-			id: "assistant-inspection-2",
-			parentId: "tool-inspection-read",
-			timestamp: "2026-05-23T00:00:04.000Z",
-			message: {
-				role: "assistant",
-				content: [
-					{ type: "text", text: "I will write the release evidence artifact." },
-					{
-						type: "toolCall",
-						id: writeCallId,
-						name: "write",
-						arguments: { path: ARTIFACT_PATH, content: ARTIFACT_TEXT },
-					},
-				],
-				api: "scripted-replay",
-				provider: "scripted-replay",
-				model: "maestro-replay-v1",
-				stopReason: "toolUse",
-				timestamp: 1779494404000,
-			},
-		},
-		{
-			type: "message",
-			id: "tool-inspection-write",
-			parentId: "assistant-inspection-2",
-			timestamp: "2026-05-23T00:00:05.000Z",
-			message: {
-				role: "toolResult",
-				toolCallId: writeCallId,
-				toolName: "write",
-				content: [{ type: "text", text: "ok" }],
-				isError: false,
-				timestamp: 1779494405000,
-				details: { toolExecutionId: "tool-exec-inspection-write" },
-			},
-		},
-		{
-			type: "message",
-			id: "assistant-inspection-final",
-			parentId: "tool-inspection-write",
-			timestamp: "2026-05-23T00:00:06.000Z",
-			message: {
-				role: "assistant",
-				content: [{ type: "text", text: FINAL_TEXT }],
-				api: "scripted-replay",
-				provider: "scripted-replay",
-				model: "maestro-replay-v1",
-				stopReason: "stop",
-				timestamp: 1779494406000,
-			},
-		},
-	];
-	const sessionDir = rustSessionDirForContext(context);
-	mkdirSync(sessionDir, { recursive: true });
-	// The native session reader discovers headers via compact JSONL
-	// (`"type":"session"` substring scan); keep one compact entry per line.
-	writeFileSync(
-		join(sessionDir, `2026-05-23T00-00-00-000Z_${sessionId}.jsonl`),
-		`${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
-	);
-	return { sessionId, toolCallIds: [readCallId, writeCallId] };
-}
-
-function assertAgentRuntimeInspection(binPath) {
-	const label = "Published AgentRuntime inspection";
-	const context = createRunContext("agent-runtime-inspection");
-	try {
-		const { sessionId, toolCallIds } =
-			writeAgentRuntimeInspectionFixtureSession(context);
-		const result = spawnSync(binPath, ["run", "inspect", sessionId, "--json"], {
-			cwd: context.runDir,
-			encoding: "utf8",
-			env: context.env,
-			timeout: timeoutMs,
-		});
-		if (result.error) {
-			fail(`${label} failed to launch.`, result.error.stack);
-		}
-		if (result.status !== 0) {
-			fail(
-				`${label} exited with ${result.status}.`,
-				[result.stdout, result.stderr].filter(Boolean).join("\n\n"),
-			);
-		}
-		let report;
-		try {
-			report = JSON.parse(result.stdout);
-		} catch (error) {
-			fail(
-				`${label} did not emit JSON.`,
-				`${result.stdout}\n${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-		const ledger = report?.agentRuntimeLedger;
-		if (ledger?.schemaVersion !== AGENT_RUNTIME_LEDGER_SCHEMA) {
-			fail(`${label} did not emit the ${AGENT_RUNTIME_LEDGER_SCHEMA} schema.`);
-		}
-		const durability = report?.durability;
-		if (durability?.reconstructable !== true) {
-			fail(`${label} did not prove reconstructable durability.`);
-		}
-		if (durability?.replayDeterministic !== true) {
-			fail(`${label} did not carry deterministic replay durability.`);
-		}
-		if (durability?.agentRuntimeLedgerEntries !== ledger?.counts?.entries) {
-			fail(`${label} durability summary did not match ledger entries.`);
-		}
-		if (typeof durability?.promotionIdempotencyKey !== "string") {
-			fail(`${label} is missing the promotion idempotency key.`);
-		}
-		if (ledger?.replay?.deterministic !== true) {
-			fail(`${label} ledger replay was not deterministic.`);
-		}
-		const operations = Array.isArray(ledger?.promotion?.operations)
-			? ledger.promotion.operations
-			: [];
-		const hasHandleTrigger = operations.some(
-			(operation) => operation?.operation === "handle_trigger",
-		);
-		const hasRecordRunStep = operations.some(
-			(operation) => operation?.operation === "record_run_step",
-		);
-		const hasRecordRunWorkItem = operations.some(
-			(operation) => operation?.operation === "record_run_work_item",
-		);
-		const terminalOperations = operations.filter(
-			(operation) =>
-				operation?.operation === "complete_run" ||
-				operation?.operation === "fail_run",
-		);
-		if (
-			!hasHandleTrigger ||
-			!hasRecordRunStep ||
-			!hasRecordRunWorkItem ||
-			terminalOperations.length === 0
-		) {
-			fail(`${label} promotion plan is missing required operations.`);
-		}
-		const workItems = operations.filter(
-			(operation) => operation?.operation === "record_run_work_item",
-		);
-		for (const workItem of workItems) {
-			if (workItem?.payload?.completionGate !== AGENT_RUNTIME_COMPLETION_GATE) {
-				fail(`${label} work item is missing the completion gate.`);
-			}
-		}
-		const runSteps = operations.filter(
-			(operation) => operation?.operation === "record_run_step",
-		);
-		const toolCallEvidence = toolCallIds.map((toolCallId) => {
-			const workItem = workItems.find((candidate) =>
-				Array.isArray(candidate?.payload?.evidenceRefs)
-					? candidate.payload.evidenceRefs.some(
-							(ref) => ref?.kind === "tool_call" && ref?.id === toolCallId,
-						)
-					: false,
-			);
-			if (!workItem) {
-				fail(`${label} is missing tool_call evidence for ${toolCallId}.`);
-			}
-			const runStep = runSteps.find(
-				(candidate) =>
-					candidate?.payload?.stepId === workItem?.ledgerEntryId ||
-					candidate?.ledgerEntryId === workItem?.ledgerEntryId,
-			);
-			const toolName =
-				typeof runStep?.payload?.toolName === "string"
-					? runStep.payload.toolName
-					: "";
-			if (!toolName) {
-				fail(`${label} is missing the tool name for ${toolCallId}.`);
-			}
-			return {
-				toolName,
-				toolCallId,
-				completionGate: workItem?.payload?.completionGate,
-				evidenceKinds: uniqueValues(
-					(Array.isArray(workItem?.payload?.evidenceRefs)
-						? workItem.payload.evidenceRefs
-						: []
-					).map((ref) => ref?.kind),
-				),
-			};
-		});
-		console.log("Published AgentRuntime inspection smoke passed.");
-		return {
-			fixture: true,
-			sessionId,
-			ledgerSchemaVersion: ledger.schemaVersion,
-			replayDeterministic: true,
-			hasHandleTrigger,
-			hasRecordRunStep,
-			hasRecordRunWorkItem,
-			hasTerminalOperation: terminalOperations.length > 0,
-			completionGate: AGENT_RUNTIME_COMPLETION_GATE,
-			counts: {
-				entries: finiteNumber(ledger?.counts?.entries),
-				promotionOperations: finiteNumber(
-					ledger?.counts?.promotionOperations ?? operations.length,
-				),
-				terminalOperations: terminalOperations.length,
-			},
-			outcomes: {
-				terminalStates: countBy(
-					terminalOperations.map((operation) => operation?.payload?.state),
-				),
-				terminalEventTypes: uniqueValues(
-					terminalOperations.map((operation) => operation?.payload?.eventType),
-				),
-			},
-			toolCallEvidence,
-			durability: {
-				reconstructable: true,
-				sessionFilePresent: durability.sessionFilePresent === true,
-				replayDeterministic: true,
-				promotionIdempotencyKey: durability.promotionIdempotencyKey,
-			},
-			evidenceRefs: uniqueValues([
-				`inspection-session:${sessionId}`,
-				...toolCallIds.map((toolCallId) => `tool-call:${toolCallId}`),
-			]),
-		};
 	} finally {
 		rmSync(context.runDir, { recursive: true, force: true });
 	}
@@ -1673,20 +1884,22 @@ export function buildPublishedReplayEvidence({
 	scenario,
 	scenarioResult,
 	determinism,
-	agentRuntimeInspection,
 }) {
 	const resolvedInstaller = inferPublishedInstaller({ installer, installMetadata });
 	const scenarioConfig = {
-		runner: "maestro scenario run",
+		runner: "maestro scenario run --execute",
 		scenarioSchemaVersion: SCRIPTED_SCENARIO_SCHEMA,
 		scenarioId: scenario.id,
 		scenarioSha256: scenario.sha256,
 		deterministic: true,
 		externalCredentialsRequired: false,
 		externalNetworkRequired: false,
-		toolAllowlist: [...SCRIPTED_REPLAY_TOOL_ALLOWLIST],
+		toolAllowlist: REQUIRED_TOOL_EXECUTION_SPECS.map((spec) => spec.name),
 		approvalMode: SCRIPTED_REPLAY_APPROVAL_MODE,
 		sandboxMode: replaySandboxMode,
+		searchTool: ripgrepAvailable
+			? { status: "executed" }
+			: { status: "skipped", reason: SEARCH_SKIP_REASON },
 	};
 	const transcript = buildPublishedReplayTranscript({ modes, scenario });
 	const observability = buildPublishedReplayObservability({
@@ -1696,7 +1909,6 @@ export function buildPublishedReplayEvidence({
 		scenarioConfig,
 		transcript,
 		scenarioResult,
-		agentRuntimeInspection,
 	});
 	const releaseGate = buildPublishedReplayReleaseGate({
 		observability,
@@ -1705,7 +1917,6 @@ export function buildPublishedReplayEvidence({
 		scenarioConfig,
 		transcript,
 		determinism,
-		agentRuntimeInspection,
 	});
 	return {
 		schemaVersion: PUBLISHED_REPLAY_EVIDENCE_SCHEMA,
@@ -1718,7 +1929,7 @@ export function buildPublishedReplayEvidence({
 			installMetadata,
 		},
 		replay: {
-			runner: "maestro scenario run",
+			runner: "maestro scenario run --execute",
 			scenarioSchemaVersion: SCRIPTED_SCENARIO_SCHEMA,
 			scenario: {
 				id: scenario.id,
@@ -1727,6 +1938,9 @@ export function buildPublishedReplayEvidence({
 			},
 			sandboxMode: replaySandboxMode,
 			scenarioConfig: cloneJson(scenarioConfig),
+			searchTool: ripgrepAvailable
+				? { status: "executed" }
+				: { status: "skipped", reason: SEARCH_SKIP_REASON },
 			determinism: cloneJson(determinism),
 			expected: {
 				toolName: "read",
@@ -1735,6 +1949,7 @@ export function buildPublishedReplayEvidence({
 				searchToolName: "search",
 				searchToolCallId: SEARCH_TOOL_CALL_ID,
 				searchToolInputPath: "package.json",
+				searchEngine: "ripgrep",
 				writeToolName: "write",
 				writeToolCallId: WRITE_TOOL_CALL_ID,
 				writeToolInputPath: ARTIFACT_PATH,
@@ -1744,7 +1959,6 @@ export function buildPublishedReplayEvidence({
 		transcript,
 		observability,
 		releaseGate,
-		agentRuntimeInspection: cloneJson(agentRuntimeInspection),
 		modes,
 	};
 }
@@ -1770,6 +1984,11 @@ export async function runPublishedReplayE2E({
 		console.log(`Skipping published replay E2E smoke for ${packageSpec}.`);
 		return null;
 	}
+	if (!ripgrepAvailable) {
+		console.log(
+			`ripgrep (rg) not found on PATH; recording the search leg as skipped (${SEARCH_SKIP_REASON}).`,
+		);
+	}
 
 	const binPath = installedBinPath(installRoot, cliCommand);
 	const modes = [];
@@ -1777,7 +1996,6 @@ export async function runPublishedReplayE2E({
 	const { evidence: jsonModeEvidence, scenarioResult } = runJsonMode(binPath);
 	modes.push(jsonModeEvidence);
 	modes.push(runJunitMode(binPath));
-	const agentRuntimeInspection = assertAgentRuntimeInspection(binPath);
 	const scenario = modes[0].scenario;
 	const determinism = jsonModeEvidence.determinism;
 	const evidence = buildPublishedReplayEvidence({
@@ -1790,7 +2008,6 @@ export async function runPublishedReplayE2E({
 		scenario,
 		scenarioResult,
 		determinism,
-		agentRuntimeInspection,
 	});
 	writePublishedReplayEvidence(
 		resolvePublishedReplayEvidencePath({ evidencePath }),
