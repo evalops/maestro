@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   prepare:
-    runs-on: ${{ vars.INTERNAL_CONFIRMATION_RUNNER }}
+    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -124,11 +124,16 @@ jobs:
     needs:
       - prepare
       - binaries
-    runs-on: ${{ vars.INTERNAL_CONFIRMATION_RUNNER }}
+    # Public free hosted minutes by default. Do not point this at private
+    # self-hosted labels unless the runner group allows public repos.
+    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
     environment: npm-release
     permissions:
       contents: read
+      # Required for npm trusted publishing (OIDC). Last successful
+      # @evalops/maestro publish used GitHub OIDC, not classic NPM_TOKEN.
+      id-token: write
     outputs:
       package_name: ${{ needs.prepare.outputs.package_name }}
       release_tag: ${{ needs.prepare.outputs.release_tag }}
@@ -193,6 +198,7 @@ jobs:
           PACKAGE_NAME: ${{ needs.prepare.outputs.package_name }}
           PACKED_INTEGRITY: ${{ steps.pack.outputs.integrity }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
           NPM_CONFIG_FETCH_RETRIES: "1"
           NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
           NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
@@ -201,16 +207,23 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Trusted publishing (OIDC) is the primary path for @evalops/maestro.
+          # Classic NPM_TOKEN is fallback only; a dead token returns E404 on PUT.
+          publish_with_oidc() {
+            # npm ≥ 11.5.1 required for OIDC; pin via npx for stable behavior.
+            npx --yes npm@11.10.0 publish "$TARBALL" --access public --registry "$NPM_CONFIG_REGISTRY"
+          }
+
           publish_with_token() {
             if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
-              echo "::error::The npm-release NPM_TOKEN secret is required on the internal confirmation runner."
+              echo "::error::OIDC publish failed and secrets.NPM_TOKEN is empty. Configure npm trusted publishing for evalops/maestro release.yml (npm-release env) and ensure this job has id-token: write, or set a granular NPM_TOKEN with write on @evalops/maestro."
               return 1
             fi
 
             printf "//registry.npmjs.org/:_authToken=%s\n" "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/npmrc"
             NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/npmrc" \
               NODE_AUTH_TOKEN="$NODE_AUTH_TOKEN" \
-              command npm publish "${{ steps.pack.outputs.tarball }}" --access public --registry "$NPM_CONFIG_REGISTRY"
+              npx --yes npm@11.10.0 publish "$TARBALL" --access public --registry "$NPM_CONFIG_REGISTRY"
           }
 
           verify_published_tarball() {
@@ -258,13 +271,18 @@ jobs:
             exit 2
           fi
 
+          # OIDC first (matches last successful publisher identity), then token.
+          if publish_or_verify publish_with_oidc; then
+            exit 0
+          fi
+          echo "::warning::OIDC trusted publish failed; trying secrets.NPM_TOKEN fallback."
           publish_or_verify publish_with_token
   github-release:
     needs:
       - prepare
       - binaries
       - publish
-    runs-on: ${{ vars.INTERNAL_CONFIRMATION_RUNNER }}
+    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     permissions:
       contents: write
@@ -321,7 +339,7 @@ jobs:
     needs:
       - prepare
       - publish
-    runs-on: ${{ vars.INTERNAL_CONFIRMATION_RUNNER }}
+    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     permissions:
       contents: read
