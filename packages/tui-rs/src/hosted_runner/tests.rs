@@ -211,6 +211,126 @@ struct CompletingRuntimeExecutor {
 }
 
 #[derive(Debug, Default)]
+struct RecordingThreadExecutor {
+    prompts: Mutex<Vec<String>>,
+}
+
+#[derive(Debug, Default)]
+struct PendingThreadExecutor {
+    prompts: Mutex<Vec<String>>,
+}
+
+#[derive(Debug, Default)]
+struct SteeringLifecycleExecutor {
+    queued: Mutex<Vec<FromAgentMessage>>,
+}
+
+impl SteeringLifecycleExecutor {
+    fn complete_active_run(&self) {
+        self.queued.lock().expect("steering lifecycle events").push(
+            FromAgentMessage::ResponseEnd {
+                response_id: "response-steered".to_string(),
+                usage: None,
+                tools_summary: None,
+                duration_ms: Some(1),
+                ttft_ms: Some(1),
+            },
+        );
+    }
+}
+
+impl HostedRunnerHeadlessMessageExecutor for SteeringLifecycleExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        _message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+            Vec::new(),
+            "steering lifecycle fixture accepted message",
+        ))
+    }
+
+    fn drain(&self) -> Result<Vec<FromAgentMessage>, HostedRunnerError> {
+        Ok(std::mem::take(
+            &mut *self.queued.lock().expect("steering lifecycle events"),
+        ))
+    }
+}
+
+impl HostedRunnerHeadlessMessageExecutor for PendingThreadExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        match message {
+            ToAgentMessage::Prompt { content, .. } | ToAgentMessage::Steer { content, .. } => {
+                self.prompts.lock().expect("pending prompts").push(content);
+            }
+            _ => {}
+        }
+        Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+            Vec::new(),
+            "thread prompt remains active",
+        ))
+    }
+}
+
+impl HostedRunnerHeadlessMessageExecutor for RecordingThreadExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        let content = match message {
+            ToAgentMessage::Prompt { content, .. } | ToAgentMessage::Steer { content, .. } => {
+                content
+            }
+            _ => {
+                return Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+                    Vec::new(),
+                    "thread fixture ignored non-prompt message",
+                ));
+            }
+        };
+        self.prompts
+            .lock()
+            .expect("recorded prompts")
+            .push(content.clone());
+        let messages = if content == "needs approval" {
+            vec![FromAgentMessage::ServerRequest {
+                request_id: "approval-1".to_string(),
+                request_type: ServerRequestType::Approval,
+                call_id: "call-1".to_string(),
+                tool_execution_id: None,
+                tool: "bash".to_string(),
+                args: json!({"command": "deploy"}),
+                reason: "production deploy".to_string(),
+                started_at_ms: None,
+            }]
+        } else {
+            vec![
+                FromAgentMessage::ResponseStart {
+                    response_id: format!("response-{content}"),
+                },
+                FromAgentMessage::ResponseEnd {
+                    response_id: format!("response-{content}"),
+                    usage: None,
+                    tools_summary: None,
+                    duration_ms: Some(1),
+                    ttft_ms: Some(1),
+                },
+            ]
+        };
+        Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+            messages,
+            "thread fixture handled prompt",
+        ))
+    }
+}
+
+#[derive(Debug, Default)]
 struct PumpOnlyRuntimeExecutor {
     queued: Arc<Mutex<Vec<FromAgentMessage>>>,
 }
@@ -358,6 +478,7 @@ fn test_config(workspace_root: PathBuf) -> HostedRunnerConfig {
         runner_session_id: "mrs_test".to_string(),
         workspace_root,
         bind_addr: "127.0.0.1:0".parse().expect("bind addr"),
+        runtime_generation: 0,
         owner_instance_id: Some("owner_test".to_string()),
         snapshot_root: None,
         restore_manifest_path: None,
@@ -412,6 +533,57 @@ fn add_workload_identity_env(env: &mut HashMap<String, String>, token_file: &Pat
         ),
         ("MAESTRO_PLACEMENT_GENERATION".to_string(), "7".to_string()),
     ]);
+}
+
+async fn attach_thread_controller(
+    client: &reqwest::Client,
+    base_url: &str,
+    connection_id: &str,
+) -> (String, String) {
+    let connection: serde_json::Value = client
+        .post(format!("{base_url}/api/headless/connections"))
+        .json(&json!({
+            "sessionId": "sess_test",
+            "connectionId": connection_id,
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("connection response")
+        .error_for_status()
+        .expect("connection status")
+        .json()
+        .await
+        .expect("connection json");
+    let connection_capability = connection["connection_capability"]
+        .as_str()
+        .expect("connection capability")
+        .to_string();
+    let subscription: serde_json::Value = client
+        .post(format!(
+            "{base_url}/api/headless/sessions/sess_test/subscribe"
+        ))
+        .json(&json!({
+            "connectionId": connection_id,
+            "connectionCapability": connection_capability,
+            "connectionCapabilityRequired": true,
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("subscription response")
+        .error_for_status()
+        .expect("subscription status")
+        .json()
+        .await
+        .expect("subscription json");
+    (
+        connection_capability,
+        subscription["subscription_id"]
+            .as_str()
+            .expect("subscription id")
+            .to_string(),
+    )
 }
 
 #[tokio::test]
@@ -1696,6 +1868,10 @@ fn resolves_env_config_with_hosted_runner_contract_names() {
         "pod_1".to_string(),
     );
     env.insert(
+        "MAESTRO_SANDBOXWICH_PLACEMENT_GENERATION".to_string(),
+        "42".to_string(),
+    );
+    env.insert(
         "MAESTRO_HOSTED_RUNNER_LISTEN".to_string(),
         "127.0.0.1:9090".to_string(),
     );
@@ -1719,6 +1895,7 @@ fn resolves_env_config_with_hosted_runner_contract_names() {
     let config = HostedRunnerConfig::from_env_map(&env).expect("config");
     assert_eq!(config.runner_session_id, "mrs_123");
     assert_eq!(config.owner_instance_id.as_deref(), Some("pod_1"));
+    assert_eq!(config.runtime_generation, 42);
     assert_eq!(
         config.workspace_root,
         dunce::canonicalize(workspace.path()).unwrap()
@@ -5912,6 +6089,427 @@ async fn controller_disconnect_rejects_replayed_public_authority() {
     assert_eq!(state["state"]["subscriber_count"], 1);
 
     handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn durable_thread_appends_idempotent_turns_and_exposes_waiting_state() {
+    let workspace = tempdir().expect("workspace");
+    let executor = Arc::new(RecordingThreadExecutor::default());
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+    )
+    .await
+    .expect("start hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), "conn_thread").await;
+    let turns_url = format!("{}/api/headless/threads/sess_test/turns", handle.base_url());
+
+    let append_turn = |turn_id: &str, kind: &str, content: &str| {
+        client
+            .post(&turns_url)
+            .header("x-maestro-headless-connection-id", "conn_thread")
+            .header("x-maestro-headless-subscriber-id", &subscription_id)
+            .header("x-maestro-headless-connection-capability", &capability)
+            .header("x-maestro-runtime-generation", "0")
+            .json(&json!({
+                "protocolVersion": "evalops.maestro.thread.v1",
+                "turnId": turn_id,
+                "kind": kind,
+                "content": content
+            }))
+            .send()
+    };
+
+    let first: serde_json::Value = append_turn("turn-1", "user_message", "hello")
+        .await
+        .expect("first turn response")
+        .error_for_status()
+        .expect("first turn status")
+        .json()
+        .await
+        .expect("first turn json");
+    assert_eq!(first["thread_id"], "sess_test");
+    assert_eq!(first["turn_id"], "turn-1");
+    assert_eq!(first["run_id"], "run_turn-1");
+    assert_eq!(first["phase"], "completed");
+    assert_eq!(first["replayed"], false);
+
+    let replay: serde_json::Value = append_turn("turn-1", "user_message", "hello")
+        .await
+        .expect("replayed turn response")
+        .error_for_status()
+        .expect("replayed turn status")
+        .json()
+        .await
+        .expect("replayed turn json");
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(replay["run_id"], "run_turn-1");
+    assert_eq!(
+        executor
+            .prompts
+            .lock()
+            .expect("recorded prompts")
+            .as_slice(),
+        ["hello"]
+    );
+
+    let conflict = append_turn("turn-1", "user_message", "different")
+        .await
+        .expect("conflicting turn response");
+    assert_eq!(conflict.status(), StatusCode::CONFLICT);
+
+    let steer: serde_json::Value = append_turn("turn-2", "steer", "needs approval")
+        .await
+        .expect("steering response")
+        .error_for_status()
+        .expect("steering status")
+        .json()
+        .await
+        .expect("steering json");
+    assert_eq!(steer["phase"], "waiting_for_approval");
+
+    let thread: serde_json::Value = client
+        .get(format!(
+            "{}/api/headless/threads/sess_test",
+            handle.base_url()
+        ))
+        .send()
+        .await
+        .expect("thread state response")
+        .error_for_status()
+        .expect("thread state status")
+        .json()
+        .await
+        .expect("thread state json");
+    assert_eq!(thread["protocol_version"], "evalops.maestro.thread.v1");
+    assert_eq!(thread["thread_id"], "sess_test");
+    assert_eq!(thread["phase"], "waiting_for_approval");
+    assert_eq!(thread["active_turn_id"], "turn-2");
+    assert_eq!(thread["turns"].as_array().expect("turns").len(), 2);
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn durable_thread_restores_turn_idempotency_and_cursor_from_workspace() {
+    let workspace = tempdir().expect("workspace");
+    let source_executor = Arc::new(RecordingThreadExecutor::default());
+    let source = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        source_executor,
+    )
+    .await
+    .expect("start source hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &source.base_url(), "conn_source_thread").await;
+    let request = json!({
+        "protocolVersion": "evalops.maestro.thread.v1",
+        "turnId": "turn-durable",
+        "kind": "user_message",
+        "content": "persist me"
+    });
+    let source_turn: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/threads/sess_test/turns",
+            source.base_url()
+        ))
+        .header("x-maestro-headless-connection-id", "conn_source_thread")
+        .header("x-maestro-headless-subscriber-id", &subscription_id)
+        .header("x-maestro-headless-connection-capability", &capability)
+        .header("x-maestro-runtime-generation", "0")
+        .json(&request)
+        .send()
+        .await
+        .expect("source turn response")
+        .error_for_status()
+        .expect("source turn status")
+        .json()
+        .await
+        .expect("source turn json");
+    let durable_cursor = source_turn["cursor"].as_u64().expect("source cursor");
+    assert!(durable_cursor > 0);
+    source.shutdown().await;
+
+    let restored_executor = Arc::new(RecordingThreadExecutor::default());
+    let restored = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        restored_executor.clone(),
+    )
+    .await
+    .expect("start restored hosted runner");
+    let restored_state: serde_json::Value = client
+        .get(format!(
+            "{}/api/headless/threads/sess_test",
+            restored.base_url()
+        ))
+        .send()
+        .await
+        .expect("restored thread state response")
+        .error_for_status()
+        .expect("restored thread state status")
+        .json()
+        .await
+        .expect("restored thread state json");
+    assert_eq!(restored_state["cursor"], durable_cursor);
+    assert_eq!(restored_state["turns"][0]["turn_id"], "turn-durable");
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &restored.base_url(), "conn_restored_thread").await;
+    let replayed: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/threads/sess_test/turns",
+            restored.base_url()
+        ))
+        .header("x-maestro-headless-connection-id", "conn_restored_thread")
+        .header("x-maestro-headless-subscriber-id", &subscription_id)
+        .header("x-maestro-headless-connection-capability", &capability)
+        .header("x-maestro-runtime-generation", "0")
+        .json(&request)
+        .send()
+        .await
+        .expect("restored turn response")
+        .error_for_status()
+        .expect("restored turn status")
+        .json()
+        .await
+        .expect("restored turn json");
+    assert_eq!(replayed["replayed"], true);
+    assert!(
+        replayed["cursor"].as_u64().expect("replayed cursor") >= durable_cursor,
+        "reattachment events may advance but must never rewind the durable cursor"
+    );
+    assert!(
+        restored_executor
+            .prompts
+            .lock()
+            .expect("restored prompts")
+            .is_empty(),
+        "restoring an accepted turn must not execute it twice"
+    );
+
+    restored.shutdown().await;
+}
+
+#[tokio::test]
+async fn durable_thread_rejects_stale_runtime_generation() {
+    let workspace = tempdir().expect("workspace");
+    let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+        .await
+        .expect("start hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), "conn_stale_thread").await;
+
+    let response = client
+        .post(format!(
+            "{}/api/headless/threads/sess_test/turns",
+            handle.base_url()
+        ))
+        .header("x-maestro-headless-connection-id", "conn_stale_thread")
+        .header("x-maestro-headless-subscriber-id", subscription_id)
+        .header("x-maestro-headless-connection-capability", capability)
+        .header("x-maestro-runtime-generation", "1")
+        .json(&json!({
+            "protocolVersion": "evalops.maestro.thread.v1",
+            "turnId": "turn-stale",
+            "kind": "user_message",
+            "content": "must not run"
+        }))
+        .send()
+        .await
+        .expect("stale generation response");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn durable_thread_only_accepts_steering_while_a_turn_is_active() {
+    let workspace = tempdir().expect("workspace");
+    let executor = Arc::new(PendingThreadExecutor::default());
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+    )
+    .await
+    .expect("start hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), "conn_steering").await;
+    let post = |turn_id: &str, kind: &str, content: &str| {
+        client
+            .post(format!(
+                "{}/api/headless/threads/sess_test/turns",
+                handle.base_url()
+            ))
+            .header("x-maestro-headless-connection-id", "conn_steering")
+            .header("x-maestro-headless-subscriber-id", &subscription_id)
+            .header("x-maestro-headless-connection-capability", &capability)
+            .header("x-maestro-runtime-generation", "0")
+            .json(&json!({
+                "protocolVersion": "evalops.maestro.thread.v1",
+                "turnId": turn_id,
+                "kind": kind,
+                "content": content
+            }))
+            .send()
+    };
+
+    let first: serde_json::Value = post("turn-active", "user_message", "work for a while")
+        .await
+        .expect("active turn response")
+        .error_for_status()
+        .expect("active turn status")
+        .json()
+        .await
+        .expect("active turn json");
+    assert_eq!(first["phase"], "running");
+
+    let unrelated = post("turn-unrelated", "user_message", "start something else")
+        .await
+        .expect("unrelated turn response");
+    assert_eq!(unrelated.status(), StatusCode::CONFLICT);
+
+    let steer: serde_json::Value = post("turn-steer", "steer", "also inspect the logs")
+        .await
+        .expect("steer response")
+        .error_for_status()
+        .expect("steer status")
+        .json()
+        .await
+        .expect("steer json");
+    assert_eq!(steer["phase"], "running");
+    assert_eq!(
+        executor.prompts.lock().expect("pending prompts").as_slice(),
+        ["work for a while", "also inspect the logs"]
+    );
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn durable_thread_single_response_end_completes_active_run_and_its_steers() {
+    let workspace = tempdir().expect("workspace");
+    let executor = Arc::new(SteeringLifecycleExecutor::default());
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+    )
+    .await
+    .expect("start hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), "conn_steer_completion").await;
+    let post = |turn_id: &str, kind: &str, content: &str| {
+        client
+            .post(format!(
+                "{}/api/headless/threads/sess_test/turns",
+                handle.base_url()
+            ))
+            .header("x-maestro-headless-connection-id", "conn_steer_completion")
+            .header("x-maestro-headless-subscriber-id", &subscription_id)
+            .header("x-maestro-headless-connection-capability", &capability)
+            .header("x-maestro-runtime-generation", "0")
+            .json(&json!({
+                "protocolVersion": "evalops.maestro.thread.v1",
+                "turnId": turn_id,
+                "kind": kind,
+                "content": content
+            }))
+            .send()
+    };
+
+    post("turn-active", "user_message", "work for a while")
+        .await
+        .expect("active turn response")
+        .error_for_status()
+        .expect("active turn status");
+    post("turn-steer", "steer", "also inspect the logs")
+        .await
+        .expect("steer response")
+        .error_for_status()
+        .expect("steer status");
+
+    executor.complete_active_run();
+    let thread = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let thread: serde_json::Value = client
+                .get(format!(
+                    "{}/api/headless/threads/sess_test",
+                    handle.base_url()
+                ))
+                .send()
+                .await
+                .expect("thread response")
+                .error_for_status()
+                .expect("thread status")
+                .json()
+                .await
+                .expect("thread json");
+            if thread["phase"] == "completed" {
+                break thread;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("thread completion timeout");
+
+    assert!(thread["active_turn_id"].is_null());
+    assert_eq!(thread["turns"][0]["phase"], "completed");
+    assert_eq!(thread["turns"][1]["phase"], "completed");
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn durable_thread_generation_lock_fences_overlapping_and_stale_runtimes() {
+    let workspace = tempdir().expect("workspace");
+    let first_config = test_config(workspace.path().to_path_buf()).with_runtime_generation(1);
+    let first = start_hosted_runner(first_config)
+        .await
+        .expect("start first generation");
+
+    let overlapping = match start_hosted_runner(
+        test_config(workspace.path().to_path_buf()).with_runtime_generation(2),
+    )
+    .await
+    {
+        Ok(handle) => {
+            handle.shutdown().await;
+            panic!("new generation must not overlap a live journal writer");
+        }
+        Err(error) => error,
+    };
+    assert!(
+        matches!(
+            overlapping.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::PermissionDenied
+        ),
+        "unexpected overlapping generation error: {overlapping}"
+    );
+
+    first.shutdown().await;
+    let second =
+        start_hosted_runner(test_config(workspace.path().to_path_buf()).with_runtime_generation(2))
+            .await
+            .expect("start replacement generation after old writer exits");
+    second.shutdown().await;
+
+    let stale = match start_hosted_runner(
+        test_config(workspace.path().to_path_buf()).with_runtime_generation(1),
+    )
+    .await
+    {
+        Ok(handle) => {
+            handle.shutdown().await;
+            panic!("older generation must not reclaim a newer journal");
+        }
+        Err(error) => error,
+    };
+    assert_eq!(stale.kind(), std::io::ErrorKind::PermissionDenied);
 }
 
 #[tokio::test]

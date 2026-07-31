@@ -13,11 +13,21 @@ impl SharedRunner {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn new_with_message_executor_and_restore(
         config: HostedRunnerConfig,
         message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
         restore_manifest: Option<SnapshotManifest>,
     ) -> Self {
+        Self::try_new_with_message_executor_and_restore(config, message_executor, restore_manifest)
+            .expect("hosted runner fixture should load its durable thread journal")
+    }
+
+    pub(super) fn try_new_with_message_executor_and_restore(
+        config: HostedRunnerConfig,
+        message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
+        restore_manifest: Option<SnapshotManifest>,
+    ) -> io::Result<Self> {
         let session_id = config
             .maestro_session_id
             .clone()
@@ -27,6 +37,11 @@ impl SharedRunner {
                     .map(|manifest| manifest.maestro_session_id.clone())
             })
             .unwrap_or_else(|| config.runner_session_id.clone());
+        let loaded_thread = ThreadJournal::load(
+            &config.workspace_root,
+            &session_id,
+            config.runtime_generation,
+        )?;
         let (events, _) = broadcast::channel(MAX_EVENTS);
         let (controller_events, _) = broadcast::channel(MAX_EVENTS);
         let restored_snapshot = restore_manifest
@@ -59,7 +74,7 @@ impl SharedRunner {
                 ready: restore_ready,
                 draining: false,
                 session_id,
-                cursor: restored_cursor.unwrap_or(0),
+                cursor: restored_cursor.unwrap_or(0).max(loaded_thread.cursor),
                 last_init,
                 last_status: Some(
                     restore_status
@@ -77,13 +92,15 @@ impl SharedRunner {
                 active_utility_commands: HashMap::new(),
                 active_file_watches: HashMap::new(),
                 active_response_ids: HashSet::new(),
-                envelopes: VecDeque::new(),
-                controller_envelopes: VecDeque::new(),
+                envelopes: loaded_thread.events.clone(),
+                controller_envelopes: loaded_thread.events,
                 pending_controller_events: VecDeque::new(),
+                thread: loaded_thread.state,
             })),
             events,
             controller_events,
             message_executor,
+            thread_journal: Arc::new(loaded_thread.journal),
             mutation_lifecycle: Arc::new(tokio::sync::Mutex::new(())),
             event_pump_cancellation: CancellationToken::new(),
             event_pump_task: Arc::new(tokio::sync::Mutex::new(None)),
@@ -97,7 +114,14 @@ impl SharedRunner {
             state.envelopes.push_back(envelope.clone());
             state.controller_envelopes.push_back(envelope);
         }
-        shared
+        {
+            let state = shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            shared.persist_thread(&state)?;
+        }
+        Ok(shared)
     }
 
     pub(super) fn identity(&self) -> HostedRunnerIdentity {
@@ -365,6 +389,15 @@ impl SharedRunner {
         snapshot
     }
 
+    pub(super) fn persist_thread(&self, state: &RunnerState) -> io::Result<()> {
+        self.thread_journal.persist(
+            &state.thread,
+            self.config.runtime_generation,
+            state.cursor,
+            &state.envelopes,
+        )
+    }
+
     pub(super) fn controller_pending_events(
         &self,
         state: &mut RunnerState,
@@ -441,6 +474,17 @@ impl SharedRunner {
     }
 
     pub(super) fn publish_message(&self, state: &mut RunnerState, message: FromAgentMessage) {
+        // Stream chunks stay in the bounded in-memory replay buffer. Persist
+        // only lifecycle boundaries so token streaming does not serialize and
+        // fsync the entire journal for every chunk. A crash mid-response is
+        // restored as interrupted; every terminal/waiting boundary is durable.
+        let persist_lifecycle_boundary = matches!(
+            &message,
+            FromAgentMessage::ResponseEnd { .. }
+                | FromAgentMessage::ServerRequest { .. }
+                | FromAgentMessage::ServerRequestResolved { .. }
+                | FromAgentMessage::Error { .. }
+        );
         let agent_state = self.prune_pending_controller_events(state);
         let matching_pending = agent_state.as_ref().and_then(|agent_state| {
             agent_state
@@ -488,6 +532,7 @@ impl SharedRunner {
                 1
             },
         );
+        state.thread.apply_agent_message(&message, state.cursor);
         let controller_envelope = StreamEnvelope::Message {
             cursor: state.cursor,
             message: Box::new(crate::transcript::agent_message_for_controller(
@@ -510,6 +555,13 @@ impl SharedRunner {
         }
         let _ = self.events.send(envelope);
         let _ = self.controller_events.send(controller_envelope);
+        if persist_lifecycle_boundary {
+            if let Err(error) = self.persist_thread(state) {
+                state.ready = false;
+                state.last_error = Some(format!("durable thread journal write failed: {error}"));
+                state.last_error_type = Some("internal".to_string());
+            }
+        }
     }
 
     pub(super) fn publish_snapshot(&self, state: &mut RunnerState) {
@@ -526,6 +578,11 @@ impl SharedRunner {
         }
         let _ = self.events.send(envelope.clone());
         let _ = self.controller_events.send(envelope);
+        if let Err(error) = self.persist_thread(state) {
+            state.ready = false;
+            state.last_error = Some(format!("durable thread journal write failed: {error}"));
+            state.last_error_type = Some("internal".to_string());
+        }
     }
 
     pub(super) fn reset_envelope(&self, reason: impl Into<String>) -> StreamEnvelope {

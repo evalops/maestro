@@ -269,7 +269,7 @@ impl CodexAppServerTurnSession {
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                bail!("Timed out waiting for turn {turn_id} progress");
+                return Ok(TurnWaitEvent::Pending);
             }
             let slice_ms = remaining.min(Duration::from_millis(250)).as_millis() as u64;
 
@@ -431,6 +431,7 @@ fn codex_message_item(role: Role, text: &str) -> Value {
 pub enum TurnWaitEvent {
     ServerRequest(IncomingServerRequest),
     Completed(CodexAppServerTurnResult),
+    Pending,
 }
 
 /// True when the configured model should use Codex app-server turns.

@@ -2946,6 +2946,7 @@ impl NativeAgentRunner {
             if self.drain_pending_commands() {
                 return Err(anyhow::anyhow!("Request cancelled"));
             }
+            self.forward_pending_codex_steers(&turn_id).await?;
 
             // Stream any agent message deltas that arrived since the last wait.
             self.drain_codex_assistant_deltas(&response_id, &mut streamed_assistant)
@@ -2957,11 +2958,12 @@ impl NativeAgentRunner {
                     .as_ref()
                     .context("Codex app-server session missing")?;
                 session
-                    .wait_server_request_or_turn_complete(&turn_id, None)
+                    .wait_server_request_or_turn_complete(&turn_id, Some(100))
                     .await?
             };
 
             match event {
+                TurnWaitEvent::Pending => continue,
                 TurnWaitEvent::Completed(result) => {
                     let (completion_delta, full_text) = Self::reconcile_codex_completion_text(
                         &streamed_assistant,
@@ -3007,6 +3009,43 @@ impl NativeAgentRunner {
                 }
             }
         }
+    }
+
+    async fn forward_pending_codex_steers(&mut self, turn_id: &str) -> Result<()> {
+        let pending = self.drain_leading_pending_messages(PromptKind::Steer, self.steering_mode);
+        if pending.is_empty() {
+            return Ok(());
+        }
+        self.announce_next_turn_messages(&pending);
+        for pending_message in pending {
+            let Some((message, prompt_context)) =
+                self.prepare_pending_message(&pending_message).await?
+            else {
+                continue;
+            };
+            let mut text = match &message.content {
+                MessageContent::Text(text) => text.clone(),
+                MessageContent::Blocks(blocks) => blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            };
+            if let Some(context) = prompt_context {
+                text.push_str("\n\n");
+                text.push_str(&context);
+            }
+            self.codex_session
+                .as_ref()
+                .context("Codex app-server session missing")?
+                .steer_text(turn_id, text, None)
+                .await?;
+            self.messages.push(message);
+        }
+        Ok(())
     }
 
     async fn drain_codex_assistant_deltas(

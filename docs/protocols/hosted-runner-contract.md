@@ -42,6 +42,7 @@ flags or environment variables, but the resolved values are the contract.
 | Workspace root | `--workspace-root`, `MAESTRO_WORKSPACE_ROOT`, `WORKSPACE_ROOT` | yes |
 | Listen address | `--listen`, `--host`, `--port`, `MAESTRO_HOSTED_RUNNER_LISTEN`, `MAESTRO_HOSTED_RUNNER_HOST`, `MAESTRO_HOSTED_RUNNER_PORT`, `PORT` | yes |
 | Owner generation | `--owner-instance-id`, `MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID`, `REMOTE_RUNNER_OWNER_INSTANCE_ID` | required when Platform fences owners |
+| Runtime generation | `MAESTRO_SANDBOXWICH_PLACEMENT_GENERATION`, `MAESTRO_REMOTE_RUNNER_GENERATION` | required for managed durable threads |
 | Snapshot root | `--snapshot-root`, `MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT`, `REMOTE_RUNNER_SNAPSHOT_ROOT` | optional |
 | Restore manifest | `MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST`, `REMOTE_RUNNER_RESTORE_MANIFEST` | optional |
 | Workspace id | `--workspace-id`, `MAESTRO_REMOTE_RUNNER_WORKSPACE_ID`, `MAESTRO_WORKSPACE_ID` | optional |
@@ -148,7 +149,44 @@ runtime-owner records.
 
 ## Attach Surface
 
-All providers expose the same HTTP headless surface:
+Managed clients use a thread as the durable public object:
+
+- `POST /api/headless/threads/:threadId/turns`
+- `GET /api/headless/threads/:threadId`
+- `GET /api/headless/threads/:threadId/events?cursor=:cursor`
+
+`POST .../turns` accepts protocol
+`evalops.maestro.thread.v1`, a caller-stable `turnId`, `kind` equal to
+`user_message` or `steer`, content, and optional attachments. A retry with the
+same turn id and payload returns the existing run without executing it again.
+Reusing a turn id with a different payload fails with `409`. While a run is
+active, a normal `user_message` also fails with `409`; an explicit `steer`
+appends to the same thread and is delivered to the resident agent.
+
+Thread state exposes an active turn, cursor, append-only turn records, and one
+of these explicit phases: `idle`, `accepted`, `running`,
+`waiting_for_approval`, `waiting_for_input`, `waiting_for_client_tool`,
+`waiting_for_retry`, `completed`, `failed`, or `interrupted`.
+
+The event stream returns only envelopes whose cursor is greater than the
+requested cursor. A client persists its last applied cursor and deduplicates by
+cursor after reconnect. A reset envelope replaces local runtime state only when
+the requested cursor has fallen outside the retained replay window.
+
+The runtime keeps a private journal under
+`<workspace>/.maestro/hosted-runner/threads`. It durably records accepted
+turns, redacted replay envelopes, cursor, and generation. An exclusive
+cross-process lock prevents overlapping writers. A replacement may adopt a
+journal only at the same or a newer generation; an older generation fails
+closed. Non-terminal turns become `interrupted` after process replacement
+rather than being executed twice.
+
+The generation header on an append is a fenced assertion checked against the
+runtime's canonical generation. It is not authentication. Managed production
+traffic is authorized by the workload mTLS boundary and live resident binding;
+the guest and browser never receive workload credentials.
+
+The lower-level session surface remains for local clients and compatibility:
 
 - `POST /api/headless/connections`
 - `POST /api/headless/sessions/:id/subscribe`
@@ -159,7 +197,8 @@ All providers expose the same HTTP headless surface:
 - `GET /api/headless/sessions/:id/state`
 
 Runtimes may keep `/api/headless/sessions/:id/message` as a compatibility
-alias, but new Rust and Platform code should use `/messages`.
+alias. New managed Runner Host and Platform code must use the thread surface
+for user turns; legacy session ids are not the durable product object.
 
 The event stream is replayable by cursor. Clients that fall behind receive a
 reset snapshot. This mirrors the reference remote-session pattern: durable

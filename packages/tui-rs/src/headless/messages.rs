@@ -187,6 +187,12 @@ pub enum ToAgentMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         attachments: Option<Vec<String>>,
     },
+    /// Steer the currently active agent turn.
+    Steer {
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        attachments: Option<Vec<String>>,
+    },
     /// Interrupt the current operation
     Interrupt,
     /// Respond to a tool approval request
