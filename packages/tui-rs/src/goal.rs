@@ -301,6 +301,26 @@ impl GoalStore {
         Ok(hit_cap)
     }
 
+    /// Tokens that should count against a goal `--token-budget`.
+    ///
+    /// Counts non-cached input + output. Cached prompt tokens are excluded so
+    /// multi-step tool loops do not burn the budget on repeated cheap cache
+    /// hits. When a provider reports `cache_read` as a **subset** of
+    /// `input_tokens` (OpenAI Chat Completions style), the cached portion is
+    /// subtracted. When `input_tokens` is already exclusive of cache
+    /// (Anthropic style, where cache can exceed uncached input), `input` is
+    /// used as-is and cache is not added.
+    pub fn billable_tokens(input_tokens: u64, output_tokens: u64, cache_read_tokens: u64) -> u64 {
+        let non_cached_input = if cache_read_tokens > 0 && cache_read_tokens <= input_tokens {
+            // OpenAI: prompt_tokens includes cached_tokens as a subset.
+            input_tokens.saturating_sub(cache_read_tokens)
+        } else {
+            // Anthropic / exclusive input: cache is reported separately.
+            input_tokens
+        };
+        non_cached_input.saturating_add(output_tokens)
+    }
+
     /// Account tokens for the latest worker turn. Returns `true` if a token
     /// budget was just exhausted (auto-continue disabled).
     pub fn account_tokens(&mut self, turn_tokens: u64) -> Result<bool> {
@@ -626,6 +646,23 @@ mod tests {
         assert!(store.account_tokens(70).unwrap());
         assert!(!store.should_auto_continue());
         assert_eq!(store.current.as_ref().unwrap().tokens_used, 110);
+    }
+
+    #[test]
+    fn billable_tokens_excludes_openai_style_cache_subset() {
+        // prompt=10_000 of which 8_000 cached → 2_000 new input + 100 output
+        assert_eq!(GoalStore::billable_tokens(10_000, 100, 8_000), 2_100);
+    }
+
+    #[test]
+    fn billable_tokens_keeps_anthropic_style_exclusive_input() {
+        // uncached input 500, cache hit 9_000, output 50 → 550
+        assert_eq!(GoalStore::billable_tokens(500, 50, 9_000), 550);
+    }
+
+    #[test]
+    fn billable_tokens_without_cache() {
+        assert_eq!(GoalStore::billable_tokens(1_000, 200, 0), 1_200);
     }
 
     #[test]
