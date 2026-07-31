@@ -524,7 +524,12 @@ impl ToolRegistry {
         tools.insert(
             "background_tasks".to_string(),
             ToolDefinition {
-                tool: Tool::new("background_tasks", "Manage long-running background tasks.")
+                tool: Tool::new(
+                    "background_tasks",
+                    "Manage long-running background tasks. Prefer logs/list (snapshots). \
+                     waitForRotation defaults to non-blocking (timeoutMs=0); do not block the turn. \
+                     Process exit is reported via lifecycle notifications.",
+                )
                     .with_schema(serde_json::json!({
                         "type": "object",
                         "properties": {
@@ -536,7 +541,10 @@ impl ToolRegistry {
                             "taskId": {"type": "string"},
                             "lines": {"type": "number"},
                             "restart": {"type": "object"},
-                            "timeoutMs": {"type": "number"}
+                            "timeoutMs": {
+                                "type": "number",
+                                "description": "waitForRotation only. Default 0 = non-blocking snapshot. Capped at 2000ms if >0."
+                            }
                         },
                         "required": ["action"]
                     })),

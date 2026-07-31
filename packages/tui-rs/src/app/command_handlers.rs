@@ -1185,6 +1185,22 @@ impl App {
                 &branch.id[..8.min(branch.id.len())]
             )
         };
+        // Kimi-style: forked sessions do not inherit the prior goal.
+        match self.goal_store.clear_for_session_fork() {
+            Ok(Some(goal_id)) => {
+                self.goal_auto_continue_armed = false;
+                self.state.add_system_message(format!(
+                    "Goal {goal_id} was cleared for this fork. Create a new goal with `/goal create` if needed; do not continue the parent session's goal."
+                ));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                self.state
+                    .error
+                    .replace(format!("Failed to clear goal on fork: {e}"));
+            }
+        }
+
         self.state.status = Some("Session forked.".to_string());
         self.state.add_system_message(msg);
     }

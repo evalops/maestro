@@ -2576,7 +2576,7 @@ dependencies = [
 
 [[package]]
 name = "maestro"
-version = "0.10.60"
+version = "0.10.61"
 dependencies = [
  "anyhow",
  "ctor",

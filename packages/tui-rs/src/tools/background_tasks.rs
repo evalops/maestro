@@ -100,6 +100,8 @@ static MONITOR_HISTORY: std::sync::LazyLock<RwLock<VecDeque<MonitorEvent>>> =
     std::sync::LazyLock::new(|| RwLock::new(VecDeque::new()));
 static MONITOR_BUDGET: std::sync::LazyLock<StdMutex<MonitorBudget>> =
     std::sync::LazyLock::new(|| StdMutex::new(MonitorBudget::new()));
+static TASK_LIFECYCLE_EVENTS: std::sync::LazyLock<RwLock<VecDeque<TaskLifecycleEvent>>> =
+    std::sync::LazyLock::new(|| RwLock::new(VecDeque::new()));
 
 const DEFAULT_LOG_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const DEFAULT_LOG_SEGMENTS: usize = 2;
@@ -116,6 +118,9 @@ const MAX_MONITOR_HISTORY: usize = 200;
 const MAX_MONITOR_EVENTS_PER_SECOND: u32 = 5;
 const MAX_MONITOR_EVALUATIONS_PER_SECOND: u32 = 2_048;
 const MAX_MONITOR_GLOBAL_EVENTS_PER_SECOND: u32 = 32;
+/// Cap concurrent running background processes (Kimi-style max running tasks).
+const DEFAULT_MAX_RUNNING_TASKS: usize = 16;
+const MAX_TASK_LIFECYCLE_EVENTS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorInfo {
@@ -131,6 +136,148 @@ pub struct MonitorEvent {
     pub stream: &'static str,
     pub output: String,
     pub timestamp_ms: u64,
+}
+
+/// Process exit / stop notifications for the TUI and agent (non-blocking).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskLifecycleEvent {
+    pub task_id: String,
+    pub command: String,
+    /// `exited` | `failed` | `stopped`
+    pub status: String,
+    pub exit_code: Option<i32>,
+    pub timestamp_ms: u64,
+}
+
+/// Snapshot of a task that was running when a previous process exited.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedRunningTask {
+    pub id: String,
+    pub command: String,
+    pub pid: Option<u32>,
+    pub log_path: String,
+    pub started_at_unix: u64,
+}
+
+fn max_running_tasks() -> usize {
+    std::env::var("MAESTRO_BACKGROUND_MAX_RUNNING_TASKS")
+        .ok()
+        .and_then(|raw| raw.trim().parse().ok())
+        .filter(|n: &usize| *n > 0)
+        .unwrap_or(DEFAULT_MAX_RUNNING_TASKS)
+}
+
+fn running_task_count() -> usize {
+    TASKS
+        .read()
+        .map(|tasks| {
+            tasks
+                .values()
+                .filter(|t| matches!(t.status, BackgroundTaskStatus::Running))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn persist_path() -> PathBuf {
+    crate::path_utils::maestro_home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("background_tasks.json")
+}
+
+fn persist_running_snapshot() {
+    let running: Vec<PersistedRunningTask> = TASKS
+        .read()
+        .map(|tasks| {
+            tasks
+                .values()
+                .filter(|t| matches!(t.status, BackgroundTaskStatus::Running))
+                .map(|t| PersistedRunningTask {
+                    id: t.id.clone(),
+                    command: t.command.clone(),
+                    pid: t.pid,
+                    log_path: t.log_path.clone(),
+                    started_at_unix: t
+                        .started_at
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let path = persist_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let payload = serde_json::json!({ "running": running });
+    if let Ok(raw) = serde_json::to_string_pretty(&payload) {
+        let _ = crate::fs_atomic::write_atomic(&path, raw.as_bytes());
+    }
+}
+
+/// Tasks marked running when the previous Maestro process wrote its snapshot.
+pub fn load_persisted_running_snapshot() -> Vec<PersistedRunningTask> {
+    let path = persist_path();
+    let Ok(raw) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Vec::new();
+    };
+    value
+        .get("running")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+fn emit_task_lifecycle(task_id: &str, command: &str, status: &str, exit_code: Option<i32>) {
+    let event = TaskLifecycleEvent {
+        task_id: task_id.to_string(),
+        command: command.to_string(),
+        status: status.to_string(),
+        exit_code,
+        timestamp_ms: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64),
+    };
+    if let Ok(mut events) = TASK_LIFECYCLE_EVENTS.write() {
+        if events.len() >= MAX_TASK_LIFECYCLE_EVENTS {
+            events.pop_front();
+        }
+        events.push_back(event.clone());
+    }
+    // Also mirror into monitor stream so Operations UI can show lifecycle rows.
+    if let Ok(mut events) = MONITOR_EVENTS.write() {
+        if events.len() >= MAX_MONITOR_EVENTS {
+            events.pop_front();
+        }
+        events.push_back(MonitorEvent {
+            monitor_id: "lifecycle".to_string(),
+            task_id: event.task_id.clone(),
+            stream: "lifecycle",
+            output: format!(
+                "task {} {}{}",
+                event.status,
+                event.command.chars().take(80).collect::<String>(),
+                event
+                    .exit_code
+                    .map(|c| format!(" exit={c}"))
+                    .unwrap_or_default()
+            ),
+            timestamp_ms: event.timestamp_ms,
+        });
+    }
+    persist_running_snapshot();
+}
+
+/// Drain process exit/stop notifications for the UI (and optional agent nudge).
+pub fn poll_task_lifecycle_events() -> Vec<TaskLifecycleEvent> {
+    TASK_LIFECYCLE_EVENTS
+        .write()
+        .map(|mut events| events.drain(..).collect())
+        .unwrap_or_default()
 }
 
 #[derive(Debug)]
@@ -431,7 +578,27 @@ impl LogRotationObserver {
             return Err("Log rotation is disabled".to_string());
         }
 
+        // Non-blocking snapshot (default): never stall the agent turn.
+        // Kimi TaskOutput no longer blocks; match that for waitForRotation.
+        if timeout.is_zero() {
+            let state = self.state.lock().await;
+            if let Some(info) = state.last_rotation.clone() {
+                return Ok(info);
+            }
+            if let Some(reason) = &state.failure_reason {
+                return Err(reason.clone());
+            }
+            return Err(
+                "No log rotation yet (non-blocking waitForRotation). \
+                 Prefer action=logs/list, or attach_monitor; set timeoutMs>0 only if you must wait."
+                    .to_string(),
+            );
+        }
+
         let deadline = Instant::now() + timeout;
+        // Cap blocking wait so a high timeoutMs cannot freeze the turn for minutes.
+        let cap = Duration::from_secs(2);
+        let effective_deadline = Instant::now() + timeout.min(cap);
 
         loop {
             {
@@ -444,16 +611,24 @@ impl LogRotationObserver {
                 }
             }
 
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining = effective_deadline
+                .saturating_duration_since(Instant::now())
+                .min(deadline.saturating_duration_since(Instant::now()));
             if remaining.is_zero() {
-                return Err("Timed out waiting for log rotation".to_string());
+                return Err(
+                    "Timed out waiting for log rotation (max 2s block). Use logs/list instead."
+                        .to_string(),
+                );
             }
 
             if tokio::time::timeout(remaining, self.notify.notified())
                 .await
                 .is_err()
             {
-                return Err("Timed out waiting for log rotation".to_string());
+                return Err(
+                    "Timed out waiting for log rotation (max 2s block). Use logs/list instead."
+                        .to_string(),
+                );
             }
         }
     }
@@ -827,6 +1002,15 @@ pub async fn start(
         ));
     }
 
+    let max_running = max_running_tasks();
+    let running = running_task_count();
+    if running >= max_running {
+        return Err(format!(
+            "Too many running background tasks ({running}/{max_running}). \
+             Stop one with action=stop, or raise MAESTRO_BACKGROUND_MAX_RUNNING_TASKS."
+        ));
+    }
+
     ensure_logs_dir()?;
     let id = Uuid::new_v4().to_string();
     let log_path = logs_dir().join(format!("background-{id}.log"));
@@ -955,13 +1139,16 @@ pub async fn start(
     }
     store_rotation_observer(&id, observer);
 
-    // Track completion
+    // Track completion — never block the agent turn on waitForRotation; push
+    // lifecycle events instead (Kimi TaskOutput non-blocking completion notify).
+    let lifecycle_command = command.clone();
     tokio::spawn(async move {
         let status = child.wait().await;
         let (exit_code, failed) = match status {
             Ok(status) => (status.code().unwrap_or(-1), !status.success()),
             Err(_) => (-1, true),
         };
+        let status_label = if failed { "failed" } else { "exited" };
 
         if let Ok(mut tasks) = TASKS.write() {
             if let Some(existing) = tasks.get_mut(&id) {
@@ -974,6 +1161,7 @@ pub async fn start(
                 };
             }
         }
+        emit_task_lifecycle(&id, &lifecycle_command, status_label, Some(exit_code));
         for handle in drain_handles {
             let _ = handle.await;
         }
@@ -985,6 +1173,7 @@ pub async fn start(
         }
     });
 
+    persist_running_snapshot();
     Ok(task)
 }
 
@@ -1023,10 +1212,13 @@ pub fn stop(id: &str) -> Result<BackgroundTask, String> {
     }
     task.status = BackgroundTaskStatus::Stopped;
     task.finished_at = Some(SystemTime::now());
+    let stopped = task.clone();
     remove_rotation_observer(id);
     remove_task_monitors(id);
+    drop(tasks);
+    emit_task_lifecycle(&stopped.id, &stopped.command, "stopped", stopped.exit_code);
 
-    Ok(task.clone())
+    Ok(stopped)
 }
 
 /// Retrieve the last N lines from a task's log file.
@@ -1317,6 +1509,29 @@ mod tests {
     // ========================================================================
     // Log Rotation Waiter Tests
     // ========================================================================
+
+    #[tokio::test]
+    async fn wait_for_rotation_zero_timeout_is_non_blocking() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let log_path = temp_dir.path().join("nonblock.log");
+        let observer = LogRotationObserver {
+            limit: 1024,
+            segments: 1,
+            state: Arc::new(Mutex::new(RotationState::default())),
+            notify: Arc::new(Notify::new()),
+        };
+        let started = Instant::now();
+        let err = observer
+            .wait_for_rotation(Duration::from_millis(0))
+            .await
+            .expect_err("zero timeout must not block");
+        assert!(err.contains("non-blocking"), "unexpected error: {err}");
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "zero-timeout wait must return immediately"
+        );
+        let _ = log_path;
+    }
 
     #[tokio::test]
     async fn test_wait_for_rotation_disabled() {

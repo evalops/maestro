@@ -445,6 +445,11 @@ enum AgentCommand {
     /// Replace conversation history (used by /rewind and /fork rebuilds).
     ReplaceHistory { messages: Vec<Message> },
 
+    /// Append a host-generated user note to conversation history without
+    /// starting a model turn. Used for background-task lifecycle notices so
+    /// the next completion request sees them (does not trigger a response).
+    InjectUserNote { content: String },
+
     /// Continue from current context without a new user message
     ///
     /// Used for retrying after transient errors (rate limits, 5xx errors),
@@ -982,6 +987,20 @@ impl NativeAgent {
         let _ = self
             .command_tx
             .send(AgentCommand::ReplaceHistory { messages });
+    }
+
+    /// Append a host tool/user note to history without starting a turn.
+    ///
+    /// Callers must only flush these when the agent is idle so provider
+    /// message order stays valid (no user turn between tool results).
+    pub fn inject_user_note(&self, content: impl Into<String>) {
+        let content = content.into();
+        if content.trim().is_empty() {
+            return;
+        }
+        let _ = self
+            .command_tx
+            .send(AgentCommand::InjectUserNote { content });
     }
 
     /// Set the model
@@ -1780,6 +1799,11 @@ impl NativeAgentRunner {
                 AgentCommand::SetSystemPrompt { system_prompt } => {
                     self.config.system_prompt = Some(system_prompt);
                 }
+                AgentCommand::InjectUserNote { content } => {
+                    // Defer until idle so we never insert a user message mid-tool-loop.
+                    self.deferred_commands
+                        .push_back(AgentCommand::InjectUserNote { content });
+                }
                 other => {
                     self.deferred_commands.push_back(other);
                 }
@@ -1791,6 +1815,17 @@ impl NativeAgentRunner {
             }
         }
         cancelled
+    }
+
+    fn apply_user_note(&mut self, content: String) {
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        self.messages.push(Message {
+            role: Role::User,
+            content: MessageContent::text(trimmed.to_string()),
+        });
     }
 
     /// Guarantee every assistant tool call in history has a matching tool result.
@@ -2128,6 +2163,15 @@ impl NativeAgentRunner {
                     queue_id,
                 } => {
                     self.requeue_follow_up_front(content, attachments, queue_id);
+                    continue;
+                }
+                AgentCommand::InjectUserNote { content } => {
+                    if self.busy {
+                        self.deferred_commands
+                            .push_back(AgentCommand::InjectUserNote { content });
+                        continue;
+                    }
+                    self.apply_user_note(content);
                     continue;
                 }
                 AgentCommand::Prompt {
