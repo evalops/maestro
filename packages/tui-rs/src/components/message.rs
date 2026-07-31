@@ -2191,51 +2191,38 @@ impl Widget for StatusBarWidget<'_> {
 
         let available_width = area.width.saturating_sub(left_width + 1);
 
-        let mut include_core = core_badges.is_some();
-        let mut include_env = env_badges.is_some();
+        // Drop right-side segments until the right column fits. Never paint
+        // over the left content (bugbash: "gpt-4queue" / "…fiqueue").
+        let mut right = RightStatusParts {
+            usage: usage_text.as_deref(),
+            core: core_badges.as_deref(),
+            env: env_badges.as_deref(),
+            queue: queue_text.as_deref(),
+            term: term_text.as_deref(),
+        };
+        let mut right_text = right.render();
 
-        let mut right_text = build_right_text(
-            usage_text.as_deref(),
-            core_badges.as_deref(),
-            env_badges.as_deref(),
-            queue_text.as_deref(),
-            term_text.as_deref(),
-            include_core,
-            include_env,
-        );
-
-        if !right_text.is_empty()
-            && UnicodeWidthStr::width(right_text.as_str()) > available_width as usize
-        {
-            include_env = false;
-            right_text = build_right_text(
-                usage_text.as_deref(),
-                core_badges.as_deref(),
-                env_badges.as_deref(),
-                queue_text.as_deref(),
-                term_text.as_deref(),
-                include_core,
-                include_env,
-            );
+        // Prefer keeping queue mode labels over env/core/usage when tight.
+        for drop in [
+            DropRight::Env,
+            DropRight::Core,
+            DropRight::Usage,
+            DropRight::Term,
+            DropRight::Queue,
+        ] {
+            if right_text.is_empty()
+                || UnicodeWidthStr::width(right_text.as_str()) <= available_width as usize
+            {
+                break;
+            }
+            right.omit(drop);
+            right_text = right.render();
         }
 
+        // Render right-side info only when it fits without overlapping left.
         if !right_text.is_empty()
-            && UnicodeWidthStr::width(right_text.as_str()) > available_width as usize
+            && UnicodeWidthStr::width(right_text.as_str()) <= available_width as usize
         {
-            include_core = false;
-            right_text = build_right_text(
-                usage_text.as_deref(),
-                core_badges.as_deref(),
-                env_badges.as_deref(),
-                queue_text.as_deref(),
-                term_text.as_deref(),
-                include_core,
-                include_env,
-            );
-        }
-
-        // Render right-side info
-        if !right_text.is_empty() {
             let right_line = Line::from(Span::styled(
                 right_text,
                 Style::default().fg(Color::DarkGray),
@@ -2247,41 +2234,54 @@ impl Widget for StatusBarWidget<'_> {
     }
 }
 
-fn build_right_text(
-    usage_text: Option<&str>,
-    core_badges: Option<&str>,
-    env_badges: Option<&str>,
-    queue_text: Option<&str>,
-    term_text: Option<&str>,
-    include_core: bool,
-    include_env: bool,
-) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(usage) = usage_text {
-        parts.push(usage.to_string());
-    }
-    if include_core {
-        if let Some(core) = core_badges {
-            if !core.is_empty() {
-                parts.push(core.to_string());
-            }
+#[derive(Clone, Copy)]
+enum DropRight {
+    Env,
+    Core,
+    Usage,
+    Term,
+    Queue,
+}
+
+#[derive(Clone, Copy)]
+struct RightStatusParts<'a> {
+    usage: Option<&'a str>,
+    core: Option<&'a str>,
+    env: Option<&'a str>,
+    queue: Option<&'a str>,
+    term: Option<&'a str>,
+}
+
+impl RightStatusParts<'_> {
+    fn omit(&mut self, which: DropRight) {
+        match which {
+            DropRight::Env => self.env = None,
+            DropRight::Core => self.core = None,
+            DropRight::Usage => self.usage = None,
+            DropRight::Term => self.term = None,
+            DropRight::Queue => self.queue = None,
         }
-    }
-    if include_env {
-        if let Some(env) = env_badges {
-            if !env.is_empty() {
-                parts.push(env.to_string());
-            }
-        }
-    }
-    if let Some(queue) = queue_text {
-        parts.push(queue.to_string());
-    }
-    if let Some(term) = term_text {
-        parts.push(term.to_string());
     }
 
-    parts.join(" ")
+    fn render(self) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        if let Some(usage) = self.usage {
+            parts.push(usage);
+        }
+        if let Some(core) = self.core.filter(|c| !c.is_empty()) {
+            parts.push(core);
+        }
+        if let Some(env) = self.env.filter(|e| !e.is_empty()) {
+            parts.push(env);
+        }
+        if let Some(queue) = self.queue {
+            parts.push(queue);
+        }
+        if let Some(term) = self.term {
+            parts.push(term);
+        }
+        parts.join(" ")
+    }
 }
 
 /// The main chat view widget containing messages, input, and status bar.

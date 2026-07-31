@@ -139,4 +139,32 @@ mod tests {
         let get = get_goal();
         assert!(get.success);
     }
+
+    #[test]
+    fn update_goal_complete_persists_under_maestro_home() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let previous = std::env::var("MAESTRO_HOME").ok();
+        // SAFETY: test-only env mutation; serialized by cargo's default harness
+        // for this crate's serial tests is not guaranteed, so restore always.
+        std::env::set_var("MAESTRO_HOME", dir.path());
+        let mut seed = GoalStore::load_default();
+        seed.create("finish it", None, true, Some(4), Some(9_000))
+            .expect("seed goal");
+        let id = seed.current.as_ref().unwrap().id.clone();
+
+        let result = update_goal(json!({"status": "complete"}));
+        assert!(result.success, "update_goal failed: {:?}", result.error);
+        assert!(result.output.contains("complete"), "{}", result.output);
+
+        let loaded = GoalStore::load_default();
+        let goal = loaded.current.expect("goal should remain on disk");
+        assert_eq!(goal.id, id);
+        assert_eq!(goal.status, GoalStatus::Complete);
+        assert!(!goal.auto_continue);
+
+        match previous {
+            Some(v) => std::env::set_var("MAESTRO_HOME", v),
+            None => std::env::remove_var("MAESTRO_HOME"),
+        }
+    }
 }

@@ -141,8 +141,11 @@ impl GoalStore {
 
     pub fn status_line(&self) -> Option<String> {
         self.current.as_ref().map(|g| {
-            let preview: String = g.text.chars().take(40).collect();
-            let ellipsis = if g.text.chars().count() > 40 {
+            // Keep the badge short so the status bar does not collide with the
+            // right-side queue/term badges on narrow terminals (80 cols).
+            const PREVIEW_CHARS: usize = 18;
+            let preview: String = g.text.chars().take(PREVIEW_CHARS).collect();
+            let ellipsis = if g.text.chars().count() > PREVIEW_CHARS {
                 "…"
             } else {
                 ""
@@ -240,12 +243,16 @@ impl GoalStore {
     }
 
     pub fn complete(&mut self) -> Result<Goal> {
-        let goal = self.current.take().context("no current goal")?;
-        let mut done = goal;
-        done.status = GoalStatus::Complete;
-        done.updated_at_unix = now_unix();
+        // Keep the goal record with status `complete` (do not clear `current`).
+        // Clearing used to race with mid-turn `account_tokens`, which rewrote a
+        // stale Active snapshot over the tool's disk write.
+        let goal = self.current.as_mut().context("no current goal")?;
+        goal.status = GoalStatus::Complete;
+        goal.auto_continue = false;
+        goal.block_reason = None;
+        goal.updated_at_unix = now_unix();
         self.save_default()?;
-        Ok(done)
+        Ok(self.current.clone().expect("just completed"))
     }
 
     pub fn clear(&mut self) -> Result<Option<Goal>> {
@@ -271,7 +278,15 @@ impl GoalStore {
     /// auto-continue when the safety `max_turns` circuit-breaker is reached.
     /// Returns `true` if the cap was just hit.
     pub fn note_auto_continue_submitted(&mut self) -> Result<bool> {
+        // Reload first: never clobber a mid-turn `update_goal` complete/blocked.
+        if self.persist_path.is_some() {
+            self.reload_from_disk();
+        }
         let goal = self.current.as_mut().context("no current goal")?;
+        if goal.status != GoalStatus::Active {
+            // Terminal / paused goals must not be rewritten as Active.
+            return Ok(true);
+        }
         goal.auto_continue_count = goal.auto_continue_count.saturating_add(1);
         goal.updated_at_unix = now_unix();
         let hit_cap = goal.auto_continue_count >= goal.max_turns;
@@ -292,7 +307,14 @@ impl GoalStore {
         if turn_tokens == 0 {
             return Ok(false);
         }
-        let goal = self.current.as_mut().context("no current goal")?;
+        // `update_goal` writes the same goals.json mid-turn. Reload so a stale
+        // in-memory Active snapshot cannot overwrite complete/blocked.
+        if self.persist_path.is_some() {
+            self.reload_from_disk();
+        }
+        let Some(goal) = self.current.as_mut() else {
+            return Ok(false);
+        };
         if goal.status != GoalStatus::Active {
             return Ok(false);
         }
@@ -348,44 +370,31 @@ impl GoalStore {
         if !self.should_auto_continue() {
             return None;
         }
+        // Keep this short: it is re-injected every auto-continue turn and was
+        // burning thousands of tokens per turn during bugbash.
         let mut prompt = format!(
-            "Continue working toward the active goal (id {}).\n\n\
-             <objective>\n{}\n</objective>\n\n\
-             Auto-continue turns so far: {} (safety max {}).\n",
-            g.id, g.text, g.auto_continue_count, g.max_turns
+            "Continue the active goal {id}.\n\
+             Objective: {text}\n\
+             Turns {n}/{max}.",
+            id = g.id,
+            text = g.text,
+            n = g.auto_continue_count,
+            max = g.max_turns
         );
-        match g.token_budget {
-            Some(budget) => {
-                let remaining = budget.saturating_sub(g.tokens_used);
-                prompt.push_str(&format!(
-                    "Token budget: used {} / {} (remaining {}).\n",
-                    g.tokens_used, budget, remaining
-                ));
-            }
-            None => {
-                prompt.push_str(&format!("Tokens used on this goal: {}.\n", g.tokens_used));
-            }
+        if let Some(budget) = g.token_budget {
+            let remaining = budget.saturating_sub(g.tokens_used);
+            prompt.push_str(&format!(
+                " Tokens {}/{} ({} left).",
+                g.tokens_used, budget, remaining
+            ));
         }
         if let Some(criteria) = &g.success_criteria {
-            prompt.push_str(&format!("Success criteria: {criteria}\n"));
+            prompt.push_str(&format!(" Success criteria: {criteria}."));
         }
         prompt.push_str(
-            "\nContinuation behavior:\n\
-             - This goal persists across turns. Ending this turn does not finish the goal.\n\
-             - Make concrete progress toward the full objective; do not redefine success smaller.\n\
-             - Use the current worktree as authoritative evidence.\n\
-             \n\
-             Completion audit (before calling update_goal):\n\
-             - Derive requirements from the objective and success criteria.\n\
-             - Verify each against current files, tests, or command output.\n\
-             - Uncertain evidence means not complete — keep working.\n\
-             - When (and only when) current evidence proves every requirement, call the tool \
-             `update_goal` with status \"complete\".\n\
-             - Call `update_goal` with status \"blocked\" and a reason only if the same blocker \
-             has repeated across multiple goal turns and you cannot progress without user input.\n\
-             - Do not mark complete merely because you are stopping work or the safety budget is low.\n\
-             - Do not call update_goal for pause/resume; those are user-controlled.\n\
-             - Use `get_goal` if you need the current goal record.\n",
+            " Make concrete progress. When evidence proves every requirement, \
+             call update_goal status=complete. If blocked after repeated failures, \
+             call update_goal status=blocked with reason. Do not stop without update_goal.",
         );
         Some(prompt)
     }
@@ -552,7 +561,12 @@ mod tests {
         assert!(store.should_auto_continue());
         let done = store.complete().unwrap();
         assert_eq!(done.status, GoalStatus::Complete);
-        assert!(store.current.is_none());
+        assert_eq!(
+            store.current.as_ref().map(|g| g.status),
+            Some(GoalStatus::Complete)
+        );
+        assert!(!store.should_auto_continue());
+        assert!(!store.tools_visible());
     }
 
     #[test]
@@ -612,6 +626,50 @@ mod tests {
         assert!(store.account_tokens(70).unwrap());
         assert!(!store.should_auto_continue());
         assert_eq!(store.current.as_ref().unwrap().tokens_used, 110);
+    }
+
+    #[test]
+    fn account_tokens_does_not_clobber_mid_turn_complete() {
+        // Regression: worker `update_goal` complete writes goals.json; a later
+        // ResponseEnd must not save a stale Active snapshot over it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("goals.json");
+        let mut app_store = GoalStore {
+            persist_path: Some(path.clone()),
+            ..Default::default()
+        };
+        app_store
+            .create("finish the file", None, false, None, Some(50_000))
+            .unwrap();
+        assert_eq!(
+            app_store.current.as_ref().unwrap().status,
+            GoalStatus::Active
+        );
+
+        // Simulate agent tool path: load same file, complete, save.
+        let mut tool_store = GoalStore {
+            persist_path: Some(path.clone()),
+            ..load_from_path(&path).unwrap()
+        };
+        tool_store.complete().unwrap();
+        assert_eq!(
+            tool_store.current.as_ref().unwrap().status,
+            GoalStatus::Complete
+        );
+
+        // Stale in-memory Active must not overwrite complete when accounting.
+        assert!(!app_store.account_tokens(1_200).unwrap());
+        assert_eq!(
+            app_store.current.as_ref().unwrap().status,
+            GoalStatus::Complete
+        );
+        let reloaded = load_from_path(&path).unwrap();
+        assert_eq!(
+            reloaded.current.as_ref().unwrap().status,
+            GoalStatus::Complete
+        );
+        // Tokens are not added after terminal status.
+        assert_eq!(reloaded.current.as_ref().unwrap().tokens_used, 0);
     }
 
     #[test]

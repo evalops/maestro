@@ -2918,12 +2918,16 @@ Manual snapshot: `/magic-trace stop`",
     /// Execute a slash command
     pub(super) async fn execute_slash_command(&mut self) -> Result<()> {
         let input = self.state.take_input();
+        // Normalize leading whitespace so " /goal status" still executes as a
+        // command instead of failing registry parse or falling through to the
+        // agent (bugbash: slash while busy looked like steering without `/`).
+        let input = input.trim().to_string();
 
         // Expand an unambiguous partial command ("/qui" -> "/quit") or rescue
         // a one-character typo ("/quti" -> "/quit") so that pressing Enter runs
         // the intended command instead of erroring — or worse, forwarding the
         // partial text to the agent as a prompt.
-        let without_slash = input.trim().trim_start_matches('/');
+        let without_slash = input.trim_start_matches('/');
         let mut parts = without_slash.splitn(2, char::is_whitespace);
         let typed_word = parts.next().unwrap_or("");
         let typed_args = parts.next().unwrap_or("").trim();

@@ -298,7 +298,9 @@ impl App {
                     // Shift+Enter: insert newline for multi-line input
                     self.state.insert_char('\n');
                 } else if !self.state.input().is_empty() {
-                    if self.state.input().starts_with('/') {
+                    // Trim so " /attach list" still runs as a slash command and
+                    // is never queued as steering with a missing leading '/'.
+                    if self.state.input().trim_start().starts_with('/') {
                         self.execute_slash_command().await?;
                     } else if self.state.busy {
                         let input = self.state.input().to_string();
