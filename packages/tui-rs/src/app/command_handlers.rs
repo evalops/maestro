@@ -2668,20 +2668,26 @@ Manual snapshot: `/magic-trace stop`",
                 .create(text, criteria, replace, max_turns, token_budget)
             {
                 Ok(goal) => {
-                    // Kick off work; later turns continue while the goal stays
-                    // active. The same worker model ends the loop via
-                    // `update_goal` complete|blocked (Codex-style).
-                    self.goal_auto_continue_armed = goal.auto_continue;
+                    // Arm only when an agent can actually take a turn. Without
+                    // an agent, arming would immediately burn auto_continue
+                    // count (bugbash: n=1 after create with no API key).
+                    self.goal_auto_continue_armed =
+                        goal.auto_continue && self.native_agent.is_some();
                     let budget = match goal.token_budget {
                         Some(b) => format!("Token budget: {b}. "),
                         None => String::new(),
+                    };
+                    let kickoff = if self.native_agent.is_some() {
+                        "Auto-continue will inject a kickoff turn while idle."
+                    } else {
+                        "Agent is not available yet — send a prompt after login, or restart with credentials; auto-continue will arm after a successful worker turn."
                     };
                     self.state.add_system_message(format!(
                         "Goal {} set (**{}**).\n\n{}\n\n\
                          Auto-continue (Codex-style): after each turn, if the goal is still active the TUI injects a continuation prompt. \
                          Mark done with the **`update_goal`** tool (`complete` or `blocked`) — same model. \
                          {budget}Safety max_turns={}. `/goal pause` stops. Skipped while `/loop` or queue is active. \
-                         Goal tools are hidden from the model when no goal exists.",
+                         Goal tools are hidden from the model when no goal exists.\n\n{kickoff}",
                         goal.id,
                         goal.status.as_str(),
                         goal.text,
