@@ -255,6 +255,36 @@ impl HeadlessState {
     }
 }
 
+async fn submit_prompt_with_kind(
+    state: &mut HeadlessState,
+    content: String,
+    attachments: Option<Vec<String>>,
+    kind: PromptKind,
+) -> Result<()> {
+    let atts = attachments.unwrap_or_default();
+    match state.agent_mut() {
+        Ok(agent) => {
+            if let Err(err) = agent.prompt_with_kind(content, atts, kind, None).await {
+                emit(&FromAgentMessage::Error {
+                    request_id: None,
+                    message: format!("Failed to send prompt: {err:#}"),
+                    fatal: false,
+                    error_type: Some(HeadlessErrorType::Protocol),
+                })?;
+            }
+        }
+        Err(err) => {
+            emit(&FromAgentMessage::Error {
+                request_id: None,
+                message: format!("Failed to start agent: {err:#}"),
+                fatal: true,
+                error_type: Some(HeadlessErrorType::Fatal),
+            })?;
+        }
+    }
+    Ok(())
+}
+
 /// Run the native headless protocol server until EOF or shutdown.
 pub async fn run_headless_server() -> Result<i32> {
     let mut state = HeadlessState::new();
@@ -407,30 +437,15 @@ pub async fn run_headless_server() -> Result<i32> {
                 content,
                 attachments,
             } => {
-                let atts = attachments.unwrap_or_default();
-                match state.agent_mut() {
-                    Ok(agent) => {
-                        if let Err(err) = agent
-                            .prompt_with_kind(content, atts, PromptKind::Prompt, None)
-                            .await
-                        {
-                            emit(&FromAgentMessage::Error {
-                                request_id: None,
-                                message: format!("Failed to send prompt: {err:#}"),
-                                fatal: false,
-                                error_type: Some(HeadlessErrorType::Protocol),
-                            })?;
-                        }
-                    }
-                    Err(err) => {
-                        emit(&FromAgentMessage::Error {
-                            request_id: None,
-                            message: format!("Failed to start agent: {err:#}"),
-                            fatal: true,
-                            error_type: Some(HeadlessErrorType::Fatal),
-                        })?;
-                    }
-                }
+                submit_prompt_with_kind(&mut state, content, attachments, PromptKind::Prompt)
+                    .await?;
+            }
+            ToAgentMessage::Steer {
+                content,
+                attachments,
+            } => {
+                submit_prompt_with_kind(&mut state, content, attachments, PromptKind::Steer)
+                    .await?;
             }
             ToAgentMessage::Interrupt | ToAgentMessage::Cancel => {
                 if let Some(agent) = state.agent.as_ref() {
@@ -1672,6 +1687,100 @@ fn tool_lifecycle_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn steer_message_reaches_codex_as_turn_steer_not_turn_start() {
+        if std::env::var_os("MAESTRO_HEADLESS_STEER_FIXTURE").is_some() {
+            assert_eq!(run_headless_server().await.expect("headless fixture"), 0);
+            return;
+        }
+
+        let root = tempfile::tempdir().expect("fixture root");
+        let script = root.path().join("app-server.js");
+        let log = root.path().join("app-server.log");
+        std::fs::write(
+            &script,
+            r"const rl=require('readline').createInterface({input:process.stdin});
+const fs=require('fs');
+const log=process.env.MAESTRO_HEADLESS_STEER_LOG;
+function send(x){process.stdout.write(JSON.stringify(x)+'\n')}
+rl.on('line',line=>{const x=JSON.parse(line);fs.appendFileSync(log,JSON.stringify(x)+'\n');
+if(x.method==='initialize'){send({id:x.id,result:{protocolVersion:'2025-01-01',capabilities:{}}})}
+else if(x.method==='thread/start'){send({id:x.id,result:{thread:{id:'thread-headless'}}})}
+else if(x.method==='turn/start'){send({id:x.id,result:{turn:{id:'turn-active'}}})}
+else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}});setTimeout(()=>send({method:'turn/completed',params:{turnId:'turn-active'}}),10)}
+});",
+        )
+        .expect("app-server script");
+        let current = std::env::current_exe().expect("current test binary");
+        let mut child = std::process::Command::new(current)
+            .arg("headless_server::tests::steer_message_reaches_codex_as_turn_steer_not_turn_start")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env("MAESTRO_HEADLESS_STEER_FIXTURE", "1")
+            .env("MAESTRO_HEADLESS_STEER_LOG", &log)
+            .env("MAESTRO_MODEL", "openai-codex/gpt-5.5")
+            .env("MAESTRO_CODEX_APP_SERVER_COMMAND", "node")
+            .env(
+                "MAESTRO_CODEX_APP_SERVER_ARGS_JSON",
+                serde_json::to_string(&vec![script.display().to_string()])
+                    .expect("app-server args"),
+            )
+            .env("OPENAI_CODEX_TOKEN", "fixture-token")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn headless fixture");
+        let mut stdin = child.stdin.take().expect("fixture stdin");
+        use std::io::Write as _;
+        writeln!(
+            stdin,
+            "{}",
+            json!({"type":"prompt","content":"start work","attachments":null})
+        )
+        .expect("write prompt");
+
+        let turn_started = std::time::Instant::now();
+        while !std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains(r#""method":"turn/start""#)
+        {
+            assert!(
+                turn_started.elapsed() < std::time::Duration::from_secs(5),
+                "headless prompt never reached turn/start: {}",
+                std::fs::read_to_string(&log).unwrap_or_default()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        writeln!(
+            stdin,
+            "{}",
+            json!({"type":"steer","content":"inspect the logs too","attachments":null})
+        )
+        .expect("write steer");
+        let steer_started = std::time::Instant::now();
+        while !std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains(r#""method":"turn/steer""#)
+        {
+            assert!(
+                steer_started.elapsed() < std::time::Duration::from_secs(5),
+                "headless steer did not reach turn/steer: {}",
+                std::fs::read_to_string(&log).unwrap_or_default()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        writeln!(stdin, "{}", json!({"type":"shutdown"})).expect("write shutdown");
+        drop(stdin);
+        let status = child.wait().expect("headless fixture status");
+        assert!(status.success(), "headless fixture failed: {status}");
+
+        let requests = std::fs::read_to_string(log).expect("app-server log");
+        assert_eq!(requests.matches(r#""method":"turn/start""#).count(), 1);
+        assert_eq!(requests.matches(r#""method":"turn/steer""#).count(), 1);
+    }
 
     #[test]
     fn native_capabilities_match_implemented_request_surface() {

@@ -12,6 +12,7 @@ pub struct HostedRunnerConfig {
     pub runner_session_id: String,
     pub workspace_root: PathBuf,
     pub bind_addr: SocketAddr,
+    pub runtime_generation: u64,
     pub owner_instance_id: Option<String>,
     pub snapshot_root: Option<PathBuf>,
     pub restore_manifest_path: Option<PathBuf>,
@@ -103,11 +104,28 @@ impl HostedRunnerConfig {
             .as_deref(),
             &workspace_root,
         );
+        let runtime_generation = first_env(
+            env,
+            &[
+                "MAESTRO_SANDBOXWICH_PLACEMENT_GENERATION",
+                "MAESTRO_REMOTE_RUNNER_GENERATION",
+            ],
+        )
+        .map(|value| {
+            value.parse::<u64>().map_err(|_| {
+                HostedRunnerConfigError::new(
+                    "hosted runner runtime generation must be an unsigned integer",
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or(0);
 
         Ok(Self {
             runner_session_id: non_empty(runner_session_id, "runner_session_id")?,
             workspace_root,
             bind_addr,
+            runtime_generation,
             owner_instance_id: first_env(
                 env,
                 &[
@@ -141,6 +159,7 @@ impl HostedRunnerConfig {
             bind_addr: format!("{DEFAULT_PROGRAMMATIC_LISTEN_HOST}:{DEFAULT_LISTEN_PORT}")
                 .parse()
                 .expect("default hosted runner bind address is valid"),
+            runtime_generation: 0,
             owner_instance_id: None,
             snapshot_root: None,
             restore_manifest_path: None,
@@ -156,6 +175,12 @@ impl HostedRunnerConfig {
     #[must_use]
     pub fn with_bind_addr(mut self, bind_addr: SocketAddr) -> Self {
         self.bind_addr = bind_addr;
+        self
+    }
+
+    #[must_use]
+    pub fn with_runtime_generation(mut self, runtime_generation: u64) -> Self {
+        self.runtime_generation = runtime_generation;
         self
     }
 

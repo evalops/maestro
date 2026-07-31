@@ -38,12 +38,14 @@ mod handle;
 mod manifests;
 mod shared;
 mod snapshots;
+mod thread_protocol;
 mod workload_identity;
 
 pub use config::{HostedRunnerConfig, HostedRunnerConfigError};
 pub use handle::{HostedRunnerHandle, HostedRunnerIdentity};
 use manifests::*;
 use snapshots::*;
+use thread_protocol::*;
 
 pub const HOSTED_RUNNER_IDENTITY_PATH: &str = "/.well-known/evalops/remote-runner/identity";
 pub const HOSTED_RUNNER_DRAIN_PATH: &str = "/.well-known/evalops/remote-runner/drain";
@@ -71,6 +73,7 @@ struct SharedRunner {
     events: broadcast::Sender<StreamEnvelope>,
     controller_events: broadcast::Sender<StreamEnvelope>,
     message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
+    thread_journal: Arc<ThreadJournal>,
     mutation_lifecycle: Arc<tokio::sync::Mutex<()>>,
     event_pump_cancellation: CancellationToken,
     event_pump_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
@@ -96,6 +99,7 @@ struct RunnerState {
     envelopes: VecDeque<StreamEnvelope>,
     controller_envelopes: VecDeque<StreamEnvelope>,
     pending_controller_events: VecDeque<FromAgentMessage>,
+    thread: ThreadProtocolState,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -512,11 +516,11 @@ pub async fn start_hosted_runner_with_message_executor(
     let listener = TcpListener::bind(config.bind_addr).await?;
     let local_addr = listener.local_addr()?;
     let shutdown = CancellationToken::new();
-    let shared = SharedRunner::new_with_message_executor_and_restore(
+    let shared = SharedRunner::try_new_with_message_executor_and_restore(
         config,
         message_executor,
         restore_manifest,
-    );
+    )?;
     shared.start_event_pump();
     let server_shared = shared.clone();
     let (task, identity_task, tls) = if let Some((exchanger, identity)) = identity_runtime {
@@ -1202,6 +1206,27 @@ async fn route_request(
             handle_connection_create(shared, input)
         }
         ("GET", path)
+            if path.starts_with("/api/headless/threads/")
+                && !path.ends_with("/events")
+                && !path.ends_with("/turns") =>
+        {
+            let thread_id = thread_id_from_path(path, "")?;
+            handle_thread_state(shared, thread_id)
+        }
+        ("GET", path)
+            if path.starts_with("/api/headless/threads/") && path.ends_with("/events") =>
+        {
+            let thread_id = thread_id_from_path(path, "/events")?;
+            handle_events(shared, thread_id, request.query)
+        }
+        ("POST", path)
+            if path.starts_with("/api/headless/threads/") && path.ends_with("/turns") =>
+        {
+            let thread_id = thread_id_from_path(path, "/turns")?;
+            let input = parse_json::<AppendTurnRequest>(&request.body)?;
+            handle_append_turn(shared, thread_id, request.headers, input).await
+        }
+        ("GET", path)
             if path.starts_with("/api/headless/sessions/") && path.ends_with("/state") =>
         {
             let session_id = session_id_from_path(path, "/state")?;
@@ -1554,6 +1579,179 @@ fn handle_state(shared: SharedRunner, session_id: &str) -> HostedResult<Response
     json_response(200, shared.public_snapshot(&state))
 }
 
+fn handle_thread_state(shared: SharedRunner, thread_id: &str) -> HostedResult<ResponseBody> {
+    let state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ensure_session_id(&state, Some(thread_id))?;
+    json_response(
+        200,
+        json!({
+            "protocol_version": THREAD_PROTOCOL_VERSION,
+            "thread_id": thread_id,
+            "runtime_generation": shared.config.runtime_generation,
+            "phase": state.thread.phase(),
+            "active_turn_id": state
+                .thread
+                .view(state.cursor, shared.config.runtime_generation)
+                .active_turn_id,
+            "cursor": state.cursor,
+            "turns": state
+                .thread
+                .view(state.cursor, shared.config.runtime_generation)
+                .turns,
+            "runtime": shared.public_snapshot(&state),
+        }),
+    )
+}
+
+async fn handle_append_turn(
+    shared: SharedRunner,
+    thread_id: &str,
+    headers: HashMap<String, String>,
+    input: AppendTurnRequest,
+) -> HostedResult<ResponseBody> {
+    input
+        .validate()
+        .map_err(|message| HostedError::new(HostedRunnerErrorCode::BadRequest, message))?;
+    require_runtime_generation(&headers, shared.config.runtime_generation)?;
+    let (connection_header_id, subscription_id, connection_capability) =
+        connection_from_headers(&headers);
+    {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ensure_session_id(&state, Some(thread_id))?;
+        let connection_id = resolve_authorized_connection_id(
+            &state,
+            connection_header_id,
+            subscription_id,
+            connection_capability.as_deref(),
+        )?;
+        assert_controller(&state, Some(connection_id.as_str()))?;
+        if !state.ready || state.draining {
+            return Err(HostedError::new(
+                HostedRunnerErrorCode::RuntimeNotReady,
+                "hosted thread runtime is not accepting turns",
+            ));
+        }
+        if let Some(turn) = state.thread.turn(&input.turn_id) {
+            if !turn.matches(&input) {
+                return Err(HostedError::new(
+                    HostedRunnerErrorCode::LeaseConflict,
+                    "turnId was already used with a different payload",
+                ));
+            }
+            return json_response(
+                200,
+                json!({
+                    "protocol_version": THREAD_PROTOCOL_VERSION,
+                    "thread_id": thread_id,
+                    "turn_id": turn.turn_id,
+                    "run_id": turn.run_id,
+                    "phase": turn.phase,
+                    "cursor": state.cursor,
+                    "replayed": true,
+                }),
+            );
+        }
+        if input.kind == ThreadTurnKind::UserMessage && state.thread.has_active_turn() {
+            return Err(HostedError::new(
+                HostedRunnerErrorCode::LeaseConflict,
+                "a turn is already active; append an explicit steer turn instead",
+            ));
+        }
+        let cursor = state.cursor;
+        state.thread.append(input.clone(), cursor);
+        shared.persist_thread(&state).map_err(|error| {
+            HostedError::new(
+                HostedRunnerErrorCode::RuntimeFailed,
+                format!("failed to persist accepted thread turn: {error}"),
+            )
+        })?;
+    }
+
+    let message = match input.kind {
+        ThreadTurnKind::UserMessage => ToAgentMessage::Prompt {
+            content: input.content,
+            attachments: input.attachments,
+        },
+        ThreadTurnKind::Steer => ToAgentMessage::Steer {
+            content: input.content,
+            attachments: input.attachments,
+        },
+    };
+    let execution = handle_message_inner(shared.clone(), thread_id, headers, message).await;
+    if let Err(error) = execution {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cursor = state.cursor;
+        state.thread.mark_failed(cursor);
+        let _ = shared.persist_thread(&state);
+        return Err(error);
+    }
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cursor = state.cursor;
+    state.thread.mark_dispatched(cursor);
+    shared.persist_thread(&state).map_err(|error| {
+        HostedError::new(
+            HostedRunnerErrorCode::RuntimeFailed,
+            format!("failed to persist dispatched thread turn: {error}"),
+        )
+    })?;
+    let turn = state
+        .thread
+        .turn(&input.turn_id)
+        .expect("accepted turn remains in append-only thread");
+    json_response(
+        200,
+        json!({
+            "protocol_version": THREAD_PROTOCOL_VERSION,
+            "thread_id": thread_id,
+            "turn_id": turn.turn_id,
+            "run_id": turn.run_id,
+            "phase": turn.phase,
+            "cursor": state.cursor,
+            "replayed": false,
+        }),
+    )
+}
+
+fn require_runtime_generation(
+    headers: &HashMap<String, String>,
+    expected_generation: u64,
+) -> HostedResult<()> {
+    let generation = headers
+        .get("x-maestro-runtime-generation")
+        .ok_or_else(|| {
+            HostedError::new(
+                HostedRunnerErrorCode::BadRequest,
+                "x-maestro-runtime-generation is required",
+            )
+        })?
+        .parse::<u64>()
+        .map_err(|_| {
+            HostedError::new(
+                HostedRunnerErrorCode::BadRequest,
+                "x-maestro-runtime-generation must be an unsigned integer",
+            )
+        })?;
+    if generation != expected_generation {
+        return Err(HostedError::new(
+            HostedRunnerErrorCode::RuntimeOwnedElsewhere,
+            "runtime generation is stale",
+        ));
+    }
+    Ok(())
+}
+
 fn handle_events(
     shared: SharedRunner,
     session_id: &str,
@@ -1649,6 +1847,15 @@ async fn handle_message(
     message: ToAgentMessage,
 ) -> HostedResult<ResponseBody> {
     let _lifecycle = shared.mutation_lifecycle.lock().await;
+    handle_message_inner(shared.clone(), session_id, headers, message).await
+}
+
+async fn handle_message_inner(
+    shared: SharedRunner,
+    session_id: &str,
+    headers: HashMap<String, String>,
+    message: ToAgentMessage,
+) -> HostedResult<ResponseBody> {
     let (connection_header_id, subscription_id, connection_capability) =
         connection_from_headers(&headers);
     let connection_id;
@@ -1751,7 +1958,7 @@ async fn handle_message(
                 });
                 state.last_status = Some("Initialized".to_string());
             }
-            ToAgentMessage::Prompt { content, .. } => {
+            ToAgentMessage::Prompt { content, .. } | ToAgentMessage::Steer { content, .. } => {
                 state.last_status = Some(format!("Prompt: {content}"));
                 executor_request = Some((
                     Arc::clone(&shared.message_executor),
@@ -2732,6 +2939,29 @@ fn session_id_from_path<'a>(path: &'a str, suffix: &str) -> HostedResult<&'a str
         ));
     };
     Ok(session_id.trim_end_matches('/'))
+}
+
+fn thread_id_from_path<'a>(path: &'a str, suffix: &str) -> HostedResult<&'a str> {
+    let Some(prefix_removed) = path.strip_prefix("/api/headless/threads/") else {
+        return Err(HostedError::new(
+            HostedRunnerErrorCode::NotFound,
+            "route not found",
+        ));
+    };
+    let Some(thread_id) = prefix_removed.strip_suffix(suffix) else {
+        return Err(HostedError::new(
+            HostedRunnerErrorCode::NotFound,
+            "route not found",
+        ));
+    };
+    let thread_id = thread_id.trim_end_matches('/');
+    if thread_id.is_empty() || thread_id.contains('/') {
+        return Err(HostedError::new(
+            HostedRunnerErrorCode::NotFound,
+            "route not found",
+        ));
+    }
+    Ok(thread_id)
 }
 
 fn resolve_workspace_path(

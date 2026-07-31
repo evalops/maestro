@@ -673,6 +673,12 @@ impl AgentState {
                 self.last_status = None;
                 self.is_responding = true;
             }
+            ToAgentMessage::Steer { .. } => {
+                self.last_error = None;
+                self.last_error_type = None;
+                self.last_status = None;
+                self.is_responding = true;
+            }
             ToAgentMessage::Interrupt | ToAgentMessage::Cancel => {
                 self.current_response = None;
                 self.pending_approvals.clear();
