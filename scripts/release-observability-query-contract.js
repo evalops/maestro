@@ -6,13 +6,10 @@ export const RELEASE_OBSERVABILITY_QUERY_SCHEMA =
 
 export const REQUIRED_OBSERVABILITY_QUERY_TRACES = [
 	"install",
-	"session",
+	"scenario",
 	"tool",
-	"search",
-	"approval",
 	"error",
-	"artifact",
-	"agent-runtime-lifecycle",
+	"inspection",
 	"final-status",
 ];
 
@@ -22,10 +19,10 @@ export const RELEASE_OBSERVABILITY_QUERY_DESCRIPTORS = {
 		platformConsumers: ["release.maestro-install-smoke"],
 		filterFields: ["packageSpec", "installer", "installable"],
 	},
-	session: {
-		subjects: ["maestro.sessions.session.closed"],
-		platformConsumers: ["release.maestro-session-final-state"],
-		filterFields: ["sessionId", "mode", "finalStatus"],
+	scenario: {
+		subjects: ["maestro.scenario.replay.ready"],
+		platformConsumers: ["release.maestro-scenario-replay-gates"],
+		filterFields: ["scenarioId", "mode", "observedOutcome"],
 	},
 	tool: {
 		subjects: [
@@ -38,40 +35,18 @@ export const RELEASE_OBSERVABILITY_QUERY_DESCRIPTORS = {
 			"release.maestro-tool-success-gates",
 			"release.maestro-tool-failure-gates",
 		],
-		filterFields: ["toolCallId", "toolName", "mode", "toolExecutionId"],
-	},
-	search: {
-		subjects: ["maestro.events.tool_call.completed"],
-		platformConsumers: ["release.maestro-tool-success-gates"],
-		filterFields: ["toolCallId", "toolName=search", "mode", "toolExecutionId"],
-	},
-	approval: {
-		subjects: ["maestro.events.approval_hit"],
-		platformConsumers: ["release.maestro-approval-gates"],
-		filterFields: ["approvalRequestId", "mode", "toolExecutionId"],
+		filterFields: ["toolCallId", "toolName", "mode"],
 	},
 	error: {
 		subjects: ["maestro.events.error.captured"],
 		platformConsumers: ["release.maestro-error-gates"],
 		filterFields: ["status", "mode", "expectedCount"],
 	},
-	artifact: {
-		subjects: ["maestro.events.artifact.created"],
-		platformConsumers: ["release.maestro-artifact-gates"],
-		filterFields: ["artifactId", "path", "mode"],
-	},
-	"agent-runtime-lifecycle": {
+	inspection: {
 		subjects: ["maestro.sessions.session.closed"],
-		platformConsumers: [
-			"release.maestro-session-final-state",
-			"release.maestro-tool-success-gates",
-		],
-		filterFields: ["sessionId", "pendingRequestId", "toolExecutionId"],
-		platformRecords: [
-			"AgentRuntimeRun",
-			"AgentRuntimeRunStep",
-			"ToolExecution",
-		],
+		platformConsumers: ["release.maestro-session-final-state"],
+		filterFields: ["sessionId", "promotionIdempotencyKey"],
+		platformRecords: ["AgentRuntimeRun", "AgentRuntimeRunStep"],
 	},
 	"final-status": {
 		subjects: ["maestro.events.final_status.reported"],
