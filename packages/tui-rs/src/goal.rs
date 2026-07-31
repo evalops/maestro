@@ -132,6 +132,48 @@ impl GoalStore {
         store
     }
 
+    /// Load goals for a new process and demote any leftover `active` goal.
+    ///
+    /// Do not use this mid-session: tool paths call [`load_default`] so they
+    /// never pause a live goal while the TUI is running.
+    pub fn load_for_process_start() -> Self {
+        let mut store = Self::load_default();
+        // Kimi-style: a process restart cannot continue the prior active turn.
+        let _ = store.demote_active_for_process_restart();
+        store
+    }
+
+    /// If the current goal is `active`, mark it `paused` and persist.
+    ///
+    /// Returns `true` when a demotion was written. Called on process start
+    /// (and available for tests).
+    pub fn demote_active_for_process_restart(&mut self) -> Result<bool> {
+        let Some(goal) = self.current.as_mut() else {
+            return Ok(false);
+        };
+        if goal.status != GoalStatus::Active {
+            return Ok(false);
+        }
+        goal.status = GoalStatus::Paused;
+        goal.auto_continue = false;
+        goal.last_judge_reason =
+            Some("paused on process restart (resume with /goal resume)".to_string());
+        goal.updated_at_unix = now_unix();
+        self.save_default()?;
+        Ok(true)
+    }
+
+    /// Drop the current goal so a forked session does not inherit it.
+    /// Returns the cleared goal id if any.
+    pub fn clear_for_session_fork(&mut self) -> Result<Option<String>> {
+        let id = self.current.as_ref().map(|g| g.id.clone());
+        if id.is_some() {
+            self.current = None;
+            self.save_default()?;
+        }
+        Ok(id)
+    }
+
     pub fn save_default(&self) -> Result<()> {
         let Some(path) = &self.persist_path else {
             return Ok(());
@@ -587,6 +629,45 @@ mod tests {
         );
         assert!(!store.should_auto_continue());
         assert!(!store.tools_visible());
+    }
+
+    #[test]
+    fn demote_active_for_process_restart_persists_paused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("goals.json");
+        let mut store = GoalStore {
+            persist_path: Some(path.clone()),
+            ..Default::default()
+        };
+        store
+            .create("keep working", None, false, None, None)
+            .unwrap();
+        assert_eq!(store.current.as_ref().unwrap().status, GoalStatus::Active);
+        assert!(store.demote_active_for_process_restart().unwrap());
+        assert_eq!(store.current.as_ref().unwrap().status, GoalStatus::Paused);
+        assert!(!store.current.as_ref().unwrap().auto_continue);
+        assert!(store
+            .current
+            .as_ref()
+            .unwrap()
+            .last_judge_reason
+            .as_ref()
+            .unwrap()
+            .contains("process restart"));
+        let reloaded = load_from_path(&path).unwrap();
+        assert_eq!(
+            reloaded.current.as_ref().unwrap().status,
+            GoalStatus::Paused
+        );
+    }
+
+    #[test]
+    fn clear_for_session_fork_drops_goal() {
+        let mut store = GoalStore::default();
+        store.create("x", None, false, None, None).unwrap();
+        let id = store.clear_for_session_fork().unwrap();
+        assert!(id.is_some());
+        assert!(store.current.is_none());
     }
 
     #[test]

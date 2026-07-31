@@ -34,6 +34,17 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.61] - 2026-07-31
+
+### Added
+
+- Query cerebro memory first in incident-triage (#3246). <!-- maestro-release-note:20efff4066f6 -->
+- Inject background-task lifecycle into agent as tool notes (#3247). <!-- maestro-release-note:a64562eaa5b4 -->
+
+### Fixed
+
+- Goal resume-as-paused and non-blocking background tasks (#3244). <!-- maestro-release-note:b88e9d00a176 -->
+
 ## [0.10.60] - 2026-07-31
 
 ### Added

@@ -1291,6 +1291,13 @@ async fn run_fork(args: &[std::ffi::OsString]) -> Result<i32> {
 
     run_interactive_with_shutdown(move || {
         let mut app = App::new_with_initial_prompt(None)?;
+        // Forked chat must not keep the parent process goal (session-global
+        // goals.json). Clear after process-start demotion.
+        if let Ok(Some(goal_id)) = app.clear_goal_for_fork() {
+            app.note_system_message(format!(
+                "Goal {goal_id} was cleared for this forked session. Create a new goal with `/goal create` if needed."
+            ));
+        }
         app.resume_session_at_startup(&forked.id);
         Ok(app)
     })

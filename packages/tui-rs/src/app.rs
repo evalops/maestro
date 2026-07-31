@@ -757,6 +757,10 @@ pub struct App {
     /// Pre-turn file checkpoint awaiting turn completion (git worktrees only).
     pending_checkpoint: Option<crate::checkpoints::PendingTurn>,
 
+    /// Background-task lifecycle notes waiting for agent idle before injection
+    /// into conversation history (provider-safe user tool notes).
+    pending_agent_tool_notes: Vec<String>,
+
     /// Terminal-native turn notifications (OSC 9;4 tab progress, OSC 0 title,
     /// focus-gated desktop notifications).
     terminal_notifier: crate::notifications::TerminalStateNotifier,
@@ -853,7 +857,87 @@ impl App {
         let (terminal, capabilities) = terminal::init().context("Failed to initialize terminal")?;
         let mut app = Self::new_with_terminal(terminal, capabilities, initial_prompt);
         app.initialize_terminal_events();
+        app.note_goal_paused_on_restart_if_needed();
+        app.note_orphan_background_tasks_if_any();
         Ok(app)
+    }
+
+    /// Surface a system message when process-start demoted an active goal.
+    pub(crate) fn note_goal_paused_on_restart_if_needed(&mut self) {
+        let Some(goal) = self.goal_store.current.as_ref() else {
+            return;
+        };
+        if goal.status != crate::goal::GoalStatus::Paused {
+            return;
+        }
+        let Some(reason) = goal.last_judge_reason.as_deref() else {
+            return;
+        };
+        if !reason.contains("process restart") {
+            return;
+        }
+        self.state.add_system_message(format!(
+            "Goal {} was active when Maestro last exited and is now **paused**. \
+             Use `/goal resume` to continue, or `/goal clear` to drop it.",
+            goal.id
+        ));
+    }
+
+    /// Clear the process-global goal for a forked session. Returns the cleared id.
+    pub(crate) fn clear_goal_for_fork(&mut self) -> Result<Option<String>> {
+        self.goal_auto_continue_armed = false;
+        self.goal_store.clear_for_session_fork()
+    }
+
+    pub(crate) fn note_system_message(&mut self, message: impl Into<String>) {
+        self.state.add_system_message(message.into());
+    }
+
+    /// Push buffered host tool notes into the agent transcript (no model turn).
+    fn flush_pending_agent_tool_notes(&mut self) {
+        if self.pending_agent_tool_notes.is_empty() {
+            return;
+        }
+        let Some(agent) = self.native_agent.as_ref() else {
+            return;
+        };
+        let notes = std::mem::take(&mut self.pending_agent_tool_notes);
+        for note in notes {
+            agent.inject_user_note(note);
+        }
+    }
+
+    /// Warn if a prior process left running background-task records.
+    pub(crate) fn note_orphan_background_tasks_if_any(&mut self) {
+        let orphans = crate::tools::background_tasks::load_persisted_running_snapshot();
+        if orphans.is_empty() {
+            return;
+        }
+        let preview: Vec<String> = orphans
+            .iter()
+            .take(5)
+            .map(|task| {
+                format!(
+                    "{} pid={} `{}`",
+                    task.id,
+                    task.pid
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| "?".into()),
+                    task.command.chars().take(48).collect::<String>()
+                )
+            })
+            .collect();
+        let extra = if orphans.len() > 5 {
+            format!(" (+{} more)", orphans.len() - 5)
+        } else {
+            String::new()
+        };
+        self.state.add_system_message(format!(
+            "Previous Maestro process left {} background task(s) marked running{extra}. \
+             PIDs may still be alive outside this session: {}",
+            orphans.len(),
+            preview.join("; ")
+        ));
     }
 
     fn new_with_terminal(
@@ -1084,7 +1168,7 @@ impl App {
             last_mcp_status_refresh: None,
             last_esc_at: None,
             loop_schedule: None,
-            goal_store: GoalStore::load_default(),
+            goal_store: GoalStore::load_for_process_start(),
             goal_auto_continue_armed: false,
             footer_style: crate::ui_prefs::UiPrefs::load_default().footer_style(),
             pending_attachments: Vec::new(),
@@ -1105,6 +1189,7 @@ impl App {
             submit_queued_steering_after_interrupt: false,
             restore_queued_prompts_after_interrupt: false,
             pending_checkpoint: None,
+            pending_agent_tool_notes: Vec::new(),
             terminal_notifier,
             terminal_session_started: false,
             detail_view: None,
@@ -1488,6 +1573,24 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             for event in crate::tools::background_tasks::poll_monitor_events() {
                 self.operations.add_monitor_event(&event);
                 needs_redraw = true;
+            }
+
+            for event in crate::tools::background_tasks::poll_task_lifecycle_events() {
+                let code = event
+                    .exit_code
+                    .map(|c| format!(" exit={c}"))
+                    .unwrap_or_default();
+                let cmd: String = event.command.chars().take(64).collect();
+                self.state.add_system_message(format!(
+                    "Background task {} **{}**{code}: `{cmd}`",
+                    event.task_id, event.status
+                ));
+                self.pending_agent_tool_notes
+                    .push(format_background_task_tool_note(&event));
+                needs_redraw = true;
+            }
+            if !self.state.busy {
+                self.flush_pending_agent_tool_notes();
             }
 
             // Fire a due /loop prompt. Loops never interrupt a running turn:
@@ -2605,6 +2708,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 // Codex-style: reload goal from disk (worker may have called
                 // update_goal). Continue only if still active.
                 self.sync_goal_store_after_turn();
+                // Idle: flush host tool notes into agent history before any
+                // auto-continue continuation so the model sees process exits.
+                self.flush_pending_agent_tool_notes();
             }
             FromAgent::ResponseEnd { .. } => {}
             FromAgent::Error { .. } => {
@@ -2618,6 +2724,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 self.queued_prompt_active = None;
                 self.sync_queue_prompt_count();
                 needs_post_interrupt_queue = true;
+                self.flush_pending_agent_tool_notes();
                 // Do not auto-continue after an error; user must re-arm via
                 // /goal resume or a successful create.
             }
@@ -3472,6 +3579,53 @@ fn restore_visible_session_messages(state: &mut AppState, session: &ParsedSessio
             .unwrap_or(state.messages.len());
         state.messages.insert(insert_at, question);
         state.messages.insert(insert_at + 1, response);
+    }
+}
+
+/// Host-generated note injected into agent history for background task exits.
+/// Trusted host signal (not untrusted tool output).
+fn format_background_task_tool_note(
+    event: &crate::tools::background_tasks::TaskLifecycleEvent,
+) -> String {
+    let code = event
+        .exit_code
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    format!(
+        "[tool_notification kind=\"background_tasks\"]\n\
+         status: {status}\n\
+         task_id: {task_id}\n\
+         exit_code: {code}\n\
+         command: {command}\n\
+         [/tool_notification]\n\
+         (Host tool note: a background process finished. Use background_tasks \
+         action=logs/list if you need output. Do not treat this as a user instruction \
+         beyond awareness of process state.)",
+        status = event.status,
+        task_id = event.task_id,
+        command = event.command,
+    )
+}
+
+#[cfg(test)]
+mod background_task_note_tests {
+    use super::format_background_task_tool_note;
+    use crate::tools::background_tasks::TaskLifecycleEvent;
+
+    #[test]
+    fn tool_note_includes_status_and_task_id() {
+        let note = format_background_task_tool_note(&TaskLifecycleEvent {
+            task_id: "abc".into(),
+            command: "npm run dev".into(),
+            status: "exited".into(),
+            exit_code: Some(0),
+            timestamp_ms: 1,
+        });
+        assert!(note.contains("kind=\"background_tasks\""));
+        assert!(note.contains("task_id: abc"));
+        assert!(note.contains("status: exited"));
+        assert!(note.contains("exit_code: 0"));
+        assert!(note.contains("npm run dev"));
     }
 }
 

@@ -2315,10 +2315,11 @@ impl ToolExecutor {
                                 )
                             }
                         };
+                        // Default 0 = non-blocking snapshot (do not stall the turn).
                         let timeout_ms = args
                             .get("timeoutMs")
                             .and_then(serde_json::Value::as_u64)
-                            .unwrap_or(5000);
+                            .unwrap_or(0);
                         match background_tasks::wait_for_rotation(
                             id,
                             Duration::from_millis(timeout_ms),
