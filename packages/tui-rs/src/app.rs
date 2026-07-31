@@ -1512,7 +1512,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
             // Goal auto-continue (Codex-style): after idle, if the goal is still
             // active (worker did not call update_goal complete|blocked), inject
-            // a continuation prompt. No second model.
+            // a continuation prompt. No second model. Do not burn the safety
+            // counter or spin when no agent is available (e.g. missing API key).
             let queue_or_loop_busy = self.loop_schedule.is_some()
                 || !self.queued_prompts.is_empty()
                 || self.queued_prompt_inflight.is_some()
@@ -1522,34 +1523,67 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 && self.goal_auto_continue_armed
                 && self.goal_store.should_auto_continue()
             {
-                if let Some(prompt) = self.goal_store.continuation_prompt() {
+                if self.native_agent.is_none() {
+                    // Stay armed so a later successful agent start can continue,
+                    // but do not increment auto_continue_count or call submit.
                     self.goal_auto_continue_armed = false;
-                    match self.goal_store.note_auto_continue_submitted() {
-                        Ok(hit_cap) => {
-                            if hit_cap {
-                                let max = self
-                                    .goal_store
-                                    .current
-                                    .as_ref()
-                                    .map(|g| g.max_turns)
-                                    .unwrap_or(0);
-                                self.state.status.replace(format!(
-                                    "Goal auto-continue stopped (safety max {max})"
-                                ));
-                                self.state.add_system_message(format!(
-                                    "Goal auto-continue hit safety max_turns={max}. \
-                                     Mark goals done with the `update_goal` tool (or `/goal complete`). \
-                                     Use `/goal resume` or `/goal auto on` to re-arm."
-                                ));
-                            } else {
-                                self.state.status.replace("Goal auto-continue".to_string());
-                                self.submit_prompt(prompt).await?;
+                    self.state.status.replace(
+                        "Goal auto-continue waiting for agent (set API key / login)".to_string(),
+                    );
+                    needs_redraw = true;
+                } else if let Some(prompt) = self.goal_store.continuation_prompt() {
+                    self.goal_auto_continue_armed = false;
+                    // Check the safety cap *before* submitting so a failed send
+                    // never consumes a turn.
+                    let at_cap =
+                        self.goal_store.current.as_ref().is_some_and(|g| {
+                            g.auto_continue_count.saturating_add(1) >= g.max_turns
+                        });
+                    if at_cap {
+                        let max = self
+                            .goal_store
+                            .current
+                            .as_ref()
+                            .map(|g| g.max_turns)
+                            .unwrap_or(0);
+                        let _ = self.goal_store.note_auto_continue_submitted();
+                        self.state
+                            .status
+                            .replace(format!("Goal auto-continue stopped (safety max {max})"));
+                        self.state.add_system_message(format!(
+                            "Goal auto-continue hit safety max_turns={max}. \
+                             Mark goals done with the `update_goal` tool (or `/goal complete`). \
+                             Use `/goal resume` or `/goal auto on` to re-arm."
+                        ));
+                        needs_redraw = true;
+                    } else {
+                        self.state.status.replace("Goal auto-continue".to_string());
+                        match self
+                            .submit_prompt_with_kind(prompt, crate::agent::PromptKind::Prompt)
+                            .await
+                        {
+                            Ok(true) => {
+                                if let Err(e) = self.goal_store.note_auto_continue_submitted() {
+                                    self.state.error =
+                                        Some(format!("Goal auto-continue bookkeeping failed: {e}"));
+                                }
+                                needs_redraw = true;
                             }
-                            needs_redraw = true;
-                        }
-                        Err(e) => {
-                            self.state.error = Some(format!("Goal auto-continue failed: {e}"));
-                            needs_redraw = true;
+                            Ok(false) => {
+                                // Agent missing or session blocked — do not burn
+                                // the safety counter. Leave disarmed.
+                                self.state.status.replace(
+                                    "Goal auto-continue skipped (agent unavailable)".to_string(),
+                                );
+                                needs_redraw = true;
+                            }
+                            Err(e) => {
+                                self.state.error =
+                                    Some(format!("Goal auto-continue failed to submit: {e}"));
+                                // Leave disarmed so we do not tight-loop on a
+                                // permanent submit failure.
+                                needs_redraw = true;
+                            }
                         }
                     }
                 } else {
