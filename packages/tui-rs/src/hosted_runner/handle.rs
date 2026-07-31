@@ -12,6 +12,8 @@ pub struct HostedRunnerHandle {
     pub(super) shared: SharedRunner,
     pub(super) shutdown: CancellationToken,
     pub(super) task: JoinHandle<()>,
+    pub(super) identity_task: Option<JoinHandle<()>>,
+    pub(super) tls: bool,
 }
 
 impl HostedRunnerHandle {
@@ -22,7 +24,8 @@ impl HostedRunnerHandle {
 
     #[must_use]
     pub fn base_url(&self) -> String {
-        format!("http://{}", self.local_addr)
+        let scheme = if self.tls { "https" } else { "http" };
+        format!("{scheme}://{}", self.local_addr)
     }
 
     pub async fn drain_for_shutdown(
@@ -55,6 +58,9 @@ impl HostedRunnerHandle {
         let _ = self.shared.stop_event_pump().await;
         self.shutdown.cancel();
         let _ = self.task.await;
+        if let Some(identity_task) = self.identity_task {
+            let _ = identity_task.await;
+        }
     }
 }
 

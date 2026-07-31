@@ -49,6 +49,27 @@ flags or environment variables, but the resolved values are the contract.
 | Existing Maestro session | `--maestro-session-id`, `MAESTRO_SESSION_ID` | optional |
 | Attach audience | `--attach-audience`, `MAESTRO_ATTACH_AUDIENCE` | optional |
 
+Managed Kubernetes workload-identity mode additionally requires all of the
+following values. Supplying only part of the set fails startup; static hosted
+runner bearer authentication is forbidden when the set is present.
+
+| Workload identity field | Environment |
+| --- | --- |
+| Projected pod-bound token | `MAESTRO_KUBERNETES_TOKEN_FILE` |
+| Identity HTTPS trust bundle | `MAESTRO_IDENTITY_TLS_CA_FILE` |
+| Certificate exchange endpoint | `MAESTRO_IDENTITY_EXCHANGE_URL` |
+| Organization binding | `MAESTRO_ORGANIZATION_ID` |
+| Workspace binding | `MAESTRO_WORKSPACE_ID` |
+| Sandbox binding | `MAESTRO_SANDBOX_ID` |
+| Placement generation | `MAESTRO_PLACEMENT_GENERATION` |
+| Runner session binding | `MAESTRO_RUNNER_SESSION_ID` |
+
+There is intentionally no file or environment input for a Runner Host client
+CA, Maestro server certificate, or private key. The authenticated exchange
+response carries the workload CA in memory. Maestro uses that CA only for the
+current server chain and Runner Host client verification, pinned to the exact
+client URI `spiffe://identity.evalops.dev/service/runner-host`.
+
 Hosted runner startup also sets these runtime defaults before the web server is
 imported:
 
@@ -332,11 +353,41 @@ as a resolved profile property.
 
 ### GKE Workload Identity Federation
 
-Runner pods should avoid long-lived cloud keys. GKE Workload Identity
-Federation lets Kubernetes identities authenticate to Google Cloud APIs through
-IAM policies for specific namespaces or service accounts. Platform can use that
-for artifact upload, image pulls, or telemetry exporters without handing cloud
-keys to Maestro.
+Hosted runners must not receive a long-lived bearer or cloud key. The
+Kubernetes provider sets `automountServiceAccountToken: false` and projects one
+pod-bound TokenRequest JWT into the Maestro container only. The projection has
+an exact EvalOps STS audience and a short expiration with kubelet rotation; it
+does not grant generic Google Cloud IAM access and is not mounted into the guest
+workspace or helper containers.
+
+Maestro exchanges that projected identity with the configured EvalOps Identity
+service using a fresh in-memory P-256 CSR for a certificate valid for at most
+five minutes. The issued identity is bound to the typed runtime
+resource, including sandbox id, authoritative pod UID, resident generation,
+and the current Platform session binding. Issuance and renewal fail closed when
+the Kubernetes issuer, audience, subject, pod UID, lease, generation, placement,
+or digest-pinned runtime image no longer matches the provider's authoritative
+state.
+
+The hosted runner re-reads the kubelet-rotated token and generates a new key for
+every renewal. It atomically replaces the TLS configuration before expiry and
+closes connections authenticated under the prior generation. Failed renewal
+keeps the current certificate only until its recorded expiry, then closes
+existing connections and refuses new TLS handshakes until exchange succeeds.
+No projected token, private key, CSR, or certificate is persisted or logged.
+Runner Host connects through the provider-private endpoint, verifies the exact
+dynamic Maestro certificate identity and session binding, and presents its own
+short-lived ClientAuth identity. Maestro accepts it only when it chains to the
+CA returned by the same Identity exchange and has the exact Runner Host URI.
+Attach tokens authorize a user to the Runner Host proxy; they are never
+forwarded to Maestro and are not runner credentials.
+
+Provider implementations must cover projected-token rotation, certificate
+renewal, stale generation and replaced-pod rejection, wrong audience/issuer/
+subject rejection, and revocation after stop or lease expiry. The public
+Maestro contract intentionally does not expose Kubernetes service-account
+names, cluster issuers, cloud IAM principals, certificate authorities, or
+provider DNS names.
 
 ### Daytona
 

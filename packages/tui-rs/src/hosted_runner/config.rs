@@ -20,6 +20,18 @@ pub struct HostedRunnerConfig {
     pub maestro_session_id: Option<String>,
     pub attach_audience: Option<String>,
     pub auth_token: Option<String>,
+    pub workload_identity: Option<HostedRunnerWorkloadIdentityConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HostedRunnerWorkloadIdentityConfig {
+    pub kubernetes_token_file: PathBuf,
+    pub identity_tls_ca_file: PathBuf,
+    pub identity_exchange_url: url::Url,
+    pub organization_id: String,
+    pub workspace_id: String,
+    pub sandbox_id: uuid::Uuid,
+    pub placement_generation: u64,
 }
 
 impl HostedRunnerConfig {
@@ -58,7 +70,13 @@ impl HostedRunnerConfig {
             env,
             &["MAESTRO_HOSTED_RUNNER_AUTH_TOKEN", "MAESTRO_WEB_API_KEY"],
         );
-        if !bind_addr.ip().is_loopback() && auth_token.is_none() {
+        let workload_identity = parse_workload_identity(env)?;
+        if workload_identity.is_some() && auth_token.is_some() {
+            return Err(HostedRunnerConfigError::new(
+                "projected workload identity mode forbids static bearer authentication",
+            ));
+        }
+        if !bind_addr.ip().is_loopback() && auth_token.is_none() && workload_identity.is_none() {
             return Err(HostedRunnerConfigError::new(
                 "maestro hosted-runner requires MAESTRO_HOSTED_RUNNER_AUTH_TOKEN or MAESTRO_WEB_API_KEY when binding to non-loopback interfaces",
             ));
@@ -107,6 +125,7 @@ impl HostedRunnerConfig {
             maestro_session_id: env_value(env, "MAESTRO_SESSION_ID"),
             attach_audience: env_value(env, "MAESTRO_ATTACH_AUDIENCE"),
             auth_token,
+            workload_identity,
         })
     }
 
@@ -130,6 +149,7 @@ impl HostedRunnerConfig {
             maestro_session_id: None,
             attach_audience: None,
             auth_token: None,
+            workload_identity: None,
         })
     }
 
@@ -180,6 +200,84 @@ impl HostedRunnerConfig {
         self.maestro_session_id = Some(maestro_session_id.into());
         self
     }
+}
+
+fn parse_workload_identity(
+    env: &HashMap<String, String>,
+) -> Result<Option<HostedRunnerWorkloadIdentityConfig>, HostedRunnerConfigError> {
+    if env.contains_key("MAESTRO_RUNNER_CLIENT_CA_FILE") {
+        return Err(HostedRunnerConfigError::new(
+            "MAESTRO_RUNNER_CLIENT_CA_FILE is not supported; Runner Host client trust comes from the authenticated Identity exchange response",
+        ));
+    }
+    const IDENTITY_TRIGGER_KEYS: [&str; 6] = [
+        "MAESTRO_KUBERNETES_TOKEN_FILE",
+        "MAESTRO_IDENTITY_TLS_CA_FILE",
+        "MAESTRO_IDENTITY_EXCHANGE_URL",
+        "MAESTRO_ORGANIZATION_ID",
+        "MAESTRO_SANDBOX_ID",
+        "MAESTRO_PLACEMENT_GENERATION",
+    ];
+    if !IDENTITY_TRIGGER_KEYS
+        .iter()
+        .any(|key| env.contains_key(*key))
+    {
+        return Ok(None);
+    }
+    let required = |key: &'static str| {
+        env_value(env, key).ok_or_else(|| {
+            HostedRunnerConfigError::new(format!("projected workload identity requires {key}"))
+        })
+    };
+    let kubernetes_token_file = PathBuf::from(required("MAESTRO_KUBERNETES_TOKEN_FILE")?);
+    if !kubernetes_token_file.is_absolute() {
+        return Err(HostedRunnerConfigError::new(
+            "MAESTRO_KUBERNETES_TOKEN_FILE must be an absolute read-only projected-token path",
+        ));
+    }
+    let identity_tls_ca_file = PathBuf::from(required("MAESTRO_IDENTITY_TLS_CA_FILE")?);
+    if !identity_tls_ca_file.is_absolute() {
+        return Err(HostedRunnerConfigError::new(
+            "MAESTRO_IDENTITY_TLS_CA_FILE must be an absolute read-only CA path",
+        ));
+    }
+    let identity_exchange_url = required("MAESTRO_IDENTITY_EXCHANGE_URL")?
+        .parse::<url::Url>()
+        .map_err(|_| {
+            HostedRunnerConfigError::new("MAESTRO_IDENTITY_EXCHANGE_URL must be a valid HTTPS URL")
+        })?;
+    if identity_exchange_url.scheme() != "https"
+        || identity_exchange_url.host_str().is_none()
+        || identity_exchange_url.username() != ""
+        || identity_exchange_url.password().is_some()
+    {
+        return Err(HostedRunnerConfigError::new(
+            "MAESTRO_IDENTITY_EXCHANGE_URL must be a valid HTTPS URL without userinfo",
+        ));
+    }
+    let sandbox_id = required("MAESTRO_SANDBOX_ID")?
+        .parse()
+        .map_err(|_| HostedRunnerConfigError::new("MAESTRO_SANDBOX_ID must be a UUID"))?;
+    let placement_generation = required("MAESTRO_PLACEMENT_GENERATION")?
+        .parse()
+        .map_err(|_| {
+            HostedRunnerConfigError::new("MAESTRO_PLACEMENT_GENERATION must be a positive integer")
+        })?;
+    if placement_generation == 0 {
+        return Err(HostedRunnerConfigError::new(
+            "MAESTRO_PLACEMENT_GENERATION must be a positive integer",
+        ));
+    }
+    let _ = required("MAESTRO_RUNNER_SESSION_ID")?;
+    Ok(Some(HostedRunnerWorkloadIdentityConfig {
+        kubernetes_token_file,
+        identity_tls_ca_file,
+        identity_exchange_url,
+        organization_id: required("MAESTRO_ORGANIZATION_ID")?,
+        workspace_id: required("MAESTRO_WORKSPACE_ID")?,
+        sandbox_id,
+        placement_generation,
+    }))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
