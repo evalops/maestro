@@ -17,7 +17,8 @@ const SCRIPTED_SCENARIO_RESULT_SCHEMA =
 	"evalops.maestro.scripted-scenario-result.v1";
 const AGENT_RUNTIME_LEDGER_SCHEMA = "evalops.maestro.agent-runtime-ledger.v1";
 const AGENT_RUNTIME_COMPLETION_GATE = "maestro_agent_runtime_ledger_recorded";
-const SCENARIO_RUNNER = "maestro scenario run --execute";
+const SCENARIO_RUNNER_EXECUTE = "maestro scenario run --execute";
+const SCENARIO_RUNNER_OFFLINE = "maestro scenario run";
 const SCENARIO_ID = "maestro-published-replay";
 const AUDIT_EVENT_TYPE = "maestro.scenario.replay.ready";
 const REQUIRED_INSTALLERS = ["npm"];
@@ -75,16 +76,25 @@ const WRITE_TOOL_SPEC = {
 const ARTIFACT_PATH = "published-replay-artifact.json";
 const SCRIPTED_REPLAY_APPROVAL_MODE = "auto";
 const SEARCH_SKIP_REASON = "rg-not-found";
+const EXECUTE_SKIP_REASON = "binary-lacks-execute";
 const EXPECTED_FINAL_TEXT_SHA256 =
 	"b1623066f0894eaf01ec8155297fa424a825ccfb65a82dfc406125d677662aff";
 // The smoke generates one of two scenario variants depending on whether the
 // ripgrep binary is available on PATH (the native `search` tool shells out
 // to rg). Both hashes are pinned; the hash determines which evidence shape
 // the verifier requires.
+// The smoke generates one of four scenario variants (search leg x execute
+// capability). All hashes are pinned; the hash determines which evidence
+// shape the verifier requires, so a forged skip on a capable-variant hash is
+// rejected and vice versa.
 const EXPECTED_SCENARIO_SHA256_WITH_SEARCH =
 	"57fa2783a7e1f062dfa8673f9b90c6d08d0df9de14690f492388697e2579909f";
 const EXPECTED_SCENARIO_SHA256_NO_SEARCH =
 	"04d2dc217b51f091272cfa6b96616624a12bf75cc3078150af07a518d8bfa0c0";
+const EXPECTED_SCENARIO_SHA256_NO_EXECUTE_WITH_SEARCH =
+	"a47fe043ffa85e49b05d2ebb4bd6d915885329b2cf57dd791d35afceee3446f6";
+const EXPECTED_SCENARIO_SHA256_NO_EXECUTE_NO_SEARCH =
+	"77a97b1a191dde2299d9d870d31f53aa27409fb5c5c3a36aec5af553e3c25742";
 const PUBLISHED_REPLAY_EVIDENCE_REF_PREFIXES = [
 	"tool-call:",
 	"scenario-assertion:",
@@ -158,14 +168,19 @@ function filterPublishedReplayEvidenceRefs(refs) {
 	);
 }
 
-function searchExecutedForScenarioSha(scenarioSha256) {
-	if (scenarioSha256 === EXPECTED_SCENARIO_SHA256_WITH_SEARCH) {
-		return true;
+function variantForScenarioSha(scenarioSha256) {
+	switch (scenarioSha256) {
+		case EXPECTED_SCENARIO_SHA256_WITH_SEARCH:
+			return { search: true, execute: true };
+		case EXPECTED_SCENARIO_SHA256_NO_SEARCH:
+			return { search: false, execute: true };
+		case EXPECTED_SCENARIO_SHA256_NO_EXECUTE_WITH_SEARCH:
+			return { search: true, execute: false };
+		case EXPECTED_SCENARIO_SHA256_NO_EXECUTE_NO_SEARCH:
+			return { search: false, execute: false };
+		default:
+			return null;
 	}
-	if (scenarioSha256 === EXPECTED_SCENARIO_SHA256_NO_SEARCH) {
-		return false;
-	}
-	return null;
 }
 
 function toolSpecsForSearch(searchExecuted) {
@@ -174,23 +189,33 @@ function toolSpecsForSearch(searchExecuted) {
 		: [READ_TOOL_SPEC, WRITE_TOOL_SPEC];
 }
 
-function assertionIdsForSearch(searchExecuted) {
-	return searchExecuted
+// Workspace execution assertions (the written artifact) only exist in the
+// scenario when the target binary advertises --execute.
+const EXECUTION_ASSERTION_IDS = ["artifact-exists", "artifact-contents"];
+
+function assertionIdsForVariant(variant) {
+	const ids = variant.search
 		? [
 				BASE_ASSERTION_IDS[0],
 				SEARCH_ASSERTION_ID,
 				...BASE_ASSERTION_IDS.slice(1),
 			]
 		: [...BASE_ASSERTION_IDS];
+	if (!variant.execute) {
+		return ids.filter((id) => !EXECUTION_ASSERTION_IDS.includes(id));
+	}
+	return ids;
 }
 
-function scenarioConfigIsValid(scenarioConfig, scenarioSha256, searchExecuted) {
+function scenarioConfigIsValid(scenarioConfig, scenarioSha256, variant) {
 	const searchTool = isObject(scenarioConfig?.searchTool)
 		? scenarioConfig.searchTool
 		: {};
+	const execute = isObject(scenarioConfig?.execute) ? scenarioConfig.execute : {};
 	return (
 		isObject(scenarioConfig) &&
-		scenarioConfig.runner === SCENARIO_RUNNER &&
+		scenarioConfig.runner ===
+			(variant.execute ? SCENARIO_RUNNER_EXECUTE : SCENARIO_RUNNER_OFFLINE) &&
 		scenarioConfig.scenarioSchemaVersion === SCRIPTED_SCENARIO_SCHEMA &&
 		scenarioConfig.scenarioId === SCENARIO_ID &&
 		scenarioConfig.scenarioSha256 === scenarioSha256 &&
@@ -200,13 +225,17 @@ function scenarioConfigIsValid(scenarioConfig, scenarioSha256, searchExecuted) {
 		scenarioConfig.approvalMode === SCRIPTED_REPLAY_APPROVAL_MODE &&
 		typeof scenarioConfig.sandboxMode === "string" &&
 		scenarioConfig.sandboxMode.length > 0 &&
-		toolSpecsForSearch(searchExecuted).every((spec) =>
+		toolSpecsForSearch(variant.search).every((spec) =>
 			stringArray(scenarioConfig.toolAllowlist).includes(spec.name),
 		) &&
-		(searchExecuted
+		(variant.search
 			? searchTool.status === "executed"
 			: searchTool.status === "skipped" &&
-				searchTool.reason === SEARCH_SKIP_REASON)
+				searchTool.reason === SEARCH_SKIP_REASON) &&
+		(variant.execute
+			? execute.status === "executed"
+			: execute.status === "skipped" &&
+				execute.reason === EXECUTE_SKIP_REASON)
 	);
 }
 
@@ -233,12 +262,14 @@ function scenarioConfigsMatch(left, right) {
 	);
 }
 
-function determinismIsValid(determinism) {
+function determinismIsValid(determinism, executeCapable = true) {
 	return (
 		isObject(determinism) &&
 		determinism.runs === 2 &&
 		determinism.identical === true &&
-		isSha256(determinism.transcriptSha256)
+		(executeCapable
+			? isSha256(determinism.transcriptSha256)
+			: isSha256(determinism.resultSha256))
 	);
 }
 
@@ -262,8 +293,8 @@ function transcriptCoversRequiredModes(transcript) {
 	);
 }
 
-function transcriptIsValid(transcript, scenarioSha256, searchExecuted) {
-	const specs = toolSpecsForSearch(searchExecuted);
+function transcriptIsValid(transcript, scenarioSha256, variant) {
+	const specs = toolSpecsForSearch(variant.search);
 	if (
 		!isObject(transcript) ||
 		transcript.schemaVersion !== TRANSCRIPT_SCHEMA ||
@@ -300,13 +331,16 @@ function transcriptIsValid(transcript, scenarioSha256, searchExecuted) {
 			mode?.final?.status === "ok" &&
 			mode?.final?.containsExpectedText === true &&
 			mode?.final?.textSha256 === EXPECTED_FINAL_TEXT_SHA256 &&
-			typeof mode?.session?.sessionId === "string" &&
-			mode.session.sessionId.length > 0 &&
-			Number.isFinite(mode?.session?.jsonlFileCount) &&
-			mode.session.jsonlFileCount > 0 &&
-			Number.isFinite(mode?.session?.bytes) &&
-			mode.session.bytes > 0 &&
-			isSha256(mode?.session?.sha256)
+			(variant.execute
+				? typeof mode?.session?.sessionId === "string" &&
+					mode.session.sessionId.length > 0 &&
+					Number.isFinite(mode?.session?.jsonlFileCount) &&
+					mode.session.jsonlFileCount > 0 &&
+					Number.isFinite(mode?.session?.bytes) &&
+					mode.session.bytes > 0 &&
+					isSha256(mode?.session?.sha256)
+				: mode?.session?.status === "skipped" &&
+					mode?.session?.reason === EXECUTE_SKIP_REASON)
 		);
 	});
 }
@@ -314,7 +348,7 @@ function transcriptIsValid(transcript, scenarioSha256, searchExecuted) {
 function transcriptObservabilityIsValid(
 	observabilityTranscript,
 	scenarioSha256,
-	searchExecuted,
+	variant,
 ) {
 	return (
 		isObject(observabilityTranscript) &&
@@ -322,14 +356,14 @@ function transcriptObservabilityIsValid(
 		observabilityTranscript.scenarioSha256 === scenarioSha256 &&
 		countModesWith(observabilityTranscript.modes, REQUIRED_REPLAY_MODES) ===
 			REQUIRED_REPLAY_MODES.length &&
-		toolSpecsForSearch(searchExecuted).every((spec) =>
+		toolSpecsForSearch(variant.search).every((spec) =>
 			stringArray(observabilityTranscript.toolCallIds).includes(spec.id),
 		) &&
 		observabilityTranscript?.finalStatus?.ok === REQUIRED_REPLAY_MODES.length
 	);
 }
 
-function agentRuntimeLedgerIsValid(ledger, searchExecuted) {
+function agentRuntimeLedgerIsValid(ledger, variant) {
 	if (!isObject(ledger)) {
 		return false;
 	}
@@ -360,7 +394,7 @@ function agentRuntimeLedgerIsValid(ledger, searchExecuted) {
 				Number.isFinite(count) &&
 				count > 0,
 		) &&
-		toolSpecsForSearch(searchExecuted).every((spec) =>
+		toolSpecsForSearch(variant.search).every((spec) =>
 			toolCallEvidence.some(
 				(entry) =>
 					entry?.toolName === spec.name &&
@@ -392,21 +426,28 @@ function releaseQueryDescriptorIsValid(entry, traceType) {
 	return releaseObservabilityQueryDescriptorIsValid(entry, traceType);
 }
 
-function queryableObservabilityIndexIsValid({ observability, searchExecuted }) {
+function queryableObservabilityIndexIsValid({ observability, variant }) {
 	const queryIndex = Array.isArray(observability?.queryIndex)
 		? observability.queryIndex
 		: [];
 	if (
-		!REQUIRED_OBSERVABILITY_QUERY_TRACES.every((traceType) =>
-			queryIndex.some(
+		!REQUIRED_OBSERVABILITY_QUERY_TRACES.every((traceType) => {
+			const expectedStatus =
+				!variant.execute &&
+				(traceType === "session" || traceType === "inspection")
+					? "skipped"
+					: "ok";
+			return queryIndex.some(
 				(entry) =>
 					isObject(entry) &&
 					entry.traceType === traceType &&
 					entry.queryable === true &&
-					entry.status === "ok" &&
+					entry.status === expectedStatus &&
+					(expectedStatus !== "skipped" ||
+						entry.reason === EXECUTE_SKIP_REASON) &&
 					releaseQueryDescriptorIsValid(entry, traceType),
-			),
-		)
+			);
+		})
 	) {
 		return false;
 	}
@@ -421,16 +462,19 @@ function queryableObservabilityIndexIsValid({ observability, searchExecuted }) {
 	const toolRefs = stringArray(toolEntry?.evidenceRefs);
 	const scenarioRefs = stringArray(scenarioEntry?.evidenceRefs);
 	const inspectionRefs = stringArray(inspectionEntry?.evidenceRefs);
-	const specs = toolSpecsForSearch(searchExecuted);
-	const assertionIds = assertionIdsForSearch(searchExecuted);
+	const specs = toolSpecsForSearch(variant.search);
+	const assertionIds = assertionIdsForVariant(variant);
 
 	return (
 		isObject(installEntry?.counts) &&
 		installEntry.counts.forbiddenReferences === 0 &&
 		installEntry.counts.workspaceProtocolReferences === 0 &&
-		queryIndexEntryHasRequiredModes(sessionEntry) &&
-		Number.isFinite(sessionEntry?.counts?.jsonlFileCount) &&
-		sessionEntry.counts.jsonlFileCount >= REQUIRED_REPLAY_MODES.length &&
+		(variant.execute
+			? queryIndexEntryHasRequiredModes(sessionEntry) &&
+				Number.isFinite(sessionEntry?.counts?.jsonlFileCount) &&
+				sessionEntry.counts.jsonlFileCount >= REQUIRED_REPLAY_MODES.length
+			: sessionEntry?.status === "skipped" &&
+				sessionEntry?.reason === EXECUTE_SKIP_REASON) &&
 		queryIndexEntryHasRequiredModes(scenarioEntry) &&
 		stringArray(scenarioEntry?.ids).includes(SCENARIO_ID) &&
 		scenarioEntry?.counts?.failed === 0 &&
@@ -444,9 +488,12 @@ function queryableObservabilityIndexIsValid({ observability, searchExecuted }) {
 		specs.every((spec) => toolRefs.includes(`tool-call:${spec.id}`)) &&
 		errorEntry?.counts?.count === 0 &&
 		errorEntry?.counts?.expectedCount === 0 &&
-		inspectionEntry?.status === "ok" &&
-		queryIndexEntryHasRequiredModes(inspectionEntry) &&
-		inspectionRefs.some((ref) => ref.startsWith("inspection-session:")) &&
+		(variant.execute
+			? inspectionEntry?.status === "ok" &&
+				queryIndexEntryHasRequiredModes(inspectionEntry) &&
+				inspectionRefs.some((ref) => ref.startsWith("inspection-session:"))
+			: inspectionEntry?.status === "skipped" &&
+				inspectionEntry?.reason === EXECUTE_SKIP_REASON) &&
 		queryIndexEntryHasRequiredModes(finalStatusEntry) &&
 		finalStatusEntry?.counts?.ok === REQUIRED_REPLAY_MODES.length
 	);
@@ -507,10 +554,10 @@ export function readPublishedReplayEvidence(filePath) {
 	}
 }
 
-function validateModeEvidence(errors, mode, scenarioSha256, searchExecuted) {
+function validateModeEvidence(errors, mode, scenarioSha256, variant) {
 	const modeName = typeof mode?.mode === "string" ? mode.mode : "unknown";
-	const specs = toolSpecsForSearch(searchExecuted);
-	const assertionIds = assertionIdsForSearch(searchExecuted);
+	const specs = toolSpecsForSearch(variant.search);
+	const assertionIds = assertionIdsForVariant(variant);
 	pushUnless(errors, mode?.status === "ok", `${modeName}.status must be ok`);
 	pushUnless(
 		errors,
@@ -523,7 +570,7 @@ function validateModeEvidence(errors, mode, scenarioSha256, searchExecuted) {
 		["tool", READ_TOOL_SPEC, "read-tool-called"],
 		["artifactTool", WRITE_TOOL_SPEC, "write-artifact-tool-called"],
 	];
-	if (searchExecuted) {
+	if (variant.search) {
 		toolFields.splice(1, 0, [
 			"searchTool",
 			SEARCH_TOOL_SPEC,
@@ -557,7 +604,7 @@ function validateModeEvidence(errors, mode, scenarioSha256, searchExecuted) {
 			`${modeName}.${field}.assertionId must be ${assertionId}`,
 		);
 	}
-	if (!searchExecuted) {
+	if (!variant.search) {
 		pushUnless(
 			errors,
 			mode?.searchTool === undefined,
@@ -585,41 +632,56 @@ function validateModeEvidence(errors, mode, scenarioSha256, searchExecuted) {
 		Number.isFinite(mode?.output?.bytes) && mode.output.bytes > 0,
 		`${modeName}.output.bytes must be positive`,
 	);
-	pushUnless(
-		errors,
-		typeof mode?.session?.sessionId === "string" &&
-			mode.session.sessionId.length > 0,
-		`${modeName}.session.sessionId must be a non-empty string`,
-	);
-	pushUnless(
-		errors,
-		Number.isFinite(mode?.session?.jsonlFileCount) &&
-			mode.session.jsonlFileCount > 0,
-		`${modeName}.session.jsonlFileCount must be positive`,
-	);
-	pushUnless(
-		errors,
-		Number.isFinite(mode?.session?.bytes) && mode.session.bytes > 0,
-		`${modeName}.session.bytes must be positive`,
-	);
-	pushUnless(
-		errors,
-		isSha256(mode?.session?.sha256),
-		`${modeName}.session.sha256 must be a 64 character hex string`,
-	);
-	pushUnless(
-		errors,
-		mode?.session?.containsFinalText === true &&
-			mode?.session?.containsToolCallId === true &&
-			mode?.session?.containsWriteToolCallId === true &&
-			mode?.session?.containsSearchToolCallId === searchExecuted,
-		`${modeName}.session must record the final text and executed tool call ids`,
-	);
-	pushUnless(
-		errors,
-		agentRuntimeLedgerIsValid(mode?.agentRuntimeLedger, searchExecuted),
-		`${modeName}.agentRuntimeLedger must include completion-gated ledger operations, tool_call evidence, and durable idempotent promotion`,
-	);
+	if (variant.execute) {
+		pushUnless(
+			errors,
+			typeof mode?.session?.sessionId === "string" &&
+				mode.session.sessionId.length > 0,
+			`${modeName}.session.sessionId must be a non-empty string`,
+		);
+		pushUnless(
+			errors,
+			Number.isFinite(mode?.session?.jsonlFileCount) &&
+				mode.session.jsonlFileCount > 0,
+			`${modeName}.session.jsonlFileCount must be positive`,
+		);
+		pushUnless(
+			errors,
+			Number.isFinite(mode?.session?.bytes) && mode.session.bytes > 0,
+			`${modeName}.session.bytes must be positive`,
+		);
+		pushUnless(
+			errors,
+			isSha256(mode?.session?.sha256),
+			`${modeName}.session.sha256 must be a 64 character hex string`,
+		);
+		pushUnless(
+			errors,
+			mode?.session?.containsFinalText === true &&
+				mode?.session?.containsToolCallId === true &&
+				mode?.session?.containsWriteToolCallId === true &&
+				mode?.session?.containsSearchToolCallId === variant.search,
+			`${modeName}.session must record the final text and executed tool call ids`,
+		);
+		pushUnless(
+			errors,
+			agentRuntimeLedgerIsValid(mode?.agentRuntimeLedger, variant),
+			`${modeName}.agentRuntimeLedger must include completion-gated ledger operations, tool_call evidence, and durable idempotent promotion`,
+		);
+	} else {
+		pushUnless(
+			errors,
+			mode?.session?.status === "skipped" &&
+				mode?.session?.reason === EXECUTE_SKIP_REASON,
+			`${modeName}.session must be recorded as skipped (${EXECUTE_SKIP_REASON})`,
+		);
+		pushUnless(
+			errors,
+			mode?.agentRuntimeLedger?.status === "skipped" &&
+				mode?.agentRuntimeLedger?.reason === EXECUTE_SKIP_REASON,
+			`${modeName}.agentRuntimeLedger must be recorded as skipped (${EXECUTE_SKIP_REASON})`,
+		);
+	}
 
 	if (modeName === "json") {
 		pushUnless(
@@ -640,42 +702,50 @@ function validateModeEvidence(errors, mode, scenarioSha256, searchExecuted) {
 		);
 		pushUnless(
 			errors,
-			determinismIsValid(mode?.determinism),
-			"json.determinism must prove identical transcripts across two runs",
+			determinismIsValid(mode?.determinism, variant.execute),
+			"json.determinism must prove identical results across two runs",
 		);
-		pushUnless(
-			errors,
-			mode?.execution?.sessionId === mode?.session?.sessionId,
-			"json.execution.sessionId must match the recorded session evidence",
-		);
-		pushUnless(
-			errors,
-			mode?.execution?.finalText ===
-				"Published package golden path completed with manifest evidence.",
-			"json.execution.finalText must match the scenario final frame",
-		);
-		pushUnless(
-			errors,
-			isSha256(mode?.execution?.transcriptSha256) &&
-				mode?.execution?.transcriptSha256 ===
-					mode?.determinism?.transcriptSha256,
-			"json.execution.transcriptSha256 must match the determinism evidence",
-		);
-		pushUnless(
-			errors,
-			specs.every((spec) =>
-				(Array.isArray(mode?.execution?.toolExecutions)
-					? mode.execution.toolExecutions
-					: []
-				).some(
-					(entry) =>
-						entry?.callId === spec.id &&
-						entry?.tool === spec.name &&
-						entry?.success === true,
+		if (variant.execute) {
+			pushUnless(
+				errors,
+				mode?.execution?.sessionId === mode?.session?.sessionId,
+				"json.execution.sessionId must match the recorded session evidence",
+			);
+			pushUnless(
+				errors,
+				mode?.execution?.finalText ===
+					"Published package golden path completed with manifest evidence.",
+				"json.execution.finalText must match the scenario final frame",
+			);
+			pushUnless(
+				errors,
+				isSha256(mode?.execution?.transcriptSha256) &&
+					mode?.execution?.transcriptSha256 ===
+						mode?.determinism?.transcriptSha256,
+				"json.execution.transcriptSha256 must match the determinism evidence",
+			);
+			pushUnless(
+				errors,
+				specs.every((spec) =>
+					(Array.isArray(mode?.execution?.toolExecutions)
+						? mode.execution.toolExecutions
+						: []
+					).some(
+						(entry) =>
+							entry?.callId === spec.id &&
+							entry?.tool === spec.name &&
+							entry?.success === true,
+					),
 				),
-			),
-			"json.execution.toolExecutions must record every tool call succeeding",
-		);
+				"json.execution.toolExecutions must record every tool call succeeding",
+			);
+		} else {
+			pushUnless(
+				errors,
+				mode?.execution === undefined,
+				"json.execution must be absent when execute evidence is skipped",
+			);
+		}
 	}
 	if (modeName === "junit") {
 		pushUnless(
@@ -701,7 +771,7 @@ function validateModeEvidence(errors, mode, scenarioSha256, searchExecuted) {
 	}
 }
 
-function crossModeConsistencyIsValid(evidence) {
+function crossModeConsistencyIsValid(evidence, variant) {
 	const modes = Array.isArray(evidence?.modes) ? evidence.modes : [];
 	const jsonMode = modes.find((mode) => mode?.mode === "json");
 	if (!isObject(jsonMode)) {
@@ -709,7 +779,12 @@ function crossModeConsistencyIsValid(evidence) {
 	}
 	if (
 		JSON.stringify(canonicalJson(evidence?.replay?.determinism)) !==
-			JSON.stringify(canonicalJson(jsonMode.determinism)) ||
+		JSON.stringify(canonicalJson(jsonMode.determinism))
+	) {
+		return false;
+	}
+	if (
+		variant.execute &&
 		evidence?.replay?.determinism?.transcriptSha256 !==
 			jsonMode?.execution?.transcriptSha256
 	) {
@@ -722,12 +797,22 @@ function crossModeConsistencyIsValid(evidence) {
 		const transcriptMode = transcriptModes.find(
 			(entry) => entry?.mode === mode?.mode,
 		);
+		if (
+			!isObject(transcriptMode) ||
+			transcriptMode?.output?.sha256 !== mode?.output?.sha256 ||
+			transcriptMode?.output?.bytes !== mode?.output?.bytes
+		) {
+			return false;
+		}
+		if (variant.execute) {
+			return (
+				transcriptMode?.session?.sessionId === mode?.session?.sessionId &&
+				transcriptMode?.session?.sha256 === mode?.session?.sha256
+			);
+		}
 		return (
-			isObject(transcriptMode) &&
-			transcriptMode?.output?.sha256 === mode?.output?.sha256 &&
-			transcriptMode?.output?.bytes === mode?.output?.bytes &&
-			transcriptMode?.session?.sessionId === mode?.session?.sessionId &&
-			transcriptMode?.session?.sha256 === mode?.session?.sha256
+			transcriptMode?.session?.status === "skipped" &&
+			transcriptMode?.session?.reason === EXECUTE_SKIP_REASON
 		);
 	});
 }
@@ -756,15 +841,15 @@ export function validatePublishedReplayEvidence(
 		typeof evidence?.replay?.scenario?.sha256 === "string"
 			? evidence.replay.scenario.sha256
 			: "";
-	const searchExecuted = searchExecutedForScenarioSha(scenarioSha256);
+	const variant = variantForScenarioSha(scenarioSha256);
 	pushUnless(
 		errors,
-		searchExecuted !== null,
+		variant !== null,
 		"replay.scenario.sha256 must match a pinned published replay scenario variant",
 	);
-	const searchVariant = searchExecuted === true;
-	const specs = toolSpecsForSearch(searchVariant);
-	const assertionIds = assertionIdsForSearch(searchVariant);
+	const resolvedVariant = variant ?? { search: false, execute: false };
+	const specs = toolSpecsForSearch(resolvedVariant.search);
+	const assertionIds = assertionIdsForVariant(resolvedVariant);
 
 	const packageInfo = isObject(evidence?.package) ? evidence.package : {};
 	const installMetadata = isObject(packageInfo.installMetadata)
@@ -842,8 +927,17 @@ export function validatePublishedReplayEvidence(
 
 	pushUnless(
 		errors,
-		evidence?.replay?.runner === SCENARIO_RUNNER,
-		`replay.runner must be "${SCENARIO_RUNNER}"`,
+		evidence?.replay?.runner ===
+			(resolvedVariant.execute ? SCENARIO_RUNNER_EXECUTE : SCENARIO_RUNNER_OFFLINE),
+		`replay.runner must match the scenario variant's execute capability`,
+	);
+	pushUnless(
+		errors,
+		resolvedVariant.execute
+			? evidence?.replay?.execute?.status === "executed"
+			: evidence?.replay?.execute?.status === "skipped" &&
+				evidence?.replay?.execute?.reason === EXECUTE_SKIP_REASON,
+		"replay.execute must record the execute leg as executed or explicitly skipped",
 	);
 	pushUnless(
 		errors,
@@ -857,13 +951,13 @@ export function validatePublishedReplayEvidence(
 		scenarioConfigIsValid(
 			evidence?.replay?.scenarioConfig,
 			scenarioSha256,
-			searchVariant,
+			resolvedVariant,
 		),
 		"replay.scenarioConfig must describe the deterministic scenario execution configuration",
 	);
 	pushUnless(
 		errors,
-		searchVariant
+		resolvedVariant.search
 			? evidence?.replay?.searchTool?.status === "executed"
 			: evidence?.replay?.searchTool?.status === "skipped" &&
 				evidence?.replay?.searchTool?.reason === SEARCH_SKIP_REASON,
@@ -871,17 +965,17 @@ export function validatePublishedReplayEvidence(
 	);
 	pushUnless(
 		errors,
-		determinismIsValid(evidence?.replay?.determinism),
-		"replay.determinism must prove identical transcripts across two runs",
+		determinismIsValid(evidence?.replay?.determinism, resolvedVariant.execute),
+		"replay.determinism must prove identical results across two runs",
 	);
 	pushUnless(
 		errors,
-		crossModeConsistencyIsValid(evidence),
+		crossModeConsistencyIsValid(evidence, resolvedVariant),
 		"replay.determinism, json mode execution, and transcript sessions must be consistent",
 	);
 	pushUnless(
 		errors,
-		transcriptIsValid(evidence?.transcript, scenarioSha256, searchVariant),
+		transcriptIsValid(evidence?.transcript, scenarioSha256, resolvedVariant),
 		"transcript must include queryable published replay transcript evidence for text, json, and junit",
 	);
 
@@ -893,7 +987,7 @@ export function validatePublishedReplayEvidence(
 		`modes must exactly cover ${REQUIRED_REPLAY_MODES.join(", ")}`,
 	);
 	for (const mode of modes) {
-		validateModeEvidence(errors, mode, scenarioSha256, searchVariant);
+		validateModeEvidence(errors, mode, scenarioSha256, resolvedVariant);
 	}
 
 	try {
@@ -958,7 +1052,7 @@ export function validatePublishedReplayEvidence(
 		scenarioConfigIsValid(
 			observability?.scenarioConfig,
 			scenarioSha256,
-			searchVariant,
+			resolvedVariant,
 		) &&
 			scenarioConfigsMatch(
 				observability?.scenarioConfig,
@@ -971,7 +1065,7 @@ export function validatePublishedReplayEvidence(
 		transcriptObservabilityIsValid(
 			observability?.transcript,
 			scenarioSha256,
-			searchVariant,
+			resolvedVariant,
 		),
 		"observability.transcript must summarize transcript modes, tool calls, and final status",
 	);
@@ -1001,16 +1095,21 @@ export function validatePublishedReplayEvidence(
 	);
 	pushUnless(
 		errors,
-		countModesWith(observability?.sessions?.modes, REQUIRED_REPLAY_MODES) ===
-			REQUIRED_REPLAY_MODES.length &&
-			Number.isFinite(observability?.sessions?.jsonlFileCount) &&
-			observability.sessions.jsonlFileCount >= REQUIRED_REPLAY_MODES.length &&
-			REQUIRED_REPLAY_MODES.every(
-				(mode) =>
-					typeof observability?.sessions?.sha256ByMode?.[mode] === "string" &&
-					observability.sessions.sha256ByMode[mode].length === 64,
-			),
-		"observability.sessions must record a session JSONL for every replay mode",
+		resolvedVariant.execute
+			? countModesWith(observability?.sessions?.modes, REQUIRED_REPLAY_MODES) ===
+					REQUIRED_REPLAY_MODES.length &&
+				Number.isFinite(observability?.sessions?.jsonlFileCount) &&
+				observability.sessions.jsonlFileCount >= REQUIRED_REPLAY_MODES.length &&
+				REQUIRED_REPLAY_MODES.every(
+					(mode) =>
+						typeof observability?.sessions?.sha256ByMode?.[mode] === "string" &&
+						observability.sessions.sha256ByMode[mode].length === 64,
+				)
+			: observability?.sessions?.skipped?.reason === EXECUTE_SKIP_REASON &&
+				Array.isArray(observability?.sessions?.modes) &&
+				observability.sessions.modes.length === 0 &&
+				observability?.sessions?.jsonlFileCount === 0,
+		"observability.sessions must record a session JSONL for every replay mode, or an explicit execute skip",
 	);
 	pushUnless(
 		errors,
@@ -1035,30 +1134,33 @@ export function validatePublishedReplayEvidence(
 	}
 	pushUnless(
 		errors,
-		countModesWith(
-			observability?.agentRuntimeLedger?.modes,
-			REQUIRED_REPLAY_MODES,
-		) === REQUIRED_REPLAY_MODES.length &&
-			countModesWith(
-				observability?.agentRuntimeLedger?.replayDeterministicModes,
-				REQUIRED_REPLAY_MODES,
-			) === REQUIRED_REPLAY_MODES.length &&
-			countModesWith(
-				observability?.agentRuntimeLedger?.durabilityModes,
-				REQUIRED_REPLAY_MODES,
-			) === REQUIRED_REPLAY_MODES.length &&
-			observability?.agentRuntimeLedger?.completionGate ===
-				AGENT_RUNTIME_COMPLETION_GATE &&
-			specs.every((spec) =>
-				stringArray(observability?.agentRuntimeLedger?.toolCallIds).includes(
-					spec.id,
-				),
-			),
-		"observability.agentRuntimeLedger must summarize completion-gated ledger evidence for every replay mode",
+		resolvedVariant.execute
+			? countModesWith(
+						observability?.agentRuntimeLedger?.modes,
+						REQUIRED_REPLAY_MODES,
+					) === REQUIRED_REPLAY_MODES.length &&
+				countModesWith(
+					observability?.agentRuntimeLedger?.replayDeterministicModes,
+					REQUIRED_REPLAY_MODES,
+				) === REQUIRED_REPLAY_MODES.length &&
+				countModesWith(
+					observability?.agentRuntimeLedger?.durabilityModes,
+					REQUIRED_REPLAY_MODES,
+				) === REQUIRED_REPLAY_MODES.length &&
+				observability?.agentRuntimeLedger?.completionGate ===
+					AGENT_RUNTIME_COMPLETION_GATE &&
+				specs.every((spec) =>
+					stringArray(observability?.agentRuntimeLedger?.toolCallIds).includes(
+						spec.id,
+					),
+				)
+			: observability?.agentRuntimeLedger?.skipped?.reason ===
+				EXECUTE_SKIP_REASON,
+		"observability.agentRuntimeLedger must summarize completion-gated ledger evidence for every replay mode, or an explicit execute skip",
 	);
 	pushUnless(
 		errors,
-		queryableObservabilityIndexIsValid({ observability, searchExecuted: searchVariant }),
+		queryableObservabilityIndexIsValid({ observability, variant: resolvedVariant }),
 		"observability.queryIndex must provide queryable install, session, scenario, tool, error, inspection, and final-status traces with release query descriptors",
 	);
 
