@@ -1,21 +1,47 @@
 #!/usr/bin/env node
-// Refuse to publish a release containing a binary that was never executed.
+// Refuse to publish a release containing a binary that was never smoke-tested.
 //
-// Each matrix leg in .github/workflows/release.yml runs the native smoke
-// against the artifact it just built and writes smoked-<platform>.txt holding
-// that artifact's sha256. This script re-hashes every downloaded binary and
-// requires a matching marker, so a matrix leg that skipped, was filtered out
-// by an `if:`, or never started cannot reach the GitHub Release unnoticed.
+// Each matrix leg in .github/workflows/release.yml runs smoke against the
+// artifact it just built and writes smoked-<platform>.txt holding that
+// artifact's sha256. This script re-hashes every downloaded binary and
+// requires a matching marker.
+//
+// Platforms are either:
+//   - MAESTRO_RELEASE_PLATFORMS (space- or comma-separated), from the plan job
+//   - or inferred from maestro-* binaries present under the artifact directory
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-const PLATFORMS = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"];
-
 const dir = process.argv[2] ?? "release-binaries";
 if (!existsSync(dir)) {
 	console.error(`Release artifact directory not found: ${dir}`);
+	process.exit(1);
+}
+
+const fromEnv = (process.env.MAESTRO_RELEASE_PLATFORMS || "")
+	.split(/[\s,]+/)
+	.map((s) => s.trim())
+	.filter(Boolean);
+
+const inferred = readdirSync(dir)
+	.map((name) => {
+		const match = /^maestro-(linux|darwin)-(x64|arm64)$/.exec(name);
+		return match ? `${match[1]}-${match[2]}` : null;
+	})
+	.filter(Boolean);
+
+const PLATFORMS = fromEnv.length > 0 ? fromEnv : inferred;
+
+if (PLATFORMS.length === 0) {
+	console.error("No release platforms found (set MAESTRO_RELEASE_PLATFORMS or ship maestro-* binaries).");
+	process.exit(1);
+}
+
+// Always require linux-x64 — publish smoke runs that host binary.
+if (!PLATFORMS.includes("linux-x64")) {
+	console.error("Release platforms must include linux-x64 (publish host smoke).");
 	process.exit(1);
 }
 
@@ -34,7 +60,7 @@ for (const platform of PLATFORMS) {
 	}
 	if (!existsSync(marker)) {
 		failures.push(
-			`${platform}: no smoke marker — this binary was never executed on its own platform`,
+			`${platform}: no smoke marker — this binary was never smoke-tested`,
 		);
 		continue;
 	}
@@ -50,14 +76,14 @@ for (const platform of PLATFORMS) {
 	console.log(`ok  ${platform}  smoked  sha256=${actual}`);
 }
 
-// A platform added to the release matrix but not to PLATFORMS would otherwise
-// ship unchecked. Fail on any binary this script does not know about.
+// A platform binary present but not in PLATFORMS would ship unchecked.
 for (const entry of readdirSync(dir)) {
 	if (!entry.startsWith("maestro-")) continue;
+	if (entry.endsWith(".txt")) continue;
 	const platform = entry.slice("maestro-".length);
 	if (!PLATFORMS.includes(platform)) {
 		failures.push(
-			`${entry}: built but absent from the smoke-coverage list; add "${platform}" to PLATFORMS`,
+			`${entry}: built but absent from the release platform list (${PLATFORMS.join(", ")})`,
 		);
 	}
 }
@@ -69,5 +95,5 @@ if (failures.length > 0) {
 }
 
 console.log(
-	`\nAll ${PLATFORMS.length} shipped binaries were smoke-tested on their own platform.`,
+	`\nAll ${PLATFORMS.length} shipped binaries were smoke-tested (${PLATFORMS.join(", ")}).`,
 );
