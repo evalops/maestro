@@ -15,7 +15,7 @@ concurrency:
   group: \${{ github.workflow }}-\${{ github.event_name == 'workflow_dispatch' && (startsWith(inputs.version, 'v') && inputs.version || format('v{0}', inputs.version)) || github.ref_name }}
 jobs:
   prepare:
-    runs-on: \${{ vars.INTERNAL_CONFIRMATION_RUNNER }}
+    runs-on: \${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     outputs:
@@ -69,11 +69,12 @@ jobs:
           ref: ${releaseSha}
   publish:
     needs: [prepare, binaries]
-    runs-on: \${{ vars.INTERNAL_CONFIRMATION_RUNNER }}
+    runs-on: \${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
     environment:
       name: npm-release
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@sha
         with:
@@ -94,6 +95,7 @@ jobs:
           PACKAGE_NAME: \${{ needs.prepare.outputs.package_name }}
           PACKED_INTEGRITY: \${{ steps.pack.outputs.integrity }}
           RELEASE_VERSION: \${{ needs.prepare.outputs.release_version }}
+          TARBALL: \${{ steps.pack.outputs.tarball }}
           NPM_CONFIG_FETCH_RETRIES: "1"
           NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
           NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
@@ -101,8 +103,16 @@ jobs:
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org
         run: |
           set -euo pipefail
+          publish_with_oidc() {
+            npx --yes npm@11.10.0 publish "\$TARBALL" --access public --registry "$NPM_CONFIG_REGISTRY"
+          }
           publish_with_token() {
-            command npm publish "\${{ steps.pack.outputs.tarball }}" --access public --registry "$NPM_CONFIG_REGISTRY"
+            if [[ -z "\${NODE_AUTH_TOKEN:-}" ]]; then
+              return 1
+            fi
+            NPM_CONFIG_USERCONFIG="\$RUNNER_TEMP/npmrc" \\
+              NODE_AUTH_TOKEN="\$NODE_AUTH_TOKEN" \\
+              npx --yes npm@11.10.0 publish "\$TARBALL" --access public --registry "$NPM_CONFIG_REGISTRY"
           }
           verify_published_tarball() {
             registry_integrity="\$(
@@ -140,6 +150,9 @@ jobs:
           if [[ "\$registry_status" -eq 2 ]]; then
             exit 2
           fi
+          if publish_or_verify publish_with_oidc; then
+            exit 0
+          fi
           publish_or_verify publish_with_token
       - name: Smoke packed package without JS runtime
         env:
@@ -161,7 +174,7 @@ jobs:
           path: maestro-web-dist.tar.gz
   github-release:
     needs: [prepare, binaries, publish]
-    runs-on: \${{ vars.INTERNAL_CONFIRMATION_RUNNER }}
+    runs-on: \${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: write
     steps:
@@ -212,7 +225,7 @@ jobs:
     needs:
       - prepare
       - publish
-    runs-on: \${{ vars.INTERNAL_CONFIRMATION_RUNNER }}
+    runs-on: \${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -279,8 +292,8 @@ test("rejects swallowed npm publish failures", () => {
 test("comments cannot spoof environment, permissions, or dependencies", () => {
 	const spoofed = completeWorkflow
 		.replace(
-			"  publish:\n    needs: [prepare, binaries]\n    runs-on: ${{ vars.INTERNAL_CONFIRMATION_RUNNER }}\n    environment:\n      name: npm-release\n    permissions:\n      contents: read\n",
-			"  publish:\n    needs: [prepare, binaries]\n    runs-on: ${{ vars.INTERNAL_CONFIRMATION_RUNNER }}\n    environment:\n      name: npm-release\n    permissions:\n      # contents: read\n",
+			"  publish:\n    needs: [prepare, binaries]\n    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}\n    environment:\n      name: npm-release\n    permissions:\n      contents: read\n      id-token: write\n",
+			"  publish:\n    needs: [prepare, binaries]\n    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}\n    environment:\n      name: npm-release\n    permissions:\n      # contents: read\n      id-token: write\n",
 		)
 		.replace("    environment:\n      name: npm-release\n", "    # environment: npm-release\n")
 		.replace("      - publish\n", "      # - publish # needs: publish\n");
@@ -321,8 +334,8 @@ test("rejects extra workflow or job write permissions", () => {
 
 test("rejects publish checkout without contents read", () => {
 	const unreadablePublish = completeWorkflow.replace(
-		"  publish:\n    needs: [prepare, binaries]\n    runs-on: ${{ vars.INTERNAL_CONFIRMATION_RUNNER }}\n    environment:\n      name: npm-release\n    permissions:\n      contents: read\n",
-		"  publish:\n    needs: [prepare, binaries]\n    runs-on: ${{ vars.INTERNAL_CONFIRMATION_RUNNER }}\n    environment:\n      name: npm-release\n    permissions:\n",
+		"  publish:\n    needs: [prepare, binaries]\n    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}\n    environment:\n      name: npm-release\n    permissions:\n      contents: read\n      id-token: write\n",
+		"  publish:\n    needs: [prepare, binaries]\n    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}\n    environment:\n      name: npm-release\n    permissions:\n      id-token: write\n",
 	);
 	assert.ok(
 		validateReleaseWorkflow(unreadablePublish).some((failure) =>
@@ -603,8 +616,8 @@ test("rejects unauthorized early success or a shell function that shadows npm", 
 	);
 
 	const swallowedTokenFailure = completeWorkflow.replace(
-		'            command npm publish "${{ steps.pack.outputs.tarball }}" --access public --registry "$NPM_CONFIG_REGISTRY"\n',
-		'            command npm publish "${{ steps.pack.outputs.tarball }}" --access public --registry "$NPM_CONFIG_REGISTRY"\n            return 0\n',
+		'            npx --yes npm@11.10.0 publish "$TARBALL" --access public --registry "$NPM_CONFIG_REGISTRY"\n',
+		'            npx --yes npm@11.10.0 publish "$TARBALL" --access public --registry "$NPM_CONFIG_REGISTRY"\n            return 0\n',
 	);
 	assert.ok(
 		validateReleaseWorkflow(swallowedTokenFailure).some((failure) =>
@@ -677,14 +690,14 @@ test("rejects npm publication or reconciliation without the public registry", ()
 	);
 });
 
-test("rejects trusted publishing on the self-hosted release lane", () => {
+test("rejects removing the token-backed publish fallback", () => {
 	const trusted = completeWorkflow.replace(
 		"          publish_with_token() {\n",
 		"          publish_with_trusted_publisher() {\n",
 	);
 	assert.ok(
 		validateReleaseWorkflow(trusted).some((failure) =>
-			failure.includes("token-backed npm publication only"),
+			failure.includes("token-backed npm publication"),
 		),
 	);
 });
@@ -726,14 +739,14 @@ test("rejects an unbounded immutable tag fetch", () => {
 	);
 });
 
-test("rejects release control jobs outside the internal confirmation runner", () => {
+test("rejects release control jobs outside the public release runner", () => {
 	const wrongRunner = completeWorkflow.replace(
-		"    runs-on: ${{ vars.INTERNAL_CONFIRMATION_RUNNER }}",
+		"    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}",
 		"    runs-on: ubuntu-latest",
 	);
 	assert.ok(
 		validateReleaseWorkflow(wrongRunner).some((failure) =>
-			failure.includes("must run on INTERNAL_CONFIRMATION_RUNNER"),
+			failure.includes("must run on PUBLIC_RELEASE_RUNNER"),
 		),
 	);
 });

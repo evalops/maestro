@@ -67,8 +67,8 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "${GH_TOKEN}" ]]; then
-            echo "error: RUNTIME_IMAGE_SYNC_TOKEN is required to dispatch evalops/deploy image sync." >&2
-            exit 1
+            echo "::notice::RUNTIME_IMAGE_SYNC_TOKEN is not configured; skipping evalops/deploy image sync dispatch. The internal repo performs this dispatch."
+            exit 0
           fi
 
           image_tag="sha-${SOURCE_SHA:0:7}"
