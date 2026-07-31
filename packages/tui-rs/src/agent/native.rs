@@ -154,6 +154,7 @@ fn provider_id(provider: AiProvider) -> &'static str {
         AiProvider::Qwen => "dashscope",
         AiProvider::MiniMax => "minimax",
         AiProvider::Zai => "zai",
+        AiProvider::Scripted => "scripted-replay",
     }
 }
 
@@ -711,6 +712,41 @@ impl NativeAgent {
             credential_vault,
             None,
             None,
+        )
+    }
+
+    /// Create an agent with a caller-provided client (e.g. a deterministic
+    /// `UnifiedClient::Scripted` replay client) instead of resolving one from
+    /// `config.model` through the provider registry.
+    pub fn new_with_client(
+        config: NativeAgentConfig,
+        client: UnifiedClient,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
+        Self::new_with_tools_and_credential_vault_filtered(
+            config,
+            Vec::new(),
+            CredentialVault::new(),
+            None,
+            Some(client),
+        )
+    }
+
+    /// Create an agent with a caller-provided client, advertising only the
+    /// selected built-in tools to the model. Unlike
+    /// [`NativeAgent::new_with_allowed_tools_and_credential_vault`], execution
+    /// stays with the runner's own tool executor (this is the
+    /// `scenario run --execute` shape: scripted model, real tools).
+    pub fn new_with_client_and_allowed_tools(
+        config: NativeAgentConfig,
+        allowed_tools: &HashSet<String>,
+        client: UnifiedClient,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
+        Self::new_with_tools_and_credential_vault_filtered(
+            config,
+            Vec::new(),
+            CredentialVault::new(),
+            Some(allowed_tools),
+            Some(client),
         )
     }
 

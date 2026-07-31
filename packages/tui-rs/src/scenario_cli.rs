@@ -15,6 +15,8 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+pub(crate) mod execute;
+
 const SCRIPTED_SCHEMA: &str = "evalops.maestro.scripted-scenario.v1";
 const TRAJECTORY_SCHEMA: &str = "evalops.maestro.scenario.v1";
 const WORKSPACE_MANIFEST_SCHEMA: &str = "evalops.maestro.scenario-workspace-manifest.v1";
@@ -68,7 +70,7 @@ const TOOL_ADAPTER_MODES: &[&str] = &["recorded", "mocked", "sandboxed", "disabl
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ScriptedScenario {
+pub(crate) struct ScriptedScenario {
     schema_version: String,
     id: String,
     description: String,
@@ -282,6 +284,8 @@ struct ScriptedRunResult {
     release_gate: Option<ReleaseGateSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     workspace: Option<WorkspaceSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution: Option<execute::ExecutionSummary>,
     assertions: Vec<AssertionResult>,
 }
 
@@ -587,6 +591,7 @@ pub async fn run_scenario(args: &[String]) -> Result<i32> {
 
     let rest = &args[1..];
     let json = rest.iter().any(|a| a == "--json");
+    let execute = rest.iter().any(|a| a == "--execute");
     let junit_path = value_after(rest, "--junit");
     let positional = positional_args(rest);
     let Some(scenario_path) = positional.first() else {
@@ -671,6 +676,10 @@ pub async fn run_scenario(args: &[String]) -> Result<i32> {
                     .parent()
                     .map(Path::to_path_buf)
                     .unwrap_or_else(|| PathBuf::from("."));
+                if execute {
+                    return run_scripted_scenario_execute(&scenario, &base_dir, json, junit_path)
+                        .await;
+                }
                 let result = evaluate_scripted_scenario(&scenario, &base_dir)?;
                 if let Some(path) = junit_path {
                     write_junit_file(path, &scripted_result_to_junit(&result))?;
@@ -758,10 +767,13 @@ fn write_junit_file(path: &str, xml: &str) -> Result<()> {
 }
 
 fn scenario_help() -> &'static str {
-    "Usage: maestro scenario <validate|run> <path> [--json] [--junit <path>]\n\n\
+    "Usage: maestro scenario <validate|run> <path> [--execute] [--json] [--junit <path>]\n\n\
      Native support:\n\
        evalops.maestro.scripted-scenario.v1  validate + run (assertions, workspace, junit)\n\
        evalops.maestro.scenario.v1           full validate + offline run (trajectory artifacts)\n\n\
+     --execute replays a scripted scenario through the real agent loop via the\n\
+     scripted-replay provider: tools execute for real in the (hydrated)\n\
+     workspace under auto approval and a session JSONL is recorded.\n\n\
      Residual:\n\
        Remote http(s)/gs:// sources are not loaded natively yet."
 }
@@ -1734,8 +1746,319 @@ fn evaluate_scripted_scenario(
         },
         release_gate,
         workspace,
+        execution: None,
         assertions,
     })
+}
+
+/// Evaluate one assertion against a real `--execute` run: tool assertions
+/// check what the runtime actually executed, file assertions check the
+/// (possibly hydrated) execution workspace, and the audit event assertion
+/// checks the events the run surfaced.
+fn evaluate_execution_assertion(
+    assertion: &ScriptedAssertion,
+    scenario: &ScriptedScenario,
+    base_dir: &Path,
+    execution: &execute::ScenarioExecution,
+    workspace_manifest: Option<&WorkspaceManifest>,
+) -> AssertionResult {
+    match assertion.kind.as_str() {
+        "tool_called" => {
+            if assertion.tool.is_none() && assertion.tool_call_id.is_none() {
+                return fail(
+                    assertion,
+                    "tool_called requires tool or toolCallId.",
+                    vec![],
+                );
+            }
+            let expected_success =
+                scenario
+                    .frames
+                    .iter()
+                    .flat_map(|f| &f.statements)
+                    .any(|statement| {
+                        if statement.get("kind").and_then(Value::as_str) != Some("tool_call") {
+                            return false;
+                        }
+                        let tool_matches = assertion.tool.as_ref().is_none_or(|tool| {
+                            statement.get("tool").and_then(Value::as_str) == Some(tool.as_str())
+                        });
+                        let id_matches = assertion.tool_call_id.as_ref().is_none_or(|id| {
+                            statement.get("id").and_then(Value::as_str) == Some(id.as_str())
+                        });
+                        tool_matches
+                            && id_matches
+                            && statement.get("expectedResult").and_then(Value::as_str)
+                                != Some("error")
+                    });
+            let matches: Vec<_> = execution
+                .tool_executions
+                .iter()
+                .filter(|call| {
+                    assertion
+                        .tool
+                        .as_ref()
+                        .is_none_or(|tool| call.tool.eq_ignore_ascii_case(tool))
+                        && assertion
+                            .tool_call_id
+                            .as_ref()
+                            .is_none_or(|id| &call.call_id == id)
+                })
+                .collect();
+            if matches.is_empty() {
+                fail(assertion, "No executed tool call matched.", vec![])
+            } else if expected_success && matches.iter().any(|call| !call.success) {
+                fail(
+                    assertion,
+                    "A matched tool call failed during real execution.",
+                    matches
+                        .iter()
+                        .map(|call| AssertionEvidence {
+                            kind: "tool_execution".to_string(),
+                            id: call.call_id.clone(),
+                            source: "execution".to_string(),
+                            label: format!("{}:{}:failed", call.tool, call.call_id),
+                        })
+                        .collect(),
+                )
+            } else {
+                pass(
+                    assertion,
+                    format!("Matched {} executed tool call(s).", matches.len()),
+                    matches
+                        .iter()
+                        .map(|call| AssertionEvidence {
+                            kind: "tool_execution".to_string(),
+                            id: call.call_id.clone(),
+                            source: "execution".to_string(),
+                            label: format!(
+                                "{}:{}:{}",
+                                call.tool,
+                                call.call_id,
+                                if call.success { "success" } else { "error" }
+                            ),
+                        })
+                        .collect(),
+                )
+            }
+        }
+        "tool_not_called" => {
+            let matched = assertion.tool.as_ref().is_some_and(|tool| {
+                execution
+                    .tool_executions
+                    .iter()
+                    .any(|call| call.tool.eq_ignore_ascii_case(tool))
+            });
+            if matched {
+                fail(
+                    assertion,
+                    format!(
+                        "Tool {} was executed for real.",
+                        assertion.tool.clone().unwrap_or_default()
+                    ),
+                    vec![],
+                )
+            } else {
+                pass(
+                    assertion,
+                    format!(
+                        "Tool {} was not executed.",
+                        assertion.tool.clone().unwrap_or_default()
+                    ),
+                    vec![],
+                )
+            }
+        }
+        "file_exists" => {
+            let path = assertion.path.clone().unwrap_or_default();
+            let exists = !path.is_empty() && execution.workspace.join(&path).exists();
+            if exists {
+                pass(
+                    assertion,
+                    format!("File exists in execution workspace: {path}."),
+                    vec![AssertionEvidence {
+                        kind: "file".to_string(),
+                        id: path.clone(),
+                        source: "execution".to_string(),
+                        label: format!("file:{path}"),
+                    }],
+                )
+            } else {
+                fail(
+                    assertion,
+                    format!("File missing in execution workspace: {path}."),
+                    vec![],
+                )
+            }
+        }
+        "file_contents" => {
+            let path = assertion.path.clone().unwrap_or_default();
+            let contains = assertion.contains.clone().unwrap_or_default();
+            let contents = std::fs::read_to_string(execution.workspace.join(&path)).ok();
+            let matched = contents
+                .as_ref()
+                .is_some_and(|text| text.contains(&contains));
+            if matched {
+                pass(
+                    assertion,
+                    format!("File contents matched in execution workspace: {path}."),
+                    vec![AssertionEvidence {
+                        kind: "file".to_string(),
+                        id: path.clone(),
+                        source: "execution".to_string(),
+                        label: format!("file:{path}"),
+                    }],
+                )
+            } else {
+                fail(
+                    assertion,
+                    format!("File contents did not match in execution workspace: {path}."),
+                    vec![],
+                )
+            }
+        }
+        "audit_event_emitted" => {
+            let event_type = assertion.event_type.clone().unwrap_or_default();
+            if scenario.metadata.audit_events.contains(&event_type) {
+                pass(
+                    assertion,
+                    format!("Audit event present: {event_type}."),
+                    vec![AssertionEvidence {
+                        kind: "audit_event".to_string(),
+                        id: event_type.clone(),
+                        source: "audit".to_string(),
+                        label: format!("audit_event:{event_type}"),
+                    }],
+                )
+            } else {
+                fail(
+                    assertion,
+                    format!("Audit event missing: {event_type}."),
+                    vec![],
+                )
+            }
+        }
+        "workspace_manifest" => {
+            evaluate_workspace_manifest_assertion(assertion, scenario, base_dir, workspace_manifest)
+        }
+        other => fail(
+            assertion,
+            format!("Assertion kind {other} is not supported in --execute mode."),
+            vec![],
+        ),
+    }
+}
+
+/// `scenario run --execute`: replay the scenario through the real agent loop
+/// (scripted-replay provider), then evaluate assertions against the real
+/// execution evidence.
+async fn run_scripted_scenario_execute(
+    scenario: &ScriptedScenario,
+    base_dir: &Path,
+    json: bool,
+    junit_path: Option<&str>,
+) -> Result<i32> {
+    let workspace_manifest = match scenario.workspace_manifest_path.as_ref() {
+        Some(path) => Some(load_workspace_manifest(&base_dir.join(path))?),
+        None => None,
+    };
+    let execution = execute::execute_scripted_scenario(scenario, base_dir).await?;
+    let assertions: Vec<_> = scenario
+        .assertions
+        .iter()
+        .map(|assertion| {
+            evaluate_execution_assertion(
+                assertion,
+                scenario,
+                base_dir,
+                &execution,
+                workspace_manifest.as_ref(),
+            )
+        })
+        .collect();
+    let failed = assertions.iter().filter(|a| a.status == "fail").count();
+    let warnings = assertions.iter().filter(|a| a.status == "warn").count();
+    let passed = assertions.iter().filter(|a| a.status == "pass").count();
+    let observed_outcome = if failed > 0 { "fail" } else { "pass" };
+    let result = ScriptedRunResult {
+        schema_version: SCRIPTED_RESULT_SCHEMA,
+        scenario_schema_version: scenario.schema_version.clone(),
+        scenario: ScenarioOutcome {
+            id: scenario.id.clone(),
+            description: scenario.description.clone(),
+            expected_outcome: scenario
+                .expected_outcome
+                .clone()
+                .unwrap_or_else(|| "pass".to_string()),
+            observed_outcome: observed_outcome.to_string(),
+        },
+        run: RunMeta {
+            scenario_id: scenario.id.clone(),
+            replay: true,
+            frames: scenario.frames.len(),
+            tool_calls: execution.tool_executions.len(),
+            audit_events: scenario.metadata.audit_events.clone(),
+        },
+        counts: RunCounts {
+            assertions: assertions.len(),
+            passed,
+            failed,
+            warnings,
+            workspace_files: workspace_manifest
+                .as_ref()
+                .map(|m| m.files.len())
+                .unwrap_or(0),
+            tool_adapters: workspace_manifest
+                .as_ref()
+                .map(|m| m.tool_adapters.len())
+                .unwrap_or(0),
+        },
+        release_gate: None,
+        workspace: workspace_manifest.as_ref().map(|m| WorkspaceSummary {
+            manifest_id: m.id.clone(),
+            source: m.source.clone(),
+            recorded_at: m.recorded_at.clone(),
+            hydration_mode: m.hydration.mode.clone(),
+            files: m.files.len(),
+            tool_adapters: m.tool_adapters.len(),
+        }),
+        execution: Some(execution.summary()),
+        assertions,
+    };
+    if let Some(path) = junit_path {
+        write_junit_file(path, &scripted_result_to_junit(&result))?;
+    }
+    let matched = result.scenario.expected_outcome == result.scenario.observed_outcome;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        let summary = format!(
+            "{}/{} passed, {} failed, {} warning(s)",
+            result.counts.passed,
+            result.counts.assertions,
+            result.counts.failed,
+            result.counts.warnings
+        );
+        println!(
+            "Scripted scenario {} (executed in agent loop): {summary}",
+            result.scenario.id
+        );
+        for assertion in &result.assertions {
+            let marker = match assertion.status.as_str() {
+                "pass" => "PASS",
+                "warn" => "WARN",
+                _ => "FAIL",
+            };
+            println!("  {marker} {}: {}", assertion.id, assertion.message);
+        }
+        println!(
+            "  Session {} ({} tool call(s) executed): {}",
+            execution.session_id,
+            execution.tool_executions.len(),
+            execution.session_path.display()
+        );
+    }
+    Ok(i32::from(!matched))
 }
 
 fn escape_xml(value: &str) -> String {

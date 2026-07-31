@@ -3668,6 +3668,7 @@ fn provider_id(provider: AiProvider) -> &'static str {
         AiProvider::Qwen => "dashscope",
         AiProvider::MiniMax => "minimax",
         AiProvider::Zai => "zai",
+        AiProvider::Scripted => "scripted-replay",
     }
 }
 
