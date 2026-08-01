@@ -1,6 +1,6 @@
 # Maestro TUI User Guide
 
-Learn how to install, authenticate, configure, and extend the native Maestro terminal UI (`maestro-tui` / `packages/tui-rs`).
+Learn how to install, authenticate, configure, and extend the native Maestro terminal UI (`maestro` / `packages/tui-rs`).
 
 Interactive Maestro hands off to this native binary. For architecture and contributor notes, see [TUI Architecture](../../../../docs/TUI_ARCHITECTURE.md) and the [package README](../../README.md).
 

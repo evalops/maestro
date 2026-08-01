@@ -4,6 +4,7 @@ members = [
     "packages/maestro-rs",
     "packages/ai-rs",
     "packages/control-plane-rs",
+    "packages/execpolicy-rs",
     "packages/tui-rs",
     "packages/ambient-agent-rs",
 ]
@@ -23,6 +24,7 @@ glob = "0.3"
 libc = "0.2"
 maestro-ai = { path = "packages/ai-rs" }
 maestro-control-plane = { path = "packages/control-plane-rs" }
+maestro-execpolicy = { path = "packages/execpolicy-rs" }
 maestro-tui = { path = "packages/tui-rs" }
 # Shared by maestro-tui and maestro-control-plane; keep both crates on the
 # same version here so a security bump (e.g. the lopdf RUSTSEC-2026-0187

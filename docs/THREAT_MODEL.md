@@ -1,303 +1,248 @@
-# Threat Model
+# Maestro Threat Model
 
-> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. Safety and auth now live in `packages/tui-rs/src/safety/` and `packages/control-plane-rs/src/auth.rs`. The enterprise RBAC/audit/SSO surfaces described below have no verified Rust equivalent and may not have been ported. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+> **Status:** Current Rust runtime. This document is checked against the
+> implementation in `packages/tui-rs/`, `packages/control-plane-rs/`, and
+> `packages/execpolicy-rs/`. It describes the controls that exist today; it
+> does not claim that prompt injection, secret exposure, or arbitrary code
+> execution is solved.
 
+Audience: security reviewers and operators deploying Maestro in sensitive
+environments.
 
-Audience: security auditors, operators deploying Maestro in sensitive environments.
 Nav: [Docs index](README.md) · [Safety](SAFETY.md) · [Enterprise](ENTERPRISE.md)
 
-This document describes Maestro's security architecture, trust boundaries, and mitigations against common attack vectors.
+## Scope and trust boundaries
 
----
-
-## Trust Boundaries
+Maestro runs a local Rust agent and tool executor. The web/control-plane
+process exposes a separate HTTP boundary. Model providers, MCP servers,
+websites, files, and tool results are untrusted inputs unless the operator has
+chosen to trust them.
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              EXTERNAL TRUST BOUNDARY                         │
-│  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │                        LLM Provider APIs                               │  │
-│  │    Anthropic  ·  OpenAI  ·  Google  ·  Groq  ·  Custom Providers      │  │
-│  └───────────────────────────────────────────────────────────────────────┘  │
-│                                     ▲                                        │
-│                                     │ HTTPS/TLS                              │
-│                                     ▼                                        │
-│  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │                      MAESTRO PROCESS BOUNDARY                         │  │
-│  │                                                                         │  │
-│  │  ┌─────────────┐   ┌─────────────┐   ┌─────────────────────────────┐  │  │
-│  │  │   Agent     │◄──│   Safety    │◄──│     Tool Execution          │  │  │
-│  │  │   Core      │   │   Layer     │   │ bash · read · patch/edit │  │  │
-│  │  └─────────────┘   └─────────────┘   └─────────────────────────────┘  │  │
-│  │         │                │                         │                   │  │
-│  │         │                ▼                         ▼                   │  │
-│  │         │         ┌─────────────┐         ┌─────────────────┐         │  │
-│  │         │         │  Policy     │         │   Filesystem    │         │  │
-│  │         │         │  Engine     │         │   (Workspace)   │         │  │
-│  │         │         └─────────────┘         └─────────────────┘         │  │
-│  │         │                                                              │  │
-│  │         ▼                                                              │  │
-│  │  ┌─────────────────────────────────────────────────────────────────┐  │  │
-│  │  │                   User Interface (TUI/Web/CLI)                   │  │  │
-│  │  └─────────────────────────────────────────────────────────────────┘  │  │
-│  └───────────────────────────────────────────────────────────────────────┘  │
-│                                     ▲                                        │
-│                                     │ Terminal/HTTP                          │
-│                                     ▼                                        │
-│  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │                              USER                                       │  │
-│  └───────────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────────┘
+ User / web client
+        │ terminal or authenticated HTTP
+        ▼
+ Rust agent and control plane
+        │
+        ├── model/provider APIs (external)
+        ├── MCP servers and web tools (external)
+        └── safety gateway
+                ├── action firewall and enterprise policy
+                ├── path containment and sensitive-file checks
+                ├── approval / guardian decisions
+                └── optional native command sandbox
+                        │
+                        └── host processes and filesystem
 ```
 
----
-
-## Threat Categories
-
-### 1. Prompt Injection
-
-**Risk:** LLM receives malicious instructions embedded in user input, file contents, or web fetches.
-
-**Attack Surface:**
-- User messages containing adversarial prompts
-- File contents read by the agent (e.g., README.md, source code)
-- Web pages fetched via `webfetch` tool
-- MCP server responses
-
-**Mitigations:**
-| Control | Location | Description |
-|---------|----------|-------------|
-| Action Firewall | `src/safety/action-firewall.ts` | Blocks dangerous bash patterns regardless of LLM intent |
-| Semantic Analysis | `src/safety/action-firewall.ts` | Tree-sitter parses bash commands for semantic inspection |
-| User Approval | `src/agent/action-approval.ts` | High-risk operations require explicit user consent |
-| System Path Protection | `src/security/directory-access.ts` | Hard blocks writes to `/etc`, `/usr`, `/var`, etc. |
-| Safe Mode | `src/safety/safe-mode.ts` | Restricts shell operations when enabled |
-
-**Residual Risk:** Medium. LLM may still produce harmful output that evades pattern matching. User approval is the primary defense for novel attacks.
-
----
-
-### 2. Arbitrary Code Execution
-
-**Risk:** Agent executes malicious shell commands on the host system.
-
-**Attack Surface:**
-- `bash` tool execution
-- Background tasks
-- MCP server tool calls
-
-**Mitigations:**
-| Control | Location | Description |
-|---------|----------|-------------|
-| Regex + Semantic Firewall | `src/safety/action-firewall.ts` | Detects `rm -rf`, `mkfs`, `dd`, privilege escalation |
-| Docker Sandbox | `src/sandbox/` | Optional container isolation for untrusted workspaces |
-| Process Resource Limits | `src/tools/background-tasks.ts` | CPU and memory limits for background processes |
-| Approval Required | TUI/CLI | User must approve flagged commands |
-
-**Configuration:**
-```bash
-# Enable Docker sandbox
-maestro --sandbox docker
-
-# Reject all high-risk commands automatically
-maestro --approval-mode fail
-```
-
-**Residual Risk:** Low when approval mode is `prompt` or `fail`. High when using `auto` approval in untrusted environments.
-
----
-
-### 3. Data Exfiltration
-
-**Risk:** Sensitive data (API keys, credentials, PII) leaked via LLM responses or external requests.
-
-**Attack Surface:**
-- LLM context window contains sensitive file contents
-- Web search queries may include sensitive terms
-- Tool results sent back to LLM provider
-
-**Mitigations:**
-| Control | Location | Description |
-|---------|----------|-------------|
-| PII Detection | `src/safety/semantic-judge.ts` | Scans for common PII patterns before external transmission |
-| Secret Redaction | `src/utils/secret-redactor.ts` | Redacts API keys and tokens in logs and outputs |
-| Guardian Pre-commit | `.maestro/guardian.json` | Blocks commits containing secrets (Semgrep rules) |
-| Telemetry Opt-out | Default off | No data sent to Anthropic telemetry by default |
-| Audit Logging | `src/audit/` | HMAC-verified logs of sensitive operations (enterprise) |
-
-**Residual Risk:** Medium. Files read into context may contain secrets. Use workspace isolation for sensitive projects.
-
----
-
-### 4. Directory Traversal / Filesystem Access
-
-**Risk:** Agent reads or writes files outside the intended workspace.
-
-**Attack Surface:**
-- `read`, `apply_patch`, `write`, `edit` tools with path arguments
-- Symlink following
-- Parent directory escapes (`../`)
-
-**Mitigations:**
-| Control | Location | Description |
-|---------|----------|-------------|
-| Path Validation | `src/utils/path-validation.ts` | Resolves symlinks, blocks `..` escapes |
-| Directory ACLs | `src/security/directory-access.ts` | Allowlist/denylist for path patterns |
-| System Path Blocks | Hardcoded | `/etc`, `/usr`, `/var`, `/boot`, `/dev`, `/proc`, `/sys` always blocked |
-| Workspace Containment | `src/safety/policy.ts` | Approval required for writes outside project root |
-
-**Example Policy:**
-```json
-{
-  "directoryAccess": {
-    "allow": ["./src/**", "./test/**"],
-    "deny": ["./secrets/**", "./.env*"]
-  }
-}
-```
-
-**Residual Risk:** Low. Path validation is comprehensive but complex symlink chains may bypass checks.
-
----
-
-### 5. Network-Based Attacks
-
-**Risk:** Agent makes unauthorized network requests or connects to malicious endpoints.
-
-**Attack Surface:**
-- `webfetch` and `websearch` tools
-- MCP server connections
-- LLM API requests
-
-**Mitigations:**
-| Control | Location | Description |
-|---------|----------|-------------|
-| Rate Limiting | `src/server/rate-limiter.ts` | TieredRateLimiter prevents request floods |
-| URL Validation | `src/tools/webfetch.ts` | Blocks private IP ranges, localhost |
-| TLS Enforcement | Provider transports | All LLM API calls use HTTPS |
-| Network Config | `src/providers/network-config.ts` | Proxy and timeout configuration |
-
-**Residual Risk:** Low. Web fetch is rate-limited and URL-validated.
-
----
-
-### 6. Denial of Service
-
-**Risk:** Resource exhaustion via runaway processes or excessive LLM calls.
-
-**Attack Surface:**
-- Infinite loops in bash commands
-- Background tasks consuming resources
-- Context window exhaustion
-
-**Mitigations:**
-| Control | Location | Description |
-|---------|----------|-------------|
-| Background Task Limits | `src/tools/background-tasks.ts` | Max concurrent tasks, CPU/memory limits |
-| Execution Timeouts | Tool implementations | Configurable timeouts for all tools |
-| Context Compaction | `packages/tui-rs/src/agent/compaction.rs` (native TUI); TS agent compaction for headless/web | Auto-compacts at ~85% context usage |
-| Rate Limiting | `src/server/rate-limiter.ts` | Per-route and global request limits |
-
-**Residual Risk:** Low. Resource limits are configurable and enforced.
-
----
-
-### 7. Supply Chain / Dependency Risks
-
-**Risk:** Malicious code in dependencies or MCP servers.
-
-**Attack Surface:**
-- npm dependencies
-- MCP server plugins
-- Custom provider implementations
-
-**Mitigations:**
-| Control | Location | Description |
-|---------|----------|-------------|
-| Lockfile pinning | `Cargo.lock`, `package-lock.json` | Exact native and distribution dependency versions |
-| Guardian CI | `.github/workflows/` | Semgrep security scanning in CI |
-| MCP Isolation | Per-server processes | MCP servers run in separate processes |
-| Dependency Audit | `npm audit` | Regular vulnerability scanning |
-
-**Residual Risk:** Medium. MCP servers have broad capabilities. Vet servers before enabling.
-
----
-
-## Authentication & Authorization
-
-### Local Mode (TUI/CLI)
-- **Authentication:** Implicit - runs as the local user
-- **Authorization:** Unix filesystem permissions
-
-### Web Server Mode
-- **Authentication:** API key header (`X-Maestro-API-Key`) or enterprise SSO
-- **Authorization:** RBAC via `src/rbac/permissions.ts` (enterprise)
-- **Session Management:** UUID-based sessions with configurable expiry
-
-### Enterprise Features
-| Feature | Location | Description |
-|---------|----------|-------------|
-| JWT Authentication | `src/auth/jwt.ts` | Token-based auth with refresh |
-| SSO Integration | `src/auth/sso.ts` | OIDC/SAML support |
-| Audit Logging | `src/audit/` | Tamper-evident logs with HMAC |
-| Key Rotation | `src/db/encryption.ts` | Encrypted settings with key rotation |
-
----
-
-## Secure Deployment Checklist
-
-### Local Development
-- [ ] Keep approval mode as `prompt` (default)
-- [ ] Install Guardian pre-commit hooks: `npm run guardian:install-hook`
-- [ ] Review tool calls before approving
-- [ ] Use Docker sandbox for untrusted repos: `--sandbox docker`
-
-### CI/CD Pipelines
-- [ ] Set `--approval-mode fail` to block dangerous commands
-- [ ] Run in ephemeral containers
-- [ ] Limit network access to required endpoints
-- [ ] Use read-only filesystem mounts where possible
-
-### Web Server Production
-- [ ] Enable TLS termination at reverse proxy
-- [ ] Configure authentication (API key or SSO)
-- [ ] Set restrictive CORS headers
-- [ ] Deploy behind rate-limiting proxy
-- [ ] Monitor audit logs for anomalies
-- [ ] Use Docker sandbox mode
-- [ ] Run as non-root user
-
----
-
-## Incident Response
-
-### Suspected Prompt Injection
-1. Review session history: `/sessions` to examine conversation
-2. Check audit log: `cat ~/.maestro/audit.log | grep -i suspicious`
-3. Report patterns to maintainers for firewall rule updates
-
-### Unauthorized File Access
-1. Examine tool results in session for unexpected paths
-2. Check directory access policy: `.maestro/policy.json`
-3. Tighten allowlist/denylist rules
-
-### Credential Exposure
-1. Rotate exposed credentials immediately
-2. Review PII detection logs
-3. Enable Guardian hooks to prevent future commits
-
----
-
-## Security Contacts
-
-- **Issues:** https://github.com/evalops/maestro/security
-- **Email:** security@evalops.dev
-- **Responsible Disclosure:** 90-day disclosure window
-
----
-
-## Version History
-
-| Version | Date | Changes |
-|---------|------|---------|
-| 1.0 | 2025-12-01 | Initial threat model |
+The protected assets are source trees, credentials, model context, provider
+tokens, control-plane sessions, and the host account. A user approval is an
+authorization decision; text found in a file, web page, MCP response, or model
+output is not authorization by itself.
+
+## Threats and current controls
+
+### Prompt injection
+
+**Threat:** Instructions embedded in repository files, web content, MCP
+responses, or model output attempt to change the task, gain authority, or
+exfiltrate data.
+
+**Controls:**
+
+- The agent protocol treats wrapped content as data and does not grant it
+  authority to change the user's task.
+- `packages/tui-rs/src/safety/firewall.rs` checks tool calls after the model
+  proposes them.
+- Dangerous shell patterns are blocked or sent to approval by
+  `dangerous_patterns.rs` and `bash_analyzer.rs`.
+- Approval-gated operations are surfaced to the user; the guardian in
+  `safety/guardian.rs` can add a review decision but cannot lower the hard
+  safety ceiling.
+
+**Residual risk:** High for unattended or permissive operation. Prompt
+injection is not a complete security boundary: a malicious instruction can
+still produce harmful text or a novel action that the user approves.
+
+### Arbitrary command execution
+
+**Threat:** A model, MCP server, or compromised input causes a shell command to
+modify the host, escalate privileges, or destroy data.
+
+**Controls:**
+
+- `ActionFirewall::check_bash` applies high-severity pattern blocks before
+  command execution and combines them with parsed bash-risk analysis.
+- `check_command_policy` and `check_tool_allowed` apply the configured policy
+  file from `~/.maestro/policy.json` or an explicit policy path.
+- `bypass_sandbox` is itself approval-gated when a native sandbox is active.
+- `MAESTRO_NO_EGRESS_SHELL=1` makes shell egress primitives such as `curl`,
+  `wget`, `ssh`, `scp`, and `nc` approval-gated.
+- `packages/tui-rs/src/sandbox.rs` provides native child-process enforcement:
+  Seatbelt on macOS and Landlock plus seccomp on Linux. `read-only` and
+  `workspace-write` restrict the child; `danger-full-access` deliberately
+  does not.
+
+Native sandbox availability is checked at runtime. A requested sandbox is not
+proof that a command was isolated on a host where the enforcement mechanism is
+unavailable; the interactive UI reports that condition and the operator must
+choose whether to continue.
+
+**Residual risk:** Low to medium with prompt/fail approvals and a working
+native sandbox; high with automatic approval, `danger-full-access`, or
+untrusted code on an unsupported host.
+
+### Filesystem escape and destructive writes
+
+**Threat:** A tool reads or writes outside the intended workspace, follows a
+symlink to a protected path, or uses traversal to reach host data.
+
+**Controls:**
+
+- `packages/tui-rs/src/safety/path_containment.rs` canonicalizes paths where
+  possible and checks traversal, workspace/safe-zone containment, and
+  protected system paths.
+- The firewall applies these checks to read, write, edit, search, and related
+  path-bearing tools.
+- Sensitive filenames such as credential and environment files require extra
+  approval in `firewall.rs`.
+- `EnterprisePolicy.paths` can further restrict paths. Policy-load and
+  policy-parse failures fail closed.
+
+**Residual risk:** Medium. Containment is defense in depth; do not treat
+workspace access as a substitute for OS isolation when the repository is
+hostile.
+
+### Network access and data exfiltration
+
+**Threat:** The agent sends source, credentials, or private-network requests
+to an attacker-controlled endpoint.
+
+**Controls:**
+
+- Network tools (`websearch`, `codesearch`, `webfetch`, `web_fetch`, and
+  `extract_document`) pass URL checks in `firewall.rs` and `policy.rs`.
+- Enterprise network policy supports allowed/blocked hosts and localhost or
+  private-IP blocking.
+- `MAESTRO_NO_EGRESS_SHELL=1` covers common shell-based egress primitives.
+- MCP tools are approval-gated by default; server annotations cannot reduce
+  the required approval.
+- Native `read-only` sandbox mode blocks network access for its child process;
+  `workspace-write` carries an explicit network-access setting.
+
+**Residual risk:** Medium. URL and tool checks do not make external services
+trustworthy, and data deliberately sent to a model provider or approved
+external tool can no longer be recovered. Review URLs, MCP servers, and
+provider data policies.
+
+### Credential and PII exposure
+
+**Threat:** API keys, tokens, passwords, or personal data enter model context,
+logs, approval prompts, or human-facing tools.
+
+**Controls:**
+
+- `packages/tui-rs/src/agent/credential_store.rs` redacts recognized
+  credential formats in tool arguments and JSON/text output, while preserving
+  internal credential references where required.
+- Sandboxed and unsandboxed child-command helpers clear the inherited
+  environment and pass only the filtered environment constructed by the
+  executor.
+- `safety/workflow_state.rs` tracks PII capture/redaction state and the
+  firewall can block unredacted PII before a human-facing egress tool.
+- Sensitive path names are approval-gated by the firewall.
+
+**Residual risk:** High. Pattern-based redaction is not perfect, file contents
+can contain secrets that are not recognized, and anything intentionally
+submitted to a provider is disclosed to that provider. Use isolated workspaces,
+short-lived credentials, and provider-side controls.
+
+### Denial of service
+
+**Threat:** Runaway commands, excessive sessions, or oversized model work
+consume host or provider resources.
+
+**Controls:**
+
+- Enterprise policy supports maximum tokens per session, session duration, and
+  concurrent sessions through `LimitsPolicy`.
+- The control plane and provider bridges use bounded request timeouts in their
+  integration paths, and child-process cleanup is exercised by regression
+  tests.
+- Safe mode can require a plan before mutation and run validators after writes.
+
+**Residual risk:** Medium to high. Maestro does not claim a host-wide CPU,
+memory, or disk quota for every child process. Use OS/container quotas and
+provider limits for multi-tenant or hostile workloads.
+
+### Supply chain and extension risk
+
+**Threat:** A compromised release, dependency, or MCP server gains code
+execution or data access.
+
+**Controls:**
+
+- Rust dependencies are pinned in `Cargo.lock` and checked by repository CI.
+- The installer verifies release checksums and verifies Cosign signatures when
+  the release publishes the signed bundle. Set
+  `MAESTRO_REQUIRE_SIGNED_INSTALL=1` to reject unsigned legacy releases.
+- MCP servers run outside the agent process and remain a broad trust boundary;
+  review and pin them before enabling them.
+- `packages/execpolicy-rs/src/lib.rs` is a parser/migration leaf, not the live
+  approval gateway. It must not be wired into approvals without a separate
+  trust-boundary review.
+
+**Residual risk:** Medium. A valid signature authenticates the publisher, not
+the safety of every feature, dependency, or MCP server.
+
+## Control-plane authentication
+
+The HTTP control plane is authenticated by
+`packages/control-plane-rs/src/auth.rs`:
+
+- API keys are accepted as `Authorization: Bearer` or
+  `x-maestro-api-key` (the legacy `x-composer-api-key` is also accepted).
+- Shared bearer secrets, JWT HMAC/RS-family validation, and JWKS validation
+  are supported through the corresponding `MAESTRO_*` settings.
+- A trusted proxy can authenticate a subject with
+  `MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN` and an identity header.
+- Runtime session cookies are HMAC-bound to the configured API key.
+- State-changing `/api/` and A2A requests require the configured CSRF token
+  when CSRF enforcement is enabled.
+- Non-loopback binds require configured authentication. Disabling the key
+  requirement is only accepted for loopback development binds.
+
+`AuthContext` carries an optional subject and an unrestricted API-key status.
+This repository does not claim a general RBAC, SSO, or tamper-evident audit
+implementation in the Rust control plane. If a reverse proxy supplies identity
+or authorization, configure and review that proxy separately.
+
+## Deployment checklist
+
+For a local or shared deployment:
+
+- Bind the control plane to loopback unless remote access is required.
+- For a remote bind, configure `MAESTRO_WEB_API_KEY`, a supported JWT/shared
+  secret, or trusted-proxy authentication; use `MAESTRO_PROFILE=prod` and
+  configure CSRF for browser clients.
+- Keep approval mode at prompt or fail for untrusted work. Do not combine
+  automatic approval with `danger-full-access`.
+- Select `read-only` or `workspace-write` sandboxing where the host supports
+  it, and verify `/sandbox` in the TUI.
+- Set `MAESTRO_NO_EGRESS_SHELL=1` for sensitive work and review MCP servers.
+- Prefer signed releases and set `MAESTRO_REQUIRE_SIGNED_INSTALL=1` when
+  unsigned legacy artifacts are unacceptable.
+- Use short-lived, least-privilege provider credentials and rotate them after
+  suspected exposure.
+
+## Incident response
+
+If a session may have executed an unsafe action:
+
+1. Stop the Maestro process and the affected child processes.
+2. Revoke or rotate provider, API, proxy, and MCP credentials.
+3. Preserve the session, command, policy, and control-plane logs available to
+   the deployment without copying secrets into an issue.
+4. Review filesystem, network, and provider-side audit records.
+5. Report security vulnerabilities to `security@evalops.dev` with a minimal
+   reproduction, impact, and affected version.

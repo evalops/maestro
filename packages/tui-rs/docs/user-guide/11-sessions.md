@@ -32,7 +32,7 @@ Some native modules document legacy `~/.composer/agent/sessions/` paths; prefer 
 ```bash
 maestro --continue
 maestro --resume
-maestro-tui --resume
+maestro --resume
 ```
 
 Native helpers also expose `maestro sessions` early-exit subcommands.
