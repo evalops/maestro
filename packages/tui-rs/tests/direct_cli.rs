@@ -7,7 +7,10 @@ fn direct_binary_help_remains_a_successful_early_exit() {
         .output()
         .expect("run maestro-tui --help");
     assert!(output.status.success(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Usage:"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Usage:"));
+    assert!(stdout.contains("Usage: maestro"));
+    assert!(!stdout.contains("maestro-tui"));
 }
 
 #[test]

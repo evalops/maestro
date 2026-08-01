@@ -2,7 +2,7 @@
 
 `packages/tui-rs/src` is 227,108 lines of Rust across 299 files (84.3% of the
 227,108/269,352-line Rust `src` trees). It is a single Cargo crate containing the
-agent loop, AI provider clients, execpolicy/sandbox, sessions, the headless
+agent loop, AI provider clients, sandbox, sessions, the headless
 server, and the terminal UI. This document records the measured module
 dependency graph, the hot-file overlap against the ~48 PRs open against this
 repo on 2026-07-25, and the ordered extraction plan that follows from both.
@@ -11,8 +11,9 @@ repo on 2026-07-25, and the ordered extraction plan that follows from both.
 [#3148](https://github.com/evalops/maestro-internal/pull/3148) (merged
 2026-07-26), landing exactly the shape measured and planned below. The
 measurement and adjacency data in this document reflect the state of the
-repo on 2026-07-25, before that extraction; slices 2-5 are still pending as
-described.
+repo on 2026-07-25, before those extractions. The dependency-free execution
+policy leaf is now shipped as `maestro-execpolicy`; the remaining slices are
+still pending as described.
 
 **Precision caveat on slices 2-4:** review found that this document's
 per-slice prerequisite lists (the specific named cycles under
@@ -67,7 +68,7 @@ included for context on the cycle):
 | Module | Files | LOC | Hot files (open PRs) | Outgoing edges to other top-level modules |
 |---|---:|---:|---:|---|
 | `ai` | 13 | 10,231 | 0 / 13 | *(none)* |
-| `execpolicy` | 1 | 911 | 1 / 1 (`#3126`) | *(none)* |
+| `execpolicy` | 1 | 1,870 | 1 / 1 (`#3126`) | *(none)* |
 | `sandbox` | 1 | 1,931 | 0 / 1 | *(none)* |
 | `swarm` | 5 | 3,604 | 0 / 5 | *(none)* |
 | `hooks` | 10 | 5,452 | 1 / 10 (`#3133` touches `hooks/config.rs`) | *(none)* |
@@ -158,10 +159,11 @@ The owner's hypothesis (restated) and what the data says:
   now (own reverse-dependency count of 6; a candidate for a later,
   separately-scoped slice, not bundled into this one to keep the first PR
   minimal). No contradiction found — proceed with `maestro-ai` = `ai/` only.
-- **`maestro-policy`** (execpolicy + `safety/`) — **hot now, and cyclic.**
-  `execpolicy.rs` alone has zero outgoing edges and zero *other* hot overlap
-  besides itself, but it is directly hot (`#3126`, self-testing rules with
-  load-time validation is in flight against this exact file). `safety/` has
+- **`maestro-policy`** (`safety/`; `maestro-execpolicy` is already extracted) — **hot now, and cyclic.**
+  The former `execpolicy.rs` module had zero outgoing edges and zero *other*
+  hot overlap besides itself, so it was extracted without taking `safety/`
+  along. The dependency-free leaf now ships as `maestro-execpolicy`. `safety/`
+  has
   3 of 9 files hot and sits inside the 19-module SCC via `tools`/`agent`.
   Map only, as directed; do not touch. **Correction:** `safety/` also has
   direct outgoing edges to `lsp` (`safety/safe_mode.rs`), `mcp`
@@ -267,8 +269,9 @@ untangling from the SCC, not on anything specific to `ai`.
    that doesn't drag in the TUI's `agent`/`state` types) and `#2645`
    (multi-agent orchestration primitives, which need tool execution
    decoupled from the single-agent `agent` module).
-3. **`maestro-policy`** (`execpolicy` + `safety/`) once `#3121`/`#3126`/`#3128`
-   land and `maestro-exec` exists (policy's edge into `tools` needs
+3. **`maestro-policy`** (`safety/`) once `#3121`/`#3126`/`#3128` land and
+   `maestro-exec` exists. The dependency-free `maestro-execpolicy` leaf is
+   already extracted; the remaining safety edge into `tools` needs
    `maestro-exec` first, or the same inversion applied a second time).
    Unblocks `#2647` (client SDKs need a stable, crate-boundary policy
    surface to describe, not an internal module).
@@ -281,8 +284,10 @@ untangling from the SCC, not on anything specific to `ai`.
    `git` is cold/leaf so this doesn't add a new cycle, but it is a second
    dependency this slice needs to account for beyond the `agent` edge.
    The complete proposed session slice is 8,976 LOC (`session/` at 8,168
-   plus `checkpoints.rs` at 808), which is larger than the 7,736-LOC policy
-   slice (`safety/` at 6,825 plus `execpolicy.rs` at 911). It remains fourth
+   plus `checkpoints.rs` at 808), which is larger than the historical 7,736-LOC
+   policy estimate. That estimate included `safety/` at 6,825 plus the former
+   `execpolicy.rs` at 911; the current execution-policy crate is 1,870 LOC.
+   It remains fourth
    because of the dependency sequence and unresolved `agent`/`git` edges,
    not because it is the smallest deferred seam; it does not strictly block
    anything upstream by itself.
@@ -294,7 +299,7 @@ untangling from the SCC, not on anything specific to `ai`.
    package") is **closed** already (superseded/resolved) and is not a
    dependency of this slice; no other open roadmap issue is currently
    blocked specifically by the UI slice. **Gap found:** steps 2-4 extract
-   `tools`, `safety`/`execpolicy`, and `session`, but none of them touch
+   `tools`, `safety`, and `session`, but none of them touch
    `agent` or `state`, which have their own two-node cycle
    (`agent/native.rs` imports `state`; `state.rs` imports `agent`) that
    `components` (`components/operations.rs`, `components/message.rs`) and

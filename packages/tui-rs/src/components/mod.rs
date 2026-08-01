@@ -150,7 +150,7 @@ pub use config_selector::{ConfigCategory, ConfigChangeEvent, ConfigOption, Confi
 pub use context_indicator::{ContextIndicator, ContextIndicatorBuilder, UsageLevel};
 pub use deixic_logo::{
     logo_line_count, logo_visual_width, pick_logo, render_welcome, welcome_content_lines,
-    LOGO_COMPACT, LOGO_FULL, LOGO_TINY,
+    LOGO_COMPACT, LOGO_FULL, LOGO_MICRO, LOGO_TINY,
 };
 pub use detail_view::DetailView;
 pub use file_search::FileSearchModal;

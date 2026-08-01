@@ -2756,6 +2756,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "maestro-execpolicy"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "maestro-tui"
 version = "0.1.0"
 dependencies = [
@@ -2778,6 +2789,7 @@ dependencies = [
  "landlock",
  "libc",
  "maestro-ai",
+ "maestro-execpolicy",
  "mlua",
  "notify",
  "once_cell",

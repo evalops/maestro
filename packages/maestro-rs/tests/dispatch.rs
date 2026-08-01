@@ -46,6 +46,21 @@ fn doctor_is_forwarded_to_native_dispatch() {
 }
 
 #[test]
+fn primary_help_exposes_the_canonical_command_surface() {
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_maestro"))
+        .arg("--help")
+        .output()
+        .expect("run maestro --help");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("maestro setup"));
+    assert!(stdout.contains("maestro config"));
+    assert!(stdout.contains("maestro sessions"));
+    assert!(!stdout.contains("maestro-tui"));
+}
+
+#[test]
 fn frozen_cli_routes_are_owned_by_native_dispatch() {
     let fixture: Fixture = serde_json::from_str(include_str!(
         "../../../test/fixtures/rust-cutover/cli-routing.json"
@@ -94,7 +109,7 @@ fn hosted_runner_help_reaches_the_native_hosted_runner_dispatch() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("Usage: maestro-tui hosted-runner"),
+        String::from_utf8_lossy(&output.stdout).contains("Usage: maestro hosted-runner"),
         "primary maestro binary did not reach the hosted-runner CLI: {}",
         String::from_utf8_lossy(&output.stdout)
     );

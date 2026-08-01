@@ -31,22 +31,23 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
         "stats" => run_stats(&args[1..]),
         "models" => run_models(&args[1..]),
         "doctor" => crate::doctor::run_doctor(&args[1..]).await,
+        "setup" => crate::setup_cli::run_setup(&args[1..]).await,
         "status" if args.get(1).is_some_and(|arg| is_help(arg)) => {
-            println!("Usage: maestro-tui status");
+            println!("Usage: maestro status");
             Ok(0)
         }
         "status" => run_status(),
         "hooks" => run_hooks(&args[1..]),
         "export" if args.get(1).is_some_and(|arg| is_help(arg)) => {
-            println!("Usage: maestro-tui export <session-id> [output-path] [--format f]");
+            println!("Usage: maestro export <session-id> [output-path] [--format f]");
             Ok(0)
         }
         "export" => {
-            // `maestro-tui export <id> [path] [--format json|md|html|txt|jsonl]`
+            // `maestro export <id> [path] [--format json|md|html|txt|jsonl]`
             run_sessions_export(&args[1..])
         }
         "import" if args.get(1).is_some_and(|arg| is_help(arg)) => {
-            println!("Usage: maestro-tui import <file.jsonl|file.json>");
+            println!("Usage: maestro import <file.jsonl|file.json>");
             Ok(0)
         }
         "import" => run_sessions_import(&args[1..]),
@@ -97,13 +98,13 @@ fn run_sessions(args: &[String]) -> Result<i32> {
         "import" => run_sessions_import(&args[1..]),
         "help" | "--help" | "-h" => {
             println!(
-                "Usage: maestro-tui sessions [list [N]|path|export <id> [out] [--format f]|import <file>]"
+                "Usage: maestro sessions [list [N]|path|export <id> [out] [--format f]|import <file>]"
             );
             Ok(0)
         }
         other => {
             eprintln!("Unknown sessions subcommand: {other}");
-            eprintln!("Try: maestro-tui sessions list|export|import|path");
+            eprintln!("Try: maestro sessions list|export|import|path");
             Ok(1)
         }
     }
@@ -203,7 +204,7 @@ fn run_sessions_export(args: &[String]) -> Result<i32> {
     }
 
     let Some(id) = session_id else {
-        eprintln!("Usage: maestro-tui sessions export <session-id> [output-path] [--format json|md|html|txt|jsonl]");
+        eprintln!("Usage: maestro sessions export <session-id> [output-path] [--format json|md|html|txt|jsonl]");
         return Ok(2);
     };
 
@@ -283,7 +284,7 @@ fn parse_export_format(s: &str) -> Result<ExportFormat> {
 
 fn run_sessions_import(args: &[String]) -> Result<i32> {
     let Some(source) = args.first() else {
-        eprintln!("Usage: maestro-tui sessions import <file.jsonl|file.json>");
+        eprintln!("Usage: maestro sessions import <file.jsonl|file.json>");
         return Ok(2);
     };
     let src = PathBuf::from(source);
@@ -314,7 +315,7 @@ fn run_cost(args: &[String]) -> Result<i32> {
         "clear" => run_cost_clear(args),
         "breakdown" => run_cost_breakdown(),
         "help" | "--help" | "-h" => {
-            println!("Usage: maestro-tui cost [today|week|month|all|breakdown|clear]");
+            println!("Usage: maestro cost [today|week|month|all|breakdown|clear]");
             Ok(0)
         }
         "today" | "yesterday" | "week" | "7d" | "month" | "30d" | "all" | "total" => {
@@ -322,7 +323,7 @@ fn run_cost(args: &[String]) -> Result<i32> {
         }
         other => {
             eprintln!("Unknown cost subcommand: {other}");
-            eprintln!("Try: maestro-tui cost today|yesterday|week|month|all|breakdown|clear");
+            eprintln!("Try: maestro cost today|yesterday|week|month|all|breakdown|clear");
             Ok(1)
         }
     }
@@ -541,7 +542,7 @@ fn run_stats(args: &[String]) -> Result<i32> {
             }
             "help" | "--help" | "-h" => {
                 println!(
-                    "Usage: maestro-tui stats [today|yesterday|week|month|all] [--json|--csv] [--session <id>]"
+                    "Usage: maestro stats [today|yesterday|week|month|all] [--json|--csv] [--session <id>]"
                 );
                 return Ok(0);
             }
@@ -681,8 +682,8 @@ fn run_models(args: &[String]) -> Result<i32> {
             "providers" => sub = "providers",
             "help" | "--help" | "-h" => {
                 println!(
-                    "Usage: maestro-tui models [list|providers] [--provider <name>]\n\
-                     \x20      maestro-tui models inspect <model-id> [--json]"
+                    "Usage: maestro models [list|providers] [--provider <name>]\n\
+                     \x20      maestro models inspect <model-id> [--json]"
                 );
                 return Ok(0);
             }
@@ -696,7 +697,7 @@ fn run_models(args: &[String]) -> Result<i32> {
                 provider_filter = Some(s.trim_start_matches("--provider=").to_string());
             }
             other if !other.starts_with('-') && provider_filter.is_none() => {
-                // bare provider name: `maestro-tui models openai`
+                // bare provider name: `maestro models openai`
                 provider_filter = Some(other.to_string());
             }
             _ => {}
@@ -768,7 +769,7 @@ fn run_status() -> Result<i32> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let version = env!("CARGO_PKG_VERSION");
     println!("Maestro status (native)");
-    println!("  Binary:     maestro-tui {version}");
+    println!("  Binary:     maestro {version}");
     println!("  Cwd:        {}", cwd.display());
     println!(
         "  Git:        {}",

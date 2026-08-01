@@ -65,7 +65,7 @@ You can also point at a custom models file with `MAESTRO_MODELS_FILE`.
 
 ```bash
 maestro --provider anthropic --model claude-sonnet-4-5-20250514
-maestro-tui --model gpt-4o
+maestro --model gpt-4o
 ```
 
 ---

@@ -818,7 +818,7 @@ fn untrusted_workspace_notice(
     }
 
     Some(format!(
-        "Workspace untrusted — skipped project config: {}. Run `/trust` (or `maestro-tui trust`) to load them for {}.",
+        "Workspace untrusted — skipped project config: {}. Run `/trust` (or `maestro trust`) to load them for {}.",
         skipped.join(", "),
         workspace_dir.display()
     ))

@@ -9,12 +9,15 @@ curl -fsSL https://raw.githubusercontent.com/evalops/maestro/main/scripts/instal
 maestro --version
 ```
 
+The installer verifies the release checksum manifest and Cosign signatures when the release provides them, stages binaries and web assets under a versioned data directory, and swaps only the launcher. Set `MAESTRO_REQUIRE_SIGNED_INSTALL=1` to refuse legacy releases without signed metadata.
+
 Release assets are named `maestro-darwin-arm64`, `maestro-darwin-x64`, `maestro-linux-arm64`, and `maestro-linux-x64`. The npm package contains the same native binaries and a POSIX launcher; it does not execute JavaScript at runtime.
 
 ## Use
 
 ```sh
 maestro                         # interactive TUI
+maestro setup                   # check auth/config and show the next setup step
 maestro "fix the failing test" # interactive with an initial prompt
 maestro exec "summarize this repository"
 maestro --headless              # NDJSON protocol over stdio

@@ -15,7 +15,7 @@ use crate::hosted_runner::{
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "maestro-tui hosted-runner",
+    name = "maestro hosted-runner",
     about = "Run the Rust Maestro hosted remote-runner runtime"
 )]
 pub struct HostedRunnerCliArgs {
@@ -509,7 +509,7 @@ mod tests {
         ]);
         let config = resolve_hosted_runner_launch_config(
             [
-                "maestro-tui hosted-runner",
+                "maestro hosted-runner",
                 "--runner-session-id",
                 "mrs_cli",
                 "--owner-instance-id",
@@ -606,7 +606,7 @@ mod tests {
     fn cli_requires_auth_by_default_even_on_loopback() {
         let workspace = tempdir().expect("workspace");
         let args = [
-            "maestro-tui hosted-runner",
+            "maestro hosted-runner",
             "--runner-session-id",
             "mrs_auth",
             "--workspace-root",
@@ -662,7 +662,7 @@ mod tests {
 
         let runtime = start_hosted_runner_cli_runtime(
             [
-                "maestro-tui hosted-runner",
+                "maestro hosted-runner",
                 "--runner-session-id",
                 "mrs_real",
                 "--workspace-root",
@@ -751,7 +751,7 @@ mod tests {
         let source_listen = format!("127.0.0.1:{source_port}");
         let source = start_hosted_runner_cli_runtime(
             [
-                "maestro-tui hosted-runner",
+                "maestro hosted-runner",
                 "--runner-session-id",
                 "mrs_source",
                 "--workspace-root",
@@ -983,7 +983,7 @@ mod tests {
         let restored_listen = format!("127.0.0.1:{restored_port}");
         let restored = start_hosted_runner_cli_runtime(
             [
-                "maestro-tui hosted-runner",
+                "maestro hosted-runner",
                 "--runner-session-id",
                 "mrs_restored",
                 "--workspace-root",

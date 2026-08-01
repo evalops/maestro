@@ -45,6 +45,12 @@ pub const LOGO_TINY: &str = r"
   ╰~~~~╯
 ";
 
+/// One-line mark for compact terminal panes. It keeps the product visibly
+/// branded when there is room for the title and hint but not the two-line art.
+pub const LOGO_MICRO: &str = "  ◉";
+
+/// Minimum area height (rows) to show the one-line mark.
+pub const MICRO_MIN_HEIGHT: u16 = 4;
 /// Minimum area height (rows) to show the tiny mark.
 pub const TINY_MIN_HEIGHT: u16 = 8;
 /// Minimum area height for the compact ghost.
@@ -55,8 +61,10 @@ pub const FULL_MIN_HEIGHT: u16 = 20;
 /// Pick logo art for the given available height. `None` if too short.
 #[must_use]
 pub fn pick_logo(area_height: u16) -> Option<&'static str> {
-    if area_height < TINY_MIN_HEIGHT {
+    if area_height < MICRO_MIN_HEIGHT {
         None
+    } else if area_height < TINY_MIN_HEIGHT {
+        Some(LOGO_MICRO)
     } else if area_height < COMPACT_MIN_HEIGHT {
         Some(LOGO_TINY)
     } else if area_height < FULL_MIN_HEIGHT {
@@ -181,6 +189,7 @@ pub fn hint_line() -> Line<'static> {
 #[must_use]
 pub fn welcome_content_lines(area_height: u16, animate: bool) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let micro_logo = pick_logo(area_height) == Some(LOGO_MICRO);
 
     let logo = if animate {
         shimmered_logo_lines(area_height)
@@ -192,11 +201,13 @@ pub fn welcome_content_lines(area_height: u16, animate: bool) -> Vec<Line<'stati
             line.alignment = Some(Alignment::Center);
             lines.push(line);
         }
-        lines.push(Line::from(""));
+        if !micro_logo {
+            lines.push(Line::from(""));
+        }
     }
 
     // Wordmark only when logo is visible (brand block).
-    if pick_logo(area_height).is_some() {
+    if pick_logo(area_height).is_some() && !micro_logo {
         lines.push(wordmark_line(animate));
     }
 
@@ -234,7 +245,9 @@ mod tests {
 
     #[test]
     fn logo_tiers_by_height() {
-        assert!(pick_logo(TINY_MIN_HEIGHT - 1).is_none());
+        assert!(pick_logo(MICRO_MIN_HEIGHT - 1).is_none());
+        assert_eq!(pick_logo(MICRO_MIN_HEIGHT), Some(LOGO_MICRO));
+        assert_eq!(pick_logo(TINY_MIN_HEIGHT - 1), Some(LOGO_MICRO));
         assert_eq!(pick_logo(TINY_MIN_HEIGHT), Some(LOGO_TINY));
         assert_eq!(pick_logo(COMPACT_MIN_HEIGHT), Some(LOGO_COMPACT));
         assert_eq!(pick_logo(FULL_MIN_HEIGHT), Some(LOGO_FULL));
@@ -244,6 +257,7 @@ mod tests {
     fn full_logo_is_taller_than_compact() {
         assert!(logo_lines(LOGO_FULL).len() > logo_lines(LOGO_COMPACT).len());
         assert!(logo_lines(LOGO_COMPACT).len() > logo_lines(LOGO_TINY).len());
+        assert!(logo_lines(LOGO_TINY).len() > logo_lines(LOGO_MICRO).len());
     }
 
     #[test]
@@ -261,7 +275,7 @@ mod tests {
 
     #[test]
     fn welcome_short_height_hides_logo_keeps_title() {
-        let lines = welcome_content_lines(4, false);
+        let lines = welcome_content_lines(MICRO_MIN_HEIGHT - 1, false);
         let text: String = lines
             .iter()
             .map(Line::to_string)
@@ -271,6 +285,21 @@ mod tests {
         assert!(text.contains("Type a message or /help."));
         // No room for brand block.
         assert!(!text.contains("deixic"));
+    }
+
+    #[test]
+    fn welcome_micro_height_keeps_a_visible_mark_without_wordmark() {
+        let lines = welcome_content_lines(MICRO_MIN_HEIGHT, false);
+        let text: String = lines
+            .iter()
+            .map(Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains('◉'));
+        assert!(text.contains("Maestro"));
+        assert!(text.contains("Type a message or /help."));
+        assert!(!text.contains("deixic"));
+        assert_eq!(lines.len(), 3);
     }
 
     #[test]

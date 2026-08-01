@@ -109,4 +109,4 @@ return { continue = true }
 /hooks disable
 ```
 
-Alias: `/hook`. Native CLI also exposes `maestro hooks` early-exit helpers via `maestro-tui`.
+Alias: `/hook`. Native CLI also exposes `maestro hooks` early-exit helpers via `maestro`.

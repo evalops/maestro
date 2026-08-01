@@ -11,7 +11,7 @@
 //! ## Usage
 //!
 //! ```bash
-//! maestro-tui [options] [prompt]
+//! maestro [options] [prompt]
 //! ```
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -58,7 +58,7 @@ mod shutdown_signal;
 /// utility handler instead of the interactive TUI, headless server, or
 /// exec/print bridges; `packages/maestro-rs` no longer keeps an independent
 /// copy of this list (see `maestro::cli::classify`).
-pub const NATIVE_UTILITY_COMMANDS: [&str; 35] = [
+pub const NATIVE_UTILITY_COMMANDS: [&str; 36] = [
     "acp",
     "sessions",
     "search",
@@ -94,6 +94,7 @@ pub const NATIVE_UTILITY_COMMANDS: [&str; 35] = [
     "plugins",
     "plugin",
     "doctor",
+    "setup",
 ];
 
 const GLOBAL_FLAGS_WITH_VALUES: [&str; 26] = [
@@ -402,13 +403,13 @@ fn infer_provider_from_model(model: &str) -> &'static str {
 
 /// Command-line arguments for the Maestro TUI.
 #[derive(Parser, Debug)]
-#[command(name = "maestro-tui")]
+#[command(name = "maestro")]
 #[command(about = "Native terminal interface for Maestro")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(long_about = "Native terminal UI for Maestro (coding agent).\n\n\
-Interactive: maestro-tui --provider openai -m gpt-4.1-mini\n\
-Print mode:  maestro-tui -p --provider openai -m gpt-4.1-mini \"question\"\n\
-Trust cwd:   maestro-tui trust\n\
+Interactive: maestro --provider openai -m gpt-4.1-mini\n\
+Print mode:  maestro -p --provider openai -m gpt-4.1-mini \"question\"\n\
+Trust cwd:   maestro trust\n\
 Sandbox:     use /sandbox in-session or MAESTRO_SANDBOX_MODE")]
 struct Args {
     /// Provider to use (for example, openai). When omitted, inferred from the model.
@@ -683,6 +684,14 @@ fn set_provider_api_key(provider: &str, api_key: &str) {
 ///   returns an error, return that error from this function; otherwise, unwrap
 ///   the Ok value and continue."
 pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
+    // maestro-tui remains a Cargo target for compatibility, but it is not a
+    // public product name. Normalize argv[0] before Clap renders help or
+    // diagnostics so both binaries expose the same maestro surface.
+    let mut raw_args = raw_args;
+    if let Some(program) = raw_args.first_mut() {
+        *program = std::ffi::OsString::from("maestro");
+    }
+
     // Set up panic hook for process cleanup on unexpected termination.
     // This ensures background processes are killed even if the app panics.
     let default_hook = std::panic::take_hook();
@@ -701,7 +710,7 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
         .and_then(|arg| arg.to_str())
         .is_some_and(|arg| arg == "hosted-runner")
     {
-        let mut hosted_args = vec![std::ffi::OsString::from("maestro-tui hosted-runner")];
+        let mut hosted_args = vec![std::ffi::OsString::from("maestro hosted-runner")];
         hosted_args.extend(raw_args.into_iter().skip(2));
         run_hosted_runner_cli_from_env(hosted_args).await?;
         return Ok(());
@@ -830,7 +839,7 @@ pub enum AgentEntry {
     TrustSubcommand,
     /// Falls through to `Args::try_parse_from` (interactive TUI, `-p`,
     /// `--headless`/`--rpc` flags, unknown commands, `--help`/`--version`
-    /// on the `maestro-tui` binary directly, or a parse error).
+    /// on the native binary directly, or a parse error).
     ClapParsed,
 }
 
@@ -916,7 +925,7 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
         AgentEntry::ForkSubcommand => return run_fork(&raw_args[2..]).await,
         AgentEntry::TrustSubcommand => return run_trust_cli(&raw_args[2..]),
         AgentEntry::ExecOrPrintSubcommand(cmd) => {
-            // maestro-tui print|exec [--json] [--model X] [--output-last-message P]
+            // maestro print|exec [--json] [--model X] [--output-last-message P]
             //   [--output-schema S] <prompt...>
             let mut options = parse_native_exec_options(&raw_args[2..]);
             let env_sandbox = std::env::var("MAESTRO_SANDBOX_MODE").ok();
@@ -946,7 +955,7 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
             }
             if options.prompt.is_empty() {
                 eprintln!(
-                    "Usage: maestro-tui {cmd} [--json] [--model <id>] [--output-last-message <path>] [--output-schema <path|json>] <prompt>"
+                    "Usage: maestro {cmd} [--json] [--model <id>] [--output-last-message <path>] [--output-schema <path|json>] <prompt>"
                 );
                 return Ok(2);
             }
@@ -1069,7 +1078,7 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
     run_interactive_with_shutdown(move || App::new_with_initial_prompt(initial_prompt)).await
 }
 
-/// `maestro-tui trust [status|grant|revoke]` — writes global trust for cwd.
+/// The trust command writes global trust for the current working directory.
 fn run_trust_cli(args: &[std::ffi::OsString]) -> Result<i32> {
     let action = args
         .first()
@@ -1105,14 +1114,14 @@ fn run_trust_cli(args: &[std::ffi::OsString]) -> Result<i32> {
             Ok(0)
         }
         "help" | "-h" | "--help" => {
-            println!("Usage: maestro-tui trust [status|grant|revoke]");
+            println!("Usage: maestro trust [status|grant|revoke]");
             println!("Grant or revoke project skills/plugins/hooks for the current workspace.");
             println!("Writes only ~/.composer/config.toml (repositories cannot self-trust).");
             Ok(0)
         }
         other => {
             eprintln!("Unknown trust action: {other}");
-            eprintln!("Usage: maestro-tui trust [status|grant|revoke]");
+            eprintln!("Usage: maestro trust [status|grant|revoke]");
             Ok(2)
         }
     }
@@ -1353,7 +1362,7 @@ mod tests {
     #[test]
     fn args_use_maestro_branding() {
         let command = Args::command();
-        assert_eq!(command.get_name(), "maestro-tui");
+        assert_eq!(command.get_name(), "maestro");
         assert_eq!(
             command.get_about().map(|about| about.to_string()),
             Some("Native terminal interface for Maestro".to_string())

@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
-# Interactive TUI smoke: start maestro-tui in tmux, wait for paint, send Ctrl+C, require EXIT:0.
+# Interactive TUI smoke: start the canonical maestro binary in tmux, wait for
+# paint, send Ctrl+C, and require a clean exit.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="${MAESTRO_TUI_BIN:-$ROOT/target/debug/maestro-tui}"
-if [[ ! -x "$BIN" ]]; then
-  BIN="$ROOT/target/release/maestro-tui"
+if [[ -n "${MAESTRO_TUI_BIN:-}" ]]; then
+  BIN="$MAESTRO_TUI_BIN"
+else
+  BIN=""
+  for candidate in \
+    "$ROOT/target/debug/maestro" \
+    "$ROOT/target/release/maestro" \
+    "$ROOT/target/debug/maestro-tui" \
+    "$ROOT/target/release/maestro-tui"
+  do
+    if [[ -x "$candidate" ]]; then
+      BIN="$candidate"
+      break
+    fi
+  done
 fi
 if [[ ! -x "$BIN" ]]; then
-  echo "maestro-tui binary not found at $BIN; build with cargo build -p maestro-tui" >&2
+  echo "maestro binary not found; build with cargo build -p maestro" >&2
   exit 1
 fi
 if ! command -v tmux >/dev/null 2>&1; then
@@ -24,7 +37,7 @@ tmux send-keys -t "$SESSION" "export OPENAI_API_KEY=sk-test-smoke" Enter
 tmux send-keys -t "$SESSION" "'$BIN' --provider openai -m gpt-4.1-mini; echo EXIT:\$?" Enter
 sleep 3
 PANE="$(tmux capture-pane -t "$SESSION" -p -S -80 || true)"
-if ! printf '%s' "$PANE" | grep -E -q 'Type a message|gpt-4|approvals:|trust:|sandbox:'; then
+if ! printf '%s' "$PANE" | grep -E -q 'Type a message|deixic|◉|gpt-4|approvals:|trust:|sandbox:'; then
   echo "TUI did not paint expected chrome:" >&2
   printf '%s\n' "$PANE" >&2
   tmux kill-session -t "$SESSION" 2>/dev/null || true

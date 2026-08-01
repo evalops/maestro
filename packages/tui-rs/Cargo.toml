@@ -39,6 +39,7 @@ futures.workspace = true
 
 # AI provider client layer (packages/ai-rs); re-exported at crate::ai
 maestro-ai.workspace = true
+maestro-execpolicy.workspace = true
 
 # HTTP client for AI APIs
 reqwest = { workspace = true, features = ["json", "stream", "rustls-tls"] }

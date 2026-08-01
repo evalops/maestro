@@ -19,8 +19,8 @@ maestro -w feat-x -p "summarize this repo"
 Native binary equivalent:
 
 ```bash
-maestro-tui -w feat-x
-maestro-tui --worktree=feat-x "prompt"
+maestro -w feat-x
+maestro --worktree=feat-x "prompt"
 ```
 
 The name is required; it is sanitized into a valid git branch name (spaces, `/`, and other invalid characters become `-`).

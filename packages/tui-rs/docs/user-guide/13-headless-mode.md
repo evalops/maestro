@@ -17,7 +17,7 @@ Non-TTY pipes and `maestro exec "…"` flows dispatch to the native print path. 
 
 ```bash
 # Direct native binary
-maestro-tui --print "list the top-level modules"
+maestro --print "list the top-level modules"
 ```
 
 ---

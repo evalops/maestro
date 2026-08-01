@@ -1,6 +1,6 @@
 # Getting Started
 
-Maestro is a coding agent for real software work. The interactive surface is a native terminal UI (`maestro-tui`) that can inspect code, edit files, run shell commands, and stream tool use with approvals and sandbox controls.
+Maestro is a coding agent for real software work. The interactive surface is a native terminal UI (`maestro`) that can inspect code, edit files, run shell commands, and stream tool use with approvals and sandbox controls.
 
 ---
 
@@ -24,6 +24,8 @@ Verify:
 maestro --version
 ```
 
+The installer keeps prior verified releases under the Maestro data directory so a failed update does not replace the active launcher. Use `MAESTRO_REQUIRE_SIGNED_INSTALL=1` when your environment should reject older unsigned releases.
+
 See the root [README Install section](../../../../README.md#install) for manual release binary downloads.
 
 From a source checkout you must build the native TUI before interactive use:
@@ -31,12 +33,20 @@ From a source checkout you must build the native TUI before interactive use:
 ```bash
 npm install
 npm run tui-rs:build
-# optional: export MAESTRO_TUI_BIN=target/release/maestro-tui
+# optional test/development override: export MAESTRO_TUI_BIN=target/release/maestro-tui
 ```
 
 ---
 
 ## First launch
+
+Run the read-only setup check once after installation. It checks the selected model, credentials, local configuration, and Codex transport, then prints the next command without exposing secret values:
+
+```bash
+maestro setup
+```
+
+Use `maestro setup --live` only when you want the optional provider metadata probe. Use `maestro setup --json` for scripts.
 
 ```bash
 maestro

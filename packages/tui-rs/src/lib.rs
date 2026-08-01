@@ -128,6 +128,7 @@ pub mod bridge;
 /// JSONL-based session storage for resuming previous conversations.
 pub mod session;
 pub mod session_transfer;
+pub mod setup_cli;
 pub mod skill_cli;
 pub mod skill_package_cli;
 
@@ -166,7 +167,11 @@ pub mod diff;
 
 /// Execution policy (command approval/blocking).
 /// Security rules for which bash commands are auto-approved or blocked.
-pub mod execpolicy;
+///
+/// The implementation lives in the dependency-light maestro-execpolicy
+/// crate; this re-export preserves the historical maestro_tui::execpolicy
+/// path for importers and fixture harnesses.
+pub use maestro_execpolicy as execpolicy;
 
 /// Hook system for intercepting and modifying agent behavior.
 /// Provides trait-based hooks for tool calls, session events, and overflow handling.

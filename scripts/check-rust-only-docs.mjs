@@ -15,6 +15,8 @@ const files = [
 	"docs/CONTRIBUTOR_RUNBOOK.md",
 	"docs/TOOLS_REFERENCE.md",
 	"docs/CI_VERSION_PINS.md",
+	"docs/THREAT_MODEL.md",
+	"docs/SAFETY.md",
 	"packages/tui-rs/docs/user-guide/01-getting-started.md",
 	"packages/tui-rs/docs/user-guide/12-sandbox-and-safety.md",
 	"packages/tui-rs/docs/user-guide/13-headless-mode.md",
@@ -26,6 +28,14 @@ const banned = [
 	/typescript (agent|runtime) (remains|handles|owns|supports|executes)/i,
 	/(bun install(?:\s|$)|bun run(?:\s|$)|npx tsc(?:\s|$)|tsconfig\.build)/i,
 	/typescript (path|cli|adapter|surface)/i,
+	/src\/safety\/(action-firewall|policy|safe-mode)\.ts/i,
+	/src\/agent\/action-approval\.ts/i,
+	/src\/security\/directory-access\.ts/i,
+	/src\/sandbox\//i,
+	/src\/tools\/(background-tasks|webfetch)\.ts/i,
+	/src\/utils\/secret-redactor\.ts/i,
+	/src\/server\/rate-limiter\.ts/i,
+	/src\/(rbac|auth|audit)\//i,
 ];
 const failures = [];
 for (const file of files) {
