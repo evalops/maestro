@@ -166,6 +166,10 @@ tokio = { workspace = true, features = ["test-util"] }
 portable-pty.workspace = true
 # doctor.rs auth-health tests reuse maestro-ai's FakeOp `op://` test fixture.
 maestro-ai = { workspace = true, features = ["test-support"] }
+# Library for the `#[cfg(kani)]` proof harnesses in tools/process_registry.rs.
+# The harnesses only compile under `--cfg kani` (e.g. `cargo kani`); plain
+# `cargo test` never builds them. Run proofs with `cargo kani -p maestro-tui`.
+kani-verifier = "0.67"
 
 [build-dependencies]
 prost-build = "0.14"
@@ -259,3 +263,4 @@ large_stack_arrays = "allow"            # Test fixtures may use large arrays
 # Unsafe code is allowed only for low-level system operations
 # (libc process management, Darwin APIs, pointer arithmetic)
 # Each unsafe block should have a SAFETY comment explaining why it's safe
+unexpected_cfgs = { level = "allow", check-cfg = ["cfg(kani)"] }

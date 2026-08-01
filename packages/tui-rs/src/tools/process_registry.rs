@@ -24,7 +24,6 @@
 //! The registry uses `RwLock` for thread-safe access across the async runtime.
 //! It's safe to register and unregister from multiple tasks concurrently.
 
-use std::collections::HashSet;
 use std::sync::RwLock;
 
 use super::process_utils::kill_process_tree;
@@ -33,36 +32,48 @@ use super::process_utils::kill_process_tree;
 static PROCESS_REGISTRY: std::sync::LazyLock<RwLock<ProcessRegistry>> =
     std::sync::LazyLock::new(|| RwLock::new(ProcessRegistry::new()));
 
-/// Process registry for tracking background processes
+/// Process registry for tracking background processes.
+///
+/// The tracked set is a dedup-on-insert `Vec` rather than a `HashSet`: the
+/// registry holds a handful of per-session background processes, so linear
+/// scans are cheap, iteration order is deterministic (insertion order),
+/// initialization needs no OS entropy (std `HashSet`'s random seed reaches a
+/// foreign call Kani cannot model), and the flat loops keep the registry's
+/// lifecycle machine cheap to verify with Kani (`BTreeSet`'s tree navigation
+/// loops do not unwind cleanly either).
 #[derive(Debug)]
 pub struct ProcessRegistry {
-    /// Set of tracked process IDs
-    pids: HashSet<u32>,
+    /// Set of tracked process IDs (deduplicated on insert)
+    pids: Vec<u32>,
 }
 
 impl ProcessRegistry {
     /// Create a new empty registry
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            pids: HashSet::new(),
-        }
+        Self { pids: Vec::new() }
     }
 
     /// Register a process ID for tracking
     pub fn register(&mut self, pid: u32) {
-        self.pids.insert(pid);
+        if !self.pids.contains(&pid) {
+            self.pids.push(pid);
+        }
     }
 
     /// Unregister a process ID (e.g., when it completes)
     pub fn unregister(&mut self, pid: u32) -> bool {
-        self.pids.remove(&pid)
+        let Some(index) = self.pids.iter().position(|tracked| *tracked == pid) else {
+            return false;
+        };
+        self.pids.remove(index);
+        true
     }
 
     /// Get all tracked PIDs
     #[must_use]
     pub fn pids(&self) -> Vec<u32> {
-        self.pids.iter().copied().collect()
+        self.pids.clone()
     }
 
     /// Get count of tracked processes
@@ -74,6 +85,17 @@ impl ProcessRegistry {
     /// Clear all tracked PIDs
     pub fn clear(&mut self) {
         self.pids.clear();
+    }
+
+    /// Atomically take every tracked PID and leave the registry empty.
+    ///
+    /// This is the pure state transition behind [`cleanup_all`]'s shutdown
+    /// drain: the returned set is exactly what was registered, and no live
+    /// registrations remain afterwards. The registry stays usable, so a
+    /// background launch that linearizes after the drain is tracked fresh
+    /// (and is the next drain's responsibility, not this one's).
+    pub fn drain(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.pids)
     }
 }
 
@@ -150,11 +172,7 @@ fn is_process_running(_pid: u32) -> bool {
 /// The number of processes that were killed.
 pub fn cleanup_all() -> usize {
     let pids = match PROCESS_REGISTRY.write() {
-        Ok(mut registry) => {
-            let pids = registry.pids();
-            registry.clear();
-            pids
-        }
+        Ok(mut registry) => registry.drain(),
         Err(_) => return 0,
     };
 
@@ -252,6 +270,110 @@ mod tests {
         let mut registry = ProcessRegistry::new();
         registry.register(1234);
         registry.register(1234); // Duplicate
-        assert_eq!(registry.count(), 1); // HashSet deduplicates
+        assert_eq!(registry.count(), 1); // deduplicated on insert
+    }
+
+    #[test]
+    fn test_registry_drain() {
+        let mut registry = ProcessRegistry::new();
+        registry.register(1);
+        registry.register(2);
+        let drained = registry.drain();
+        assert_eq!(drained.len(), 2);
+        assert!(drained.contains(&1) && drained.contains(&2));
+        assert_eq!(registry.count(), 0);
+        // Registry stays usable after a drain.
+        registry.register(3);
+        assert_eq!(registry.count(), 1);
+    }
+}
+
+/// Kani proofs for the process-registry lifecycle state machine.
+///
+/// These harnesses verify the pure invariants that the shutdown/cleanup
+/// paths rely on (fork/exec, signal delivery, and the async watcher loop are
+/// OS side effects Kani cannot model; those are covered by the integration
+/// tests in `tools::bash::tests`):
+///
+/// 1. register/unregister round-trips (with dedup) preserve the tracked set.
+/// 2. `drain` -- the state transition behind shutdown cleanup -- returns
+///    exactly the registered set and leaves no live registrations behind.
+/// 3. The registry remains usable after a drain: registrations that
+///    linearize after a shutdown drain are tracked, never silently lost.
+///
+/// Run with: `cargo kani -p maestro-tui` (requires the Kani toolchain, see
+/// https://model-checking.github.io/kani/install-guide.html).
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Any single registration is tracked, unregisters exactly once, and
+    /// leaves the registry empty.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn register_unregister_roundtrip() {
+        let mut registry = ProcessRegistry::new();
+        let pid: u32 = kani::any();
+        registry.register(pid);
+        assert!(registry.pids().contains(&pid));
+        assert_eq!(registry.count(), 1);
+        assert!(registry.unregister(pid));
+        assert_eq!(registry.count(), 0);
+        assert!(!registry.unregister(pid));
+    }
+
+    /// Registering the same pid twice is idempotent; unregistering a pid
+    /// that was never registered fails and disturbs nothing else.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn duplicate_register_is_idempotent_and_unknown_unregister_is_safe() {
+        let mut registry = ProcessRegistry::new();
+        let pid: u32 = kani::any();
+        let other: u32 = kani::any();
+        registry.register(pid);
+        registry.register(pid);
+        assert_eq!(registry.count(), 1);
+        assert_eq!(registry.unregister(other), other == pid);
+        if other != pid {
+            assert!(registry.pids().contains(&pid));
+        }
+    }
+
+    /// After a drain, no live registrations remain, and the drained output
+    /// is exactly the registered set with no duplicates.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn drain_returns_exactly_the_registered_set() {
+        let mut registry = ProcessRegistry::new();
+        let a: u32 = kani::any();
+        let b: u32 = kani::any();
+        registry.register(a);
+        registry.register(b);
+        let expected_len = if a == b { 1 } else { 2 };
+        let drained = registry.drain();
+        assert_eq!(registry.count(), 0, "drain must leave no registrations");
+        assert_eq!(drained.len(), expected_len);
+        assert!(drained.contains(&a));
+        assert!(drained.contains(&b));
+    }
+
+    /// A registration that linearizes after a shutdown drain is tracked
+    /// fresh: post-drain registrations are never silently dropped, so a
+    /// later cleanup still sees them.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn registration_after_drain_is_tracked() {
+        let mut registry = ProcessRegistry::new();
+        let first: u32 = kani::any();
+        registry.register(first);
+        let _ = registry.drain();
+        let second: u32 = kani::any();
+        registry.register(second);
+        assert_eq!(registry.count(), 1);
+        assert!(registry.pids().contains(&second));
+        let drained_again = registry.drain();
+        assert_eq!(drained_again.len(), 1);
+        assert!(drained_again.contains(&second));
+        assert_eq!(registry.count(), 0);
     }
 }
