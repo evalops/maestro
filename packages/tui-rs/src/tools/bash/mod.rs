@@ -2947,8 +2947,18 @@ mod tests {
         let tool = BashTool::new(workspace.path().display().to_string());
         let result = tool
             .execute(BashArgs {
+                // The detached child records its PID immediately but delays
+                // the workspace mutation for 30s. A 1s delay raced the
+                // assertion path below on loaded CI runners: if the pid-file
+                // poll was starved past the mutation, the sentinel existed
+                // before shutdown even started, and the post-shutdown
+                // assertion failed even though the kill path worked
+                // (evalops/maestro run 30661302999). 30s gives the
+                // poll-plus-shutdown path a 30x margin while the
+                // process-group assertions below remain the kill-correctness
+                // proof.
                 command: format!(
-                    "setsid sh -c 'printf %s \"$$\" > \"{}\"; sleep 1; printf leaked > \"{}\"' &",
+                    "setsid sh -c 'printf %s \"$$\" > \"{}\"; sleep 30; printf leaked > \"{}\"' &",
                     detached_pid_path.display(),
                     sentinel.display()
                 ),
@@ -3001,6 +3011,8 @@ mod tests {
             !process_group_exists(detached_pid),
             "shutdown must terminate the detached process group"
         );
+        // The detached child would only mutate the workspace 30s in; a
+        // prompt shutdown must kill it long before that.
         sleep(Duration::from_millis(1_100)).await;
         assert!(
             !sentinel.exists(),
