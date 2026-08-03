@@ -336,8 +336,13 @@ fn credential_candidate_is_complete(input: &str, start: usize, marker: &str) -> 
     let mut value_start = after;
     if is_stream_credential_key(marker) {
         let mut cursor = after;
+        let mut skipped_quote = None;
         while let Some(character) = input[cursor..].chars().next() {
-            if character.is_ascii_whitespace() || matches!(character, '\'' | '"') {
+            if character.is_ascii_whitespace() {
+                skipped_quote = None;
+                cursor += character.len_utf8();
+            } else if matches!(character, '\'' | '"') {
+                skipped_quote = Some(character);
                 cursor += character.len_utf8();
             } else {
                 break;
@@ -347,10 +352,18 @@ fn credential_candidate_is_complete(input: &str, start: usize, marker: &str) -> 
             return false;
         };
         if !matches!(separator, ':' | '=') {
-            return input[after..]
+            // Whitespace-separated form such as `token <value>`. Hold the
+            // candidate until the value reaches a boundary; completing on the
+            // first value byte would release a value split across pipe reads
+            // before the vault can recognize it.
+            if !input[after..]
                 .chars()
                 .next()
-                .is_some_and(|character| character.is_ascii_whitespace());
+                .is_some_and(|character| character.is_ascii_whitespace())
+            {
+                return false;
+            }
+            return credential_value_is_complete(input, cursor, skipped_quote);
         }
         cursor += separator.len_utf8();
         while let Some(character) = input[cursor..].chars().next() {
@@ -3745,6 +3758,52 @@ mod tests {
         let tail = redactor.finish(&vault, generation);
         assert!(tail.contains("{{CRED:password:"));
         assert!(!tail.contains("uri-secret"));
+    }
+
+    #[test]
+    fn streaming_redactor_holds_whitespace_separated_value_until_boundary() {
+        let vault = CredentialVault::new();
+        let generation = vault.generation();
+        let mut redactor = StreamingToolOutputRedactor::default();
+
+        // The value splits across pipe reads; nothing may be released until a
+        // value boundary arrives, or the raw prefix escapes unredacted.
+        assert_eq!(redactor.push(&vault, generation, "token ABCDEFGHIJ"), "");
+        assert_eq!(redactor.push(&vault, generation, "KLMNOPQRSTUVWXYZ"), "");
+        let output = redactor.push(&vault, generation, "\ndone\n");
+        assert!(!output.contains("ABCDEFGHIJ"));
+        assert!(output.contains("{{CRED:"));
+        assert!(output.contains("done"));
+    }
+
+    #[test]
+    fn streaming_redactor_releases_complete_whitespace_separated_value() {
+        let vault = CredentialVault::new();
+        let generation = vault.generation();
+        let mut redactor = StreamingToolOutputRedactor::default();
+
+        let output = redactor.push(
+            &vault,
+            generation,
+            "token ABCDEFGHIJKLMNOPQRSTUVWXYZ\nready\n",
+        );
+        assert!(!output.contains("ABCDEFGHIJ"));
+        assert!(output.contains("{{CRED:"));
+        assert!(output.contains("ready"));
+    }
+
+    #[test]
+    fn streaming_redactor_holds_quoted_whitespace_separated_value() {
+        let vault = CredentialVault::new();
+        let generation = vault.generation();
+        let mut redactor = StreamingToolOutputRedactor::default();
+
+        assert_eq!(
+            redactor.push(&vault, generation, "secret \"ABCDEFGHIJKLMNOP"),
+            ""
+        );
+        let tail = redactor.finish(&vault, generation);
+        assert!(tail.contains("ABCDEFGHIJKLMNOP"));
     }
 
     #[test]
