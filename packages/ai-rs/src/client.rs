@@ -3,9 +3,12 @@
 //! Provides a common interface for different AI providers.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 use super::anthropic::AnthropicClient;
 use super::google::GoogleClient;
@@ -162,10 +165,42 @@ pub fn provider_model_name(model: &str) -> String {
         | "google" | "gemini" | "google-gemini-cli" | "google-antigravity" | "mistral" | "groq"
         | "vertex-ai" | "vertex" | "deepseek" | "moonshot" | "kimi" | "dashscope" | "qwen"
         | "minimax" | "zai" | "zhipu" | "evalops" | "maestro-managed" | "bedrock"
-        | "aws-bedrock" | "writer" | "xai" | "grok" | "cerebras" | "openrouter" => {
+        | "aws-bedrock" | "writer" | "xai" | "grok" | "cerebras" => {
+            // OpenRouter model ids are opaque and may themselves begin with
+            // `openrouter/`; the OpenAI-compatible transport strips the
+            // outer routing prefix exactly once at its boundary.
             model_id.to_string()
         }
         _ => trimmed.to_string(),
+    }
+}
+
+fn telemetry_provider_model(provider: &str, model: &str) -> String {
+    let model = model.trim();
+    // Keep the managed namespace long enough to distinguish an OpenRouter
+    // model id owned by the gateway from a direct OpenRouter route. The
+    // managed request boundary strips this prefix before sending the request,
+    // but telemetry must retain the provider-owned `openrouter/` namespace.
+    for prefix in ["evalops/", "maestro-managed/"] {
+        if model
+            .get(..prefix.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        {
+            let managed_model = model[prefix.len()..].trim();
+            return if provider.eq_ignore_ascii_case("openrouter") {
+                managed_model.to_string()
+            } else {
+                provider_model_name(managed_model)
+            };
+        }
+    }
+    if provider.eq_ignore_ascii_case("openrouter") {
+        model
+            .split_once('/')
+            .filter(|(prefix, _)| prefix.eq_ignore_ascii_case("openrouter"))
+            .map_or_else(|| model.to_string(), |(_, nested)| nested.to_string())
+    } else {
+        provider_model_name(model)
     }
 }
 
@@ -332,6 +367,14 @@ impl UnifiedClient {
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                     .context("EvalOps managed provider requires MAESTRO_EVALOPS_ORG_ID")?;
+                let workspace_id = ["MAESTRO_EVALOPS_WORKSPACE_ID", "EVALOPS_WORKSPACE_ID"]
+                    .iter()
+                    .find_map(|name| {
+                        env.get(*name)
+                            .map(String::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                    });
                 let provider = env
                     .get("MAESTRO_EVALOPS_PROVIDER")
                     .map(String::as_str)
@@ -364,7 +407,16 @@ impl UnifiedClient {
                     }
                 }
                 let client = OpenAiClient::with_base_url(credential, base_url)?
-                    .with_managed_gateway_context(organization_id, provider_ref)?;
+                    .with_route_provider(provider);
+                let client = if let Some(workspace_id) = workspace_id {
+                    client.with_managed_gateway_scope(
+                        organization_id,
+                        workspace_id,
+                        provider_ref,
+                    )?
+                } else {
+                    client.with_managed_gateway_context(organization_id, provider_ref)?
+                };
                 Ok(Self::OpenAI(client))
             }
             ProviderProtocol::OpenAi
@@ -375,7 +427,8 @@ impl UnifiedClient {
                     .base_url
                     .as_deref()
                     .context("provider requires an explicit base URL")?;
-                let client = OpenAiClient::with_base_url(credential, base_url)?;
+                let client = OpenAiClient::with_base_url(credential, base_url)?
+                    .with_route_provider(resolved.provider.id);
                 Ok(match resolved.provider.id {
                     "mistral" => Self::Mistral(client),
                     "groq" => Self::Groq(client),
@@ -409,6 +462,30 @@ impl UnifiedClient {
         }
     }
 
+    /// Return the routed provider identity used for lifecycle telemetry.
+    ///
+    /// Several providers intentionally use the OpenAI-compatible transport.
+    /// Keep the transport enum available for behavior such as prompt caching,
+    /// but preserve the configured route here so an OpenRouter or managed
+    /// Anthropic turn is not mislabeled as OpenAI in traces.
+    #[must_use]
+    pub fn provider_name(&self) -> &str {
+        match self {
+            Self::Anthropic(_) => "anthropic",
+            Self::OpenAI(client) => client.routed_provider().unwrap_or("openai"),
+            Self::Mistral(_) => "mistral",
+            Self::Google(_) => "google",
+            Self::Groq(_) => "groq",
+            Self::VertexAi(_) => "vertex-ai",
+            Self::DeepSeek(_) => "deepseek",
+            Self::Moonshot(_) => "moonshot",
+            Self::Qwen(_) => "qwen",
+            Self::MiniMax(_) => "minimax",
+            Self::Zai(_) => "zai",
+            Self::Scripted(_) => "scripted",
+        }
+    }
+
     /// Stream a request to the AI provider
     ///
     /// Applies the default stream idle policy
@@ -421,29 +498,110 @@ impl UnifiedClient {
         messages: &[Message],
         config: &RequestConfig,
     ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
+        self.stream_owned_config(messages, config.clone()).await
+    }
+
+    /// Stream a request while transferring ownership of its immutable config.
+    ///
+    /// The normal agent loop builds a request config and does not use it after
+    /// dispatch. Moving it into the retry task avoids a deep clone of every
+    /// tool schema before the first response event. The borrowed `stream`
+    /// API above remains for callers that need to retain their config.
+    pub async fn stream_owned_config(
+        &self,
+        messages: &[Message],
+        config: RequestConfig,
+    ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
+        self.stream_owned_config_shared_messages(Arc::new(messages.to_vec()), config)
+            .await
+    }
+
+    /// Stream a request while sharing an owned immutable message snapshot.
+    ///
+    /// The native agent keeps its conversation history in an `Arc<Vec<_>>`,
+    /// so the first attempt and any retry can share the snapshot without
+    /// cloning the transcript on every successful turn.
+    pub async fn stream_owned_config_shared_messages(
+        &self,
+        messages: Arc<Vec<Message>>,
+        config: RequestConfig,
+    ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
+        let provider = self.provider_name().to_string();
+        let model = config.model.trim().to_string();
+        let provider_model = telemetry_provider_model(&provider, &model);
+        let started = Instant::now();
+        tracing::info!(
+            target: "maestro.llm",
+            event = "llm_stream_start",
+            provider = %provider,
+            model = %model,
+            provider_model = %provider_model,
+            message_count = messages.len(),
+            tool_count = config.tools.len(),
+            max_tokens = config.max_tokens,
+            thinking_enabled = config.thinking.is_some(),
+            cache_system_prompt = config.cache_system_prompt,
+        );
         // Start the first attempt inline so connect/request failures surface
         // from this call exactly as they did before the idle policy existed.
-        let first = self.stream_once(messages, config).await?;
+        let first = match self.stream_once(messages.as_slice(), &config).await {
+            Ok(first) => first,
+            Err(error) => {
+                tracing::warn!(
+                    target: "maestro.llm",
+                    event = "llm_stream_start_failed",
+                    provider = %provider,
+                    model = %model,
+                    provider_model = %provider_model,
+                    duration_ms = started.elapsed().as_millis() as u64,
+                    outcome = "request_error",
+                );
+                return Err(error);
+            }
+        };
+        tracing::debug!(
+            target: "maestro.llm",
+            event = "llm_stream_open",
+            provider = %provider,
+            model = %model,
+            provider_model = %provider_model,
+            duration_ms = started.elapsed().as_millis() as u64,
+            outcome = "stream_open",
+        );
 
         let (tx, rx) = mpsc::unbounded_channel();
         let client = self.clone();
-        let messages = messages.to_vec();
-        let config = config.clone();
-        tokio::spawn(async move {
-            forward_stream_with_idle_policy(
-                first,
-                move || {
-                    let client = client.clone();
-                    let messages = messages.clone();
-                    let config = config.clone();
-                    async move { client.stream_once(&messages, &config).await }
-                },
-                DEFAULT_STREAM_IDLE_TIMEOUT,
-                DEFAULT_STREAM_MAX_RETRIES,
-                tx,
-            )
-            .await;
-        });
+        let config = Arc::new(config);
+        let stream_span = tracing::info_span!(
+            target: "maestro.llm",
+            "llm_stream_lifecycle",
+            event = "llm_stream_lifecycle",
+            provider = %provider,
+            model = %model,
+            provider_model = %provider_model,
+        );
+        tokio::spawn(
+            async move {
+                forward_stream_with_idle_policy(
+                    first,
+                    move || {
+                        let client = client.clone();
+                        let messages = Arc::clone(&messages);
+                        let config = Arc::clone(&config);
+                        async move {
+                            client
+                                .stream_once(messages.as_slice(), config.as_ref())
+                                .await
+                        }
+                    },
+                    DEFAULT_STREAM_IDLE_TIMEOUT,
+                    DEFAULT_STREAM_MAX_RETRIES,
+                    tx,
+                )
+                .await;
+            }
+            .instrument(stream_span),
+        );
         Ok(rx)
     }
 
@@ -478,15 +636,16 @@ impl UnifiedClient {
 /// event for `idle_timeout`) is retried from scratch up to `max_retries`
 /// times, but only while no content event has been forwarded yet — replaying
 /// a request after partial content would duplicate it for the consumer. A
-/// stall after partial content, or after retries are exhausted, produces a
-/// terminal `StreamEvent::Error`.
+/// stall after partial content, an attempt that closes without a terminal
+/// event, or retries that are exhausted produces a terminal
+/// `StreamEvent::Error`.
 ///
 /// Only the streaming phase is bounded here; request/connect semantics are
 /// unchanged. A retried attempt's receiver is dropped, which detaches the
 /// provider's stream task until its HTTP connection ends.
 async fn forward_stream_with_idle_policy<F, Fut>(
     first: mpsc::UnboundedReceiver<StreamEvent>,
-    mut begin_attempt: F,
+    begin_attempt: F,
     idle_timeout: std::time::Duration,
     max_retries: u32,
     tx: mpsc::UnboundedSender<StreamEvent>,
@@ -497,17 +656,82 @@ async fn forward_stream_with_idle_policy<F, Fut>(
     let max_attempts = max_retries.saturating_add(1);
     let mut attempt = 1u32;
     let mut attempt_rx = first;
+    let mut begin_attempt = Some(begin_attempt);
+    let stream_started = Instant::now();
+    let mut attempt_started = Instant::now();
+    let mut events_forwarded = 0u64;
     loop {
         let mut committed_content = false;
         loop {
             let event = match tokio::time::timeout(idle_timeout, attempt_rx.recv()).await {
                 Ok(Some(event)) => event,
-                // Attempt stream ended; whatever it delivered was forwarded.
-                Ok(None) => return,
+                Ok(None) => {
+                    if !committed_content && attempt < max_attempts {
+                        tracing::warn!(
+                            target: "maestro.llm",
+                            event = "llm_stream_retry",
+                            reason = "closed_without_terminal",
+                            attempt,
+                            max_attempts,
+                            committed_content,
+                            attempt_duration_ms = attempt_started.elapsed().as_millis() as u64,
+                            duration_ms = stream_started.elapsed().as_millis() as u64,
+                            events_forwarded,
+                        );
+                        break; // The provider closed before producing content; retry.
+                    }
+                    tracing::error!(
+                        target: "maestro.llm",
+                        event = "llm_stream_failed",
+                        reason = "closed_without_terminal",
+                        attempt,
+                        max_attempts,
+                        committed_content,
+                        attempt_duration_ms = attempt_started.elapsed().as_millis() as u64,
+                        duration_ms = stream_started.elapsed().as_millis() as u64,
+                        events_forwarded,
+                    );
+                    let message = if committed_content {
+                        "Provider stream closed mid-response without a terminal event; \
+                         not retrying because partial content was already streamed"
+                            .to_string()
+                    } else {
+                        format!(
+                            "Provider stream closed without a terminal event after \
+                             {attempt} attempt(s); giving up"
+                        )
+                    };
+                    let _ = tx.send(StreamEvent::Error { message });
+                    return;
+                }
                 Err(_elapsed) => {
                     if !committed_content && attempt < max_attempts {
+                        tracing::warn!(
+                            target: "maestro.llm",
+                            event = "llm_stream_retry",
+                            reason = "idle_timeout",
+                            attempt,
+                            max_attempts,
+                            committed_content,
+                            idle_timeout_ms = idle_timeout.as_millis() as u64,
+                            attempt_duration_ms = attempt_started.elapsed().as_millis() as u64,
+                            duration_ms = stream_started.elapsed().as_millis() as u64,
+                            events_forwarded,
+                        );
                         break; // Discard the stalled attempt and retry.
                     }
+                    tracing::error!(
+                        target: "maestro.llm",
+                        event = "llm_stream_failed",
+                        reason = "idle_timeout",
+                        attempt,
+                        max_attempts,
+                        committed_content,
+                        idle_timeout_ms = idle_timeout.as_millis() as u64,
+                        attempt_duration_ms = attempt_started.elapsed().as_millis() as u64,
+                        duration_ms = stream_started.elapsed().as_millis() as u64,
+                        events_forwarded,
+                    );
                     let message = if committed_content {
                         format!(
                             "Provider stream stalled: no data received for {}s mid-response; \
@@ -525,22 +749,98 @@ async fn forward_stream_with_idle_policy<F, Fut>(
                     return;
                 }
             };
+            events_forwarded = events_forwarded.saturating_add(1);
             committed_content |= stream_event_commits_content(&event);
+            if committed_content {
+                // Once content has been forwarded, retries are forbidden to
+                // avoid duplicating the response. Drop the retry closure now
+                // so its transcript/config snapshots are released during the
+                // normal successful path.
+                begin_attempt = None;
+            }
+            let terminal_error = matches!(&event, StreamEvent::Error { .. });
+            if terminal_error {
+                let error_message_len = match &event {
+                    StreamEvent::Error { message } => message.len(),
+                    _ => 0,
+                };
+                tracing::error!(
+                    target: "maestro.llm",
+                    event = "llm_stream_failed",
+                    reason = "provider_error",
+                    attempt,
+                    max_attempts,
+                    committed_content,
+                    error_message_len,
+                    attempt_duration_ms = attempt_started.elapsed().as_millis() as u64,
+                    duration_ms = stream_started.elapsed().as_millis() as u64,
+                    events_forwarded,
+                );
+            }
             let terminal = matches!(
-                event,
+                &event,
                 StreamEvent::MessageStop { .. } | StreamEvent::Error { .. }
             );
             if tx.send(event).is_err() {
+                tracing::debug!(
+                    target: "maestro.llm",
+                    event = "llm_stream_abandoned",
+                    reason = "consumer_dropped",
+                    attempt,
+                    max_attempts,
+                    committed_content,
+                    attempt_duration_ms = attempt_started.elapsed().as_millis() as u64,
+                    duration_ms = stream_started.elapsed().as_millis() as u64,
+                    events_forwarded,
+                );
                 return; // Caller dropped the receiver.
             }
             if terminal {
+                if !terminal_error {
+                    tracing::info!(
+                        target: "maestro.llm",
+                        event = "llm_stream_completed",
+                        outcome = "success",
+                        attempt,
+                        max_attempts,
+                        committed_content,
+                        attempt_duration_ms = attempt_started.elapsed().as_millis() as u64,
+                        duration_ms = stream_started.elapsed().as_millis() as u64,
+                        events_forwarded,
+                    );
+                }
                 return;
             }
         }
         attempt += 1;
-        match begin_attempt().await {
+        attempt_started = Instant::now();
+        let Some(begin_attempt_fn) = begin_attempt.as_mut() else {
+            tracing::error!(
+                target: "maestro.llm",
+                event = "llm_stream_failed",
+                reason = "retry_state_unavailable",
+                attempt,
+                max_attempts,
+                duration_ms = stream_started.elapsed().as_millis() as u64,
+                events_forwarded,
+            );
+            let _ = tx.send(StreamEvent::Error {
+                message: "Provider stream retry state was unavailable".to_string(),
+            });
+            return;
+        };
+        match begin_attempt_fn().await {
             Ok(next) => attempt_rx = next,
             Err(err) => {
+                tracing::error!(
+                    target: "maestro.llm",
+                    event = "llm_stream_failed",
+                    reason = "retry_start_failed",
+                    attempt,
+                    max_attempts,
+                    duration_ms = stream_started.elapsed().as_millis() as u64,
+                    events_forwarded,
+                );
                 let _ = tx.send(StreamEvent::Error {
                     message: format!("Provider stream retry failed: {err:#}"),
                 });
@@ -799,6 +1099,26 @@ mod tests {
     }
 
     #[test]
+    fn telemetry_provider_model_preserves_openrouter_vendor_namespace() {
+        assert_eq!(
+            telemetry_provider_model("openrouter", "anthropic/claude-sonnet-4.5"),
+            "anthropic/claude-sonnet-4.5"
+        );
+        assert_eq!(
+            telemetry_provider_model("openrouter", "openrouter/google/gemini-2.5-pro"),
+            "google/gemini-2.5-pro"
+        );
+        assert_eq!(
+            telemetry_provider_model("openrouter", "evalops/openrouter/auto"),
+            "openrouter/auto"
+        );
+        assert_eq!(
+            telemetry_provider_model("openai", "openai/gpt-5.5"),
+            "gpt-5.5"
+        );
+    }
+
+    #[test]
     fn managed_provider_builds_from_delegated_context() {
         let env = HashMap::from([
             (
@@ -810,9 +1130,36 @@ mod tests {
                 "MAESTRO_EVALOPS_PROVIDER".to_string(),
                 "anthropic".to_string(),
             ),
+            (
+                "MAESTRO_EVALOPS_ENVIRONMENT".to_string(),
+                "prod".to_string(),
+            ),
+            (
+                "MAESTRO_EVALOPS_WORKSPACE_ID".to_string(),
+                "workspace_456".to_string(),
+            ),
         ]);
         let resolved = ProviderRegistry::require("evalops/claude-sonnet-4-5", &env).unwrap();
-        assert!(UnifiedClient::from_resolved_provider(&resolved, &env).is_ok());
+        let client = UnifiedClient::from_resolved_provider(&resolved, &env).unwrap();
+        assert!(matches!(client, UnifiedClient::OpenAI(_)));
+
+        let mut alias_env = env.clone();
+        alias_env.insert(
+            "MAESTRO_EVALOPS_WORKSPACE_ID".to_string(),
+            "   ".to_string(),
+        );
+        alias_env.insert(
+            "EVALOPS_WORKSPACE_ID".to_string(),
+            "workspace_alias".to_string(),
+        );
+        let alias_client = UnifiedClient::from_resolved_provider(&resolved, &alias_env).unwrap();
+        let UnifiedClient::OpenAI(alias_client) = alias_client else {
+            panic!("managed provider should use the OpenAI-compatible client");
+        };
+        assert_eq!(
+            alias_client.headers().get("x-workspace-id").unwrap(),
+            "workspace_alias"
+        );
 
         let missing_org = HashMap::from([(
             "MAESTRO_EVALOPS_ACCESS_TOKEN".to_string(),
@@ -820,6 +1167,18 @@ mod tests {
         )]);
         let resolved = ProviderRegistry::require("evalops/gpt-4o-mini", &missing_org).unwrap();
         assert!(UnifiedClient::from_resolved_provider(&resolved, &missing_org).is_err());
+    }
+
+    #[test]
+    fn provider_name_preserves_openrouter_route_identity() {
+        let env = HashMap::from([("OPENROUTER_API_KEY".to_string(), "secret".to_string())]);
+        let resolved =
+            ProviderRegistry::require("openrouter/anthropic/claude-sonnet-4.5:free", &env).unwrap();
+        let client = UnifiedClient::from_resolved_provider(&resolved, &env).unwrap();
+
+        assert!(matches!(client, UnifiedClient::OpenAI(_)));
+        assert_eq!(client.provider(), AiProvider::OpenAI);
+        assert_eq!(client.provider_name(), "openrouter");
     }
 
     #[test]
@@ -994,6 +1353,154 @@ mod stream_idle_policy_tests {
         assert!(matches!(events[0], StreamEvent::MessageStart { .. }));
         assert!(matches!(events[1], StreamEvent::TextDelta { .. }));
         assert!(matches!(events[2], StreamEvent::MessageStop { .. }));
+    }
+
+    #[tokio::test]
+    async fn closed_stream_before_content_is_retried_and_success_streams() {
+        let attempts = Attempts::new(AtomicU32::new(0));
+        let (first_tx, first_rx) = mpsc::unbounded_channel();
+        drop(first_tx);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        forward_stream_with_idle_policy(
+            first_rx,
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
+                let _ = attempt_tx.send(StreamEvent::MessageStart {
+                    id: "msg-closed-retry".to_string(),
+                    model: "test-model".to_string(),
+                });
+                let _ = attempt_tx.send(StreamEvent::TextDelta {
+                    index: 0,
+                    text: "recovered".to_string(),
+                });
+                let _ = attempt_tx.send(StreamEvent::MessageStop { stop_reason: None });
+                async move { Ok(attempt_rx) }
+            },
+            IDLE,
+            RETRIES,
+            tx,
+        )
+        .await;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 3);
+        assert!(matches!(events[0], StreamEvent::MessageStart { .. }));
+        assert!(matches!(events[1], StreamEvent::TextDelta { .. }));
+        assert!(matches!(events[2], StreamEvent::MessageStop { .. }));
+    }
+
+    #[tokio::test]
+    async fn provider_error_event_is_forwarded_without_retry() {
+        let retried = Attempts::new(AtomicU32::new(0));
+        let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
+        attempt_tx
+            .send(StreamEvent::Error {
+                message: "provider returned 401".to_string(),
+            })
+            .unwrap();
+        drop(attempt_tx);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        forward_stream_with_idle_policy(
+            attempt_rx,
+            || {
+                retried.fetch_add(1, Ordering::SeqCst);
+                async move { unreachable!("provider errors must not retry") }
+            },
+            IDLE,
+            RETRIES,
+            tx,
+        )
+        .await;
+
+        assert_eq!(retried.load(Ordering::SeqCst), 0);
+        let events = drain(&mut rx);
+        assert!(matches!(
+            events.as_slice(),
+            [StreamEvent::Error { message }] if message == "provider returned 401"
+        ));
+    }
+
+    #[tokio::test]
+    async fn closed_stream_after_partial_content_surfaces_error_without_retry() {
+        let retried = Attempts::new(AtomicU32::new(0));
+        let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
+        attempt_tx
+            .send(StreamEvent::TextDelta {
+                index: 0,
+                text: "partial".to_string(),
+            })
+            .unwrap();
+        drop(attempt_tx);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        forward_stream_with_idle_policy(
+            attempt_rx,
+            || {
+                retried.fetch_add(1, Ordering::SeqCst);
+                let (retry_tx, retry_rx) = mpsc::unbounded_channel::<StreamEvent>();
+                std::mem::forget(retry_tx);
+                async move { Ok(retry_rx) }
+            },
+            IDLE,
+            RETRIES,
+            tx,
+        )
+        .await;
+
+        assert_eq!(retried.load(Ordering::SeqCst), 0);
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], StreamEvent::TextDelta { .. }));
+        match &events[1] {
+            StreamEvent::Error { message } => assert!(
+                message.contains("closed mid-response"),
+                "error should explain why no retry happened: {message}"
+            ),
+            other => panic!("expected terminal error event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn closed_stream_exhausts_retries_and_surfaces_error() {
+        let attempts = Attempts::new(AtomicU32::new(0));
+        let (first_tx, first_rx) = mpsc::unbounded_channel();
+        drop(first_tx);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        forward_stream_with_idle_policy(
+            first_rx,
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
+                drop(attempt_tx);
+                async move { Ok(attempt_rx) }
+            },
+            IDLE,
+            RETRIES,
+            tx,
+        )
+        .await;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), RETRIES);
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::Error { message } => {
+                assert!(
+                    message.contains("closed without a terminal event"),
+                    "error should name the abnormal closure: {message}"
+                );
+                assert!(
+                    message.contains("3 attempt(s)"),
+                    "error should report exhausted attempts: {message}"
+                );
+            }
+            other => panic!("expected terminal error event, got {other:?}"),
+        }
     }
 
     #[tokio::test]

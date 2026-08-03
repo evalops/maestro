@@ -90,7 +90,7 @@ const CONTROL_PLANE_ENV_NAMES: &[&str] = &[
     "NODE_ENV",
     "PORT",
 ];
-const CORS_ENV_NAMES: &[&str] = &["MAESTRO_WEB_ORIGIN"];
+const CORS_ENV_NAMES: &[&str] = &["MAESTRO_WEB_ORIGIN", "MAESTRO_WEB_ORIGINS"];
 
 fn snapshot_env(names: &'static [&'static str]) -> Vec<(&'static str, Option<std::ffi::OsString>)> {
     names
@@ -2672,6 +2672,38 @@ async fn non_allowlisted_origin_never_receives_allow_credentials() {
         );
         assert!(!reflects_attacker, "configured={configured}: {response}");
     }
+
+    restore_env(snapshot);
+}
+
+#[test]
+fn configured_web_origins_allow_multiple_first_party_hosts_only() {
+    let _guard = ENV_LOCK.blocking_lock();
+    let snapshot = snapshot_env(CORS_ENV_NAMES);
+    clear_env(CORS_ENV_NAMES);
+    env::set_var(
+        "MAESTRO_WEB_ORIGINS",
+        "https://app.deixic.com, https://maestro.evalops.dev",
+    );
+
+    for origin in ["https://app.deixic.com", "https://maestro.evalops.dev"] {
+        let request = format!(
+            "GET /api/chat/ws HTTP/1.1\r\nHost: app.deixic.com\r\nOrigin: {origin}\r\n\r\n"
+        );
+        let head = parse_request_head(request.as_bytes()).expect("request should parse");
+        assert!(
+            origin_allowed(&head),
+            "configured origin should be allowed: {origin}"
+        );
+        assert_eq!(requested_cors_origin(&head), origin);
+    }
+
+    let rejected = parse_request_head(
+        b"GET /api/chat/ws HTTP/1.1\r\nHost: app.deixic.com\r\nOrigin: https://evil.example\r\n\r\n",
+    )
+    .expect("request should parse");
+    assert!(!origin_allowed(&rejected));
+    assert_eq!(requested_cors_origin(&rejected), "https://app.deixic.com");
 
     restore_env(snapshot);
 }

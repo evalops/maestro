@@ -1186,7 +1186,7 @@ impl App {
             )
         };
         // Kimi-style: forked sessions do not inherit the prior goal.
-        match self.goal_store.clear_for_session_fork() {
+        match self.clear_goal_for_fork() {
             Ok(Some(goal_id)) => {
                 self.goal_auto_continue_armed = false;
                 self.state.add_system_message(format!(
@@ -2669,6 +2669,7 @@ Manual snapshot: `/magic-trace stop`",
 
     /// Handle `/goal` lifecycle actions.
     pub(super) fn handle_goal_action(&mut self, action: GoalAction) {
+        let previous_tools_visible = self.goal_store.tools_visible();
         match action {
             GoalAction::Status => {
                 self.state.add_system_message(self.goal_store.report());
@@ -2792,6 +2793,9 @@ Manual snapshot: `/magic-trace stop`",
                     Err(e) => self.state.error = Some(e.to_string()),
                 }
             }
+        }
+        if previous_tools_visible != self.goal_store.tools_visible() {
+            self.sync_agent_goal_tools_visibility();
         }
     }
 

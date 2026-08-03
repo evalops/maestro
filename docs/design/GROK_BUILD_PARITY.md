@@ -97,7 +97,7 @@ Statuses mirror [NATIVE_TUI_PARITY.md](../NATIVE_TUI_PARITY.md):
 | Context compaction | Auto ~0.85 threshold | **Present** | Inspired by Grok-class thresholds; not identical policy |
 | Modes cycle (Normal / Plan / Always-approve) | Shift+Tab + `/plan` | **Partial** | Mode chrome exists; plan depth is weaker (below) |
 | Plan mode (deep) | Todo gate before mutating tools | **Partial** | No durable `plan.md`, no enter/exit plan tools, no plan-approval UI with line comments |
-| Subagents / personas | Agents CLI, swarm/A2A, planner type | **Partial** | Parallel/agent surfaces exist; not a unified persona + marketplace story |
+| Subagents / personas | Native `spawn_subagent` lifecycle plus agents CLI, swarm/A2A, planner type | **Partial** | Durable child sessions, optional worktrees, wait/resume/cancel now exist; no unified persona + marketplace story |
 | Cross-session memory | Shared memory + `maestro memory` inspect | **Partial** | No dream/flush consolidation UX or hybrid FTS+vector product path |
 | Config story | JSON + TOML mix (`~/.maestro/*`, legacy composer) | **Partial** | Native reads `config.toml` in places; public story still multi-format |
 | Plugins + marketplace | Skills + MCP + hooks separately | **Open** | No installable plugin unit, no marketplace tab, no trust-scoped plugin dir |
@@ -464,8 +464,7 @@ A full inventory pass compared Maestro against the public grok-build repo
 | Gap | Grok reference | Maestro anchors |
 |-----|----------------|-----------------|
 | File-level checkpoints + real `/rewind` | per-prompt file snapshots; rewind restores files, not just chat | checkpoint code lives in ambient daemon + headless resume only |
-| ACP server (`agent stdio`) | Zed/Neovim/Emacs via Agent Client Protocol | headless RPC protocol `2026-04-02` is the substrate; ACP is an adapter |
-| Subagent as a TUI tool (`spawn_subagent`) | first-class child transcripts, worktree isolation, resume chaining | swarm + control-plane dispatch exist; no Task-style tool in the TUI registry |
+| ACP server (`agent stdio`) | Zed/Neovim/Emacs via Agent Client Protocol | headless RPC protocol `2026-08-01` is the substrate; ACP is an adapter |
 
 **Deliberately skipped:** media generation, voice dictation, Rhai
 workflows (swarm DAG covers orchestration), pure-Rust Mermaid.

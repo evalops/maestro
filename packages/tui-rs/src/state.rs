@@ -37,7 +37,7 @@ use crate::session::ThinkingLevel;
 // Import from our own crate using `crate::` prefix
 // `FromAgent` is an enum of all messages the agent can send us
 
-use crate::components::message_layout::{MessageLayout, MessageLayoutCache, MessageLayoutKey};
+use crate::components::message_layout::{MessageLayout, MessageLayoutCache};
 use crate::components::textarea::{TextArea, PASTE_FOLD_MIN_CHARS, PASTE_FOLD_MIN_LINES};
 // Our multi-line text input component
 
@@ -717,15 +717,18 @@ impl AppState {
         &self,
         width: u16,
         settings_key: u64,
-        keys: &[MessageLayoutKey],
+        messages: &[&Message],
         measure: F,
     ) -> MessageLayout
     where
         F: FnMut(usize) -> usize,
     {
-        self.message_layout_cache
-            .borrow_mut()
-            .prepare(width, settings_key, keys, measure)
+        self.message_layout_cache.borrow_mut().prepare_messages(
+            width,
+            settings_key,
+            messages,
+            measure,
+        )
     }
 
     #[cfg(test)]

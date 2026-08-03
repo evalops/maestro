@@ -193,6 +193,8 @@ struct ReplaySidecar {
     state: AgentStateCheckpoint,
     last_init: Option<InitConfig>,
     semantic_conversation: Option<SemanticConversationCheckpoint>,
+    #[serde(default)]
+    semantic_conversation_attempt: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -620,6 +622,8 @@ pub struct SessionRecorder {
     last_init: Option<InitConfig>,
     /// Latest private, sanitized provider conversation checkpoint.
     semantic_conversation: Option<SemanticConversationCheckpoint>,
+    /// Attempt identity associated with the latest semantic checkpoint.
+    semantic_conversation_attempt: Option<u32>,
     /// Number of entries written since the last checkpoint.
     entries_since_checkpoint: usize,
 }
@@ -762,6 +766,7 @@ impl SessionRecorder {
             replay_state: AgentState::default(),
             last_init: None,
             semantic_conversation: None,
+            semantic_conversation_attempt: None,
             entries_since_checkpoint: 0,
         })
     }
@@ -777,8 +782,12 @@ impl SessionRecorder {
         // Load existing metadata
         let (mut metadata, reconstructed) = load_metadata_tolerant(&metadata_path, id)?;
 
-        let sidecar_replay = load_replay_sidecar(&replay_path)
-            .and_then(|sidecar| replay_from_sidecar_tail(&path, sidecar).ok());
+        let loaded_sidecar = load_replay_sidecar(&replay_path);
+        let semantic_conversation_attempt = loaded_sidecar
+            .as_ref()
+            .and_then(|sidecar| sidecar.semantic_conversation_attempt);
+        let sidecar_replay =
+            loaded_sidecar.and_then(|sidecar| replay_from_sidecar_tail(&path, sidecar).ok());
         let reader = if sidecar_replay.is_none() || reconstructed {
             SessionReader::load(sessions_dir, id).ok()
         } else {
@@ -816,6 +825,7 @@ impl SessionRecorder {
                         messages,
                     })
             }),
+            semantic_conversation_attempt,
             entries_since_checkpoint: 0,
         })
     }
@@ -865,6 +875,12 @@ impl SessionRecorder {
                 })
                 .map(|checkpoint| checkpoint.messages.clone()),
         }
+    }
+
+    /// Return the attempt identity stored with the latest semantic checkpoint.
+    #[must_use]
+    pub(crate) fn semantic_conversation_attempt(&self) -> Option<u32> {
+        self.semantic_conversation_attempt
     }
 
     /// Replace the reconstructed replay state with a snapshot and persist it.
@@ -950,24 +966,7 @@ impl SessionRecorder {
             messages,
         } = &portable_message
         {
-            if protocol_version == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL {
-                self.semantic_conversation = Some(SemanticConversationCheckpoint {
-                    protocol_version: protocol_version.clone(),
-                    messages: messages.clone(),
-                });
-            } else {
-                // A present-but-unsupported version is not a facade-only
-                // snapshot. Clear stale provider history rather than replaying
-                // a transcript with unknown semantics after restart.
-                self.semantic_conversation = Some(SemanticConversationCheckpoint {
-                    protocol_version: protocol_version.clone(),
-                    messages: Vec::new(),
-                });
-            }
-            // Semantic snapshots are private checkpoint material, never an
-            // ordinary received event or transcript/SSE payload.
-            self.entries_since_checkpoint += 1;
-            return self.maybe_write_checkpoint(true);
+            return self.record_conversation_snapshot(protocol_version, messages, None);
         }
         let entry = SessionEntry::received(portable_message);
         self.write_entry(&entry)?;
@@ -1020,6 +1019,64 @@ impl SessionRecorder {
         Ok(())
     }
 
+    /// Record a received message whose semantic snapshot has already been
+    /// vaulted by the owning session.
+    ///
+    /// Portable transcript export intentionally masks credential references.
+    /// Delegated child checkpoints are different: they must retain the live
+    /// opaque references so an in-process resume can resolve them from the
+    /// child credential scope. Callers must vault the message before using
+    /// this method; non-snapshot messages continue through the portable path.
+    pub fn record_received_preserving_credential_references(
+        &mut self,
+        message: &FromAgentMessage,
+    ) -> std::io::Result<()> {
+        self.record_received_preserving_credential_references_with_snapshot_attempt(message, None)
+    }
+
+    /// Record a received message while atomically associating semantic snapshots
+    /// with the child attempt that produced them.
+    pub(crate) fn record_received_preserving_credential_references_with_snapshot_attempt(
+        &mut self,
+        message: &FromAgentMessage,
+        snapshot_attempt: Option<u32>,
+    ) -> std::io::Result<()> {
+        match message {
+            FromAgentMessage::ConversationSnapshot {
+                protocol_version,
+                messages,
+            } => self.record_conversation_snapshot(protocol_version, messages, snapshot_attempt),
+            _ => self.record_received(message),
+        }
+    }
+
+    fn record_conversation_snapshot(
+        &mut self,
+        protocol_version: &str,
+        messages: &[maestro_ai::Message],
+        snapshot_attempt: Option<u32>,
+    ) -> std::io::Result<()> {
+        self.semantic_conversation_attempt = snapshot_attempt;
+        if protocol_version == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL {
+            self.semantic_conversation = Some(SemanticConversationCheckpoint {
+                protocol_version: protocol_version.to_string(),
+                messages: messages.to_vec(),
+            });
+        } else {
+            // A present-but-unsupported version is not a facade-only
+            // snapshot. Clear stale provider history rather than replaying
+            // a transcript with unknown semantics after restart.
+            self.semantic_conversation = Some(SemanticConversationCheckpoint {
+                protocol_version: protocol_version.to_string(),
+                messages: Vec::new(),
+            });
+        }
+        // Semantic snapshots are private checkpoint material, never an
+        // ordinary received event or transcript/SSE payload.
+        self.entries_since_checkpoint += 1;
+        self.maybe_write_checkpoint(true)
+    }
+
     fn maybe_write_checkpoint(&mut self, force: bool) -> std::io::Result<()> {
         if !force && self.entries_since_checkpoint < CHECKPOINT_INTERVAL {
             return Ok(());
@@ -1051,6 +1108,7 @@ impl SessionRecorder {
             state: portable_redacted_checkpoint(&self.replay_state),
             last_init: self.last_init.clone(),
             semantic_conversation: self.semantic_conversation.clone(),
+            semantic_conversation_attempt: self.semantic_conversation_attempt,
         };
         let json = serde_json::to_string(&sidecar)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;

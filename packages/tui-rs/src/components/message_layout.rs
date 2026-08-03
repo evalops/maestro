@@ -1,22 +1,88 @@
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct MessageLayoutKey(u64);
+use std::sync::Arc;
+
+use crate::state::{Message, MessageKind, MessageRole};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ToolCallLayoutKey {
+    call_id: String,
+    tool: String,
+    output_len: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MessageLayoutKey {
+    id: String,
+    role: MessageRole,
+    kind: MessageKind,
+    content_len: usize,
+    thinking_len: usize,
+    streaming: bool,
+    thinking_expanded: bool,
+    tool_calls: Vec<ToolCallLayoutKey>,
+}
 
 impl MessageLayoutKey {
-    pub(crate) const fn new(value: u64) -> Self {
-        Self(value)
+    fn from_message(message: &Message) -> Self {
+        Self {
+            id: message.id.clone(),
+            role: message.role,
+            kind: message.kind,
+            content_len: message.content.len(),
+            thinking_len: message.thinking.len(),
+            streaming: message.streaming,
+            thinking_expanded: message.thinking_expanded,
+            tool_calls: message
+                .tool_calls
+                .iter()
+                .map(|tool_call| ToolCallLayoutKey {
+                    call_id: tool_call.call_id.clone(),
+                    tool: tool_call.tool.clone(),
+                    output_len: tool_call.output.len(),
+                })
+                .collect(),
+        }
+    }
+
+    fn matches_message(&self, message: &Message) -> bool {
+        self.id == message.id
+            && self.role == message.role
+            && self.kind == message.kind
+            && self.content_len == message.content.len()
+            && self.thinking_len == message.thinking.len()
+            && self.streaming == message.streaming
+            && self.thinking_expanded == message.thinking_expanded
+            && self.tool_calls.len() == message.tool_calls.len()
+            && self
+                .tool_calls
+                .iter()
+                .zip(&message.tool_calls)
+                .all(|(cached, current)| {
+                    cached.call_id == current.call_id
+                        && cached.tool == current.tool
+                        && cached.output_len == current.output.len()
+                })
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct CachedEntry {
     key: MessageLayoutKey,
     height: usize,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MessageLayout {
-    heights: Vec<usize>,
-    cumulative_bottoms: Vec<usize>,
+    heights: Arc<[usize]>,
+    cumulative_bottoms: Arc<[usize]>,
+}
+
+impl Default for MessageLayout {
+    fn default() -> Self {
+        Self {
+            heights: Arc::from(Vec::<usize>::new()),
+            cumulative_bottoms: Arc::from(Vec::<usize>::new()),
+        }
+    }
 }
 
 impl MessageLayout {
@@ -39,32 +105,34 @@ pub(crate) struct MessageLayoutCache {
     width: Option<u16>,
     settings_key: u64,
     entries: Vec<CachedEntry>,
+    layout: MessageLayout,
     #[cfg(test)]
     measurements: usize,
 }
 
 impl MessageLayoutCache {
-    pub(crate) fn prepare<F>(
+    pub(crate) fn prepare_messages<F>(
         &mut self,
         width: u16,
         settings_key: u64,
-        keys: &[MessageLayoutKey],
+        messages: &[&Message],
         mut measure: F,
     ) -> MessageLayout
     where
         F: FnMut(usize) -> usize,
     {
-        if self.width != Some(width) || self.settings_key != settings_key {
+        let mut layout_dirty = self.width != Some(width) || self.settings_key != settings_key;
+        if layout_dirty {
             self.entries.clear();
             self.width = Some(width);
             self.settings_key = settings_key;
         }
 
-        for (index, key) in keys.iter().copied().enumerate() {
+        for (index, message) in messages.iter().enumerate() {
             if self
                 .entries
                 .get(index)
-                .is_some_and(|entry| entry.key == key)
+                .is_some_and(|entry| entry.key.matches_message(message))
             {
                 continue;
             }
@@ -74,35 +142,36 @@ impl MessageLayoutCache {
                 self.measurements += 1;
             }
             let entry = CachedEntry {
-                key,
+                key: MessageLayoutKey::from_message(message),
                 height: measure(index),
             };
+            layout_dirty = true;
             if let Some(cached) = self.entries.get_mut(index) {
                 *cached = entry;
             } else {
                 self.entries.push(entry);
             }
         }
-        self.entries.truncate(keys.len());
+        let previous_len = self.entries.len();
+        self.entries.truncate(messages.len());
+        layout_dirty |= previous_len != self.entries.len();
 
-        let heights = self
-            .entries
-            .iter()
-            .map(|entry| entry.height)
-            .collect::<Vec<_>>();
-        let mut total = 0usize;
-        let cumulative_bottoms = heights
-            .iter()
-            .map(|height| {
-                total = total.saturating_add(*height);
-                total
-            })
-            .collect();
-
-        MessageLayout {
-            heights,
-            cumulative_bottoms,
+        if layout_dirty {
+            let mut total = 0usize;
+            let mut heights = Vec::with_capacity(self.entries.len());
+            let mut cumulative_bottoms = Vec::with_capacity(self.entries.len());
+            for entry in &self.entries {
+                heights.push(entry.height);
+                total = total.saturating_add(entry.height);
+                cumulative_bottoms.push(total);
+            }
+            self.layout = MessageLayout {
+                heights: Arc::from(heights),
+                cumulative_bottoms: Arc::from(cumulative_bottoms),
+            };
         }
+
+        self.layout.clone()
     }
 
     #[cfg(test)]
@@ -113,30 +182,105 @@ impl MessageLayoutCache {
 
 #[cfg(test)]
 mod tests {
-    use super::{MessageLayoutCache, MessageLayoutKey};
+    use super::MessageLayoutCache;
+    use crate::state::{Message, MessageKind, MessageRole, ToolCallState, ToolCallStatus};
+    use std::time::SystemTime;
 
-    fn key(value: u64) -> MessageLayoutKey {
-        MessageLayoutKey::new(value)
+    fn message(id: &str) -> Message {
+        Message {
+            id: id.to_string(),
+            role: MessageRole::Assistant,
+            kind: MessageKind::Regular,
+            content: String::new(),
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: Vec::new(),
+            usage: None,
+            timestamp: SystemTime::UNIX_EPOCH,
+            thinking_expanded: false,
+        }
+    }
+
+    fn tool_message() -> Message {
+        let mut message = message("tool-message");
+        message.tool_calls.push(ToolCallState {
+            call_id: "call-one".to_string(),
+            tool: "read".to_string(),
+            args: serde_json::Value::Null,
+            status: ToolCallStatus::Completed,
+            output: String::new(),
+        });
+        message
+    }
+
+    fn messages(ids: &[&str]) -> Vec<Message> {
+        ids.iter().map(|id| message(id)).collect()
+    }
+
+    fn refs(messages: &[Message]) -> Vec<&Message> {
+        messages.iter().collect()
+    }
+
+    #[test]
+    fn message_prepare_reuses_unchanged_signatures_and_detects_same_length_id_changes() {
+        let mut cache = MessageLayoutCache::default();
+        let mut messages = [message("one")];
+        let refs = messages.iter().collect::<Vec<_>>();
+        cache.prepare_messages(80, 0, &refs, |_| 10);
+
+        messages[0].id = "two".to_string();
+        let refs = messages.iter().collect::<Vec<_>>();
+        let mut measurements = 0;
+        cache.prepare_messages(80, 0, &refs, |_| {
+            measurements += 1;
+            20
+        });
+
+        assert_eq!(measurements, 1);
+    }
+
+    #[test]
+    fn message_prepare_detects_same_length_tool_identity_changes() {
+        let mut cache = MessageLayoutCache::default();
+        let mut messages = vec![tool_message()];
+        let message_refs = refs(&messages);
+        cache.prepare_messages(80, 0, &message_refs, |_| 10);
+
+        messages[0].tool_calls[0].call_id = "call-two".to_string();
+        messages[0].tool_calls[0].tool = "write".to_string();
+        let message_refs = refs(&messages);
+        let mut measurements = 0;
+        cache.prepare_messages(80, 0, &message_refs, |_| {
+            measurements += 1;
+            20
+        });
+
+        assert_eq!(measurements, 1);
     }
 
     #[test]
     fn reuses_unchanged_heights_and_remeasures_one_changed_entry() {
         let mut cache = MessageLayoutCache::default();
+        let messages = messages(&["one", "two", "three"]);
+        let message_refs = refs(&messages);
         let mut measurements = 0;
-        let initial = cache.prepare(80, 0, &[key(1), key(2), key(3)], |_| {
+        let initial = cache.prepare_messages(80, 0, &message_refs, |_| {
             measurements += 1;
             10
         });
         assert_eq!(initial.heights(), &[10, 10, 10]);
         assert_eq!(measurements, 3);
 
-        cache.prepare(80, 0, &[key(1), key(2), key(3)], |_| {
+        cache.prepare_messages(80, 0, &message_refs, |_| {
             measurements += 1;
             99
         });
         assert_eq!(measurements, 3);
 
-        let updated = cache.prepare(80, 0, &[key(1), key(20), key(3)], |index| {
+        let mut updated_messages = messages.clone();
+        updated_messages[1].content.push('x');
+        let updated_refs = refs(&updated_messages);
+        let updated = cache.prepare_messages(80, 0, &updated_refs, |index| {
             measurements += 1;
             20 + index
         });
@@ -145,12 +289,33 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_prepare_reuses_layout_vectors() {
+        let mut cache = MessageLayoutCache::default();
+        let messages = messages(&["one", "two", "three"]);
+        let message_refs = refs(&messages);
+        let first = cache.prepare_messages(80, 0, &message_refs, |_| 10);
+        let first_heights = first.heights().as_ptr();
+        let first_cumulative = first.cumulative_bottoms.as_ptr();
+
+        let second = cache.prepare_messages(80, 0, &message_refs, |_| 99);
+
+        assert_eq!(second.heights(), &[10, 10, 10]);
+        assert_eq!(second.heights().as_ptr(), first_heights);
+        assert_eq!(second.cumulative_bottoms.as_ptr(), first_cumulative);
+    }
+
+    #[test]
     fn append_measures_only_the_new_suffix() {
         let mut cache = MessageLayoutCache::default();
-        cache.prepare(80, 0, &[key(1), key(2)], |_| 5);
+        let mut messages = messages(&["one", "two"]);
+        let initial_refs = refs(&messages);
+        cache.prepare_messages(80, 0, &initial_refs, |_| 5);
+
+        messages.extend([message("three"), message("four")]);
+        let message_refs = refs(&messages);
 
         let mut measured = Vec::new();
-        let layout = cache.prepare(80, 0, &[key(1), key(2), key(3), key(4)], |index| {
+        let layout = cache.prepare_messages(80, 0, &message_refs, |index| {
             measured.push(index);
             index + 1
         });
@@ -162,17 +327,19 @@ mod tests {
     #[test]
     fn width_and_settings_changes_invalidate_all_heights() {
         let mut cache = MessageLayoutCache::default();
-        cache.prepare(80, 0, &[key(1), key(2)], |_| 5);
+        let messages = messages(&["one", "two"]);
+        let message_refs = refs(&messages);
+        cache.prepare_messages(80, 0, &message_refs, |_| 5);
 
         let mut width_measurements = 0;
-        cache.prepare(81, 0, &[key(1), key(2)], |_| {
+        cache.prepare_messages(81, 0, &message_refs, |_| {
             width_measurements += 1;
             6
         });
         assert_eq!(width_measurements, 2);
 
         let mut settings_measurements = 0;
-        cache.prepare(81, 1, &[key(1), key(2)], |_| {
+        cache.prepare_messages(81, 1, &message_refs, |_| {
             settings_measurements += 1;
             7
         });
@@ -182,7 +349,9 @@ mod tests {
     #[test]
     fn cumulative_bottoms_find_the_first_visible_entry() {
         let mut cache = MessageLayoutCache::default();
-        let layout = cache.prepare(80, 0, &[key(1), key(2), key(3)], |index| [3, 5, 7][index]);
+        let messages = messages(&["one", "two", "three"]);
+        let message_refs = refs(&messages);
+        let layout = cache.prepare_messages(80, 0, &message_refs, |index| [3, 5, 7][index]);
 
         assert_eq!(layout.total_height(), 15);
         assert_eq!(layout.first_visible(0), 0);
@@ -196,8 +365,11 @@ mod tests {
     #[test]
     fn totals_larger_than_u16_do_not_overflow() {
         let mut cache = MessageLayoutCache::default();
-        let keys = (0..1_000).map(key).collect::<Vec<_>>();
-        let layout = cache.prepare(80, 0, &keys, |_| 100);
+        let messages = (0..1_000)
+            .map(|index| message(&format!("message-{index}")))
+            .collect::<Vec<_>>();
+        let message_refs = refs(&messages);
+        let layout = cache.prepare_messages(80, 0, &message_refs, |_| 100);
 
         assert_eq!(layout.total_height(), 100_000);
         assert_eq!(layout.first_visible(99_950), 999);

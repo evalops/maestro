@@ -352,7 +352,7 @@ impl AnthropicClient {
 
                 body["tools"] = serde_json::json!(tools_json);
             } else {
-                body["tools"] = serde_json::json!(config.tools);
+                body["tools"] = serde_json::json!(config.tools.as_ref());
             }
         }
 
@@ -860,7 +860,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
         let config = RequestConfig {
             model: "claude-3-opus-20240229".to_string(),
             max_tokens: 4096,
-            tools,
+            tools: tools.into(),
             cache_system_prompt: true,
             ..Default::default()
         };
@@ -884,7 +884,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
         let config = RequestConfig {
             model: "claude-3-opus-20240229".to_string(),
             max_tokens: 4096,
-            tools,
+            tools: tools.into(),
             cache_system_prompt: false,
             ..Default::default()
         };

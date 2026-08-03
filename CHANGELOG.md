@@ -34,6 +34,49 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.62] - 2026-08-03
+
+### Added
+
+- Instrument hosted runner requests (#3285). <!-- maestro-release-note:e97f310dbbe2 -->
+- Add durable subagent lifecycle tools (#3274). <!-- maestro-release-note:c2b7886f0720 -->
+- Version response acceptance event. <!-- maestro-release-note:0446a4977094 -->
+- Unify Maestro product surface and install safety (#3263). <!-- maestro-release-note:3f3068bf68bd -->
+- Scripted-replay provider + scenario run --execute (#3257) (#3259). <!-- maestro-release-note:028acc26410b -->
+- Add durable hosted threads (#3252). <!-- maestro-release-note:1604f73a2a69 -->
+- Rotate workload mTLS identity (#3249). <!-- maestro-release-note:04c62f6583a5 -->
+- Support arbitrary OpenRouter model routes (#3291). <!-- maestro-release-note:bfa7a9e16002 -->
+
+### Changed
+
+- Accelerate the agent tool loop (#3278). <!-- maestro-release-note:666a3d5b98f1 -->
+- Add a skill for verifying the Maestro headless protocol locally (#3280). <!-- maestro-release-note:e09cd5dabc9c -->
+- Cache dynamic goal tool visibility (#3276). <!-- maestro-release-note:1028c23f8347 -->
+- Route workloads to Hetzner private lanes (#3277). <!-- maestro-release-note:3bc2c5dfbc35 -->
+- Reduce loop allocations and baseline agent workloads (#3275). <!-- maestro-release-note:7c1a3f767243 -->
+- Serialize concurrent response retries. <!-- maestro-release-note:356052f40153 -->
+- Cache terminal dimensions between resizes (#3271). <!-- maestro-release-note:9cb9bb76ad4c -->
+- Bound search and redraw allocations. <!-- maestro-release-note:822fd1d30d26 -->
+- Cache message layout signatures. <!-- maestro-release-note:fcfe259f7407 -->
+- Bound file search ranking work. <!-- maestro-release-note:2c421b926fe4 -->
+- Kill the whole prefetch process group in the watchdog fallback (#3294). <!-- maestro-release-note:cafbe1e223bc -->
+- Use test-world fixtures in ambient-agent (#3281). <!-- maestro-release-note:7efb15eb68e7 -->
+
+### Fixed
+
+- Retry identity bootstrap. <!-- maestro-release-note:55259f970965 -->
+- Preserve hosted model binding (#3286). <!-- maestro-release-note:fc4d1957c2bb -->
+- Allow multiple hosted Maestro origins (#3283). <!-- maestro-release-note:e0e41651aa5f -->
+- Negotiate the client protocol version on Hello (#3279). <!-- maestro-release-note:1ef42aa41373 -->
+- Key retries by request identity. <!-- maestro-release-note:ea9da65e44e3 -->
+- Close response protocol and ledger gaps. <!-- maestro-release-note:eb853961b6fc -->
+- Use portable atomic ledger writes. <!-- maestro-release-note:7d7676cc18fa -->
+- Correlate response acknowledgements. <!-- maestro-release-note:a660f9dac48e -->
+- Preserve response acceptance receipts. <!-- maestro-release-note:1dd85fbbc395 -->
+- Require response consumption acknowledgements. <!-- maestro-release-note:b89d44df375f -->
+- Model executor response inbox states. <!-- maestro-release-note:ba3dab28e3b9 -->
+- Persist production response acceptance. <!-- maestro-release-note:d8dd0e50e2d8 -->
+
 ## [0.10.61] - 2026-07-31
 
 ### Added

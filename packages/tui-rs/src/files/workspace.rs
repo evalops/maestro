@@ -36,6 +36,15 @@ impl WorkspaceFile {
     /// Create from a path relative to the workspace root
     #[must_use]
     pub fn from_path(root: &Path, path: PathBuf) -> Self {
+        let is_dir = path.is_dir();
+        Self::from_path_with_type(root, path, is_dir)
+    }
+
+    pub(super) fn from_file_path(root: &Path, path: PathBuf) -> Self {
+        Self::from_path_with_type(root, path, false)
+    }
+
+    fn from_path_with_type(root: &Path, path: PathBuf, is_dir: bool) -> Self {
         let relative_path = path
             .strip_prefix(root)
             .unwrap_or(&path)
@@ -48,8 +57,6 @@ impl WorkspaceFile {
             .unwrap_or_default();
 
         let extension = path.extension().map(|e| e.to_string_lossy().to_string());
-
-        let is_dir = path.is_dir();
 
         Self {
             path,
@@ -187,14 +194,20 @@ fn try_ripgrep(root: &Path, max_files: usize) -> Option<Vec<WorkspaceFile>> {
             continue;
         }
         let path = root.join(&line);
-        let canonical = match dunce::canonicalize(&path) {
-            Ok(p) => p,
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
             Err(_) => continue,
         };
-        if !canonical.starts_with(&root_canonical) {
-            continue;
+        if metadata.file_type().is_symlink() {
+            let canonical = match dunce::canonicalize(&path) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if !canonical.starts_with(&root_canonical) {
+                continue;
+            }
         }
-        files.push(WorkspaceFile::from_path(root, path));
+        files.push(WorkspaceFile::from_file_path(root, path));
     }
 
     // Stop the walk as soon as we have enough files / hit the budget.
@@ -246,7 +259,7 @@ fn try_find(root: &Path, max_files: usize) -> Option<Vec<WorkspaceFile>> {
             continue;
         }
         let path = root.join(line);
-        files.push(WorkspaceFile::from_path(root, path));
+        files.push(WorkspaceFile::from_file_path(root, path));
     }
 
     let _ = child.kill();
@@ -331,7 +344,7 @@ fn manual_traverse(root: &Path, max_files: usize) -> Vec<WorkspaceFile> {
                 } else {
                     root
                 };
-                files.push(WorkspaceFile::from_path(root_for_relative, path));
+                files.push(WorkspaceFile::from_file_path(root_for_relative, path));
             }
         }
     }
@@ -388,6 +401,16 @@ mod tests {
         let wf = WorkspaceFile::from_path(dir.path(), file_path);
         assert!(wf.relative_path.contains("src"));
         assert!(wf.relative_path.contains("main.rs"));
+    }
+
+    #[test]
+    fn workspace_file_from_file_path_does_not_probe_file_type() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("not-created.rs");
+
+        let wf = WorkspaceFile::from_file_path(dir.path(), file_path);
+
+        assert!(!wf.is_dir);
     }
 
     #[test]

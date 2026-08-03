@@ -55,7 +55,7 @@
 use rand::Rng;
 use regex::{Captures, Regex};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::Write;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -500,6 +500,7 @@ pub struct CredentialVault(Arc<Mutex<CredentialVaultState>>);
 struct CredentialVaultState {
     store: CredentialStore,
     generation: u64,
+    initial_references: HashSet<String>,
 }
 
 impl fmt::Debug for CredentialVault {
@@ -525,7 +526,101 @@ impl CredentialVault {
         Self(Arc::new(Mutex::new(CredentialVaultState {
             store: CredentialStore::new(),
             generation: 0,
+            initial_references: HashSet::new(),
         })))
+    }
+
+    /// Fork this vault into an independently owned child scope.
+    ///
+    /// The child keeps the current opaque references and their values, but a
+    /// later clear or store operation in either vault cannot affect the other.
+    pub(crate) fn fork(&self) -> Self {
+        let state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self(Arc::new(Mutex::new(CredentialVaultState {
+            initial_references: state.store.references(),
+            store: state.store.fork(),
+            generation: state.generation,
+        })))
+    }
+
+    /// Import child-created credentials and return a mapping from child
+    /// references to references usable by this scope. Credentials that were
+    /// present when the child was forked are deliberately excluded so a
+    /// parent clear cannot be undone by a child finishing later. Import only
+    /// occurs while the parent execution generation is still current. The
+    /// generation check is performed while holding the parent lock so a
+    /// concurrent clear cannot be followed by a stale child repopulating the
+    /// newly reset vault.
+    pub(crate) fn absorb_child_credentials_at_generation(
+        &self,
+        child: &Self,
+        expected_generation: u64,
+    ) -> HashMap<String, String> {
+        if Arc::ptr_eq(&self.0, &child.0) {
+            return HashMap::new();
+        }
+
+        let child_credentials = {
+            let child_state = child
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            child_state
+                .store
+                .credentials
+                .iter()
+                .filter_map(|(id, credential)| {
+                    let child_reference =
+                        format!("{{{{CRED:{}:{id}}}}}", credential.cred_type.as_str());
+                    (!child_state.initial_references.contains(&child_reference)).then(|| {
+                        (
+                            child_reference,
+                            credential.value.to_string(),
+                            credential.cred_type,
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let mut parent_state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if parent_state.generation != expected_generation {
+            return HashMap::new();
+        }
+        child_credentials
+            .into_iter()
+            .map(|(child_reference, value, cred_type)| {
+                let parent_reference = parent_state.store.store(&value, cred_type);
+                (child_reference, parent_reference)
+            })
+            .collect()
+    }
+
+    /// Rewrite canonical credential references using a child-to-parent map.
+    pub(crate) fn translate_references(input: &str, mappings: &HashMap<String, String>) -> String {
+        if mappings.is_empty() {
+            return input.to_string();
+        }
+        let replacements = REFERENCE_PATTERN
+            .captures_iter(input)
+            .filter_map(|captures| {
+                let full_match = captures.get(0)?;
+                mappings
+                    .get(full_match.as_str())
+                    .map(|replacement| (full_match.start(), full_match.end(), replacement.clone()))
+            })
+            .collect::<Vec<_>>();
+        let mut translated = input.to_string();
+        for (start, end, replacement) in replacements.into_iter().rev() {
+            translated.replace_range(start..end, &replacement);
+        }
+        translated
     }
 
     /// Store a credential and return its opaque reference.
@@ -562,6 +657,12 @@ impl CredentialVault {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .store
             .resolve_in_json(value)
+    }
+
+    /// Check whether a value contains a canonical credential reference.
+    #[must_use]
+    pub fn has_references(input: &str) -> bool {
+        CredentialStore::has_references(input)
     }
 
     /// Vault credentials in a plain text value.
@@ -623,6 +724,7 @@ impl CredentialVault {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.store.clear();
         state.generation = state.generation.wrapping_add(1);
+        state.initial_references.clear();
     }
 
     /// Get credential statistics for this vault.
@@ -660,6 +762,21 @@ impl CredentialStore {
             value_to_ref: HashMap::new(),
             fingerprint_key: Zeroizing::new(random_fingerprint_key()),
         }
+    }
+
+    fn fork(&self) -> Self {
+        Self {
+            credentials: self.credentials.clone(),
+            value_to_ref: self.value_to_ref.clone(),
+            fingerprint_key: self.fingerprint_key.clone(),
+        }
+    }
+
+    fn references(&self) -> HashSet<String> {
+        self.credentials
+            .iter()
+            .map(|(id, credential)| format!("{{{{CRED:{}:{id}}}}}", credential.cred_type.as_str()))
+            .collect()
     }
 
     fn fingerprint(&self, value: &str) -> [u8; 32] {
@@ -803,6 +920,84 @@ impl CredentialStore {
         self.credentials.is_empty()
     }
 
+    fn vault_known_values(&self, input: &str, protected_ranges: &[(usize, usize)]) -> String {
+        let mut replacements = self
+            .credentials
+            .iter()
+            .filter_map(|(id, credential)| {
+                let value = credential.value.to_string();
+                (!value.is_empty()).then(|| {
+                    let reference = format!("{{{{CRED:{}:{id}}}}}", credential.cred_type.as_str());
+                    (value, reference)
+                })
+            })
+            .collect::<Vec<_>>();
+        replacements.sort_by(
+            |(left_value, left_reference), (right_value, right_reference)| {
+                right_value
+                    .len()
+                    .cmp(&left_value.len())
+                    .then_with(|| left_value.cmp(right_value))
+                    .then_with(|| left_reference.cmp(right_reference))
+            },
+        );
+
+        let replace_segment = |segment: &str| {
+            let mut output = String::with_capacity(segment.len());
+            let mut cursor = 0;
+            while cursor < segment.len() {
+                if let Some((value, reference)) = replacements
+                    .iter()
+                    .find(|(value, _)| segment[cursor..].starts_with(value))
+                {
+                    output.push_str(reference);
+                    cursor += value.len();
+                } else {
+                    let character = segment[cursor..]
+                        .chars()
+                        .next()
+                        .expect("cursor remains on a UTF-8 character boundary");
+                    output.push(character);
+                    cursor += character.len_utf8();
+                }
+            }
+            output
+        };
+        let mut ranges = REFERENCE_PATTERN
+            .find_iter(input)
+            .map(|reference| (reference.start(), reference.end()))
+            .collect::<Vec<_>>();
+        ranges.extend_from_slice(protected_ranges);
+        ranges.sort_unstable_by_key(|(start, end)| (*start, *end));
+        let mut merged_ranges = Vec::with_capacity(ranges.len());
+        for (start, end) in ranges {
+            if start >= end {
+                continue;
+            }
+            if let Some((_, previous_end)) = merged_ranges.last_mut() {
+                if start <= *previous_end {
+                    *previous_end = (*previous_end).max(end);
+                    continue;
+                }
+            }
+            merged_ranges.push((start, end));
+        }
+        let ranges = merged_ranges;
+        if ranges.is_empty() {
+            return replace_segment(input);
+        }
+
+        let mut output = String::with_capacity(input.len());
+        let mut cursor = 0;
+        for (start, end) in ranges {
+            output.push_str(&replace_segment(&input[cursor..start]));
+            output.push_str(&input[start..end]);
+            cursor = end;
+        }
+        output.push_str(&replace_segment(&input[cursor..]));
+        output
+    }
+
     /// Clear all stored credentials
     pub fn clear(&mut self) {
         for credential in self.credentials.values_mut() {
@@ -834,7 +1029,19 @@ impl CredentialStore {
 }
 
 fn vault_credentials_in_string(store: &mut CredentialStore, input: &str) -> String {
-    let mut output = input.to_string();
+    // Protect full pattern matches while replacing already-known values. This
+    // keeps a known value such as `word` from corrupting the `password` label
+    // before the original segment is scanned for a newly discovered secret.
+    let protected_ranges = CREDENTIAL_PATTERNS
+        .iter()
+        .flat_map(|pattern| {
+            pattern
+                .regex
+                .find_iter(input)
+                .map(|matched| (matched.start(), matched.end()))
+        })
+        .collect::<Vec<_>>();
+    let mut output = store.vault_known_values(input, &protected_ranges);
 
     let ordered_patterns = CREDENTIAL_PATTERNS
         .iter()
@@ -1514,6 +1721,110 @@ mod tests {
 
         assert_eq!(clone.resolve_all(&reference), secret);
         assert_eq!(isolated.resolve_all(&reference), reference);
+    }
+
+    #[test]
+    fn forked_vaults_survive_parent_clear_independently() {
+        let parent = CredentialVault::new();
+        let secret = "child-survives-parent-reset";
+        let reference = parent.store(secret, CredentialType::Secret);
+        let child = parent.fork();
+
+        parent.clear();
+        assert_eq!(child.resolve_all(&reference), secret);
+
+        let child_reference = child.store("child-only-secret", CredentialType::Secret);
+        assert_eq!(parent.resolve_all(&child_reference), child_reference);
+    }
+
+    #[test]
+    fn absorb_child_credentials_translates_only_new_references() {
+        let parent = CredentialVault::new();
+        let inherited_reference = parent.store("inherited-secret", CredentialType::Secret);
+        let child = parent.fork();
+        let child_reference = child.store("discovered-secret", CredentialType::Token);
+        let generation = parent.generation();
+
+        let mappings = parent.absorb_child_credentials_at_generation(&child, generation);
+
+        assert!(!mappings.contains_key(&inherited_reference));
+        let parent_reference = mappings
+            .get(&child_reference)
+            .expect("new child reference should transfer");
+        assert_ne!(parent_reference, &child_reference);
+        assert_eq!(parent.resolve_all(parent_reference), "discovered-secret");
+        assert_eq!(
+            CredentialVault::translate_references(&format!("value={child_reference}"), &mappings),
+            format!("value={parent_reference}")
+        );
+    }
+
+    #[test]
+    fn absorb_child_credentials_skips_stale_parent_generation() {
+        let parent = CredentialVault::new();
+        let child = parent.fork();
+        let child_reference = child.store("stale-child-secret", CredentialType::Secret);
+        let generation = parent.generation();
+
+        parent.clear();
+        let mappings = parent.absorb_child_credentials_at_generation(&child, generation);
+
+        assert!(mappings.is_empty());
+        assert_eq!(parent.stats().count, 0);
+        assert_eq!(parent.resolve_all(&child_reference), child_reference);
+    }
+
+    #[test]
+    fn vault_replaces_arbitrary_values_already_registered_in_the_store() {
+        let vault = CredentialVault::new();
+        let reference = vault.store("arbitrary-password", CredentialType::Password);
+
+        let vaulted = vault.vault_in_json(&json!({
+            "prompt": "Use arbitrary-password in the child"
+        }));
+        assert_eq!(vaulted["prompt"], format!("Use {reference} in the child"));
+        assert_eq!(
+            vault.resolve_in_json(&vaulted),
+            json!({"prompt": "Use arbitrary-password in the child"})
+        );
+    }
+
+    #[test]
+    fn vault_does_not_rewrite_known_values_inside_existing_references() {
+        let vault = CredentialVault::new();
+        let reference = vault.store("password", CredentialType::Password);
+
+        let vaulted = vault.vault_in_json(&json!({
+            "prompt": format!("Use the existing reference {reference}")
+        }));
+        assert_eq!(
+            vaulted["prompt"],
+            format!("Use the existing reference {reference}")
+        );
+    }
+
+    #[test]
+    fn vault_overlapping_values_does_not_rewrite_generated_references() {
+        let vault = CredentialVault::new();
+        let password_reference = vault.store("password", CredentialType::Password);
+        vault.store("word", CredentialType::Secret);
+
+        let vaulted = vault.vault_in_text("password");
+        assert_eq!(vaulted, password_reference);
+        assert_eq!(vault.resolve_all(&vaulted), "password");
+    }
+
+    #[test]
+    fn vault_scans_new_credentials_before_known_value_replacement() {
+        let vault = CredentialVault::new();
+        vault.store("word", CredentialType::Secret);
+        let input = "password=new-secret";
+
+        let vaulted = vault.vault_in_text(input);
+
+        assert!(!vaulted.contains("new-secret"));
+        assert!(vaulted.contains("{{CRED:password:"));
+        assert_eq!(vault.resolve_all(&vaulted), input);
     }
 
     #[test]

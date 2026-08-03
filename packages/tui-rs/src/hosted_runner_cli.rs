@@ -90,6 +90,22 @@ pub struct HostedRunnerCliRuntime {
     handle: HostedRunnerHandle,
 }
 
+/// Install the structured logger for both the dedicated hosted-runner binary
+/// and the `maestro-tui hosted-runner` compatibility entrypoint. The latter is
+/// the immutable binary used by Platform's E2E harness, so keeping setup here
+/// prevents the two supported launch paths from producing different traces.
+pub fn init_hosted_runner_tracing() {
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .with_target(false)
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+        .with_env_filter(env_filter)
+        .finish();
+    let _ = tracing::subscriber::set_global_default(subscriber);
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostedRunnerShutdownSignal {
     Hangup,
@@ -231,6 +247,7 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
+    init_hosted_runner_tracing();
     let env = std::env::vars().collect::<HashMap<_, _>>();
     let runtime = match start_hosted_runner_cli_runtime(args, &env).await {
         Ok(runtime) => runtime,

@@ -4,7 +4,7 @@
 //! git worktree so the files an agent turn modifies can be restored later. This
 //! mirrors grok-build's rewind behavior without ever creating commits or stashes
 //! in the user's repository: all checkpoint data lives under the per-session
-//! storage directory (`<sessions_dir>/checkpoints/<session_id>/<checkpoint_id>/`).
+//! storage directory (`<sessions_dir>/checkpoints/<session_key>/<checkpoint_id>/`).
 //!
 //! # Snapshot mechanism (two-phase)
 //!
@@ -40,6 +40,7 @@
 //! reports that checkpoints require a git worktree.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -63,15 +64,16 @@ const MANIFEST_FILE: &str = "checkpoint.json";
 /// On-disk store for one session's checkpoints.
 pub struct CheckpointStore {
     root: PathBuf,
+    legacy_root: PathBuf,
 }
 
 impl CheckpointStore {
     #[must_use]
     pub fn new(sessions_dir: &Path, session_id: &str) -> Self {
+        let checkpoints_root = sessions_dir.join("checkpoints");
         Self {
-            root: sessions_dir
-                .join("checkpoints")
-                .join(sanitize_component(session_id)),
+            root: checkpoints_root.join(encode_session_component(session_id)),
+            legacy_root: checkpoints_root.join(sanitize_component(session_id)),
         }
     }
 
@@ -80,23 +82,25 @@ impl CheckpointStore {
         &self.root
     }
 
+    /// The pre-v2 root used by existing sessions. New checkpoints are never
+    /// written here, but old checkpoints remain readable and removable.
+    pub(crate) fn legacy_root(&self) -> &Path {
+        &self.legacy_root
+    }
+
     /// Load all finalized checkpoints, oldest first. Corrupt or half-written
     /// checkpoint directories are ignored.
     #[must_use]
     pub fn list(&self) -> Vec<Checkpoint> {
-        let mut checkpoints = Vec::new();
-        let Ok(entries) = fs::read_dir(&self.root) else {
-            return checkpoints;
-        };
-        for entry in entries.flatten() {
-            let manifest = entry.path().join(MANIFEST_FILE);
-            let Ok(bytes) = fs::read(&manifest) else {
-                continue;
-            };
-            if let Ok(checkpoint) = serde_json::from_slice::<Checkpoint>(&bytes) {
-                checkpoints.push(checkpoint);
+        // Read v2 first so a checkpoint ID present in both roots resolves to
+        // the collision-proof copy rather than the legacy copy.
+        let mut by_id = HashMap::new();
+        for root in [&self.root, &self.legacy_root] {
+            for checkpoint in read_checkpoints_from_root(root) {
+                by_id.entry(checkpoint.id.clone()).or_insert(checkpoint);
             }
         }
+        let mut checkpoints = by_id.into_values().collect::<Vec<_>>();
         checkpoints.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
         checkpoints
     }
@@ -107,7 +111,7 @@ impl CheckpointStore {
     }
 
     fn save(&self, checkpoint: &Checkpoint) -> io::Result<()> {
-        let dir = self.root.join(&checkpoint.id);
+        let dir = self.new_checkpoint_dir(&checkpoint.id);
         // Usually a no-op by the time this runs (`begin_turn` already
         // created `dir` via the same synced path), but kept consistent
         // with it rather than a bare `fs::create_dir_all` in case `save`
@@ -119,11 +123,34 @@ impl CheckpointStore {
     }
 
     pub fn remove(&self, id: &str) -> io::Result<()> {
-        let dir = self.root.join(sanitize_component(id));
-        match fs::remove_dir_all(&dir) {
-            Ok(()) => Ok(()),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(err),
+        let component = sanitize_component(id);
+        let mut first_error = None;
+        for root in [&self.root, &self.legacy_root] {
+            match fs::remove_dir_all(root.join(&component)) {
+                Ok(()) => {}
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    first_error.get_or_insert(err);
+                }
+            }
+        }
+        match first_error {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
+    }
+
+    fn new_checkpoint_dir(&self, id: &str) -> PathBuf {
+        self.root.join(sanitize_component(id))
+    }
+
+    fn checkpoint_dir_for_restore(&self, id: &str) -> PathBuf {
+        let component = sanitize_component(id);
+        let v2_dir = self.root.join(&component);
+        if v2_dir.join(MANIFEST_FILE).is_file() {
+            v2_dir
+        } else {
+            self.legacy_root.join(component)
         }
     }
 
@@ -223,7 +250,7 @@ pub fn begin_turn(
         chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
         &uuid::Uuid::new_v4().simple().to_string()[..8]
     );
-    let cp_dir = store.root.join(&id);
+    let cp_dir = store.new_checkpoint_dir(&id);
     // `create_dir_all_synced` (not a bare `fs::create_dir_all`) so this
     // checkpoint directory's creation is itself durable: for a turn that
     // only creates new files, `store_blob` below is never called, making
@@ -273,7 +300,7 @@ pub fn begin_turn(
 /// for everything the turn changed. Returns `None` when nothing changed (the
 /// pending directory is removed) or the repository disappeared.
 pub fn finalize_turn(pending: PendingTurn) -> io::Result<Option<Checkpoint>> {
-    let cp_dir = pending.store.root.join(&pending.id);
+    let cp_dir = pending.store.new_checkpoint_dir(&pending.id);
     let Some(post) = status_snapshot(&pending.repo_root) else {
         let _ = fs::remove_dir_all(&cp_dir);
         return Ok(None);
@@ -410,7 +437,7 @@ pub fn restore_checkpoint(
     store: &CheckpointStore,
     checkpoint: &Checkpoint,
 ) -> io::Result<RestoreReport> {
-    let cp_dir = store.root.join(&checkpoint.id);
+    let cp_dir = store.checkpoint_dir_for_restore(&checkpoint.id);
     let mut report = RestoreReport {
         checkpoint_id: checkpoint.id.clone(),
         prompt: checkpoint.prompt.clone(),
@@ -626,6 +653,36 @@ fn sanitize_component(value: &str) -> String {
     }
 }
 
+/// Encode a session ID without collapsing distinct IDs onto one directory.
+/// The `v2~` prefix keeps the empty ID distinct from any path-like component
+/// and makes the result impossible for the legacy sanitizer to produce (`~`
+/// is not in its pass-through set).
+fn encode_session_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(3 + value.len() * 2);
+    encoded.push_str("v2~");
+    for byte in value.as_bytes() {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
+
+fn read_checkpoints_from_root(root: &Path) -> Vec<Checkpoint> {
+    let mut checkpoints = Vec::new();
+    let Ok(entries) = fs::read_dir(root) else {
+        return checkpoints;
+    };
+    for entry in entries.flatten() {
+        let manifest = entry.path().join(MANIFEST_FILE);
+        let Ok(bytes) = fs::read(&manifest) else {
+            continue;
+        };
+        if let Ok(checkpoint) = serde_json::from_slice::<Checkpoint>(&bytes) {
+            checkpoints.push(checkpoint);
+        }
+    }
+    checkpoints
+}
+
 fn prompt_excerpt(prompt: &str) -> String {
     const MAX_LEN: usize = 80;
     let condensed = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -704,7 +761,69 @@ mod tests {
     fn store_root_for_dot_only_session_id_stays_under_checkpoints_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let store = CheckpointStore::new(tmp.path(), "..");
-        assert_eq!(store.root(), tmp.path().join("checkpoints").join("__"));
+        assert_eq!(store.root(), tmp.path().join("checkpoints").join("v2~2e2e"));
+    }
+
+    #[test]
+    fn session_components_do_not_collide_and_stay_under_checkpoints_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let checkpoints_root = tmp.path().join("checkpoints");
+        let slash = CheckpointStore::new(tmp.path(), "team/a");
+        let question = CheckpointStore::new(tmp.path(), "team?a");
+        let dots = CheckpointStore::new(tmp.path(), "..");
+        let underscores = CheckpointStore::new(tmp.path(), "__");
+        let encoded_name = CheckpointStore::new(tmp.path(), "a");
+        let legacy_name = CheckpointStore::new(tmp.path(), "v2-61");
+
+        assert_ne!(slash.root(), question.root());
+        assert_ne!(dots.root(), underscores.root());
+        assert_ne!(encoded_name.root(), legacy_name.legacy_root());
+        for root in [
+            slash.root(),
+            question.root(),
+            dots.root(),
+            underscores.root(),
+        ] {
+            assert!(root.starts_with(&checkpoints_root));
+            assert!(
+                root.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("v2~")),
+                "new checkpoint roots must use the versioned encoding: {}",
+                root.display()
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_checkpoints_are_listed_and_removed_alongside_v2_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = CheckpointStore::new(tmp.path(), "legacy/session");
+        let checkpoint = Checkpoint {
+            id: "cp-legacy".to_string(),
+            created_at: "2026-08-01T00:00:00Z".to_string(),
+            prompt: "legacy".to_string(),
+            repo_root: tmp.path().to_path_buf(),
+            head: None,
+            entries: Vec::new(),
+        };
+        let legacy_dir = store.legacy_root().join(&checkpoint.id);
+        fs::create_dir_all(&legacy_dir).unwrap();
+        fs::write(
+            legacy_dir.join(MANIFEST_FILE),
+            serde_json::to_vec(&checkpoint).unwrap(),
+        )
+        .unwrap();
+        let v2_dir = store.new_checkpoint_dir(&checkpoint.id);
+        fs::create_dir_all(&v2_dir).unwrap();
+
+        let listed = store.list();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].prompt, "legacy");
+
+        store.remove(&checkpoint.id).unwrap();
+        assert!(!legacy_dir.exists());
+        assert!(!v2_dir.exists());
     }
 
     #[test]

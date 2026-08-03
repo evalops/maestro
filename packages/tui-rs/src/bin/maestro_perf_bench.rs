@@ -18,15 +18,24 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use anyhow::{bail, Context, Result};
+use maestro_tui::agent::{FromAgent, NativeAgent, NativeAgentConfig};
+use maestro_tui::ai::{ScriptedBlock, ScriptedClient, ScriptedResponse, StopReason, UnifiedClient};
+use maestro_tui::components::ChatView;
 use maestro_tui::execpolicy::{parse_command, parse_policy, Decision};
 use maestro_tui::session::{
     AppMessage, ContentBlock, MessageContent, MessageEntry, SessionEntry, SessionHeader,
     SessionReader, ThinkingLevel, TokenUsage,
 };
+use maestro_tui::state::{AppState, ApprovalMode, Message, MessageKind, MessageRole};
+use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use serde::{Deserialize, Serialize};
+use tokio::runtime::Runtime;
+
+const MESSAGE_LAYOUT_COUNT: usize = 1_000;
+const MESSAGE_LAYOUT_AREA: Rect = Rect::new(0, 0, 100, 40);
 
 /// Default maximum allowed slowdown before a scenario counts as regressed.
 const DEFAULT_THRESHOLD: f64 = 0.15;
@@ -38,6 +47,11 @@ const MEASURED_ROUNDS: usize = 9;
 const SESSION_MESSAGES: usize = 2_000;
 /// Execpolicy evaluations per measured round.
 const EXECPOLICY_EVALS_PER_ROUND: usize = 500;
+/// Agent turns in the scripted loop scenarios.
+const AGENT_TURN_COUNT: usize = 32;
+const AGENT_TOOL_TURN_COUNT: usize = 32;
+const AGENT_MULTI_TOOL_TURN_COUNT: usize = 16;
+const AGENT_LONG_HISTORY_TURN_COUNT: usize = 96;
 
 /// Versioned per-platform baseline file.
 #[derive(Debug, Serialize, Deserialize)]
@@ -203,6 +217,243 @@ fn bench_policy_source() -> String {
     source
 }
 
+/// Synthetic transcript for the message-layout steady-state scenario.
+fn message_layout_transcript() -> AppState {
+    let mut state = AppState::default();
+    state.zen_mode = true;
+    state.messages = (0..MESSAGE_LAYOUT_COUNT)
+        .map(|index| Message {
+            id: format!("message-{index}"),
+            role: MessageRole::Assistant,
+            kind: MessageKind::Regular,
+            content: format!(
+                "## Result {index}\n\nProcessed `src/module_{index}.rs` successfully.\n\n- cached output\n- deterministic wrapping\n- **complete**"
+            ),
+            thinking: String::new(),
+            streaming: index + 1 == MESSAGE_LAYOUT_COUNT,
+            tool_calls: Vec::new(),
+            usage: None,
+            timestamp: SystemTime::UNIX_EPOCH,
+            thinking_expanded: false,
+        })
+        .collect();
+    state
+}
+
+fn render_message_layout(state: &AppState) {
+    let mut buffer = Buffer::empty(MESSAGE_LAYOUT_AREA);
+    ChatView::new(state).render(MESSAGE_LAYOUT_AREA, &mut buffer);
+    black_box(buffer);
+}
+
+fn benchmark_cwd() -> String {
+    env!("CARGO_MANIFEST_DIR").to_string()
+}
+
+async fn run_scripted_session(
+    responses: Vec<ScriptedResponse>,
+    prompts: Vec<String>,
+    expected_completions: usize,
+    expected_tool_ends: usize,
+) {
+    let client = UnifiedClient::Scripted(ScriptedClient::new("maestro-replay-v1", responses));
+    let config = NativeAgentConfig {
+        model: "maestro-replay-v1".to_string(),
+        cwd: benchmark_cwd(),
+        approval_mode: ApprovalMode::Yolo,
+        ..NativeAgentConfig::default()
+    };
+    let (agent, mut events) = NativeAgent::new_with_client(config, client).expect("agent");
+
+    for prompt in prompts {
+        agent.prompt(prompt, vec![]).await.expect("prompt");
+    }
+
+    let mut completed = 0;
+    let mut tool_ends = 0;
+    let mut failed_tool_ids = Vec::new();
+    while let Some(event) = events.recv().await {
+        if let FromAgent::ToolEnd {
+            call_id, success, ..
+        } = &event
+        {
+            tool_ends += 1;
+            if !success {
+                failed_tool_ids.push(call_id.clone());
+            }
+        }
+        if matches!(
+            &event,
+            FromAgent::ResponseEnd { response_id, .. } if response_id == "done"
+        ) {
+            completed += 1;
+            if completed == expected_completions {
+                break;
+            }
+        }
+    }
+    assert_eq!(completed, expected_completions);
+    assert_eq!(tool_ends, expected_tool_ends);
+    assert!(
+        failed_tool_ids.is_empty(),
+        "scripted tool fixture must dispatch successfully: {failed_tool_ids:?}"
+    );
+    agent.shutdown().await;
+}
+
+async fn run_scripted_turns(turn_count: usize) {
+    let responses = (0..turn_count)
+        .map(|_| ScriptedResponse {
+            blocks: vec![ScriptedBlock::Text("Completed this step.".to_string())],
+            stop_reason: StopReason::EndTurn,
+        })
+        .collect();
+    let prompts = (0..turn_count)
+        .map(|index| format!("Continue benchmark turn {index}."))
+        .collect();
+    run_scripted_session(responses, prompts, turn_count, 0).await;
+}
+
+const AGENT_TOOL_KIND_COUNT: usize = 8;
+
+fn scripted_tool_call(index: usize, cwd: &str, id_prefix: &str) -> ScriptedBlock {
+    let variant = (index / AGENT_TOOL_KIND_COUNT) % 4;
+    let path = match variant {
+        0 => cwd.to_string(),
+        1 => format!("{cwd}/src"),
+        2 => format!("{cwd}/benches"),
+        _ => format!("{cwd}/src/agent"),
+    };
+    let cargo_toml = format!("{cwd}/Cargo.toml");
+    let pattern = ["workspace", "members", "resolver", "edition"][variant];
+    let id = format!("{id_prefix}-{index}");
+
+    match index % AGENT_TOOL_KIND_COUNT {
+        0 => ScriptedBlock::ToolUse {
+            id,
+            name: "list".to_string(),
+            input: serde_json::json!({"path": path}),
+        },
+        1 => ScriptedBlock::ToolUse {
+            id,
+            name: "find".to_string(),
+            input: serde_json::json!({
+                "pattern": "Cargo.toml",
+                "path": path,
+                "limit": variant + 1
+            }),
+        },
+        2 => ScriptedBlock::ToolUse {
+            id,
+            name: "search".to_string(),
+            input: serde_json::json!({
+                "pattern": pattern,
+                "paths": [cargo_toml],
+                "literal": true,
+                "maxResults": variant + 1
+            }),
+        },
+        3 => ScriptedBlock::ToolUse {
+            id,
+            name: "parallel_ripgrep".to_string(),
+            input: serde_json::json!({
+                "patterns": [pattern],
+                "paths": [cargo_toml],
+                "maxResults": variant + 1
+            }),
+        },
+        4 => ScriptedBlock::ToolUse {
+            id,
+            name: "read".to_string(),
+            input: serde_json::json!({
+                "path": cargo_toml,
+                "offset": variant + 1,
+                "limit": 1
+            }),
+        },
+        5 => ScriptedBlock::ToolUse {
+            id,
+            name: "glob".to_string(),
+            input: serde_json::json!({"pattern": "Cargo.toml", "path": path}),
+        },
+        6 => ScriptedBlock::ToolUse {
+            id,
+            name: "grep".to_string(),
+            input: serde_json::json!({"pattern": pattern, "path": cargo_toml}),
+        },
+        _ => ScriptedBlock::ToolUse {
+            id,
+            name: "status".to_string(),
+            input: serde_json::json!({
+                "branchSummary": variant < 2,
+                "includeIgnored": variant % 2 == 1
+            }),
+        },
+    }
+}
+
+async fn run_scripted_tool_turns(turn_count: usize) {
+    let cwd = benchmark_cwd();
+    let mut responses = (0..turn_count)
+        .map(|index| ScriptedResponse {
+            blocks: vec![scripted_tool_call(index, &cwd, "tool")],
+            stop_reason: StopReason::ToolUse,
+        })
+        .collect::<Vec<_>>();
+    responses.push(ScriptedResponse {
+        blocks: vec![ScriptedBlock::Text("Completed the tool loop.".to_string())],
+        stop_reason: StopReason::EndTurn,
+    });
+    run_scripted_session(
+        responses,
+        vec!["Run the scripted tool loop.".to_string()],
+        1,
+        turn_count,
+    )
+    .await;
+}
+
+async fn run_scripted_multi_tool_turns(turn_count: usize) {
+    let cwd = benchmark_cwd();
+    let mut responses = (0..turn_count)
+        .map(|index| ScriptedResponse {
+            blocks: vec![
+                scripted_tool_call(index * 2, &cwd, "multi-tool-a"),
+                scripted_tool_call(index * 2 + 1, &cwd, "multi-tool-b"),
+            ],
+            stop_reason: StopReason::ToolUse,
+        })
+        .collect::<Vec<_>>();
+    responses.push(ScriptedResponse {
+        blocks: vec![ScriptedBlock::Text(
+            "Completed the multi-tool loop.".to_string(),
+        )],
+        stop_reason: StopReason::EndTurn,
+    });
+    run_scripted_session(
+        responses,
+        vec!["Run the scripted multi-tool loop.".to_string()],
+        1,
+        turn_count * 2,
+    )
+    .await;
+}
+
+async fn run_scripted_long_history(turn_count: usize) {
+    let response_text = "Completed a long-history step. ".repeat(12);
+    let responses = (0..turn_count)
+        .map(|_| ScriptedResponse {
+            blocks: vec![ScriptedBlock::Text(response_text.clone())],
+            stop_reason: StopReason::EndTurn,
+        })
+        .collect();
+    let prompt_suffix = " prior context".repeat(24);
+    let prompts = (0..turn_count)
+        .map(|index| format!("Continue long-history turn {index}.{prompt_suffix}"))
+        .collect();
+    run_scripted_session(responses, prompts, turn_count, 0).await;
+}
+
 fn run_scenarios() -> Result<BTreeMap<String, u64>> {
     let mut results = BTreeMap::new();
 
@@ -264,6 +515,35 @@ fn run_scenarios() -> Result<BTreeMap<String, u64>> {
                 let eval = policy.check(black_box(cmd), None::<fn(&[String]) -> Decision>);
                 black_box(eval);
             }
+        }),
+    );
+
+    let message_layout = message_layout_transcript();
+    render_message_layout(&message_layout);
+    results.insert(
+        "message_layout_steady".to_string(),
+        time_rounds(|| render_message_layout(black_box(&message_layout))),
+    );
+
+    let runtime = Runtime::new().context("create agent loop perf runtime")?;
+    results.insert(
+        "agent_loop_32_turns".to_string(),
+        time_rounds(|| runtime.block_on(run_scripted_turns(AGENT_TURN_COUNT))),
+    );
+    results.insert(
+        "agent_loop_32_tool_turns".to_string(),
+        time_rounds(|| runtime.block_on(run_scripted_tool_turns(AGENT_TOOL_TURN_COUNT))),
+    );
+    results.insert(
+        "agent_loop_16_multi_tool_turns".to_string(),
+        time_rounds(|| {
+            runtime.block_on(run_scripted_multi_tool_turns(AGENT_MULTI_TOOL_TURN_COUNT));
+        }),
+    );
+    results.insert(
+        "agent_loop_96_long_history_turns".to_string(),
+        time_rounds(|| {
+            runtime.block_on(run_scripted_long_history(AGENT_LONG_HISTORY_TURN_COUNT));
         }),
     );
 

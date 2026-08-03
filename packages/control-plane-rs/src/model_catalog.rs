@@ -1,4 +1,5 @@
 use crate::{model_config_path, read_json_value, Config, MAX_JSON_BODY_BYTES};
+use maestro_tui::ai::ProviderRegistry;
 use maestro_tui::model_catalog as shared_catalog;
 use maestro_tui::model_catalog::ModelProtocol;
 use serde::{Deserialize, Serialize};
@@ -495,7 +496,7 @@ pub(crate) fn resolve_model(input: &str, registry: &ModelRegistry) -> Option<Mod
         .map(|(provider, id)| (Some(provider), id))
         .unwrap_or((None, candidate));
 
-    registry
+    let resolved = registry
         .models
         .iter()
         .find(|model| {
@@ -504,7 +505,40 @@ pub(crate) fn resolve_model(input: &str, registry: &ModelRegistry) -> Option<Mod
                     .map(|provider| provider == model.provider)
                     .unwrap_or(true)
         })
-        .cloned()
+        .cloned();
+    if resolved.is_some() {
+        return resolved;
+    }
+
+    // The OpenRouter catalog is intentionally live: model ids can be added,
+    // aliased, or retired without a Maestro release. Preserve the exact
+    // provider/model route even when the metadata endpoint is unavailable so
+    // an uncatalogued OpenRouter model still reaches the native client. The
+    // zero/false capabilities are honest unknowns; a live catalog overlay will
+    // replace them with typed metadata when available.
+    let provider = provider?;
+    let descriptor = ProviderRegistry::descriptor(provider)?;
+    if descriptor.id != "openrouter" || id.trim().is_empty() || id.chars().any(char::is_whitespace)
+    {
+        return None;
+    }
+
+    Some(ModelInfo {
+        id: id.to_string(),
+        provider: descriptor.id.to_string(),
+        name: id.to_string(),
+        api: "openai-completions".to_string(),
+        context_window: 0,
+        max_tokens: 0,
+        reasoning: false,
+        cost: zero_model_cost(),
+        capabilities: ModelCapabilities {
+            streaming: true,
+            tools: false,
+            vision: false,
+            reasoning: false,
+        },
+    })
 }
 
 /// Static catalog seed shared with the TUI: the generated models.dev
@@ -639,5 +673,35 @@ mod tests {
                 "deprecated id {dead} must not appear in the control-plane catalog"
             );
         }
+    }
+
+    #[test]
+    fn uncatalogued_openrouter_models_resolve_as_chat_routes() {
+        let registry = ModelRegistry {
+            models: Vec::new(),
+            aliases: HashMap::new(),
+        };
+
+        let model = resolve_model("openrouter/anthropic/claude-sonnet-4.5:free", &registry)
+            .expect("OpenRouter model ids must not require a release-time catalog entry");
+
+        assert_eq!(model.provider, "openrouter");
+        assert_eq!(model.id, "anthropic/claude-sonnet-4.5:free");
+        assert_eq!(model.api, "openai-completions");
+        assert!(model.capabilities.streaming);
+        assert!(!model.capabilities.tools);
+        assert_eq!(model.context_window, 0);
+    }
+
+    #[test]
+    fn uncatalogued_non_openrouter_models_still_fail_closed() {
+        let registry = ModelRegistry {
+            models: Vec::new(),
+            aliases: HashMap::new(),
+        };
+
+        assert!(resolve_model("openai/future-custom-model", &registry).is_none());
+        assert!(resolve_model("openrouter/", &registry).is_none());
+        assert!(resolve_model("openrouter/model with spaces", &registry).is_none());
     }
 }

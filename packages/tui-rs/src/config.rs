@@ -72,7 +72,7 @@ use std::path::{Path, PathBuf};
 // `Path` is a borrowed path (like &str for strings)
 // `PathBuf` is an owned path (like String for strings)
 
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 // RwLock allows multiple readers OR one writer at a time.
 // This is thread-safe: multiple threads can read config simultaneously,
 // but only one can update it. `Mutex` would only allow one accessor at a time.
@@ -409,7 +409,7 @@ pub fn workspace_trusted_in_global_config(workspace_dir: &Path) -> bool {
         return false;
     };
     let global_path = home.join(".composer").join("config.toml");
-    parse_config_file(&global_path)
+    load_global_config_cached(&global_path)
         .map(|config| workspace_trusted(&config, workspace_dir))
         .unwrap_or(false)
 }
@@ -473,6 +473,7 @@ pub fn set_workspace_trust_in_global_config(
         .map_err(|error| format!("failed to serialize {}: {error}", global_path.display()))?;
     std::fs::write(&global_path, rendered)
         .map_err(|error| format!("failed to write {}: {error}", global_path.display()))?;
+    clear_global_config_cache();
     Ok(global_path)
 }
 
@@ -745,6 +746,57 @@ static CONFIG_CACHE: std::sync::LazyLock<RwLock<ConfigCache>> = std::sync::LazyL
     })
 });
 
+/// Cache the parsed global config used by trust checks while still noticing
+/// normal edits to the config file. Comparing the bytes, rather than only
+/// filesystem metadata, keeps same-size timestamp-preserving edits fail-safe.
+/// The global-only trust boundary is kept separate from `CONFIG_CACHE`, which
+/// may contain project config.
+#[derive(Default)]
+struct GlobalConfigCache {
+    path: Option<PathBuf>,
+    content: Option<Vec<u8>>,
+    loaded: bool,
+    config: Option<Arc<ComposerConfig>>,
+}
+
+static GLOBAL_CONFIG_CACHE: std::sync::LazyLock<RwLock<GlobalConfigCache>> =
+    std::sync::LazyLock::new(|| RwLock::new(GlobalConfigCache::default()));
+
+fn load_global_config_cached(path: &Path) -> Option<Arc<ComposerConfig>> {
+    let content = fs::read(path).ok();
+    {
+        let cache = GLOBAL_CONFIG_CACHE
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache.loaded
+            && cache.path.as_deref() == Some(path)
+            && cache.content.as_deref() == content.as_deref()
+        {
+            return cache.config.clone();
+        }
+    }
+
+    let config = content
+        .as_deref()
+        .and_then(|bytes| parse_config_bytes(path, bytes))
+        .map(Arc::new);
+    let mut cache = GLOBAL_CONFIG_CACHE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    cache.path = Some(path.to_path_buf());
+    cache.content = content;
+    cache.loaded = true;
+    cache.config = config.clone();
+    config
+}
+
+fn clear_global_config_cache() {
+    let mut cache = GLOBAL_CONFIG_CACHE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *cache = GlobalConfigCache::default();
+}
+
 /// Clear the configuration cache.
 ///
 /// Used primarily in tests to ensure a fresh config load.
@@ -757,6 +809,7 @@ pub fn clear_config_cache() {
     cache.config = None;
     cache.workspace_dir = None;
     cache.profile_name = None;
+    clear_global_config_cache();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -971,15 +1024,27 @@ fn parse_config_file(path: &Path) -> Option<ComposerConfig> {
         return None;
     }
 
-    let content = match fs::read_to_string(path) {
-        Ok(c) => c,
+    let content = match fs::read(path) {
+        Ok(content) => content,
         Err(e) => {
             eprintln!("Failed to read config file {}: {e}", path.display());
             return None;
         }
     };
 
-    match toml::from_str(&content) {
+    parse_config_bytes(path, &content)
+}
+
+fn parse_config_bytes(path: &Path, bytes: &[u8]) -> Option<ComposerConfig> {
+    let content = match std::str::from_utf8(bytes) {
+        Ok(content) => content,
+        Err(e) => {
+            eprintln!("Failed to read config file {}: {e}", path.display());
+            return None;
+        }
+    };
+
+    match toml::from_str(content) {
         Ok(config) => Some(config),
         Err(e) => {
             eprintln!("Failed to parse config file {}: {e}", path.display());
@@ -2027,6 +2092,29 @@ sandbox_mode = "danger-full-access"
             Some(value) => unsafe { std::env::set_var("HOME", value) },
             None => unsafe { std::env::remove_var("HOME") },
         }
+    }
+
+    #[test]
+    fn cached_global_config_reloads_when_file_changes() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.toml");
+        let key = dunce::canonicalize(workspace.path())
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        clear_global_config_cache();
+        let trusted_content = format!("[projects.\"{key}\"]\ntrust_level = \"trusted\"  \n");
+        let untrusted_content = format!("[projects.\"{key}\"]\ntrust_level = \"untrusted\"\n");
+        assert_eq!(trusted_content.len(), untrusted_content.len());
+        fs::write(&config_path, trusted_content).unwrap();
+        let trusted = load_global_config_cached(&config_path).expect("trusted config parses");
+        assert!(workspace_trusted(&trusted, workspace.path()));
+
+        fs::write(&config_path, untrusted_content).unwrap();
+        let untrusted = load_global_config_cached(&config_path).expect("updated config parses");
+        assert!(!workspace_trusted(&untrusted, workspace.path()));
     }
 
     #[test]

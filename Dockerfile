@@ -1,6 +1,7 @@
 FROM rust:bookworm AS native
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
+COPY packages/execpolicy-rs ./packages/execpolicy-rs
 COPY packages/tui-rs ./packages/tui-rs
 COPY packages/control-plane-rs ./packages/control-plane-rs
 COPY packages/maestro-rs ./packages/maestro-rs

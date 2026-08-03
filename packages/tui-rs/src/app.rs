@@ -528,6 +528,9 @@ pub struct App {
     /// The ratatui terminal handle for rendering.
     terminal: terminal::Terminal,
 
+    /// Cached terminal dimensions, refreshed only at startup and on resize.
+    terminal_size: Option<(u16, u16)>,
+
     /// Protocol-aware terminal input. Falls back to crossterm when unavailable.
     terminal_events: Option<TerminalEventReader>,
 
@@ -886,7 +889,12 @@ impl App {
     /// Clear the process-global goal for a forked session. Returns the cleared id.
     pub(crate) fn clear_goal_for_fork(&mut self) -> Result<Option<String>> {
         self.goal_auto_continue_armed = false;
-        self.goal_store.clear_for_session_fork()
+        let previous_tools_visible = self.goal_store.tools_visible();
+        let result = self.goal_store.clear_for_session_fork();
+        if previous_tools_visible != self.goal_store.tools_visible() {
+            self.sync_agent_goal_tools_visibility();
+        }
+        result
     }
 
     pub(crate) fn note_system_message(&mut self, message: impl Into<String>) {
@@ -904,6 +912,12 @@ impl App {
         let notes = std::mem::take(&mut self.pending_agent_tool_notes);
         for note in notes {
             agent.inject_user_note(note);
+        }
+    }
+
+    fn sync_agent_goal_tools_visibility(&self) {
+        if let Some(agent) = self.native_agent.as_ref() {
+            agent.set_goal_tools_visible(self.goal_store.tools_visible());
         }
     }
 
@@ -1110,6 +1124,8 @@ impl App {
             }
         };
 
+        let terminal_size = terminal.size().ok().map(|area| (area.width, area.height));
+
         Self {
             state,
             native_agent: None,
@@ -1118,6 +1134,7 @@ impl App {
             tool_executor: Arc::new(tool_executor),
             credential_vault,
             terminal,
+            terminal_size,
             terminal_events: None,
             should_quit: false,
             capabilities,
@@ -1498,8 +1515,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                             _ => {} // Ignore other mouse events
                         }
                     }
-                    AppTerminalEvent::Resize { height } => {
-                        self.handle_resize(height)?;
+                    AppTerminalEvent::Resize { width, height } => {
+                        self.handle_resize(width, height)?;
                         needs_redraw = true;
                     }
                     // Bracketed paste: route to the open modal's text input,
@@ -1734,7 +1751,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
     /// Handle a terminal resize: recompute viewport capabilities (PageUp/
     /// PageDown step size) and resize the inline viewport itself.
-    fn handle_resize(&mut self, height: u16) -> Result<()> {
+    fn handle_resize(&mut self, width: u16, height: u16) -> Result<()> {
+        self.terminal_size = Some((width, height));
+        self.state.set_input_width(width.saturating_sub(2).max(1));
         if self.update_viewport_capabilities(height) {
             // ratatui's inline viewport height is fixed at construction, so
             // growing/shrinking it requires rebuilding the Terminal around
@@ -1853,6 +1872,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
                 // Send ready event
                 if let Some(agent) = &self.native_agent {
+                    agent.set_goal_tools_visible(self.goal_store.tools_visible());
                     // Startup session restore runs before the agent exists. Queue
                     // the copied conversation before any initial prompt so a
                     // fork continues with the same model context.
@@ -2184,7 +2204,11 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     fn sync_goal_store_after_turn(&mut self) {
         let prev_id = self.goal_store.current.as_ref().map(|g| g.id.clone());
         let prev_status = self.goal_store.current.as_ref().map(|g| g.status);
+        let prev_tools_visible = self.goal_store.tools_visible();
         self.goal_store.reload_from_disk();
+        if prev_tools_visible != self.goal_store.tools_visible() {
+            self.sync_agent_goal_tools_visibility();
+        }
         let cur = self.goal_store.current.as_ref();
         match cur {
             Some(g) if g.status == crate::goal::GoalStatus::Active && g.auto_continue => {
@@ -3186,8 +3210,15 @@ Slash Commands:
     }
 
     fn render_inner(&mut self) -> Result<()> {
-        if let Ok(area) = self.terminal.size() {
-            let inner_width = area.width.saturating_sub(2).max(1);
+        if self.terminal_size.is_none() {
+            self.terminal_size = self
+                .terminal
+                .size()
+                .ok()
+                .map(|area| (area.width, area.height));
+        }
+        if let Some((width, _height)) = self.terminal_size {
+            let inner_width = width.saturating_sub(2).max(1);
             self.state.set_input_width(inner_width);
         }
 

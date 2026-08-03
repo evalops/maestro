@@ -31,6 +31,56 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
 
+#[test]
+fn response_retries_have_stable_idempotency_keys() {
+    let response = ToAgentMessage::ServerRequestResponse {
+        request_id: "request-1".into(),
+        request_type: ServerRequestType::Approval,
+        approved: Some(true),
+        result: None,
+        content: None,
+        is_error: None,
+        decision_action: None,
+        reason: Some("approved".into()),
+    };
+    let key = super::response_idempotency_key(&response).expect("response key");
+    assert_eq!(key, super::response_idempotency_key(&response).unwrap());
+    assert!(key.starts_with("maestro-response-"));
+    let changed_payload = ToAgentMessage::ServerRequestResponse {
+        request_id: "request-1".into(),
+        request_type: ServerRequestType::Approval,
+        approved: Some(false),
+        result: None,
+        content: None,
+        is_error: None,
+        decision_action: None,
+        reason: Some("changed decision payload".into()),
+    };
+    assert_eq!(
+        key,
+        super::response_idempotency_key(&changed_payload).expect("same request identity key")
+    );
+    let different_request = ToAgentMessage::ServerRequestResponse {
+        request_id: "request-2".into(),
+        request_type: ServerRequestType::Approval,
+        approved: Some(true),
+        result: None,
+        content: None,
+        is_error: None,
+        decision_action: None,
+        reason: Some("approved".into()),
+    };
+    assert_ne!(
+        key,
+        super::response_idempotency_key(&different_request).expect("different request key")
+    );
+    assert!(super::response_idempotency_key(&ToAgentMessage::Prompt {
+        content: "same payload must remain repeatable".into(),
+        attachments: None,
+    })
+    .is_none());
+}
+
 async fn read_http_request(
     socket: &mut TcpStream,
 ) -> Option<(String, Vec<(String, String)>, String)> {
@@ -590,7 +640,7 @@ fn remote_session_subscribe_request_serializes_opt_out_notifications() {
         connection_id: Some("conn_remote".to_string()),
         connection_capability: Some("cap_remote".to_string()),
         connection_capability_required: true,
-        protocol_version: Some("2026-04-02".to_string()),
+        protocol_version: Some("2026-08-01".to_string()),
         client_info: Some(ClientInfo {
             name: "maestro-tui-rs".to_string(),
             version: Some("0.1.0".to_string()),

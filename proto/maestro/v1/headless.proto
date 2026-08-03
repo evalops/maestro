@@ -9,7 +9,7 @@ import "google/protobuf/struct.proto";
 // This mirrors the current message surface closely enough for code generation and
 // cross-language drift checks, while the live runtime continues to use the
 // existing JSON transport until follow-up slices migrate the transport layer.
-// protocol-version: 2026-04-02
+// protocol-version: 2026-08-01
 
 enum ServerRequestType {
   SERVER_REQUEST_TYPE_UNSPECIFIED = 0;
@@ -531,6 +531,10 @@ message ConnectionInfoMessage {
   repeated ConnectionState connections = 10;
 }
 
+message ResponseAcceptedMessage {
+  string request_id = 1;
+}
+
 message RawAgentEventMessage {
   string event_type = 1;
   google.protobuf.Value event = 2;
@@ -587,5 +591,6 @@ message FromAgentEnvelope {
     CompactionMessage compaction = 25;
     SessionInfoMessage session_info = 26;
     ConnectionInfoMessage connection_info = 27;
+    ResponseAcceptedMessage response_accepted = 28;
   }
 }

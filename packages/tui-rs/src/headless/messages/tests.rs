@@ -354,7 +354,7 @@ fn parse_connection_info_message() {
 
 #[test]
 fn parse_hello_ok_message() {
-    let json = r#"{"type":"hello_ok","protocol_version":"2026-04-02","connection_id":"conn_remote","client_protocol_version":"2026-03-30","client_info":{"name":"maestro-web","version":"1.2.3"},"capabilities":{"server_requests":["approval"]},"opt_out_notifications":["status"],"role":"controller","controller_connection_id":"conn_remote"}"#;
+    let json = r#"{"type":"hello_ok","protocol_version":"2026-08-01","connection_id":"conn_remote","client_protocol_version":"2026-03-30","client_info":{"name":"maestro-web","version":"1.2.3"},"capabilities":{"server_requests":["approval"]},"opt_out_notifications":["status"],"role":"controller","controller_connection_id":"conn_remote"}"#;
     let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
     match msg {
         FromAgentMessage::HelloOk {
@@ -368,7 +368,7 @@ fn parse_hello_ok_message() {
             controller_connection_id,
             lease_expires_at,
         } => {
-            assert_eq!(protocol_version, "2026-04-02");
+            assert_eq!(protocol_version, "2026-08-01");
             assert_eq!(connection_id.as_deref(), Some("conn_remote"));
             assert_eq!(client_protocol_version.as_deref(), Some("2026-03-30"));
             assert_eq!(
@@ -1128,7 +1128,7 @@ fn state_tracks_protocol_version_from_hello_ok() {
     let event = state.handle_message(FromAgentMessage::HelloOk {
         protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
         connection_id: Some("conn_remote".to_string()),
-        client_protocol_version: Some("2026-04-02".to_string()),
+        client_protocol_version: Some("2026-08-01".to_string()),
         client_info: Some(ClientInfo {
             name: "maestro-web".to_string(),
             version: Some("1.2.3".to_string()),
@@ -1150,7 +1150,7 @@ fn state_tracks_protocol_version_from_hello_ok() {
         state.protocol_version.as_deref(),
         Some(HEADLESS_PROTOCOL_VERSION)
     );
-    assert_eq!(state.client_protocol_version.as_deref(), Some("2026-04-02"));
+    assert_eq!(state.client_protocol_version.as_deref(), Some("2026-08-01"));
     assert_eq!(state.connection_role, Some(ConnectionRole::Controller));
     assert_eq!(
         state.controller_connection_id.as_deref(),
@@ -1684,4 +1684,31 @@ fn codex_subagent_terminal_statuses_keep_spawned_and_resumed_active() {
     assert!(!codex_subagent_status_is_terminal("Spawned"));
     assert!(!codex_subagent_status_is_terminal("resumed"));
     assert!(!codex_subagent_status_is_terminal("reSumed"));
+}
+
+#[test]
+fn hello_accepts_every_client_version_this_build_serves() {
+    for version in SUPPORTED_CLIENT_PROTOCOL_VERSIONS {
+        assert!(client_protocol_version_is_supported(Some(version)));
+    }
+    assert!(
+        client_protocol_version_is_supported(None),
+        "a client that announces nothing keeps the pre-negotiation behavior"
+    );
+    assert!(
+        SUPPORTED_CLIENT_PROTOCOL_VERSIONS.contains(&HEADLESS_PROTOCOL_VERSION),
+        "this build must accept its own protocol version"
+    );
+}
+
+#[test]
+fn hello_rejects_protocol_versions_this_build_does_not_speak() {
+    for version in ["", "2025-01-01", "2027-01-01", "latest", " 2026-08-01"] {
+        assert!(
+            !client_protocol_version_is_supported(Some(version)),
+            "{version:?} is not a version this build serves"
+        );
+        let message = unsupported_client_protocol_version_message(version);
+        assert!(message.contains(HEADLESS_PROTOCOL_VERSION));
+    }
 }

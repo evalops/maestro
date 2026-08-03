@@ -13,6 +13,7 @@ use anyhow::{bail, Context, Result};
 use crate::agent::{CredentialVault, ExecutionSource, FromAgent, NativeAgent, NativeAgentConfig};
 use crate::safety::FirewallVerdict;
 use crate::sandbox::SandboxPolicy;
+use crate::state::ApprovalMode;
 use crate::tools::ToolExecutor;
 
 /// Options for print / exec-style runs.
@@ -45,6 +46,13 @@ fn approval_denied(
                 executor.firewall_verdict(tool, args),
                 FirewallVerdict::RequireApproval { .. }
             ))
+}
+
+/// Print mode owns its tool limits, workspace policy, and execution. Native
+/// must therefore defer every tool call to this event loop so each call is
+/// executed exactly once through the print-mode executor.
+fn print_mode_approval_mode() -> ApprovalMode {
+    ApprovalMode::Safe
 }
 
 #[derive(Debug, Clone)]
@@ -263,10 +271,10 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
         thinking_enabled: false,
         thinking_budget: 0,
         cwd: cwd.clone(),
-        // Print mode has no interactive approval UI; preserve the prior
-        // (mode-unaware) per-tool heuristic exactly. `fail_on_approval`
-        // above is this mode's own separate reject-instead-of-run policy.
-        approval_mode: crate::state::ApprovalMode::Selective,
+        // Print mode owns the limits, workspace policy, and executor below.
+        // Defer every call to this event loop so native cannot auto-execute a
+        // selective-safe call before this mode sees the ToolCall event.
+        approval_mode: print_mode_approval_mode(),
         // The native agent runner's own tool executor -- which runs every
         // call the per-tool heuristic above doesn't flag for approval --
         // is a separate executor from the sandboxed one constructed below
@@ -777,6 +785,11 @@ mod tests {
         };
         assert!(!opts.json);
         assert_eq!(opts.prompt, "hi");
+    }
+
+    #[test]
+    fn print_mode_defers_every_tool_call_to_its_host_executor() {
+        assert_eq!(print_mode_approval_mode(), ApprovalMode::Safe);
     }
 
     #[test]
