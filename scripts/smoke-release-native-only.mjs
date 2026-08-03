@@ -4,10 +4,19 @@ import {
 	chmodSync,
 	existsSync,
 	mkdtempSync,
+	readFileSync,
 	symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+
+// The agent only serves protocol versions it implements, so the smoke has to
+// announce the version this build speaks rather than a placeholder.
+const protocolVersion = readFileSync(
+	resolve("packages/tui-rs/src/headless/generated_protocol.rs"),
+	"utf8",
+).match(/pub const HEADLESS_PROTOCOL_VERSION: &str = "([^"]+)";/)?.[1];
+if (!protocolVersion) throw new Error("could not read HEADLESS_PROTOCOL_VERSION");
 
 const binary = resolve(process.argv[2] ?? "bin/maestro");
 if (!existsSync(binary)) throw new Error(`Missing native package binary: ${binary}`);
@@ -44,7 +53,7 @@ if (!run(["--version"]).includes("maestro")) throw new Error("version smoke fail
 if (!run(["--help"]).includes("Usage:")) throw new Error("help smoke failed");
 const headless = run(
 	["--headless"],
-	`${JSON.stringify({ type: "hello", protocol_version: "1.2", client_info: { name: "native-smoke", version: "1" }, role: "controller" })}\n${JSON.stringify({ type: "shutdown" })}\n`,
+	`${JSON.stringify({ type: "hello", protocol_version: protocolVersion, client_info: { name: "native-smoke", version: "1" }, role: "controller" })}\n${JSON.stringify({ type: "shutdown" })}\n`,
 );
 if (!headless.includes('"type":"hello_ok"')) throw new Error("headless smoke failed");
 

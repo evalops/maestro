@@ -768,7 +768,8 @@ impl SessionManager {
     /// every session id building a `CheckpointStore` root, so a real
     /// session directory name can never collide with a fixed, dot-prefixed
     /// namespace directory the way it could with a suffix appended to its
-    /// own name.
+    /// own name. New checkpoint roots use a versioned encoded session key;
+    /// legacy sanitized roots are still cleaned up by the same prune path.
     ///
     /// Does not remove the session's sidecar `<file>.lock` (see
     /// [`SessionLock`]); callers that hold the lock while pruning must drop
@@ -777,6 +778,7 @@ impl SessionManager {
     fn remove_session_and_checkpoints(&self, session: &SessionInfo) -> std::io::Result<()> {
         let store = crate::checkpoints::CheckpointStore::new(&self.sessions_dir, &session.id);
         let checkpoint_root = store.root();
+        let legacy_checkpoint_root = store.legacy_root().to_path_buf();
         let staging_dir = Self::prune_staging_dir(&self.sessions_dir);
         // `fs::rename`'s target parent must already exist; `create_dir_all`
         // is a no-op (not an error) if another prune already created it.
@@ -840,6 +842,11 @@ impl SessionManager {
                     // could act on.
                     let _ = fs::remove_dir_all(&staged);
                 }
+                // Old sessions may still have checkpoints under the
+                // pre-v2 sanitized root. The transcript is gone now, so
+                // remove that sibling best-effort just like the staged v2
+                // directory.
+                let _ = fs::remove_dir_all(&legacy_checkpoint_root);
                 Ok(())
             }
             Err(e) => {

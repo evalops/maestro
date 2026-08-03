@@ -15,12 +15,15 @@ mod tests {
     use prost::Message;
 
     use super::maestro::v1::to_agent_envelope::Payload;
-    use super::maestro::v1::{HelloMessage, ToAgentEnvelope, ToolEndMessage, ToolResponseMessage};
+    use super::maestro::v1::{
+        FromAgentEnvelope, HelloMessage, ResponseAcceptedMessage, ToAgentEnvelope, ToolEndMessage,
+        ToolResponseMessage,
+    };
 
     #[test]
     fn generated_headless_proto_types_compile() {
         let hello = HelloMessage {
-            protocol_version: Some("2026-04-02".to_string()),
+            protocol_version: Some("2026-08-01".to_string()),
             ..HelloMessage::default()
         };
 
@@ -56,5 +59,26 @@ mod tests {
             decoded.tool_execution_id.as_deref(),
             Some("tool-execution-1")
         );
+    }
+
+    #[test]
+    fn response_acceptance_is_in_the_authoritative_proto_envelope() {
+        let envelope = FromAgentEnvelope {
+            payload: Some(
+                super::maestro::v1::from_agent_envelope::Payload::ResponseAccepted(
+                    ResponseAcceptedMessage {
+                        request_id: "call-1".to_string(),
+                    },
+                ),
+            ),
+        };
+        let encoded = envelope.encode_to_vec();
+        let decoded = FromAgentEnvelope::decode(encoded.as_slice()).expect("decode envelope");
+        assert!(matches!(
+            decoded.payload,
+            Some(super::maestro::v1::from_agent_envelope::Payload::ResponseAccepted(
+                ResponseAcceptedMessage { request_id }
+            )) if request_id == "call-1"
+        ));
     }
 }

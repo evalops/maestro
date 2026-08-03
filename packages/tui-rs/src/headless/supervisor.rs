@@ -215,6 +215,8 @@ pub enum HealthStatus {
 pub enum SupervisorEvent {
     /// Agent event (pass-through)
     Agent(Box<AgentEvent>),
+    /// Native response consumer accepted a control response.
+    ResponseAccepted { request_id: String },
     /// Connection established
     Connected,
     /// State was hydrated from replay or a remote snapshot.
@@ -682,8 +684,29 @@ impl AgentSupervisor {
         &mut self,
         msg: ToAgentMessage,
     ) -> Result<Vec<FromAgentMessage>, AsyncTransportError> {
+        Ok(self.send_and_drain_agent_messages_with_ack(msg)?.0)
+    }
+
+    /// Send a message and report whether the native response consumer
+    /// explicitly acknowledged accepting a control response.
+    pub fn send_and_drain_agent_messages_with_ack(
+        &mut self,
+        msg: ToAgentMessage,
+    ) -> Result<(Vec<FromAgentMessage>, bool), AsyncTransportError> {
+        let expected_acknowledgement = response_ack_request_id(&msg).map(str::to_owned);
         self.send(msg)?;
-        Ok(self.drain_available_agent_messages())
+        let mut messages = self.drain_available_agent_messages();
+        let acknowledged = expected_acknowledgement.as_deref().is_some_and(|expected| {
+            messages.iter().any(|message| {
+                matches!(
+                    message,
+                    FromAgentMessage::ResponseAccepted { request_id }
+                        if request_id == expected
+                )
+            })
+        });
+        messages.retain(|message| !matches!(message, FromAgentMessage::ResponseAccepted { .. }));
+        Ok((messages, acknowledged))
     }
 
     /// Drain currently available supervisor agent events as headless protocol messages.
@@ -691,8 +714,14 @@ impl AgentSupervisor {
     pub fn drain_available_agent_messages(&mut self) -> Vec<FromAgentMessage> {
         let mut messages = Vec::new();
         while let Some(event) = self.poll() {
-            if let SupervisorEvent::Agent(agent_event) = event {
-                messages.push(agent_event_to_message(&agent_event));
+            match event {
+                SupervisorEvent::Agent(agent_event) => {
+                    messages.push(agent_event_to_message(&agent_event));
+                }
+                SupervisorEvent::ResponseAccepted { request_id } => {
+                    messages.push(FromAgentMessage::ResponseAccepted { request_id });
+                }
+                _ => {}
             }
         }
         messages
@@ -808,6 +837,11 @@ impl AgentSupervisor {
     }
 
     fn apply_agent_message(&mut self, message: FromAgentMessage) -> Option<SupervisorEvent> {
+        if let FromAgentMessage::ResponseAccepted { request_id } = &message {
+            return Some(SupervisorEvent::ResponseAccepted {
+                request_id: request_id.clone(),
+            });
+        }
         if let FromAgentMessage::ConversationSnapshot {
             protocol_version,
             messages,
@@ -1208,6 +1242,15 @@ impl AgentSupervisor {
     #[must_use]
     pub fn session_file(&self) -> Option<&Path> {
         self.session_recorder.as_ref().map(SessionRecorder::path)
+    }
+}
+
+fn response_ack_request_id(message: &ToAgentMessage) -> Option<&str> {
+    match message {
+        ToAgentMessage::ToolResponse { call_id, .. }
+        | ToAgentMessage::ClientToolResult { call_id, .. } => Some(call_id),
+        ToAgentMessage::ServerRequestResponse { request_id, .. } => Some(request_id),
+        _ => None,
     }
 }
 

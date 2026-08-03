@@ -1,7 +1,7 @@
 {
   "name": "@evalops/maestro",
   "description": "Maestro by EvalOps — native Rust coding agent, CLI, TUI, and web control plane",
-  "version": "0.10.61",
+  "version": "0.10.62",
   "private": false,
   "type": "module",
   "bin": {
@@ -17,7 +17,7 @@
     "clean": "node scripts/clean-paths.js bin target",
     "build": "cargo build --release --locked -p maestro && node scripts/materialize-native-package.mjs",
     "build:all": "npm run build",
-    "check": "npm run check:workspace-contract && npm run check:rust-only-runtime && cargo check --workspace --all-targets --locked",
+    "check": "npm run check:workspace-contract && npm run check:rust-only-runtime && npm run check:helm-probes && cargo check --workspace --all-targets --locked",
     "test": "cargo test --workspace --locked",
     "lint": "cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D warnings",
     "format": "cargo fmt --all",
@@ -27,6 +27,7 @@
     "web": "./bin/maestro web",
     "check:workspace-contract": "node scripts/check-workspace-contract.mjs",
     "check:rust-only-runtime": "node scripts/check-rust-only-runtime.mjs && node scripts/check-rust-only-docs.mjs",
+    "check:helm-probes": "node --test scripts/check-helm-probes.test.mjs",
     "verify:runtime-deps": "npm run check:rust-only-runtime",
     "check:doc-paths": "node scripts/check-doc-paths.mjs",
     "check:scenario-replay-gate": "node scripts/run-scenario-replay-gate.mjs",

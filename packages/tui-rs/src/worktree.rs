@@ -11,8 +11,13 @@
 //! module shells out to the `git` CLI instead of linking libgit2.
 
 use std::ffi::OsString;
+use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+
+#[cfg(unix)]
+use std::os::unix::ffi::OsStringExt;
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -171,6 +176,127 @@ impl WorktreeSession {
         })
     }
 
+    /// Copy the source repository's tracked and non-ignored untracked changes
+    /// into this clean worktree.
+    ///
+    /// `git worktree add ... HEAD` intentionally starts from the committed
+    /// tree. A delegated child must see the parent session's current working
+    /// state as well, otherwise it can inspect stale files or overwrite a
+    /// parent change with an older version. Tracked changes are transferred
+    /// with a binary-capable `git diff`/`git apply` pair; untracked files are
+    /// copied individually from Git's authoritative path list. Ignored files
+    /// are deliberately excluded so local secrets and caches do not cross the
+    /// isolation boundary.
+    pub fn copy_changes_from(&self, source: &Path) -> Result<()> {
+        let source_root = repository_root(source)?;
+        let staged_diff = Command::new("git")
+            .args(["diff", "--no-ext-diff", "--binary", "--cached", "--"])
+            .current_dir(&source_root)
+            .output()
+            .context("failed to inspect source staged changes")?;
+        if !staged_diff.status.success() {
+            bail!(
+                "git diff --cached failed: {}",
+                String::from_utf8_lossy(&staged_diff.stderr).trim()
+            );
+        }
+        apply_diff(&self.path, &staged_diff.stdout, true)
+            .context("apply source staged changes to child worktree")?;
+
+        let unstaged_diff = Command::new("git")
+            .args(["diff", "--no-ext-diff", "--binary", "--"])
+            .current_dir(&source_root)
+            .output()
+            .context("failed to inspect source unstaged changes")?;
+        if !unstaged_diff.status.success() {
+            bail!(
+                "git diff failed: {}",
+                String::from_utf8_lossy(&unstaged_diff.stderr).trim()
+            );
+        }
+        apply_diff(&self.path, &unstaged_diff.stdout, false)
+            .context("apply source unstaged changes to child worktree")?;
+
+        let untracked = Command::new("git")
+            .args([
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "--full-name",
+                "-z",
+            ])
+            .current_dir(&source_root)
+            .output()
+            .context("failed to inspect source untracked files")?;
+        if !untracked.status.success() {
+            bail!(
+                "git ls-files failed: {}",
+                String::from_utf8_lossy(&untracked.stderr).trim()
+            );
+        }
+        for relative in untracked
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+        {
+            copy_untracked_path(&source_root, &self.path, &path_from_git_bytes(relative))?;
+        }
+        Ok(())
+    }
+
+    /// Map a directory from the source repository into this worktree.
+    pub fn path_for(&self, source: &Path) -> Result<PathBuf> {
+        let source_root = repository_root(source)?;
+        let source_path = dunce::canonicalize(source)
+            .with_context(|| format!("canonicalize source path {}", source.display()))?;
+        let source_root = dunce::canonicalize(&source_root)
+            .with_context(|| format!("canonicalize source repository {}", source_root.display()))?;
+        let relative = source_path.strip_prefix(&source_root).with_context(|| {
+            format!(
+                "source path {} is outside repository {}",
+                source_path.display(),
+                source_root.display()
+            )
+        })?;
+        Ok(self.path.join(relative))
+    }
+
+    /// Discard a worktree and its branch after setup fails.
+    ///
+    /// This is intentionally forceful because the worktree is newly created
+    /// by the caller and may contain a partially applied parent diff.
+    pub fn abort(self) {
+        let removed = Command::new("git")
+            .args(["worktree", "remove", "--force"])
+            .arg(&self.path)
+            .current_dir(&self.repo_root)
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+        if !removed {
+            eprintln!(
+                "Worktree cleanup failed; keeping {} and branch {}",
+                self.path.display(),
+                self.branch
+            );
+            return;
+        }
+
+        let deleted = Command::new("git")
+            .args(["branch", "-D", &self.branch])
+            .current_dir(&self.repo_root)
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+        if !deleted {
+            eprintln!(
+                "Removed failed worktree {} but could not delete branch {}",
+                self.path.display(),
+                self.branch
+            );
+        }
+    }
+
     /// Filesystem path of the worktree the session should run in.
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -236,6 +362,138 @@ impl WorktreeSession {
             );
         }
     }
+}
+
+fn repository_root(cwd: &Path) -> Result<PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(cwd)
+        .output()
+        .context("failed to locate source git repository")?;
+    if !output.status.success() {
+        bail!(
+            "source path is not inside a git repository: {}",
+            cwd.display()
+        );
+    }
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if root.is_empty() {
+        bail!("git returned an empty source repository root");
+    }
+    Ok(PathBuf::from(root))
+}
+
+fn apply_diff(worktree_path: &Path, diff: &[u8], update_index: bool) -> Result<()> {
+    if diff.is_empty() {
+        return Ok(());
+    }
+
+    let mut command = Command::new("git");
+    command.args(["apply", "--binary", "--whitespace=nowarn"]);
+    if update_index {
+        command.arg("--index");
+    }
+    command
+        .arg("-")
+        .current_dir(worktree_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let mut apply = command
+        .spawn()
+        .context("failed to start git apply for worktree changes")?;
+    apply
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("git apply did not expose stdin"))?
+        .write_all(diff)
+        .context("failed to send worktree diff to git apply")?;
+    let output = apply
+        .wait_with_output()
+        .context("failed to apply source worktree changes")?;
+    if !output.status.success() {
+        bail!(
+            "git apply failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+fn path_from_git_bytes(path: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        PathBuf::from(OsString::from_vec(path.to_vec()))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(path).into_owned())
+    }
+}
+
+fn copy_untracked_path(source_root: &Path, target_root: &Path, relative: &Path) -> Result<()> {
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        bail!(
+            "git returned an unsafe untracked path: {}",
+            relative.display()
+        );
+    }
+
+    let source = source_root.join(relative);
+    let destination = target_root.join(relative);
+    let metadata = fs::symlink_metadata(&source)
+        .with_context(|| format!("inspect untracked file {}", source.display()))?;
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create destination directory {}", parent.display()))?;
+    }
+
+    if metadata.file_type().is_symlink() {
+        remove_existing_path(&destination)?;
+        let link_target = fs::read_link(&source)
+            .with_context(|| format!("read untracked symlink {}", source.display()))?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&link_target, &destination)
+            .with_context(|| format!("copy untracked symlink {}", relative.display()))?;
+        #[cfg(windows)]
+        {
+            let target_metadata = fs::metadata(&source).ok();
+            if target_metadata.is_some_and(|metadata| metadata.is_dir()) {
+                std::os::windows::fs::symlink_dir(&link_target, &destination)
+            } else {
+                std::os::windows::fs::symlink_file(&link_target, &destination)
+            }
+            .with_context(|| format!("copy untracked symlink {}", relative.display()))?;
+        }
+    } else if metadata.is_file() {
+        fs::copy(&source, &destination)
+            .with_context(|| format!("copy untracked file {}", relative.display()))?;
+        fs::set_permissions(&destination, metadata.permissions()).with_context(|| {
+            format!(
+                "preserve permissions for untracked file {}",
+                relative.display()
+            )
+        })?;
+    } else {
+        bail!("unsupported untracked path: {}", relative.display());
+    }
+    Ok(())
+}
+
+fn remove_existing_path(path: &Path) -> Result<()> {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    if metadata.file_type().is_dir() {
+        fs::remove_dir_all(path).with_context(|| format!("remove {}", path.display()))?;
+    } else {
+        fs::remove_file(path).with_context(|| format!("remove {}", path.display()))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -415,6 +673,138 @@ mod tests {
             .current_dir(&repo)
             .output()
             .expect("git branch delete should run");
+        fs::remove_dir_all(repo.parent().expect("repo has a parent"))
+            .expect("test directory should be removed");
+    }
+
+    #[test]
+    fn copy_changes_transfers_tracked_and_untracked_state() {
+        let repo = temp_repo("copy-changes");
+        fs::write(repo.join("README.md"), "parent change\n").expect("tracked file should change");
+        fs::write(repo.join("new.txt"), "parent addition\n")
+            .expect("untracked file should be written");
+
+        let session =
+            WorktreeSession::create_in(&repo, "copy-changes").expect("worktree should be created");
+        session
+            .copy_changes_from(&repo)
+            .expect("parent changes should be copied");
+        assert_eq!(
+            fs::read_to_string(session.path().join("README.md")).expect("tracked file exists"),
+            "parent change\n"
+        );
+        assert_eq!(
+            fs::read_to_string(session.path().join("new.txt")).expect("untracked file exists"),
+            "parent addition\n"
+        );
+
+        let path = session.path().to_path_buf();
+        session.finish();
+        assert!(path.exists(), "dirty child worktree should be retained");
+        Command::new("git")
+            .args(["worktree", "remove", "--force"])
+            .arg(&path)
+            .current_dir(&repo)
+            .output()
+            .expect("git worktree remove should run");
+        Command::new("git")
+            .args(["branch", "-D", "copy-changes"])
+            .current_dir(&repo)
+            .output()
+            .expect("git branch delete should run");
+        fs::remove_dir_all(repo.parent().expect("repo has a parent"))
+            .expect("test directory should be removed");
+    }
+
+    #[test]
+    fn copy_changes_preserves_staged_and_unstaged_state() {
+        let repo = temp_repo("copy-staged");
+        let git = |args: &[&str], cwd: &Path| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .expect("git should run");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output
+        };
+        fs::write(repo.join("README.md"), "staged\n").expect("staged file should be written");
+        git(&["add", "README.md"], &repo);
+        fs::write(repo.join("README.md"), "staged and unstaged\n")
+            .expect("unstaged file should be written");
+
+        let session =
+            WorktreeSession::create_in(&repo, "copy-staged").expect("worktree should be created");
+        session
+            .copy_changes_from(&repo)
+            .expect("parent changes should be copied");
+        assert_eq!(
+            fs::read_to_string(session.path().join("README.md")).expect("tracked file exists"),
+            "staged and unstaged\n"
+        );
+        let staged = git(&["diff", "--cached", "--", "README.md"], session.path());
+        assert!(
+            String::from_utf8_lossy(&staged.stdout).contains("+staged\n"),
+            "child index should contain the staged version"
+        );
+        let unstaged = git(&["diff", "--", "README.md"], session.path());
+        assert!(
+            String::from_utf8_lossy(&unstaged.stdout).contains("+staged and unstaged\n"),
+            "child worktree should retain the unstaged version"
+        );
+
+        let path = session.path().to_path_buf();
+        session.abort();
+        assert!(!path.exists(), "test worktree should be removed");
+        fs::remove_dir_all(repo.parent().expect("repo has a parent"))
+            .expect("test directory should be removed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_path_bytes_preserve_non_utf8_names() {
+        let raw = b"nested/\xFFname";
+        assert_eq!(path_from_git_bytes(raw).into_os_string().into_vec(), raw);
+    }
+
+    #[test]
+    fn abort_removes_worktree_and_branch() {
+        let repo = temp_repo("abort");
+        let session =
+            WorktreeSession::create_in(&repo, "abort-me").expect("worktree should be created");
+        let path = session.path().to_path_buf();
+
+        session.abort();
+
+        assert!(!path.exists(), "aborted worktree should be removed");
+        assert_eq!(listed_branch(&repo, "abort-me"), "");
+        fs::remove_dir_all(repo.parent().expect("repo has a parent"))
+            .expect("test directory should be removed");
+    }
+
+    #[test]
+    fn path_for_preserves_source_subdirectory() {
+        let repo = temp_repo("subdirectory");
+        let source = repo.join("packages").join("foo");
+        fs::create_dir_all(&source).expect("source subdirectory should be created");
+        let session = WorktreeSession::create_in(&source, "subdirectory")
+            .expect("worktree should be created");
+
+        assert_eq!(
+            session.path_for(&source).expect("path should map"),
+            session.path().join("packages").join("foo")
+        );
+
+        session.finish();
+        assert!(!repo
+            .parent()
+            .expect("repo has a parent")
+            .join("repo-wt-subdirectory")
+            .exists());
         fs::remove_dir_all(repo.parent().expect("repo has a parent"))
             .expect("test directory should be removed");
     }

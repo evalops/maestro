@@ -561,7 +561,8 @@ mod tests {
             tools: vec![Tool::new("test", "A test tool").with_schema(json!({
                 "type": "object",
                 "properties": {}
-            }))],
+            }))]
+            .into(),
             ..Default::default()
         };
 
@@ -664,7 +665,8 @@ mod tests {
                 Tool::new("tool1", "First tool").with_schema(json!({"type": "object"})),
                 Tool::new("tool2", "Second tool").with_schema(json!({"type": "object"})),
                 Tool::new("tool3", "Third tool").with_schema(json!({"type": "object"})),
-            ],
+            ]
+            .into(),
             ..Default::default()
         };
 
@@ -767,7 +769,8 @@ mod tests {
             max_tokens: 1024,
             tools: vec![
                 Tool::new("complex_tool", "A complex tool").with_schema(complex_schema.clone())
-            ],
+            ]
+            .into(),
             ..Default::default()
         };
 

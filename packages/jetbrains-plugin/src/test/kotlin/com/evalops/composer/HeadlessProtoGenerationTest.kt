@@ -10,10 +10,10 @@ class HeadlessProtoGenerationTest {
     @Test
     fun `generated Kotlin DSL builds headless hello message`() {
         val message = helloMessage {
-            protocolVersion = "2026-04-02"
+            protocolVersion = "2026-08-01"
         }
 
-        assertEquals("2026-04-02", message.protocolVersion)
+        assertEquals("2026-08-01", message.protocolVersion)
         assertEquals(Headless.HelloMessage::class.java, message::class.java)
     }
 }

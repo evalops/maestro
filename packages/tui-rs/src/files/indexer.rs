@@ -300,7 +300,7 @@ impl FileIndexer {
                 } else if path.is_file() {
                     if self.should_include(&path) {
                         if self.try_reserve_file_slot() {
-                            vec![WorkspaceFile::from_path(&root, path)]
+                            vec![WorkspaceFile::from_file_path(&root, path)]
                         } else {
                             Vec::new()
                         }
@@ -379,7 +379,7 @@ impl FileIndexer {
         } else if path.is_file() {
             if self.should_include(&path) {
                 if self.try_reserve_file_slot() {
-                    vec![WorkspaceFile::from_path(root, path)]
+                    vec![WorkspaceFile::from_file_path(root, path)]
                 } else {
                     Vec::new()
                 }

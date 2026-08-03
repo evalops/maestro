@@ -7,7 +7,7 @@
 			"direction": "client_to_agent",
 			"message": {
 				"type": "hello",
-				"protocol_version": "2026-04-02",
+				"protocol_version": "2026-08-01",
 				"client_info": {
 					"name": "maestro-headless-conformance",
 					"version": "1.0.0"
@@ -29,9 +29,9 @@
 			"direction": "agent_to_client",
 			"message": {
 				"type": "hello_ok",
-				"protocol_version": "2026-04-02",
+				"protocol_version": "2026-08-01",
 				"connection_id": "conn_conformance_1",
-				"client_protocol_version": "2026-04-02",
+				"client_protocol_version": "2026-08-01",
 				"role": "controller",
 				"server_capabilities": {
 					"server_requests": [
@@ -56,7 +56,7 @@
 			"direction": "agent_to_client",
 			"message": {
 				"type": "ready",
-				"protocol_version": "2026-04-02",
+				"protocol_version": "2026-08-01",
 				"model": "gpt-5.4",
 				"provider": "openai",
 				"executor_type": "live",

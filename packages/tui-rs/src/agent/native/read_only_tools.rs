@@ -1,9 +1,11 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::super::{ExecutionSource, FromAgent, ToolExecution};
+#[cfg(test)]
 use crate::agent::CredentialVault;
 use crate::mcp::McpToolAnnotations;
 use crate::tools::{BatchConfig, BatchExecutor, BatchToolCall, ToolExecutor};
@@ -67,7 +69,7 @@ fn is_known_native_read_only_tool(tool_name: &str) -> bool {
 pub(super) fn is_native_parallel_read_only_tool_call(
     tool_name: &str,
     requires_approval: bool,
-    _annotations: Option<&McpToolAnnotations>,
+    annotations: Option<&McpToolAnnotations>,
     explicit_inline_read_only: bool,
 ) -> bool {
     if requires_approval {
@@ -80,7 +82,9 @@ pub(super) fn is_native_parallel_read_only_tool_call(
     }
 
     if tool_key.starts_with("mcp__") {
-        return false;
+        return annotations.is_some_and(|annotations| {
+            annotations.read_only_hint == Some(true) && annotations.destructive_hint != Some(true)
+        });
     }
 
     explicit_inline_read_only
@@ -98,13 +102,12 @@ pub(super) fn is_explicit_inline_read_only_tool(
 }
 
 pub(super) async fn execute_native_read_only_tool_wave(
-    cwd: &str,
-    credential_vault: CredentialVault,
+    tool_executor: Arc<ToolExecutor>,
     event_tx: &mpsc::UnboundedSender<FromAgent>,
     pending: &[QueuedReadOnlyToolExecution],
     cancel_token: Option<CancellationToken>,
 ) -> HashMap<String, ToolExecution> {
-    let credential_generation = credential_vault.generation();
+    let credential_generation = tool_executor.credential_generation();
     let calls = pending
         .iter()
         .map(|call| {
@@ -115,11 +118,8 @@ pub(super) async fn execute_native_read_only_tool_wave(
             )
         })
         .collect();
-    let batch_executor = BatchExecutor::with_config_and_credential_vault(
-        cwd.to_string(),
-        native_read_only_batch_config(),
-        credential_vault,
-    );
+    let batch_executor =
+        BatchExecutor::from_shared_executor(tool_executor, native_read_only_batch_config());
     let results = if let Some(cancel_token) = cancel_token {
         batch_executor
             .execute_with_cancel_at_generation(
@@ -187,7 +187,7 @@ mod tests {
             destructive_hint: Some(false),
             ..Default::default()
         };
-        assert!(!is_native_parallel_read_only_tool_call(
+        assert!(is_native_parallel_read_only_tool_call(
             "mcp__repo__inspect",
             false,
             Some(&read_only_mcp),
@@ -303,7 +303,11 @@ mod tests {
             })
             .collect();
 
-        let tool_executor = ToolExecutor::new(temp.path().to_str().unwrap());
+        let credential_vault = CredentialVault::new();
+        let tool_executor = Arc::new(ToolExecutor::with_credential_vault(
+            temp.path().to_str().unwrap(),
+            credential_vault.clone(),
+        ));
         assert_eq!(pending.len(), 4);
         assert!(pending.iter().all(|call| {
             is_native_parallel_read_only_tool_call(
@@ -315,15 +319,7 @@ mod tests {
         }));
 
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let credential_vault = CredentialVault::new();
-        let results = execute_native_read_only_tool_wave(
-            temp.path().to_str().unwrap(),
-            credential_vault.clone(),
-            &tx,
-            &pending,
-            None,
-        )
-        .await;
+        let results = execute_native_read_only_tool_wave(tool_executor, &tx, &pending, None).await;
 
         assert_eq!(results.len(), 4);
         assert!(results
@@ -384,8 +380,7 @@ mod tests {
         cancel_token.cancel();
 
         let results = execute_native_read_only_tool_wave(
-            temp.path().to_str().unwrap(),
-            CredentialVault::new(),
+            Arc::new(ToolExecutor::new(temp.path().to_str().unwrap())),
             &tx,
             &pending,
             Some(cancel_token),

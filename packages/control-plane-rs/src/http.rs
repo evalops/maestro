@@ -303,20 +303,20 @@ where
 }
 
 pub(crate) fn requested_cors_origin(head: &RequestHead) -> String {
-    let configured = cors_origin();
-    if configured == WILDCARD_ORIGIN {
+    let configured = cors_origins();
+    if configured.iter().any(|origin| origin == WILDCARD_ORIGIN) {
         // A wildcard configuration means "public API". Answer with the literal
         // wildcard rather than reflecting the caller's origin, so browsers
         // refuse credentialed cross-origin requests instead of being handed an
         // `Access-Control-Allow-Origin` that names the attacker's page.
-        return configured;
+        return WILDCARD_ORIGIN.into();
     }
     head.headers
         .get("origin")
         .map(|origin| origin.trim())
         .filter(|origin| !origin.is_empty() && origin_allowed(head))
         .map(|origin| origin.to_string())
-        .unwrap_or(configured)
+        .unwrap_or_else(cors_origin)
 }
 
 pub(crate) fn response_cors_origin() -> String {
@@ -336,7 +336,11 @@ pub(crate) fn response_cors_credentials_header() -> &'static str {
 /// combine `Access-Control-Allow-Credentials: true` with a reflected attacker
 /// origin, which is what let any visited page drive the local agent runtime.
 fn cors_credentials_header(reflected_origin: &str) -> &'static str {
-    if reflected_origin == WILDCARD_ORIGIN || cors_origin() == WILDCARD_ORIGIN {
+    if reflected_origin == WILDCARD_ORIGIN
+        || cors_origins()
+            .iter()
+            .any(|origin| origin == WILDCARD_ORIGIN)
+    {
         ""
     } else {
         "Access-Control-Allow-Credentials: true\r\n"
@@ -344,7 +348,23 @@ fn cors_credentials_header(reflected_origin: &str) -> &'static str {
 }
 
 pub(crate) fn cors_origin() -> String {
-    env::var("MAESTRO_WEB_ORIGIN").unwrap_or_else(|_| "http://localhost:4173".into())
+    cors_origins()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "http://localhost:4173".into())
+}
+
+fn cors_origins() -> Vec<String> {
+    let configured = env::var("MAESTRO_WEB_ORIGINS")
+        .ok()
+        .or_else(|| env::var("MAESTRO_WEB_ORIGIN").ok())
+        .unwrap_or_else(|| "http://localhost:4173".into());
+    configured
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 pub(crate) fn origin_allowed(head: &RequestHead) -> bool {
@@ -355,8 +375,11 @@ pub(crate) fn origin_allowed(head: &RequestHead) -> bool {
 }
 
 fn origin_allowed_value(origin: &str) -> bool {
-    let configured_origin = cors_origin();
-    if configured_origin == WILDCARD_ORIGIN || origin == configured_origin {
+    let configured_origins = cors_origins();
+    if configured_origins
+        .iter()
+        .any(|configured| configured == WILDCARD_ORIGIN || origin == configured)
+    {
         return true;
     }
     matches!(

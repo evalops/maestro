@@ -105,7 +105,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::ask_user;
 use super::background_tasks;
-use super::bash::{BashArgs, BashTool, BashVersion};
+use super::bash::{BashArgs, BashOutputStream, BashTool, BashVersion};
 use super::cache::{CacheConfig, CacheKey, CacheStats, CachedResult, ToolResultCache};
 use super::details::{
     DiffDetails, EditDetails, GlobDetails, GrepDetails, ListDetails, ReadDetails, WriteDetails,
@@ -117,6 +117,7 @@ use super::image::{ImageTool, ReadImageArgs, ScreenshotArgs};
 use super::inline::{load_inline_tools, InlineTool, InlineToolExecutor};
 use super::notebook_edit;
 use super::status;
+use super::subagents::SubagentManager;
 use super::todo;
 use super::versions::ToolVersionOverrides;
 use super::web_fetch::{WebFetchArgs, WebFetchTool};
@@ -152,6 +153,95 @@ fn vault_tool_result_credentials(
         result.details = Some(vault.vault_in_json_at_generation(generation, &details));
     }
     result
+}
+
+fn cache_dependency_paths(cwd: &str, tool_name: &str, args: &Value) -> Vec<PathBuf> {
+    let tool_name = tool_name.to_ascii_lowercase();
+    let mut dependencies = Vec::new();
+
+    let mut add_path = |base_cwd: &str, value: &Value| {
+        if let Some(raw) = value.as_str() {
+            if let Ok(path) = resolve_tool_path(base_cwd, raw) {
+                dependencies.push(PathBuf::from(path));
+            }
+        }
+    };
+
+    match tool_name.as_str() {
+        "read" | "read_image" => {
+            if let Some(path) = args.get("path").or_else(|| args.get("file_path")) {
+                add_path(cwd, path);
+            }
+        }
+        "glob" | "find" | "list" | "grep" => {
+            if let Some(path) = args.get("path").or_else(|| args.get("directory")) {
+                add_path(cwd, path);
+            } else {
+                dependencies.push(PathBuf::from(cwd));
+            }
+        }
+        "search" | "parallel_ripgrep" => {
+            // Search executes relative paths from its command cwd. Keep cache
+            // dependencies in that same coordinate system so a later edit of
+            // subdir/file.rs invalidates a search run with cwd=subdir.
+            let search_cwd = args
+                .get("cwd")
+                .and_then(Value::as_str)
+                .and_then(|raw| resolve_tool_path(cwd, raw).ok())
+                .unwrap_or_else(|| cwd.to_string());
+            match args.get("paths") {
+                Some(Value::Array(paths)) => {
+                    for path in paths {
+                        add_path(&search_cwd, path);
+                    }
+                }
+                Some(paths) => add_path(&search_cwd, paths),
+                None => dependencies.push(PathBuf::from(search_cwd)),
+            }
+        }
+        "diff" | "status" => dependencies.push(PathBuf::from(cwd)),
+        "vscode_get_diagnostics" | "jetbrains_get_diagnostics" => {
+            if let Some(raw_uri) = args.get("uri").and_then(Value::as_str) {
+                let normalized = normalize_uri_input(raw_uri);
+                if let Ok(path) = resolve_tool_path(cwd, &normalized) {
+                    dependencies.push(PathBuf::from(path));
+                }
+            } else {
+                // Workspace diagnostics have no file-specific key; the
+                // workspace directory is the narrowest safe dependency.
+                dependencies.push(PathBuf::from(cwd));
+            }
+        }
+        "vscode_get_definition"
+        | "jetbrains_get_definition"
+        | "vscode_find_references"
+        | "jetbrains_find_references" => {
+            // Definitions and references are project-sensitive: editing a
+            // different file can change the answer to a query for this URI.
+            // Keep the URI for precise bookkeeping, but also bind the entry to
+            // the workspace so edits elsewhere invalidate it.
+            dependencies.push(PathBuf::from(cwd));
+            if let Some(raw_uri) = args.get("uri").and_then(Value::as_str) {
+                let normalized = normalize_uri_input(raw_uri);
+                if let Ok(path) = resolve_tool_path(cwd, &normalized) {
+                    dependencies.push(PathBuf::from(path));
+                }
+            }
+        }
+        "vscode_read_file_range" | "jetbrains_read_file_range" => {
+            if let Some(raw_uri) = args.get("uri").and_then(Value::as_str) {
+                let normalized = normalize_uri_input(raw_uri);
+                if let Ok(path) = resolve_tool_path(cwd, &normalized) {
+                    dependencies.push(PathBuf::from(path));
+                }
+            }
+        }
+        _ => {}
+    }
+
+    dependencies.sort_unstable();
+    dependencies.dedup();
+    dependencies
 }
 
 fn build_glob_pattern(base_path: &str, pattern: &str) -> String {
@@ -427,6 +517,9 @@ pub struct ToolExecutor {
     /// Maps lowercase tool names to their definitions.
     inline_tools: HashMap<String, InlineTool>,
 
+    /// Durable child-agent delegation shared by tool calls in this workspace.
+    subagents: Arc<SubagentManager>,
+
     /// Current working directory for all tool operations
     ///
     /// This directory is used as the base for relative paths and as the cwd for
@@ -513,10 +606,19 @@ fn is_reserved_execute_dispatch_name(name: &str) -> bool {
             | "search"
             | "Search"
             | "parallel_ripgrep"
+            | "tool_search"
+            | "explore"
+            | "Explore"
             | "ParallelRipgrep"
             | "status"
             | "Status"
             | "background_tasks"
+            | "spawn_subagent"
+            | "list_subagents"
+            | "get_subagent"
+            | "wait_subagent"
+            | "resume_subagent"
+            | "cancel_subagent"
             | "todo"
             | "get_goal"
             | "update_goal"
@@ -596,6 +698,16 @@ fn register_inline_tools(
 struct ToolExecutionContext<'a> {
     cancel: Option<CancellationToken>,
     approved_inline_env: Option<&'a HashMap<String, String>>,
+    hooks: Option<&'a mut crate::hooks::IntegratedHookSystem>,
+    /// Receipt callers suppress the dispatcher lifecycle events; new execute_impl
+    /// arms must use lifecycle_event_tx so ToolEnd remains singular.
+    emit_tool_events: bool,
+}
+
+pub(crate) struct ToolExecutionOptions<'a> {
+    pub(crate) cancel: CancellationToken,
+    pub(crate) approved_inline_env: Option<&'a HashMap<String, String>>,
+    pub(crate) hooks: Option<&'a mut crate::hooks::IntegratedHookSystem>,
 }
 
 impl ToolExecutor {
@@ -655,6 +767,7 @@ impl ToolExecutor {
             image: ImageTool::new(),
             inline_executor: InlineToolExecutor::new(&cwd),
             inline_tools,
+            subagents: Arc::new(SubagentManager::new(cwd.clone())),
             cwd,
             registry,
             cache: RwLock::new(ToolResultCache::default()),
@@ -696,6 +809,7 @@ impl ToolExecutor {
             image: ImageTool::new(),
             inline_executor: InlineToolExecutor::new(&cwd),
             inline_tools,
+            subagents: Arc::new(SubagentManager::new(cwd.clone())),
             cwd,
             registry,
             cache: RwLock::new(ToolResultCache::default()),
@@ -741,6 +855,7 @@ impl ToolExecutor {
             image: ImageTool::new(),
             inline_executor: InlineToolExecutor::new(&cwd),
             inline_tools,
+            subagents: Arc::new(SubagentManager::new(cwd.clone())),
             cwd,
             registry,
             cache: RwLock::new(ToolResultCache::new(cache_config)),
@@ -1108,11 +1223,10 @@ impl ToolExecutor {
     /// Called when files are modified to ensure stale data isn't returned.
     fn invalidate_file_cache(&self, path: &str) {
         if let Ok(mut cache) = self.cache.write() {
-            // Clear all entries - a more sophisticated approach would track
-            // which cache entries depend on which files
-            cache.clear();
-            // Note: File modification triggered cache invalidation for: {path}
-            let _ = path; // silence unused warning
+            // Invalidate only reads that recorded this file (or a containing
+            // directory) as a dependency. Unrelated cached reads survive a
+            // write elsewhere in the workspace.
+            cache.invalidate_for_file(Path::new(path));
         }
     }
 
@@ -1319,7 +1433,13 @@ impl ToolExecutor {
             || self.inline_tools.contains_key(&tool_key)
             || matches!(
                 tool_key.as_str(),
-                "write" | "edit" | "notebook_edit" | "todo" | "extract_document"
+                "write"
+                    | "edit"
+                    | "notebook_edit"
+                    | "todo"
+                    | "extract_document"
+                    | "spawn_subagent"
+                    | "resume_subagent"
             )
     }
 
@@ -1526,6 +1646,8 @@ impl ToolExecutor {
             ToolExecutionContext {
                 cancel,
                 approved_inline_env: None,
+                hooks: None,
+                emit_tool_events: true,
             },
         )
         .await
@@ -1540,6 +1662,7 @@ impl ToolExecutor {
         generation: u64,
         execution_context: ToolExecutionContext<'_>,
     ) -> ToolResult {
+        let emit_tool_events = execution_context.emit_tool_events;
         if let Some(message) = self.sandbox_policy_denial(tool_name, args) {
             return ToolResult::failure(message);
         }
@@ -1566,13 +1689,15 @@ impl ToolExecutor {
         {
             let result = ToolResult::failure(format!("{tool_name} cancelled"))
                 .with_details(serde_json::json!({"cancelled": true}));
-            if let Some(tx) = event_tx {
-                let _ = tx.send(FromAgent::ToolEnd {
-                    call_id: call_id.to_string(),
-                    success: false,
-                    result: Some(result.clone()),
-                    receipt: None,
-                });
+            if emit_tool_events {
+                if let Some(tx) = event_tx {
+                    let _ = tx.send(FromAgent::ToolEnd {
+                        call_id: call_id.to_string(),
+                        success: false,
+                        result: Some(result.clone()),
+                        receipt: None,
+                    });
+                }
             }
             return result;
         }
@@ -1593,22 +1718,24 @@ impl ToolExecutor {
                     };
 
                     // Send events for cached result
-                    if let Some(tx) = event_tx {
-                        let _ = tx.send(FromAgent::ToolStart {
-                            call_id: call_id.to_string(),
-                        });
-                        if !cached.output.is_empty() {
-                            let _ = tx.send(FromAgent::ToolOutput {
+                    if emit_tool_events {
+                        if let Some(tx) = event_tx {
+                            let _ = tx.send(FromAgent::ToolStart {
                                 call_id: call_id.to_string(),
-                                content: cached.output.clone(),
+                            });
+                            if !cached.output.is_empty() {
+                                let _ = tx.send(FromAgent::ToolOutput {
+                                    call_id: call_id.to_string(),
+                                    content: cached.output.clone(),
+                                });
+                            }
+                            let _ = tx.send(FromAgent::ToolEnd {
+                                call_id: call_id.to_string(),
+                                success: !cached.is_error,
+                                result: Some(result.clone()),
+                                receipt: None,
                             });
                         }
-                        let _ = tx.send(FromAgent::ToolEnd {
-                            call_id: call_id.to_string(),
-                            success: !cached.is_error,
-                            result: Some(result.clone()),
-                            receipt: None,
-                        });
                     }
 
                     return result;
@@ -1623,14 +1750,14 @@ impl ToolExecutor {
         // per-call token.
         let cancellation = execution_context.cancel.clone();
         let owns_cancellation_cleanup = self.owns_cancellation_cleanup(tool_name);
-        let execution = self.execute_impl(
+        let execution = Box::pin(self.execute_impl(
             tool_name,
             args,
             event_tx,
             call_id,
             generation,
             execution_context,
-        );
+        ));
         let (uncached_result, synthetically_cancelled) = match cancellation {
             Some(token) if !owns_cancellation_cleanup => {
                 tokio::select! {
@@ -1638,13 +1765,15 @@ impl ToolExecutor {
                     () = token.cancelled() => {
                         let result = ToolResult::failure(format!("{tool_name} cancelled"))
                             .with_details(serde_json::json!({"cancelled": true}));
-                        if let Some(tx) = event_tx {
+                        if emit_tool_events {
+                            if let Some(tx) = event_tx {
                             let _ = tx.send(FromAgent::ToolEnd {
                                 call_id: call_id.to_string(),
                                 success: false,
                                 result: Some(result.clone()),
                                 receipt: None,
                             });
+                            }
                         }
                         (result, true)
                     }
@@ -1669,7 +1798,12 @@ impl ToolExecutor {
                     },
                     !result.success,
                 );
-                cache.put(cache_key, cached_result);
+                let dependencies = cache_dependency_paths(&self.cwd, tool_name, args);
+                if dependencies.is_empty() {
+                    cache.put(cache_key, cached_result);
+                } else {
+                    cache.put_with_deps(cache_key, cached_result, dependencies);
+                }
                 // Stored result in cache
             }
         }
@@ -1727,8 +1861,7 @@ impl ToolExecutor {
         args: &serde_json::Value,
         event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
         call_id: &str,
-        cancel: CancellationToken,
-        approved_inline_env: Option<&HashMap<String, String>>,
+        options: ToolExecutionOptions<'_>,
     ) -> ToolExecution {
         self.execute_with_receipt_at_generation_with_inline_env(
             tool_name,
@@ -1737,8 +1870,10 @@ impl ToolExecutor {
             call_id,
             self.credential_generation(),
             ToolExecutionContext {
-                cancel: Some(cancel),
-                approved_inline_env,
+                cancel: Some(options.cancel),
+                approved_inline_env: options.approved_inline_env,
+                hooks: options.hooks,
+                emit_tool_events: false,
             },
         )
         .await
@@ -1762,6 +1897,8 @@ impl ToolExecutor {
             ToolExecutionContext {
                 cancel,
                 approved_inline_env: None,
+                hooks: None,
+                emit_tool_events: false,
             },
         )
         .await
@@ -1822,7 +1959,7 @@ impl ToolExecutor {
             .execute_at_generation_with_inline_env(
                 tool_name,
                 args,
-                None,
+                event_tx,
                 call_id,
                 generation,
                 execution_context,
@@ -1858,7 +1995,13 @@ fn emit_typed_tool_end(
     };
 
     let result = execution.to_legacy();
-    if !result.output.is_empty() {
+    let output_was_streamed = result
+        .details
+        .as_ref()
+        .and_then(|details| details.get("streamed"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !output_was_streamed && !result.output.is_empty() {
         let _ = tx.send(FromAgent::ToolOutput {
             call_id: call_id.to_string(),
             content: result.output.clone(),

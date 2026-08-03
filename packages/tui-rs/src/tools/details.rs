@@ -21,6 +21,10 @@
 //! let json = serde_json::to_value(&details)?;
 //! ```
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 use serde::{Deserialize, Serialize};
 
 /// Detailed information about a bash command execution.
@@ -78,6 +82,10 @@ pub struct BashDetails {
     /// existed.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub version: String,
+
+    /// Whether output chunks were forwarded while the command was running.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub streamed: bool,
 }
 
 impl BashDetails {

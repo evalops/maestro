@@ -1,6 +1,7 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Duration, Utc};
 use futures::StreamExt as _;
+use rand::Rng as _;
 use rcgen::{CertificateParams, KeyPair};
 use rustls::{
     client::danger::HandshakeSignatureValid,
@@ -19,6 +20,10 @@ const MAX_PROJECTED_TOKEN_BYTES: usize = 16 * 1024;
 const MAX_CA_BUNDLE_BYTES: usize = 64 * 1024;
 const MAX_EXCHANGE_RESPONSE_BYTES: usize = 128 * 1024;
 const MAX_CERTIFICATE_TTL_SECONDS: i64 = 300;
+const INITIAL_EXCHANGE_TIMEOUT: StdDuration = StdDuration::from_secs(15);
+const INITIAL_EXCHANGE_MIN_BACKOFF: StdDuration = StdDuration::from_millis(100);
+const INITIAL_EXCHANGE_MAX_BACKOFF: StdDuration = StdDuration::from_secs(2);
+const INITIAL_EXCHANGE_JITTER_FACTOR: f64 = 0.2;
 pub(super) const RUNNER_HOST_CLIENT_URI: &str = "spiffe://identity.evalops.dev/service/runner-host";
 
 #[derive(Clone)]
@@ -272,9 +277,7 @@ impl WorkloadIdentityExchanger {
             .send()
             .await
             .map_err(|_| WorkloadIdentityError::Unavailable)?;
-        if response.status() != reqwest::StatusCode::CREATED {
-            return Err(WorkloadIdentityError::Unavailable);
-        }
+        require_exchange_created(response.status())?;
         let mut body = Vec::new();
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
@@ -288,6 +291,58 @@ impl WorkloadIdentityExchanger {
             serde_json::from_slice(&body).map_err(|_| WorkloadIdentityError::Unavailable)?;
         build_server_identity(response, key, &self.binding, pod_uid, now)
     }
+
+    pub(super) async fn exchange_initial(
+        &self,
+    ) -> Result<IssuedServerIdentity, WorkloadIdentityError> {
+        let deadline = tokio::time::Instant::now() + INITIAL_EXCHANGE_TIMEOUT;
+        let mut backoff = INITIAL_EXCHANGE_MIN_BACKOFF;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(WorkloadIdentityError::Unavailable);
+            }
+            let exchange = tokio::time::timeout(remaining, self.exchange_once(Utc::now()))
+                .await
+                .unwrap_or(Err(WorkloadIdentityError::Unavailable));
+            match exchange {
+                Ok(identity) => return Ok(identity),
+                Err(WorkloadIdentityError::Unavailable) => {
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if remaining.is_zero() {
+                        return Err(WorkloadIdentityError::Unavailable);
+                    }
+                    tokio::time::sleep(jittered_initial_exchange_delay(backoff).min(remaining))
+                        .await;
+                    backoff = backoff.saturating_mul(2).min(INITIAL_EXCHANGE_MAX_BACKOFF);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+fn require_exchange_created(status: reqwest::StatusCode) -> Result<(), WorkloadIdentityError> {
+    if status == reqwest::StatusCode::CREATED {
+        Ok(())
+    } else if status.is_server_error()
+        || status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+    {
+        Err(WorkloadIdentityError::Unavailable)
+    } else {
+        Err(WorkloadIdentityError::Rejected)
+    }
+}
+
+fn jittered_initial_exchange_delay_for_sample(base: StdDuration, sample: f64) -> StdDuration {
+    let multiplier = 1.0 + INITIAL_EXCHANGE_JITTER_FACTOR * sample.clamp(-1.0, 1.0);
+    StdDuration::from_secs_f64(base.as_secs_f64() * multiplier)
+}
+
+fn jittered_initial_exchange_delay(base: StdDuration) -> StdDuration {
+    let mut rng = rand::rng();
+    jittered_initial_exchange_delay_for_sample(base, rng.random_range(-1.0..=1.0))
 }
 
 fn read_bounded_utf8_file(path: &Path, max_bytes: usize) -> Result<String, WorkloadIdentityError> {
@@ -330,7 +385,7 @@ impl std::fmt::Debug for IdentityExchangeRequest {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Eq, PartialEq, thiserror::Error)]
 pub(super) enum WorkloadIdentityError {
     #[error("projected Kubernetes workload identity is invalid")]
     InvalidProjectedIdentity,
@@ -338,6 +393,8 @@ pub(super) enum WorkloadIdentityError {
     InvalidIssuedIdentity,
     #[error("workload identity service is unavailable")]
     Unavailable,
+    #[error("workload identity exchange was rejected")]
+    Rejected,
 }
 
 #[derive(Deserialize)]
@@ -762,8 +819,10 @@ mod tests {
 
     use super::{
         build_exchange_request, build_runner_client_verifier, build_server_identity,
-        projected_pod_uid, validate_identity_contract, IdentityBinding, IdentityExchangeResponse,
-        ReloadableServerIdentity, WorkloadIdentityExchanger, RUNNER_HOST_CLIENT_URI,
+        jittered_initial_exchange_delay_for_sample, projected_pod_uid, require_exchange_created,
+        validate_identity_contract, IdentityBinding, IdentityExchangeResponse,
+        ReloadableServerIdentity, WorkloadIdentityError, WorkloadIdentityExchanger,
+        INITIAL_EXCHANGE_JITTER_FACTOR, RUNNER_HOST_CLIENT_URI,
     };
     use crate::hosted_runner::config::HostedRunnerWorkloadIdentityConfig;
 
@@ -811,6 +870,36 @@ mod tests {
             pod_uid
         );
         assert!(projected_pod_uid("not-a-jwt").is_err());
+    }
+
+    #[test]
+    fn initial_exchange_retries_only_transient_statuses_with_bounded_jitter() {
+        assert_eq!(
+            require_exchange_created(reqwest::StatusCode::CREATED),
+            Ok(())
+        );
+        assert_eq!(
+            require_exchange_created(reqwest::StatusCode::SERVICE_UNAVAILABLE),
+            Err(WorkloadIdentityError::Unavailable)
+        );
+        assert_eq!(
+            require_exchange_created(reqwest::StatusCode::TOO_MANY_REQUESTS),
+            Err(WorkloadIdentityError::Unavailable)
+        );
+        assert_eq!(
+            require_exchange_created(reqwest::StatusCode::FORBIDDEN),
+            Err(WorkloadIdentityError::Rejected)
+        );
+
+        let base = std::time::Duration::from_secs(10);
+        assert_eq!(
+            jittered_initial_exchange_delay_for_sample(base, -1.0),
+            base.mul_f64(1.0 - INITIAL_EXCHANGE_JITTER_FACTOR)
+        );
+        assert_eq!(
+            jittered_initial_exchange_delay_for_sample(base, 1.0),
+            base.mul_f64(1.0 + INITIAL_EXCHANGE_JITTER_FACTOR)
+        );
     }
 
     #[test]
@@ -1089,6 +1178,13 @@ mod tests {
     }
 
     async fn start_identity_harness(expected_exchanges: usize) -> IdentityHarness {
+        start_identity_harness_with_unavailable(expected_exchanges, 0).await
+    }
+
+    async fn start_identity_harness_with_unavailable(
+        expected_exchanges: usize,
+        unavailable_exchanges: usize,
+    ) -> IdentityHarness {
         let directory = tempfile::tempdir().unwrap();
         let token_file = directory.path().join("token");
         let ca_file = directory.path().join("identity-ca.pem");
@@ -1145,7 +1241,7 @@ mod tests {
         let workload_ca_pem = ca_pem.clone();
         let task = tokio::spawn(async move {
             let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_tls));
-            for _ in 0..expected_exchanges {
+            for exchange_index in 0..expected_exchanges {
                 let (socket, _) = listener.accept().await.unwrap();
                 let mut socket = acceptor.accept(socket).await.unwrap();
                 let mut request = Vec::new();
@@ -1181,6 +1277,15 @@ mod tests {
                     serde_json::from_slice(&request[body_offset..body_offset + content_length])
                         .unwrap();
                 task_requests.lock().unwrap().push(request.clone());
+                if exchange_index < unavailable_exchanges {
+                    socket
+                        .write_all(
+                            b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                        )
+                        .await
+                        .unwrap();
+                    continue;
+                }
                 let csr = request["csr_pem"].as_str().unwrap();
                 let uri = concat!(
                     "spiffe://identity.evalops.dev/maestro/v1/",
@@ -1343,6 +1448,33 @@ mod tests {
 
         handle.shutdown().await;
         harness.task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn hosted_runner_retries_transient_identity_unavailability() {
+        let harness = start_identity_harness_with_unavailable(3, 2).await;
+        let workspace = tempfile::tempdir().unwrap();
+        let mut config =
+            crate::hosted_runner::HostedRunnerConfig::new("session/with spaces", workspace.path())
+                .unwrap()
+                .with_bind_addr("127.0.0.1:0".parse().unwrap());
+        config.workload_identity = Some(HostedRunnerWorkloadIdentityConfig {
+            kubernetes_token_file: harness.token_file.clone(),
+            identity_tls_ca_file: harness.ca_file.clone(),
+            identity_exchange_url: harness.exchange_url.clone(),
+            organization_id: "org-123".into(),
+            workspace_id: "workspace-123".into(),
+            sandbox_id: Uuid::parse_str("01234567-89ab-cdef-0123-456789abcdef").unwrap(),
+            placement_generation: 7,
+        });
+
+        let handle = crate::hosted_runner::start_hosted_runner(config)
+            .await
+            .expect("transient identity unavailability must recover during startup");
+
+        handle.shutdown().await;
+        harness.task.await.unwrap();
+        assert_eq!(harness.requests.lock().unwrap().len(), 3);
     }
 
     fn server_identity_expiring_at(

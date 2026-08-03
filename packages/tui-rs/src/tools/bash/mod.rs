@@ -125,13 +125,14 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
-use tokio::sync::{Mutex as AsyncMutex, OnceCell};
+use tokio::sync::{mpsc, Mutex as AsyncMutex, OnceCell};
 #[cfg(unix)]
 use tokio::time::sleep;
 use tokio::time::timeout;
@@ -711,6 +712,128 @@ async fn get_temp_file_path(version: BashVersion) -> std::io::Result<PathBuf> {
     Ok(dir.join(format!("composer-bash-{pid}-{timestamp}.log")))
 }
 
+#[derive(Default)]
+struct StreamOutputBudget {
+    bytes: AtomicUsize,
+    truncation_announced: AtomicBool,
+}
+
+impl StreamOutputBudget {
+    fn reserve(&self, requested: usize) -> usize {
+        loop {
+            let used = self.bytes.load(Ordering::Acquire);
+            if used >= MAX_OUTPUT_SIZE {
+                return 0;
+            }
+            let take = requested.min(MAX_OUTPUT_SIZE - used);
+            if self
+                .bytes
+                .compare_exchange_weak(used, used + take, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return take;
+            }
+        }
+    }
+
+    fn refund(&self, amount: usize) {
+        if amount > 0 {
+            self.bytes.fetch_sub(amount, Ordering::AcqRel);
+        }
+    }
+
+    fn announce_truncation(
+        &self,
+        tx: &mpsc::UnboundedSender<BashOutputChunk>,
+        stream: BashOutputStream,
+    ) {
+        if self
+            .truncation_announced
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let _ = tx.send(BashOutputChunk {
+                stream,
+                content: "\n[live output truncated at 30000 bytes]\n".to_string(),
+            });
+        }
+    }
+}
+
+/// Identifies which child-process pipe produced a streamed Bash chunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BashOutputStream {
+    /// The child process's standard output pipe.
+    Stdout,
+    /// The child process's standard error pipe.
+    Stderr,
+}
+
+/// A bounded, UTF-8-safe chunk emitted while a Bash command is running.
+#[derive(Debug, Clone)]
+pub struct BashOutputChunk {
+    /// The pipe that produced this chunk.
+    pub stream: BashOutputStream,
+    /// The chunk contents.
+    pub content: String,
+}
+
+fn send_stream_chunk_lossy(
+    tx: &mpsc::UnboundedSender<BashOutputChunk>,
+    budget: &StreamOutputBudget,
+    stream: BashOutputStream,
+    chunk: &[u8],
+) {
+    let take = budget.reserve(chunk.len());
+    if take > 0 {
+        let _ = tx.send(BashOutputChunk {
+            stream,
+            content: String::from_utf8_lossy(&chunk[..take]).into_owned(),
+        });
+    }
+    if take < chunk.len() {
+        budget.announce_truncation(tx, stream);
+    }
+}
+
+fn send_stream_chunk(
+    tx: &mpsc::UnboundedSender<BashOutputChunk>,
+    budget: &StreamOutputBudget,
+    stream: BashOutputStream,
+    chunk: &[u8],
+) {
+    let take = budget.reserve(chunk.len());
+    let mut emitted = 0;
+    if take > 0 {
+        let output = match std::str::from_utf8(&chunk[..take]) {
+            Ok(valid) => {
+                emitted = take;
+                valid.to_owned()
+            }
+            Err(error) if error.error_len().is_none() => {
+                emitted = error.valid_up_to();
+                budget.refund(take - emitted);
+                std::str::from_utf8(&chunk[..emitted])
+                    .expect("UTF-8 prefix should remain valid")
+                    .to_owned()
+            }
+            Err(_) => {
+                emitted = take;
+                String::from_utf8_lossy(&chunk[..take]).into_owned()
+            }
+        };
+        if !output.is_empty() {
+            let _ = tx.send(BashOutputChunk {
+                stream,
+                content: output,
+            });
+        }
+    }
+    if take < chunk.len() || emitted < take {
+        budget.announce_truncation(tx, stream);
+    }
+}
+
 struct StreamCapture {
     buffer: Vec<u8>,
     tail: VecDeque<u8>,
@@ -803,16 +926,49 @@ impl StreamCapture {
 async fn read_stream_with_limits<R: AsyncRead + Unpin>(
     mut reader: R,
     version: BashVersion,
+    stream: BashOutputStream,
+    output_tx: Option<mpsc::UnboundedSender<BashOutputChunk>>,
+    stream_budget: Option<Arc<StreamOutputBudget>>,
 ) -> std::io::Result<StreamCapture> {
     let mut capture = StreamCapture::new(version);
     let mut buf = [0u8; 8_192];
+    let mut utf8_pending = Vec::new();
 
     loop {
         let read = reader.read(&mut buf).await?;
         if read == 0 {
             break;
         }
+        if let (Some(tx), Some(budget)) = (&output_tx, &stream_budget) {
+            let mut combined = Vec::with_capacity(utf8_pending.len() + read);
+            combined.extend_from_slice(&utf8_pending);
+            combined.extend_from_slice(&buf[..read]);
+            match std::str::from_utf8(&combined) {
+                Ok(_) => {
+                    send_stream_chunk(tx, budget, stream, &combined);
+                    utf8_pending.clear();
+                }
+                Err(error) if error.error_len().is_none() => {
+                    let complete_len = error.valid_up_to();
+                    if complete_len > 0 {
+                        send_stream_chunk(tx, budget, stream, &combined[..complete_len]);
+                    }
+                    utf8_pending.clear();
+                    utf8_pending.extend_from_slice(&combined[complete_len..]);
+                }
+                Err(_) => {
+                    send_stream_chunk(tx, budget, stream, &combined);
+                    utf8_pending.clear();
+                }
+            }
+        }
         capture.append_chunk(&buf[..read]).await?;
+    }
+
+    if let (Some(tx), Some(budget)) = (&output_tx, &stream_budget) {
+        if !utf8_pending.is_empty() {
+            send_stream_chunk_lossy(tx, budget, stream, &utf8_pending);
+        }
     }
 
     capture.flush().await?;
@@ -1412,6 +1568,20 @@ impl BashTool {
         args: BashArgs,
         cancel: Option<CancellationToken>,
     ) -> ToolResult {
+        self.execute_with_cancellation_and_output(args, cancel, None)
+            .await
+    }
+
+    /// Execute a command while forwarding stdout/stderr chunks as they arrive.
+    ///
+    /// The final `ToolResult` remains the authoritative, truncated result; the
+    /// optional stream is only for responsive UI updates.
+    pub async fn execute_with_cancellation_and_output(
+        &self,
+        args: BashArgs,
+        cancel: Option<CancellationToken>,
+        output_tx: Option<mpsc::UnboundedSender<BashOutputChunk>>,
+    ) -> ToolResult {
         if let Some(message) = &self.shell_error {
             return ToolResult::failure(message.clone());
         }
@@ -1666,6 +1836,9 @@ impl BashTool {
         }
 
         // Wait for completion with timeout
+        let stream_budget = output_tx
+            .as_ref()
+            .map(|_| Arc::new(StreamOutputBudget::default()));
         let wait = timeout(Duration::from_millis(timeout_ms), async {
             let stdout = match child.stdout.take() {
                 Some(s) => s,
@@ -1690,8 +1863,20 @@ impl BashTool {
 
             // Read stdout and stderr concurrently with streaming limits
             let (stdout_result, stderr_result, status) = tokio::join!(
-                read_stream_with_limits(stdout, self.version),
-                read_stream_with_limits(stderr, self.version),
+                read_stream_with_limits(
+                    stdout,
+                    self.version,
+                    BashOutputStream::Stdout,
+                    output_tx.clone(),
+                    stream_budget.clone()
+                ),
+                read_stream_with_limits(
+                    stderr,
+                    self.version,
+                    BashOutputStream::Stderr,
+                    output_tx,
+                    stream_budget,
+                ),
                 child.wait()
             );
 
@@ -1851,6 +2036,28 @@ impl BashTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    struct OneByteReader {
+        bytes: Vec<u8>,
+        offset: usize,
+    }
+
+    impl tokio::io::AsyncRead for OneByteReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let reader = self.as_mut().get_mut();
+            if let Some(byte) = reader.bytes.get(reader.offset).copied() {
+                reader.offset += 1;
+                buf.put_slice(&[byte]);
+            }
+            Poll::Ready(Ok(()))
+        }
+    }
 
     #[test]
     fn test_requires_approval() {
@@ -1867,6 +2074,33 @@ mod tests {
         assert!(BashTool::requires_approval("cargo build"));
         assert!(BashTool::requires_approval("git commit"));
         assert!(BashTool::requires_approval("touch newfile"));
+    }
+
+    #[tokio::test]
+    async fn streamed_output_preserves_utf8_across_reads() {
+        let mut bytes = b"prefix-".to_vec();
+        bytes.extend_from_slice(&[0xf0, 0x9f, 0x99, 0x82]);
+        bytes.extend_from_slice(b"-suffix");
+        let expected = String::from_utf8(bytes.clone()).expect("test bytes should be UTF-8");
+        let reader = OneByteReader { bytes, offset: 0 };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let budget = Arc::new(StreamOutputBudget::default());
+
+        read_stream_with_limits(
+            reader,
+            BashVersion::Current,
+            BashOutputStream::Stdout,
+            Some(tx),
+            Some(budget),
+        )
+        .await
+        .expect("stream should be readable");
+
+        let mut output = String::new();
+        while let Ok(chunk) = rx.try_recv() {
+            output.push_str(&chunk.content);
+        }
+        assert_eq!(output, expected);
     }
 
     #[test]
@@ -3389,6 +3623,35 @@ mod tests {
         assert!(result.success);
         assert!(result.output.contains("line1"));
         assert!(result.output.contains("line2"));
+    }
+
+    #[tokio::test]
+    async fn streams_foreground_output_before_command_exit() {
+        let tool = BashTool::new(".");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            tool.execute_with_cancellation_and_output(
+                BashArgs {
+                    command: "printf first; sleep 0.08; printf second".to_string(),
+                    timeout: None,
+                    description: None,
+                    run_in_background: false,
+                    bypass_sandbox: false,
+                },
+                None,
+                Some(tx),
+            )
+            .await
+        });
+
+        let first_chunk = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .expect("streaming output should arrive before the command exits")
+            .expect("output channel should remain open until completion");
+        let result = task.await.expect("bash task should join");
+
+        assert!(result.success);
+        assert!(first_chunk.content.contains("first"));
     }
 
     #[tokio::test]

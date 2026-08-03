@@ -101,7 +101,7 @@ try {
 
 	const hello = {
 		type: "hello",
-		protocol_version: "2026-04-02",
+		protocol_version: "2026-08-01",
 		client_info: { name: "maestro-release-binary-smoke", version: "0.1.0" },
 		role: "controller",
 	};

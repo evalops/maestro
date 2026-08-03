@@ -367,4 +367,21 @@ mod tests {
             Some("https://llm-gateway.evalops.dev/v1")
         );
     }
+
+    #[test]
+    fn openrouter_accepts_opaque_nested_model_ids() {
+        let env = HashMap::from([("OPENROUTER_API_KEY".to_string(), "secret".to_string())]);
+        let resolved =
+            ProviderRegistry::require("openrouter/anthropic/claude-sonnet-4.5:free", &env).unwrap();
+
+        assert_eq!(resolved.provider.id, "openrouter");
+        assert_eq!(
+            resolved.provider.protocol,
+            ProviderProtocol::OpenAiCompatible
+        );
+        assert_eq!(
+            resolved.base_url.as_deref(),
+            Some("https://openrouter.ai/api/v1")
+        );
+    }
 }

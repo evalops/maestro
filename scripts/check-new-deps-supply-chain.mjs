@@ -41,6 +41,7 @@ function parseArgs(argv) {
 		baseLockfile: null,
 		headLockfile: "Cargo.lock",
 		dependencyInputChanged: false,
+		failOnPreexisting: false,
 	};
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index];
@@ -56,6 +57,9 @@ function parseArgs(argv) {
 				break;
 			case "--dependency-input-changed":
 				args.dependencyInputChanged = true;
+				break;
+			case "--fail-on-preexisting":
+				args.failOnPreexisting = true;
 				break;
 			default:
 				throw new Error(`Unknown argument: ${arg}`);
@@ -220,6 +224,13 @@ export function newDependencyFindings(findings, newSet) {
 	return findings.filter((finding) => finding.crates.some(isNew));
 }
 
+/** Findings that do not touch a package or edge newly introduced by the PR. */
+export function preexistingDependencyFindings(findings, newSet) {
+	return findings.filter(
+		(finding) => newDependencyFindings([finding], newSet).length === 0,
+	);
+}
+
 /**
  * Cargo.lock includes optional edges even when their feature is inactive.
  * Cargo.toml and release-build command changes can therefore expand shipped
@@ -256,7 +267,8 @@ function main() {
 		changed,
 		args.dependencyInputChanged,
 	);
-	const preexisting = findings.length - blocking.length;
+	const preexistingFindings = preexistingDependencyFindings(findings, changed);
+	const preexisting = preexistingFindings.length;
 
 	console.log(
 		`cargo-deny: ${findings.length} error-severity finding(s), ${added.size} new/changed package identity(s), and ${addedEdgeTargets.size} target(s) of new dependency edges in this PR.`,
@@ -273,6 +285,20 @@ function main() {
 			`${preexisting} finding(s) are against dependencies this PR did not add or change — not failing this PR lane. ` +
 				"They are enforced by the scheduled full check (.github/workflows/supply-chain.yml) and visible in this job's summary.",
 		);
+	}
+
+	if (args.failOnPreexisting) {
+		if (preexisting > 0) {
+			console.error(
+				`${preexisting} cargo-deny error(s) affect dependencies this PR did not add or change; the policy change would suppress an existing finding.`,
+			);
+			process.exitCode = 1;
+		} else {
+			console.log(
+				"Base-policy findings are limited to dependencies introduced or newly reached by this PR; approved policy change is scoped to those dependencies.",
+			);
+		}
+		return;
 	}
 
 	if (blocking.length === 0) {

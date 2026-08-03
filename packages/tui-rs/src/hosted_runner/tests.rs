@@ -4,9 +4,24 @@ use std::sync::Condvar;
 use tempfile::tempdir;
 
 use super::*;
-use crate::headless::messages::CodexSubagentContinuityEdge;
+use crate::headless::messages::{CodexSubagentContinuityEdge, ToolRetryDecisionAction};
 use crate::headless::PendingApproval;
 use crate::headless::RemoteTransportConfig;
+
+#[test]
+fn hosted_trace_fields_accept_only_valid_w3c_parent_and_safe_route_classes() {
+    let parent = "00-0af7656daaaaaaaaaaaaaaaaaaaaaaaa-b7ad6b7169203331-01";
+    assert_eq!(safe_traceparent(parent), Some(parent));
+    assert_eq!(safe_traceparent("prompt=never-log-this"), None);
+    assert_eq!(
+        hosted_route_class("/api/headless/threads/t-1/turns"),
+        "thread.turns"
+    );
+    assert_eq!(
+        hosted_route_class("/api/headless/sessions/s-1/events"),
+        "headless.events"
+    );
+}
 
 #[test]
 fn status_reason_covers_runner_error_statuses() {
@@ -216,6 +231,11 @@ struct RecordingThreadExecutor {
 }
 
 #[derive(Debug, Default)]
+struct ResponseRecordingExecutor {
+    messages: Mutex<Vec<ToAgentMessage>>,
+}
+
+#[derive(Debug, Default)]
 struct PendingThreadExecutor {
     prompts: Mutex<Vec<String>>,
 }
@@ -330,6 +350,23 @@ impl HostedRunnerHeadlessMessageExecutor for RecordingThreadExecutor {
     }
 }
 
+impl HostedRunnerHeadlessMessageExecutor for ResponseRecordingExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        self.messages
+            .lock()
+            .expect("recorded responses")
+            .push(message);
+        Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+            Vec::new(),
+            "response fixture handled message",
+        ))
+    }
+}
+
 #[derive(Debug, Default)]
 struct PumpOnlyRuntimeExecutor {
     queued: Arc<Mutex<Vec<FromAgentMessage>>>,
@@ -337,6 +374,7 @@ struct PumpOnlyRuntimeExecutor {
 
 #[derive(Debug)]
 struct BlockedPromptRuntimeExecutor {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
     started: Arc<AtomicBool>,
     release: Arc<(Mutex<bool>, Condvar)>,
 }
@@ -344,6 +382,7 @@ struct BlockedPromptRuntimeExecutor {
 impl BlockedPromptRuntimeExecutor {
     fn new() -> Self {
         Self {
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             started: Arc::new(AtomicBool::new(false)),
             release: Arc::new((Mutex::new(false), Condvar::new())),
         }
@@ -362,7 +401,9 @@ impl HostedRunnerHeadlessMessageExecutor for BlockedPromptRuntimeExecutor {
         _context: &HostedRunnerHeadlessMessageContext,
         message: ToAgentMessage,
     ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
-        if matches!(message, ToAgentMessage::Prompt { .. }) {
+        if matches!(message, ToAgentMessage::Prompt { .. }) || is_control_response_message(&message)
+        {
+            self.calls.fetch_add(1, Ordering::SeqCst);
             self.started.store(true, Ordering::SeqCst);
             let (released, wake) = &*self.release;
             let mut released = released.lock().expect("release state");
@@ -625,6 +666,7 @@ fn supervisor_executor_reports_runtime_not_ready_until_connected() {
         opt_out_notifications: None,
         lease_expires_at: Utc::now().to_rfc3339(),
         workspace_root: workspace.path().to_path_buf(),
+        response_idempotency_key: None,
     };
 
     let error = executor
@@ -661,6 +703,7 @@ fn supervisor_executor_negotiates_hello_without_mutating_shared_runtime() {
         opt_out_notifications: None,
         lease_expires_at: Utc::now().to_rfc3339(),
         workspace_root: workspace.path().to_path_buf(),
+        response_idempotency_key: None,
     };
 
     let result = executor
@@ -4250,6 +4293,106 @@ async fn drain_fences_in_flight_prompts_and_serializes_repeated_drains() {
     handle.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_idempotent_messages_wait_for_the_original_attempt() {
+    let workspace = tempdir().expect("workspace");
+    let executor = Arc::new(BlockedPromptRuntimeExecutor::new());
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+    )
+    .await
+    .expect("start hosted runner");
+    {
+        let mut state = handle.shared.state.lock().expect("runner state");
+        state.connections.insert(
+            "conn_idempotency_race".to_string(),
+            ConnectionRecord {
+                id: "conn_idempotency_race".to_string(),
+                connection_capability: None,
+                authority_mode: ConnectionAuthorityMode::LegacySubscription,
+                role: ConnectionRole::Controller,
+                client_protocol_version: None,
+                client_info: None,
+                capabilities: None,
+                opt_out_notifications: Vec::new(),
+                subscription_ids: HashSet::from(["sub_idempotency_race".to_string()]),
+                last_seen_at: Utc::now(),
+            },
+        );
+        state.subscriptions.insert(
+            "sub_idempotency_race".to_string(),
+            SubscriptionRecord {
+                connection_id: "conn_idempotency_race".to_string(),
+                connection_capability: None,
+                authority_mode: ConnectionAuthorityMode::LegacySubscription,
+                role: ConnectionRole::Controller,
+                attached: true,
+            },
+        );
+        state.controller_connection_id = Some("conn_idempotency_race".to_string());
+    }
+
+    let headers = || {
+        HashMap::from([
+            (
+                "x-maestro-headless-connection-id".to_string(),
+                "conn_idempotency_race".to_string(),
+            ),
+            (
+                "x-maestro-headless-subscriber-id".to_string(),
+                "sub_idempotency_race".to_string(),
+            ),
+            (
+                "x-maestro-idempotency-key".to_string(),
+                "response-race".to_string(),
+            ),
+        ])
+    };
+    let message = || ToAgentMessage::ClientToolResult {
+        call_id: "response-race".to_string(),
+        content: Vec::new(),
+        is_error: false,
+    };
+
+    let first = tokio::spawn(handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        headers(),
+        message(),
+    ));
+    wait_for_condition(|| executor.started.load(Ordering::SeqCst)).await;
+
+    let second = tokio::spawn(handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        headers(),
+        message(),
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+    assert!(
+        !second.is_finished(),
+        "retry entered the executor concurrently"
+    );
+
+    executor.release();
+    assert!(matches!(
+        first.await.expect("first task").expect("first response"),
+        ResponseBody::Json { status: 200, .. }
+    ));
+    let ResponseBody::Json { status, body } =
+        second.await.expect("second task").expect("second response")
+    else {
+        panic!("retry must return JSON");
+    };
+    assert_eq!(status, 200);
+    assert_eq!(body["replayed"], true);
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+
+    handle.shutdown().await;
+}
+
 #[tokio::test]
 async fn utility_command_completion_after_drain_does_not_mutate_snapshot_state() {
     let workspace = tempdir().expect("workspace");
@@ -5490,7 +5633,7 @@ async fn duplicate_subscribe_preserves_disconnect_cleanup() {
             "sessionId": "sess_test",
             "connectionId": "conn_multi",
             "role": "controller",
-            "protocolVersion": "2026-03-30",
+            "protocolVersion": "2026-04-02",
             "clientInfo": {"name": "lease-test", "version": "1.0.0"},
             "capabilities": {
                 "serverRequests": ["approval"],
@@ -5609,7 +5752,7 @@ async fn duplicate_subscribe_preserves_disconnect_cleanup() {
         .find(|connection| connection["connection_id"] == "conn_multi")
         .expect("conn_multi state");
     assert_eq!(connection_state["subscription_count"], 2);
-    assert_eq!(connection_state["client_protocol_version"], "2026-03-30");
+    assert_eq!(connection_state["client_protocol_version"], "2026-04-02");
     assert_eq!(connection_state["client_info"]["name"], "lease-test");
     assert_eq!(connection_state["capabilities"]["raw_agent_events"], true);
     assert!(connection_state["lease_expires_at"].as_str().is_some());
@@ -6189,6 +6332,50 @@ async fn durable_thread_appends_idempotent_turns_and_exposes_waiting_state() {
     assert_eq!(thread["active_turn_id"], "turn-2");
     assert_eq!(thread["turns"].as_array().expect("turns").len(), 2);
 
+    let response_request = json!({
+        "type": "server_request_response",
+        "request_id": "approval-1",
+        "request_type": "approval",
+        "approved": true,
+        "reason": "approved by the operator"
+    });
+    let response_url = format!(
+        "{}/api/headless/sessions/sess_test/messages",
+        handle.base_url()
+    );
+    let first_response: serde_json::Value = client
+        .post(&response_url)
+        .header("x-maestro-headless-connection-id", "conn_thread")
+        .header("x-maestro-headless-subscriber-id", &subscription_id)
+        .header("x-maestro-headless-connection-capability", &capability)
+        .header("x-maestro-idempotency-key", "response-turn-2-approval-1")
+        .json(&response_request)
+        .send()
+        .await
+        .expect("first response")
+        .error_for_status()
+        .expect("first response status")
+        .json()
+        .await
+        .expect("first response json");
+    assert_eq!(first_response["replayed"], false);
+    let replayed_response: serde_json::Value = client
+        .post(&response_url)
+        .header("x-maestro-headless-connection-id", "conn_thread")
+        .header("x-maestro-headless-subscriber-id", &subscription_id)
+        .header("x-maestro-headless-connection-capability", &capability)
+        .header("x-maestro-idempotency-key", "response-turn-2-approval-1")
+        .json(&response_request)
+        .send()
+        .await
+        .expect("replayed response")
+        .error_for_status()
+        .expect("replayed response status")
+        .json()
+        .await
+        .expect("replayed response json");
+    assert_eq!(replayed_response["replayed"], true);
+
     handle.shutdown().await;
 }
 
@@ -6290,6 +6477,228 @@ async fn durable_thread_restores_turn_idempotency_and_cursor_from_workspace() {
     );
 
     restored.shutdown().await;
+}
+
+#[tokio::test]
+async fn response_messages_cover_input_client_tool_retry_and_persist_idempotency() {
+    let workspace = tempdir().expect("workspace");
+    let executor = Arc::new(ResponseRecordingExecutor::default());
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+    )
+    .await
+    .expect("start hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), "conn_response_types").await;
+    let headers = |key: &str| {
+        [
+            (
+                "x-maestro-headless-connection-id".to_string(),
+                "conn_response_types".to_string(),
+            ),
+            (
+                "x-maestro-headless-subscriber-id".to_string(),
+                subscription_id.clone(),
+            ),
+            (
+                "x-maestro-headless-connection-capability".to_string(),
+                capability.clone(),
+            ),
+            ("x-maestro-idempotency-key".to_string(), key.to_string()),
+        ]
+        .into_iter()
+        .collect::<HashMap<_, _>>()
+    };
+
+    handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        headers("response-input"),
+        ToAgentMessage::ServerRequestResponse {
+            request_id: "input-1".into(),
+            request_type: ServerRequestType::UserInput,
+            approved: None,
+            result: None,
+            content: Some(Vec::new()),
+            is_error: Some(false),
+            decision_action: None,
+            reason: Some("answer".into()),
+        },
+    )
+    .await
+    .expect("input response");
+    handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        headers("response-client-tool"),
+        ToAgentMessage::ClientToolResult {
+            call_id: "client-call-1".into(),
+            content: Vec::new(),
+            is_error: false,
+        },
+    )
+    .await
+    .expect("client tool response");
+    handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        headers("response-retry"),
+        ToAgentMessage::ServerRequestResponse {
+            request_id: "retry-1".into(),
+            request_type: ServerRequestType::ToolRetry,
+            approved: None,
+            result: None,
+            content: None,
+            is_error: None,
+            decision_action: Some(ToolRetryDecisionAction::Retry),
+            reason: Some("retry once".into()),
+        },
+    )
+    .await
+    .expect("retry response");
+
+    let replay = handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        headers("response-retry"),
+        ToAgentMessage::ServerRequestResponse {
+            request_id: "retry-1".into(),
+            request_type: ServerRequestType::ToolRetry,
+            approved: None,
+            result: None,
+            content: None,
+            is_error: None,
+            decision_action: Some(ToolRetryDecisionAction::Retry),
+            reason: Some("retry once".into()),
+        },
+    )
+    .await
+    .expect("replayed retry response");
+    let replay_json = match replay {
+        ResponseBody::Json { body, .. } => body,
+        ResponseBody::Sse { .. } => panic!("unexpected SSE response"),
+    };
+    assert_eq!(replay_json["replayed"], true);
+    let conflict = match handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        headers("response-retry"),
+        ToAgentMessage::ClientToolResult {
+            call_id: "different-response".into(),
+            content: Vec::new(),
+            is_error: false,
+        },
+    )
+    .await
+    {
+        Ok(_) => panic!("reusing a response key for a different payload must conflict"),
+        Err(error) => error,
+    };
+    assert_eq!(conflict.code, HostedRunnerErrorCode::IdempotencyConflict);
+    let messages = {
+        let messages = executor.messages.lock().expect("recorded responses");
+        messages.clone()
+    };
+    assert_eq!(messages.len(), 3);
+    assert!(matches!(
+        messages[0],
+        ToAgentMessage::ServerRequestResponse {
+            request_type: ServerRequestType::UserInput,
+            ..
+        }
+    ));
+    assert!(matches!(
+        messages[1],
+        ToAgentMessage::ClientToolResult { .. }
+    ));
+    assert!(matches!(
+        messages[2],
+        ToAgentMessage::ServerRequestResponse {
+            request_type: ServerRequestType::ToolRetry,
+            ..
+        }
+    ));
+
+    let prompt = ToAgentMessage::Prompt {
+        content: "idempotency headers do not turn prompts into responses".into(),
+        attachments: None,
+    };
+    handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        headers("prompt-key"),
+        prompt.clone(),
+    )
+    .await
+    .expect("prompt with an incidental idempotency header");
+    let prompt_replay = handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        headers("prompt-key"),
+        prompt,
+    )
+    .await
+    .expect("repeated prompt with an incidental idempotency header");
+    let ResponseBody::Json { body, .. } = prompt_replay else {
+        panic!("prompt response must be JSON");
+    };
+    assert_eq!(body["replayed"], false);
+    assert_eq!(
+        executor.messages.lock().expect("recorded responses").len(),
+        5,
+        "non-response messages with a key must execute independently"
+    );
+    handle.shutdown().await;
+
+    let restored_executor = Arc::new(ResponseRecordingExecutor::default());
+    let restored = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        restored_executor,
+    )
+    .await
+    .expect("restore hosted runner");
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &restored.base_url(), "conn_response_restored").await;
+    let replayed: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/messages",
+            restored.base_url()
+        ))
+        .header("x-maestro-headless-connection-id", "conn_response_restored")
+        .header("x-maestro-headless-subscriber-id", &subscription_id)
+        .header("x-maestro-headless-connection-capability", &capability)
+        .header("x-maestro-idempotency-key", "response-retry")
+        .json(&json!({
+            "type": "server_request_response",
+            "request_id": "retry-1",
+            "request_type": "tool_retry",
+            "decision_action": "retry",
+            "reason": "retry once"
+        }))
+        .send()
+        .await
+        .expect("restored response")
+        .error_for_status()
+        .expect("restored response status")
+        .json()
+        .await
+        .expect("restored response json");
+    assert_eq!(replayed["replayed"], true);
+    restored.shutdown().await;
+}
+
+#[test]
+fn response_ledger_read_errors_fail_closed() {
+    let workspace = tempdir().expect("workspace");
+    let path = executor_response_ledger_path(workspace.path(), "sess_test");
+    std::fs::create_dir_all(path.parent().expect("ledger parent")).expect("ledger directory");
+    std::fs::write(&path, [0xff]).expect("invalid ledger fixture");
+
+    let error = load_executor_response_ledger(workspace.path(), "sess_test")
+        .expect_err("invalid ledger bytes must not be treated as an empty ledger");
+    assert_eq!(error.code, HostedRunnerErrorCode::Internal);
 }
 
 #[tokio::test]
@@ -6606,4 +7015,169 @@ async fn connection_only_controller_disconnect_requires_exact_private_capability
     assert_eq!(state["state"]["connection_count"], 0);
 
     handle.shutdown().await;
+}
+
+/// A controller reaching the agent through the hosted runner must clear the
+/// same protocol-version bar as one on the stdio path; otherwise the handshake
+/// guarantee only holds for direct spawns.
+#[tokio::test]
+async fn hosted_hello_rejects_a_client_protocol_version_this_build_does_not_serve() {
+    let workspace = tempdir().expect("workspace");
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()).with_auth_token("controller-test-token"),
+        Arc::new(ScriptedRuntimeExecutor),
+    )
+    .await
+    .expect("start hosted runner");
+    let client = reqwest::Client::new();
+
+    let connection: serde_json::Value = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .header("authorization", "Bearer controller-test-token")
+        .json(&json!({
+            "sessionId": "sess_test",
+            "connectionId": "conn_version",
+            "role": "controller",
+        }))
+        .send()
+        .await
+        .expect("controller connection")
+        .json()
+        .await
+        .expect("controller connection json");
+    let subscription: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .header("authorization", "Bearer controller-test-token")
+        .json(&json!({
+            "connectionId": "conn_version",
+            "connectionCapability": connection["connection_capability"],
+            "connectionCapabilityRequired": true,
+            "role": "controller",
+        }))
+        .send()
+        .await
+        .expect("subscription response")
+        .json()
+        .await
+        .expect("subscription json");
+    let subscription_id = subscription["subscription_id"]
+        .as_str()
+        .expect("subscription id");
+    let connection_capability = subscription["connection_capability"]
+        .as_str()
+        .expect("connection capability");
+
+    let hello = |protocol_version: &'static str| {
+        client
+            .post(format!(
+                "{}/api/headless/sessions/sess_test/messages",
+                handle.base_url()
+            ))
+            .header("authorization", "Bearer controller-test-token")
+            .header("x-maestro-headless-connection-id", "conn_version")
+            .header("x-maestro-headless-subscriber-id", subscription_id)
+            .header(
+                "x-maestro-headless-connection-capability",
+                connection_capability,
+            )
+            .json(&json!({"type": "hello", "protocol_version": protocol_version}))
+            .send()
+    };
+
+    let rejected = hello("2019-01-01").await.expect("rejected hello response");
+    assert_eq!(rejected.status(), StatusCode::NOT_IMPLEMENTED);
+    let rejected: serde_json::Value = rejected.json().await.expect("rejected hello json");
+    assert_eq!(rejected["code"], "unsupported_capability");
+    assert!(
+        rejected["error"]
+            .as_str()
+            .expect("rejection message")
+            .contains(crate::headless::HEADLESS_PROTOCOL_VERSION),
+        "the rejection must name the versions this build serves: {rejected}"
+    );
+
+    let accepted = hello(crate::headless::HEADLESS_PROTOCOL_VERSION)
+        .await
+        .expect("accepted hello response");
+    assert_eq!(accepted.status(), StatusCode::OK);
+    let accepted: serde_json::Value = accepted.json().await.expect("accepted hello json");
+    assert_eq!(accepted["ok"], true);
+
+    handle.shutdown().await;
+}
+
+#[test]
+fn connection_create_rejects_unsupported_protocol_version() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+
+    let request = ConnectionCreateRequest {
+        protocol_version: Some("1999-01-01".to_string()),
+        client_info: None,
+        session_id: Some("sess_test".to_string()),
+        connection_id: Some("conn_unsupported".to_string()),
+        connection_capability: None,
+        connection_capability_required: false,
+        _thinking_level: None,
+        capabilities: None,
+        opt_out_notifications: Vec::new(),
+        role: Some(ConnectionRole::Controller),
+        take_control: false,
+    };
+
+    match handle_connection_create(shared, request) {
+        Ok(_) => panic!("connection create must reject an unsupported protocol version"),
+        Err(error) => assert_eq!(error.code, HostedRunnerErrorCode::UnsupportedCapability),
+    }
+}
+
+#[test]
+fn subscribe_rejects_unsupported_protocol_version() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+
+    let request = SubscribeRequest {
+        connection_id: Some("conn_unsupported".to_string()),
+        subscription_id: None,
+        connection_capability: None,
+        connection_capability_required: false,
+        protocol_version: Some("1999-01-01".to_string()),
+        client_info: None,
+        capabilities: None,
+        opt_out_notifications: Vec::new(),
+        role: Some(ConnectionRole::Controller),
+        take_control: false,
+    };
+
+    match handle_subscribe(shared, "sess_test", request) {
+        Ok(_) => panic!("subscribe must reject an unsupported protocol version"),
+        Err(error) => assert_eq!(error.code, HostedRunnerErrorCode::UnsupportedCapability),
+    }
+}
+
+#[test]
+fn subscribe_accepts_supported_protocol_version() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+
+    let request = SubscribeRequest {
+        connection_id: Some("conn_supported".to_string()),
+        subscription_id: None,
+        connection_capability: None,
+        connection_capability_required: false,
+        protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
+        client_info: None,
+        capabilities: None,
+        opt_out_notifications: Vec::new(),
+        role: Some(ConnectionRole::Controller),
+        take_control: false,
+    };
+
+    match handle_subscribe(shared, "sess_test", request) {
+        Ok(_) => {}
+        Err(error) => panic!("subscribe must accept the current protocol version: {error:?}"),
+    }
 }

@@ -109,8 +109,47 @@ pub fn pick_review_model(current: &str, requested: Option<&str>) -> Result<Strin
 /// Canonical provider/model identity comparison, so provider-qualified
 /// aliases (`openai/gpt-5.5` vs `gpt-5.5`) count as the same model.
 fn same_model(a: &str, b: &str) -> bool {
-    AiProvider::from_model(a) == AiProvider::from_model(b)
-        && provider_model_name(a).eq_ignore_ascii_case(&provider_model_name(b))
+    effective_provider(a) == effective_provider(b)
+        && canonical_model_name(a).eq_ignore_ascii_case(&canonical_model_name(b))
+}
+
+/// Resolve the provider that will actually own a routed model.
+///
+/// OpenRouter is an OpenAI-compatible transport, but its model ids may carry
+/// an underlying vendor namespace (`openrouter/anthropic/...`).  Comparing the
+/// transport provider alone would incorrectly treat that route as independent
+/// from a direct Anthropic model.  Managed routes keep the same semantics after
+/// their gateway namespace is removed.
+fn effective_provider(model: &str) -> AiProvider {
+    let mut normalized = model.trim();
+    for prefix in ["evalops/", "maestro-managed/"] {
+        if normalized
+            .get(..prefix.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        {
+            normalized = normalized[prefix.len()..].trim();
+            break;
+        }
+    }
+
+    if let Some((route, model_id)) = normalized.split_once('/') {
+        if route.eq_ignore_ascii_case("openrouter") && !model_id.trim().is_empty() {
+            return AiProvider::from_model(model_id);
+        }
+    }
+
+    AiProvider::from_model(normalized)
+}
+
+fn canonical_model_name(model: &str) -> String {
+    let normalized = provider_model_name(model);
+    let without_openrouter = normalized
+        .split_once('/')
+        .filter(|(prefix, model_id)| {
+            prefix.eq_ignore_ascii_case("openrouter") && !model_id.trim().is_empty()
+        })
+        .map_or(normalized.as_str(), |(_, model_id)| model_id.trim());
+    provider_model_name(without_openrouter)
 }
 
 /// Build the prompt handed to the reviewing agent.
@@ -874,12 +913,35 @@ mod tests {
         assert!(pick_review_model("gpt-5.5", Some("openai/gpt-5.5")).is_err());
         // Qualified current + bare requested.
         assert!(pick_review_model("openai/gpt-5.5", Some("gpt-5.5")).is_err());
+        // An OpenRouter vendor route is not independent from the same direct
+        // vendor model, even though the transport providers differ.
+        assert!(pick_review_model(
+            "openrouter/anthropic/claude-sonnet-4.5",
+            Some("anthropic/claude-sonnet-4.5")
+        )
+        .is_err());
+        assert!(pick_review_model(
+            "openrouter/google/gemini-2.5-pro",
+            Some("google/gemini-2.5-pro")
+        )
+        .is_err());
     }
 
     #[test]
     fn same_model_matches_provider_qualified_aliases() {
         assert!(same_model("gpt-5.5", "openai/gpt-5.5"));
         assert!(same_model("openai/gpt-5.5", "gpt-5.5"));
+        assert!(same_model("gpt-5.6", "openrouter/gpt-5.6"));
+        assert!(same_model("openrouter/gpt-5.6", "gpt-5.6"));
+        assert!(same_model("openrouter/openai/gpt-5.6", "openai/gpt-5.6"));
+        assert!(same_model(
+            "openrouter/anthropic/claude-sonnet-4.5",
+            "anthropic/claude-sonnet-4.5"
+        ));
+        assert!(same_model(
+            "evalops/openrouter/google/gemini-2.5-pro",
+            "google/gemini-2.5-pro"
+        ));
         assert!(same_model(
             "claude-sonnet-4-6",
             "anthropic/claude-sonnet-4-6"

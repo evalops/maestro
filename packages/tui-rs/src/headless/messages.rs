@@ -102,6 +102,39 @@ pub(crate) const SEMANTIC_CONVERSATION_PROTOCOL: &str = "evalops.maestro.semanti
 /// Current headless protocol version shared with the TypeScript runtime.
 pub use super::generated_protocol::HEADLESS_PROTOCOL_VERSION;
 
+/// Client protocol versions a `Hello` may announce, oldest first.
+///
+/// Clients ship on their own release cadence, so the version a controller
+/// speaks is routinely one behind this build's own. Accepting any string and
+/// echoing it back hid that skew until a semantic difference surfaced as
+/// confusing behavior mid-session, so a `Hello` outside this list is now
+/// rejected with a typed protocol error instead of handshaking successfully.
+///
+/// Accepting an older version here means "this build can serve a client that
+/// speaks that version", not that it downgrades its own emission: every
+/// message the agent sends stays at [`HEADLESS_PROTOCOL_VERSION`], which is
+/// what `Ready` and `HelloOk` report.
+pub const SUPPORTED_CLIENT_PROTOCOL_VERSIONS: &[&str] = &["2026-04-02", HEADLESS_PROTOCOL_VERSION];
+
+/// Whether a `Hello` announcing `client_version` may open a session.
+///
+/// A client that announces nothing is accepted, preserving the
+/// pre-negotiation behavior for minimal clients.
+pub fn client_protocol_version_is_supported(client_version: Option<&str>) -> bool {
+    match client_version {
+        None => true,
+        Some(version) => SUPPORTED_CLIENT_PROTOCOL_VERSIONS.contains(&version),
+    }
+}
+
+/// Rejection message for a `Hello` this build cannot serve.
+pub fn unsupported_client_protocol_version_message(client_version: &str) -> String {
+    format!(
+        "unsupported client protocol version: {client_version}; this agent speaks {}",
+        SUPPORTED_CLIENT_PROTOCOL_VERSIONS.join(", ")
+    )
+}
+
 // =============================================================================
 // Messages from TUI to Agent
 // =============================================================================
@@ -592,6 +625,9 @@ pub enum FromAgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lease_expires_at: Option<String>,
     },
+    /// Durable native-agent acknowledgement that a control response was
+    /// accepted by the response consumer rather than merely queued.
+    ResponseAccepted { request_id: String },
     /// Agent is ready
     Ready {
         #[serde(default, skip_serializing_if = "Option::is_none")]

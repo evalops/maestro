@@ -157,6 +157,16 @@ pub struct BatchExecutor {
 }
 
 impl BatchExecutor {
+    /// Create a batch runner around an already-warm tool executor.
+    ///
+    /// Native agent read waves use this constructor so every call shares the
+    /// session's registry, MCP state, Bash process bookkeeping, and result
+    /// cache. Rebuilding a `ToolExecutor` for each wave is needlessly
+    /// expensive and discards useful warm state.
+    pub(crate) fn from_shared_executor(executor: Arc<ToolExecutor>, config: BatchConfig) -> Self {
+        Self { config, executor }
+    }
+
     /// Create a new batch executor with the given working directory
     pub fn new(cwd: impl Into<String>) -> Self {
         Self::with_credential_vault(cwd, CredentialVault::new())

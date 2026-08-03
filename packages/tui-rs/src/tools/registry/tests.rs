@@ -4,6 +4,7 @@ use std::path::Path;
 use crate::agent::{
     DenialReason, ExecutionSource, ExecutionStatus, ToolExecution, ToolOutcome, ToolReceiptDetails,
 };
+use crate::hooks::{HookResult, PostToolUseHook, PreToolUseHook};
 use crate::tools::details;
 use crate::tools::inline::{InlineToolDef, InlineToolSource, ToolAnnotations};
 use crate::tools::registry::execute::{
@@ -31,6 +32,51 @@ fn test_inline_tool(name: &str, command: &str) -> InlineTool {
         },
         source_path: std::path::PathBuf::from(".composer/tools.json"),
         source: InlineToolSource::Project,
+    }
+}
+
+struct ExploreHookAudit {
+    rewrite_to: String,
+    pre_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    post_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl PreToolUseHook for ExploreHookAudit {
+    fn on_pre_tool_use(&self, input: &crate::hooks::PreToolUseInput) -> HookResult {
+        self.pre_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let path = input
+            .tool_input
+            .get("file_path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if path.ends_with("blocked.txt") {
+            return HookResult::Block {
+                reason: "blocked by explore test hook".to_string(),
+            };
+        }
+        if path.ends_with("rewrite.txt") {
+            return HookResult::ModifyInput {
+                new_input: serde_json::json!({"file_path": self.rewrite_to}),
+            };
+        }
+        HookResult::Continue
+    }
+
+    fn matches(&self, tool_name: &str) -> bool {
+        tool_name.eq_ignore_ascii_case("read")
+    }
+}
+
+impl PostToolUseHook for ExploreHookAudit {
+    fn on_post_tool_use(&self, _input: &crate::hooks::PostToolUseInput) -> HookResult {
+        self.post_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        HookResult::Continue
+    }
+
+    fn matches(&self, tool_name: &str) -> bool {
+        tool_name.eq_ignore_ascii_case("read")
     }
 }
 
@@ -280,6 +326,48 @@ fn test_registry_has_default_tools() {
     assert!(registry.get("glob").is_some());
     assert!(registry.get("grep").is_some());
     assert!(registry.get("edit").is_some());
+}
+
+#[test]
+fn test_registry_exposes_subagent_lifecycle_tools() {
+    let registry = ToolRegistry::new();
+
+    for tool in [
+        "spawn_subagent",
+        "list_subagents",
+        "get_subagent",
+        "wait_subagent",
+        "resume_subagent",
+        "cancel_subagent",
+    ] {
+        assert!(registry.get(tool).is_some(), "missing tool {tool}");
+    }
+
+    assert!(registry.requires_approval(
+        "spawn_subagent",
+        &serde_json::json!({"task": "inspect the parser"})
+    ));
+    assert!(registry.requires_approval(
+        "resume_subagent",
+        &serde_json::json!({"subagent_id": "child-1", "task": "continue"})
+    ));
+    assert!(registry
+        .missing_required(
+            "resume_subagent",
+            &serde_json::json!({
+                "subagent_id": "child-1",
+                "follow_up": "continue"
+            })
+        )
+        .is_empty());
+    for tool in [
+        "list_subagents",
+        "get_subagent",
+        "wait_subagent",
+        "cancel_subagent",
+    ] {
+        assert!(!registry.requires_approval(tool, &serde_json::json!({"subagent_id": "child-1"})));
+    }
 }
 
 #[test]
@@ -630,7 +718,7 @@ async fn test_mcp_status_clears_removed_server_state() {
 fn test_registry_tool_count() {
     let registry = ToolRegistry::new();
     let count = registry.tools().count();
-    assert_eq!(count, 40); // includes parity tools + IDE stubs + get_goal/update_goal
+    assert_eq!(count, 48); // includes parity tools + IDE stubs + goals + subagent lifecycle + perf tools
 }
 
 #[test]
@@ -1993,6 +2081,468 @@ async fn typed_execution_emits_one_receipt_bearing_tool_end() {
     )));
 }
 
+#[tokio::test]
+async fn typed_bash_execution_streams_without_duplicate_final_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let execution = executor
+        .execute_with_receipt(
+            "bash",
+            &serde_json::json!({
+                "command": "printf first; sleep 0.08; printf second"
+            }),
+            Some(&tx),
+            "streamed-bash",
+        )
+        .await;
+
+    let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    let chunks = events
+        .iter()
+        .filter_map(|event| match event {
+            FromAgent::ToolOutput { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect::<String>();
+    assert!(matches!(execution.outcome, ToolOutcome::Succeeded { .. }));
+    assert_eq!(chunks, "firstsecond");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, FromAgent::ToolEnd { .. }))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn typed_bash_streaming_redacts_credentials_split_across_chunks() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    executor
+        .execute_with_receipt(
+            "bash",
+            &serde_json::json!({
+                "command": "printf 'password='; yes x | tr -d '\n' | head -c 5000; sleep 0.08; printf 'split-secret\n'"
+            }),
+            Some(&tx),
+            "stream-redaction",
+        )
+        .await;
+
+    let chunks = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            FromAgent::ToolOutput { content, .. } => Some(content),
+            _ => None,
+        })
+        .collect::<String>();
+    assert!(
+        !chunks.contains("split-secret"),
+        "secret leaked in live output: {chunks:?}"
+    );
+    assert!(
+        chunks.contains("{{CRED:password:"),
+        "redacted credential marker missing: {chunks:?}"
+    );
+}
+
+#[tokio::test]
+async fn typed_bash_streaming_redacts_underscore_api_keys_split_across_chunks() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    executor
+        .execute_with_receipt(
+            "bash",
+            &serde_json::json!({
+                "command": "printf 'sk_live_'; sleep 0.08; printf 'ABCDEFGHIJKLMNOPQRST\n'"
+            }),
+            Some(&tx),
+            "stream-api-key-redaction",
+        )
+        .await;
+
+    let chunks = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            FromAgent::ToolOutput { content, .. } => Some(content),
+            _ => None,
+        })
+        .collect::<String>();
+    assert!(
+        !chunks.contains("ABCDEFGHIJKLMNOPQRST"),
+        "API key leaked in live output: {chunks:?}"
+    );
+    assert!(
+        chunks.contains("{{CRED:api_key:"),
+        "redacted API key marker missing: {chunks:?}"
+    );
+}
+
+#[tokio::test]
+async fn typed_bash_streaming_redacts_split_aws_secret_access_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    executor
+        .execute_with_receipt(
+            "bash",
+            &serde_json::json!({
+                "command": "printf 'AWS_SECRET_ACCESS_'; sleep 0.08; printf 'KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\\n'"
+            }),
+            Some(&tx),
+            "stream-aws-secret-redaction",
+        )
+        .await;
+
+    let chunks = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            FromAgent::ToolOutput { content, .. } => Some(content),
+            _ => None,
+        })
+        .collect::<String>();
+    assert!(
+        !chunks.contains("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+        "AWS secret leaked in live output: {chunks:?}"
+    );
+    assert!(
+        chunks.contains("{{CRED:secret:"),
+        "redacted AWS secret marker missing: {chunks:?}"
+    );
+}
+
+#[tokio::test]
+async fn typed_bash_streaming_redacts_split_hyphenated_aws_secret_access_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    executor
+        .execute_with_receipt(
+            "bash",
+            &serde_json::json!({
+                "command": "printf 'AWS-SECRET-ACCESS-'; sleep 0.08; printf 'KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\\n'"
+            }),
+            Some(&tx),
+            "stream-hyphenated-aws-secret-redaction",
+        )
+        .await;
+
+    let chunks = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            FromAgent::ToolOutput { content, .. } => Some(content),
+            _ => None,
+        })
+        .collect::<String>();
+    assert!(
+        !chunks.contains("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+        "AWS secret leaked in live output: {chunks:?}"
+    );
+    assert!(
+        chunks.contains("{{CRED:secret:"),
+        "redacted AWS secret marker missing: {chunks:?}"
+    );
+}
+
+#[tokio::test]
+async fn typed_bash_streaming_redacts_split_hyphenated_api_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    executor
+        .execute_with_receipt(
+            "bash",
+            &serde_json::json!({
+                "command": "printf 'api-key='; sleep 0.08; printf 'ABCDEFGHIJKLMNOPQRST\\n'"
+            }),
+            Some(&tx),
+            "stream-hyphenated-api-key-redaction",
+        )
+        .await;
+
+    let chunks = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            FromAgent::ToolOutput { content, .. } => Some(content),
+            _ => None,
+        })
+        .collect::<String>();
+    assert!(
+        !chunks.contains("ABCDEFGHIJKLMNOPQRST"),
+        "hyphenated API key leaked in live output: {chunks:?}"
+    );
+    assert!(
+        chunks.contains("{{CRED:api_key:"),
+        "redacted hyphenated API key marker missing: {chunks:?}"
+    );
+}
+
+#[tokio::test]
+async fn typed_bash_streaming_redacts_uri_credentials_split_across_chunks() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    executor
+        .execute_with_receipt(
+            "bash",
+            &serde_json::json!({
+                "command": "printf 'https'; sleep 0.08; printf '://alice:'; sleep 0.08; printf 'uri-secret@example.test\n'"
+            }),
+            Some(&tx),
+            "stream-uri-redaction",
+        )
+        .await;
+
+    let chunks = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            FromAgent::ToolOutput { content, .. } => Some(content),
+            _ => None,
+        })
+        .collect::<String>();
+    assert!(
+        !chunks.contains("uri-secret"),
+        "URI credential leaked in live output: {chunks:?}"
+    );
+    assert!(
+        chunks.contains("{{CRED:password:"),
+        "redacted URI credential marker missing: {chunks:?}"
+    );
+}
+
+#[tokio::test]
+async fn explore_runs_nested_tool_hooks_for_each_operation() {
+    let dir = tempfile::tempdir().unwrap();
+    let allowed = dir.path().join("allowed.txt");
+    let rewrite = dir.path().join("rewrite.txt");
+    let blocked = dir.path().join("blocked.txt");
+    std::fs::write(&allowed, "allowed content").unwrap();
+    std::fs::write(&rewrite, "rewrite should not be read directly").unwrap();
+
+    let pre_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let post_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let audit = std::sync::Arc::new(ExploreHookAudit {
+        rewrite_to: allowed.display().to_string(),
+        pre_calls: std::sync::Arc::clone(&pre_calls),
+        post_calls: std::sync::Arc::clone(&post_calls),
+    });
+    let mut hooks = crate::hooks::IntegratedHookSystem::new(&dir.path().display().to_string());
+    hooks.registry.register_pre_tool_use(audit.clone());
+    hooks.registry.register_post_tool_use(audit);
+
+    let executor = ToolExecutor::new(dir.path().to_string_lossy().to_string());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let execution = executor
+        .execute_with_receipt_cancellable_inline_env(
+            "explore",
+            &serde_json::json!({
+                "operations": [
+                    {"tool": "read", "args": {"file_path": allowed}},
+                    {"tool": "read", "args": {"file_path": rewrite}},
+                    {"tool": "read", "args": {"file_path": blocked}}
+                ]
+            }),
+            Some(&tx),
+            "explore-hooks",
+            ToolExecutionOptions {
+                cancel: tokio_util::sync::CancellationToken::new(),
+                approved_inline_env: None,
+                hooks: Some(&mut hooks),
+            },
+        )
+        .await;
+
+    let output = execution.to_legacy().output;
+    let results: Vec<serde_json::Value> =
+        serde_json::from_str(&output).expect("explore output should be JSON");
+    assert_eq!(results.len(), 3);
+    assert!(results[0]["success"].as_bool().unwrap());
+    assert!(results[0]["output"]
+        .as_str()
+        .unwrap()
+        .contains("allowed content"));
+    assert!(results[1]["success"].as_bool().unwrap());
+    assert!(results[1]["output"]
+        .as_str()
+        .unwrap()
+        .contains("allowed content"));
+    assert!(!results[2]["success"].as_bool().unwrap());
+    assert!(results[2]["error"]
+        .as_str()
+        .unwrap()
+        .contains("blocked by explore test hook"));
+    assert_eq!(
+        pre_calls.load(std::sync::atomic::Ordering::SeqCst),
+        3,
+        "every nested operation must run PreToolUse"
+    );
+    assert_eq!(
+        post_calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "PostToolUse must run for each operation that actually executed"
+    );
+    assert!(
+        std::iter::from_fn(|| rx.try_recv().ok()).any(|event| matches!(
+            event,
+            FromAgent::HookBlocked { call_id, tool, .. }
+                if call_id == "explore-hooks:explore:2" && tool == "read"
+        ))
+    );
+}
+#[tokio::test]
+async fn typed_bash_streaming_keeps_stdout_and_stderr_redaction_state_separate() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    executor
+        .execute_with_receipt(
+            "bash",
+            &serde_json::json!({
+                "command": "printf 'password='; (sleep 0.08; printf 'notice\\n' >&2) & sleep 0.16; printf 'hunter2\\n'"
+            }),
+            Some(&tx),
+            "stream-separate-redactors",
+        )
+        .await;
+
+    let chunks = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            FromAgent::ToolOutput { content, .. } => Some(content),
+            _ => None,
+        })
+        .collect::<String>();
+    assert!(
+        !chunks.contains("hunter2"),
+        "stdout credential leaked through stderr boundary: {chunks:?}"
+    );
+    assert!(
+        chunks.contains("notice"),
+        "stderr output missing: {chunks:?}"
+    );
+    assert!(
+        chunks.contains("{{CRED:password:"),
+        "redacted credential marker missing: {chunks:?}"
+    );
+}
+
+#[tokio::test]
+async fn typed_bash_streaming_caps_live_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    executor
+        .execute_with_receipt(
+            "bash",
+            &serde_json::json!({"command": "yes x | head -c 50000"}),
+            Some(&tx),
+            "stream-cap",
+        )
+        .await;
+
+    let chunks = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            FromAgent::ToolOutput { content, .. } => Some(content),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let final_tail_start = chunks
+        .iter()
+        .position(|chunk| chunk.starts_with("[Showing last "))
+        .expect("truncated Bash result should emit its authoritative tail");
+    let live_output = chunks[..final_tail_start].concat();
+    assert!(
+        live_output.len() <= 30_200,
+        "live output exceeded its cap: {}",
+        live_output.len()
+    );
+    assert!(live_output.contains("live output truncated"));
+    assert!(chunks[final_tail_start..]
+        .concat()
+        .contains("[Showing last "));
+}
+
+#[tokio::test]
+async fn typed_bash_streaming_releases_low_volume_output_before_completion() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let args = serde_json::json!({
+        "command": "printf 'server ready'; sleep 1; printf ' done'"
+    });
+    let execution = executor.execute_with_receipt("bash", &args, Some(&tx), "stream-low-volume");
+    tokio::pin!(execution);
+    let deadline = tokio::time::sleep(std::time::Duration::from_millis(500));
+    tokio::pin!(deadline);
+
+    let first_output = loop {
+        tokio::select! {
+            result = &mut execution => panic!("Bash completed before streaming output: {result:?}"),
+            Some(event) = rx.recv() => {
+                if let FromAgent::ToolOutput { content, .. } = event {
+                    break content;
+                }
+            }
+            () = &mut deadline => panic!("low-volume Bash output was buffered until completion"),
+        }
+    };
+    assert!(
+        first_output.contains("server ready"),
+        "first output: {first_output:?}"
+    );
+    let _ = execution.await;
+}
+
+#[test]
+fn cache_dependencies_follow_effective_search_cwd_and_lsp_inputs() {
+    let search = cache_dependency_paths(
+        "/workspace",
+        "search",
+        &serde_json::json!({"cwd": "subdir", "paths": ["file.rs"]}),
+    );
+    assert_eq!(
+        search,
+        vec![std::path::PathBuf::from("/workspace/subdir/file.rs")]
+    );
+
+    let workspace_diagnostics = cache_dependency_paths(
+        "/workspace",
+        "vscode_get_diagnostics",
+        &serde_json::json!({}),
+    );
+    assert_eq!(
+        workspace_diagnostics,
+        vec![std::path::PathBuf::from("/workspace")]
+    );
+
+    for tool in [
+        "vscode_get_definition",
+        "jetbrains_get_definition",
+        "vscode_find_references",
+        "jetbrains_find_references",
+    ] {
+        let dependencies = cache_dependency_paths(
+            "/workspace",
+            tool,
+            &serde_json::json!({"uri": "file:///workspace/src/lib.rs"}),
+        );
+        assert_eq!(
+            dependencies,
+            vec![
+                std::path::PathBuf::from("/workspace"),
+                std::path::PathBuf::from("/workspace/src/lib.rs")
+            ],
+            "{tool} should track its query file and workspace"
+        );
+    }
+}
+
 #[test]
 fn requires_approval_forces_prompt_for_sandbox_bypass_requests() {
     let dir = tempfile::tempdir().unwrap();
@@ -2429,6 +2979,49 @@ async fn test_executor_cache_invalidation_on_write() {
     let result2 = executor.execute("read", &read_args, None, "call-3").await;
     assert!(result2.success);
     assert!(result2.output.contains("new content"));
+}
+
+#[tokio::test]
+async fn targeted_cache_invalidation_preserves_unrelated_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let first_path = dir.path().join("first.txt");
+    let second_path = dir.path().join("second.txt");
+    std::fs::write(&first_path, "first-v1").unwrap();
+    std::fs::write(&second_path, "second-v1").unwrap();
+
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let first_args = serde_json::json!({"file_path": first_path});
+    let second_args = serde_json::json!({"file_path": second_path});
+    executor
+        .execute("read", &first_args, None, "targeted-first")
+        .await;
+    executor
+        .execute("read", &second_args, None, "targeted-second")
+        .await;
+
+    let write_args = serde_json::json!({
+        "file_path": first_args["file_path"].clone(),
+        "content": "first-v2"
+    });
+    assert!(
+        executor
+            .execute("write", &write_args, None, "targeted-write")
+            .await
+            .success
+    );
+
+    let second_cached = executor
+        .execute("read", &second_args, None, "targeted-second-hit")
+        .await;
+    assert!(second_cached.success);
+    assert!(second_cached.output.contains("second-v1"));
+    assert_eq!(executor.cache_stats().hits, 1);
+
+    let first_fresh = executor
+        .execute("read", &first_args, None, "targeted-first-fresh")
+        .await;
+    assert!(first_fresh.success);
+    assert!(first_fresh.output.contains("first-v2"));
 }
 
 #[tokio::test]
@@ -3176,4 +3769,33 @@ async fn mcp_dispatch_propagates_cancellation_to_the_server() {
     );
 
     server.abort();
+}
+
+#[tokio::test]
+async fn explore_runs_independent_reads_in_one_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.txt");
+    let second = dir.path().join("second.txt");
+    std::fs::write(&first, "alpha").unwrap();
+    std::fs::write(&second, "beta").unwrap();
+
+    let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+    let result = executor
+        .execute(
+            "explore",
+            &serde_json::json!({
+                "operations": [
+                    {"tool": "read", "args": {"path": first}},
+                    {"tool": "read", "args": {"path": second}}
+                ]
+            }),
+            None,
+            "explore-call",
+        )
+        .await;
+
+    assert!(result.success);
+    assert!(result.output.contains("alpha"));
+    assert!(result.output.contains("beta"));
+    assert_eq!(executor.cache_stats().misses, 2);
 }

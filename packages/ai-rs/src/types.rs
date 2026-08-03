@@ -1,5 +1,7 @@
 //! AI types for messages, tools, and responses
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 /// A message in the conversation
@@ -157,7 +159,7 @@ pub struct RequestConfig {
     pub max_tokens: u32,
     pub temperature: Option<f32>,
     pub system: Option<String>,
-    pub tools: Vec<Tool>,
+    pub tools: Arc<Vec<Tool>>,
     pub thinking: Option<ThinkingConfig>,
     /// Enable prompt caching for system prompt (Anthropic only)
     /// When true, the system prompt will be marked for caching
@@ -171,7 +173,7 @@ impl Default for RequestConfig {
             max_tokens: 8192,
             temperature: None,
             system: None,
-            tools: Vec::new(),
+            tools: Arc::new(Vec::new()),
             thinking: None,
             cache_system_prompt: false,
         }

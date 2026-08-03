@@ -148,6 +148,7 @@ impl GoalStore {
     /// Returns `true` when a demotion was written. Called on process start
     /// (and available for tests).
     pub fn demote_active_for_process_restart(&mut self) -> Result<bool> {
+        let previous = self.current.clone();
         let Some(goal) = self.current.as_mut() else {
             return Ok(false);
         };
@@ -159,7 +160,7 @@ impl GoalStore {
         goal.last_judge_reason =
             Some("paused on process restart (resume with /goal resume)".to_string());
         goal.updated_at_unix = now_unix();
-        self.save_default()?;
+        self.save_with_rollback(previous)?;
         Ok(true)
     }
 
@@ -168,8 +169,9 @@ impl GoalStore {
     pub fn clear_for_session_fork(&mut self) -> Result<Option<String>> {
         let id = self.current.as_ref().map(|g| g.id.clone());
         if id.is_some() {
+            let previous = self.current.clone();
             self.current = None;
-            self.save_default()?;
+            self.save_with_rollback(previous)?;
         }
         Ok(id)
     }
@@ -179,6 +181,33 @@ impl GoalStore {
             return Ok(());
         };
         save_to_path(self, path)
+    }
+
+    /// Persist a goal mutation without leaving memory out of sync with disk.
+    ///
+    /// Goal tools and the TUI can observe the same store through different
+    /// paths. An atomic write can report an error after its rename, so first
+    /// reconcile from disk and only fall back to the previous goal when the
+    /// persisted state cannot be read.
+    fn save_with_rollback(&mut self, previous: Option<Goal>) -> Result<()> {
+        if let Err(error) = self.save_default() {
+            self.current = self.reconcile_after_save_error(previous);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn reconcile_after_save_error(&self, previous: Option<Goal>) -> Option<Goal> {
+        let Some(path) = &self.persist_path else {
+            return previous;
+        };
+
+        let recovered = match fs::symlink_metadata(path) {
+            Ok(_) => load_from_path(path).ok().map(|store| store.current),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(None),
+            Err(_) => None,
+        };
+        recovered.unwrap_or(previous)
     }
 
     pub fn status_line(&self) -> Option<String> {
@@ -242,6 +271,7 @@ impl GoalStore {
             }
         }
         let now = now_unix();
+        let previous = self.current.clone();
         self.current = Some(Goal {
             id: new_id(),
             text,
@@ -257,7 +287,7 @@ impl GoalStore {
             token_budget,
             tokens_used: 0,
         });
-        self.save_default()?;
+        self.save_with_rollback(previous)?;
         Ok(self.current.as_ref().expect("just set"))
     }
 
@@ -266,6 +296,7 @@ impl GoalStore {
     }
 
     pub fn resume(&mut self) -> Result<&Goal> {
+        let previous = self.current.clone();
         let goal = self.current.as_mut().context("no current goal")?;
         if matches!(goal.status, GoalStatus::Complete) {
             bail!("cannot resume a completed goal; create a new one");
@@ -276,7 +307,7 @@ impl GoalStore {
         // Resume resets the auto-continue budget so operators can continue work.
         goal.auto_continue_count = 0;
         goal.updated_at_unix = now_unix();
-        self.save_default()?;
+        self.save_with_rollback(previous)?;
         Ok(self.current.as_ref().expect("just set"))
     }
 
@@ -288,22 +319,25 @@ impl GoalStore {
         // Keep the goal record with status `complete` (do not clear `current`).
         // Clearing used to race with mid-turn `account_tokens`, which rewrote a
         // stale Active snapshot over the tool's disk write.
+        let previous = self.current.clone();
         let goal = self.current.as_mut().context("no current goal")?;
         goal.status = GoalStatus::Complete;
         goal.auto_continue = false;
         goal.block_reason = None;
         goal.updated_at_unix = now_unix();
-        self.save_default()?;
+        self.save_with_rollback(previous)?;
         Ok(self.current.clone().expect("just completed"))
     }
 
     pub fn clear(&mut self) -> Result<Option<Goal>> {
+        let previous = self.current.clone();
         let prev = self.current.take();
-        self.save_default()?;
+        self.save_with_rollback(previous)?;
         Ok(prev)
     }
 
     pub fn set_auto_continue(&mut self, enabled: bool) -> Result<&Goal> {
+        let previous = self.current.clone();
         let goal = self.current.as_mut().context("no current goal")?;
         goal.auto_continue = enabled;
         if enabled {
@@ -312,7 +346,7 @@ impl GoalStore {
             goal.auto_continue_count = 0;
         }
         goal.updated_at_unix = now_unix();
-        self.save_default()?;
+        self.save_with_rollback(previous)?;
         Ok(self.current.as_ref().expect("just set"))
     }
 
@@ -324,6 +358,7 @@ impl GoalStore {
         if self.persist_path.is_some() {
             self.reload_from_disk();
         }
+        let previous = self.current.clone();
         let goal = self.current.as_mut().context("no current goal")?;
         if goal.status != GoalStatus::Active {
             // Terminal / paused goals must not be rewritten as Active.
@@ -339,7 +374,7 @@ impl GoalStore {
                 goal.max_turns
             ));
         }
-        self.save_default()?;
+        self.save_with_rollback(previous)?;
         Ok(hit_cap)
     }
 
@@ -374,6 +409,7 @@ impl GoalStore {
         if self.persist_path.is_some() {
             self.reload_from_disk();
         }
+        let previous = self.current.clone();
         let Some(goal) = self.current.as_mut() else {
             return Ok(false);
         };
@@ -393,7 +429,7 @@ impl GoalStore {
                 goal.token_budget.unwrap_or(0)
             ));
         }
-        self.save_default()?;
+        self.save_with_rollback(previous)?;
         Ok(hit)
     }
 
@@ -500,6 +536,7 @@ impl GoalStore {
     }
 
     fn transition(&mut self, status: GoalStatus, block_reason: Option<String>) -> Result<&Goal> {
+        let previous = self.current.clone();
         let goal = self.current.as_mut().context("no current goal")?;
         goal.status = status;
         goal.block_reason = block_reason;
@@ -507,7 +544,7 @@ impl GoalStore {
             goal.auto_continue = false;
         }
         goal.updated_at_unix = now_unix();
-        self.save_default()?;
+        self.save_with_rollback(previous)?;
         Ok(self.current.as_ref().expect("just set"))
     }
 }
@@ -668,6 +705,60 @@ mod tests {
         let id = store.clear_for_session_fork().unwrap();
         assert!(id.is_some());
         assert!(store.current.is_none());
+    }
+
+    #[test]
+    fn failed_persistence_preserves_goal_visibility() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let blocker = dir.path().join("not-a-directory");
+        fs::write(&blocker, b"not a directory").unwrap();
+
+        let mut store = GoalStore::default();
+        store
+            .create("keep working", None, false, None, None)
+            .unwrap();
+        store.persist_path = Some(blocker.join("goals.json"));
+
+        assert!(store.complete().is_err());
+        assert_eq!(
+            store.current.as_ref().map(|goal| goal.status),
+            Some(GoalStatus::Active)
+        );
+        assert!(store.tools_visible());
+
+        assert!(store.clear().is_err());
+        assert_eq!(
+            store.current.as_ref().map(|goal| goal.status),
+            Some(GoalStatus::Active)
+        );
+        assert!(store.tools_visible());
+    }
+
+    #[test]
+    fn failed_persistence_prefers_published_disk_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("goals.json");
+
+        let mut disk_store = GoalStore {
+            persist_path: Some(path.clone()),
+            ..Default::default()
+        };
+        disk_store
+            .create("published goal", None, false, None, None)
+            .unwrap();
+        disk_store.complete().unwrap();
+
+        let mut memory_store = GoalStore::default();
+        memory_store
+            .create("stale active goal", None, false, None, None)
+            .unwrap();
+        memory_store.persist_path = Some(path);
+        let recovered = memory_store.reconcile_after_save_error(memory_store.current.clone());
+
+        assert_eq!(
+            recovered.as_ref().map(|goal| goal.status),
+            Some(GoalStatus::Complete)
+        );
     }
 
     #[test]

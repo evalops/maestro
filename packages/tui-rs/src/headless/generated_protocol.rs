@@ -3,7 +3,7 @@
 // Native headless protocol contract.
 // Do not edit manually; update `proto/maestro/v1/headless.proto` instead.
 
-pub const HEADLESS_PROTOCOL_VERSION: &str = "2026-04-02";
+pub const HEADLESS_PROTOCOL_VERSION: &str = "2026-08-01";
 pub const HEADLESS_SERVER_REQUEST_TYPES: &[&str] = &[
     "approval",
     "client_tool",
@@ -84,4 +84,5 @@ pub const HEADLESS_FROM_AGENT_MESSAGE_TYPES: &[&str] = &[
     "compaction",
     "session_info",
     "connection_info",
+    "response_accepted",
 ];

@@ -19,7 +19,7 @@ Transport rules:
 The protocol is versioned. The runtime sends the version in `ready` and
 `hello_ok`, and clients may send their version in `hello`.
 
-Current version: `2026-04-02`
+Current version: `2026-08-01`
 
 Source of truth:
 
@@ -144,7 +144,7 @@ snapshot manifest. The manifest directory comes from `--snapshot-root`,
       "flush_status": "completed",
       "session_id": "session_123",
       "session_file": "/workspace/.maestro/agent/sessions/session.jsonl",
-      "protocol_version": "2026-04-02",
+      "protocol_version": "2026-08-01",
       "cursor": 42
     },
     "workspace_export": {
@@ -233,7 +233,7 @@ snapshot manifest. The manifest directory comes from `--snapshot-root`,
       }
     },
     "snapshot": {
-      "protocolVersion": "2026-04-02",
+      "protocolVersion": "2026-08-01",
       "session_id": "session_123",
       "cursor": 42,
       "last_init": null,
@@ -324,7 +324,7 @@ Minimal hello:
 ```json
 {
   "type": "hello",
-  "protocol_version": "2026-04-02",
+      "protocol_version": "2026-08-01",
   "client_info": {
     "name": "evalops-chat",
     "version": "0.1.0"
@@ -338,9 +338,9 @@ Handshake acknowledgement:
 ```json
 {
   "type": "hello_ok",
-  "protocol_version": "2026-04-02",
+      "protocol_version": "2026-08-01",
   "connection_id": "conn_123",
-  "client_protocol_version": "2026-04-02",
+      "client_protocol_version": "2026-08-01",
   "role": "controller",
   "server_capabilities": {
     "server_requests": ["approval", "client_tool", "mcp_elicitation", "user_input", "tool_retry"],
@@ -356,7 +356,7 @@ Initial runtime state:
 ```json
 {
   "type": "ready",
-  "protocol_version": "2026-04-02",
+      "protocol_version": "2026-08-01",
   "model": "claude-opus-4-6",
   "provider": "anthropic",
   "executor_type": "live",
@@ -475,6 +475,9 @@ Supported `server_request_response.request_type` values:
   - streamed text or thinking; `is_thinking=true` marks reasoning content
 - `response_end`
   - final usage and execution telemetry
+- `response_accepted`
+  - durable acknowledgement that a controller response was consumed by the
+    native runtime, correlated by `request_id`
 
 `response_end` is the authoritative place to read:
 

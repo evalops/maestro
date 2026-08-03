@@ -164,7 +164,7 @@ pub(crate) enum AppTerminalEvent {
     Key(KeyEvent),
     Mouse(MouseEvent),
     Paste(String),
-    Resize { height: u16 },
+    Resize { width: u16, height: u16 },
     FocusGained,
     FocusLost,
     BackgroundColor { red: u8, green: u8, blue: u8 },
@@ -180,7 +180,7 @@ impl AppTerminalEvent {
             Event::Key(key) => Some(Self::Key(key)),
             Event::Mouse(mouse) => Some(Self::Mouse(mouse)),
             Event::Paste(text) => Some(Self::Paste(text)),
-            Event::Resize(_, height) => Some(Self::Resize { height }),
+            Event::Resize(width, height) => Some(Self::Resize { width, height }),
             Event::FocusGained => Some(Self::FocusGained),
             Event::FocusLost => Some(Self::FocusLost),
         }
@@ -252,7 +252,10 @@ impl EventConversionState {
                 convert_uncurses_mouse(mouse, false).map(AppTerminalEvent::Mouse)
             }
             UncursesEvent::MouseMove(_) => None,
-            UncursesEvent::Resize(size) => Some(AppTerminalEvent::Resize { height: size.row }),
+            UncursesEvent::Resize(size) => Some(AppTerminalEvent::Resize {
+                width: size.col,
+                height: size.row,
+            }),
             UncursesEvent::FocusIn => Some(AppTerminalEvent::FocusGained),
             UncursesEvent::FocusOut => Some(AppTerminalEvent::FocusLost),
             UncursesEvent::PasteStart => {
@@ -609,7 +612,10 @@ mod tests {
         ));
         assert!(matches!(
             state.convert_event(second),
-            Some(AppTerminalEvent::Resize { height: 42 })
+            Some(AppTerminalEvent::Resize {
+                width: 120,
+                height: 42
+            })
         ));
     }
 
@@ -645,7 +651,10 @@ mod tests {
     fn crossterm_fallback_keeps_resize_and_focus_events() {
         assert!(matches!(
             AppTerminalEvent::from_crossterm(Event::Resize(120, 42)),
-            Some(AppTerminalEvent::Resize { height: 42 })
+            Some(AppTerminalEvent::Resize {
+                width: 120,
+                height: 42
+            })
         ));
         assert!(matches!(
             AppTerminalEvent::from_crossterm(Event::FocusLost),

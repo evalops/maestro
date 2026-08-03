@@ -644,7 +644,8 @@ mod tests {
             tools: vec![Tool::new("test", "A test tool").with_schema(json!({
                 "type": "object",
                 "properties": {}
-            }))],
+            }))]
+            .into(),
             ..Default::default()
         };
 
@@ -677,7 +678,8 @@ mod tests {
                     "type": "object",
                     "properties": {"path": {"type": "string"}, "content": {"type": "string"}}
                 })),
-            ],
+            ]
+            .into(),
             ..Default::default()
         };
 
@@ -699,7 +701,7 @@ mod tests {
         let config = RequestConfig {
             model: "gemini-2.0-flash".to_string(),
             max_tokens: 1024,
-            tools: vec![],
+            tools: vec![].into(),
             ..Default::default()
         };
 

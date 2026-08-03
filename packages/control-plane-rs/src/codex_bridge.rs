@@ -1502,7 +1502,7 @@ pub(crate) async fn run_codex_app_server_headless_cli(
             &mut stdin,
             &serde_json::json!({
                 "type": "hello",
-                "protocol_version": "2026-04-02",
+                "protocol_version": "2026-08-01",
                 "client_info": {
                     "name": "maestro-rust-control-plane"
                 },

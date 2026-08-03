@@ -123,7 +123,6 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget, Wrap},
 };
 
-use crate::components::message_layout::MessageLayoutKey;
 use crate::components::textarea::{TextArea, TextAreaWidget};
 use crate::effects::shimmer_spans;
 use crate::runtime_badges::{build_runtime_badges, RuntimeBadgeParams};
@@ -2504,24 +2503,6 @@ impl Widget for ChatView<'_> {
 }
 
 impl ChatView<'_> {
-    fn message_layout_key(message: &Message) -> MessageLayoutKey {
-        let mut hasher = DefaultHasher::new();
-        message.id.hash(&mut hasher);
-        std::mem::discriminant(&message.role).hash(&mut hasher);
-        std::mem::discriminant(&message.kind).hash(&mut hasher);
-        message.content.len().hash(&mut hasher);
-        message.thinking.len().hash(&mut hasher);
-        message.streaming.hash(&mut hasher);
-        message.thinking_expanded.hash(&mut hasher);
-        message.tool_calls.len().hash(&mut hasher);
-        for tool_call in &message.tool_calls {
-            tool_call.call_id.hash(&mut hasher);
-            tool_call.tool.hash(&mut hasher);
-            tool_call.output.len().hash(&mut hasher);
-        }
-        MessageLayoutKey::new(hasher.finish())
-    }
-
     fn message_layout_settings_key(&self) -> u64 {
         let mut key = u64::from(self.state.compact_tool_outputs);
         for call_id in &self.state.expanded_tool_calls {
@@ -2549,14 +2530,10 @@ impl ChatView<'_> {
             return;
         }
 
-        let layout_keys = renderable_messages
-            .iter()
-            .map(|message| Self::message_layout_key(message))
-            .collect::<Vec<_>>();
         let layout = self.state.prepare_message_layout(
             area.width,
             self.message_layout_settings_key(),
-            &layout_keys,
+            &renderable_messages,
             |index| {
                 usize::from(calculate_message_height(
                     renderable_messages[index],

@@ -15,6 +15,7 @@ use reqwest::{
     Client, StatusCode,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -1445,6 +1446,7 @@ async fn send_message_with_retry(
     cancel: &CancellationToken,
 ) -> Result<(), AsyncTransportError> {
     let mut delay = MESSAGE_POST_BASE_DELAY;
+    let response_idempotency_key = response_idempotency_key(message);
 
     for attempt in 1..=MESSAGE_POST_MAX_RETRIES {
         if cancel.is_cancelled() {
@@ -1475,6 +1477,9 @@ async fn send_message_with_retry(
                     connection_capability,
                 );
         }
+        if let Some(response_idempotency_key) = response_idempotency_key.as_deref() {
+            request = request.header("x-maestro-idempotency-key", response_idempotency_key);
+        }
         let result = with_headers(request, config, true).send().await;
 
         match result {
@@ -1504,6 +1509,23 @@ async fn send_message_with_retry(
 
     Err(AsyncTransportError::Remote(
         "message retries exhausted unexpectedly".to_string(),
+    ))
+}
+
+fn response_idempotency_key(message: &ToAgentMessage) -> Option<String> {
+    let identity = match message {
+        ToAgentMessage::ToolResponse { call_id, .. } => format!("tool_response:{call_id}"),
+        ToAgentMessage::ClientToolResult { call_id, .. } => {
+            format!("client_tool_result:{call_id}")
+        }
+        ToAgentMessage::ServerRequestResponse { request_id, .. } => {
+            format!("server_request_response:{request_id}")
+        }
+        _ => return None,
+    };
+    Some(format!(
+        "maestro-response-{:x}",
+        Sha256::digest(identity.as_bytes())
     ))
 }
 

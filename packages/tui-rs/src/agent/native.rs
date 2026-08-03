@@ -108,7 +108,7 @@ use super::protocol::InlineToolApprovalContext;
 use super::safety::{SafetyController, SafetyVerdict};
 use super::{
     ensure_untrusted_content_policy, CredentialVault, DenialReason, ExecutionPhase,
-    ExecutionSource, FromAgent, TokenUsage, ToolExecution, ToolResult,
+    ExecutionSource, FromAgent, TokenUsage, ToolExecution, ToolOutcome, ToolResult,
 };
 use crate::ai::{
     provider_model_name, AiProvider, ContentBlock, ImageSource, Message, MessageContent,
@@ -121,7 +121,7 @@ use crate::safety::{
     FirewallVerdict, WorkflowStateTracker,
 };
 use crate::state::{ApprovalMode, QueueMode};
-use crate::tools::{ToolExecutor, ToolRegistry};
+use crate::tools::{ToolExecutionOptions, ToolExecutor, ToolRegistry};
 
 mod read_only_tools;
 
@@ -370,6 +370,136 @@ pub struct ToolDefinition {
     pub requires_approval: bool,
 }
 
+#[derive(Clone)]
+struct ModelToolCache {
+    goal_tools_visible: bool,
+    include_ide_tools: bool,
+    active_tool_names: HashSet<String>,
+    tools: Arc<Vec<Tool>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ToolProfile {
+    Fast,
+    All,
+    Review,
+    Explore,
+}
+
+impl ToolProfile {
+    fn from_env() -> Self {
+        match std::env::var("MAESTRO_TOOL_PROFILE")
+            .ok()
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("all" | "full") => Self::All,
+            Some("review") => Self::Review,
+            Some("explore") => Self::Explore,
+            _ => Self::Fast,
+        }
+    }
+
+    fn includes(self, name: &str) -> bool {
+        if self == Self::All {
+            return true;
+        }
+
+        let name = name.to_ascii_lowercase();
+        let names: &[&str] = match self {
+            Self::Fast => &[
+                "bash",
+                "read",
+                "write",
+                "edit",
+                "glob",
+                "grep",
+                "find",
+                "list",
+                "search",
+                "parallel_ripgrep",
+                "diff",
+                "status",
+                "background_tasks",
+                "todo",
+                "ask_user",
+                "get_goal",
+                "update_goal",
+                "tool_search",
+                "explore",
+            ],
+            Self::Review => &[
+                "read",
+                "grep",
+                "find",
+                "list",
+                "search",
+                "parallel_ripgrep",
+                "diff",
+                "status",
+                "tool_search",
+                "explore",
+            ],
+            Self::Explore => &[
+                "read",
+                "glob",
+                "grep",
+                "find",
+                "list",
+                "search",
+                "parallel_ripgrep",
+                "diff",
+                "status",
+                "tool_search",
+                "explore",
+            ],
+            Self::All => &[],
+        };
+        names.contains(&name.as_str())
+    }
+}
+
+fn initial_active_tool_names(
+    profile: ToolProfile,
+    tools: &HashMap<String, ToolDefinition>,
+    external_tools: &HashSet<String>,
+    explicit_allowed_tools: Option<&HashSet<String>>,
+) -> HashSet<String> {
+    tools
+        .keys()
+        .filter_map(|name| {
+            let explicitly_allowed = explicit_allowed_tools
+                .is_some_and(|allowed| allowed.contains(&name.to_ascii_lowercase()));
+            (profile.includes(name) || explicitly_allowed).then_some(name.clone())
+        })
+        .chain(external_tools.iter().cloned())
+        .collect()
+}
+
+fn include_ide_tools_enabled_value(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn include_ide_tools_enabled() -> bool {
+    std::env::var("MAESTRO_INCLUDE_IDE_TOOLS")
+        .map(|value| include_ide_tools_enabled_value(&value))
+        .unwrap_or(false)
+}
+
+fn goal_tools_visible_from_execution(execution: &ToolExecution) -> Option<bool> {
+    let ToolOutcome::Succeeded { output } = &execution.outcome else {
+        return None;
+    };
+    let response: Value = serde_json::from_str(output.as_str()).ok()?;
+    let status = response.get("goal")?.get("status")?.as_str()?;
+    Some(matches!(status, "active" | "paused" | "blocked"))
+}
+
 /// Command sent to the background agent runner
 ///
 /// Internal enum used for communication between `NativeAgent` (handle) and
@@ -419,6 +549,9 @@ enum AgentCommand {
     /// Enables or disables the extended thinking mode and sets the token budget.
     SetThinking { enabled: bool, budget: u32 },
 
+    /// Update whether the goal lifecycle tools are exposed to the model.
+    SetGoalToolsVisible { visible: bool },
+
     /// Update the active approval mode
     ///
     /// Keeps the runner's tool-execution gate (`requires_approval`) in sync
@@ -445,6 +578,10 @@ enum AgentCommand {
 
     /// Replace conversation history (used by /rewind and /fork rebuilds).
     ReplaceHistory { messages: Vec<Message> },
+
+    /// Replace history for a delegated child resume without clearing the
+    /// credential vault shared with its parent runner.
+    ReplaceHistoryPreservingCredentials { messages: Vec<Message> },
 
     /// Append a host-generated user note to conversation history without
     /// starting a model turn. Used for background-task lifecycle notices so
@@ -687,6 +824,24 @@ impl NativeAgent {
         )
     }
 
+    /// Create an agent that advertises only the selected built-in tools and
+    /// executes them in its own runner. Delegation tools are filtered by the
+    /// caller before this constructor is invoked, so the child cannot create
+    /// an unbounded delegation tree.
+    pub fn new_with_allowed_tools_and_credential_vault_runner(
+        config: NativeAgentConfig,
+        allowed_tools: &HashSet<String>,
+        credential_vault: CredentialVault,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
+        Self::new_with_tools_and_credential_vault_filtered(
+            config,
+            Vec::new(),
+            credential_vault,
+            Some(allowed_tools),
+            None,
+        )
+    }
+
     /// Create an agent with caller-provided tools. Caller tools override built-ins
     /// with the same name and are completed through `tool_response_sender`.
     pub fn new_with_tools(
@@ -780,7 +935,7 @@ impl NativeAgent {
             Some(client) => client,
             None => UnifiedClient::from_model(&config.model)?,
         };
-        let provider = client.provider();
+        let provider_name = client.provider_name().to_string();
 
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (tool_response_tx, tool_response_rx) = mpsc::unbounded_channel();
@@ -803,6 +958,14 @@ impl NativeAgent {
         for definition in external_tool_definitions {
             tools.insert(definition.tool.name.to_lowercase(), definition);
         }
+        let goal_tools_visible = crate::goal::GoalStore::load_default().tools_visible();
+        let include_ide_tools = include_ide_tools_enabled();
+        let active_tool_names = initial_active_tool_names(
+            ToolProfile::from_env(),
+            &tools,
+            &external_tools,
+            allowed_tools,
+        );
 
         // Create tool executor. This is the executor that actually runs
         // every auto-approved call (Yolo mode entirely, plus Selective
@@ -810,11 +973,11 @@ impl NativeAgent {
         // `NativeAgentConfig::sandbox_policy`. It must receive the same
         // policy a caller resolved for its own approval-gated executor, or
         // the sandbox default silently does nothing for the common case.
-        let tool_executor = build_runner_tool_executor(
+        let tool_executor = Arc::new(build_runner_tool_executor(
             &config.cwd,
             credential_vault.clone(),
             config.sandbox_policy.clone(),
-        );
+        ));
 
         // Load hook system from config files
         let mut hooks = IntegratedHookSystem::load_from_config(&config.cwd);
@@ -840,8 +1003,12 @@ impl NativeAgent {
             codex_history_restore_prefix_len: None,
             codex_current_prompt_started: false,
             config: config.clone(),
-            messages: Vec::new(),
+            messages: Arc::new(Vec::new()),
             tools,
+            model_tool_cache: None,
+            goal_tools_visible,
+            include_ide_tools,
+            active_tool_names,
             external_tools,
             tool_executor,
             credential_vault,
@@ -877,7 +1044,7 @@ impl NativeAgent {
             active_cancellation,
             event_tx,
             model_name: config.model,
-            provider_name: format!("{provider:?}"),
+            provider_name,
             shutdown_token,
             runner_handle: Some(runner_handle),
         };
@@ -1025,6 +1192,14 @@ impl NativeAgent {
             .send(AgentCommand::ReplaceHistory { messages });
     }
 
+    /// Replace conversation history while retaining credentials supplied by
+    /// the parent runner for a delegated child resume.
+    pub fn replace_history_preserving_credentials(&self, messages: Vec<Message>) {
+        let _ = self
+            .command_tx
+            .send(AgentCommand::ReplaceHistoryPreservingCredentials { messages });
+    }
+
     /// Append a host tool/user note to history without starting a turn.
     ///
     /// Callers must only flush these when the agent is idle so provider
@@ -1054,6 +1229,13 @@ impl NativeAgent {
             .send(AgentCommand::SetThinking { enabled, budget })
             .map_err(|e| anyhow::anyhow!("Failed to set thinking: {e}"))?;
         Ok(())
+    }
+
+    /// Set whether the goal lifecycle tools are exposed to the model.
+    pub fn set_goal_tools_visible(&self, visible: bool) {
+        let _ = self
+            .command_tx
+            .send(AgentCommand::SetGoalToolsVisible { visible });
     }
 
     /// Set the active approval mode.
@@ -1331,13 +1513,31 @@ struct NativeAgentRunner {
     ///
     /// Stores all messages (user prompts, assistant responses, tool results)
     /// in the current conversation. Cleared via `ClearHistory` command.
-    messages: Vec<Message>,
+    messages: Arc<Vec<Message>>,
 
     /// Tool definitions
     ///
     /// Map of tool name to tool definition. Loaded from the tool registry
     /// at startup and remains constant.
     tools: HashMap<String, ToolDefinition>,
+
+    /// Cached model-facing tool schemas. The registry is immutable for the
+    /// lifetime of a runner; only goal visibility and the IDE-tools flag can
+    /// change the filtered view.
+    model_tool_cache: Option<ModelToolCache>,
+
+    /// Tool schemas currently exposed to the model. The native `tool_search`
+    /// path expands this set on demand without rebuilding the executor.
+    active_tool_names: HashSet<String>,
+
+    /// Whether the current goal exposes `get_goal` and `update_goal`.
+    /// Updated by explicit app synchronization and successful `update_goal`
+    /// executions; it is intentionally not reloaded from disk per request.
+    goal_tools_visible: bool,
+
+    /// Whether the process opted into IDE-only tool schemas. This is static
+    /// process configuration, so read it once when the runner is created.
+    include_ide_tools: bool,
 
     /// Tools whose execution is owned by the calling client.
     external_tools: HashSet<String>,
@@ -1346,7 +1546,7 @@ struct NativeAgentRunner {
     ///
     /// Handles actual tool execution (bash, read, write, etc.) and determines
     /// which tools require approval based on command content.
-    tool_executor: ToolExecutor,
+    tool_executor: Arc<ToolExecutor>,
 
     /// Shared vault for this agent session and its tool executors.
     credential_vault: CredentialVault,
@@ -1466,7 +1666,85 @@ where
     }
 }
 
+fn history_storage<T>(messages: Vec<Message>) -> T
+where
+    T: From<Vec<Message>>,
+{
+    T::from(messages)
+}
+
+fn resolve_provider_history(
+    messages: &[Message],
+    credential_vault: &CredentialVault,
+) -> Result<Vec<Message>> {
+    let serialized = serde_json::to_value(messages).context("serialize provider history")?;
+    let resolved = credential_vault.resolve_in_json(&serialized);
+    serde_json::from_value(resolved).context("deserialize resolved provider history")
+}
+
+fn json_contains_credential_reference(value: &Value) -> bool {
+    match value {
+        Value::String(value) => CredentialVault::has_references(value),
+        Value::Array(values) => values.iter().any(json_contains_credential_reference),
+        Value::Object(values) => values.values().any(json_contains_credential_reference),
+        _ => false,
+    }
+}
+
+fn message_contains_credential_reference(message: &Message) -> bool {
+    match &message.content {
+        MessageContent::Text(text) => CredentialVault::has_references(text),
+        MessageContent::Blocks(blocks) => blocks.iter().any(|block| match block {
+            ContentBlock::Text { text }
+            | ContentBlock::Thinking { thinking: text, .. }
+            | ContentBlock::ToolResult { content: text, .. } => {
+                CredentialVault::has_references(text)
+            }
+            ContentBlock::ToolUse { input, .. } => json_contains_credential_reference(input),
+            ContentBlock::Image { source } => match source {
+                ImageSource::Base64 { media_type, data } => {
+                    CredentialVault::has_references(media_type)
+                        || CredentialVault::has_references(data)
+                }
+                ImageSource::Url { url } => CredentialVault::has_references(url),
+            },
+        }),
+    }
+}
+
+fn resolve_provider_history_shared(
+    messages: &Arc<Vec<Message>>,
+    credential_vault: &CredentialVault,
+) -> Result<Arc<Vec<Message>>> {
+    if !messages.iter().any(message_contains_credential_reference) {
+        return Ok(Arc::clone(messages));
+    }
+    Ok(Arc::new(resolve_provider_history(
+        messages,
+        credential_vault,
+    )?))
+}
+
+fn resolve_codex_tool_result_for_wire(
+    credential_vault: &CredentialVault,
+    vaulted_content: &str,
+) -> String {
+    credential_vault.resolve_all(vaulted_content)
+}
+
 impl NativeAgentRunner {
+    fn messages_mut(&mut self) -> &mut Vec<Message> {
+        Arc::make_mut(&mut self.messages)
+    }
+
+    fn set_goal_tools_visible(&mut self, visible: bool) {
+        if self.goal_tools_visible == visible {
+            return;
+        }
+        self.goal_tools_visible = visible;
+        self.model_tool_cache = None;
+    }
+
     fn compact_codex_history_for_boundary(&mut self) {
         if !super::codex_app_server_turns::model_should_use_app_server_turns(&self.config.model) {
             return;
@@ -1488,7 +1766,7 @@ impl NativeAgentRunner {
             result.cut_point.as_ref(),
             true,
         );
-        self.messages = result.messages;
+        self.messages = Arc::new(result.messages);
         self.codex_session = None;
         self.codex_history_restore_prefix_len = Some(self.messages.len());
         let _ = self.event_tx.send(FromAgent::Status {
@@ -1823,6 +2101,9 @@ impl NativeAgentRunner {
                     self.config.thinking_enabled = enabled;
                     self.config.thinking_budget = budget;
                 }
+                AgentCommand::SetGoalToolsVisible { visible } => {
+                    self.set_goal_tools_visible(visible);
+                }
                 AgentCommand::SetApprovalMode { mode } => {
                     self.config.approval_mode = mode;
                 }
@@ -1858,7 +2139,7 @@ impl NativeAgentRunner {
         if trimmed.is_empty() {
             return;
         }
-        self.messages.push(Message {
+        self.messages_mut().push(Message {
             role: Role::User,
             content: MessageContent::text(trimmed.to_string()),
         });
@@ -1880,7 +2161,8 @@ impl NativeAgentRunner {
             self.pending_tool_approvals
                 .insert(id, (approved, result, source));
         }
-        repair_orphaned_tool_calls(&mut self.messages, &mut self.pending_tool_approvals);
+        let messages = Arc::make_mut(&mut self.messages);
+        repair_orphaned_tool_calls(messages, &mut self.pending_tool_approvals);
     }
 
     fn drain_leading_pending_messages(
@@ -2018,7 +2300,7 @@ impl NativeAgentRunner {
             if let Some((message, prompt_context)) =
                 self.prepare_pending_message(&pending_message).await?
             {
-                self.messages.push(message);
+                self.messages_mut().push(message);
                 if let Some(context) = prompt_context {
                     Self::merge_prompt_context(&mut next_prompt_context, context);
                 }
@@ -2350,7 +2632,7 @@ impl NativeAgentRunner {
                     };
 
                     let current_prompt_index = self.messages.len();
-                    self.messages.push(Message {
+                    self.messages_mut().push(Message {
                         role: Role::User,
                         content,
                     });
@@ -2493,7 +2775,7 @@ impl NativeAgentRunner {
                                 "current Codex prompt index must still identify its user message"
                             );
                             if current_prompt.is_some_and(|message| message.role == Role::User) {
-                                self.messages.remove(current_prompt_index);
+                                self.messages_mut().remove(current_prompt_index);
                             }
                         }
                         self.codex_current_prompt_started = false;
@@ -2575,7 +2857,7 @@ impl NativeAgentRunner {
                     let _ = crate::codex_auth::apply_codex_auth_to_process_env();
                     match UnifiedClient::from_model(&model) {
                         Ok(client) => {
-                            let provider = format!("{:?}", client.provider());
+                            let provider = client.provider_name().to_string();
                             self.client = client;
                             self.config.model = model.clone();
                             self.hooks.set_model(&model);
@@ -2591,7 +2873,7 @@ impl NativeAgentRunner {
                                 if refresh.auth_present {
                                     match UnifiedClient::from_model(&model) {
                                         Ok(client) => {
-                                            let provider = format!("{:?}", client.provider());
+                                            let provider = client.provider_name().to_string();
                                             self.client = client;
                                             self.config.model = model.clone();
                                             self.hooks.set_model(&model);
@@ -2623,6 +2905,9 @@ impl NativeAgentRunner {
                     self.config.thinking_enabled = enabled;
                     self.config.thinking_budget = budget;
                 }
+                AgentCommand::SetGoalToolsVisible { visible } => {
+                    self.set_goal_tools_visible(visible);
+                }
                 AgentCommand::SetApprovalMode { mode } => {
                     self.config.approval_mode = mode;
                 }
@@ -2636,7 +2921,7 @@ impl NativeAgentRunner {
                     self.config.system_prompt = Some(system_prompt);
                 }
                 AgentCommand::ClearHistory => {
-                    self.messages.clear();
+                    self.messages_mut().clear();
                     self.codex_session = None;
                     self.codex_history_restore_prefix_len = None;
                     self.codex_current_prompt_started = false;
@@ -2646,7 +2931,7 @@ impl NativeAgentRunner {
                 }
                 AgentCommand::ReplaceHistory { messages } => {
                     let restored_prefix_len = messages.len();
-                    self.messages = messages;
+                    self.messages = Arc::new(messages);
                     self.codex_session = None;
                     self.codex_history_restore_prefix_len = Some(restored_prefix_len);
                     self.codex_current_prompt_started = false;
@@ -2656,6 +2941,19 @@ impl NativeAgentRunner {
                     // Replacing history is used for session restore. References
                     // from the previous active session must not cross that boundary.
                     self.credential_vault.clear();
+                }
+                AgentCommand::ReplaceHistoryPreservingCredentials { messages } => {
+                    let restored_prefix_len = messages.len();
+                    // `main` stores runner history in an Arc; keep this
+                    // assignment compatible with both the pre-merge Vec and
+                    // the current shared-history representation.
+                    self.messages = history_storage(messages);
+                    self.codex_session = None;
+                    self.codex_history_restore_prefix_len = Some(restored_prefix_len);
+                    self.codex_current_prompt_started = false;
+                    self.compact_codex_history_for_boundary();
+                    self.pending_messages.clear();
+                    self.safety.reset();
                 }
                 AgentCommand::Continue => {
                     // Continue from current context without adding a new user message
@@ -2720,37 +3018,52 @@ impl NativeAgentRunner {
     }
 
     /// Build request configuration
-    fn build_config(&self) -> RequestConfig {
-        // Codex-style: only expose goal tools while a goal record exists.
-        let goal_tools_visible = crate::goal::GoalStore::load_default().tools_visible();
-        // IDE LSP stubs are never wired in the terminal agent; sending their
-        // schemas every turn costs tokens for tools that only error. Opt in
-        // with MAESTRO_INCLUDE_IDE_TOOLS=1 for IDE-bridge experiments.
-        let include_ide_tools = std::env::var("MAESTRO_INCLUDE_IDE_TOOLS")
-            .map(|v| {
-                matches!(
-                    v.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
+    fn build_config(&mut self) -> RequestConfig {
+        // These values are cached for the runner lifetime and updated through
+        // explicit commands when app-owned goal state changes.
+        let goal_tools_visible = self.goal_tools_visible;
+        let include_ide_tools = self.include_ide_tools;
+        let cached_tools = self
+            .model_tool_cache
+            .as_ref()
+            .filter(|cache| {
+                cache.goal_tools_visible == goal_tools_visible
+                    && cache.include_ide_tools == include_ide_tools
+                    && cache.active_tool_names == self.active_tool_names
             })
-            .unwrap_or(false);
-        let tools: Vec<Tool> = self
-            .tools
-            .values()
-            .filter(|d| {
-                let name = d.tool.name.as_str();
-                if matches!(name, "get_goal" | "update_goal") {
-                    return goal_tools_visible;
-                }
-                if !include_ide_tools
-                    && (name.starts_with("vscode_") || name.starts_with("jetbrains_"))
-                {
-                    return false;
-                }
-                true
-            })
-            .map(|d| compact_tool_for_model(d.tool.clone()))
-            .collect();
+            .map(|cache| Arc::clone(&cache.tools));
+        let tools = if let Some(tools) = cached_tools {
+            tools
+        } else {
+            let mut definitions: Vec<&ToolDefinition> = self
+                .tools
+                .values()
+                .filter(|d| {
+                    let name = d.tool.name.as_str();
+                    if !self.active_tool_names.contains(&name.to_ascii_lowercase()) {
+                        return false;
+                    }
+                    if !tool_is_visible_to_model(name, goal_tools_visible, include_ide_tools) {
+                        return false;
+                    }
+                    true
+                })
+                .collect();
+            definitions.sort_unstable_by(|left, right| left.tool.name.cmp(&right.tool.name));
+            let tools = Arc::new(
+                definitions
+                    .into_iter()
+                    .map(|d| compact_tool_for_model(d.tool.clone()))
+                    .collect(),
+            );
+            self.model_tool_cache = Some(ModelToolCache {
+                goal_tools_visible,
+                include_ide_tools,
+                active_tool_names: self.active_tool_names.clone(),
+                tools: Arc::clone(&tools),
+            });
+            tools
+        };
 
         let thinking = if self.config.thinking_enabled {
             Some(ThinkingConfig::enabled(self.config.thinking_budget))
@@ -2775,8 +3088,21 @@ impl NativeAgentRunner {
         // already embed it (the TUI base prompt) pass through unchanged.
         let system = ensure_untrusted_content_policy(system);
 
+        let configured_model = self.config.model.trim();
+        let model = if ["evalops/", "maestro-managed/"].iter().any(|prefix| {
+            configured_model
+                .get(..prefix.len())
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        }) {
+            // Preserve the managed namespace for telemetry and let the
+            // managed OpenAI boundary strip it immediately before dispatch.
+            configured_model.to_string()
+        } else {
+            provider_model_name(configured_model)
+        };
+
         RequestConfig {
-            model: provider_model_name(&self.config.model),
+            model,
             max_tokens: self.config.max_tokens,
             temperature: if self.config.thinking_enabled {
                 None // Temperature must be 1 or omitted for thinking
@@ -2801,15 +3127,17 @@ impl NativeAgentRunner {
         let mut answer = String::new();
         let mut usage = TokenUsage::default();
         let mut saw_usage = false;
-        let result = await_side_question_or_shutdown(&self.shutdown_token, async {
-            let mut messages = self.messages.clone();
+        let shutdown_token = self.shutdown_token.clone();
+        let credential_vault = self.credential_vault.clone();
+        let result = await_side_question_or_shutdown(&shutdown_token, async {
+            let mut messages = resolve_provider_history(&self.messages, &credential_vault)?;
             messages.push(Message {
                 role: Role::User,
                 content: MessageContent::text(question.clone()),
             });
             let mut config = self.build_config();
-            config.tools.clear();
-            let mut rx = self.client.stream(&messages, &config).await?;
+            config.tools = Arc::new(Vec::new());
+            let mut rx = self.client.stream_owned_config(&messages, config).await?;
 
             while let Some(event) = rx.recv().await {
                 match event {
@@ -2903,7 +3231,10 @@ impl NativeAgentRunner {
             ensure_untrusted_content_policy(system)
         };
         let restored_prefix_len = self.codex_history_restore_prefix_len.unwrap_or(0);
-        let restored_messages = &self.messages[..restored_prefix_len.min(self.messages.len())];
+        let restored_messages = resolve_provider_history(
+            &self.messages[..restored_prefix_len.min(self.messages.len())],
+            &self.credential_vault,
+        )?;
         let session = super::codex_app_server_turns::CodexAppServerTurnSession::connect(
             model,
             Some(cwd),
@@ -2911,7 +3242,7 @@ impl NativeAgentRunner {
             sandbox,
             &dynamic_tools,
             instructions,
-            restored_messages,
+            &restored_messages,
         )
         .await?;
         self.codex_history_restore_prefix_len = None;
@@ -3020,7 +3351,7 @@ impl NativeAgentRunner {
                         result.assistant_text_is_full,
                     );
                     if !final_text.is_empty() {
-                        self.messages.push(Message {
+                        self.messages_mut().push(Message {
                             role: Role::Assistant,
                             content: MessageContent::Text(final_text),
                         });
@@ -3079,7 +3410,7 @@ impl NativeAgentRunner {
                 .context("Codex app-server session missing")?
                 .steer_text(turn_id, text, None)
                 .await?;
-            self.messages.push(message);
+            self.messages_mut().push(message);
         }
         Ok(())
     }
@@ -3158,7 +3489,7 @@ impl NativeAgentRunner {
 
     fn flush_codex_streamed_assistant(&mut self, streamed_assistant: &mut String) {
         if !streamed_assistant.is_empty() {
-            self.messages.push(Message {
+            self.messages_mut().push(Message {
                 role: Role::Assistant,
                 content: MessageContent::Text(std::mem::take(streamed_assistant)),
             });
@@ -3166,16 +3497,12 @@ impl NativeAgentRunner {
     }
 
     fn record_codex_tool_use(&mut self, call_id: &str, tool_name: &str, args: &Value) {
-        append_codex_tool_use(
-            &mut self.messages,
-            call_id,
-            tool_name,
-            self.credential_vault.vault_in_json(args),
-        );
+        let input = self.credential_vault.vault_in_json(args);
+        append_codex_tool_use(self.messages_mut(), call_id, tool_name, input);
     }
 
     fn record_codex_tool_result(&mut self, call_id: &str, content: String, is_error: bool) {
-        append_codex_tool_result(&mut self.messages, call_id, content, is_error);
+        append_codex_tool_result(self.messages_mut(), call_id, content, is_error);
     }
 
     async fn handle_codex_server_request(
@@ -3277,12 +3604,22 @@ impl NativeAgentRunner {
                     }
                     if let Some(result) = provided_result {
                         if result.success {
-                            self.record_codex_tool_result(&call_id, result.output.clone(), false);
-                            request.respond(tool_call_success_result(result.output));
+                            let vaulted_output = result.output;
+                            let response = resolve_codex_tool_result_for_wire(
+                                &self.credential_vault,
+                                &vaulted_output,
+                            );
+                            self.record_codex_tool_result(&call_id, vaulted_output, false);
+                            request.respond(tool_call_success_result(response));
                         } else {
-                            let error = result.error.unwrap_or_else(|| result.output.clone());
-                            self.record_codex_tool_result(&call_id, error.clone(), true);
-                            request.respond(tool_call_error_result(error));
+                            let vaulted_error =
+                                result.error.unwrap_or_else(|| result.output.clone());
+                            let response = resolve_codex_tool_result_for_wire(
+                                &self.credential_vault,
+                                &vaulted_error,
+                            );
+                            self.record_codex_tool_result(&call_id, vaulted_error, true);
+                            request.respond(tool_call_error_result(response));
                         }
                         return Ok(());
                     }
@@ -3299,13 +3636,15 @@ impl NativeAgentRunner {
                 let execution = self
                     .execute_tool(&registry_name, &args, &call_id, None)
                     .await;
-                let text = execution.model_content();
+                let vaulted_text = execution.model_content();
+                let response =
+                    resolve_codex_tool_result_for_wire(&self.credential_vault, &vaulted_text);
                 if execution.is_error() {
-                    self.record_codex_tool_result(&call_id, text.clone(), true);
-                    request.respond(tool_call_error_result(text));
+                    self.record_codex_tool_result(&call_id, vaulted_text, true);
+                    request.respond(tool_call_error_result(response));
                 } else {
-                    self.record_codex_tool_result(&call_id, text.clone(), false);
-                    request.respond(tool_call_success_result(text));
+                    self.record_codex_tool_result(&call_id, vaulted_text, false);
+                    request.respond(tool_call_success_result(response));
                 }
                 Ok(())
             }
@@ -3363,7 +3702,12 @@ impl NativeAgentRunner {
 
             // Make the API call
             let config = self.build_config();
-            let mut rx = self.client.stream(&self.messages, &config).await?;
+            let provider_messages =
+                resolve_provider_history_shared(&self.messages, &self.credential_vault)?;
+            let mut rx = self
+                .client
+                .stream_owned_config_shared_messages(provider_messages, config)
+                .await?;
 
             // Collect the response
             let mut assistant_content: Vec<ContentBlock> = Vec::new();
@@ -3523,7 +3867,7 @@ impl NativeAgentRunner {
                                 let _ = self.event_tx.send(FromAgent::Status {
                                     message: status_msg,
                                 });
-                                self.messages = result.messages;
+                                self.messages = Arc::new(result.messages);
                                 self.emit_conversation_snapshot();
                             }
                             // Hooks can also handle overflow
@@ -3574,7 +3918,7 @@ impl NativeAgentRunner {
 
             // Add assistant message to history
             if !assistant_content.is_empty() {
-                self.messages.push(Message {
+                self.messages_mut().push(Message {
                     role: Role::Assistant,
                     content: MessageContent::Blocks(assistant_content),
                 });
@@ -3623,7 +3967,7 @@ impl NativeAgentRunner {
                     if processed_any_tool {
                         if self.drain_pending_commands() {
                             if !tool_results.is_empty() {
-                                self.messages.push(Message {
+                                self.messages_mut().push(Message {
                                     role: Role::User,
                                     content: MessageContent::Blocks(std::mem::take(
                                         &mut tool_results,
@@ -3664,7 +4008,8 @@ impl NativeAgentRunner {
                         });
                         continue;
                     }
-                    if !self.tools.contains_key(&tool_name.to_lowercase()) {
+                    let tool_key = tool_name.to_lowercase();
+                    if !self.tools.contains_key(&tool_key) {
                         self.drain_read_only_tool_calls(
                             &mut pending_read_only_tool_calls,
                             &mut tool_results,
@@ -3755,7 +4100,8 @@ impl NativeAgentRunner {
                     }
 
                     let safe_args = self.credential_vault.vault_in_json(&args);
-                    let resolved_args = self.credential_vault.resolve_in_json(&safe_args);
+                    let resolved_args =
+                        tool_args_for_execution(&tool_name, &safe_args, &self.credential_vault);
 
                     // Check safety controls (doom loop and rate limiting)
                     match self.safety.check_tool_call(&tool_name, &safe_args) {
@@ -3798,7 +4144,6 @@ impl NativeAgentRunner {
                         }
                     }
 
-                    let tool_key = tool_name.to_lowercase();
                     let workflow_snapshot = self.workflow_state.snapshot();
                     // Ensure MCP annotations are loaded before firewall check
                     if crate::mcp::McpClient::is_mcp_tool(&tool_key) {
@@ -3947,10 +4292,12 @@ impl NativeAgentRunner {
                     // Auto-approved, execute immediately
                     // Note: ToolExecutor sends ToolStart/ToolEnd events internally
                     let result = {
-                        let resolved_args = self.credential_vault.resolve_in_json(&safe_args);
+                        let resolved_args =
+                            tool_args_for_execution(&tool_name, &safe_args, &self.credential_vault);
                         self.execute_tool(&tool_name, &resolved_args, &call_id, None)
                             .await
                     };
+                    let tool_name_for_cache = tool_name.clone();
                     let call = ToolCallContext {
                         call_id,
                         tool_name,
@@ -3968,7 +4315,11 @@ impl NativeAgentRunner {
                     // Serial tools may mutate state through bash, inline, MCP,
                     // or external execution. Reads that follow in this model
                     // batch must not reuse entries cached before that call.
-                    invalidate_cache_after_serial_tool(&self.tool_executor, true);
+                    invalidate_cache_after_serial_tool(
+                        &self.tool_executor,
+                        &tool_name_for_cache,
+                        true,
+                    );
                 }
 
                 self.drain_read_only_tool_calls(
@@ -4210,10 +4561,15 @@ impl NativeAgentRunner {
                                     DenialReason::User,
                                 ))
                             };
+                            let tool_name_for_cache = call.tool_name.clone();
                             let result_block =
                                 self.finalize_tool_call_result(call, approved, result).await;
                             tool_results.push(result_block);
-                            invalidate_cache_after_serial_tool(&self.tool_executor, approved);
+                            invalidate_cache_after_serial_tool(
+                                &self.tool_executor,
+                                &tool_name_for_cache,
+                                approved,
+                            );
                         }
                         DeferredToolCall::Execute(mut call) => {
                             // PreToolUse may depend on filesystem or workflow
@@ -4375,8 +4731,11 @@ impl NativeAgentRunner {
                                 }
                             }
                             if !rejected {
-                                let resolved_args =
-                                    self.credential_vault.resolve_in_json(&call.safe_args);
+                                let resolved_args = tool_args_for_execution(
+                                    &call.tool_name,
+                                    &call.safe_args,
+                                    &self.credential_vault,
+                                );
                                 let result = self
                                     .execute_tool(
                                         &call.tool_name,
@@ -4385,11 +4744,16 @@ impl NativeAgentRunner {
                                         None,
                                     )
                                     .await;
+                                let tool_name_for_cache = call.tool_name.clone();
                                 let result_block = self
                                     .finalize_tool_call_result(call, true, Some(result))
                                     .await;
                                 tool_results.push(result_block);
-                                invalidate_cache_after_serial_tool(&self.tool_executor, true);
+                                invalidate_cache_after_serial_tool(
+                                    &self.tool_executor,
+                                    &tool_name_for_cache,
+                                    true,
+                                );
                             }
                         }
                     }
@@ -4416,7 +4780,7 @@ impl NativeAgentRunner {
                 if deferred_steering.is_empty() {
                     if self.drain_pending_commands() {
                         if !tool_results.is_empty() {
-                            self.messages.push(Message {
+                            self.messages_mut().push(Message {
                                 role: Role::User,
                                 content: MessageContent::Blocks(std::mem::take(&mut tool_results)),
                             });
@@ -4464,7 +4828,7 @@ impl NativeAgentRunner {
                 }
 
                 // Add tool results to history
-                self.messages.push(Message {
+                self.messages_mut().push(Message {
                     role: Role::User,
                     content: MessageContent::Blocks(tool_results),
                 });
@@ -4530,7 +4894,7 @@ impl NativeAgentRunner {
                     let _ = self.event_tx.send(FromAgent::Status {
                         message: status_msg,
                     });
-                    self.messages = result.messages;
+                    self.messages = Arc::new(result.messages);
                     self.emit_conversation_snapshot();
                 }
             }
@@ -4560,6 +4924,123 @@ impl NativeAgentRunner {
         Ok(())
     }
 
+    fn execute_tool_search(&mut self, args: &Value, call_id: &str) -> ToolExecution {
+        let emit = |execution: &ToolExecution| {
+            let _ = self.event_tx.send(FromAgent::ToolStart {
+                call_id: call_id.to_string(),
+            });
+            let result = execution.to_legacy();
+            if !result.output.is_empty() {
+                let _ = self.event_tx.send(FromAgent::ToolOutput {
+                    call_id: call_id.to_string(),
+                    content: result.output.clone(),
+                });
+            }
+            let _ = self.event_tx.send(FromAgent::ToolEnd {
+                call_id: call_id.to_string(),
+                success: result.success,
+                result: Some(result),
+                receipt: Some(execution.receipt.clone()),
+            });
+        };
+
+        let query = args
+            .get("query")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        let exact_names = args
+            .get("names")
+            .and_then(Value::as_array)
+            .map(|names| {
+                names
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_ascii_lowercase)
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        if query.is_empty() && exact_names.is_empty() {
+            let execution = ToolExecution::from_legacy(
+                call_id,
+                "tool_search",
+                ExecutionSource::Native,
+                ToolResult::failure("tool_search requires query or names"),
+            );
+            emit(&execution);
+            return execution;
+        }
+
+        let terms = query.split_whitespace().collect::<Vec<_>>();
+        let mut candidates = self
+            .tools
+            .iter()
+            .filter_map(|(name, definition)| {
+                let name_lower = name.to_ascii_lowercase();
+                if name_lower == "tool_search"
+                    || !tool_is_visible_to_model(
+                        name,
+                        self.goal_tools_visible,
+                        self.include_ide_tools,
+                    )
+                {
+                    return None;
+                }
+                let description = definition.tool.description.to_ascii_lowercase();
+                let exact = exact_names.contains(&name_lower);
+                let mut score = if exact { 1_000 } else { 0 };
+                for term in &terms {
+                    if name_lower.contains(term) {
+                        score += 50;
+                    }
+                    if description.contains(term) {
+                        score += 10;
+                    }
+                }
+                (score > 0).then_some((score, name_lower, definition.tool.description.clone()))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_unstable_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
+
+        let max_results = args
+            .get("maxResults")
+            .and_then(Value::as_u64)
+            .map_or(8, |value| value.clamp(1, 16) as usize);
+        let selected = candidates.into_iter().take(max_results).collect::<Vec<_>>();
+        if selected.is_empty() {
+            let execution = ToolExecution::from_legacy(
+                call_id,
+                "tool_search",
+                ExecutionSource::Native,
+                ToolResult::failure(format!("No tools matched `{query}`")),
+            );
+            emit(&execution);
+            return execution;
+        }
+
+        let mut activated = Vec::new();
+        let mut lines = Vec::with_capacity(selected.len() + 1);
+        lines.push("Activated tools for the next turn:".to_string());
+        for (_, name, description) in selected {
+            if self.active_tool_names.insert(name.clone()) {
+                activated.push(name.clone());
+            }
+            lines.push(format!("- {name}: {description}"));
+        }
+        if !activated.is_empty() {
+            self.model_tool_cache = None;
+        }
+        let result = ToolResult::success(lines.join("\n")).with_details(json!({
+            "activated": activated,
+            "nextTurn": true,
+        }));
+        let execution =
+            ToolExecution::from_legacy(call_id, "tool_search", ExecutionSource::Native, result);
+        emit(&execution);
+        execution
+    }
+
     /// Execute a tool using the `ToolExecutor`
     async fn execute_tool(
         &mut self,
@@ -4568,6 +5049,10 @@ impl NativeAgentRunner {
         call_id: &str,
         approved_inline_env: Option<&HashMap<String, String>>,
     ) -> ToolExecution {
+        if tool_name.eq_ignore_ascii_case("tool_search") {
+            return self.execute_tool_search(args, call_id);
+        }
+
         let cancel = self.shutdown_token.child_token();
         let terminal_drain_required =
             native_tool_requires_terminal_drain(&self.tool_executor, tool_name, args);
@@ -4579,11 +5064,25 @@ impl NativeAgentRunner {
                 args,
                 Some(&self.event_tx),
                 call_id,
-                cancel,
-                approved_inline_env,
+                ToolExecutionOptions {
+                    cancel,
+                    approved_inline_env,
+                    hooks: Some(&mut self.hooks),
+                },
             )
             .await;
         self.set_active_tool_cancel_token(None, false);
+        // Direct Codex/native dispatch does not pass through the main turn's
+        // serial-tool boundary. Keep the warm executor honest after a Bash,
+        // inline, MCP, or other side-effecting call from that path too.
+        invalidate_cache_after_serial_tool(&self.tool_executor, tool_name, true);
+        if tool_name.eq_ignore_ascii_case("update_goal")
+            && execution.receipt.source == ExecutionSource::Native
+        {
+            if let Some(visible) = goal_tools_visible_from_execution(&execution) {
+                self.set_goal_tools_visible(visible);
+            }
+        }
         execution
     }
 
@@ -4609,7 +5108,8 @@ impl NativeAgentRunner {
         } = call;
         let mut result = result;
         if approved && result.is_none() {
-            let resolved_args = self.credential_vault.resolve_in_json(&safe_args);
+            let resolved_args =
+                tool_args_for_execution(&tool_name, &safe_args, &self.credential_vault);
             let approved_environment = approval_inline_env
                 .as_ref()
                 .map(|context| &context.environment);
@@ -4709,8 +5209,7 @@ impl NativeAgentRunner {
         let cancel_token = CancellationToken::new();
         self.set_active_tool_cancel_token(Some(cancel_token.clone()), false);
         let mut results_by_call_id = execute_native_read_only_tool_wave(
-            &self.config.cwd,
-            self.credential_vault.clone(),
+            Arc::clone(&self.tool_executor),
             &self.event_tx,
             &pending_calls,
             Some(cancel_token),
@@ -4975,6 +5474,24 @@ fn parse_tool_input(tool_name: &str, json: &str) -> Result<serde_json::Value, St
         .map_err(|err| format!("Failed to parse tool input JSON for '{tool_name}': {err}"))
 }
 
+/// Lifecycle managers must receive opaque credential references so child
+/// prompts and durable records never receive the parent's resolved secrets.
+/// The child receives the shared vault separately and resolves only at the
+/// provider/tool execution boundary.
+fn tool_args_for_execution(
+    tool_name: &str,
+    safe_args: &serde_json::Value,
+    credential_vault: &CredentialVault,
+) -> serde_json::Value {
+    if tool_name.eq_ignore_ascii_case("spawn_subagent")
+        || tool_name.eq_ignore_ascii_case("resume_subagent")
+    {
+        safe_args.clone()
+    } else {
+        credential_vault.resolve_in_json(safe_args)
+    }
+}
+
 /// Everything needed to finish a tool call once its execution decision is
 /// known. Approval-needing calls capture their hook-adjusted arguments when
 /// their batched `ToolCall` event is emitted. Auto-approved calls behind that
@@ -5159,10 +5676,63 @@ fn emit_deferred_policy_failure(
     });
 }
 
-fn invalidate_cache_after_serial_tool(tool_executor: &ToolExecutor, executed: bool) {
-    if executed {
+fn invalidate_cache_after_serial_tool(
+    tool_executor: &ToolExecutor,
+    tool_name: &str,
+    executed: bool,
+) {
+    if executed && tool_can_change_workspace(tool_name) {
         tool_executor.clear_cache();
     }
+}
+
+fn tool_can_change_workspace(tool_name: &str) -> bool {
+    !matches!(
+        tool_name.to_ascii_lowercase().as_str(),
+        "read"
+            | "read_image"
+            | "glob"
+            | "grep"
+            | "diff"
+            | "list"
+            | "find"
+            | "search"
+            | "parallel_ripgrep"
+            | "explore"
+            | "websearch"
+            | "codesearch"
+            | "status"
+            | "ask_user"
+            | "extract_document"
+            | "web_fetch"
+            | "webfetch"
+            | "screenshot"
+            | "mcp_list_resources"
+            | "mcp_list_prompts"
+            | "mcp_read_resource"
+            | "mcp_get_prompt"
+            | "get_goal"
+            | "vscode_get_diagnostics"
+            | "jetbrains_get_diagnostics"
+            | "vscode_get_definition"
+            | "jetbrains_get_definition"
+            | "vscode_find_references"
+            | "jetbrains_find_references"
+            | "vscode_read_file_range"
+            | "jetbrains_read_file_range"
+    )
+}
+
+fn tool_is_visible_to_model(
+    tool_name: &str,
+    goal_tools_visible: bool,
+    include_ide_tools: bool,
+) -> bool {
+    let name = tool_name.to_ascii_lowercase();
+    if matches!(name.as_str(), "get_goal" | "update_goal") {
+        return goal_tools_visible;
+    }
+    include_ide_tools || !(name.starts_with("vscode_") || name.starts_with("jetbrains_"))
 }
 
 fn deferred_firewall_verdict(
@@ -5450,6 +6020,69 @@ mod tests {
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn goal_tools_visibility_tracks_update_goal_results() {
+        for (status, expected) in [
+            ("active", true),
+            ("paused", true),
+            ("blocked", true),
+            ("complete", false),
+        ] {
+            let execution = ToolExecution::from_legacy(
+                "call-1",
+                "update_goal",
+                ExecutionSource::Native,
+                ToolResult::success(serde_json::json!({"goal": {"status": status}}).to_string()),
+            );
+            assert_eq!(
+                goal_tools_visible_from_execution(&execution),
+                Some(expected),
+                "unexpected visibility for goal status {status}"
+            );
+        }
+
+        let failed = ToolExecution::from_legacy(
+            "call-2",
+            "update_goal",
+            ExecutionSource::Native,
+            ToolResult::failure("goal update failed"),
+        );
+        assert_eq!(goal_tools_visible_from_execution(&failed), None);
+
+        let malformed = ToolExecution::from_legacy(
+            "call-3",
+            "update_goal",
+            ExecutionSource::Native,
+            ToolResult::success("not json"),
+        );
+        assert_eq!(goal_tools_visible_from_execution(&malformed), None);
+    }
+
+    #[test]
+    fn codex_wire_results_resolve_vaulted_credentials_without_mutating_input() {
+        let vault = CredentialVault::new();
+        let reference = vault.store(
+            "child-discovered-secret",
+            crate::agent::CredentialType::Secret,
+        );
+        let vaulted = format!("child result: {reference}");
+
+        let response = resolve_codex_tool_result_for_wire(&vault, &vaulted);
+
+        assert_eq!(response, "child result: child-discovered-secret");
+        assert_eq!(vaulted, format!("child result: {reference}"));
+    }
+
+    #[test]
+    fn ide_tool_flag_accepts_only_explicit_truthy_values() {
+        for value in ["1", "true", "TRUE", " yes ", "on"] {
+            assert!(include_ide_tools_enabled_value(value), "{value:?}");
+        }
+        for value in ["", "0", "false", "y", "random"] {
+            assert!(!include_ide_tools_enabled_value(value), "{value:?}");
+        }
+    }
 
     async fn read_scripted_provider_request(
         stream: &mut tokio::net::TcpStream,
@@ -7765,6 +8398,73 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
     }
 
     #[test]
+    fn fast_tool_profile_is_small_but_has_an_escape_hatch() {
+        let registry = ToolRegistry::new();
+        let definitions = registry
+            .tools()
+            .map(|definition| (definition.tool.name.clone(), definition.clone()))
+            .collect::<HashMap<_, _>>();
+        let active =
+            initial_active_tool_names(ToolProfile::Fast, &definitions, &HashSet::new(), None);
+
+        assert!(active.contains("read"));
+        assert!(active.contains("bash"));
+        assert!(active.contains("tool_search"));
+        assert!(active.contains("explore"));
+        assert!(!active.contains("gh_pr"));
+        assert!(!active.contains("vscode_get_definition"));
+    }
+
+    #[test]
+    fn all_tool_profile_preserves_every_registered_tool() {
+        let registry = ToolRegistry::new();
+        let definitions = registry
+            .tools()
+            .map(|definition| (definition.tool.name.clone(), definition.clone()))
+            .collect::<HashMap<_, _>>();
+        let active =
+            initial_active_tool_names(ToolProfile::All, &definitions, &HashSet::new(), None);
+
+        assert_eq!(active.len(), definitions.len());
+    }
+
+    #[test]
+    fn explicit_allowed_tools_override_fast_profile() {
+        let registry = ToolRegistry::new();
+        let definitions = registry
+            .tools()
+            .map(|definition| (definition.tool.name.clone(), definition.clone()))
+            .collect::<HashMap<_, _>>();
+        let allowed = HashSet::from([String::from("websearch")]);
+
+        let active = initial_active_tool_names(
+            ToolProfile::Fast,
+            &definitions,
+            &HashSet::new(),
+            Some(&allowed),
+        );
+
+        assert!(active.contains("websearch"));
+    }
+
+    #[test]
+    fn tool_visibility_matches_model_schema_filtering() {
+        assert!(!tool_is_visible_to_model(
+            "vscode_get_definition",
+            false,
+            false
+        ));
+        assert!(tool_is_visible_to_model(
+            "vscode_get_definition",
+            false,
+            true
+        ));
+        assert!(!tool_is_visible_to_model("get_goal", false, true));
+        assert!(tool_is_visible_to_model("get_goal", true, false));
+        assert!(tool_is_visible_to_model("websearch", false, false));
+    }
+
+    #[test]
     fn test_request_config_building() {
         let config = NativeAgentConfig {
             model: "claude-sonnet-4-5-20250514".to_string(),
@@ -7787,7 +8487,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             max_tokens: config.max_tokens,
             temperature: Some(0.7),
             system: config.system_prompt.clone(),
-            tools,
+            tools: tools.into(),
             thinking: None,
             cache_system_prompt: true, // Test caching enabled
         };
@@ -7879,6 +8579,58 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         let err = parse_tool_input("bash", "{invalid").unwrap_err();
         assert!(err.contains("bash"));
         assert!(err.contains("Failed to parse tool input JSON"));
+    }
+
+    #[test]
+    fn lifecycle_tool_args_preserve_opaque_credential_references() {
+        let vault = CredentialVault::new();
+        let reference = vault.store("secret-value", crate::agent::CredentialType::Token);
+        let args = serde_json::json!({
+            "task": format!("Use {reference} in the child")
+        });
+
+        assert_eq!(
+            tool_args_for_execution("spawn_subagent", &args, &vault),
+            args,
+            "durable lifecycle records must retain the opaque reference"
+        );
+        assert_eq!(
+            tool_args_for_execution("bash", &args, &vault),
+            serde_json::json!({"task": "Use secret-value in the child"})
+        );
+    }
+
+    #[test]
+    fn provider_history_resolves_references_without_mutating_durable_history() {
+        let vault = CredentialVault::new();
+        let reference = vault.store("secret-value", crate::agent::CredentialType::Token);
+        let history = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text(format!("Use {reference} in the child")),
+        }];
+
+        let resolved = resolve_provider_history(&history, &vault).expect("history should resolve");
+        let MessageContent::Text(resolved_text) = &resolved[0].content else {
+            panic!("expected resolved text message");
+        };
+        assert_eq!(resolved_text, "Use secret-value in the child");
+
+        let MessageContent::Text(durable_text) = &history[0].content else {
+            panic!("expected vaulted text message");
+        };
+        assert_eq!(durable_text, &format!("Use {reference} in the child"));
+    }
+
+    #[test]
+    fn provider_history_without_references_reuses_shared_storage() {
+        let history = Arc::new(vec![Message {
+            role: Role::User,
+            content: MessageContent::text("ordinary history"),
+        }]);
+        let resolved = resolve_provider_history_shared(&history, &CredentialVault::new())
+            .expect("history should be reusable");
+
+        assert!(Arc::ptr_eq(&history, &resolved));
     }
 
     #[tokio::test]
@@ -8576,7 +9328,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         let stale = executor.execute("read", &args, None, "read-stale").await;
         assert!(stale.output.contains("before"));
 
-        invalidate_cache_after_serial_tool(&executor, true);
+        invalidate_cache_after_serial_tool(&executor, "bash", true);
 
         let refreshed = executor.execute("read", &args, None, "read-after").await;
         assert!(refreshed.output.contains("after"));

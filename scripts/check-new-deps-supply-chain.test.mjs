@@ -8,6 +8,7 @@ import {
 	newPackages,
 	parseDenyDiagnostics,
 	newDependencyFindings,
+	preexistingDependencyFindings,
 	scopedDependencyFindings,
 } from "./check-new-deps-supply-chain.mjs";
 
@@ -205,6 +206,17 @@ test("newDependencyFindings returns nothing when no finding touches a new depend
 	];
 	const added = new Set(["some-other-crate@1.0.0"]);
 	assert.equal(newDependencyFindings(findings, added).length, 0);
+});
+
+test("preexistingDependencyFindings keeps findings outside the changed dependency graph", () => {
+	const findings = [
+		{ code: "unknown-git", message: "new source", crates: ["test-world@0.1.0"] },
+		{ code: "vulnerability", message: "old issue", crates: ["lopdf@0.34.0"] },
+	];
+	const changed = new Set(["test-world@0.1.0 (git+https://github.com/evalops/test-world?rev=abc#abc)"]);
+	const preexisting = preexistingDependencyFindings(findings, changed);
+	assert.equal(preexisting.length, 1);
+	assert.equal(preexisting[0].code, "vulnerability");
 });
 
 test("dependency activation inputs fail closed for feature-only changes", () => {

@@ -398,6 +398,7 @@ impl PlatformEventBusConfig {
         }
     }
 
+    #[cfg(test)]
     pub fn for_test() -> Self {
         Self {
             enabled: true,

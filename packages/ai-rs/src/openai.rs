@@ -61,11 +61,13 @@
 //!
 //! ## Pattern Matching for API Selection
 //!
-//! Uses `str::starts_with` and `str::contains` for model detection:
+//! Uses provider-aware model detection for API selection:
 //!
 //! ```rust,ignore
-//! fn uses_responses_api(model: &str) -> bool {
-//!     model.contains("codex") || model.starts_with("gpt-5") || model.starts_with("o3")
+//! fn uses_responses_api(provider: Option<&str>, model: &str) -> bool {
+//!     // OpenRouter model ids are opaque and stay on Chat Completions unless
+//!     // the provider/model catalog explicitly maps them to Responses.
+//!     provider == Some("openrouter") && model.starts_with("gpt-5.6-")
 //! }
 //! ```
 //!
@@ -91,7 +93,7 @@
 //! # Example: Model-Specific Behavior
 //!
 //! ```rust,ignore
-//! let body = if uses_responses_api(&config.model) {
+//! let body = if uses_responses_api(Some("openai"), &config.model) {
 //!     self.build_responses_request_body(messages, config)
 //! } else {
 //!     self.build_chat_request_body(messages, config)
@@ -480,11 +482,69 @@ fn extract_text_from_item(item: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// Returns true if the model uses the Responses API (vs Chat Completions)
-fn uses_responses_api(model: &str) -> bool {
-    let model = provider_model_name(model);
-    // Codex models and gpt-5.x models use the Responses API
-    model.contains("codex") || model.starts_with("gpt-5") || model.starts_with("o3")
+fn strip_managed_model_prefix(model: &str) -> &str {
+    for prefix in ["evalops/", "maestro-managed/"] {
+        if let Some(candidate) = model.get(..prefix.len()) {
+            if candidate.eq_ignore_ascii_case(prefix) {
+                return &model[prefix.len()..];
+            }
+        }
+    }
+    model
+}
+
+fn has_managed_model_prefix(model: &str) -> bool {
+    let model = model.trim();
+    ["evalops/", "maestro-managed/"].iter().any(|prefix| {
+        model
+            .get(..prefix.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+    })
+}
+
+fn strip_provider_model_prefix<'a>(model: &'a str, provider: &str) -> &'a str {
+    let Some((prefix, model_id)) = model.split_once('/') else {
+        return model;
+    };
+    if prefix.eq_ignore_ascii_case(provider) && !model_id.trim().is_empty() {
+        model_id.trim()
+    } else {
+        model
+    }
+}
+
+/// Returns true if the model uses the Responses API (vs Chat Completions).
+///
+/// OpenRouter exposes one OpenAI-compatible Chat Completions surface for its
+/// broad model catalog. Its model ids are opaque, often nested
+/// (`openrouter/anthropic/claude-...`), and must not inherit OpenAI's model-name
+/// heuristic. The explicitly mapped gpt-5.6 family is the one OpenRouter
+/// Responses route currently owned by Platform; all other OpenRouter ids stay
+/// on Chat Completions so adding a new upstream model cannot accidentally send
+/// it through an incompatible beta shape.
+fn uses_responses_api(provider: Option<&str>, model: &str) -> bool {
+    let managed_namespace = has_managed_model_prefix(model);
+    let model = strip_managed_model_prefix(model).trim();
+    let inferred_provider = model.split_once('/').map(|(provider, _)| provider.trim());
+    let provider = provider.or(inferred_provider);
+    let is_openrouter =
+        provider.is_some_and(|provider| provider.eq_ignore_ascii_case("openrouter"));
+    let normalized = provider_model_name(model);
+    let normalized = if is_openrouter && !managed_namespace {
+        let routed_model = strip_provider_model_prefix(&normalized, "openrouter");
+        provider_model_name(routed_model)
+    } else {
+        normalized
+    };
+    let normalized = normalized.to_ascii_lowercase();
+
+    if is_openrouter {
+        return normalized == "gpt-5.6" || normalized.starts_with("gpt-5.6-");
+    }
+
+    // Direct OpenAI and managed OpenAI routes use the Responses families
+    // already supported by the native client.
+    normalized.contains("codex") || normalized.starts_with("gpt-5") || normalized.starts_with("o3")
 }
 
 /// Check if this is a Mistral model (requires special tool ID handling)
@@ -558,7 +618,7 @@ fn normalize_mistral_tool_id(id: &str) -> String {
 
 /// Get the appropriate API URL for the model
 fn api_url_for_model(model: &str) -> &'static str {
-    if uses_responses_api(model) {
+    if uses_responses_api(None, model) {
         "https://api.openai.com/v1/responses"
     } else {
         "https://api.openai.com/v1/chat/completions"
@@ -587,6 +647,8 @@ pub struct OpenAiClient {
     base_url: Option<String>,
     extra_headers: HeaderMap,
     request_extensions: serde_json::Map<String, serde_json::Value>,
+    managed_gateway: bool,
+    route_provider: Option<String>,
 }
 
 impl OpenAiClient {
@@ -604,6 +666,8 @@ impl OpenAiClient {
             base_url: None,
             extra_headers: HeaderMap::new(),
             request_extensions: serde_json::Map::new(),
+            managed_gateway: false,
+            route_provider: None,
         })
     }
 
@@ -621,7 +685,18 @@ impl OpenAiClient {
             base_url: Some(base_url.into()),
             extra_headers: HeaderMap::new(),
             request_extensions: serde_json::Map::new(),
+            managed_gateway: false,
+            route_provider: None,
         })
+    }
+
+    pub(crate) fn with_route_provider(mut self, provider: &str) -> Self {
+        self.route_provider = Some(provider.trim().to_string());
+        self
+    }
+
+    pub(crate) fn routed_provider(&self) -> Option<&str> {
+        self.route_provider.as_deref()
     }
 
     pub(crate) fn with_managed_gateway_context(
@@ -629,12 +704,31 @@ impl OpenAiClient {
         organization_id: &str,
         provider_ref: serde_json::Value,
     ) -> Result<Self> {
+        self.managed_gateway = true;
         self.extra_headers.insert(
             HeaderName::from_static("x-organization-id"),
             HeaderValue::from_str(organization_id).context("invalid EvalOps organization id")?,
         );
         self.request_extensions
             .insert("provider_ref".to_string(), provider_ref);
+        Ok(self)
+    }
+
+    /// Attach the tenant scope used by a hosted Platform turn. The managed
+    /// provider reference and both tenant headers must travel together so the
+    /// gateway cannot resolve a model for one workspace while authorizing
+    /// another.
+    pub(crate) fn with_managed_gateway_scope(
+        mut self,
+        organization_id: &str,
+        workspace_id: &str,
+        provider_ref: serde_json::Value,
+    ) -> Result<Self> {
+        self = self.with_managed_gateway_context(organization_id, provider_ref)?;
+        self.extra_headers.insert(
+            HeaderName::from_static("x-workspace-id"),
+            HeaderValue::from_str(workspace_id).context("invalid EvalOps workspace id")?,
+        );
         Ok(self)
     }
 
@@ -705,7 +799,7 @@ impl OpenAiClient {
     }
 
     /// Build request headers
-    fn headers(&self) -> HeaderMap {
+    pub(crate) fn headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(
@@ -767,6 +861,34 @@ impl OpenAiClient {
             }
         }
         converted
+    }
+
+    /// Managed gateway requests use the exact Platform model key. Direct
+    /// provider clients still receive the provider-native model id expected by
+    /// their upstream API.
+    fn request_model_name(&self, model: &str) -> String {
+        let model = model.trim();
+        if self.managed_gateway {
+            // The managed gateway resolves the provider-native id itself.
+            // Remove only Maestro's routing namespace; OpenRouter model ids
+            // are opaque and may themselves begin with `openrouter/`.
+            strip_managed_model_prefix(model).to_string()
+        } else if self
+            .route_provider
+            .as_deref()
+            .is_some_and(|provider| provider.eq_ignore_ascii_case("openrouter"))
+        {
+            // OpenRouter's native id is often `<vendor>/<model>`. Strip only
+            // the optional outer routing prefix; a second pass must not turn
+            // `anthropic/claude-...` into `claude-...`.
+            strip_provider_model_prefix(model, "openrouter").to_string()
+        } else {
+            provider_model_name(model)
+        }
+    }
+
+    fn uses_responses_api_for(&self, model: &str) -> bool {
+        uses_responses_api(self.route_provider.as_deref(), model)
     }
 
     fn convert_message(
@@ -961,7 +1083,7 @@ impl OpenAiClient {
         messages: &[Message],
         config: &RequestConfig,
     ) -> serde_json::Value {
-        let model = provider_model_name(&config.model);
+        let model = self.request_model_name(&config.model);
         // Check if this is a Mistral model (needs special tool handling)
         let is_mistral = is_mistral_model(&model, self.base_url.as_deref());
         // Check if this is a Groq model (may need parameter adjustments)
@@ -1038,7 +1160,7 @@ impl OpenAiClient {
         messages: &[Message],
         config: &RequestConfig,
     ) -> serde_json::Value {
-        let model = provider_model_name(&config.model);
+        let model = self.request_model_name(&config.model);
         // Convert messages to Responses API format
         // The input array contains ResponseItems, which can be messages, function calls, or function outputs
         let mut input: Vec<serde_json::Value> = Vec::new();
@@ -1224,7 +1346,7 @@ impl OpenAiClient {
         messages: &[Message],
         config: &RequestConfig,
     ) -> serde_json::Value {
-        let mut body = if uses_responses_api(&config.model) {
+        let mut body = if self.uses_responses_api_for(&config.model) {
             self.build_responses_request_body(messages, config)
         } else {
             self.build_chat_request_body(messages, config)
@@ -1247,7 +1369,7 @@ impl OpenAiClient {
         match &self.base_url {
             Some(base) => {
                 let trimmed = base.trim_end_matches('/');
-                if uses_responses_api(model) {
+                if self.uses_responses_api_for(model) {
                     format!("{trimmed}/responses")
                 } else {
                     format!("{trimmed}/chat/completions")
@@ -1302,7 +1424,7 @@ impl AiClient for OpenAiClient {
 
         // Spawn task to process SSE stream
         let model = config.model.clone();
-        let is_responses_api = uses_responses_api(&config.model);
+        let is_responses_api = self.uses_responses_api_for(&config.model);
 
         if is_responses_api {
             // Use eventsource-stream for proper SSE parsing (Responses API)
@@ -1956,16 +2078,60 @@ mod tests {
     #[test]
     fn test_uses_responses_api() {
         // gpt-5.1-codex-* should use Responses API
-        assert!(uses_responses_api("gpt-5.1-codex-max"));
-        assert!(uses_responses_api("openai/gpt-5.1-codex-max"));
-        assert!(uses_responses_api("gpt-5.1-codex-lite"));
+        assert!(uses_responses_api(None, "gpt-5.1-codex-max"));
+        assert!(uses_responses_api(None, "openai/gpt-5.1-codex-max"));
+        assert!(uses_responses_api(None, "gpt-5.1-codex-lite"));
         // o3 models use Responses API
-        assert!(uses_responses_api("o3"));
-        assert!(uses_responses_api("o3-mini"));
+        assert!(uses_responses_api(None, "o3"));
+        assert!(uses_responses_api(None, "o3-mini"));
         // Other models should not
-        assert!(!uses_responses_api("gpt-4o"));
-        assert!(!uses_responses_api("gpt-4-turbo"));
-        assert!(!uses_responses_api("o1"));
+        assert!(!uses_responses_api(None, "gpt-4o"));
+        assert!(!uses_responses_api(None, "gpt-4-turbo"));
+        assert!(!uses_responses_api(None, "o1"));
+    }
+
+    #[test]
+    fn openrouter_model_ids_use_chat_completions_except_mapped_responses_family() {
+        for model in [
+            "openrouter/anthropic/claude-sonnet-4.5",
+            "openrouter/google/gemini-2.5-pro",
+            "openrouter/meta-llama/llama-4-maverick",
+            "openrouter/openai/gpt-5.4",
+            "openrouter/openai/o3-mini",
+            "openrouter/openrouter/auto",
+            "evalops/openrouter/gpt-5.6",
+        ] {
+            assert!(
+                !uses_responses_api(None, model),
+                "unmapped OpenRouter model must use Chat Completions: {model}"
+            );
+        }
+        for model in [
+            "openrouter/gpt-5.6",
+            "openrouter/gpt-5.6-terra",
+            "openrouter/openai/gpt-5.6-terra",
+        ] {
+            assert!(
+                uses_responses_api(None, model),
+                "mapped OpenRouter Responses model must use Responses: {model}"
+            );
+        }
+        assert!(uses_responses_api(
+            Some("openrouter"),
+            "evalops/openai/gpt-5.6"
+        ));
+        assert!(uses_responses_api(
+            Some("openrouter"),
+            "evalops/openai/gpt-5.6-terra"
+        ));
+        assert!(!uses_responses_api(
+            Some("openrouter"),
+            "evalops/anthropic/claude-sonnet-4.5"
+        ));
+        assert!(!uses_responses_api(
+            Some("openrouter"),
+            "evalops/openrouter/gpt-5.6"
+        ));
     }
 
     #[test]
@@ -2113,6 +2279,86 @@ mod tests {
             },
         );
         assert_eq!(chat_body["model"], "gpt-4o");
+    }
+
+    #[test]
+    fn openrouter_nested_model_ids_remain_opaque_on_chat_completions() {
+        let client = OpenAiClient::with_base_url("test-key", "https://openrouter.example/v1")
+            .unwrap()
+            .with_route_provider("openrouter");
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("Hello".to_string()),
+        }];
+        let config = RequestConfig {
+            model: "openrouter/anthropic/claude-sonnet-4.5".to_string(),
+            ..Default::default()
+        };
+
+        let body = client.build_request_body(&messages, &config);
+
+        assert_eq!(body["model"], "anthropic/claude-sonnet-4.5");
+        assert!(body["messages"].is_array());
+        assert!(body.get("input").is_none());
+        assert_eq!(
+            client.request_url(&config.model),
+            "https://openrouter.example/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn openrouter_normalized_model_ids_keep_the_vendor_namespace() {
+        let client = OpenAiClient::with_base_url("test-key", "https://openrouter.example/v1")
+            .unwrap()
+            .with_route_provider("openrouter");
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("Hello".to_string()),
+        }];
+
+        let chat_body = client.build_request_body(
+            &messages,
+            &RequestConfig {
+                model: "anthropic/claude-sonnet-4.5".to_string(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(chat_body["model"], "anthropic/claude-sonnet-4.5");
+
+        let responses_body = client.build_request_body(
+            &messages,
+            &RequestConfig {
+                model: "openai/gpt-5.6-terra".to_string(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(responses_body["model"], "openai/gpt-5.6-terra");
+        assert!(responses_body.get("input").is_some());
+        assert!(responses_body.get("messages").is_none());
+        assert_eq!(
+            client.request_url("openai/gpt-5.6-terra"),
+            "https://openrouter.example/v1/responses"
+        );
+    }
+
+    #[test]
+    fn openrouter_owned_model_namespace_is_not_stripped_twice() {
+        let client = OpenAiClient::with_base_url("test-key", "https://openrouter.example/v1")
+            .unwrap()
+            .with_route_provider("openrouter");
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("Hello".to_string()),
+        }];
+        let config = RequestConfig {
+            model: provider_model_name("openrouter/openrouter/auto"),
+            ..Default::default()
+        };
+
+        assert_eq!(config.model, "openrouter/openrouter/auto");
+        let body = client.build_request_body(&messages, &config);
+
+        assert_eq!(body["model"], "openrouter/auto");
     }
 
     fn tool_call_history(calls: &[(&str, &str, serde_json::Value, &str)]) -> Vec<Message> {
@@ -2371,6 +2617,122 @@ mod tests {
         );
         assert_eq!(body["provider_ref"]["provider"], "anthropic");
         assert_eq!(body["provider_ref"]["credential_name"], "team-shared");
+    }
+
+    #[test]
+    fn managed_gateway_scope_adds_workspace_header_without_changing_provider_reference() {
+        let client =
+            OpenAiClient::with_base_url("delegated-token", "https://llm-gateway.evalops.dev/v1")
+                .unwrap()
+                .with_managed_gateway_scope(
+                    "org_123",
+                    "workspace_456",
+                    serde_json::json!({
+                        "provider": "openrouter",
+                        "environment": "prod",
+                    }),
+                )
+                .unwrap();
+        assert_eq!(
+            client.headers().get("x-organization-id").unwrap(),
+            "org_123"
+        );
+        assert_eq!(
+            client.headers().get("x-workspace-id").unwrap(),
+            "workspace_456"
+        );
+        assert_eq!(
+            client.request_extensions["provider_ref"]["provider"],
+            "openrouter"
+        );
+        assert_eq!(
+            client.request_extensions["provider_ref"]["environment"],
+            "prod"
+        );
+        let body = client.build_request_body(
+            &[Message {
+                role: Role::User,
+                content: MessageContent::Text("Hello".to_string()),
+            }],
+            &RequestConfig {
+                model: "openai/gpt-5.6".to_string(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(body["model"], "openai/gpt-5.6");
+    }
+
+    #[test]
+    fn managed_openrouter_gateway_preserves_opaque_model_namespace() {
+        let client =
+            OpenAiClient::with_base_url("delegated-token", "https://llm-gateway.evalops.dev/v1")
+                .unwrap()
+                .with_route_provider("openrouter")
+                .with_managed_gateway_scope(
+                    "org_123",
+                    "workspace_456",
+                    serde_json::json!({
+                        "provider": "openrouter",
+                        "environment": "prod",
+                    }),
+                )
+                .unwrap();
+
+        for model in ["openrouter/auto", "evalops/openrouter/auto"] {
+            let body = client.build_request_body(
+                &[Message {
+                    role: Role::User,
+                    content: MessageContent::Text("Hello".to_string()),
+                }],
+                &RequestConfig {
+                    model: model.to_string(),
+                    ..Default::default()
+                },
+            );
+
+            assert_eq!(body["model"], "openrouter/auto");
+        }
+    }
+
+    #[test]
+    fn managed_gateway_classifies_namespaced_responses_models_before_protocol_selection() {
+        let client =
+            OpenAiClient::with_base_url("delegated-token", "https://llm-gateway.evalops.dev/v1")
+                .unwrap()
+                .with_managed_gateway_scope(
+                    "org_123",
+                    "workspace_456",
+                    serde_json::json!({
+                        "provider": "openai",
+                        "environment": "prod",
+                    }),
+                )
+                .unwrap();
+        for model in [
+            "evalops/openai/gpt-5.6",
+            "EVALOPS/openai/gpt-5.6",
+            "maestro-managed/openai/gpt-5.6",
+            "MAESTRO-MANAGED/openai/gpt-5.6",
+        ] {
+            let body = client.build_request_body(
+                &[Message {
+                    role: Role::User,
+                    content: MessageContent::Text("Hello".to_string()),
+                }],
+                &RequestConfig {
+                    model: model.to_string(),
+                    ..Default::default()
+                },
+            );
+
+            assert!(client.uses_responses_api_for(model));
+            assert!(body["input"].is_array());
+            assert_eq!(
+                client.request_url(model),
+                "https://llm-gateway.evalops.dev/v1/responses"
+            );
+            assert_eq!(body["model"], "openai/gpt-5.6");
+        }
     }
 
     #[test]

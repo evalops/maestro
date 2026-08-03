@@ -919,7 +919,11 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
 
     match classify_agent_entry(&raw_args) {
         AgentEntry::HeadlessSubcommand => {
-            let code = crate::headless_server::run_headless_server().await?;
+            let code = crate::headless_server::run_headless_server(raw_option_value(
+                &raw_args,
+                &["--model", "-m"],
+            ))
+            .await?;
             return Ok(code);
         }
         AgentEntry::ForkSubcommand => return run_fork(&raw_args[2..]).await,
@@ -1048,7 +1052,7 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
 
     // Native headless/RPC server (kills TS agent path for these modes)
     if args.headless || args.rpc {
-        let code = crate::headless_server::run_headless_server().await?;
+        let code = crate::headless_server::run_headless_server(args.model.clone()).await?;
         return Ok(code);
     }
 

@@ -11,11 +11,12 @@ use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Duration as ChronoDuration, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 #[cfg(test)]
@@ -23,6 +24,7 @@ use tokio::net::TcpStream;
 use tokio::process::Command;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::headless::messages::{
@@ -65,6 +67,10 @@ const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 15_000;
 const CONNECTION_IDLE_MS: i64 = (DEFAULT_HEARTBEAT_INTERVAL_MS as i64) * 3;
 const EVENT_PUMP_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_EVENTS: usize = 1024;
+// Response retries are short-lived transport retries; retain enough completed
+// keys to cover a burst without allowing a long-lived hosted session's journal
+// to grow without bound.
+const MAX_RESPONSE_IDEMPOTENCY_RECORDS: usize = 4096;
 
 #[derive(Clone)]
 struct SharedRunner {
@@ -96,6 +102,11 @@ struct RunnerState {
     active_utility_commands: HashMap<String, ActiveUtilityCommandSnapshot>,
     active_file_watches: HashMap<String, ActiveFileWatchSnapshot>,
     active_response_ids: HashSet<String>,
+    response_idempotency_keys: HashSet<String>,
+    response_idempotency_digests: HashMap<String, String>,
+    pending_response_idempotency: HashMap<String, ToAgentMessage>,
+    response_idempotency_order: VecDeque<String>,
+    pending_response_idempotency_order: VecDeque<String>,
     envelopes: VecDeque<StreamEnvelope>,
     controller_envelopes: VecDeque<StreamEnvelope>,
     pending_controller_events: VecDeque<FromAgentMessage>,
@@ -264,6 +275,9 @@ pub struct HostedRunnerHeadlessMessageContext {
     pub opt_out_notifications: Option<Vec<String>>,
     pub lease_expires_at: String,
     pub workspace_root: PathBuf,
+    /// Stable response key used by executors to reconcile a durable pending
+    /// response without applying it twice after a hosted-runner restart.
+    pub response_idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -305,6 +319,17 @@ pub trait HostedRunnerHeadlessMessageExecutor: Send + Sync {
         message: ToAgentMessage,
     ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError>;
 
+    /// Reconcile a response durably journaled before a prior executor attempt
+    /// completed. Remote transports use the stable key in the context to make
+    /// this replay idempotent.
+    fn reconcile_pending(
+        &self,
+        context: &HostedRunnerHeadlessMessageContext,
+        message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        self.execute(context, message)
+    }
+
     fn drain(&self) -> Result<Vec<FromAgentMessage>, HostedRunnerError> {
         Ok(Vec::new())
     }
@@ -344,23 +369,15 @@ impl HostedRunnerHeadlessMessageExecutor for AgentSupervisorHostedRunnerMessageE
         context: &HostedRunnerHeadlessMessageContext,
         message: ToAgentMessage,
     ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
-        if matches!(message, ToAgentMessage::Hello { .. }) {
-            return Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
-                vec![hosted_hello_ok_for_context(context)],
-                "Rust hosted runner negotiated the connection at the hosted boundary",
-            ));
-        }
-        let mut supervisor = self
-            .supervisor
-            .lock()
-            .map_err(|_| HostedRunnerError::internal("agent supervisor mutex poisoned"))?;
-        let messages = supervisor
-            .send_and_drain_agent_messages(message)
-            .map_err(hosted_runner_error_from_async_transport)?;
-        Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
-            messages,
-            "Rust hosted runner forwarded the headless message to AgentSupervisor",
-        ))
+        self.execute_with_mode(context, message, false)
+    }
+
+    fn reconcile_pending(
+        &self,
+        context: &HostedRunnerHeadlessMessageContext,
+        message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        self.execute_with_mode(context, message, true)
     }
 
     fn drain(&self) -> Result<Vec<FromAgentMessage>, HostedRunnerError> {
@@ -389,6 +406,242 @@ impl HostedRunnerHeadlessMessageExecutor for AgentSupervisorHostedRunnerMessageE
             .map_err(|error| HostedRunnerError::internal(error.to_string()))?;
         Ok(supervisor.session_file().map(Path::to_path_buf))
     }
+}
+
+impl AgentSupervisorHostedRunnerMessageExecutor {
+    fn execute_with_mode(
+        &self,
+        context: &HostedRunnerHeadlessMessageContext,
+        message: ToAgentMessage,
+        reconciled: bool,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        let started = Instant::now();
+        let message_kind = hosted_message_kind(&message);
+        if matches!(message, ToAgentMessage::Hello { .. }) {
+            tracing::debug!(
+                target: "maestro.hosted",
+                event = "hosted_message_transport_handled",
+                session_id = %context.session_id,
+                connection_id = %context.connection_id,
+                message_kind,
+                duration_ms = started.elapsed().as_millis() as u64,
+            );
+            return Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+                vec![hosted_hello_ok_for_context(context)],
+                "Rust hosted runner negotiated the connection at the hosted boundary",
+            ));
+        }
+        let response_key = is_control_response_message(&message)
+            .then_some(context.response_idempotency_key.as_deref())
+            .flatten();
+        if let Some(key) = response_key {
+            let mut ledger =
+                load_executor_response_ledger(&context.workspace_root, &context.session_id)?;
+            if ledger
+                .iter()
+                .any(|(entry, dispatched)| entry == key && *dispatched)
+            {
+                return Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+                    Vec::new(),
+                    "Rust hosted runner reconciled an already accepted response",
+                ));
+            }
+            if !ledger.iter().any(|(entry, _)| entry == key) {
+                if ledger.len() >= MAX_RESPONSE_IDEMPOTENCY_RECORDS {
+                    ledger.remove(0);
+                }
+                ledger.push((key.to_string(), false));
+                persist_executor_response_ledger(
+                    &context.workspace_root,
+                    &context.session_id,
+                    &ledger,
+                )?;
+            }
+        }
+        let mut supervisor = self
+            .supervisor
+            .lock()
+            .map_err(|_| HostedRunnerError::internal("agent supervisor mutex poisoned"))?;
+        let configured_model = supervisor
+            .state()
+            .model
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+        let configured_provider = supervisor
+            .state()
+            .provider
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+        tracing::info!(
+            target: "maestro.hosted",
+            event = "hosted_model_binding_dispatch",
+            session_id = %context.session_id,
+            connection_id = %context.connection_id,
+            message_kind,
+            configured_model = %configured_model,
+            configured_provider = %configured_provider,
+            response_idempotency_present = response_key.is_some(),
+            reconcile_pending = reconciled,
+        );
+        let (messages, acknowledged) =
+            match supervisor.send_and_drain_agent_messages_with_ack(message) {
+                Ok(result) => result,
+                Err(error) => {
+                    if let Some(key) = response_key {
+                        let mut ledger = load_executor_response_ledger(
+                            &context.workspace_root,
+                            &context.session_id,
+                        )?;
+                        ledger.retain(|(entry, _)| entry != key);
+                        persist_executor_response_ledger(
+                            &context.workspace_root,
+                            &context.session_id,
+                            &ledger,
+                        )?;
+                    }
+                    tracing::warn!(
+                        target: "maestro.hosted",
+                        event = "hosted_model_binding_dispatch_failed",
+                        session_id = %context.session_id,
+                        connection_id = %context.connection_id,
+                        message_kind,
+                        configured_model = %configured_model,
+                        configured_provider = %configured_provider,
+                        duration_ms = started.elapsed().as_millis() as u64,
+                        outcome = "transport_error",
+                    );
+                    return Err(hosted_runner_error_from_async_transport(error));
+                }
+            };
+        if response_key.is_some() && !acknowledged {
+            if let Some(key) = response_key {
+                let mut ledger =
+                    load_executor_response_ledger(&context.workspace_root, &context.session_id)?;
+                ledger.retain(|(entry, _)| entry != key);
+                persist_executor_response_ledger(
+                    &context.workspace_root,
+                    &context.session_id,
+                    &ledger,
+                )?;
+            }
+            tracing::warn!(
+                target: "maestro.hosted",
+                event = "hosted_model_binding_dispatch_failed",
+                session_id = %context.session_id,
+                connection_id = %context.connection_id,
+                message_kind,
+                configured_model = %configured_model,
+                configured_provider = %configured_provider,
+                duration_ms = started.elapsed().as_millis() as u64,
+                outcome = "response_not_acknowledged",
+                reconcile_pending = reconciled,
+            );
+            return Err(HostedRunnerError::new(
+                HostedRunnerErrorCode::RuntimeFailed,
+                "response consumer did not acknowledge the control response",
+            ));
+        }
+        if let Some(key) = response_key {
+            let mut ledger =
+                load_executor_response_ledger(&context.workspace_root, &context.session_id)?;
+            if let Some((_, dispatched)) = ledger.iter_mut().find(|(entry, _)| entry == key) {
+                *dispatched = true;
+            }
+            persist_executor_response_ledger(
+                &context.workspace_root,
+                &context.session_id,
+                &ledger,
+            )?;
+        }
+        tracing::info!(
+            target: "maestro.hosted",
+            event = "hosted_model_binding_dispatch_completed",
+            session_id = %context.session_id,
+            connection_id = %context.connection_id,
+            message_kind,
+            configured_model = %configured_model,
+            configured_provider = %configured_provider,
+            response_message_count = messages.len(),
+            acknowledged,
+            duration_ms = started.elapsed().as_millis() as u64,
+            outcome = "success",
+            reconcile_pending = reconciled,
+        );
+        Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+            messages,
+            "Rust hosted runner forwarded the headless message to AgentSupervisor",
+        ))
+    }
+}
+
+fn hosted_message_kind(message: &ToAgentMessage) -> &'static str {
+    match message {
+        ToAgentMessage::Hello { .. } => "hello",
+        ToAgentMessage::Init { .. } => "init",
+        ToAgentMessage::RestoreConversation { .. } => "restore_conversation",
+        ToAgentMessage::Prompt { .. } => "prompt",
+        ToAgentMessage::Steer { .. } => "steer",
+        ToAgentMessage::Interrupt => "interrupt",
+        ToAgentMessage::ToolResponse { .. } => "tool_response",
+        ToAgentMessage::ClientToolResult { .. } => "client_tool_result",
+        ToAgentMessage::ServerRequestResponse { .. } => "server_request_response",
+        ToAgentMessage::UtilityCommandStart { .. } => "utility_command_start",
+        ToAgentMessage::UtilityCommandTerminate { .. } => "utility_command_terminate",
+        ToAgentMessage::UtilityCommandStdin { .. } => "utility_command_stdin",
+        ToAgentMessage::UtilityCommandResize { .. } => "utility_command_resize",
+        ToAgentMessage::UtilityFileSearch { .. } => "utility_file_search",
+        ToAgentMessage::UtilityFileRead { .. } => "utility_file_read",
+        ToAgentMessage::UtilityFileWatchStart { .. } => "utility_file_watch_start",
+        ToAgentMessage::UtilityFileWatchStop { .. } => "utility_file_watch_stop",
+        ToAgentMessage::Cancel => "cancel",
+        ToAgentMessage::Shutdown => "shutdown",
+    }
+}
+
+fn executor_response_ledger_path(workspace_root: &Path, session_id: &str) -> PathBuf {
+    let session_digest = Sha256::digest(session_id.as_bytes());
+    workspace_root
+        .join(".maestro")
+        .join("hosted-runner")
+        .join(format!(
+            "executor-response-idempotency-{session_digest:x}.json"
+        ))
+}
+
+fn load_executor_response_ledger(
+    workspace_root: &Path,
+    session_id: &str,
+) -> Result<Vec<(String, bool)>, HostedRunnerError> {
+    let path = executor_response_ledger_path(workspace_root, session_id);
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(HostedRunnerError::internal(format!(
+                "read response ledger: {error}"
+            )))
+        }
+    };
+    serde_json::from_str(&contents)
+        .map_err(|error| HostedRunnerError::internal(format!("invalid response ledger: {error}")))
+}
+
+fn persist_executor_response_ledger(
+    workspace_root: &Path,
+    session_id: &str,
+    ledger: &[(String, bool)],
+) -> Result<(), HostedRunnerError> {
+    let path = executor_response_ledger_path(workspace_root, session_id);
+    let parent = path
+        .parent()
+        .ok_or_else(|| HostedRunnerError::internal("response ledger has no parent"))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| HostedRunnerError::internal(format!("create response ledger: {error}")))?;
+    let contents = serde_json::to_vec(ledger).map_err(|error| {
+        HostedRunnerError::internal(format!("serialize response ledger: {error}"))
+    })?;
+    crate::fs_atomic::write_atomic(&path, contents)
+        .map_err(|error| HostedRunnerError::internal(format!("persist response ledger: {error}")))
 }
 
 #[derive(Debug, Default)]
@@ -503,7 +756,7 @@ pub async fn start_hosted_runner_with_message_executor(
             .map_err(io::Error::other)?,
         );
         let identity = exchanger
-            .exchange_once(Utc::now())
+            .exchange_initial()
             .await
             .map_err(io::Error::other)?;
         Some((
@@ -701,6 +954,7 @@ pub enum HostedRunnerErrorCode {
     WorkspaceViolation,
     UnsupportedCapability,
     RuntimeFailed,
+    IdempotencyConflict,
     Internal,
 }
 
@@ -720,6 +974,7 @@ impl HostedRunnerErrorCode {
             Self::WorkspaceViolation => "workspace_violation",
             Self::UnsupportedCapability => "unsupported_capability",
             Self::RuntimeFailed => "runtime_failed",
+            Self::IdempotencyConflict => "idempotency_conflict",
             Self::Internal => "internal_error",
         }
     }
@@ -733,6 +988,7 @@ impl HostedRunnerErrorCode {
             Self::LeaseConflict | Self::RuntimeOwnedElsewhere => 409,
             Self::UnsupportedCapability => 501,
             Self::RuntimeFailed | Self::Internal => 500,
+            Self::IdempotencyConflict => 409,
         }
     }
 }
@@ -1165,6 +1421,53 @@ async fn route_request(
     shared: SharedRunner,
     peer_addr: SocketAddr,
 ) -> HostedResult<ResponseBody> {
+    let span = tracing::info_span!(
+        "hosted_runner.http",
+        method = request.method.as_str(),
+        route_class = hosted_route_class(&request.path),
+        http_status = tracing::field::Empty,
+        duration_ms = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+        error_kind = tracing::field::Empty,
+        trace_id = tracing::field::Empty,
+        w3c.traceparent = tracing::field::Empty,
+    );
+    if let Some(traceparent) = request
+        .headers
+        .get("traceparent")
+        .and_then(|value| safe_traceparent(value))
+    {
+        span.record("trace_id", traceparent.split('-').nth(1).unwrap_or(""));
+        span.record("w3c.traceparent", traceparent);
+    }
+    let started = std::time::Instant::now();
+    let result = route_request_inner(request, shared, peer_addr)
+        .instrument(span.clone())
+        .await;
+    span.record("duration_ms", started.elapsed().as_millis() as u64);
+    match &result {
+        Ok(ResponseBody::Json { status, .. }) => {
+            span.record("http_status", *status);
+            span.record("outcome", if *status < 400 { "success" } else { "error" });
+        }
+        Ok(ResponseBody::Sse { .. }) => {
+            span.record("http_status", 200_u16);
+            span.record("outcome", "stream");
+        }
+        Err(error) => {
+            span.record("http_status", error.status);
+            span.record("outcome", "error");
+            span.record("error_kind", error.code.as_str());
+        }
+    }
+    result
+}
+
+async fn route_request_inner(
+    request: HttpRequest,
+    shared: SharedRunner,
+    peer_addr: SocketAddr,
+) -> HostedResult<ResponseBody> {
     if request.path.starts_with("/api/headless/")
         || (request.path == HOSTED_RUNNER_DRAIN_PATH && !peer_addr.ip().is_loopback())
     {
@@ -1277,6 +1580,48 @@ async fn route_request(
             "route not found",
         )),
     }
+}
+
+fn hosted_route_class(path: &str) -> &'static str {
+    match path {
+        "/readyz" | "/healthz" => "health",
+        HOSTED_RUNNER_IDENTITY_PATH => "identity",
+        HOSTED_RUNNER_DRAIN_PATH => "drain",
+        path if path.ends_with("/connections") => "headless.connections",
+        path if path.ends_with("/subscribe") => "headless.subscribe",
+        path if path.ends_with("/events") => "headless.events",
+        path if path.ends_with("/turns") => "thread.turns",
+        path if path.ends_with("/messages") || path.ends_with("/message") => "headless.messages",
+        path if path.ends_with("/heartbeat") => "headless.heartbeat",
+        path if path.ends_with("/disconnect") => "headless.disconnect",
+        path if path.starts_with("/api/headless/threads/") => "thread.snapshot",
+        path if path.starts_with("/api/headless/sessions/") => "headless.session",
+        _ => "other",
+    }
+}
+
+fn safe_traceparent(value: &str) -> Option<&str> {
+    let value = value.trim();
+    let mut parts = value.split('-');
+    let version = parts.next()?;
+    let trace_id = parts.next()?;
+    let span_id = parts.next()?;
+    let flags = parts.next()?;
+    if parts.next().is_some()
+        || version.len() != 2
+        || version.eq_ignore_ascii_case("ff")
+        || trace_id.len() != 32
+        || span_id.len() != 16
+        || flags.len() != 2
+        || !value.is_ascii()
+        || !trace_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || !span_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || trace_id.bytes().all(|byte| byte == b'0')
+        || span_id.bytes().all(|byte| byte == b'0')
+    {
+        return None;
+    }
+    Some(value)
 }
 
 fn require_auth_header(
@@ -1403,6 +1748,16 @@ fn handle_connection_create(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("conn_{}", Uuid::new_v4().simple()));
     let role = input.role.unwrap_or(ConnectionRole::Controller);
+    if !crate::headless::messages::client_protocol_version_is_supported(
+        input.protocol_version.as_deref(),
+    ) {
+        return Err(HostedError::new(
+            HostedRunnerErrorCode::UnsupportedCapability,
+            crate::headless::messages::unsupported_client_protocol_version_message(
+                input.protocol_version.as_deref().unwrap_or_default(),
+            ),
+        ));
+    }
     // Requests predating capability negotiation always sent a protocol version.
     // Protocol-less in-process callers keep the secure default used by existing
     // tests and embedders; wire clients explicitly opt in or follow the legacy lane.
@@ -1454,6 +1809,16 @@ fn handle_subscribe(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     ensure_session_id(&state, Some(session_id))?;
     let role = input.role.unwrap_or(ConnectionRole::Controller);
+    if !crate::headless::messages::client_protocol_version_is_supported(
+        input.protocol_version.as_deref(),
+    ) {
+        return Err(HostedError::new(
+            HostedRunnerErrorCode::UnsupportedCapability,
+            crate::headless::messages::unsupported_client_protocol_version_message(
+                input.protocol_version.as_deref().unwrap_or_default(),
+            ),
+        ));
+    }
     let connection_id = input
         .connection_id
         .filter(|value| !value.trim().is_empty())
@@ -1846,6 +2211,10 @@ async fn handle_message(
     headers: HashMap<String, String>,
     message: ToAgentMessage,
 ) -> HostedResult<ResponseBody> {
+    // Keep this guard across the executor call and the completion journal
+    // update. In particular, a retry for a pending idempotency key must wait
+    // for the original attempt to finish instead of entering
+    // `reconcile_pending` concurrently with it.
     let _lifecycle = shared.mutation_lifecycle.lock().await;
     handle_message_inner(shared.clone(), session_id, headers, message).await
 }
@@ -1856,12 +2225,24 @@ async fn handle_message_inner(
     headers: HashMap<String, String>,
     message: ToAgentMessage,
 ) -> HostedResult<ResponseBody> {
+    let requested_response_idempotency_key = headers
+        .get("x-maestro-idempotency-key")
+        .map(|key| key.trim())
+        .filter(|key| !key.is_empty())
+        .map(str::to_owned);
+    let response_idempotency_key = is_control_response_message(&message)
+        .then_some(requested_response_idempotency_key)
+        .flatten();
+    let response_idempotency_digest = response_idempotency_key
+        .as_ref()
+        .map(|_| response_message_digest(&message));
     let (connection_header_id, subscription_id, connection_capability) =
         connection_from_headers(&headers);
     let connection_id;
     let mut executor_request = None;
     let mut execution = HostedRunnerHeadlessMessageExecution::TransportOnly;
     let mut published_messages = 0usize;
+    let mut reconcile_pending_response = false;
     let mut response_message =
         "Rust hosted runner accepted the headless message; agent execution is not attached yet"
             .to_string();
@@ -1884,6 +2265,67 @@ async fn handle_message_inner(
                 "hosted runner is draining",
             ));
         }
+        if let Some(idempotency_key) = response_idempotency_key.as_ref() {
+            if state.response_idempotency_keys.contains(idempotency_key) {
+                if let (Some(expected), Some(actual)) = (
+                    state.response_idempotency_digests.get(idempotency_key),
+                    response_idempotency_digest.as_ref(),
+                ) {
+                    if expected != actual {
+                        return Err(HostedError::new(
+                            HostedRunnerErrorCode::IdempotencyConflict,
+                            "idempotency key was already used for a different response",
+                        ));
+                    }
+                }
+                let snapshot = shared.public_snapshot(&state);
+                return json_response(
+                    200,
+                    json!({
+                        "ok": true,
+                        "success": true,
+                        "accepted": true,
+                        "replayed": true,
+                        "cursor": snapshot.cursor,
+                        "execution": HostedRunnerHeadlessMessageExecution::TransportOnly,
+                        "published_messages": 0,
+                        "message": "Rust hosted runner replayed an idempotent headless response",
+                        "snapshot": snapshot,
+                    }),
+                );
+            }
+            if let Some(pending) = state.pending_response_idempotency.get(idempotency_key) {
+                let expected = response_message_digest(pending);
+                if response_idempotency_digest.as_deref() != Some(expected.as_str()) {
+                    return Err(HostedError::new(
+                        HostedRunnerErrorCode::IdempotencyConflict,
+                        "idempotency key was already used for a different response",
+                    ));
+                }
+                reconcile_pending_response = true;
+            }
+            if state.pending_response_idempotency_order.len() >= MAX_RESPONSE_IDEMPOTENCY_RECORDS {
+                if let Some(evicted_key) = state.pending_response_idempotency_order.pop_front() {
+                    state.pending_response_idempotency.remove(&evicted_key);
+                }
+            }
+            state
+                .pending_response_idempotency
+                .insert(idempotency_key.clone(), message.clone());
+            state
+                .pending_response_idempotency_order
+                .push_back(idempotency_key.clone());
+            if let Err(error) = shared.persist_thread(&state) {
+                state.pending_response_idempotency.remove(idempotency_key);
+                state
+                    .pending_response_idempotency_order
+                    .retain(|key| key != idempotency_key);
+                return Err(HostedError::new(
+                    HostedRunnerErrorCode::RuntimeFailed,
+                    format!("failed to persist pending response: {error}"),
+                ));
+            }
+        }
         connection_id = Some(resolved_connection_id.clone());
         match &message {
             ToAgentMessage::Hello {
@@ -1893,6 +2335,16 @@ async fn handle_message_inner(
                 role,
                 opt_out_notifications,
             } => {
+                if !crate::headless::messages::client_protocol_version_is_supported(
+                    protocol_version.as_deref(),
+                ) {
+                    return Err(HostedError::new(
+                        HostedRunnerErrorCode::UnsupportedCapability,
+                        crate::headless::messages::unsupported_client_protocol_version_message(
+                            protocol_version.as_deref().unwrap_or_default(),
+                        ),
+                    ));
+                }
                 let resolved_role = state
                     .connections
                     .get(&resolved_connection_id)
@@ -1967,6 +2419,7 @@ async fn handle_message_inner(
                         &resolved_connection_id,
                         subscription_id.clone(),
                         &shared.config.workspace_root,
+                        response_idempotency_key.clone(),
                     )?,
                 ));
             }
@@ -1999,6 +2452,7 @@ async fn handle_message_inner(
                         &resolved_connection_id,
                         subscription_id.clone(),
                         &shared.config.workspace_root,
+                        response_idempotency_key.clone(),
                     )?,
                 ));
             }
@@ -2011,9 +2465,27 @@ async fn handle_message_inner(
     }
 
     if let Some((executor, context)) = executor_request {
-        let result = executor
-            .execute(&context, message.clone())
-            .map_err(HostedError::from)?;
+        let result = match if reconcile_pending_response {
+            executor.reconcile_pending(&context, message.clone())
+        } else {
+            executor.execute(&context, message.clone())
+        } {
+            Ok(result) => result,
+            Err(error) => {
+                if let Some(idempotency_key) = response_idempotency_key.as_ref() {
+                    let mut state = shared
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state.pending_response_idempotency.remove(idempotency_key);
+                    state
+                        .pending_response_idempotency_order
+                        .retain(|key| key != idempotency_key);
+                    let _ = shared.persist_thread(&state);
+                }
+                return Err(HostedError::from(error));
+            }
+        };
         published_messages = result.messages.len();
         execution = result.execution;
         response_message = result.message;
@@ -2105,6 +2577,52 @@ async fn handle_message_inner(
         _ => {}
     }
 
+    // Reconcile the durable pending record only after the executor accepted
+    // the response and every synchronous delivery side effect succeeded. A
+    // retry after a restart can therefore recover the original payload instead
+    // of being mistaken for a completed response.
+    if let Some(idempotency_key) = response_idempotency_key.as_ref() {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.pending_response_idempotency.remove(idempotency_key);
+        state
+            .pending_response_idempotency_order
+            .retain(|key| key != idempotency_key);
+        if !state.response_idempotency_keys.contains(idempotency_key) {
+            if state.response_idempotency_order.len() >= MAX_RESPONSE_IDEMPOTENCY_RECORDS {
+                if let Some(evicted_key) = state.response_idempotency_order.pop_front() {
+                    state.response_idempotency_keys.remove(&evicted_key);
+                    state.response_idempotency_digests.remove(&evicted_key);
+                }
+            }
+            state
+                .response_idempotency_order
+                .push_back(idempotency_key.clone());
+        }
+        state
+            .response_idempotency_keys
+            .insert(idempotency_key.clone());
+        if let Some(digest) = response_idempotency_digest.as_ref() {
+            state
+                .response_idempotency_digests
+                .insert(idempotency_key.clone(), digest.clone());
+        }
+        let mut idempotency_persisted = true;
+        if let Err(error) = shared.persist_thread(&state) {
+            // The executor has already accepted and delivered this response.
+            // Keep the in-memory completion marker and return success so a
+            // transient journal failure cannot make the native transport retry
+            // an already-executed approval, input, tool result, or retry.
+            idempotency_persisted = false;
+            eprintln!("failed to persist response idempotency key: {error}");
+        }
+        if !idempotency_persisted {
+            response_message.push_str("; response idempotency is currently memory-only");
+        }
+    }
+
     let snapshot = {
         let state = shared
             .state
@@ -2119,12 +2637,29 @@ async fn handle_message_inner(
             "ok": true,
             "success": true,
             "accepted": true,
+            "replayed": false,
             "cursor": cursor,
             "execution": execution,
             "published_messages": published_messages,
             "message": response_message,
             "snapshot": snapshot,
         }),
+    )
+}
+
+fn response_message_digest(message: &ToAgentMessage) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(message).expect("headless messages are serializable"))
+    )
+}
+
+fn is_control_response_message(message: &ToAgentMessage) -> bool {
+    matches!(
+        message,
+        ToAgentMessage::ToolResponse { .. }
+            | ToAgentMessage::ClientToolResult { .. }
+            | ToAgentMessage::ServerRequestResponse { .. }
     )
 }
 
@@ -2863,6 +3398,7 @@ fn message_context(
     connection_id: &str,
     subscription_id: Option<String>,
     workspace_root: &Path,
+    response_idempotency_key: Option<String>,
 ) -> HostedResult<HostedRunnerHeadlessMessageContext> {
     let connection = state.connections.get(connection_id).ok_or_else(|| {
         HostedError::new(
@@ -2883,6 +3419,7 @@ fn message_context(
             .then(|| connection.opt_out_notifications.clone()),
         lease_expires_at: lease_expires_at(connection),
         workspace_root: workspace_root.to_path_buf(),
+        response_idempotency_key,
     })
 }
 

@@ -428,6 +428,62 @@ impl ToolRegistry {
             },
         );
 
+        // Tool search keeps the default model-facing tool profile small while
+        // retaining an explicit escape hatch for less common capabilities.
+        tools.insert(
+            "tool_search".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "tool_search",
+                    "Find and activate less-common tools by name or description. The activated tools are available on the next turn.",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Words describing the capability to find"},
+                        "names": {"type": "array", "items": {"type": "string"}, "description": "Exact tool names to activate"},
+                        "maxResults": {"type": "number", "description": "Maximum matches to activate (default 8)"}
+                    },
+                    "anyOf": [
+                        {"required": ["query"]},
+                        {"required": ["names"]}
+                    ]
+                })),
+                requires_approval: false,
+            },
+        );
+
+        // Composite exploration collapses the common search/read fan-out into
+        // one model turn while retaining the executor's normal cache and
+        // cancellation paths for each sub-operation.
+        tools.insert(
+            "explore".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "explore",
+                    "Run up to eight independent local read/search operations in parallel and return their results in request order.",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "operations": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "tool": {"type": "string", "enum": ["read", "glob", "grep", "find", "list", "search", "parallel_ripgrep", "diff"]},
+                                    "args": {"type": "object"}
+                                },
+                                "required": ["tool", "args"]
+                            }
+                        }
+                    },
+                    "required": ["operations"]
+                })),
+                requires_approval: false,
+            },
+        );
+
         // Parallel ripgrep tool
         tools.insert(
             "parallel_ripgrep".to_string(),
@@ -549,6 +605,119 @@ impl ToolRegistry {
                         "required": ["action"]
                     })),
                 requires_approval: true,
+            },
+        );
+
+        // Durable child-agent delegation tools. A child has its own native
+        // session/transcript and can optionally work in an isolated git
+        // worktree; lifecycle records are recoverable by id.
+        tools.insert(
+            "spawn_subagent".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "spawn_subagent",
+                    "Delegate a focused task to a child agent with its own session and optional worktree.",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "task": {"type": "string", "description": "The focused task for the child agent."},
+                        "role": {"type": "string", "enum": ["explore", "plan", "code", "review"]},
+                        "model": {"type": "string"},
+                        "run_in_background": {"type": "boolean", "description": "Return immediately and let the child run asynchronously. Defaults to true."},
+                        "isolation": {"type": "string", "enum": ["worktree", "shared"], "description": "Use an isolated git worktree (default) or the current workspace."},
+                        "worktree_name": {"type": "string"}
+                    },
+                    "required": ["task"]
+                })),
+                requires_approval: true,
+            },
+        );
+        tools.insert(
+            "list_subagents".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "list_subagents",
+                    "List durable child-agent runs for this workspace, including status and handles.",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                })),
+                requires_approval: false,
+            },
+        );
+        tools.insert(
+            "get_subagent".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "get_subagent",
+                    "Read a durable child-agent record and its latest result.",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "subagent_id": {"type": "string"}
+                    },
+                    "required": ["subagent_id"]
+                })),
+                requires_approval: false,
+            },
+        );
+        tools.insert(
+            "wait_subagent".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "wait_subagent",
+                    "Wait briefly for a child-agent result, or return its current durable snapshot.",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "subagent_id": {"type": "string"},
+                        "timeout_ms": {"type": "integer", "minimum": 0, "maximum": 300_000, "description": "Maximum wait in milliseconds; zero returns immediately."}
+                    },
+                    "required": ["subagent_id"]
+                })),
+                requires_approval: false,
+            },
+        );
+        tools.insert(
+            "resume_subagent".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "resume_subagent",
+                    "Resume a completed, failed, or cancelled child session with a focused follow-up task.",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "subagent_id": {"type": "string"},
+                        "task": {"type": "string"},
+                        "follow_up": {"type": "string"},
+                        "run_in_background": {"type": "boolean"}
+                    },
+                    "required": ["subagent_id"]
+                })),
+                requires_approval: true,
+            },
+        );
+        tools.insert(
+            "cancel_subagent".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "cancel_subagent",
+                    "Request cancellation of a running child-agent session.",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "subagent_id": {"type": "string"}
+                    },
+                    "required": ["subagent_id"]
+                })),
+                requires_approval: false,
             },
         );
 
@@ -1205,7 +1374,7 @@ impl ToolRegistry {
     ///
     /// // Count tools
     /// let count = registry.tools().count();
-    /// assert_eq!(count, 40);  // includes search/parity tools + IDE stubs + goal tools
+    /// assert_eq!(count, 48);  // includes search/parity tools + IDE stubs + goals + subagents + perf tools
     ///
     /// // List tool names
     /// for tool_def in registry.tools() {

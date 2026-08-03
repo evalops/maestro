@@ -95,12 +95,13 @@ mod process_utils;
 mod registry;
 mod shell_env;
 mod status;
+mod subagents;
 mod todo;
 pub mod versions;
 mod web_fetch;
 
 pub(crate) use bash::resolve_shell_config;
-pub use bash::{BashTool, BashVersion};
+pub use bash::{BashOutputChunk, BashOutputStream, BashTool, BashVersion};
 pub use batch::{BatchConfig, BatchExecutor, BatchToolCall, BatchToolResult};
 pub use cache::{CacheConfig, CacheKey, CacheStats, CachedResult, ToolResultCache};
 pub use details::{
@@ -116,5 +117,6 @@ pub use inline::{
 pub use process_registry::{
     cleanup_all as cleanup_background_processes, count as background_process_count,
 };
+pub(crate) use registry::ToolExecutionOptions;
 pub use registry::{McpServerStatus, ToolExecutor, ToolRegistry};
 pub use web_fetch::WebFetchTool;

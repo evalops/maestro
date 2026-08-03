@@ -30,7 +30,13 @@ impl Default for CacheConfig {
             max_entries: 100,
             ttl: Duration::from_mins(1),
             enabled: true,
-            excluded_tools: vec!["bash".to_string(), "write".to_string(), "edit".to_string()],
+            excluded_tools: vec![
+                "bash".to_string(),
+                "write".to_string(),
+                "edit".to_string(),
+                "explore".to_string(),
+                "extract_document".to_string(),
+            ],
         }
     }
 }
@@ -273,6 +279,12 @@ impl ToolResultCache {
         }
 
         // Evict old entries if at capacity
+        if self.entries.contains_key(&key) {
+            self.access_order.retain(|existing| existing != &key);
+            self.remove_deps_for_key(&key);
+            self.entries.remove(&key);
+        }
+
         while self.entries.len() >= self.config.max_entries && !self.access_order.is_empty() {
             let oldest = self.access_order.remove(0);
             self.entries.remove(&oldest);
@@ -293,6 +305,12 @@ impl ToolResultCache {
         }
 
         // Evict old entries if at capacity
+        if self.entries.contains_key(&key) {
+            self.access_order.retain(|existing| existing != &key);
+            self.remove_deps_for_key(&key);
+            self.entries.remove(&key);
+        }
+
         while self.entries.len() >= self.config.max_entries && !self.access_order.is_empty() {
             let oldest = self.access_order.remove(0);
             self.entries.remove(&oldest);
@@ -301,7 +319,17 @@ impl ToolResultCache {
 
         // Track file dependencies
         for dep in deps {
-            self.file_deps.entry(dep).or_default().push(key.clone());
+            let canonical = dunce::canonicalize(&dep).unwrap_or_else(|_| dep.clone());
+            self.file_deps
+                .entry(dep.clone())
+                .or_default()
+                .push(key.clone());
+            if canonical != dep {
+                self.file_deps
+                    .entry(canonical)
+                    .or_default()
+                    .push(key.clone());
+            }
         }
 
         self.entries.insert(key.clone(), result);
@@ -325,16 +353,25 @@ impl ToolResultCache {
     pub fn invalidate_for_file(&mut self, path: &Path) -> usize {
         let canonical = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
-        // Find all keys that depend on this file
-        let keys_to_remove: Vec<CacheKey> =
-            self.file_deps.get(&canonical).cloned().unwrap_or_default();
-
-        // Also check with the original path (in case canonicalization differs)
-        let mut keys_from_orig: Vec<CacheKey> =
-            self.file_deps.get(path).cloned().unwrap_or_default();
-        keys_from_orig.retain(|k| !keys_to_remove.contains(k));
-
-        let all_keys: Vec<CacheKey> = keys_to_remove.into_iter().chain(keys_from_orig).collect();
+        // Match exact file dependencies and directory dependencies that
+        // contain the changed path. Directory dependencies are used by
+        // searches/globs; exact dependencies are used by reads.
+        let mut all_keys = self.file_deps.get(&canonical).cloned().unwrap_or_default();
+        all_keys.extend(self.file_deps.get(path).cloned().unwrap_or_default());
+        for (dependency, keys) in &self.file_deps {
+            // Path::starts_with is component-aware, so treating every tracked
+            // dependency as a prefix avoids filesystem stats and also invalidates
+            // entries for directories that did not exist when they were cached.
+            if canonical.starts_with(dependency) || path.starts_with(dependency) {
+                all_keys.extend(keys.iter().cloned());
+            }
+        }
+        all_keys.sort_unstable_by(|left, right| {
+            left.tool_name
+                .cmp(&right.tool_name)
+                .then(left.args_hash.cmp(&right.args_hash))
+        });
+        all_keys.dedup();
         let count = all_keys.len();
 
         // Remove the entries
@@ -343,10 +380,6 @@ impl ToolResultCache {
             self.access_order.retain(|k| k != &key);
             self.remove_deps_for_key(&key);
         }
-
-        // Remove the file from deps tracking
-        self.file_deps.remove(&canonical);
-        self.file_deps.remove(path);
 
         count
     }

@@ -1,5 +1,6 @@
 use super::*;
 use crate::headless::report_diagnostic_nonblocking;
+use crate::hooks::{HookResult, IntegratedHookSystem};
 #[cfg(windows)]
 use crate::tools::bash::resolve_shell_config;
 use tokio::io::{AsyncRead, AsyncReadExt as _};
@@ -19,6 +20,388 @@ use windows_sys::Win32::System::JobObjects::{
 use windows_sys::Win32::System::Threading::{
     OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
 };
+
+const STREAM_CREDENTIAL_MARKERS: &[&str] = &[
+    "password",
+    "passwd",
+    "pwd",
+    "credential",
+    "credentials",
+    "api_key",
+    "api-key",
+    "apikey",
+    "api-token",
+    "token",
+    "secret",
+    "secret_key",
+    "aws_secret_key",
+    "aws_secret_access_key",
+    "aws-secret-access-key",
+    "access_token",
+    "refresh_token",
+    "auth_token",
+    "bearer",
+    "authorization",
+    "sk-",
+    "pk-",
+    "sk_live_",
+    "sk_test_",
+    "pk_live_",
+    "pk_test_",
+    "sk-ant-",
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "xoxb-",
+    "xoxa-",
+    "xoxp-",
+    "xoxr-",
+    "xoxs-",
+    "akia",
+    "aiza",
+    "ya29.",
+    "eyj",
+    "-----begin ",
+];
+
+#[derive(Default)]
+struct StreamingToolOutputRedactor {
+    pending: String,
+    pending_emitted_prefix: usize,
+}
+
+impl StreamingToolOutputRedactor {
+    fn push(&mut self, vault: &CredentialVault, generation: u64, chunk: &str) -> String {
+        self.pending.push_str(chunk);
+        let lower = self.pending.to_ascii_lowercase();
+        let partial_scheme_start = stream_uri_partial_credential_start(&lower);
+        let incomplete_start = self.incomplete_credential_start();
+
+        // Emit a possible URI scheme immediately, but retain an already
+        // emitted copy as context for a delimiter arriving in the next read.
+        // This keeps ordinary low-volume output live without exposing a URI
+        // credential when the scheme itself was split from `://`.
+        if partial_scheme_start.is_some() && partial_scheme_start == incomplete_start {
+            let output_start = self.pending_emitted_prefix;
+            let output =
+                vault.vault_in_text_at_generation(generation, &self.pending[output_start..]);
+            let retained = self.pending[partial_scheme_start.unwrap_or_default()..].to_string();
+            self.pending = retained;
+            self.pending_emitted_prefix = self.pending.len();
+            return output;
+        }
+
+        let mut safe_len = incomplete_start.unwrap_or(self.pending.len());
+        while safe_len > 0 && !self.pending.is_char_boundary(safe_len) {
+            safe_len -= 1;
+        }
+        let output = if safe_len > self.pending_emitted_prefix {
+            vault.vault_in_text_at_generation(
+                generation,
+                &self.pending[self.pending_emitted_prefix..safe_len],
+            )
+        } else {
+            String::new()
+        };
+        self.pending.drain(..safe_len);
+        if safe_len >= self.pending_emitted_prefix {
+            self.pending_emitted_prefix = 0;
+        } else {
+            self.pending_emitted_prefix -= safe_len;
+        }
+        output
+    }
+
+    fn finish(mut self, vault: &CredentialVault, generation: u64) -> String {
+        let pending = std::mem::take(&mut self.pending);
+        let redacted = vault.vault_in_text_at_generation(generation, &pending);
+        redacted
+            .get(self.pending_emitted_prefix..)
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn incomplete_credential_start(&self) -> Option<usize> {
+        let lower = self.pending.to_ascii_lowercase();
+        let mut incomplete_start: Option<usize> = None;
+
+        for marker in STREAM_CREDENTIAL_MARKERS {
+            let mut search_from = 0;
+            while let Some(relative) = lower[search_from..].find(marker) {
+                let start = search_from + relative;
+                if credential_marker_is_candidate(&lower, start, marker)
+                    && !credential_candidate_is_complete(&lower, start, marker)
+                {
+                    incomplete_start =
+                        Some(incomplete_start.map_or(start, |current| current.min(start)));
+                }
+                search_from = start + marker.len();
+            }
+        }
+
+        if let Some(start) = stream_uri_credential_start(&lower) {
+            incomplete_start = Some(incomplete_start.map_or(start, |current| current.min(start)));
+        }
+
+        // Preserve a marker that is itself split across pipe reads (for
+        // example, "pass" followed by "word=secret").
+        for marker in STREAM_CREDENTIAL_MARKERS {
+            for prefix_len in 1..marker.len() {
+                if !lower.ends_with(&marker[..prefix_len]) {
+                    continue;
+                }
+                let start = lower.len() - prefix_len;
+                let preceded_by_word = start > 0
+                    && lower[..start].chars().next_back().is_some_and(|character| {
+                        character.is_ascii_alphanumeric() || character == '_'
+                    });
+                // A one-byte prefix is only held at a token boundary. This
+                // avoids buffering ordinary words ending in a character that
+                // happens to begin a longer credential marker, such as the
+                // final y in ready versus ya29.
+                if prefix_len > 1 || !preceded_by_word {
+                    incomplete_start =
+                        Some(incomplete_start.map_or(start, |current| current.min(start)));
+                }
+            }
+        }
+
+        incomplete_start
+    }
+}
+
+fn is_stream_credential_key(marker: &str) -> bool {
+    matches!(
+        marker,
+        "password"
+            | "passwd"
+            | "pwd"
+            | "credential"
+            | "credentials"
+            | "api_key"
+            | "api-key"
+            | "apikey"
+            | "api-token"
+            | "token"
+            | "secret"
+            | "secret_key"
+            | "aws_secret_key"
+            | "aws_secret_access_key"
+            | "aws-secret-access-key"
+            | "access_token"
+            | "refresh_token"
+            | "auth_token"
+    )
+}
+
+fn credential_marker_is_candidate(input: &str, start: usize, marker: &str) -> bool {
+    let after = start + marker.len();
+    if after == input.len() {
+        return true;
+    }
+
+    let next = input[after..].chars().next().unwrap_or_default();
+    if is_stream_credential_key(marker) {
+        return next.is_ascii_whitespace() || matches!(next, '\'' | '"' | ':' | '=');
+    }
+    if matches!(marker, "bearer" | "authorization") {
+        return next.is_ascii_whitespace() || matches!(next, ':' | '=');
+    }
+    true
+}
+
+fn stream_credential_boundary(character: char) -> bool {
+    character.is_ascii_whitespace()
+        || matches!(
+            character,
+            ';' | ',' | '|' | '&' | '<' | '>' | '(' | ')' | '{' | '}' | '[' | ']'
+        )
+}
+
+fn stream_uri_credential_start(input: &str) -> Option<usize> {
+    let mut search_from = 0;
+    while let Some(relative) = input[search_from..].find("://") {
+        let marker_start = search_from + relative;
+        let bytes = input.as_bytes();
+        let mut scheme_start = marker_start;
+        while scheme_start > 0
+            && (bytes[scheme_start - 1].is_ascii_alphanumeric()
+                || matches!(bytes[scheme_start - 1], b'+' | b'-' | b'.'))
+        {
+            scheme_start -= 1;
+        }
+        if scheme_start < marker_start {
+            let authority_start = marker_start + 3;
+            let authority = &input[authority_start..];
+            let authority_end = authority
+                .char_indices()
+                .find(|(_, character)| {
+                    character.is_ascii_whitespace() || matches!(character, '/' | '?' | '#')
+                })
+                .map_or(authority.len(), |(offset, _)| offset);
+            let authority_is_complete = authority_end == authority.len();
+            let authority = &authority[..authority_end];
+            if authority.is_empty() && authority_is_complete {
+                // Keep a complete delimiter until the authority arrives in a
+                // later pipe read. Otherwise a following `user:secret@host`
+                // chunk cannot be associated with this URI anymore.
+                return Some(scheme_start);
+            }
+            if let Some(colon) = authority.find(':') {
+                if authority[colon + 1..].contains('@') || authority_is_complete {
+                    // A trailing `user:` or `user:secret` may become a
+                    // credential-bearing authority in the next chunk.
+                    return Some(scheme_start);
+                }
+            }
+        }
+        search_from = marker_start + 3;
+    }
+    stream_uri_partial_credential_start(input)
+}
+
+fn stream_uri_partial_credential_start(input: &str) -> Option<usize> {
+    // A pipe read can end after the scheme and before the `://` delimiter.
+    // Retain that possible scheme token so the next read can be joined into a
+    // complete URI before it is published. Once a full delimiter exists, the
+    // complete-URI scan above owns the decision and we must not hold ordinary
+    // authority text here.
+    let partial_marker_end = if input.ends_with(":/") {
+        input.len() - 2
+    } else if input.ends_with(':') {
+        input.len() - 1
+    } else {
+        // A possible scheme split such as "https" ends with a valid scheme
+        // character. Do not classify a hyphen-terminated credential marker
+        // (for example "AWS-SECRET-ACCESS-") as a URI scheme, or the
+        // redactor will mark its prefix as already emitted context.
+        if !input
+            .as_bytes()
+            .last()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        {
+            return None;
+        }
+        input.len()
+    };
+    if partial_marker_end == 0 || input[..partial_marker_end].contains("://") {
+        return None;
+    }
+
+    let bytes = input.as_bytes();
+    let mut scheme_start = partial_marker_end;
+    while scheme_start > 0
+        && (bytes[scheme_start - 1].is_ascii_alphanumeric()
+            || matches!(bytes[scheme_start - 1], b'+' | b'-' | b'.'))
+    {
+        scheme_start -= 1;
+    }
+    (scheme_start < partial_marker_end
+        && bytes[scheme_start].is_ascii_alphabetic()
+        && (scheme_start == 0 || bytes[scheme_start - 1] != b'_'))
+        .then_some(scheme_start)
+}
+
+fn credential_value_is_complete(input: &str, start: usize, quote: Option<char>) -> bool {
+    let mut escaped = false;
+    for character in input[start..].chars() {
+        if let Some(quote) = quote {
+            if character == quote && !escaped {
+                return true;
+            }
+        } else if stream_credential_boundary(character) {
+            return true;
+        }
+        escaped = character == '\\' && !escaped;
+        if character != '\\' {
+            escaped = false;
+        }
+    }
+    false
+}
+
+fn credential_candidate_is_complete(input: &str, start: usize, marker: &str) -> bool {
+    let after = start + marker.len();
+    if marker == "-----begin " {
+        return input[after..].contains("-----end ");
+    }
+    if marker == "authorization" {
+        return input[after..]
+            .chars()
+            .any(|character| matches!(character, '\n' | '\r'));
+    }
+
+    let mut value_start = after;
+    if is_stream_credential_key(marker) {
+        let mut cursor = after;
+        while let Some(character) = input[cursor..].chars().next() {
+            if character.is_ascii_whitespace() || matches!(character, '\'' | '"') {
+                cursor += character.len_utf8();
+            } else {
+                break;
+            }
+        }
+        let Some(separator) = input[cursor..].chars().next() else {
+            return false;
+        };
+        if !matches!(separator, ':' | '=') {
+            return input[after..]
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_ascii_whitespace());
+        }
+        cursor += separator.len_utf8();
+        while let Some(character) = input[cursor..].chars().next() {
+            if character.is_ascii_whitespace() {
+                cursor += character.len_utf8();
+            } else {
+                break;
+            }
+        }
+        let quote = input[cursor..]
+            .chars()
+            .next()
+            .filter(|character| matches!(character, '\'' | '"'));
+        if let Some(quote) = quote {
+            cursor += quote.len_utf8();
+        }
+        value_start = cursor;
+        return value_start < input.len()
+            && credential_value_is_complete(input, value_start, quote);
+    }
+
+    if marker == "bearer" {
+        while let Some(character) = input[value_start..].chars().next() {
+            if character.is_ascii_whitespace() {
+                value_start += character.len_utf8();
+            } else {
+                break;
+            }
+        }
+    }
+    value_start < input.len() && credential_value_is_complete(input, value_start, None)
+}
+
+fn forward_streamed_output(
+    tx: &mpsc::UnboundedSender<FromAgent>,
+    redactor: &mut StreamingToolOutputRedactor,
+    vault: &CredentialVault,
+    generation: u64,
+    call_id: &str,
+    chunk: &str,
+    streamed: &mut bool,
+) {
+    let content = redactor.push(vault, generation, chunk);
+    if !content.is_empty() {
+        *streamed = true;
+        let _ = tx.send(FromAgent::ToolOutput {
+            call_id: call_id.to_string(),
+            content,
+        });
+    }
+}
 
 async fn begin_mutation_commit(cancellation: Option<&CancellationToken>) -> bool {
     match cancellation {
@@ -800,6 +1183,180 @@ impl ToolExecutor {
         .map(ToolResult::failure)
     }
 
+    /// Execute bounded local exploration while applying the native hook
+    /// pipeline to every nested operation.
+    async fn execute_explore(
+        &self,
+        args: &serde_json::Value,
+        hook_event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+        call_id: &str,
+        generation: u64,
+        cancel: Option<CancellationToken>,
+        mut hooks: Option<&mut IntegratedHookSystem>,
+    ) -> ToolResult {
+        let operations = match args.get("operations").and_then(Value::as_array) {
+            Some(operations) if !operations.is_empty() => operations,
+            _ => {
+                return ToolResult::failure(
+                    "explore requires a non-empty operations array".to_string(),
+                )
+            }
+        };
+        if operations.len() > 8 {
+            return ToolResult::failure("explore accepts at most 8 operations");
+        }
+
+        struct PreparedExploreOperation {
+            tool_name: String,
+            args: Value,
+            call_id: String,
+            extra_context: Option<String>,
+            skip_reason: Option<String>,
+        }
+
+        let mut prepared = Vec::with_capacity(operations.len());
+        for (index, operation) in operations.iter().enumerate() {
+            let operation_object = match operation.as_object() {
+                Some(operation) => operation,
+                None => return ToolResult::failure("Each explore operation must be an object"),
+            };
+            let sub_tool = operation_object
+                .get("tool")
+                .and_then(Value::as_str)
+                .map(str::to_ascii_lowercase)
+                .unwrap_or_default();
+            if !matches!(
+                sub_tool.as_str(),
+                "read" | "glob" | "grep" | "find" | "list" | "search" | "parallel_ripgrep" | "diff"
+            ) {
+                return ToolResult::failure(format!(
+                    "Unsupported explore operation: {sub_tool}. Only local read/search tools are allowed"
+                ));
+            }
+            let sub_args = match operation_object.get("args") {
+                Some(Value::Object(args)) => Value::Object(args.clone()),
+                _ => return ToolResult::failure("Each explore operation requires an args object"),
+            };
+            let sub_call_id = format!("{call_id}:explore:{index}");
+            let mut effective_args = sub_args;
+            let mut extra_context = None;
+            let mut skip_reason = None;
+            if let Some(hooks) = hooks.as_deref_mut() {
+                match hooks.execute_pre_tool_use(&sub_tool, &sub_call_id, &effective_args) {
+                    HookResult::Block { reason } => {
+                        if let Some(tx) = hook_event_tx {
+                            let _ = tx.send(FromAgent::HookBlocked {
+                                call_id: sub_call_id.clone(),
+                                tool: sub_tool.clone(),
+                                reason: reason.clone(),
+                            });
+                        }
+                        skip_reason = Some(format!("Tool blocked by hook: {reason}"));
+                    }
+                    HookResult::ModifyInput { new_input } => {
+                        effective_args = new_input;
+                    }
+                    HookResult::InjectContext { context } => {
+                        extra_context = Some(context);
+                    }
+                    HookResult::Continue => {}
+                }
+            }
+            if skip_reason.is_none() {
+                let missing = self.missing_required(&sub_tool, &effective_args);
+                if !missing.is_empty() {
+                    skip_reason = Some(format!(
+                        "Missing required fields for tool '{}': {}",
+                        sub_tool,
+                        missing.join(", ")
+                    ));
+                }
+            }
+            prepared.push(PreparedExploreOperation {
+                tool_name: sub_tool,
+                args: effective_args,
+                call_id: sub_call_id,
+                extra_context,
+                skip_reason,
+            });
+        }
+
+        let executions = prepared.into_iter().map(|operation| {
+            let cancel = cancel.clone();
+            async move {
+                if let Some(reason) = operation.skip_reason.clone() {
+                    return (operation, ToolResult::failure(reason), false);
+                }
+                let result = Box::pin(self.execute_at_generation(
+                    &operation.tool_name,
+                    &operation.args,
+                    None,
+                    &operation.call_id,
+                    generation,
+                    cancel,
+                ))
+                .await;
+                (operation, result, true)
+            }
+        });
+        let results = futures::future::join_all(executions).await;
+
+        let mut success = true;
+        let output = results
+            .into_iter()
+            .enumerate()
+            .map(|(index, (operation, mut result, executed))| {
+                if executed {
+                    if let Some(hooks) = hooks.as_deref_mut() {
+                        let post_output = result.error.as_ref().map_or_else(
+                            || result.output.clone(),
+                            |error| {
+                                if result.output.is_empty() {
+                                    error.clone()
+                                } else {
+                                    format!("{}\n{error}", result.output)
+                                }
+                            },
+                        );
+                        let _ = hooks.execute_post_tool_use(
+                            &operation.tool_name,
+                            &operation.call_id,
+                            &operation.args,
+                            &post_output,
+                            !result.success,
+                        );
+                    }
+                }
+                if let Some(context) = operation.extra_context {
+                    result.output = if result.output.is_empty() {
+                        context
+                    } else {
+                        format!("{}\n\n{context}", result.output)
+                    };
+                }
+                success &= result.success;
+                serde_json::json!({
+                    "index": index,
+                    "success": result.success,
+                    "output": result.output,
+                    "error": result.error,
+                })
+            })
+            .collect::<Vec<_>>();
+        let output = serde_json::to_string_pretty(&output)
+            .unwrap_or_else(|_| "explore results could not be serialized".to_string());
+        if success {
+            ToolResult::success(output)
+        } else {
+            ToolResult {
+                success: false,
+                output,
+                error: Some("One or more explore operations failed".to_string()),
+                details: None,
+            }
+        }
+    }
+
     /// Internal implementation of tool execution (without caching)
     pub(super) async fn execute_impl(
         &self,
@@ -813,7 +1370,10 @@ impl ToolExecutor {
         let ToolExecutionContext {
             cancel,
             approved_inline_env,
+            hooks,
+            emit_tool_events,
         } = execution_context;
+        let lifecycle_event_tx = emit_tool_events.then_some(event_tx).flatten();
         if McpClient::is_mcp_tool(tool_name) {
             let client = match cancel.as_ref() {
                 Some(token) => tokio::select! {
@@ -899,6 +1459,104 @@ impl ToolExecutor {
         // registered under that name would silently never execute despite
         // passing the collision check.
         match tool_name {
+            "explore" | "Explore" => {
+                if hooks.is_some() {
+                    return Box::pin(
+                        self.execute_explore(args, event_tx, call_id, generation, cancel, hooks),
+                    )
+                    .await;
+                }
+
+                let operations = match args.get("operations").and_then(Value::as_array) {
+                    Some(operations) if !operations.is_empty() => operations,
+                    _ => {
+                        return ToolResult::failure(
+                            "explore requires a non-empty operations array".to_string(),
+                        )
+                    }
+                };
+                if operations.len() > 8 {
+                    return ToolResult::failure("explore accepts at most 8 operations");
+                }
+
+                let mut executions = Vec::with_capacity(operations.len());
+                for (index, operation) in operations.iter().enumerate() {
+                    let operation_object = match operation.as_object() {
+                        Some(operation) => operation,
+                        None => {
+                            return ToolResult::failure("Each explore operation must be an object")
+                        }
+                    };
+                    let sub_tool = operation_object
+                        .get("tool")
+                        .and_then(Value::as_str)
+                        .map(str::to_ascii_lowercase)
+                        .unwrap_or_default();
+                    if !matches!(
+                        sub_tool.as_str(),
+                        "read"
+                            | "glob"
+                            | "grep"
+                            | "find"
+                            | "list"
+                            | "search"
+                            | "parallel_ripgrep"
+                            | "diff"
+                    ) {
+                        return ToolResult::failure(format!(
+                            "Unsupported explore operation: {sub_tool}. Only local read/search tools are allowed"
+                        ));
+                    }
+                    let sub_args = match operation_object.get("args") {
+                        Some(Value::Object(args)) => Value::Object(args.clone()),
+                        _ => {
+                            return ToolResult::failure(
+                                "Each explore operation requires an args object",
+                            )
+                        }
+                    };
+                    let sub_call_id = format!("{call_id}:explore:{index}");
+                    let sub_cancel = cancel.clone();
+                    executions.push(async move {
+                        Box::pin(self.execute_at_generation(
+                            &sub_tool,
+                            &sub_args,
+                            None,
+                            &sub_call_id,
+                            generation,
+                            sub_cancel,
+                        ))
+                        .await
+                    });
+                }
+
+                let results = futures::future::join_all(executions).await;
+                let success = results.iter().all(|result| result.success);
+                let output = results
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, result)| {
+                        serde_json::json!({
+                            "index": index,
+                            "success": result.success,
+                            "output": result.output,
+                            "error": result.error,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let output = serde_json::to_string_pretty(&output)
+                    .unwrap_or_else(|_| "explore results could not be serialized".to_string());
+                if success {
+                    ToolResult::success(output)
+                } else {
+                    ToolResult {
+                        success: false,
+                        output,
+                        error: Some("One or more explore operations failed".to_string()),
+                        details: None,
+                    }
+                }
+            }
             "bash" | "Bash" => {
                 let bash_args: BashArgs = match serde_json::from_value(args.clone()) {
                     Ok(a) => a,
@@ -911,35 +1569,129 @@ impl ToolExecutor {
                     return ToolResult::failure(err);
                 }
 
-                // Send tool start event
-                if let Some(tx) = event_tx {
-                    let _ = tx.send(FromAgent::ToolStart {
-                        call_id: call_id.to_string(),
-                    });
-                }
+                let result = if let Some(tx) = event_tx {
+                    if emit_tool_events {
+                        let _ = tx.send(FromAgent::ToolStart {
+                            call_id: call_id.to_string(),
+                        });
+                    }
 
-                let result = vault_tool_result_credentials(
-                    &self.credential_vault,
-                    generation,
-                    self.bash.execute_with_cancellation(bash_args, cancel).await,
-                );
-
-                // Send tool output event
-                if let Some(tx) = event_tx {
-                    if !result.output.is_empty() {
+                    let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
+                    let execution = self.bash.execute_with_cancellation_and_output(
+                        bash_args,
+                        cancel,
+                        Some(stream_tx),
+                    );
+                    tokio::pin!(execution);
+                    let mut streamed = false;
+                    // stdout and stderr are independent byte streams. Keep a
+                    // separate redactor for each so a boundary on one pipe
+                    // cannot complete a credential candidate on the other.
+                    let mut stdout_redactor = StreamingToolOutputRedactor::default();
+                    let mut stderr_redactor = StreamingToolOutputRedactor::default();
+                    let uncached_result = loop {
+                        tokio::select! {
+                            biased;
+                            result = &mut execution => break result,
+                            Some(chunk) = stream_rx.recv() => {
+                                let redactor = match chunk.stream {
+                                    BashOutputStream::Stdout => &mut stdout_redactor,
+                                    BashOutputStream::Stderr => &mut stderr_redactor,
+                                };
+                                forward_streamed_output(
+                                    tx,
+                                    redactor,
+                                    &self.credential_vault,
+                                    generation,
+                                    call_id,
+                                    &chunk.content,
+                                    &mut streamed,
+                                );
+                            }
+                        }
+                    };
+                    while let Ok(chunk) = stream_rx.try_recv() {
+                        let redactor = match chunk.stream {
+                            BashOutputStream::Stdout => &mut stdout_redactor,
+                            BashOutputStream::Stderr => &mut stderr_redactor,
+                        };
+                        forward_streamed_output(
+                            tx,
+                            redactor,
+                            &self.credential_vault,
+                            generation,
+                            call_id,
+                            &chunk.content,
+                            &mut streamed,
+                        );
+                    }
+                    for tail in [
+                        stdout_redactor.finish(&self.credential_vault, generation),
+                        stderr_redactor.finish(&self.credential_vault, generation),
+                    ] {
+                        if !tail.is_empty() {
+                            streamed = true;
+                            let _ = tx.send(FromAgent::ToolOutput {
+                                call_id: call_id.to_string(),
+                                content: tail,
+                            });
+                        }
+                    }
+                    let result = vault_tool_result_credentials(
+                        &self.credential_vault,
+                        generation,
+                        uncached_result,
+                    );
+                    let result_was_truncated = result
+                        .details
+                        .as_ref()
+                        .and_then(|details| details.get("truncated"))
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let result = if streamed {
+                        let mut result = result;
+                        let mut details = result
+                            .details
+                            .take()
+                            .unwrap_or_else(|| serde_json::json!({}));
+                        details["streamed"] = serde_json::json!(true);
+                        result.details = Some(details);
+                        result
+                    } else {
+                        result
+                    };
+                    if streamed && result_was_truncated && !result.output.is_empty() {
+                        // Live output is prefix-bounded, while the completed
+                        // Bash result is the authoritative tail. Emit it as
+                        // a second segment so failures at the end of a large
+                        // command are not hidden by the live cap.
                         let _ = tx.send(FromAgent::ToolOutput {
                             call_id: call_id.to_string(),
                             content: result.output.clone(),
                         });
                     }
-
-                    let _ = tx.send(FromAgent::ToolEnd {
-                        call_id: call_id.to_string(),
-                        success: result.success,
-                        result: Some(result.clone()),
-                        receipt: None,
-                    });
-                }
+                    if emit_tool_events {
+                        if !streamed && !result.output.is_empty() {
+                            let _ = tx.send(FromAgent::ToolOutput {
+                                call_id: call_id.to_string(),
+                                content: result.output.clone(),
+                            });
+                        }
+                        let _ = tx.send(FromAgent::ToolEnd {
+                            call_id: call_id.to_string(),
+                            success: result.success,
+                            result: Some(result.clone()),
+                            receipt: None,
+                        });
+                    }
+                    result
+                } else {
+                    vault_tool_result_credentials(
+                        &self.credential_vault,
+                        generation,
+                        self.bash.execute_with_cancellation(bash_args, cancel).await,
+                    )
+                };
 
                 result
             }
@@ -2371,6 +3123,32 @@ impl ToolExecutor {
                     }
                 }
             }
+            "spawn_subagent" => {
+                self.subagents
+                    .spawn(
+                        args,
+                        call_id,
+                        self.sandbox_policy.clone(),
+                        self.credential_vault.clone(),
+                        cancel.as_ref(),
+                    )
+                    .await
+            }
+            "list_subagents" => self.subagents.list().await,
+            "get_subagent" => self.subagents.get(args),
+            "wait_subagent" => self.subagents.wait(args, cancel.as_ref()).await,
+            "resume_subagent" => {
+                self.subagents
+                    .resume(
+                        args,
+                        call_id,
+                        self.sandbox_policy.clone(),
+                        self.credential_vault.clone(),
+                        cancel.as_ref(),
+                    )
+                    .await
+            }
+            "cancel_subagent" => self.subagents.cancel(args),
             "get_goal" => crate::tools::goal_tools::get_goal(),
             "update_goal" => crate::tools::goal_tools::update_goal(args.clone()),
             "todo" => todo::todo_with_cancellation(args.clone(), cancel.as_ref()).await,
@@ -2781,7 +3559,7 @@ impl ToolExecutor {
                 };
 
                 // Send tool start event
-                if let Some(tx) = event_tx {
+                if let Some(tx) = lifecycle_event_tx {
                     let _ = tx.send(FromAgent::ToolStart {
                         call_id: call_id.to_string(),
                     });
@@ -2805,7 +3583,7 @@ impl ToolExecutor {
                 };
 
                 // Send tool output event
-                if let Some(tx) = event_tx {
+                if let Some(tx) = lifecycle_event_tx {
                     if !result.output.is_empty() {
                         let _ = tx.send(FromAgent::ToolOutput {
                             call_id: call_id.to_string(),
@@ -2832,7 +3610,7 @@ impl ToolExecutor {
                 };
 
                 // Send tool start event
-                if let Some(tx) = event_tx {
+                if let Some(tx) = lifecycle_event_tx {
                     let _ = tx.send(FromAgent::ToolStart {
                         call_id: call_id.to_string(),
                     });
@@ -2841,7 +3619,7 @@ impl ToolExecutor {
                 let result = self.image.read_image(image_args).await;
 
                 // Send tool output event
-                if let Some(tx) = event_tx {
+                if let Some(tx) = lifecycle_event_tx {
                     if !result.output.is_empty() {
                         let _ = tx.send(FromAgent::ToolOutput {
                             call_id: call_id.to_string(),
@@ -2868,7 +3646,7 @@ impl ToolExecutor {
                 };
 
                 // Send tool start event
-                if let Some(tx) = event_tx {
+                if let Some(tx) = lifecycle_event_tx {
                     let _ = tx.send(FromAgent::ToolStart {
                         call_id: call_id.to_string(),
                     });
@@ -2877,7 +3655,7 @@ impl ToolExecutor {
                 let result = self.image.screenshot(screenshot_args).await;
 
                 // Send tool output event
-                if let Some(tx) = event_tx {
+                if let Some(tx) = lifecycle_event_tx {
                     if !result.output.is_empty() {
                         let _ = tx.send(FromAgent::ToolOutput {
                             call_id: call_id.to_string(),
@@ -2899,7 +3677,7 @@ impl ToolExecutor {
                 // Check if this is an inline tool
                 if let Some(inline_tool) = self.get_inline_tool(tool_name) {
                     // Send tool start event
-                    if let Some(tx) = event_tx {
+                    if let Some(tx) = lifecycle_event_tx {
                         let _ = tx.send(FromAgent::ToolStart {
                             call_id: call_id.to_string(),
                         });
@@ -2919,7 +3697,7 @@ impl ToolExecutor {
                     );
 
                     // Send tool output and end events
-                    if let Some(tx) = event_tx {
+                    if let Some(tx) = lifecycle_event_tx {
                         if !result.output.is_empty() {
                             let _ = tx.send(FromAgent::ToolOutput {
                                 call_id: call_id.to_string(),
@@ -2946,4 +3724,43 @@ impl ToolExecutor {
 
 fn cancelled_tool_result(message: &str) -> ToolResult {
     ToolResult::failure(message).with_details(serde_json::json!({"cancelled": true}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn streaming_redactor_holds_split_uri_delimiter_until_redaction() {
+        let vault = CredentialVault::new();
+        let generation = vault.generation();
+        let mut redactor = StreamingToolOutputRedactor::default();
+
+        assert_eq!(redactor.push(&vault, generation, "https:/"), "https:/");
+        assert_eq!(redactor.push(&vault, generation, "/alice:"), "");
+        assert_eq!(
+            redactor.push(&vault, generation, "uri-secret@example.test\n"),
+            ""
+        );
+        let tail = redactor.finish(&vault, generation);
+        assert!(tail.contains("{{CRED:password:"));
+        assert!(!tail.contains("uri-secret"));
+    }
+
+    #[test]
+    fn streaming_redactor_holds_split_uri_scheme_until_redaction() {
+        let vault = CredentialVault::new();
+        let generation = vault.generation();
+        let mut redactor = StreamingToolOutputRedactor::default();
+
+        assert_eq!(redactor.push(&vault, generation, "https"), "https");
+        assert_eq!(redactor.push(&vault, generation, "://alice:"), "");
+        assert_eq!(
+            redactor.push(&vault, generation, "uri-secret@example.test\n"),
+            ""
+        );
+        let tail = redactor.finish(&vault, generation);
+        assert!(tail.contains("{{CRED:password:"));
+        assert!(!tail.contains("uri-secret"));
+    }
 }

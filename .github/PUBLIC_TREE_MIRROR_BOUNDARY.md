@@ -64,7 +64,32 @@ The public `package.json` is still generated from internal, so
 `scripts/prepare-public-release-mirror.mjs` injects the public-only
 `release:verify:published`, `release:verify:published:e2e`,
 `release:verify:published:evidence`, and `release:deprecate` npm script aliases
-while leaving release-helper propagation to the release mirror.
+while leaving release-helper propagation to the release mirror. The internal
+generator also removes internal-only test dependencies and their lockfile
+entries before writing the public projection, so public release builds never
+need credentials for private test infrastructure. It rewrites the Rust sources
+that use those fixtures as well, because a tree that dropped the dependency but
+kept the import would not compile its own tests. The generator itself is
+internal-only and is excluded from the public tree, and it is listed in the
+generator's stale-target deletion set so an already-published copy is removed
+from the public repository on the next sync rather than being frozen there by
+the exclusion.
+
+The same rewrites are available in place through
+`node scripts/prepare-public-release-mirror.mjs --sanitize-workspace <dir>`.
+`.github/actions/prepare-fork-safe-cargo` uses that mode so fork PR validation,
+the container build context, and the internal release build in
+`.github/workflows/public-release-mirror.yml` can run Cargo with no credential
+for internal-only test infrastructure. Both modes read one shared path list, and
+both fail the run if a sanitized file still references the internal dependency
+afterwards, so a rewrite rule that stops matching turns into a red check instead
+of a silent leak.
+
+`.github/actions/configure-private-cargo-git` (the credential prefetch for the
+private dependency) is likewise excluded from the public projection and listed
+in the stale-target deletion set: the public tree strips the dependency, owns
+none of the workflows that call the action, and must not carry internal-only
+credential plumbing.
 
 ### Internal-only docs that should not leak into the public repo
 

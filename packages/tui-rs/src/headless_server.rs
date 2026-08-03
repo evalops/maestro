@@ -24,6 +24,7 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -120,8 +121,11 @@ struct UtilityCommandOptions {
 }
 
 impl HeadlessState {
-    fn new() -> Self {
-        let model = std::env::var("MAESTRO_MODEL").unwrap_or_else(|_| "gpt-5.5".to_string());
+    fn new(model_override: Option<String>) -> Self {
+        let model = model_override
+            .filter(|model| !model.trim().is_empty())
+            .or_else(|| std::env::var("MAESTRO_MODEL").ok())
+            .unwrap_or_else(|| "gpt-5.5".to_string());
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
@@ -185,6 +189,7 @@ impl HeadlessState {
 
     fn ensure_agent(&mut self) -> Result<&NativeAgent> {
         if self.agent.is_none() {
+            let started = Instant::now();
             let config = NativeAgentConfig {
                 model: self.model.clone(),
                 max_tokens: 16384,
@@ -218,9 +223,19 @@ impl HeadlessState {
             let tool_tx = agent.tool_response_sender();
             let tool_tx_bg = tool_tx.clone();
             let meta_bg = Arc::clone(&self.meta);
+            let reported_model = self.model.clone();
+            let routed_provider = managed_provider_override();
             let event_task = tokio::spawn(async move {
                 while let Some(msg) = event_rx.recv().await {
-                    if let Err(err) = handle_agent_event(msg, &meta_bg, &tool_tx_bg).await {
+                    if let Err(err) = handle_agent_event(
+                        msg,
+                        &meta_bg,
+                        &tool_tx_bg,
+                        &reported_model,
+                        routed_provider.as_deref(),
+                    )
+                    .await
+                    {
                         let _ = emit(&FromAgentMessage::Error {
                             request_id: None,
                             message: format!("headless event bridge failed: {err:#}"),
@@ -240,10 +255,27 @@ impl HeadlessState {
             if let Some(agent) = self.agent.as_ref() {
                 agent.send_session_info(&self.cwd, Some(session_id.clone()), git_branch);
             }
+            let (model, provider) = reported_identity(
+                &self.model,
+                infer_provider_label(&self.model),
+                managed_provider_override().as_deref(),
+            );
+            tracing::info!(
+                target: "maestro.model_binding",
+                event = "maestro_model_binding_ready",
+                session_id = %session_id,
+                configured_model = %self.model,
+                configured_provider = infer_provider_label(&self.model),
+                reported_model = %model,
+                reported_provider = %provider,
+                routed_provider = managed_provider_override().as_deref().unwrap_or(""),
+                binding_mode = model_binding_mode(&self.model),
+                duration_ms = started.elapsed().as_millis() as u64,
+            );
             emit(&FromAgentMessage::Ready {
                 protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
-                model: self.model.clone(),
-                provider: infer_provider_label(&self.model).to_string(),
+                model,
+                provider,
                 session_id: Some(session_id),
             })?;
         }
@@ -286,15 +318,31 @@ async fn submit_prompt_with_kind(
 }
 
 /// Run the native headless protocol server until EOF or shutdown.
-pub async fn run_headless_server() -> Result<i32> {
-    let mut state = HeadlessState::new();
+pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> {
+    let mut state = HeadlessState::new(model_override);
+    let (reported_model, reported_provider) = reported_identity(
+        &state.model,
+        infer_provider_label(&state.model),
+        managed_provider_override().as_deref(),
+    );
+    tracing::info!(
+        target: "maestro.model_binding",
+        event = "maestro_model_binding_selected",
+        session_id = ?state.session_id(),
+        configured_model = %state.model,
+        configured_provider = infer_provider_label(&state.model),
+        reported_model = %reported_model,
+        reported_provider = %reported_provider,
+        routed_provider = managed_provider_override().as_deref().unwrap_or(""),
+        binding_mode = model_binding_mode(&state.model),
+    );
 
     // Emit ready immediately so clients can proceed with Hello/Init without credentials.
     // Include session_id when already available (e.g. MAESTRO_SESSION_ID).
     emit(&FromAgentMessage::Ready {
         protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
-        model: state.model.clone(),
-        provider: infer_provider_label(&state.model).to_string(),
+        model: reported_model,
+        provider: reported_provider,
         session_id: state.session_id(),
     })?;
 
@@ -340,6 +388,23 @@ pub async fn run_headless_server() -> Result<i32> {
                 role,
                 opt_out_notifications,
             } => {
+                // A client this build cannot serve must not get a session: the
+                // error is fatal and ends the stdio loop, so a client that
+                // ignores it cannot go on to Init and prompt anyway.
+                if !crate::headless::messages::client_protocol_version_is_supported(
+                    protocol_version.as_deref(),
+                ) {
+                    emit(&FromAgentMessage::Error {
+                        request_id: None,
+                        message:
+                            crate::headless::messages::unsupported_client_protocol_version_message(
+                                protocol_version.as_deref().unwrap_or_default(),
+                            ),
+                        fatal: true,
+                        error_type: Some(HeadlessErrorType::Protocol),
+                    })?;
+                    break;
+                }
                 if let Some(grade) = capabilities.and_then(|value| value.transcript_grade) {
                     state
                         .meta
@@ -484,6 +549,10 @@ pub async fn run_headless_server() -> Result<i32> {
                                 Some(call_id),
                                 "native tool response channel is closed",
                             )?;
+                        } else {
+                            emit(&FromAgentMessage::ResponseAccepted {
+                                request_id: call_id,
+                            })?;
                         }
                     }
                     Err(message) => protocol_error(Some(call_id), message)?,
@@ -508,6 +577,10 @@ pub async fn run_headless_server() -> Result<i32> {
                                 Some(call_id),
                                 "native client-tool response channel is closed",
                             )?;
+                        } else {
+                            emit(&FromAgentMessage::ResponseAccepted {
+                                request_id: call_id,
+                            })?;
                         }
                     }
                     Err(message) => protocol_error(Some(call_id), message)?,
@@ -543,12 +616,19 @@ pub async fn run_headless_server() -> Result<i32> {
                             | ServerRequestResolutionStatus::Skipped
                             | ServerRequestResolutionStatus::Aborted
                     ));
-                    let _ = tool_tx.send((
-                        request_id.clone(),
-                        approved,
-                        agent_result,
-                        ExecutionSource::RemoteClient,
-                    ));
+                    if tool_tx
+                        .send((
+                            request_id.clone(),
+                            approved,
+                            agent_result,
+                            ExecutionSource::RemoteClient,
+                        ))
+                        .is_ok()
+                    {
+                        emit(&FromAgentMessage::ResponseAccepted {
+                            request_id: request_id.clone(),
+                        })?;
+                    }
                 }
                 emit(&FromAgentMessage::ServerRequestResolved {
                     request_id: request_id.clone(),
@@ -1208,6 +1288,8 @@ async fn handle_agent_event(
     msg: FromAgent,
     meta: &Arc<Mutex<RuntimeMeta>>,
     tool_tx: &mpsc::UnboundedSender<ToolResponseMessage>,
+    configured_model: &str,
+    routed_provider: Option<&str>,
 ) -> Result<()> {
     match msg {
         FromAgent::ConversationSnapshot {
@@ -1225,6 +1307,20 @@ async fn handle_agent_event(
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .session_id
                 .clone();
+            let (native_model, native_provider, model, provider) =
+                observed_ready_identity(&model, &provider, routed_provider);
+            tracing::info!(
+                target: "maestro.model_binding",
+                event = "maestro_model_binding_observed",
+                session_id = ?session_id,
+                configured_model = %configured_model,
+                native_model = %native_model,
+                native_provider = %native_provider,
+                reported_model = %model,
+                reported_provider = %provider,
+                routed_provider = routed_provider.unwrap_or(""),
+                binding_mode = model_binding_mode(configured_model),
+            );
             emit(&FromAgentMessage::Ready {
                 protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
                 model,
@@ -1233,6 +1329,17 @@ async fn handle_agent_event(
             })?;
         }
         FromAgent::ResponseStart { response_id } => {
+            let session_id = meta
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .session_id
+                .clone();
+            tracing::debug!(
+                target: "maestro.llm",
+                event = "maestro_response_started",
+                session_id = ?session_id,
+                response_id = %response_id,
+            );
             meta.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .response_chunks
@@ -1259,6 +1366,20 @@ async fn handle_agent_event(
             }
         }
         FromAgent::ResponseEnd { response_id, usage } => {
+            let session_id = meta
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .session_id
+                .clone();
+            tracing::info!(
+                target: "maestro.llm",
+                event = "maestro_response_completed",
+                session_id = ?session_id,
+                response_id = %response_id,
+                usage_present = usage.is_some(),
+                configured_model = %configured_model,
+                routed_provider = routed_provider.unwrap_or(""),
+            );
             for message in take_interrupted_tool_terminal_messages(meta) {
                 emit(&message)?;
             }
@@ -1283,7 +1404,8 @@ async fn handle_agent_event(
             }
             emit(&FromAgentMessage::ResponseEnd {
                 response_id,
-                usage: usage.map(to_headless_usage),
+                usage: usage
+                    .map(|usage| to_headless_usage(usage, configured_model, routed_provider)),
                 tools_summary: None,
                 duration_ms: None,
                 ttft_ms: None,
@@ -1373,6 +1495,20 @@ async fn handle_agent_event(
             }
         }
         FromAgent::Error { message, fatal } => {
+            let session_id = meta
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .session_id
+                .clone();
+            tracing::warn!(
+                target: "maestro.llm",
+                event = "maestro_response_failed",
+                session_id = ?session_id,
+                fatal,
+                error_kind = if fatal { "fatal" } else { "transient" },
+                configured_model = %configured_model,
+                routed_provider = routed_provider.unwrap_or(""),
+            );
             emit(&FromAgentMessage::Error {
                 request_id: None,
                 message,
@@ -1466,7 +1602,16 @@ fn emit(msg: &FromAgentMessage) -> Result<()> {
     Ok(())
 }
 
-fn to_headless_usage(usage: crate::agent::TokenUsage) -> HeadlessTokenUsage {
+fn to_headless_usage(
+    usage: crate::agent::TokenUsage,
+    configured_model: &str,
+    routed_provider: Option<&str>,
+) -> HeadlessTokenUsage {
+    let (model, provider) = reported_identity(
+        configured_model,
+        infer_provider_label(configured_model),
+        routed_provider,
+    );
     HeadlessTokenUsage {
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
@@ -1474,14 +1619,89 @@ fn to_headless_usage(usage: crate::agent::TokenUsage) -> HeadlessTokenUsage {
         cache_write_tokens: usage.cache_write_tokens,
         cost: usage.cost,
         total_tokens: Some(usage.input_tokens + usage.output_tokens),
-        model_id: None,
-        provider: None,
+        model_id: Some(model),
+        provider: Some(provider),
+    }
+}
+
+fn managed_provider_override() -> Option<String> {
+    std::env::var("MAESTRO_EVALOPS_PROVIDER")
+        .ok()
+        .map(|provider| provider.trim().to_string())
+        .filter(|provider| !provider.is_empty())
+}
+
+/// Return the identity of the provider/model selected by the hosted caller.
+/// `evalops/` and `maestro-managed/` are transport prefixes used to select
+/// Maestro's managed client; they are not the model identity Platform selected
+/// for the turn.
+fn reported_identity(
+    model: &str,
+    fallback_provider: &str,
+    routed_provider: Option<&str>,
+) -> (String, String) {
+    let model = model.trim();
+    let managed = ["evalops/", "maestro-managed/"]
+        .into_iter()
+        .find_map(|prefix| {
+            model
+                .get(..prefix.len())
+                .filter(|candidate| candidate.eq_ignore_ascii_case(prefix))
+                .map(|_| &model[prefix.len()..])
+        })
+        .filter(|model| !model.trim().is_empty());
+    let reported_model = managed.unwrap_or(model);
+    let inferred_provider = infer_provider_label(reported_model);
+    (
+        reported_model.to_string(),
+        if managed.is_some() {
+            routed_provider
+                .filter(|provider| !provider.trim().is_empty())
+                .unwrap_or(inferred_provider)
+                .to_string()
+        } else if inferred_provider == "OpenRouter" {
+            inferred_provider.to_string()
+        } else {
+            fallback_provider.to_string()
+        },
+    )
+}
+
+fn observed_ready_identity(
+    native_model: &str,
+    native_provider: &str,
+    routed_provider: Option<&str>,
+) -> (String, String, String, String) {
+    let (reported_model, reported_provider) =
+        reported_identity(native_model, native_provider, routed_provider);
+    (
+        native_model.to_string(),
+        native_provider.to_string(),
+        reported_model,
+        reported_provider,
+    )
+}
+
+fn model_binding_mode(model: &str) -> &'static str {
+    let model = model.trim();
+    if ["evalops/", "maestro-managed/"].into_iter().any(|prefix| {
+        model
+            .get(..prefix.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+    }) {
+        "managed_normalized"
+    } else {
+        "native"
     }
 }
 
 fn infer_provider_label(model: &str) -> &'static str {
     let m = model.to_lowercase();
-    if m.contains("claude") || m.contains("anthropic") {
+    if m.split_once('/')
+        .is_some_and(|(provider, _)| provider == "openrouter")
+    {
+        "OpenRouter"
+    } else if m.contains("claude") || m.contains("anthropic") {
         "Anthropic"
     } else if m.contains("gemini") || m.contains("google") {
         "Google"
@@ -1689,10 +1909,77 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn managed_headless_identity_reports_the_platform_route() {
+        assert_eq!(
+            reported_identity("evalops/openai/gpt-5.6", "OpenAI", Some("openrouter"),),
+            ("openai/gpt-5.6".to_string(), "openrouter".to_string())
+        );
+        assert_eq!(
+            reported_identity(
+                "MAESTRO-MANAGED/openai/gpt-5.6",
+                "OpenAI",
+                Some("openrouter"),
+            ),
+            ("openai/gpt-5.6".to_string(), "openrouter".to_string())
+        );
+
+        let usage = to_headless_usage(
+            crate::agent::TokenUsage::default(),
+            "evalops/openai/gpt-5.6",
+            Some("openrouter"),
+        );
+        assert_eq!(usage.model_id.as_deref(), Some("openai/gpt-5.6"));
+        assert_eq!(usage.provider.as_deref(), Some("openrouter"));
+    }
+
+    #[test]
+    fn unbound_headless_identity_preserves_native_provider_label() {
+        assert_eq!(
+            reported_identity("gpt-5.5", "OpenAI", Some("openrouter")),
+            ("gpt-5.5".to_string(), "OpenAI".to_string())
+        );
+    }
+
+    #[test]
+    fn openrouter_headless_identity_uses_route_not_nested_vendor() {
+        assert_eq!(
+            reported_identity("openrouter/anthropic/claude-sonnet-4.5", "OpenAI", None,),
+            (
+                "openrouter/anthropic/claude-sonnet-4.5".to_string(),
+                "OpenRouter".to_string(),
+            )
+        );
+        assert_eq!(
+            reported_identity("openrouter/google/gemini-2.5-pro", "OpenAI", None,).1,
+            "OpenRouter"
+        );
+        assert_eq!(
+            reported_identity("openrouter/meta-llama/llama-4-maverick", "OpenAI", None,).1,
+            "OpenRouter"
+        );
+    }
+
+    #[test]
+    fn observed_ready_identity_preserves_native_values_before_normalizing_route() {
+        assert_eq!(
+            observed_ready_identity("evalops/openai/gpt-5.6", "OpenAI", Some("openrouter"),),
+            (
+                "evalops/openai/gpt-5.6".to_string(),
+                "OpenAI".to_string(),
+                "openai/gpt-5.6".to_string(),
+                "openrouter".to_string(),
+            )
+        );
+    }
+
     #[tokio::test]
     async fn steer_message_reaches_codex_as_turn_steer_not_turn_start() {
         if std::env::var_os("MAESTRO_HEADLESS_STEER_FIXTURE").is_some() {
-            assert_eq!(run_headless_server().await.expect("headless fixture"), 0);
+            assert_eq!(
+                run_headless_server(None).await.expect("headless fixture"),
+                0
+            );
             return;
         }
 

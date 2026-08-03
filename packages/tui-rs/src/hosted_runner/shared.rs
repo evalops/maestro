@@ -92,6 +92,12 @@ impl SharedRunner {
                 active_utility_commands: HashMap::new(),
                 active_file_watches: HashMap::new(),
                 active_response_ids: HashSet::new(),
+                response_idempotency_keys: loaded_thread.response_idempotency_keys,
+                response_idempotency_digests: loaded_thread.response_idempotency_digests,
+                pending_response_idempotency: loaded_thread.pending_response_idempotency,
+                response_idempotency_order: loaded_thread.response_idempotency_order,
+                pending_response_idempotency_order: loaded_thread
+                    .pending_response_idempotency_order,
                 envelopes: loaded_thread.events.clone(),
                 controller_envelopes: loaded_thread.events,
                 pending_controller_events: VecDeque::new(),
@@ -395,6 +401,13 @@ impl SharedRunner {
             self.config.runtime_generation,
             state.cursor,
             &state.envelopes,
+            ResponseIdempotencyView {
+                keys: &state.response_idempotency_keys,
+                digests: &state.response_idempotency_digests,
+                pending: &state.pending_response_idempotency,
+                order: &state.response_idempotency_order,
+                pending_order: &state.pending_response_idempotency_order,
+            },
         )
     }
 

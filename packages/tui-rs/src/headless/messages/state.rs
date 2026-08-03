@@ -772,6 +772,7 @@ impl AgentState {
             // A provider conversation snapshot is durable private runtime state,
             // not a customer-visible protocol event.
             FromAgentMessage::ConversationSnapshot { .. } => None,
+            FromAgentMessage::ResponseAccepted { .. } => None,
             FromAgentMessage::HelloOk {
                 protocol_version,
                 connection_id: _connection_id,
