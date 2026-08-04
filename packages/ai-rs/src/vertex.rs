@@ -22,6 +22,7 @@
 //! }
 //! ```
 
+use std::collections::HashMap;
 use std::env;
 
 use anyhow::{Context, Result};
@@ -34,7 +35,7 @@ use tokio::sync::mpsc;
 use super::types::{
     ContentBlock, Message, MessageContent, RequestConfig, Role, StopReason, StreamEvent,
 };
-use super::AiProvider;
+use super::{provider_model_name, AiProvider};
 
 /// Default Vertex AI region
 const DEFAULT_REGION: &str = "us-central1";
@@ -95,6 +96,45 @@ impl VertexAiClient {
         Ok(Self::new(project_id, region, api_key, access_token))
     }
 
+    /// Create a client from the provider registry's resolved credential and
+    /// environment snapshot. The registry resolves `op://` references before
+    /// this boundary, so callers never need to pass raw secret values to the
+    /// transport. `auth_source` selects whether the credential is an OAuth
+    /// access token or a Google API key.
+    pub(crate) fn from_resolved_env(
+        env: &HashMap<String, String>,
+        credential: &str,
+        auth_source: &str,
+    ) -> Result<Self> {
+        let project_id = ["GOOGLE_CLOUD_PROJECT", "VERTEX_PROJECT_ID"]
+            .iter()
+            .find_map(|name| {
+                env.get(*name)
+                    .map(String::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+            })
+            .context("GOOGLE_CLOUD_PROJECT or VERTEX_PROJECT_ID environment variable not set")?;
+        let region = env
+            .get("VERTEX_REGION")
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(DEFAULT_REGION);
+        let credential = credential.trim();
+        if credential.is_empty() {
+            anyhow::bail!("Vertex AI credential must not be empty");
+        }
+
+        let (api_key, access_token) = match auth_source {
+            "VERTEX_ACCESS_TOKEN" => (None, Some(credential.to_owned())),
+            "GOOGLE_API_KEY" => (Some(credential.to_owned()), None),
+            other => anyhow::bail!("unsupported Vertex AI auth source: {other}"),
+        };
+
+        Ok(Self::new(project_id, region, api_key, access_token))
+    }
+
     /// Stream a request to the Vertex AI API
     pub async fn stream(
         &self,
@@ -112,7 +152,7 @@ impl VertexAiClient {
         let region = self.region.clone();
         let api_key = self.api_key.clone();
         let access_token = self.access_token.clone();
-        let model = config.model.clone();
+        let model = provider_model_name(&config.model);
 
         tokio::spawn(async move {
             if let Err(e) = stream_vertex_response(

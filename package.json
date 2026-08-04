@@ -19,6 +19,7 @@
     "build:all": "npm run build",
     "check": "npm run check:workspace-contract && npm run check:rust-only-runtime && npm run check:helm-probes && npm run check:hook-dispatch && cargo check --workspace --all-targets --locked",
     "test": "cargo test --workspace --locked",
+    "test:internal": "node --test test/internal/*.test.mjs",
     "lint": "cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D warnings",
     "format": "cargo fmt --all",
     "start": "./bin/maestro",

@@ -17,6 +17,11 @@
 			"authEnv": ["GOOGLE_ANTIGRAVITY_TOKEN"]
 		},
 		{
+			"provider": "vertex-ai",
+			"aliases": ["vertex"],
+			"authEnv": ["VERTEX_ACCESS_TOKEN", "GOOGLE_API_KEY"]
+		},
+		{
 			"provider": "evalops",
 			"aliases": ["maestro-managed"],
 			"authEnv": ["MAESTRO_EVALOPS_ACCESS_TOKEN", "EVALOPS_TOKEN"]
@@ -46,10 +51,13 @@
 			"aliases": ["aws-bedrock"],
 			"authEnv": [
 				"AWS_ACCESS_KEY_ID",
+				"AWS_SECRET_ACCESS_KEY",
 				"AWS_PROFILE",
-				"AWS_SSO_SESSION_NAME",
+				"AWS_CONFIG_FILE",
+				"AWS_SHARED_CREDENTIALS_FILE",
 				"AWS_WEB_IDENTITY_TOKEN_FILE",
-				"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"
+				"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+				"AWS_CONTAINER_CREDENTIALS_FULL_URI"
 			]
 		},
 		{ "provider": "writer", "aliases": [], "authEnv": ["WRITER_API_KEY"] },

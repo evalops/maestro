@@ -16,6 +16,7 @@ pub enum ProviderProtocol {
     OpenAi,
     OpenAiCompatible,
     Google,
+    VertexAi,
     Codex,
     AzureOpenAi,
     Bedrock,
@@ -157,6 +158,19 @@ const PROVIDERS: &[ProviderDescriptor] = &[
         protocol: ProviderProtocol::Google,
     },
     ProviderDescriptor {
+        id: "vertex-ai",
+        aliases: &["vertex"],
+        // Vertex supports OAuth access tokens and API keys. Keep the access
+        // token first so an explicitly configured OAuth credential wins when
+        // both variables are present, matching VertexAiClient's precedence.
+        auth_env: &["VERTEX_ACCESS_TOKEN", "GOOGLE_API_KEY"],
+        // Vertex's endpoint is derived from project and region rather than a
+        // configurable OpenAI-style base URL.
+        base_url_env: &[],
+        default_base_url: None,
+        protocol: ProviderProtocol::VertexAi,
+    },
+    ProviderDescriptor {
         id: "google-gemini-cli",
         aliases: &[],
         auth_env: &["GOOGLE_GEMINI_CLI_TOKEN"],
@@ -221,10 +235,13 @@ const PROVIDERS: &[ProviderDescriptor] = &[
         aliases: &["aws-bedrock"],
         auth_env: &[
             "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
             "AWS_PROFILE",
-            "AWS_SSO_SESSION_NAME",
+            "AWS_CONFIG_FILE",
+            "AWS_SHARED_CREDENTIALS_FILE",
             "AWS_WEB_IDENTITY_TOKEN_FILE",
             "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
         ],
         base_url_env: &["AWS_BEDROCK_ENDPOINT"],
         default_base_url: None,
@@ -325,6 +342,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bedrock_sso_session_marker_is_not_allowlisted() {
+        let env = HashMap::from([(
+            "AWS_SSO_SESSION_NAME".to_string(),
+            "default-sso".to_string(),
+        )]);
+        let resolved = ProviderRegistry::resolve("bedrock/model", &env).unwrap();
+        assert_eq!(resolved.auth_source, None);
+        let error = ProviderRegistry::require("bedrock/model", &env)
+            .expect_err("a standalone SSO session marker is not a credential source")
+            .to_string();
+        assert!(error.contains("AWS_PROFILE"));
+        assert!(!error.contains("AWS_SSO_SESSION_NAME"));
+    }
+
+    #[test]
     fn bare_codex_models_use_openai_credentials() {
         let env = HashMap::from([("OPENAI_API_KEY".to_string(), "secret".to_string())]);
         let resolved = ProviderRegistry::require("gpt-5.1-codex-max", &env).unwrap();
@@ -382,6 +414,24 @@ mod tests {
         assert_eq!(
             resolved.base_url.as_deref(),
             Some("https://openrouter.ai/api/v1")
+        );
+    }
+
+    #[test]
+    fn vertex_ai_prefers_access_token_over_api_key() {
+        let env = HashMap::from([
+            ("VERTEX_ACCESS_TOKEN".to_string(), "oauth-token".to_string()),
+            ("GOOGLE_API_KEY".to_string(), "api-key".to_string()),
+        ]);
+        let resolved = ProviderRegistry::require("vertex-ai/gemini-2.5-pro", &env).unwrap();
+
+        assert_eq!(resolved.provider.id, "vertex-ai");
+        assert_eq!(resolved.provider.protocol, ProviderProtocol::VertexAi);
+        assert_eq!(resolved.auth_source.as_deref(), Some("VERTEX_ACCESS_TOKEN"));
+        assert_eq!(resolved.credential.as_deref(), Some("oauth-token"));
+        assert_eq!(
+            ProviderRegistry::descriptor("vertex").map(|value| value.id),
+            Some("vertex-ai")
         );
     }
 }

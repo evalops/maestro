@@ -126,6 +126,7 @@ fn merge_gateway_provider_array(registry: &mut ModelRegistry, providers: &[Value
         if provider_id.is_empty() {
             continue;
         }
+        let provider_id = canonical_provider(provider_id);
         if let Some(models) = provider.get("models").and_then(Value::as_array) {
             merge_gateway_model_array(registry, Some(provider_id), models);
         }
@@ -204,6 +205,7 @@ fn model_info_from_gateway_value(provider_id: Option<&str>, model: &Value) -> Op
         .filter(|provider| !provider.is_empty())
         .or(provider_id)
         .unwrap_or("llm-gateway");
+    let provider = canonical_provider(provider);
     let name = model
         .get("name")
         .and_then(Value::as_str)
@@ -291,7 +293,7 @@ fn default_api_for_provider_model(provider: &str, _model_id: &str) -> &'static s
         "openai-codex" => "openai-codex-app-server",
         "openai" | "azure-openai" | "azure" => "openai-responses",
         "openrouter" => "openai-completions",
-        "google" | "google-ai" | "gemini" => "google",
+        "google" | "google-ai" | "gemini" | "vertex-ai" | "vertex" => "google",
         "bedrock" | "aws-bedrock" => "bedrock",
         _ => "openai-responses",
     }
@@ -322,6 +324,7 @@ pub(crate) fn merge_configured_models(registry: &mut ModelRegistry, config: &Val
         if provider_id.is_empty() {
             continue;
         }
+        let provider_id = canonical_provider(provider_id);
         let provider_api = provider.get("api").and_then(Value::as_str).map(str::trim);
         let Some(models) = provider.get("models").and_then(Value::as_array) else {
             continue;
@@ -345,7 +348,11 @@ pub(crate) fn merge_configured_models(registry: &mut ModelRegistry, config: &Val
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .or(provider_api)
-                .unwrap_or("openai-responses");
+                .unwrap_or(if provider_id == "vertex-ai" {
+                    "google"
+                } else {
+                    "openai-responses"
+                });
             let reasoning = model
                 .get("reasoning")
                 .and_then(Value::as_bool)
@@ -493,7 +500,7 @@ pub(crate) fn resolve_model(input: &str, registry: &ModelRegistry) -> Option<Mod
         .unwrap_or(normalized);
     let (provider, id) = candidate
         .split_once('/')
-        .map(|(provider, id)| (Some(provider), id))
+        .map(|(provider, id)| (Some(canonical_provider(provider)), id))
         .unwrap_or((None, candidate));
 
     let resolved = registry
@@ -553,6 +560,16 @@ pub(crate) fn builtin_models() -> Vec<ModelInfo> {
     models.extend(
         shared
             .iter()
+            .filter(|model| model.provider == "google" && model.id.starts_with("gemini-"))
+            .map(|model| {
+                let mut info = model_info_from_shared(model);
+                info.provider = "vertex-ai".to_string();
+                info
+            }),
+    );
+    models.extend(
+        shared
+            .iter()
             .filter(|model| {
                 model.provider == "openai"
                     && model.capabilities.protocol == ModelProtocol::OpenAiResponses
@@ -565,6 +582,13 @@ pub(crate) fn builtin_models() -> Vec<ModelInfo> {
             }),
     );
     models
+}
+
+fn canonical_provider(provider: &str) -> &str {
+    match provider {
+        "vertex" => "vertex-ai",
+        _ => provider,
+    }
 }
 
 fn model_info_from_shared(model: &shared_catalog::ModelInfo) -> ModelInfo {
@@ -619,10 +643,25 @@ mod tests {
         assert_eq!(
             models
                 .iter()
-                .filter(|model| model.provider != "openai-codex")
+                .filter(|model| {
+                    model.provider != "openai-codex" && model.provider != "vertex-ai"
+                })
                 .count(),
             shared.len(),
             "every shared snapshot model must appear under its own provider"
+        );
+
+        let shared_gemini_count = shared
+            .iter()
+            .filter(|model| model.provider == "google" && model.id.starts_with("gemini-"))
+            .count();
+        assert_eq!(
+            models
+                .iter()
+                .filter(|model| model.provider == "vertex-ai")
+                .count(),
+            shared_gemini_count,
+            "Vertex should expose the shared Gemini metadata under its own provider"
         );
 
         let codex = models
@@ -703,5 +742,98 @@ mod tests {
         assert!(resolve_model("openai/future-custom-model", &registry).is_none());
         assert!(resolve_model("openrouter/", &registry).is_none());
         assert!(resolve_model("openrouter/model with spaces", &registry).is_none());
+    }
+
+    #[test]
+    fn resolves_catalogued_vertex_gemini_routes() {
+        let registry = ModelRegistry {
+            models: builtin_models(),
+            aliases: HashMap::new(),
+        };
+
+        for route in ["vertex-ai/gemini-2.5-pro", "vertex/gemini-2.5-pro"] {
+            let model = resolve_model(route, &registry).expect("Vertex Gemini route");
+            assert_eq!(model.provider, "vertex-ai");
+            assert_eq!(model.id, "gemini-2.5-pro");
+            assert_eq!(model.api, "google");
+            assert!(model.capabilities.tools);
+            assert!(model.capabilities.vision);
+        }
+
+        assert!(resolve_model("vertex-ai/future-gemini-model", &registry).is_none());
+    }
+
+    #[test]
+    fn canonicalizes_vertex_aliases_when_ingesting_custom_models() {
+        let config = serde_json::json!({
+            "aliases": { "vertex-default": "vertex/gemini-custom" },
+            "providers": [{
+                "id": "vertex",
+                "models": [{
+                    "id": "gemini-custom",
+                    "name": "Vertex Gemini Custom",
+                    "input": ["text", "image"],
+                    "contextWindow": 131072
+                }]
+            }]
+        });
+        let mut registry = ModelRegistry {
+            models: Vec::new(),
+            aliases: HashMap::new(),
+        };
+
+        merge_configured_models(&mut registry, &config);
+
+        let model = resolve_model("vertex-default", &registry)
+            .expect("configured Vertex aliases should resolve");
+        assert_eq!(model.provider, "vertex-ai");
+        assert_eq!(model.id, "gemini-custom");
+        assert_eq!(model.api, "google");
+        assert!(model.capabilities.vision);
+        assert_eq!(model.context_window, 131072);
+    }
+
+    #[test]
+    fn canonicalizes_vertex_provider_from_gateway_catalog() {
+        let catalog = serde_json::json!({
+            "external_providers": [{
+                "id": "vertex",
+                "models": [{
+                    "id": "gemini-gateway",
+                    "name": "Vertex Gemini Gateway"
+                }]
+            }]
+        });
+        let mut registry = ModelRegistry {
+            models: Vec::new(),
+            aliases: HashMap::new(),
+        };
+
+        merge_llm_gateway_model_catalog(&mut registry, &catalog);
+
+        let model = resolve_model("vertex/gemini-gateway", &registry)
+            .expect("gateway Vertex aliases should resolve");
+        assert_eq!(model.provider, "vertex-ai");
+        assert_eq!(model.id, "gemini-gateway");
+        assert_eq!(model.api, "google");
+    }
+
+    #[test]
+    fn configured_vertex_model_is_used_as_the_default() {
+        let registry = ModelRegistry {
+            models: builtin_models(),
+            aliases: HashMap::new(),
+        };
+        let previous = env::var_os("MAESTRO_DEFAULT_MODEL");
+        env::set_var("MAESTRO_DEFAULT_MODEL", "vertex-ai/gemini-2.5-pro");
+
+        let model = default_model_from_registry(&registry);
+
+        match previous {
+            Some(value) => env::set_var("MAESTRO_DEFAULT_MODEL", value),
+            None => env::remove_var("MAESTRO_DEFAULT_MODEL"),
+        }
+        assert_eq!(model.provider, "vertex-ai");
+        assert_eq!(model.id, "gemini-2.5-pro");
     }
 }
