@@ -204,7 +204,10 @@ fn telemetry_provider_model(provider: &str, model: &str) -> String {
     }
 }
 
-fn canonical_managed_environment(value: Option<&str>) -> String {
+/// Canonical `provider_ref.environment` for managed gateway requests. The
+/// gateway's Keys contract stores `production`; the legacy `prod` spelling is
+/// normalized so every producer resolves the same tuple.
+pub fn canonical_managed_environment(value: Option<&str>) -> String {
     let value = value
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -216,7 +219,8 @@ fn canonical_managed_environment(value: Option<&str>) -> String {
     }
 }
 
-fn canonical_managed_credential_name(value: Option<&str>) -> String {
+/// Canonical `provider_ref.credential_name` for managed gateway requests.
+pub fn canonical_managed_credential_name(value: Option<&str>) -> String {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())

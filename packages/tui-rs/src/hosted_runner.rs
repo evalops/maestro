@@ -7,9 +7,12 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
+use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -33,7 +36,10 @@ use crate::headless::messages::{
     UtilityCommandStream, UtilityCommandTerminalMode, UtilityFileSearchMatch, UtilityOperation,
     HEADLESS_PROTOCOL_VERSION,
 };
-use crate::headless::{AgentState, AgentSupervisor, AsyncTransportError, SessionReplay};
+use crate::headless::{
+    response_ack_request_id, AgentState, AgentSupervisor, AsyncTransportError,
+    ResponseAcknowledgement, SessionReplay,
+};
 
 mod config;
 mod handle;
@@ -71,6 +77,7 @@ const MAX_EVENTS: usize = 1024;
 // keys to cover a burst without allowing a long-lived hosted session's journal
 // to grow without bound.
 const MAX_RESPONSE_IDEMPOTENCY_RECORDS: usize = 4096;
+const RESPONSE_ACK_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Clone)]
 struct SharedRunner {
@@ -81,6 +88,9 @@ struct SharedRunner {
     message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
     thread_journal: Arc<ThreadJournal>,
     mutation_lifecycle: Arc<tokio::sync::Mutex<()>>,
+    thread_persistence_retry_pending: Arc<AtomicBool>,
+    #[cfg(test)]
+    thread_persistence_failures: Arc<Mutex<usize>>,
     event_pump_cancellation: CancellationToken,
     event_pump_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -104,6 +114,7 @@ struct RunnerState {
     active_response_ids: HashSet<String>,
     response_idempotency_keys: HashSet<String>,
     response_idempotency_digests: HashMap<String, String>,
+    response_request_owners: HashMap<String, String>,
     pending_response_idempotency: HashMap<String, ToAgentMessage>,
     response_idempotency_order: VecDeque<String>,
     pending_response_idempotency_order: VecDeque<String>,
@@ -292,6 +303,15 @@ pub struct HostedRunnerHeadlessMessageResult {
     pub execution: HostedRunnerHeadlessMessageExecution,
     pub messages: Vec<FromAgentMessage>,
     pub message: String,
+    /// Whether a response idempotency key can move from pending to completed.
+    pub idempotency_finalized: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct HostedRunnerDrainResult {
+    pub messages: Vec<FromAgentMessage>,
+    pub consumed_response_keys: Vec<String>,
+    pub rejected_response_keys: Vec<String>,
 }
 
 impl HostedRunnerHeadlessMessageResult {
@@ -300,6 +320,7 @@ impl HostedRunnerHeadlessMessageResult {
             execution: HostedRunnerHeadlessMessageExecution::TransportOnly,
             messages,
             message: message.into(),
+            idempotency_finalized: true,
         }
     }
 
@@ -308,7 +329,13 @@ impl HostedRunnerHeadlessMessageResult {
             execution: HostedRunnerHeadlessMessageExecution::RuntimeHandled,
             messages,
             message: message.into(),
+            idempotency_finalized: true,
         }
+    }
+
+    fn with_pending_idempotency(mut self) -> Self {
+        self.idempotency_finalized = false;
+        self
     }
 }
 
@@ -330,8 +357,36 @@ pub trait HostedRunnerHeadlessMessageExecutor: Send + Sync {
         self.execute(context, message)
     }
 
-    fn drain(&self) -> Result<Vec<FromAgentMessage>, HostedRunnerError> {
-        Ok(Vec::new())
+    fn execute_async<'a>(
+        &'a self,
+        context: &'a HostedRunnerHeadlessMessageContext,
+        message: ToAgentMessage,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<HostedRunnerHeadlessMessageResult, HostedRunnerError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move { self.execute(context, message) })
+    }
+
+    fn reconcile_pending_async<'a>(
+        &'a self,
+        context: &'a HostedRunnerHeadlessMessageContext,
+        message: ToAgentMessage,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<HostedRunnerHeadlessMessageResult, HostedRunnerError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move { self.reconcile_pending(context, message) })
+    }
+
+    fn drain(&self) -> Result<HostedRunnerDrainResult, HostedRunnerError> {
+        Ok(HostedRunnerDrainResult::default())
     }
 
     fn state(&self) -> Result<Option<AgentState>, HostedRunnerError> {
@@ -346,12 +401,267 @@ pub trait HostedRunnerHeadlessMessageExecutor: Send + Sync {
 #[derive(Clone)]
 pub struct AgentSupervisorHostedRunnerMessageExecutor {
     supervisor: Arc<Mutex<AgentSupervisor>>,
+    response_ledger_transaction: Arc<Mutex<()>>,
+    queued_responses: Arc<Mutex<HashMap<String, QueuedResponseOwnership>>>,
+    queued_unkeyed_responses: Arc<Mutex<HashMap<String, u64>>>,
+    memory_completed_responses: Arc<Mutex<HashMap<String, QueuedResponseOwnership>>>,
+    #[cfg(test)]
+    ledger_persistence_failures: Arc<Mutex<usize>>,
+    #[cfg(test)]
+    ledger_admission_barriers: SharedLedgerAdmissionBarriers,
+}
+
+#[cfg(test)]
+type SharedLedgerAdmissionBarriers =
+    Arc<Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>>;
+
+#[derive(Debug, Clone)]
+struct QueuedResponseOwnership {
+    request_id: String,
+    transport_generation: u64,
+    workspace_root: PathBuf,
+    session_id: String,
 }
 
 impl AgentSupervisorHostedRunnerMessageExecutor {
     #[must_use]
     pub fn new(supervisor: Arc<Mutex<AgentSupervisor>>) -> Self {
-        Self { supervisor }
+        Self {
+            supervisor,
+            response_ledger_transaction: Arc::new(Mutex::new(())),
+            queued_responses: Arc::new(Mutex::new(HashMap::new())),
+            queued_unkeyed_responses: Arc::new(Mutex::new(HashMap::new())),
+            memory_completed_responses: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(test)]
+            ledger_persistence_failures: Arc::new(Mutex::new(0)),
+            #[cfg(test)]
+            ledger_admission_barriers: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    #[cfg(test)]
+    fn fail_next_ledger_persistences(&self, count: usize) {
+        *self
+            .ledger_persistence_failures
+            .lock()
+            .expect("ledger persistence failure counter") = count;
+    }
+
+    #[cfg(test)]
+    fn set_ledger_admission_barriers(
+        &self,
+        loaded: Arc<std::sync::Barrier>,
+        resume: Arc<std::sync::Barrier>,
+    ) {
+        *self
+            .ledger_admission_barriers
+            .lock()
+            .expect("ledger admission barriers") = Some((loaded, resume));
+    }
+
+    fn admit_response_key(
+        &self,
+        workspace_root: &Path,
+        session_id: &str,
+        key: &str,
+        ownership_capacity_available: bool,
+    ) -> Result<bool, HostedRunnerError> {
+        let _transaction = self
+            .response_ledger_transaction
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut ledger = load_executor_response_ledger(workspace_root, session_id)?;
+        #[cfg(test)]
+        if let Some((loaded, resume)) = self
+            .ledger_admission_barriers
+            .lock()
+            .expect("ledger admission barriers")
+            .take()
+        {
+            loaded.wait();
+            resume.wait();
+        }
+        if ledger
+            .iter()
+            .any(|(entry, dispatched)| entry == key && *dispatched)
+        {
+            return Ok(true);
+        }
+        if !ownership_capacity_available {
+            return Err(HostedRunnerError::new(
+                HostedRunnerErrorCode::ResponseCapacity,
+                "native response queue ownership capacity is full",
+            ));
+        }
+        if !ledger.iter().any(|(entry, _)| entry == key) {
+            if ledger.len() >= MAX_RESPONSE_IDEMPOTENCY_RECORDS {
+                let Some(index) = ledger.iter().position(|(_, dispatched)| *dispatched) else {
+                    return Err(HostedRunnerError::new(
+                        HostedRunnerErrorCode::ResponseCapacity,
+                        "executor response ledger is full of live pending responses",
+                    ));
+                };
+                ledger.remove(index);
+            }
+            ledger.push((key.to_string(), false));
+            persist_executor_response_ledger(workspace_root, session_id, &ledger)?;
+        }
+        Ok(false)
+    }
+
+    fn remove_pending_response_key(
+        &self,
+        workspace_root: &Path,
+        session_id: &str,
+        key: &str,
+    ) -> Result<(), HostedRunnerError> {
+        let _transaction = self
+            .response_ledger_transaction
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(test)]
+        {
+            let mut failures = self
+                .ledger_persistence_failures
+                .lock()
+                .expect("ledger persistence failure counter");
+            if *failures > 0 {
+                *failures -= 1;
+                return Err(HostedRunnerError::internal(
+                    "injected executor ledger persistence failure",
+                ));
+            }
+        }
+        let mut ledger = load_executor_response_ledger(workspace_root, session_id)?;
+        ledger.retain(|(entry, dispatched)| entry != key || *dispatched);
+        persist_executor_response_ledger(workspace_root, session_id, &ledger)
+    }
+
+    fn persist_consumed_response(
+        &self,
+        key: &str,
+        ownership: &QueuedResponseOwnership,
+    ) -> Result<(), HostedRunnerError> {
+        let _transaction = self
+            .response_ledger_transaction
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(test)]
+        {
+            let mut failures = self
+                .ledger_persistence_failures
+                .lock()
+                .expect("ledger persistence failure counter");
+            if *failures > 0 {
+                *failures -= 1;
+                return Err(HostedRunnerError::internal(
+                    "injected executor ledger persistence failure",
+                ));
+            }
+        }
+        let mut ledger =
+            load_executor_response_ledger(&ownership.workspace_root, &ownership.session_id)?;
+        if let Some((_, dispatched)) = ledger.iter_mut().find(|(entry, _)| entry == key) {
+            *dispatched = true;
+        } else {
+            if ledger.len() >= MAX_RESPONSE_IDEMPOTENCY_RECORDS {
+                let Some(index) = ledger.iter().position(|(_, dispatched)| *dispatched) else {
+                    return Err(HostedRunnerError::new(
+                        HostedRunnerErrorCode::ResponseCapacity,
+                        "executor response ledger is full of live pending responses",
+                    ));
+                };
+                ledger.remove(index);
+            }
+            ledger.push((key.to_string(), true));
+        }
+        persist_executor_response_ledger(&ownership.workspace_root, &ownership.session_id, &ledger)
+    }
+
+    async fn await_queued_response_outcome(
+        &self,
+        context: &HostedRunnerHeadlessMessageContext,
+        key: &str,
+        request_id: &str,
+        mut result: HostedRunnerHeadlessMessageResult,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        let (messages, acknowledgement) = AgentSupervisor::wait_for_response_acknowledgement_async(
+            Arc::clone(&self.supervisor),
+            request_id.to_string(),
+            RESPONSE_ACK_TIMEOUT,
+        )
+        .await;
+        let generation = self
+            .supervisor
+            .lock()
+            .map_err(|_| HostedRunnerError::internal("agent supervisor mutex poisoned"))?
+            .transport_generation();
+        result.messages.extend(messages);
+        match acknowledgement {
+            ResponseAcknowledgement::Consumed => {
+                self.queued_responses
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(key);
+                let ownership = QueuedResponseOwnership {
+                    request_id: request_id.to_string(),
+                    transport_generation: generation,
+                    workspace_root: context.workspace_root.clone(),
+                    session_id: context.session_id.clone(),
+                };
+                if self.persist_consumed_response(key, &ownership).is_err() {
+                    self.memory_completed_responses
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(key.to_string(), ownership);
+                }
+                result.idempotency_finalized = true;
+                Ok(result)
+            }
+            ResponseAcknowledgement::Rejected => {
+                // Release the in-memory ownership before the fallible ledger
+                // write: a transient persistence failure must not leave the
+                // key counted against the queued-response capacity. A stale
+                // pending ledger entry is benign — admission only dedups on
+                // dispatched entries — and is removed when the key is retried.
+                self.queued_responses
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(key);
+                self.memory_completed_responses
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(key);
+                if let Err(error) = self.remove_pending_response_key(
+                    &context.workspace_root,
+                    &context.session_id,
+                    key,
+                ) {
+                    tracing::warn!(
+                        event = "queued_response_rejection_ledger_stale",
+                        error = %error,
+                        "rejected response ledger cleanup failed; in-memory ownership released and the stale pending entry clears on retry",
+                    );
+                }
+                let rejection = result.messages.iter().find_map(|message| match message {
+                    FromAgentMessage::Error {
+                        request_id: Some(rejected_id),
+                        message,
+                        error_type: Some(crate::headless::messages::HeadlessErrorType::Protocol),
+                        ..
+                    } if rejected_id == request_id => Some(message.as_str()),
+                    _ => None,
+                });
+                Err(HostedRunnerError::new(
+                    HostedRunnerErrorCode::RuntimeFailed,
+                    format!(
+                        "native response rejected: {}",
+                        rejection.unwrap_or("headless protocol rejected the response")
+                    ),
+                ))
+            }
+            ResponseAcknowledgement::NotExpected | ResponseAcknowledgement::Queued => Ok(result),
+        }
     }
 }
 
@@ -380,12 +690,173 @@ impl HostedRunnerHeadlessMessageExecutor for AgentSupervisorHostedRunnerMessageE
         self.execute_with_mode(context, message, true)
     }
 
-    fn drain(&self) -> Result<Vec<FromAgentMessage>, HostedRunnerError> {
+    fn execute_async<'a>(
+        &'a self,
+        context: &'a HostedRunnerHeadlessMessageContext,
+        message: ToAgentMessage,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<HostedRunnerHeadlessMessageResult, HostedRunnerError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let key = context.response_idempotency_key.clone();
+            let request_id = response_ack_request_id(&message).map(str::to_owned);
+            let result = self.execute_with_mode(context, message, false)?;
+            match (result.idempotency_finalized, key, request_id) {
+                (false, Some(key), Some(request_id)) => {
+                    self.await_queued_response_outcome(context, &key, &request_id, result)
+                        .await
+                }
+                _ => Ok(result),
+            }
+        })
+    }
+
+    fn reconcile_pending_async<'a>(
+        &'a self,
+        context: &'a HostedRunnerHeadlessMessageContext,
+        message: ToAgentMessage,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<HostedRunnerHeadlessMessageResult, HostedRunnerError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let key = context.response_idempotency_key.clone();
+            let request_id = response_ack_request_id(&message).map(str::to_owned);
+            let result = self.execute_with_mode(context, message, true)?;
+            match (result.idempotency_finalized, key, request_id) {
+                (false, Some(key), Some(request_id)) => {
+                    self.await_queued_response_outcome(context, &key, &request_id, result)
+                        .await
+                }
+                _ => Ok(result),
+            }
+        })
+    }
+
+    fn drain(&self) -> Result<HostedRunnerDrainResult, HostedRunnerError> {
         let mut supervisor = self
             .supervisor
             .lock()
             .map_err(|_| HostedRunnerError::internal("agent supervisor mutex poisoned"))?;
-        Ok(supervisor.drain_available_agent_messages())
+        let messages = supervisor.drain_available_agent_messages();
+        let generation = supervisor.transport_generation();
+        let mut queued = self
+            .queued_responses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stale = queued
+            .iter()
+            .filter(|(_, ownership)| ownership.transport_generation != generation)
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for key in stale {
+            queued.remove(&key);
+        }
+        let mut queued_unkeyed = self
+            .queued_unkeyed_responses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stale_unkeyed = queued_unkeyed
+            .iter()
+            .filter(|(_, transport_generation)| **transport_generation != generation)
+            .map(|(request_id, transport_generation)| (request_id.clone(), *transport_generation))
+            .collect::<Vec<_>>();
+        for (request_id, transport_generation) in stale_unkeyed {
+            supervisor.discard_response_acknowledgement(&request_id, transport_generation);
+            queued_unkeyed.remove(&request_id);
+        }
+        let completed_unkeyed = queued_unkeyed
+            .keys()
+            .filter(|request_id| {
+                supervisor.has_response_acknowledgement(request_id)
+                    || supervisor.has_response_rejection(request_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for request_id in completed_unkeyed {
+            let _ = supervisor.take_response_acknowledgement(&request_id);
+            let _ = supervisor.take_response_rejection(&request_id);
+            queued_unkeyed.remove(&request_id);
+        }
+        {
+            let pending_persistence = self
+                .memory_completed_responses
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            for (key, ownership) in pending_persistence {
+                if self.persist_consumed_response(&key, &ownership).is_ok() {
+                    self.memory_completed_responses
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&key);
+                }
+            }
+        }
+        let acknowledged = queued
+            .iter()
+            .filter(|(_, ownership)| supervisor.has_response_acknowledgement(&ownership.request_id))
+            .map(|(key, ownership)| (key.clone(), ownership.clone()))
+            .collect::<Vec<_>>();
+        let mut consumed_response_keys = Vec::with_capacity(acknowledged.len());
+        for (key, ownership) in acknowledged {
+            if supervisor.take_response_acknowledgement(&ownership.request_id) {
+                queued.remove(&key);
+                if self.persist_consumed_response(&key, &ownership).is_err() {
+                    self.memory_completed_responses
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(key.clone(), ownership);
+                }
+                consumed_response_keys.push(key);
+            }
+        }
+        let rejected = queued
+            .iter()
+            .filter(|(_, ownership)| supervisor.has_response_rejection(&ownership.request_id))
+            .map(|(key, ownership)| (key.clone(), ownership.clone()))
+            .collect::<Vec<_>>();
+        let mut rejected_response_keys = Vec::with_capacity(rejected.len());
+        for (key, ownership) in rejected {
+            if supervisor
+                .take_response_rejection(&ownership.request_id)
+                .is_some()
+            {
+                queued.remove(&key);
+                self.memory_completed_responses
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&key);
+                // A transient ledger cleanup failure must not fail the drain:
+                // the rejection is already taken from the supervisor, and a
+                // stale pending ledger entry never dedups admission and
+                // clears when the key is retried.
+                if let Err(error) = self.remove_pending_response_key(
+                    &ownership.workspace_root,
+                    &ownership.session_id,
+                    &key,
+                ) {
+                    tracing::warn!(
+                        event = "drained_rejection_ledger_stale",
+                        error = %error,
+                        "rejected response ledger cleanup failed during drain; the stale pending entry clears on retry",
+                    );
+                }
+                rejected_response_keys.push(key);
+            }
+        }
+        Ok(HostedRunnerDrainResult {
+            messages,
+            consumed_response_keys,
+            rejected_response_keys,
+        })
     }
 
     fn state(&self) -> Result<Option<AgentState>, HostedRunnerError> {
@@ -434,34 +905,71 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
         let response_key = is_control_response_message(&message)
             .then_some(context.response_idempotency_key.as_deref())
             .flatten();
+        let response_request_id = response_ack_request_id(&message).map(str::to_owned);
         if let Some(key) = response_key {
-            let mut ledger =
-                load_executor_response_ledger(&context.workspace_root, &context.session_id)?;
-            if ledger
-                .iter()
-                .any(|(entry, dispatched)| entry == key && *dispatched)
+            if self
+                .memory_completed_responses
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains_key(key)
             {
+                return Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+                    Vec::new(),
+                    "Rust hosted runner reconciled a memory-completed response",
+                ));
+            }
+            let queued = self
+                .queued_responses
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let memory_completed = self
+                .memory_completed_responses
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let ownership_capacity_available = queued.contains_key(key)
+                || memory_completed.contains_key(key)
+                || queued.len() + memory_completed.len() < MAX_RESPONSE_IDEMPOTENCY_RECORDS;
+            drop(memory_completed);
+            drop(queued);
+            if self.admit_response_key(
+                &context.workspace_root,
+                &context.session_id,
+                key,
+                ownership_capacity_available,
+            )? {
                 return Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
                     Vec::new(),
                     "Rust hosted runner reconciled an already accepted response",
                 ));
-            }
-            if !ledger.iter().any(|(entry, _)| entry == key) {
-                if ledger.len() >= MAX_RESPONSE_IDEMPOTENCY_RECORDS {
-                    ledger.remove(0);
-                }
-                ledger.push((key.to_string(), false));
-                persist_executor_response_ledger(
-                    &context.workspace_root,
-                    &context.session_id,
-                    &ledger,
-                )?;
             }
         }
         let mut supervisor = self
             .supervisor
             .lock()
             .map_err(|_| HostedRunnerError::internal("agent supervisor mutex poisoned"))?;
+        let reconciled_acknowledgement = if reconciled {
+            response_key.and_then(|key| {
+                let ownership = self
+                    .queued_responses
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(key)
+                    .cloned();
+                ownership.and_then(|ownership| {
+                    if ownership.transport_generation == supervisor.transport_generation() {
+                        Some(supervisor.wait_for_response_acknowledgement(&ownership.request_id))
+                    } else {
+                        self.queued_responses
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .remove(key);
+                        None
+                    }
+                })
+            })
+        } else {
+            None
+        };
         let configured_model = supervisor
             .state()
             .model
@@ -483,20 +991,16 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
             response_idempotency_present = response_key.is_some(),
             reconcile_pending = reconciled,
         );
-        let (messages, acknowledged) =
-            match supervisor.send_and_drain_agent_messages_with_ack(message) {
+        let (messages, acknowledgement) = match reconciled_acknowledgement {
+            Some(result) => result,
+            None => match supervisor.send_and_drain_agent_messages_with_ack(message) {
                 Ok(result) => result,
                 Err(error) => {
                     if let Some(key) = response_key {
-                        let mut ledger = load_executor_response_ledger(
+                        self.remove_pending_response_key(
                             &context.workspace_root,
                             &context.session_id,
-                        )?;
-                        ledger.retain(|(entry, _)| entry != key);
-                        persist_executor_response_ledger(
-                            &context.workspace_root,
-                            &context.session_id,
-                            &ledger,
+                            key,
                         )?;
                     }
                     tracing::warn!(
@@ -512,16 +1016,15 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
                     );
                     return Err(hosted_runner_error_from_async_transport(error));
                 }
-            };
-        if response_key.is_some() && !acknowledged {
+            },
+        };
+        if response_key.is_some() && matches!(acknowledgement, ResponseAcknowledgement::NotExpected)
+        {
             if let Some(key) = response_key {
-                let mut ledger =
-                    load_executor_response_ledger(&context.workspace_root, &context.session_id)?;
-                ledger.retain(|(entry, _)| entry != key);
-                persist_executor_response_ledger(
+                self.remove_pending_response_key(
                     &context.workspace_root,
                     &context.session_id,
-                    &ledger,
+                    key,
                 )?;
             }
             tracing::warn!(
@@ -541,17 +1044,96 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
                 "response consumer did not acknowledge the control response",
             ));
         }
-        if let Some(key) = response_key {
-            let mut ledger =
-                load_executor_response_ledger(&context.workspace_root, &context.session_id)?;
-            if let Some((_, dispatched)) = ledger.iter_mut().find(|(entry, _)| entry == key) {
-                *dispatched = true;
+        if response_key.is_some() && matches!(acknowledgement, ResponseAcknowledgement::Rejected) {
+            if let Some(key) = response_key {
+                self.remove_pending_response_key(
+                    &context.workspace_root,
+                    &context.session_id,
+                    key,
+                )?;
+                self.queued_responses
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(key);
             }
-            persist_executor_response_ledger(
-                &context.workspace_root,
-                &context.session_id,
-                &ledger,
-            )?;
+            let rejection = messages.iter().find_map(|message| match message {
+                FromAgentMessage::Error {
+                    request_id: Some(request_id),
+                    message,
+                    error_type: Some(crate::headless::messages::HeadlessErrorType::Protocol),
+                    ..
+                } if response_request_id.as_deref() == Some(request_id.as_str()) => {
+                    Some(message.as_str())
+                }
+                _ => None,
+            });
+            return Err(HostedRunnerError::new(
+                HostedRunnerErrorCode::RuntimeFailed,
+                format!(
+                    "native response rejected: {}",
+                    rejection.unwrap_or("headless protocol rejected the response")
+                ),
+            ));
+        }
+        if response_key.is_some() && matches!(acknowledgement, ResponseAcknowledgement::Queued) {
+            if let (Some(key), Some(request_id)) = (response_key, response_request_id.as_ref()) {
+                self.queued_responses
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(
+                        key.to_string(),
+                        QueuedResponseOwnership {
+                            request_id: request_id.clone(),
+                            transport_generation: supervisor.transport_generation(),
+                            workspace_root: context.workspace_root.clone(),
+                            session_id: context.session_id.clone(),
+                        },
+                    );
+            }
+            tracing::info!(
+                target: "maestro.hosted",
+                event = "hosted_response_queued",
+                session_id = %context.session_id,
+                connection_id = %context.connection_id,
+                message_kind,
+                "response remains owned by the native queue; outer idempotency prevents a duplicate dispatch",
+            );
+        }
+        if response_key.is_none() && matches!(acknowledgement, ResponseAcknowledgement::Queued) {
+            if let Some(request_id) = response_request_id.as_ref() {
+                self.queued_unkeyed_responses
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(request_id.clone(), supervisor.transport_generation());
+            }
+        }
+        if let Some(key) =
+            response_key.filter(|_| matches!(acknowledgement, ResponseAcknowledgement::Consumed))
+        {
+            self.queued_responses
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(key);
+            let ownership = QueuedResponseOwnership {
+                request_id: response_request_id.clone().unwrap_or_default(),
+                transport_generation: supervisor.transport_generation(),
+                workspace_root: context.workspace_root.clone(),
+                session_id: context.session_id.clone(),
+            };
+            if self.persist_consumed_response(key, &ownership).is_err() {
+                self.memory_completed_responses
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(key.to_string(), ownership);
+                tracing::warn!(
+                    target: "maestro.hosted",
+                    event = "hosted_response_idempotency_memory_only",
+                    session_id = %context.session_id,
+                    connection_id = %context.connection_id,
+                    message_kind,
+                    "native consumed the response; retaining live-process idempotency after ledger persistence failed",
+                );
+            }
         }
         tracing::info!(
             target: "maestro.hosted",
@@ -562,15 +1144,21 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
             configured_model = %configured_model,
             configured_provider = %configured_provider,
             response_message_count = messages.len(),
-            acknowledged,
+            acknowledged = matches!(acknowledgement, ResponseAcknowledgement::Consumed),
+            queued = matches!(acknowledgement, ResponseAcknowledgement::Queued),
             duration_ms = started.elapsed().as_millis() as u64,
             outcome = "success",
             reconcile_pending = reconciled,
         );
-        Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+        let result = HostedRunnerHeadlessMessageResult::runtime_handled(
             messages,
             "Rust hosted runner forwarded the headless message to AgentSupervisor",
-        ))
+        );
+        if matches!(acknowledgement, ResponseAcknowledgement::Queued) {
+            Ok(result.with_pending_idempotency())
+        } else {
+            Ok(result)
+        }
     }
 }
 
@@ -817,7 +1405,7 @@ async fn pump_agent_events(shared: SharedRunner, cancelled: CancellationToken) {
                     lifecycle = lifecycle.lock() => lifecycle,
                 };
                 match shared.message_executor.drain() {
-                    Ok(messages) => {
+                    Ok(drained) => {
                         let mut state = shared
                             .state
                             .lock()
@@ -825,9 +1413,35 @@ async fn pump_agent_events(shared: SharedRunner, cancelled: CancellationToken) {
                         if state.draining {
                             break;
                         }
-                        for message in messages {
+                        for message in drained.messages {
                             shared.publish_message(&mut state, message);
                         }
+                        if let Err(error) = shared.finalize_consumed_response_keys(
+                            &mut state,
+                            &drained.consumed_response_keys,
+                        ) {
+                            shared.thread_persistence_retry_pending.store(true, Ordering::Release);
+                            tracing::warn!(
+                                event = "event_pump_idempotency_memory_only",
+                                error = %error,
+                                "native consumed the response; retaining live-process idempotency while retrying thread journal persistence",
+                            );
+                        }
+                        if let Err(error) = shared.rollback_rejected_response_keys(
+                            &mut state,
+                            &drained.rejected_response_keys,
+                        ) {
+                            // The in-memory rollback already happened; only the
+                            // thread journal write failed. Keep the pump alive
+                            // and retry persistence like the consumed path.
+                            shared.thread_persistence_retry_pending.store(true, Ordering::Release);
+                            tracing::warn!(
+                                event = "event_pump_rejection_memory_only",
+                                error = %error,
+                                "native rejected the response; retaining live-process rollback while retrying thread journal persistence",
+                            );
+                        }
+                        shared.retry_thread_persistence(&state);
                     }
                     Err(error) => {
                         shared.publish_runtime_error("event_pump_failed", error);
@@ -840,6 +1454,88 @@ async fn pump_agent_events(shared: SharedRunner, cancelled: CancellationToken) {
 }
 
 impl SharedRunner {
+    fn retry_thread_persistence(&self, state: &RunnerState) {
+        if !self
+            .thread_persistence_retry_pending
+            .swap(false, Ordering::AcqRel)
+        {
+            return;
+        }
+        if let Err(error) = self.persist_thread(state) {
+            self.thread_persistence_retry_pending
+                .store(true, Ordering::Release);
+            tracing::warn!(
+                event = "event_pump_idempotency_persistence_retry_failed",
+                error = %error,
+                "thread journal persistence retry failed; keeping the event pump and memory-only idempotency active",
+            );
+        }
+    }
+
+    fn rollback_rejected_response_keys(
+        &self,
+        state: &mut RunnerState,
+        keys: &[String],
+    ) -> Result<(), HostedRunnerError> {
+        let mut changed = false;
+        for key in keys {
+            changed |= state.pending_response_idempotency.remove(key).is_some();
+            let owner_count = state.response_request_owners.len();
+            state
+                .response_request_owners
+                .retain(|_, owner| owner != key);
+            changed |= state.response_request_owners.len() != owner_count;
+            let prior_len = state.pending_response_idempotency_order.len();
+            state
+                .pending_response_idempotency_order
+                .retain(|entry| entry != key);
+            changed |= state.pending_response_idempotency_order.len() != prior_len;
+        }
+        if changed {
+            self.persist_thread(state)
+                .map_err(|error| HostedRunnerError::internal(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn finalize_consumed_response_keys(
+        &self,
+        state: &mut RunnerState,
+        keys: &[String],
+    ) -> Result<(), HostedRunnerError> {
+        let mut changed = false;
+        for key in keys {
+            let Some(message) = state.pending_response_idempotency.remove(key) else {
+                continue;
+            };
+            state
+                .pending_response_idempotency_order
+                .retain(|entry| entry != key);
+            if !state.response_idempotency_keys.contains(key) {
+                if state.response_idempotency_order.len() >= MAX_RESPONSE_IDEMPOTENCY_RECORDS {
+                    if let Some(evicted_key) = state.response_idempotency_order.pop_front() {
+                        state.response_idempotency_keys.remove(&evicted_key);
+                        state.response_idempotency_digests.remove(&evicted_key);
+                        state
+                            .response_request_owners
+                            .retain(|_, owner| owner != &evicted_key);
+                    }
+                }
+                state.response_idempotency_order.push_back(key.clone());
+            }
+            state.response_idempotency_keys.insert(key.clone());
+            state
+                .response_idempotency_digests
+                .insert(key.clone(), response_message_digest(&message));
+            changed = true;
+        }
+        if changed {
+            self.persist_thread(state)
+                .map_err(|error| HostedRunnerError::internal(error.to_string()))?;
+        }
+        Ok(())
+    }
+
     fn start_event_pump(&self) {
         let shared = self.clone();
         let cancelled = self.event_pump_cancellation.clone();
@@ -954,6 +1650,7 @@ pub enum HostedRunnerErrorCode {
     WorkspaceViolation,
     UnsupportedCapability,
     RuntimeFailed,
+    ResponseCapacity,
     IdempotencyConflict,
     Internal,
 }
@@ -974,6 +1671,7 @@ impl HostedRunnerErrorCode {
             Self::WorkspaceViolation => "workspace_violation",
             Self::UnsupportedCapability => "unsupported_capability",
             Self::RuntimeFailed => "runtime_failed",
+            Self::ResponseCapacity => "response_capacity_exhausted",
             Self::IdempotencyConflict => "idempotency_conflict",
             Self::Internal => "internal_error",
         }
@@ -984,7 +1682,7 @@ impl HostedRunnerErrorCode {
             Self::InvalidConfig | Self::InvalidSnapshotManifest | Self::BadRequest => 400,
             Self::AccessDenied | Self::WorkspaceViolation => 403,
             Self::NotFound | Self::StaleSession | Self::StaleConnection => 404,
-            Self::RuntimeNotReady => 503,
+            Self::RuntimeNotReady | Self::ResponseCapacity => 503,
             Self::LeaseConflict | Self::RuntimeOwnedElsewhere => 409,
             Self::UnsupportedCapability => 501,
             Self::RuntimeFailed | Self::Internal => 500,
@@ -1688,13 +2386,13 @@ async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult
     }
 
     shared.stop_event_pump().await.map_err(HostedError::from)?;
-    let drained_messages = shared.message_executor.drain().map_err(HostedError::from)?;
+    let drained = shared.message_executor.drain().map_err(HostedError::from)?;
     {
         let mut state = shared
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.cursor > 0 || !state.connections.is_empty() || !drained_messages.is_empty() {
+        if state.cursor > 0 || !state.connections.is_empty() || !drained.messages.is_empty() {
             let reason = input
                 .reason
                 .as_deref()
@@ -1706,8 +2404,32 @@ async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult
                 },
             );
         }
-        for message in drained_messages {
+        for message in drained.messages {
             shared.publish_message(&mut state, message);
+        }
+        // Journal persistence failures must not abort the drain: `draining`
+        // is already set and the event pump is stopped, so returning an error
+        // here would reject every later drain attempt as "already draining".
+        // Both helpers mutate the in-memory state before their only fallible
+        // step (the thread journal write), and the snapshot manifest below is
+        // the durable hand-off artifact.
+        if let Err(error) =
+            shared.finalize_consumed_response_keys(&mut state, &drained.consumed_response_keys)
+        {
+            tracing::warn!(
+                event = "drain_idempotency_memory_only",
+                error = %error,
+                "drain kept live-process idempotency after a thread journal persistence failure",
+            );
+        }
+        if let Err(error) =
+            shared.rollback_rejected_response_keys(&mut state, &drained.rejected_response_keys)
+        {
+            tracing::warn!(
+                event = "drain_rejection_rollback_memory_only",
+                error = %error,
+                "drain kept the live-process rejection rollback after a thread journal persistence failure",
+            );
         }
     }
 
@@ -2236,6 +2958,7 @@ async fn handle_message_inner(
     let response_idempotency_digest = response_idempotency_key
         .as_ref()
         .map(|_| response_message_digest(&message));
+    let response_request_id = response_ack_request_id(&message).map(str::to_owned);
     let (connection_header_id, subscription_id, connection_capability) =
         connection_from_headers(&headers);
     let connection_id;
@@ -2243,6 +2966,7 @@ async fn handle_message_inner(
     let mut execution = HostedRunnerHeadlessMessageExecution::TransportOnly;
     let mut published_messages = 0usize;
     let mut reconcile_pending_response = false;
+    let mut finalize_response_idempotency = true;
     let mut response_message =
         "Rust hosted runner accepted the headless message; agent execution is not attached yet"
             .to_string();
@@ -2266,6 +2990,18 @@ async fn handle_message_inner(
             ));
         }
         if let Some(idempotency_key) = response_idempotency_key.as_ref() {
+            if let Some(request_id) = response_request_id.as_ref() {
+                if let Some(owner) = state.response_request_owners.get(request_id) {
+                    if owner != idempotency_key {
+                        return Err(HostedError::new(
+                            HostedRunnerErrorCode::IdempotencyConflict,
+                            format!(
+                                "protocol request {request_id} is already owned by another idempotency key"
+                            ),
+                        ));
+                    }
+                }
+            }
             if state.response_idempotency_keys.contains(idempotency_key) {
                 if let (Some(expected), Some(actual)) = (
                     state.response_idempotency_digests.get(idempotency_key),
@@ -2276,6 +3012,19 @@ async fn handle_message_inner(
                             HostedRunnerErrorCode::IdempotencyConflict,
                             "idempotency key was already used for a different response",
                         ));
+                    }
+                }
+                if let Some(request_id) = response_request_id.as_ref() {
+                    if !state.response_request_owners.contains_key(request_id) {
+                        state
+                            .response_request_owners
+                            .insert(request_id.clone(), idempotency_key.clone());
+                        shared.persist_thread(&state).map_err(|error| {
+                            HostedError::new(
+                                HostedRunnerErrorCode::RuntimeFailed,
+                                format!("failed to persist response request ownership: {error}"),
+                            )
+                        })?;
                     }
                 }
                 let snapshot = shared.public_snapshot(&state);
@@ -2304,22 +3053,27 @@ async fn handle_message_inner(
                 }
                 reconcile_pending_response = true;
             }
-            if state.pending_response_idempotency_order.len() >= MAX_RESPONSE_IDEMPOTENCY_RECORDS {
-                if let Some(evicted_key) = state.pending_response_idempotency_order.pop_front() {
-                    state.pending_response_idempotency.remove(&evicted_key);
-                }
-            }
-            state
-                .pending_response_idempotency
-                .insert(idempotency_key.clone(), message.clone());
-            state
-                .pending_response_idempotency_order
-                .push_back(idempotency_key.clone());
+            upsert_pending_response_idempotency(
+                &mut state,
+                idempotency_key.clone(),
+                message.clone(),
+            )?;
+            let inserted_request_owner = response_request_id.as_ref().is_some_and(|request_id| {
+                state
+                    .response_request_owners
+                    .insert(request_id.clone(), idempotency_key.clone())
+                    .is_none()
+            });
             if let Err(error) = shared.persist_thread(&state) {
                 state.pending_response_idempotency.remove(idempotency_key);
                 state
                     .pending_response_idempotency_order
                     .retain(|key| key != idempotency_key);
+                if inserted_request_owner {
+                    state
+                        .response_request_owners
+                        .retain(|_, owner| owner != idempotency_key);
+                }
                 return Err(HostedError::new(
                     HostedRunnerErrorCode::RuntimeFailed,
                     format!("failed to persist pending response: {error}"),
@@ -2466,9 +3220,11 @@ async fn handle_message_inner(
 
     if let Some((executor, context)) = executor_request {
         let result = match if reconcile_pending_response {
-            executor.reconcile_pending(&context, message.clone())
+            executor
+                .reconcile_pending_async(&context, message.clone())
+                .await
         } else {
-            executor.execute(&context, message.clone())
+            executor.execute_async(&context, message.clone()).await
         } {
             Ok(result) => result,
             Err(error) => {
@@ -2478,6 +3234,9 @@ async fn handle_message_inner(
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     state.pending_response_idempotency.remove(idempotency_key);
+                    state
+                        .response_request_owners
+                        .retain(|_, owner| owner != idempotency_key);
                     state
                         .pending_response_idempotency_order
                         .retain(|key| key != idempotency_key);
@@ -2489,6 +3248,7 @@ async fn handle_message_inner(
         published_messages = result.messages.len();
         execution = result.execution;
         response_message = result.message;
+        finalize_response_idempotency = result.idempotency_finalized;
 
         let mut state = shared
             .state
@@ -2581,7 +3341,10 @@ async fn handle_message_inner(
     // the response and every synchronous delivery side effect succeeded. A
     // retry after a restart can therefore recover the original payload instead
     // of being mistaken for a completed response.
-    if let Some(idempotency_key) = response_idempotency_key.as_ref() {
+    if let Some(idempotency_key) = response_idempotency_key
+        .as_ref()
+        .filter(|_| finalize_response_idempotency)
+    {
         let mut state = shared
             .state
             .lock()
@@ -2595,6 +3358,9 @@ async fn handle_message_inner(
                 if let Some(evicted_key) = state.response_idempotency_order.pop_front() {
                     state.response_idempotency_keys.remove(&evicted_key);
                     state.response_idempotency_digests.remove(&evicted_key);
+                    state
+                        .response_request_owners
+                        .retain(|_, owner| owner != &evicted_key);
                 }
             }
             state
@@ -2621,6 +3387,8 @@ async fn handle_message_inner(
         if !idempotency_persisted {
             response_message.push_str("; response idempotency is currently memory-only");
         }
+    } else if response_idempotency_key.is_some() {
+        response_message.push_str("; response remains pending native consumption");
     }
 
     let snapshot = {
@@ -2652,6 +3420,56 @@ fn response_message_digest(message: &ToAgentMessage) -> String {
         "{:x}",
         Sha256::digest(serde_json::to_vec(message).expect("headless messages are serializable"))
     )
+}
+
+fn upsert_pending_response_idempotency(
+    state: &mut RunnerState,
+    idempotency_key: String,
+    message: ToAgentMessage,
+) -> HostedResult<()> {
+    let live_pending_keys = state
+        .pending_response_idempotency
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut seen_pending_keys = HashSet::new();
+    state
+        .pending_response_idempotency_order
+        .retain(|key| live_pending_keys.contains(key) && seen_pending_keys.insert(key.clone()));
+    let ordered_pending_keys = state
+        .pending_response_idempotency_order
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut unordered_pending_keys = live_pending_keys
+        .difference(&ordered_pending_keys)
+        .cloned()
+        .collect::<Vec<_>>();
+    unordered_pending_keys.sort();
+    state
+        .pending_response_idempotency_order
+        .extend(unordered_pending_keys);
+
+    let is_new_pending_key = !state
+        .pending_response_idempotency
+        .contains_key(&idempotency_key);
+    if is_new_pending_key
+        && state.pending_response_idempotency.len() >= MAX_RESPONSE_IDEMPOTENCY_RECORDS
+    {
+        return Err(HostedError::new(
+            HostedRunnerErrorCode::ResponseCapacity,
+            "pending response capacity is full; retry after a native response is consumed",
+        ));
+    }
+    state
+        .pending_response_idempotency
+        .insert(idempotency_key.clone(), message);
+    if is_new_pending_key {
+        state
+            .pending_response_idempotency_order
+            .push_back(idempotency_key);
+    }
+    Ok(())
 }
 
 fn is_control_response_message(message: &ToAgentMessage) -> bool {

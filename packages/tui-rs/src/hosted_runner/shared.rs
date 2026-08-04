@@ -94,6 +94,7 @@ impl SharedRunner {
                 active_response_ids: HashSet::new(),
                 response_idempotency_keys: loaded_thread.response_idempotency_keys,
                 response_idempotency_digests: loaded_thread.response_idempotency_digests,
+                response_request_owners: loaded_thread.response_request_owners,
                 pending_response_idempotency: loaded_thread.pending_response_idempotency,
                 response_idempotency_order: loaded_thread.response_idempotency_order,
                 pending_response_idempotency_order: loaded_thread
@@ -108,6 +109,9 @@ impl SharedRunner {
             message_executor,
             thread_journal: Arc::new(loaded_thread.journal),
             mutation_lifecycle: Arc::new(tokio::sync::Mutex::new(())),
+            thread_persistence_retry_pending: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            thread_persistence_failures: Arc::new(Mutex::new(0)),
             event_pump_cancellation: CancellationToken::new(),
             event_pump_task: Arc::new(tokio::sync::Mutex::new(None)),
         };
@@ -396,6 +400,19 @@ impl SharedRunner {
     }
 
     pub(super) fn persist_thread(&self, state: &RunnerState) -> io::Result<()> {
+        #[cfg(test)]
+        {
+            let mut failures = self
+                .thread_persistence_failures
+                .lock()
+                .expect("thread persistence failure counter");
+            if *failures > 0 {
+                *failures -= 1;
+                return Err(io::Error::other(
+                    "injected thread journal persistence failure",
+                ));
+            }
+        }
         self.thread_journal.persist(
             &state.thread,
             self.config.runtime_generation,
@@ -404,11 +421,20 @@ impl SharedRunner {
             ResponseIdempotencyView {
                 keys: &state.response_idempotency_keys,
                 digests: &state.response_idempotency_digests,
+                request_owners: &state.response_request_owners,
                 pending: &state.pending_response_idempotency,
                 order: &state.response_idempotency_order,
                 pending_order: &state.pending_response_idempotency_order,
             },
         )
+    }
+
+    #[cfg(test)]
+    pub(super) fn fail_next_thread_persistences(&self, count: usize) {
+        *self
+            .thread_persistence_failures
+            .lock()
+            .expect("thread persistence failure counter") = count;
     }
 
     pub(super) fn controller_pending_events(

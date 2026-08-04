@@ -255,6 +255,7 @@ pub use supervisor::{
 // shared with `tools::registry::execute` and `agent::native`, not part of
 // this crate's public surface.
 pub(crate) use supervisor::report_diagnostic_nonblocking;
+pub(crate) use supervisor::{response_ack_request_id, ResponseAcknowledgement};
 
 // Message framing
 pub use framing::{

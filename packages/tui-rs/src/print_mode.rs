@@ -451,7 +451,13 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
                 }
 
                 let approved = rejection.is_none() && !denied;
-                let _ = tool_tx.send((call_id, approved, Some(result), ExecutionSource::Native));
+                let _ = tool_tx.send((
+                    call_id,
+                    approved,
+                    Some(result),
+                    ExecutionSource::Native,
+                    None,
+                ));
                 if rejection.is_some() {
                     exit_code = 1;
                     agent.cancel();

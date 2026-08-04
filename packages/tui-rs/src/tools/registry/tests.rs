@@ -752,6 +752,20 @@ fn test_ask_user_schema_declares_nested_array_items() {
 }
 
 #[test]
+fn tool_search_schema_avoids_top_level_combinators() {
+    let registry = ToolRegistry::new();
+    let schema = &registry
+        .get("tool_search")
+        .expect("tool_search tool")
+        .tool
+        .input_schema;
+
+    assert!(schema.get("anyOf").is_none());
+    assert!(schema["properties"].get("query").is_some());
+    assert!(schema["properties"].get("names").is_some());
+}
+
+#[test]
 fn test_registered_tool_schemas_are_openai_safe() {
     let registry = ToolRegistry::new();
     let mut issues = Vec::new();

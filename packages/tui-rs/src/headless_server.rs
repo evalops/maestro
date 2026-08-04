@@ -33,7 +33,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::{
     CredentialVault, ExecutionSource, FromAgent, NativeAgent, NativeAgentConfig, PromptKind,
-    ToolResponseMessage, ToolResult,
+    ToolResponseConsumption, ToolResponseMessage, ToolResult,
 };
 use crate::git;
 use crate::headless::messages::{
@@ -541,18 +541,14 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                     result,
                 ) {
                     Ok(accepted) => {
-                        for message in accepted.messages {
-                            emit(&message)?;
-                        }
-                        if tool_tx.send(accepted.agent_response).is_err() {
-                            protocol_error(
-                                Some(call_id),
-                                "native tool response channel is closed",
-                            )?;
-                        } else {
-                            emit(&FromAgentMessage::ResponseAccepted {
-                                request_id: call_id,
-                            })?;
+                        match dispatch_accepted_tool_response(
+                            &state.meta,
+                            tool_tx,
+                            accepted,
+                            call_id.clone(),
+                        ) {
+                            Ok(()) => {}
+                            Err(message) => protocol_error(Some(call_id), message)?,
                         }
                     }
                     Err(message) => protocol_error(Some(call_id), message)?,
@@ -569,18 +565,14 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                 };
                 match prepare_client_tool_result(&state.meta, call_id.clone(), content, is_error) {
                     Ok(accepted) => {
-                        for message in accepted.messages {
-                            emit(&message)?;
-                        }
-                        if tool_tx.send(accepted.agent_response).is_err() {
-                            protocol_error(
-                                Some(call_id),
-                                "native client-tool response channel is closed",
-                            )?;
-                        } else {
-                            emit(&FromAgentMessage::ResponseAccepted {
-                                request_id: call_id,
-                            })?;
+                        match dispatch_accepted_tool_response(
+                            &state.meta,
+                            tool_tx,
+                            accepted,
+                            call_id.clone(),
+                        ) {
+                            Ok(()) => {}
+                            Err(message) => protocol_error(Some(call_id), message)?,
                         }
                     }
                     Err(message) => protocol_error(Some(call_id), message)?,
@@ -608,7 +600,7 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                         client_content_to_agent_result(value, is_error.unwrap_or(false))
                     })
                 });
-                if let Some(tool_tx) = state.tool_tx.as_ref() {
+                let response_queued = if let Some(tool_tx) = state.tool_tx.as_ref() {
                     let approved = approved.unwrap_or(!matches!(
                         resolution,
                         ServerRequestResolutionStatus::Denied
@@ -616,19 +608,26 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                             | ServerRequestResolutionStatus::Skipped
                             | ServerRequestResolutionStatus::Aborted
                     ));
-                    if tool_tx
-                        .send((
+                    send_tool_response_with_consumption_ack(
+                        tool_tx,
+                        (
                             request_id.clone(),
                             approved,
                             agent_result,
                             ExecutionSource::RemoteClient,
-                        ))
-                        .is_ok()
-                    {
-                        emit(&FromAgentMessage::ResponseAccepted {
-                            request_id: request_id.clone(),
-                        })?;
-                    }
+                            None,
+                        ),
+                        request_id.clone(),
+                    )
+                } else {
+                    false
+                };
+                if !response_queued {
+                    protocol_error(
+                        Some(request_id),
+                        "native server-request response channel is closed",
+                    )?;
+                    continue;
                 }
                 emit(&FromAgentMessage::ServerRequestResolved {
                     request_id: request_id.clone(),
@@ -1450,7 +1449,8 @@ async fn handle_agent_event(
             //
             // For approval-gated tools, honor Init approval_mode when set.
             if let Some(approved) = immediate_approval {
-                let _ = tool_tx.send((call_id, approved, None, ExecutionSource::RemoteClient));
+                let _ =
+                    tool_tx.send((call_id, approved, None, ExecutionSource::RemoteClient, None));
             }
         }
         FromAgent::ToolStart { call_id } => {
@@ -1738,6 +1738,135 @@ fn headless_tool_result_to_agent(r: HeadlessToolResult) -> ToolResult {
 struct AcceptedToolResponse {
     messages: Vec<FromAgentMessage>,
     agent_response: ToolResponseMessage,
+    rollback: ToolResponseRollback,
+}
+
+#[derive(Clone, Debug)]
+struct ToolResponseRollback {
+    call_id: String,
+    tool_execution_id: Option<String>,
+}
+
+fn dispatch_accepted_tool_response(
+    meta: &Arc<Mutex<RuntimeMeta>>,
+    tool_tx: &mpsc::UnboundedSender<ToolResponseMessage>,
+    accepted: AcceptedToolResponse,
+    request_id: String,
+) -> std::result::Result<(), String> {
+    dispatch_accepted_tool_response_with(
+        meta,
+        tool_tx,
+        accepted,
+        request_id,
+        |message| emit(message).map_err(|error| format!("emit tool lifecycle: {error:#}")),
+        |request_id, outcome| {
+            let _ = emit(&response_consumption_message(request_id, outcome));
+        },
+    )
+}
+
+fn dispatch_accepted_tool_response_with<Emit, Acknowledge>(
+    meta: &Arc<Mutex<RuntimeMeta>>,
+    tool_tx: &mpsc::UnboundedSender<ToolResponseMessage>,
+    accepted: AcceptedToolResponse,
+    request_id: String,
+    mut emit_lifecycle: Emit,
+    acknowledge: Acknowledge,
+) -> std::result::Result<(), String>
+where
+    Emit: FnMut(&FromAgentMessage) -> std::result::Result<(), String>,
+    Acknowledge: FnOnce(String, ToolResponseConsumption) + Send + 'static,
+{
+    for message in &accepted.messages {
+        if let Err(error) = emit_lifecycle(message) {
+            rollback_accepted_tool_response(meta, accepted.rollback);
+            return Err(error);
+        }
+    }
+    // A queued response can still be rejected by the consumption receipt (for
+    // example when the call is cancelled before native consumption). Restore
+    // the pending decision before surfacing the receipt so a corrected retry
+    // is not refused as "not awaiting a decision".
+    let rejection_rollback = accepted.rollback.clone();
+    let rejection_meta = Arc::clone(meta);
+    if send_tool_response_with_consumption_ack_using(
+        tool_tx,
+        accepted.agent_response,
+        request_id,
+        move |request_id, outcome| {
+            if matches!(outcome, ToolResponseConsumption::Rejected { .. }) {
+                rollback_accepted_tool_response(&rejection_meta, rejection_rollback);
+            }
+            acknowledge(request_id, outcome);
+        },
+    ) {
+        return Ok(());
+    }
+    rollback_accepted_tool_response(meta, accepted.rollback);
+    Err("native tool response channel is closed".to_string())
+}
+
+fn rollback_accepted_tool_response(meta: &Arc<Mutex<RuntimeMeta>>, rollback: ToolResponseRollback) {
+    let mut meta = meta
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    meta.pending_tool_calls.insert(rollback.call_id.clone());
+    meta.tool_execution_ids.remove(&rollback.call_id);
+    if let Some(tool_execution_id) = rollback.tool_execution_id {
+        meta.decided_tool_execution_ids.remove(&tool_execution_id);
+    }
+}
+
+fn send_tool_response_with_consumption_ack(
+    tool_tx: &mpsc::UnboundedSender<ToolResponseMessage>,
+    response: ToolResponseMessage,
+    request_id: String,
+) -> bool {
+    send_tool_response_with_consumption_ack_using(
+        tool_tx,
+        response,
+        request_id,
+        |request_id, outcome| {
+            let _ = emit(&response_consumption_message(request_id, outcome));
+        },
+    )
+}
+
+fn response_consumption_message(
+    request_id: String,
+    outcome: ToolResponseConsumption,
+) -> FromAgentMessage {
+    match outcome {
+        ToolResponseConsumption::Accepted => FromAgentMessage::ResponseAccepted { request_id },
+        ToolResponseConsumption::Rejected { reason } => FromAgentMessage::Error {
+            request_id: Some(request_id),
+            message: reason,
+            fatal: false,
+            error_type: Some(HeadlessErrorType::Protocol),
+        },
+    }
+}
+
+fn send_tool_response_with_consumption_ack_using<Acknowledge>(
+    tool_tx: &mpsc::UnboundedSender<ToolResponseMessage>,
+    mut response: ToolResponseMessage,
+    request_id: String,
+    acknowledge: Acknowledge,
+) -> bool
+where
+    Acknowledge: FnOnce(String, ToolResponseConsumption) + Send + 'static,
+{
+    let (consumed_tx, consumed_rx) = tokio::sync::oneshot::channel();
+    response.4 = Some(consumed_tx);
+    if tool_tx.send(response).is_err() {
+        return false;
+    }
+    tokio::spawn(async move {
+        if let Ok(outcome) = consumed_rx.await {
+            acknowledge(request_id, outcome);
+        }
+    });
+    true
 }
 
 fn prepare_tool_response(
@@ -1792,6 +1921,10 @@ fn prepare_tool_response(
     };
     drop(meta);
 
+    let rollback = ToolResponseRollback {
+        call_id: call_id.clone(),
+        tool_execution_id: tool_execution_id.clone(),
+    };
     Ok(AcceptedToolResponse {
         messages,
         agent_response: (
@@ -1799,7 +1932,9 @@ fn prepare_tool_response(
             approved,
             agent_result,
             ExecutionSource::RemoteClient,
+            None,
         ),
+        rollback,
     })
 }
 
@@ -1820,7 +1955,17 @@ fn prepare_client_tool_result(
     let result = client_content_to_agent_result(content, is_error);
     Ok(AcceptedToolResponse {
         messages: tool_lifecycle_messages(&call_id, None, None, &result),
-        agent_response: (call_id, true, Some(result), ExecutionSource::RemoteClient),
+        agent_response: (
+            call_id.clone(),
+            true,
+            Some(result),
+            ExecutionSource::RemoteClient,
+            None,
+        ),
+        rollback: ToolResponseRollback {
+            call_id,
+            tool_execution_id: None,
+        },
     })
 }
 
@@ -2283,7 +2428,7 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
     #[test]
     fn governed_tool_decisions_are_single_use_at_the_server_boundary() {
         let meta = Arc::new(Mutex::new(RuntimeMeta::default()));
-        let (tool_tx, mut tool_rx) = mpsc::unbounded_channel();
+        let (tool_tx, mut tool_rx) = mpsc::unbounded_channel::<ToolResponseMessage>();
 
         meta.lock()
             .expect("runtime metadata")
@@ -2307,7 +2452,7 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
             .expect("deliver first decision after lifecycle output");
         assert!(matches!(
             tool_rx.try_recv(),
-            Ok((call_id, true, None, ExecutionSource::RemoteClient)) if call_id == "call-1"
+            Ok((call_id, true, None, ExecutionSource::RemoteClient, _)) if call_id == "call-1"
         ));
 
         let error = prepare_tool_response(
@@ -2350,7 +2495,7 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
             .expect("deliver denial after terminal lifecycle");
         assert!(matches!(
             tool_rx.try_recv(),
-            Ok((call_id, false, None, ExecutionSource::RemoteClient)) if call_id == "call-2"
+            Ok((call_id, false, None, ExecutionSource::RemoteClient, _)) if call_id == "call-2"
         ));
         assert!(
             prepare_tool_response(
@@ -2399,7 +2544,7 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
             .expect("deliver completed result after lifecycle output");
         assert!(matches!(
             tool_rx.try_recv(),
-            Ok((call_id, true, Some(result), ExecutionSource::RemoteClient))
+            Ok((call_id, true, Some(result), ExecutionSource::RemoteClient, _))
                 if call_id == "call-completed" && result.success
         ));
 
@@ -2436,7 +2581,7 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
             .expect("deliver distinct execution decision");
         assert!(matches!(
             tool_rx.try_recv(),
-            Ok((call_id, true, None, ExecutionSource::RemoteClient)) if call_id == "call-1"
+            Ok((call_id, true, None, ExecutionSource::RemoteClient, _)) if call_id == "call-1"
         ));
 
         for _ in 0..2 {
@@ -2476,6 +2621,233 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
         let meta = meta.lock().expect("runtime metadata");
         assert!(meta.tool_execution_ids.is_empty());
         assert!(meta.decided_tool_execution_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn native_channel_send_failure_restores_governed_response_for_retry() {
+        let meta = Arc::new(Mutex::new(RuntimeMeta::default()));
+        meta.lock()
+            .expect("runtime metadata")
+            .pending_tool_calls
+            .insert("retry-call".to_string());
+        let (closed_tx, closed_rx) = mpsc::unbounded_channel();
+        drop(closed_rx);
+        let accepted = prepare_tool_response(
+            &meta,
+            "retry-call".to_string(),
+            Some("retry-execution".to_string()),
+            true,
+            None,
+        )
+        .expect("initial governed response");
+
+        let error =
+            dispatch_accepted_tool_response(&meta, &closed_tx, accepted, "retry-call".to_string())
+                .expect_err("closed native channel must reject delivery");
+        assert!(error.contains("channel is closed"));
+        {
+            let meta = meta.lock().expect("runtime metadata");
+            assert!(meta.pending_tool_calls.contains("retry-call"));
+            assert!(!meta.decided_tool_execution_ids.contains("retry-execution"));
+            assert!(!meta.tool_execution_ids.contains_key("retry-call"));
+        }
+
+        let (retry_tx, mut retry_rx) = mpsc::unbounded_channel();
+        let corrected = prepare_tool_response(
+            &meta,
+            "retry-call".to_string(),
+            Some("retry-execution".to_string()),
+            true,
+            None,
+        )
+        .expect("corrected governed retry");
+        dispatch_accepted_tool_response(&meta, &retry_tx, corrected, "retry-call".to_string())
+            .expect("retry reaches native channel");
+        assert!(matches!(
+            retry_rx.try_recv(),
+            Ok((call_id, true, None, ExecutionSource::RemoteClient, _))
+                if call_id == "retry-call"
+        ));
+    }
+
+    #[tokio::test]
+    async fn rejected_consumption_receipt_restores_governed_response_for_retry() {
+        let meta = Arc::new(Mutex::new(RuntimeMeta::default()));
+        meta.lock()
+            .expect("runtime metadata")
+            .pending_tool_calls
+            .insert("receipt-call".to_string());
+        let (tool_tx, mut tool_rx) = mpsc::unbounded_channel();
+        let accepted = prepare_tool_response(
+            &meta,
+            "receipt-call".to_string(),
+            Some("receipt-execution".to_string()),
+            true,
+            None,
+        )
+        .expect("initial governed response");
+
+        dispatch_accepted_tool_response(&meta, &tool_tx, accepted, "receipt-call".to_string())
+            .expect("response reaches native channel");
+        let (_, _, _, _, consumed) = tool_rx.recv().await.expect("queued native response");
+        consumed
+            .expect("queued response carries a consumption receipt sender")
+            .send(ToolResponseConsumption::Rejected {
+                reason: "tool response cancelled before native consumption".to_string(),
+            })
+            .expect("consumption receipt is delivered");
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                {
+                    let meta = meta.lock().expect("runtime metadata");
+                    if meta.pending_tool_calls.contains("receipt-call")
+                        && !meta
+                            .decided_tool_execution_ids
+                            .contains("receipt-execution")
+                        && !meta.tool_execution_ids.contains_key("receipt-call")
+                    {
+                        break;
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("rejected receipt restores the pending decision");
+
+        let corrected = prepare_tool_response(
+            &meta,
+            "receipt-call".to_string(),
+            Some("receipt-execution".to_string()),
+            true,
+            None,
+        )
+        .expect("corrected governed retry");
+        dispatch_accepted_tool_response(&meta, &tool_tx, corrected, "receipt-call".to_string())
+            .expect("retry reaches native channel");
+        assert!(matches!(
+            tool_rx.try_recv(),
+            Ok((call_id, true, None, ExecutionSource::RemoteClient, _))
+                if call_id == "receipt-call"
+        ));
+    }
+
+    #[test]
+    fn deferred_consumption_rejection_is_a_correlated_protocol_error() {
+        assert!(matches!(
+            response_consumption_message(
+                "cancelled-call".to_string(),
+                ToolResponseConsumption::Rejected {
+                    reason: "tool response cancelled before native consumption".to_string(),
+                },
+            ),
+            FromAgentMessage::Error {
+                request_id: Some(request_id),
+                message,
+                fatal: false,
+                error_type: Some(HeadlessErrorType::Protocol),
+            } if request_id == "cancelled-call"
+                && message.contains("cancelled before native consumption")
+        ));
+    }
+
+    async fn assert_lifecycle_precedes_native_acceptance(approved: bool) -> Vec<String> {
+        let meta = Arc::new(Mutex::new(RuntimeMeta::default()));
+        meta.lock()
+            .expect("runtime metadata")
+            .pending_tool_calls
+            .insert("ordered-call".to_string());
+        let accepted = prepare_tool_response(
+            &meta,
+            "ordered-call".to_string(),
+            Some("ordered-execution".to_string()),
+            approved,
+            Some(HeadlessToolResult {
+                success: approved,
+                output: "ordered output".to_string(),
+                error: (!approved).then(|| "denied".to_string()),
+                details: None,
+            }),
+        )
+        .expect("ordered response");
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (tool_tx, mut tool_rx) = mpsc::unbounded_channel::<ToolResponseMessage>();
+        let receiver_events = Arc::clone(&events);
+        tokio::spawn(async move {
+            let (_, _, _, _, consumed) = tool_rx.recv().await.expect("native response");
+            receiver_events
+                .lock()
+                .expect("ordered events")
+                .push("native".to_string());
+            consumed
+                .expect("consumption receipt")
+                .send(ToolResponseConsumption::Accepted)
+                .ok();
+        });
+        let lifecycle_events = Arc::clone(&events);
+        let acknowledgement_events = Arc::clone(&events);
+        dispatch_accepted_tool_response_with(
+            &meta,
+            &tool_tx,
+            accepted,
+            "ordered-call".to_string(),
+            move |message| {
+                let label = match message {
+                    FromAgentMessage::ToolStart { .. } => "start",
+                    FromAgentMessage::ToolOutput { .. } => "output",
+                    FromAgentMessage::ToolEnd { .. } => "end",
+                    _ => "other",
+                };
+                lifecycle_events
+                    .lock()
+                    .expect("ordered events")
+                    .push(label.to_string());
+                Ok(())
+            },
+            move |_, outcome| {
+                assert_eq!(outcome, ToolResponseConsumption::Accepted);
+                acknowledgement_events
+                    .lock()
+                    .expect("ordered events")
+                    .push("accepted".to_string());
+            },
+        )
+        .expect("ordered dispatch");
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if events
+                    .lock()
+                    .expect("ordered events")
+                    .last()
+                    .map(String::as_str)
+                    == Some("accepted")
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("acceptance event");
+        let ordered = events.lock().expect("ordered events").clone();
+        ordered
+    }
+
+    #[tokio::test]
+    async fn completed_response_lifecycle_precedes_native_acceptance() {
+        assert_eq!(
+            assert_lifecycle_precedes_native_acceptance(true).await,
+            ["start", "output", "end", "native", "accepted"]
+        );
+    }
+
+    #[tokio::test]
+    async fn denied_response_terminal_lifecycle_precedes_native_acceptance() {
+        assert_eq!(
+            assert_lifecycle_precedes_native_acceptance(false).await,
+            ["end", "native", "accepted"]
+        );
     }
 
     #[test]

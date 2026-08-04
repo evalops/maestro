@@ -715,6 +715,7 @@ pub(crate) async fn handle_chat_endpoint(
                                 true,
                                 None,
                                 ExecutionSource::RemoteClient,
+                                None,
                             ));
                             send_sse(
                                 &mut stream,
@@ -731,6 +732,7 @@ pub(crate) async fn handle_chat_endpoint(
                                 false,
                                 None,
                                 ExecutionSource::RemoteClient,
+                                None,
                             ));
                             finish_tool_metadata(&mut assistant_tools, &call_id, false);
                             send_sse(&mut stream, &approval_blocked_tool_event(&call_id, &tool))
@@ -1356,6 +1358,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                                 true,
                                 None,
                                 ExecutionSource::RemoteClient,
+                                None,
                             ));
                             send_ws_json(
                                 &mut stream,
@@ -1372,6 +1375,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                                 false,
                                 None,
                                 ExecutionSource::RemoteClient,
+                                None,
                             ));
                             finish_tool_metadata(&mut assistant_tools, &call_id, false);
                             send_ws_json(

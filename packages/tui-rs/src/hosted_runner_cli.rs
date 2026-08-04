@@ -99,6 +99,7 @@ pub fn init_hosted_runner_tracing() {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     let subscriber = tracing_subscriber::fmt()
         .json()
+        .with_writer(std::io::stderr)
         .with_target(false)
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
         .with_env_filter(env_filter)

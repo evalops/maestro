@@ -99,6 +99,19 @@ fn test_cache_config_default() {
     assert!(config.excluded_tools.contains(&"bash".to_string()));
     assert!(config.excluded_tools.contains(&"write".to_string()));
     assert!(config.excluded_tools.contains(&"edit".to_string()));
+    for tool in [
+        "spawn_subagent",
+        "list_subagents",
+        "get_subagent",
+        "wait_subagent",
+        "resume_subagent",
+        "cancel_subagent",
+    ] {
+        assert!(
+            config.excluded_tools.contains(&tool.to_string()),
+            "subagent lifecycle tool {tool} must not be cached"
+        );
+    }
 }
 
 #[test]

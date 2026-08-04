@@ -5,9 +5,11 @@
 //! - Health monitoring with heartbeats
 //! - Graceful degradation
 
+use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::path::Path;
 use std::sync::mpsc::{self as std_mpsc, SyncSender};
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -29,6 +31,17 @@ use super::session::{SessionRecorder, SessionReplay};
 const MAX_STALE_REMOTE_REFERENCE_RETRIES: u32 = 3;
 const MIN_RECONNECT_SLEEP: Duration = Duration::from_millis(1);
 const REMOTE_COMPACTION_SILENCE_TIMEOUT: Duration = Duration::from_mins(3);
+const RESPONSE_ACK_TIMEOUT: Duration = Duration::from_millis(500);
+const RESPONSE_ACK_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const MAX_RESPONSE_ACKNOWLEDGEMENTS: usize = 4096;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResponseAcknowledgement {
+    NotExpected,
+    Consumed,
+    Queued,
+    Rejected,
+}
 
 fn jittered_reconnect_delay_for_sample(
     base_delay: Duration,
@@ -413,9 +426,44 @@ pub struct AgentSupervisor {
     session_recorder_error_reported: bool,
     /// Cancellation token
     cancel_token: CancellationToken,
+    /// Correlated response acknowledgements received before their waiter.
+    pending_response_acknowledgements: HashSet<String>,
+    /// Correlated protocol rejections received before their waiter.
+    pending_response_rejections: HashMap<String, String>,
+    /// Request IDs owned by responses sent through the current transport.
+    expected_response_acknowledgements: HashMap<String, u64>,
+    /// Changes whenever a new child/remote transport takes ownership.
+    transport_generation: u64,
 }
 
 impl AgentSupervisor {
+    pub(crate) async fn wait_for_response_acknowledgement_async(
+        supervisor: Arc<std::sync::Mutex<Self>>,
+        request_id: String,
+        timeout: Duration,
+    ) -> (Vec<FromAgentMessage>, ResponseAcknowledgement) {
+        let deadline = Instant::now() + timeout;
+        let mut messages = Vec::new();
+        loop {
+            let (drained, acknowledgement) = {
+                let mut supervisor = supervisor
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                supervisor.wait_for_response_acknowledgement(&request_id)
+            };
+            messages.extend(drained);
+            if !matches!(acknowledgement, ResponseAcknowledgement::Queued) {
+                return (messages, acknowledgement);
+            }
+            if Instant::now() >= deadline {
+                return (messages, ResponseAcknowledgement::Queued);
+            }
+            tokio::time::sleep(
+                RESPONSE_ACK_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())),
+            )
+            .await;
+        }
+    }
     /// Create a new supervisor
     #[must_use]
     pub fn new(config: SupervisorConfig) -> Self {
@@ -438,6 +486,10 @@ impl AgentSupervisor {
             session_recorder: None,
             session_recorder_error_reported: false,
             cancel_token: CancellationToken::new(),
+            pending_response_acknowledgements: HashSet::new(),
+            pending_response_rejections: HashMap::new(),
+            expected_response_acknowledgements: HashMap::new(),
+            transport_generation: 0,
         }
     }
 
@@ -689,24 +741,77 @@ impl AgentSupervisor {
 
     /// Send a message and report whether the native response consumer
     /// explicitly acknowledged accepting a control response.
-    pub fn send_and_drain_agent_messages_with_ack(
+    pub(crate) fn send_and_drain_agent_messages_with_ack(
         &mut self,
         msg: ToAgentMessage,
-    ) -> Result<(Vec<FromAgentMessage>, bool), AsyncTransportError> {
+    ) -> Result<(Vec<FromAgentMessage>, ResponseAcknowledgement), AsyncTransportError> {
         let expected_acknowledgement = response_ack_request_id(&msg).map(str::to_owned);
-        self.send(msg)?;
-        let mut messages = self.drain_available_agent_messages();
-        let acknowledged = expected_acknowledgement.as_deref().is_some_and(|expected| {
-            messages.iter().any(|message| {
-                matches!(
-                    message,
-                    FromAgentMessage::ResponseAccepted { request_id }
-                        if request_id == expected
-                )
-            })
-        });
-        messages.retain(|message| !matches!(message, FromAgentMessage::ResponseAccepted { .. }));
-        Ok((messages, acknowledged))
+        if let Some(request_id) = expected_acknowledgement.as_ref() {
+            if !self.register_response_acknowledgement(request_id) {
+                return Err(AsyncTransportError::SendFailed(
+                    "response acknowledgement capacity is full".to_string(),
+                ));
+            }
+        }
+        if let Err(error) = self.send(msg) {
+            if let Some(request_id) = expected_acknowledgement.as_ref() {
+                self.expected_response_acknowledgements.remove(request_id);
+            }
+            return Err(error);
+        }
+        Ok(self.drain_agent_messages_until_ack(
+            expected_acknowledgement.as_deref(),
+            RESPONSE_ACK_TIMEOUT,
+        ))
+    }
+
+    fn drain_agent_messages_until_ack(
+        &mut self,
+        expected_acknowledgement: Option<&str>,
+        _timeout: Duration,
+    ) -> (Vec<FromAgentMessage>, ResponseAcknowledgement) {
+        let Some(expected_acknowledgement) = expected_acknowledgement else {
+            return (
+                self.drain_available_agent_messages(),
+                ResponseAcknowledgement::NotExpected,
+            );
+        };
+        if self
+            .pending_response_acknowledgements
+            .remove(expected_acknowledgement)
+        {
+            self.expected_response_acknowledgements
+                .remove(expected_acknowledgement);
+            return (Vec::new(), ResponseAcknowledgement::Consumed);
+        }
+        if self
+            .pending_response_rejections
+            .remove(expected_acknowledgement)
+            .is_some()
+        {
+            self.expected_response_acknowledgements
+                .remove(expected_acknowledgement);
+            return (Vec::new(), ResponseAcknowledgement::Rejected);
+        }
+        let messages = self.drain_available_agent_messages();
+        if self
+            .pending_response_rejections
+            .remove(expected_acknowledgement)
+            .is_some()
+        {
+            self.expected_response_acknowledgements
+                .remove(expected_acknowledgement);
+            return (messages, ResponseAcknowledgement::Rejected);
+        }
+        if self
+            .pending_response_acknowledgements
+            .remove(expected_acknowledgement)
+        {
+            self.expected_response_acknowledgements
+                .remove(expected_acknowledgement);
+            return (messages, ResponseAcknowledgement::Consumed);
+        }
+        (messages, ResponseAcknowledgement::Queued)
     }
 
     /// Drain currently available supervisor agent events as headless protocol messages.
@@ -716,15 +821,117 @@ impl AgentSupervisor {
         while let Some(event) = self.poll() {
             match event {
                 SupervisorEvent::Agent(agent_event) => {
-                    messages.push(agent_event_to_message(&agent_event));
+                    let message = agent_event_to_message(&agent_event);
+                    if let FromAgentMessage::Error {
+                        request_id: Some(request_id),
+                        message: reason,
+                        error_type: Some(super::messages::HeadlessErrorType::Protocol),
+                        ..
+                    } = &message
+                    {
+                        if self
+                            .expected_response_acknowledgements
+                            .contains_key(request_id)
+                            && self.pending_response_rejections.len()
+                                < MAX_RESPONSE_ACKNOWLEDGEMENTS
+                        {
+                            self.pending_response_rejections
+                                .insert(request_id.clone(), reason.clone());
+                        }
+                    }
+                    messages.push(message);
                 }
-                SupervisorEvent::ResponseAccepted { request_id } => {
-                    messages.push(FromAgentMessage::ResponseAccepted { request_id });
+                SupervisorEvent::ResponseAccepted { request_id }
+                    if self
+                        .expected_response_acknowledgements
+                        .contains_key(&request_id)
+                        && self.pending_response_acknowledgements.len()
+                            < MAX_RESPONSE_ACKNOWLEDGEMENTS =>
+                {
+                    self.pending_response_acknowledgements.insert(request_id);
                 }
                 _ => {}
             }
         }
         messages
+    }
+
+    pub(crate) fn wait_for_response_acknowledgement(
+        &mut self,
+        request_id: &str,
+    ) -> (Vec<FromAgentMessage>, ResponseAcknowledgement) {
+        self.drain_agent_messages_until_ack(Some(request_id), RESPONSE_ACK_TIMEOUT)
+    }
+
+    pub(crate) fn has_response_acknowledgement(&self, request_id: &str) -> bool {
+        self.pending_response_acknowledgements.contains(request_id)
+    }
+
+    pub(crate) fn has_response_rejection(&self, request_id: &str) -> bool {
+        self.pending_response_rejections.contains_key(request_id)
+    }
+
+    pub(crate) fn take_response_rejection(&mut self, request_id: &str) -> Option<String> {
+        let rejection = self.pending_response_rejections.remove(request_id);
+        if rejection.is_some() {
+            self.expected_response_acknowledgements.remove(request_id);
+            self.pending_response_acknowledgements.remove(request_id);
+        }
+        rejection
+    }
+
+    pub(crate) fn take_response_acknowledgement(&mut self, request_id: &str) -> bool {
+        let acknowledged = self.pending_response_acknowledgements.remove(request_id);
+        if acknowledged {
+            self.expected_response_acknowledgements.remove(request_id);
+        }
+        acknowledged
+    }
+
+    pub(crate) fn discard_response_acknowledgement(
+        &mut self,
+        request_id: &str,
+        transport_generation: u64,
+    ) {
+        if self.expected_response_acknowledgements.get(request_id) != Some(&transport_generation) {
+            return;
+        }
+        self.expected_response_acknowledgements.remove(request_id);
+        self.pending_response_acknowledgements.remove(request_id);
+        self.pending_response_rejections.remove(request_id);
+    }
+
+    pub(crate) fn register_response_acknowledgement(&mut self, request_id: &str) -> bool {
+        if let Some(transport_generation) = self
+            .expected_response_acknowledgements
+            .get(request_id)
+            .copied()
+        {
+            if transport_generation == self.transport_generation {
+                return true;
+            }
+            self.pending_response_acknowledgements.remove(request_id);
+            self.pending_response_rejections.remove(request_id);
+            self.expected_response_acknowledgements
+                .insert(request_id.to_string(), self.transport_generation);
+            return true;
+        }
+        if self.expected_response_acknowledgements.len() >= MAX_RESPONSE_ACKNOWLEDGEMENTS {
+            return false;
+        }
+        self.expected_response_acknowledgements
+            .insert(request_id.to_string(), self.transport_generation);
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn response_acknowledgement_count(&self) -> usize {
+        self.expected_response_acknowledgements.len()
+    }
+
+    #[must_use]
+    pub(crate) fn transport_generation(&self) -> u64 {
+        self.transport_generation
     }
 
     /// Send a prompt
@@ -789,6 +996,10 @@ impl AgentSupervisor {
         let should_replay_init = transport.needs_init_replay();
         let snapshot = transport.initial_snapshot();
         self.transport = Some(transport);
+        self.transport_generation = self.transport_generation.wrapping_add(1);
+        self.pending_response_acknowledgements.clear();
+        self.pending_response_rejections.clear();
+        self.expected_response_acknowledgements.clear();
         self.stale_reference_retries = 0;
         self.last_response = Some(Instant::now());
         if let Some((state, last_init)) = snapshot {
@@ -1245,7 +1456,7 @@ impl AgentSupervisor {
     }
 }
 
-fn response_ack_request_id(message: &ToAgentMessage) -> Option<&str> {
+pub(crate) fn response_ack_request_id(message: &ToAgentMessage) -> Option<&str> {
     match message {
         ToAgentMessage::ToolResponse { call_id, .. }
         | ToAgentMessage::ClientToolResult { call_id, .. } => Some(call_id),

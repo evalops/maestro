@@ -92,8 +92,9 @@ mod vertex;
 pub use anthropic::AnthropicClient;
 pub use app_message::{from_api_messages, transform_to_api_messages, AppMessage, BashExecution};
 pub use client::{
-    create_client, create_client_for_model, provider_model_name, AiClient, AiProvider,
-    UnifiedClient, DEFAULT_STREAM_IDLE_TIMEOUT, DEFAULT_STREAM_MAX_RETRIES,
+    canonical_managed_credential_name, canonical_managed_environment, create_client,
+    create_client_for_model, provider_model_name, AiClient, AiProvider, UnifiedClient,
+    DEFAULT_STREAM_IDLE_TIMEOUT, DEFAULT_STREAM_MAX_RETRIES,
 };
 pub use error::summarize_error_body;
 pub use google::GoogleClient;

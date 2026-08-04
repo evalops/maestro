@@ -1765,19 +1765,37 @@ fn parse_timestamp(value: Option<&str>, field: &str) -> Result<i64> {
 }
 
 fn provider_ref() -> Value {
+    provider_ref_from(
+        env_first(&["MAESTRO_EVALOPS_PROVIDER", "MAESTRO_LLM_GATEWAY_PROVIDER"]),
+        env_first(&[
+            "MAESTRO_EVALOPS_ENVIRONMENT",
+            "MAESTRO_LLM_GATEWAY_ENVIRONMENT",
+        ]),
+        env_first(&[
+            "MAESTRO_EVALOPS_CREDENTIAL_NAME",
+            "MAESTRO_LLM_GATEWAY_CREDENTIAL_NAME",
+        ]),
+        env_first(&["MAESTRO_EVALOPS_TEAM_ID", "MAESTRO_LLM_GATEWAY_TEAM_ID"]),
+    )
+}
+
+/// Build the stored `providerRef` tuple from the environment values. Split
+/// from [`provider_ref`] so the canonicalization is testable without mutating
+/// the process environment. Emits the gateway's canonical
+/// `production`/`default` tuple so this producer resolves the same Keys
+/// entry as managed request construction in `maestro_ai`.
+fn provider_ref_from(
+    provider: Option<String>,
+    environment: Option<String>,
+    credential_name: Option<String>,
+    team_id: Option<String>,
+) -> Value {
     let mut value = json!({
-        "provider": env_first(&["MAESTRO_EVALOPS_PROVIDER", "MAESTRO_LLM_GATEWAY_PROVIDER"])
-            .unwrap_or_else(|| "openai".to_owned()),
-        "environment": env_first(&["MAESTRO_EVALOPS_ENVIRONMENT", "MAESTRO_LLM_GATEWAY_ENVIRONMENT"])
-            .unwrap_or_else(|| "prod".to_owned())
+        "provider": provider.unwrap_or_else(|| "openai".to_owned()),
+        "environment": crate::ai::canonical_managed_environment(environment.as_deref()),
+        "credential_name": crate::ai::canonical_managed_credential_name(credential_name.as_deref()),
     });
-    if let Some(name) = env_first(&[
-        "MAESTRO_EVALOPS_CREDENTIAL_NAME",
-        "MAESTRO_LLM_GATEWAY_CREDENTIAL_NAME",
-    ]) {
-        value["credential_name"] = Value::String(name);
-    }
-    if let Some(team) = env_first(&["MAESTRO_EVALOPS_TEAM_ID", "MAESTRO_LLM_GATEWAY_TEAM_ID"]) {
+    if let Some(team) = team_id {
         value["team_id"] = Value::String(team);
     }
     value
@@ -2153,6 +2171,32 @@ fn remove_provider_from_registry(provider: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_ref_defaults_to_canonical_gateway_tuple() {
+        let value = provider_ref_from(None, None, None, None);
+        assert_eq!(value["provider"], "openai");
+        assert_eq!(value["environment"], "production");
+        assert_eq!(value["credential_name"], "default");
+        assert!(value.get("team_id").is_none());
+    }
+
+    #[test]
+    fn provider_ref_normalizes_legacy_prod_and_keeps_explicit_values() {
+        let value = provider_ref_from(
+            Some("anthropic".to_owned()),
+            Some("prod".to_owned()),
+            Some("scoped-key".to_owned()),
+            Some("team_9".to_owned()),
+        );
+        assert_eq!(value["provider"], "anthropic");
+        assert_eq!(value["environment"], "production");
+        assert_eq!(value["credential_name"], "scoped-key");
+        assert_eq!(value["team_id"], "team_9");
+
+        let staging = provider_ref_from(None, Some("staging".to_owned()), None, None);
+        assert_eq!(staging["environment"], "staging");
+    }
 
     #[test]
     fn parses_aliases_repeatable_lists_and_positive_numbers() {

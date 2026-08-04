@@ -1060,7 +1060,7 @@ impl App {
             // execution here would let batched approvals run concurrently and
             // reorder a gated write/edit relative to later calls.
             if let Some(tx) = &self.tool_response_tx {
-                let _ = tx.send((call_id, true, None, ExecutionSource::Native));
+                let _ = tx.send((call_id, true, None, ExecutionSource::Native, None));
             }
         } else {
             self.tool_history.fail(&call_id, "Denied".to_string());
@@ -1068,7 +1068,7 @@ impl App {
             self.state.fail_tool_call(&call_id, "Denied");
             // Send denial
             if let Some(tx) = &self.tool_response_tx {
-                let _ = tx.send((call_id, false, None, ExecutionSource::Native));
+                let _ = tx.send((call_id, false, None, ExecutionSource::Native, None));
             }
         }
         Ok(())
