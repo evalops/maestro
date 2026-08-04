@@ -1310,10 +1310,29 @@ pub(crate) async fn load_hosted_runner_session_replay(
         .map(|manifest| manifest.session_replay()))
 }
 
+fn startup_workspace_id(config: &HostedRunnerConfig) -> String {
+    config
+        .workload_identity
+        .as_ref()
+        .map(|identity| identity.workspace_id.clone())
+        .or_else(|| config.workspace_id.clone())
+        .unwrap_or_default()
+}
+
 pub async fn start_hosted_runner_with_message_executor(
     config: HostedRunnerConfig,
     message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
 ) -> io::Result<HostedRunnerHandle> {
+    let startup_started = Instant::now();
+    let runner_session_id = config.runner_session_id.clone();
+    let workspace_id = startup_workspace_id(&config);
+    let identity_context = config.workload_identity.as_ref().map(|identity| {
+        (
+            identity.organization_id.clone(),
+            identity.sandbox_id,
+            identity.placement_generation,
+        )
+    });
     let workspace_root = tokio::fs::canonicalize(&config.workspace_root).await?;
     if !tokio::fs::metadata(&workspace_root).await?.is_dir() {
         return Err(io::Error::new(
@@ -1336,17 +1355,65 @@ pub async fn start_hosted_runner_with_message_executor(
     config.workspace_root = workspace_root;
     let restore_manifest = load_restore_manifest(&config).await?;
     let identity_runtime = if let Some(identity_config) = config.workload_identity.clone() {
-        let exchanger = Arc::new(
-            workload_identity::WorkloadIdentityExchanger::try_new(
-                identity_config,
-                config.runner_session_id.clone(),
-            )
-            .map_err(io::Error::other)?,
-        );
-        let identity = exchanger
-            .exchange_initial()
-            .await
-            .map_err(io::Error::other)?;
+        let exchange_started = Instant::now();
+        let exchanger = match workload_identity::WorkloadIdentityExchanger::try_new(
+            identity_config.clone(),
+            config.runner_session_id.clone(),
+        ) {
+            Ok(exchanger) => Arc::new(exchanger),
+            Err(error) => {
+                tracing::warn!(
+                    target: "maestro.hosted",
+                    event = "hosted_runner_startup_stage",
+                    stage = "workload_identity_exchange",
+                    outcome = "error",
+                    error_kind = error.as_str(),
+                    runner_session_id = %runner_session_id,
+                    organization_id = %identity_config.organization_id,
+                    workspace_id = %identity_config.workspace_id,
+                    sandbox_id = %identity_config.sandbox_id,
+                    placement_generation = identity_config.placement_generation,
+                    duration_ms = exchange_started.elapsed().as_millis() as u64,
+                    "Hosted runner startup stage failed before identity exchange"
+                );
+                return Err(io::Error::other(error));
+            }
+        };
+        let identity = match exchanger.exchange_initial().await {
+            Ok(identity) => {
+                tracing::info!(
+                    target: "maestro.hosted",
+                    event = "hosted_runner_startup_stage",
+                    stage = "workload_identity_exchange",
+                    outcome = "success",
+                    runner_session_id = %runner_session_id,
+                    organization_id = %identity_config.organization_id,
+                    workspace_id = %identity_config.workspace_id,
+                    sandbox_id = %identity_config.sandbox_id,
+                    placement_generation = identity_config.placement_generation,
+                    duration_ms = exchange_started.elapsed().as_millis() as u64,
+                    "Hosted runner startup stage completed"
+                );
+                identity
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "maestro.hosted",
+                    event = "hosted_runner_startup_stage",
+                    stage = "workload_identity_exchange",
+                    outcome = "error",
+                    error_kind = error.as_str(),
+                    runner_session_id = %runner_session_id,
+                    organization_id = %identity_config.organization_id,
+                    workspace_id = %identity_config.workspace_id,
+                    sandbox_id = %identity_config.sandbox_id,
+                    placement_generation = identity_config.placement_generation,
+                    duration_ms = exchange_started.elapsed().as_millis() as u64,
+                    "Hosted runner startup stage failed"
+                );
+                return Err(io::Error::other(error));
+            }
+        };
         Some((
             exchanger,
             workload_identity::ReloadableServerIdentity::new(identity),
@@ -1382,6 +1449,27 @@ pub async fn start_hosted_runner_with_message_executor(
         });
         (task, None, false)
     };
+
+    let (organization_id, sandbox_id, placement_generation) = identity_context
+        .map(|(organization_id, sandbox_id, generation)| {
+            (organization_id, sandbox_id.to_string(), generation)
+        })
+        .unwrap_or_default();
+    tracing::info!(
+        target: "maestro.hosted",
+        event = "hosted_runner_startup",
+        stage = "ready",
+        outcome = "success",
+        runner_session_id = %runner_session_id,
+        organization_id = %organization_id,
+        workspace_id = %workspace_id,
+        sandbox_id = %sandbox_id,
+        placement_generation,
+        tls,
+        listen_port = local_addr.port(),
+        duration_ms = startup_started.elapsed().as_millis() as u64,
+        "Hosted runner is ready"
+    );
 
     Ok(HostedRunnerHandle {
         local_addr,

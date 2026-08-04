@@ -2206,6 +2206,22 @@ fn projected_workload_identity_replaces_static_auth_on_non_loopback_bind() {
 }
 
 #[test]
+fn startup_join_uses_identity_bound_workspace() {
+    let workspace = tempdir().expect("workspace");
+    let token_file = workspace.path().join("projected-token");
+    let mut env = base_hosted_runner_env(workspace.path());
+    add_workload_identity_env(&mut env, &token_file);
+    env.insert(
+        "MAESTRO_REMOTE_RUNNER_WORKSPACE_ID".to_string(),
+        "unrelated-remote-workspace".to_string(),
+    );
+
+    let config = HostedRunnerConfig::from_env_map(&env).expect("workload identity config");
+
+    assert_eq!(startup_workspace_id(&config), "workspace-123");
+}
+
+#[test]
 fn projected_workload_identity_forbids_static_bearer_fallback() {
     let workspace = tempdir().expect("workspace");
     let token_file = workspace.path().join("projected-token");
