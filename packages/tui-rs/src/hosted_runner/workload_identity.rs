@@ -397,6 +397,17 @@ pub(super) enum WorkloadIdentityError {
     Rejected,
 }
 
+impl WorkloadIdentityError {
+    pub(super) const fn as_str(&self) -> &'static str {
+        match self {
+            Self::InvalidProjectedIdentity => "invalid_projected_identity",
+            Self::InvalidIssuedIdentity => "invalid_issued_identity",
+            Self::Unavailable => "unavailable",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct ProjectedClaims {
     #[serde(rename = "kubernetes.io")]
@@ -900,6 +911,20 @@ mod tests {
             jittered_initial_exchange_delay_for_sample(base, 1.0),
             base.mul_f64(1.0 + INITIAL_EXCHANGE_JITTER_FACTOR)
         );
+    }
+
+    #[test]
+    fn workload_identity_error_kinds_are_stable_safe_labels() {
+        assert_eq!(
+            WorkloadIdentityError::InvalidProjectedIdentity.as_str(),
+            "invalid_projected_identity"
+        );
+        assert_eq!(
+            WorkloadIdentityError::InvalidIssuedIdentity.as_str(),
+            "invalid_issued_identity"
+        );
+        assert_eq!(WorkloadIdentityError::Unavailable.as_str(), "unavailable");
+        assert_eq!(WorkloadIdentityError::Rejected.as_str(), "rejected");
     }
 
     #[test]
