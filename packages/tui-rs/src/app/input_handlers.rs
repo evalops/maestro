@@ -943,7 +943,7 @@ impl App {
             KeyCode::Char('d') if ctrl => {
                 // Ctrl+D: persist the highlighted model as the user default
                 // and switch to it.
-                let model_id = self.model_selector.selected_model().map(|m| m.id.clone());
+                let model_id = self.model_selector.selected_model_id();
                 if let Some(model_id) = model_id {
                     self.model_selector.hide();
                     self.switch_model(&model_id, true);
