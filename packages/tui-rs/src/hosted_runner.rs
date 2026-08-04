@@ -1492,51 +1492,47 @@ async fn pump_agent_events(shared: SharedRunner, cancelled: CancellationToken) {
                     () = cancelled.cancelled() => break,
                     lifecycle = lifecycle.lock() => lifecycle,
                 };
-                match shared.message_executor.drain() {
-                    Ok(drained) => {
-                        let mut state = shared
-                            .state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if state.draining {
-                            break;
-                        }
-                        for message in drained.messages {
-                            shared.publish_message(&mut state, message);
-                        }
-                        if let Err(error) = shared.finalize_consumed_response_keys(
-                            &mut state,
-                            &drained.consumed_response_keys,
-                        ) {
-                            shared.thread_persistence_retry_pending.store(true, Ordering::Release);
-                            tracing::warn!(
-                                event = "event_pump_idempotency_memory_only",
-                                error = %error,
-                                "native consumed the response; retaining live-process idempotency while retrying thread journal persistence",
-                            );
-                        }
-                        if let Err(error) = shared.rollback_rejected_response_keys(
-                            &mut state,
-                            &drained.rejected_response_keys,
-                        ) {
-                            // The in-memory rollback already happened; only the
-                            // thread journal write failed. Keep the pump alive
-                            // and retry persistence like the consumed path.
-                            shared.thread_persistence_retry_pending.store(true, Ordering::Release);
-                            tracing::warn!(
-                                event = "event_pump_rejection_memory_only",
-                                error = %error,
-                                "native rejected the response; retaining live-process rollback while retrying thread journal persistence",
-                            );
-                        }
-                        shared.retry_thread_persistence(&state);
-                    }
-                    Err(error) => {
-                        shared.publish_runtime_error("event_pump_failed", error);
-                        break;
-                    }
+                if matches!(pump_tick(&shared), PumpTick::Stop) {
+                    break;
                 }
             }
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PumpTick {
+    Continue,
+    Stop,
+}
+
+/// One event-pump iteration: drain the executor, publish the drained
+/// messages, finalize consumed and roll back rejected response keys, and
+/// retry any deferred thread journal write. Extracted from
+/// [`pump_agent_events`] so tests can drive ticks deterministically instead
+/// of racing `EVENT_PUMP_INTERVAL`. The caller holds the mutation lifecycle
+/// lock.
+fn pump_tick(shared: &SharedRunner) -> PumpTick {
+    match shared.message_executor.drain() {
+        Ok(drained) => {
+            let mut state = shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.draining {
+                return PumpTick::Stop;
+            }
+            for message in drained.messages {
+                shared.publish_message(&mut state, message);
+            }
+            shared.finalize_consumed_response_keys(&mut state, &drained.consumed_response_keys);
+            shared.rollback_rejected_response_keys(&mut state, &drained.rejected_response_keys);
+            shared.retry_thread_persistence(&state);
+            PumpTick::Continue
+        }
+        Err(error) => {
+            shared.publish_runtime_error("event_pump_failed", error);
+            PumpTick::Stop
         }
     }
 }
@@ -1549,6 +1545,9 @@ impl SharedRunner {
         {
             return;
         }
+        // The retry mechanism itself: a raw call is intentional, failure
+        // re-arms the retry flag for the next pump tick.
+        #[allow(clippy::disallowed_methods)]
         if let Err(error) = self.persist_thread(state) {
             self.thread_persistence_retry_pending
                 .store(true, Ordering::Release);
@@ -1560,11 +1559,11 @@ impl SharedRunner {
         }
     }
 
-    fn rollback_rejected_response_keys(
-        &self,
-        state: &mut RunnerState,
-        keys: &[String],
-    ) -> Result<(), HostedRunnerError> {
+    /// Roll back the in-memory records for rejected response keys.
+    /// Infallible by design: the removals always happen, and a failed journal
+    /// write is deferred to the event pump's retry. Callers must not treat a
+    /// rejection rollback as a reason to stop the runtime.
+    fn rollback_rejected_response_keys(&self, state: &mut RunnerState, keys: &[String]) {
         let mut changed = false;
         for key in keys {
             changed |= state.pending_response_idempotency.remove(key).is_some();
@@ -1580,17 +1579,14 @@ impl SharedRunner {
             changed |= state.pending_response_idempotency_order.len() != prior_len;
         }
         if changed {
-            self.persist_thread(state)
-                .map_err(|error| HostedRunnerError::internal(error.to_string()))?;
+            self.persist_thread_or_defer(state, "rollback_rejected_response_keys");
         }
-        Ok(())
     }
 
-    fn finalize_consumed_response_keys(
-        &self,
-        state: &mut RunnerState,
-        keys: &[String],
-    ) -> Result<(), HostedRunnerError> {
+    /// Promote consumed response keys to durable idempotency records.
+    /// Infallible by design: the in-memory promotion always happens, and a
+    /// failed journal write is deferred to the event pump's retry.
+    fn finalize_consumed_response_keys(&self, state: &mut RunnerState, keys: &[String]) {
         let mut changed = false;
         for key in keys {
             let Some(message) = state.pending_response_idempotency.remove(key) else {
@@ -1618,10 +1614,8 @@ impl SharedRunner {
             changed = true;
         }
         if changed {
-            self.persist_thread(state)
-                .map_err(|error| HostedRunnerError::internal(error.to_string()))?;
+            self.persist_thread_or_defer(state, "finalize_consumed_response_keys");
         }
-        Ok(())
     }
 
     fn start_event_pump(&self) {
@@ -2495,30 +2489,12 @@ async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult
         for message in drained.messages {
             shared.publish_message(&mut state, message);
         }
-        // Journal persistence failures must not abort the drain: `draining`
-        // is already set and the event pump is stopped, so returning an error
-        // here would reject every later drain attempt as "already draining".
-        // Both helpers mutate the in-memory state before their only fallible
-        // step (the thread journal write), and the snapshot manifest below is
-        // the durable hand-off artifact.
-        if let Err(error) =
-            shared.finalize_consumed_response_keys(&mut state, &drained.consumed_response_keys)
-        {
-            tracing::warn!(
-                event = "drain_idempotency_memory_only",
-                error = %error,
-                "drain kept live-process idempotency after a thread journal persistence failure",
-            );
-        }
-        if let Err(error) =
-            shared.rollback_rejected_response_keys(&mut state, &drained.rejected_response_keys)
-        {
-            tracing::warn!(
-                event = "drain_rejection_rollback_memory_only",
-                error = %error,
-                "drain kept the live-process rejection rollback after a thread journal persistence failure",
-            );
-        }
+        // Both helpers are infallible: journal write failures defer to the
+        // pump retry, so a transient failure cannot abort the drain and leave
+        // every later attempt rejected as "already draining". The snapshot
+        // manifest below is the durable hand-off artifact.
+        shared.finalize_consumed_response_keys(&mut state, &drained.consumed_response_keys);
+        shared.rollback_rejected_response_keys(&mut state, &drained.rejected_response_keys);
     }
 
     let (manifest_path, manifest) = write_snapshot_manifest(&shared, &input).await?;
@@ -2840,7 +2816,7 @@ async fn handle_append_turn(
         }
         let cursor = state.cursor;
         state.thread.append(input.clone(), cursor);
-        shared.persist_thread(&state).map_err(|error| {
+        shared.persist_thread_for_request(&state).map_err(|error| {
             HostedError::new(
                 HostedRunnerErrorCode::RuntimeFailed,
                 format!("failed to persist accepted thread turn: {error}"),
@@ -2866,7 +2842,7 @@ async fn handle_append_turn(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let cursor = state.cursor;
         state.thread.mark_failed(cursor);
-        let _ = shared.persist_thread(&state);
+        shared.persist_thread_best_effort(&state, "turn_dispatch_failed_cleanup");
         return Err(error);
     }
     let mut state = shared
@@ -2875,7 +2851,7 @@ async fn handle_append_turn(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let cursor = state.cursor;
     state.thread.mark_dispatched(cursor);
-    shared.persist_thread(&state).map_err(|error| {
+    shared.persist_thread_for_request(&state).map_err(|error| {
         HostedError::new(
             HostedRunnerErrorCode::RuntimeFailed,
             format!("failed to persist dispatched thread turn: {error}"),
@@ -3107,7 +3083,7 @@ async fn handle_message_inner(
                         state
                             .response_request_owners
                             .insert(request_id.clone(), idempotency_key.clone());
-                        shared.persist_thread(&state).map_err(|error| {
+                        shared.persist_thread_for_request(&state).map_err(|error| {
                             HostedError::new(
                                 HostedRunnerErrorCode::RuntimeFailed,
                                 format!("failed to persist response request ownership: {error}"),
@@ -3152,7 +3128,7 @@ async fn handle_message_inner(
                     .insert(request_id.clone(), idempotency_key.clone())
                     .is_none()
             });
-            if let Err(error) = shared.persist_thread(&state) {
+            if let Err(error) = shared.persist_thread_for_request(&state) {
                 state.pending_response_idempotency.remove(idempotency_key);
                 state
                     .pending_response_idempotency_order
@@ -3328,7 +3304,7 @@ async fn handle_message_inner(
                     state
                         .pending_response_idempotency_order
                         .retain(|key| key != idempotency_key);
-                    let _ = shared.persist_thread(&state);
+                    shared.persist_thread_best_effort(&state, "response_execution_failed_cleanup");
                 }
                 return Err(HostedError::from(error));
             }
@@ -3464,7 +3440,7 @@ async fn handle_message_inner(
                 .insert(idempotency_key.clone(), digest.clone());
         }
         let mut idempotency_persisted = true;
-        if let Err(error) = shared.persist_thread(&state) {
+        if let Err(error) = shared.persist_thread_for_request(&state) {
             // The executor has already accepted and delivered this response.
             // Keep the in-memory completion marker and return success so a
             // transient journal failure cannot make the native transport retry
