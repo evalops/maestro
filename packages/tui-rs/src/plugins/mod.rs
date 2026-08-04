@@ -56,7 +56,7 @@ pub struct DiscoveredPlugin {
     pub origin: PluginOrigin,
     /// Parsed `plugin.json` when present.
     pub manifest: Option<PluginManifest>,
-    /// Resolved component paths (skills, commands, hooks, MCP).
+    /// Resolved component paths (skills, agents, commands, hooks, MCP).
     pub components: PluginComponents,
 }
 
@@ -67,6 +67,9 @@ impl DiscoveredPlugin {
         let mut parts = Vec::new();
         if self.components.skills_dir.is_some() {
             parts.push("skills");
+        }
+        if self.components.agents_dir.is_some() {
+            parts.push("agents");
         }
         if self.components.commands_dir.is_some() {
             parts.push("commands");
@@ -107,6 +110,10 @@ impl DiscoveredPlugin {
         match &self.components.skills_dir {
             Some(p) => msg.push_str(&format!("- **skills:** `{}`\n", p.display())),
             None => msg.push_str("- **skills:** _(none)_\n"),
+        }
+        match &self.components.agents_dir {
+            Some(p) => msg.push_str(&format!("- **agents:** `{}`\n", p.display())),
+            None => msg.push_str("- **agents:** _(none)_\n"),
         }
         match &self.components.commands_dir {
             Some(p) => msg.push_str(&format!("- **commands:** `{}`\n", p.display())),
@@ -196,8 +203,8 @@ impl PluginRegistry {
     ///
     /// This is a low-level primitive for callers that pre-filter roots
     /// themselves (e.g. read-only CLI listing). Production code that feeds
-    /// plugin components into execution (skills today; hooks/MCP once
-    /// wired) must go through [`Self::discover`] instead.
+    /// plugin components into execution must go through [`Self::discover`]
+    /// instead.
     ///
     /// When multiple plugins share a name, the later (higher-priority) root wins.
     #[must_use]
@@ -243,6 +250,9 @@ impl PluginRegistry {
                     }
                     if !state.capability_enabled(&key, PluginCapability::Skills) {
                         plugin.components.skills_dir = None;
+                    }
+                    if !state.capability_enabled(&key, PluginCapability::Agents) {
+                        plugin.components.agents_dir = None;
                     }
                     if !state.capability_enabled(&key, PluginCapability::Commands) {
                         plugin.components.commands_dir = None;
@@ -318,6 +328,15 @@ impl PluginRegistry {
             .collect()
     }
 
+    /// Agent/profile definition directories from all plugins.
+    #[must_use]
+    pub fn agent_dirs(&self) -> Vec<PathBuf> {
+        self.plugins
+            .iter()
+            .filter_map(|p| p.components.agents_dir.clone())
+            .collect()
+    }
+
     /// Command template directories from all plugins.
     #[must_use]
     pub fn command_dirs(&self) -> Vec<PathBuf> {
@@ -367,7 +386,7 @@ impl PluginRegistry {
                 "Install plugins under:\n".to_string(),
                 "- `.maestro/plugins/<name>/` (project)\n".to_string(),
                 "- `~/.maestro/plugins/<name>/` (user)\n\n".to_string(),
-                "Each plugin may include `plugin.json`, `skills/`, `commands/`, hooks, and MCP configs.\n".to_string(),
+                "Each plugin may include `plugin.json`, `skills/`, `agents/`, `commands/`, hooks, and MCP configs.\n".to_string(),
             ]
             .concat();
         }
@@ -637,12 +656,14 @@ mod tests {
         let plugins_root = tmp.path().join("plugins");
         let plugin = plugins_root.join("full");
         fs::create_dir_all(plugin.join("skills")).unwrap();
+        fs::create_dir_all(plugin.join("agents")).unwrap();
         fs::create_dir_all(plugin.join("commands")).unwrap();
         write_file(&plugin.join("hooks/hooks.json"), "{}\n");
         write_file(&plugin.join(".mcp.json"), "{}\n");
 
         let registry = PluginRegistry::discover_from(&[(plugins_root, PluginOrigin::User)]);
         assert_eq!(registry.skill_dirs().len(), 1);
+        assert_eq!(registry.agent_dirs().len(), 1);
         assert_eq!(registry.command_dirs().len(), 1);
         assert_eq!(registry.mcp_paths().len(), 1);
         assert_eq!(registry.hook_configs().len(), 1);

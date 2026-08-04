@@ -91,7 +91,7 @@ pub mod inline;
 mod net_guard;
 mod notebook_edit;
 pub mod process_registry;
-mod process_utils;
+pub(crate) mod process_utils;
 mod registry;
 mod shell_env;
 mod status;

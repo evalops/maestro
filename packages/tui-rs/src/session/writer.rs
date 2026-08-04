@@ -337,6 +337,56 @@ impl SessionLock {
 
         Ok(Self { _guard: lock })
     }
+
+    /// Report whether any live holder — in this process or another one —
+    /// currently owns the advisory lock for `session_path`.
+    ///
+    /// Callers that need the lock should just call [`acquire`](Self::acquire)
+    /// and handle [`SessionWriteError::Locked`]. This is for the read-only
+    /// question "is someone still working on this session?", where taking the
+    /// lock would be wrong.
+    ///
+    /// Probes with a *shared* lock rather than an exclusive one so two
+    /// concurrent probes cannot report each other as a holder. The probe is
+    /// released before returning, so the only acquisition it can delay is one
+    /// that races inside this call.
+    ///
+    /// The lock is per open file description on both platforms
+    /// (`flock(2)` on Unix, `LockFileEx` on Windows), so a lease this same
+    /// process holds through a different [`SessionLock`] is reported as held,
+    /// and dropping this probe does not release it.
+    ///
+    /// A missing lock file — or a missing session directory — means nothing
+    /// can be holding the lock, and reports `false`.
+    pub(crate) fn is_held(session_path: &Path) -> Result<bool, SessionWriteError> {
+        let lock_path = lock_path_for(session_path);
+        let file = match OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(SessionWriteError::IoError(e)),
+        };
+
+        let lock = FileLock::new(file);
+        // Bound to a local so the guard (and the `Result` temporary holding
+        // it) is dropped at this statement, before `lock` itself goes out of
+        // scope at the end of the function; returning the `match` directly
+        // makes dropck reject the borrow.
+        let held = match lock.try_read() {
+            Ok(guard) => {
+                drop(guard);
+                false
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => true,
+            Err(e) => return Err(SessionWriteError::IoError(e)),
+        };
+        Ok(held)
+    }
 }
 
 /// Compute the sidecar lock path for a session file: `foo.jsonl` ->
@@ -469,6 +519,37 @@ mod tests {
 
         // Should have flushed now
         assert!(path.exists());
+    }
+
+    #[test]
+    fn is_held_reports_a_live_lock_without_taking_it() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.jsonl");
+
+        // Nothing has ever locked this session.
+        assert!(!SessionLock::is_held(&path).expect("probe an unlocked session"));
+
+        let lock = SessionLock::acquire(&path).expect("acquire the session lock");
+        assert!(SessionLock::is_held(&path).expect("probe a locked session"));
+        // The probe must not have released the live lock, and must not have
+        // taken one of its own.
+        assert!(SessionLock::is_held(&path).expect("probe a locked session again"));
+        assert!(matches!(
+            SessionLock::acquire(&path),
+            Err(SessionWriteError::Locked(_))
+        ));
+
+        drop(lock);
+        assert!(!SessionLock::is_held(&path).expect("probe a released session"));
+        SessionLock::acquire(&path).expect("reacquire after release");
+    }
+
+    #[test]
+    fn is_held_reports_false_for_a_session_directory_that_is_gone() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("missing").join("test.jsonl");
+
+        assert!(!SessionLock::is_held(&path).expect("probe a missing session directory"));
     }
 
     #[test]

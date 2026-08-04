@@ -1331,12 +1331,17 @@ impl ToolExecutor {
                                 }
                             },
                         );
+                        // Sub-operations of one tool call are timed as a
+                        // group by the caller, not individually, so this
+                        // reports 0 rather than inventing a per-operation
+                        // duration.
                         let _ = hooks.execute_post_tool_use(
                             &operation.tool_name,
                             &operation.call_id,
                             &operation.args,
                             &post_output,
                             !result.success,
+                            0,
                         );
                     }
                 }
@@ -3149,6 +3154,8 @@ impl ToolExecutor {
             }
             "list_subagents" => self.subagents.list().await,
             "get_subagent" => self.subagents.get(args),
+            "inspect_subagent" => self.subagents.inspect(args),
+            "cleanup_subagent" => self.subagents.cleanup(args),
             "wait_subagent" => self.subagents.wait(args, cancel.as_ref()).await,
             "resume_subagent" => {
                 self.subagents

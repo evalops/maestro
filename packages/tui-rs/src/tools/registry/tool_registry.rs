@@ -619,7 +619,10 @@ impl ToolRegistry {
                     "properties": {
                         "task": {"type": "string", "description": "The focused task for the child agent."},
                         "role": {"type": "string", "enum": ["explore", "plan", "code", "review"]},
+                        "profile": {"type": "string", "description": "Optional specialist profile from .maestro/agent-profiles or the user profile directory."},
                         "model": {"type": "string"},
+                        "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 86_400_000, "description": "Maximum child execution time in milliseconds. Defaults to two hours."},
+                        "max_tokens": {"type": "integer", "minimum": 1, "maximum": 131_072, "description": "Maximum output tokens for the child."},
                         "run_in_background": {"type": "boolean", "description": "Return immediately and let the child run asynchronously. Defaults to true."},
                         "isolation": {"type": "string", "enum": ["worktree", "shared"], "description": "Use an isolated git worktree (default) or the current workspace."},
                         "worktree_name": {"type": "string"}
@@ -659,6 +662,40 @@ impl ToolRegistry {
                     "required": ["subagent_id"]
                 })),
                 requires_approval: false,
+            },
+        );
+        tools.insert(
+            "inspect_subagent".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "inspect_subagent",
+                    "Inspect a child worktree's current status, diff summary, and reported files.",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "subagent_id": {"type": "string"}
+                    },
+                    "required": ["subagent_id"]
+                })),
+                requires_approval: false,
+            },
+        );
+        tools.insert(
+            "cleanup_subagent".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "cleanup_subagent",
+                    "Explicitly remove a terminal child worktree while retaining its durable record.",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "subagent_id": {"type": "string"}
+                    },
+                    "required": ["subagent_id"]
+                })),
+                requires_approval: true,
             },
         );
         tools.insert(
@@ -1370,7 +1407,7 @@ impl ToolRegistry {
     ///
     /// // Count tools
     /// let count = registry.tools().count();
-    /// assert_eq!(count, 48);  // includes search/parity tools + IDE stubs + goals + subagents + perf tools
+    /// assert_eq!(count, 50);  // includes search/parity tools + IDE stubs + goals + subagents + perf tools
     ///
     /// // List tool names
     /// for tool_def in registry.tools() {

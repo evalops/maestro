@@ -776,6 +776,10 @@ impl AppState {
         match msg {
             // Private durable provider state is not interactive UI state.
             FromAgent::ConversationSnapshot { .. } => {}
+            // Accounting only: reported so a caller metering model output can
+            // charge Codex-native operations, which never arrive as `ToolCall`.
+            // It carries no text to display and needs no response.
+            FromAgent::CodexNativeOperation { .. } => {}
             // Agent is ready with its model info
             FromAgent::Ready { model, provider } => {
                 self.model = Some(model);

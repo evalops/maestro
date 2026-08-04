@@ -52,6 +52,8 @@ pub struct SkillRegistry {
 }
 
 impl SkillRegistry {
+    const MAX_AUTO_ACTIVATED_SKILLS: usize = 3;
+
     /// Create a new empty registry
     #[must_use]
     pub fn new() -> Self {
@@ -154,6 +156,53 @@ impl SkillRegistry {
             .collect()
     }
 
+    /// Activate skills that explicitly advertise a matching trigger for a
+    /// model/user prompt. Skills can opt out with
+    /// `disable-model-invocation: true`; automatic activation is capped so a
+    /// broad prompt cannot inflate the system prompt without bound.
+    ///
+    /// The cap counts *new* activations. Already-active skills are dropped
+    /// before it is applied: they add nothing to the system prompt that is
+    /// not already there, and counting them would silently spend the
+    /// allowance on no-ops and discard a genuinely new match.
+    pub fn auto_activate_for_input(&mut self, input: &str) -> Vec<String> {
+        let mut candidates = self
+            .match_triggers(input)
+            .into_iter()
+            .filter(|skill| {
+                !skill.is_active()
+                    && !skill
+                        .definition
+                        .metadata
+                        .get("disable-model-invocation")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false)
+            })
+            .map(|skill| skill.definition.id.clone())
+            .collect::<Vec<_>>();
+        candidates.sort();
+        candidates.dedup();
+        candidates.truncate(Self::MAX_AUTO_ACTIVATED_SKILLS);
+
+        let mut activated = Vec::new();
+        for id in candidates {
+            let Some(skill) = self.skills.get_mut(&id) else {
+                continue;
+            };
+            skill.activate();
+            skill.record_usage();
+            self.events.push(SkillEvent::Activated {
+                skill_id: id.clone(),
+            });
+            self.events.push(SkillEvent::Used {
+                skill_id: id.clone(),
+                context: input.to_string(),
+            });
+            activated.push(id);
+        }
+        activated
+    }
+
     /// Validate a skill definition for common issues.
     /// Returns Ok(()) if valid, or Err with a description of the problem.
     pub fn validate_skill(skill: &SkillDefinition) -> Result<(), String> {
@@ -251,6 +300,79 @@ mod tests {
 
         let matches = registry.match_triggers("Hello world");
         assert_eq!(matches.len(), 0);
+    }
+
+    #[test]
+    fn auto_activation_uses_triggers_but_respects_model_invocation_disable() {
+        let mut registry = SkillRegistry::new();
+        registry.register(
+            SkillDefinition::new("allowed", "Allowed")
+                .with_triggers(vec!["parser".into()])
+                .with_system_prompt("Use parser conventions."),
+        );
+        let mut disabled =
+            SkillDefinition::new("disabled", "Disabled").with_triggers(vec!["parser".into()]);
+        disabled.metadata.insert(
+            "disable-model-invocation".to_string(),
+            serde_json::json!(true),
+        );
+        registry.register(disabled);
+
+        let activated = registry.auto_activate_for_input("Review the parser changes");
+
+        assert_eq!(activated, vec!["allowed"]);
+        assert!(registry.get("allowed").expect("skill exists").is_active());
+        assert!(!registry.get("disabled").expect("skill exists").is_active());
+        assert!(registry
+            .active_system_prompt_additions()
+            .contains("parser conventions"));
+    }
+
+    #[test]
+    fn auto_activation_spends_its_cap_on_skills_that_are_not_already_active() {
+        let mut registry = SkillRegistry::new();
+        // Sorted order puts the three active skills ahead of the new one, so
+        // a cap applied before the active filter would discard `parser-new`
+        // even though no new skill has been activated for this prompt.
+        for id in ["parser-a", "parser-b", "parser-c"] {
+            registry.register(SkillDefinition::new(id, id).with_triggers(vec!["parser".into()]));
+            registry.activate(id).expect("skill exists");
+        }
+        registry.register(
+            SkillDefinition::new("parser-new", "parser-new")
+                .with_triggers(vec!["parser".into()])
+                .with_system_prompt("Use parser conventions."),
+        );
+
+        let activated = registry.auto_activate_for_input("Review the parser changes");
+
+        assert_eq!(activated, vec!["parser-new"]);
+        assert!(registry
+            .get("parser-new")
+            .expect("skill exists")
+            .is_active());
+        assert!(registry
+            .active_system_prompt_additions()
+            .contains("parser conventions"));
+    }
+
+    #[test]
+    fn auto_activation_caps_the_number_of_newly_activated_skills() {
+        let mut registry = SkillRegistry::new();
+        for id in ["parser-a", "parser-b", "parser-c", "parser-d"] {
+            registry.register(SkillDefinition::new(id, id).with_triggers(vec!["parser".into()]));
+        }
+
+        let activated = registry.auto_activate_for_input("Review the parser changes");
+
+        assert_eq!(activated.len(), SkillRegistry::MAX_AUTO_ACTIVATED_SKILLS);
+        assert!(!registry.get("parser-d").expect("skill exists").is_active());
+        // The cap is per prompt, so the skill the cap held back can still be
+        // activated by the next one.
+        assert_eq!(
+            registry.auto_activate_for_input("Review the parser changes"),
+            vec!["parser-d"]
+        );
     }
 
     #[test]

@@ -42,7 +42,7 @@ maestro-ai.workspace = true
 maestro-execpolicy.workspace = true
 
 # HTTP client for AI APIs
-reqwest = { workspace = true, features = ["json", "stream", "rustls-tls"] }
+reqwest = { workspace = true, features = ["blocking", "json", "stream", "rustls-tls"] }
 rcgen.workspace = true
 rustls.workspace = true
 semver = "1"

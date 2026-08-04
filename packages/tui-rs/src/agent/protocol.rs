@@ -1180,6 +1180,20 @@ pub enum FromAgent {
         usage: Option<TokenUsage>,
     },
 
+    /// A Codex-native operation the model produced, reported for accounting.
+    ///
+    /// Codex runs `commandExecution` and `fileChange` itself rather than
+    /// through `item/tool/call`, so those never appear as [`Self::ToolCall`]
+    /// and a caller metering model output from this stream would miss them
+    /// entirely. Carries only what the budget needs; it is not an approval
+    /// request and needs no response.
+    CodexNativeOperation {
+        /// The app-server method, for diagnostics.
+        method: String,
+        /// Characters of model-generated payload in the operation.
+        output_chars: u64,
+    },
+
     /// Agent wants to call a tool
     ///
     /// The agent has requested to execute a tool (bash, read, write, etc.).
