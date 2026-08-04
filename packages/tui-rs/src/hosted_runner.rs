@@ -79,8 +79,111 @@ const MAX_EVENTS: usize = 1024;
 const MAX_RESPONSE_IDEMPOTENCY_RECORDS: usize = 4096;
 const RESPONSE_ACK_TIMEOUT: Duration = Duration::from_millis(500);
 
+pub(super) const HOSTED_RUNNER_IDENTITY_BINDING_PROTOCOL_VERSION: &str =
+    "evalops.maestro.hosted-runner-identity-binding.v1";
+const MAX_IDENTITY_BINDING_FAILURES: usize = 64;
+const MAX_IDENTITY_BINDING_FAILURE_ID_BYTES: usize = 256;
+
+fn bounded_identity_binding_id(value: &str) -> String {
+    if value.len() <= MAX_IDENTITY_BINDING_FAILURE_ID_BYTES {
+        return value.to_string();
+    }
+    let marker = "…";
+    let mut end = MAX_IDENTITY_BINDING_FAILURE_ID_BYTES.saturating_sub(marker.len());
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{}", &value[..end], marker)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RunnerSessionId(String);
+
+impl RunnerSessionId {
+    fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MaestroSessionId(String);
+
+impl MaestroSessionId {
+    fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone)]
+struct HostedRunnerBinding {
+    runner_session_id: RunnerSessionId,
+    maestro_session_id: MaestroSessionId,
+}
+
+impl HostedRunnerBinding {
+    fn from_config(
+        config: &HostedRunnerConfig,
+        restore_manifest: Option<&SnapshotManifest>,
+    ) -> Self {
+        let maestro_session_id = config
+            .maestro_session_id
+            .clone()
+            .or_else(|| restore_manifest.map(|manifest| manifest.maestro_session_id.clone()))
+            .unwrap_or_else(|| config.runner_session_id.clone());
+        Self {
+            runner_session_id: RunnerSessionId::new(config.runner_session_id.clone()),
+            maestro_session_id: MaestroSessionId::new(maestro_session_id),
+        }
+    }
+
+    fn matches(&self, requested: &str) -> bool {
+        requested == self.runner_session_id.as_str()
+            || requested == self.maestro_session_id.as_str()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+pub(super) struct IdentityBindingFailure {
+    pub(super) protocol_version: String,
+    pub(super) operation: String,
+    pub(super) requested_session_id: String,
+    pub(super) expected_runner_session_id: String,
+    pub(super) bound_maestro_session_id: String,
+    pub(super) runtime_generation: u64,
+}
+
+impl IdentityBindingFailure {
+    fn new(
+        binding: &HostedRunnerBinding,
+        operation: &'static str,
+        requested_session_id: &str,
+        runtime_generation: u64,
+    ) -> Self {
+        Self {
+            protocol_version: HOSTED_RUNNER_IDENTITY_BINDING_PROTOCOL_VERSION.to_string(),
+            operation: operation.to_string(),
+            requested_session_id: bounded_identity_binding_id(requested_session_id),
+            expected_runner_session_id: binding.runner_session_id.as_str().to_string(),
+            bound_maestro_session_id: binding.maestro_session_id.as_str().to_string(),
+            runtime_generation,
+        }
+    }
+
+    fn details(&self) -> serde_json::Value {
+        json!({ "identity_binding": self })
+    }
+}
 #[derive(Clone)]
 struct SharedRunner {
+    binding: HostedRunnerBinding,
     config: Arc<HostedRunnerConfig>,
     state: Arc<Mutex<RunnerState>>,
     events: broadcast::Sender<StreamEnvelope>,
@@ -104,6 +207,7 @@ struct RunnerState {
     last_status: Option<String>,
     last_error: Option<String>,
     last_error_type: Option<String>,
+    identity_binding_failures: VecDeque<IdentityBindingFailure>,
     restored_snapshot: Option<RuntimeSnapshot>,
     controller_connection_id: Option<String>,
     controller_stream_cancellation: CancellationToken,
@@ -1290,6 +1394,7 @@ struct HostedError {
     status: u16,
     code: HostedRunnerErrorCode,
     message: String,
+    details: Option<serde_json::Value>,
 }
 
 type HostedResult<T> = Result<T, HostedError>;
@@ -1707,7 +1812,13 @@ impl HostedError {
             status: code.http_status(),
             code,
             message: message.into(),
+            details: None,
         }
+    }
+
+    fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
     }
 }
 
@@ -1994,7 +2105,11 @@ enum ResponseBody {
     Sse {
         replay: Vec<StreamEnvelope>,
         rx: broadcast::Receiver<StreamEnvelope>,
-        shared: SharedRunner,
+        // Keep the common JSON response representation small. `SharedRunner`
+        // owns the runtime state and event-pump handles, so storing it inline
+        // makes this enum unnecessarily large even though only SSE responses
+        // need it.
+        shared: Box<SharedRunner>,
         filter: Box<TranscriptStreamFilter>,
         controller_authorization: Option<ControllerStreamAuthorization>,
     },
@@ -2300,7 +2415,12 @@ async fn route_request_inner(
             if path.starts_with("/api/headless/threads/") && path.ends_with("/events") =>
         {
             let thread_id = thread_id_from_path(path, "/events")?;
-            handle_events(shared, thread_id, request.query)
+            handle_events(
+                shared,
+                thread_id,
+                request.query,
+                EventsRouteIdentity::Thread,
+            )
         }
         ("POST", path)
             if path.starts_with("/api/headless/threads/") && path.ends_with("/turns") =>
@@ -2327,7 +2447,12 @@ async fn route_request_inner(
             if path.starts_with("/api/headless/sessions/") && path.ends_with("/events") =>
         {
             let session_id = session_id_from_path(path, "/events")?;
-            handle_events(shared, session_id, request.query)
+            handle_events(
+                shared,
+                session_id,
+                request.query,
+                EventsRouteIdentity::Session,
+            )
         }
         ("POST", path)
             if path.starts_with("/api/headless/sessions/")
@@ -2528,7 +2653,7 @@ fn handle_connection_create(
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    ensure_session_id(&state, input.session_id.as_deref())?;
+    ensure_connection_session_id(&shared, &mut state, input.session_id.as_deref())?;
     let connection_id = input
         .connection_id
         .filter(|value| !value.trim().is_empty())
@@ -2593,7 +2718,7 @@ fn handle_subscribe(
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    ensure_session_id(&state, Some(session_id))?;
+    ensure_session_id(&shared.binding, Some(session_id))?;
     let role = input.role.unwrap_or(ConnectionRole::Controller);
     if !crate::headless::messages::client_protocol_version_is_supported(
         input.protocol_version.as_deref(),
@@ -2726,7 +2851,7 @@ fn handle_state(shared: SharedRunner, session_id: &str) -> HostedResult<Response
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    ensure_session_id(&state, Some(session_id))?;
+    ensure_session_id(&shared.binding, Some(session_id))?;
     json_response(200, shared.public_snapshot(&state))
 }
 
@@ -2735,7 +2860,7 @@ fn handle_thread_state(shared: SharedRunner, thread_id: &str) -> HostedResult<Re
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    ensure_session_id(&state, Some(thread_id))?;
+    ensure_thread_id(&state, Some(thread_id))?;
     json_response(
         200,
         json!({
@@ -2774,7 +2899,7 @@ async fn handle_append_turn(
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        ensure_session_id(&state, Some(thread_id))?;
+        ensure_thread_id(&state, Some(thread_id))?;
         let connection_id = resolve_authorized_connection_id(
             &state,
             connection_header_id,
@@ -2903,16 +3028,26 @@ fn require_runtime_generation(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+enum EventsRouteIdentity {
+    Thread,
+    Session,
+}
+
 fn handle_events(
     shared: SharedRunner,
     session_id: &str,
     query: HashMap<String, String>,
+    identity: EventsRouteIdentity,
 ) -> HostedResult<ResponseBody> {
     let state = shared
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    ensure_session_id(&state, Some(session_id))?;
+    match identity {
+        EventsRouteIdentity::Thread => ensure_thread_id(&state, Some(session_id))?,
+        EventsRouteIdentity::Session => ensure_session_id(&shared.binding, Some(session_id))?,
+    }
     let (grade, controller_authorization) = match query.get("subscriptionId") {
         Some(subscription_id) => {
             let subscription = state.subscriptions.get(subscription_id).ok_or_else(|| {
@@ -2964,7 +3099,7 @@ fn handle_events(
         return Ok(ResponseBody::Sse {
             replay,
             rx,
-            shared,
+            shared: Box::new(shared),
             filter: Box::new(TranscriptStreamFilter::new(grade, 0)),
             controller_authorization,
         });
@@ -2985,7 +3120,7 @@ fn handle_events(
     Ok(ResponseBody::Sse {
         replay,
         rx,
-        shared,
+        shared: Box::new(shared),
         filter: Box::new(TranscriptStreamFilter::new(grade, cursor)),
         controller_authorization,
     })
@@ -3039,7 +3174,7 @@ async fn handle_message_inner(
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        ensure_session_id(&state, Some(session_id))?;
+        ensure_session_id(&shared.binding, Some(session_id))?;
         let resolved_connection_id = resolve_authorized_connection_id(
             &state,
             connection_header_id.clone(),
@@ -3318,7 +3453,7 @@ async fn handle_message_inner(
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        ensure_session_id(&state, Some(session_id))?;
+        ensure_session_id(&shared.binding, Some(session_id))?;
         let resolved_connection_id = resolve_authorized_connection_id(
             &state,
             Some(context.connection_id.clone()),
@@ -3554,7 +3689,7 @@ fn handle_heartbeat(
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    ensure_session_id(&state, Some(session_id))?;
+    ensure_session_id(&shared.binding, Some(session_id))?;
     let connection_id = resolve_authorized_connection_id(
         &state,
         input.connection_id,
@@ -3593,7 +3728,7 @@ fn handle_disconnect(
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    ensure_session_id(&state, Some(session_id))?;
+    ensure_session_id(&shared.binding, Some(session_id))?;
     let connection_id = resolve_disconnect_connection_id(
         &state,
         input.connection_id,
@@ -4103,8 +4238,37 @@ fn search_workspace_files(
     results
 }
 
-fn ensure_session_id(state: &RunnerState, requested: Option<&str>) -> HostedResult<()> {
-    if requested.is_some_and(|session_id| session_id != state.session_id) {
+fn ensure_connection_session_id(
+    shared: &SharedRunner,
+    state: &mut RunnerState,
+    requested: Option<&str>,
+) -> HostedResult<()> {
+    let Some(requested) = requested else {
+        return Ok(());
+    };
+    if shared.binding.matches(requested) {
+        return Ok(());
+    }
+    let failure = shared.record_identity_failure(state, "headless_connection", requested)?;
+    Err(HostedError::new(
+        HostedRunnerErrorCode::StaleSession,
+        "Headless session binding does not belong to this hosted runner",
+    )
+    .with_details(failure.details()))
+}
+
+fn ensure_thread_id(state: &RunnerState, requested: Option<&str>) -> HostedResult<()> {
+    if requested.is_some_and(|thread_id| thread_id != state.session_id) {
+        return Err(HostedError::new(
+            HostedRunnerErrorCode::StaleSession,
+            "Headless thread not found",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_session_id(binding: &HostedRunnerBinding, requested: Option<&str>) -> HostedResult<()> {
+    if requested.is_some_and(|session_id| !binding.matches(session_id)) {
         return Err(HostedError::new(
             HostedRunnerErrorCode::StaleSession,
             "Headless session not found",
@@ -4566,12 +4730,16 @@ where
     S: AsyncWrite + Unpin,
 {
     let code = error.code.as_str();
-    let body = serde_json::to_vec(&json!({
+    let mut json_body = json!({
         "error": error.message,
         "error_type": code,
         "code": code,
-    }))
-    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    });
+    if let Some(details) = error.details {
+        json_body["details"] = details;
+    }
+    let body = serde_json::to_vec(&json_body)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     write_response(socket, error.status, "application/json", &body).await
 }
 

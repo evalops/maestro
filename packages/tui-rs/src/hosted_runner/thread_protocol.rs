@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    response_ack_request_id, FromAgentMessage, ServerRequestType, StreamEnvelope, ToAgentMessage,
+    response_ack_request_id, FromAgentMessage, IdentityBindingFailure, ServerRequestType,
+    StreamEnvelope, ToAgentMessage,
 };
 
 pub(super) const THREAD_PROTOCOL_VERSION: &str = "evalops.maestro.thread.v1";
@@ -298,6 +299,8 @@ struct DurableThreadDocument {
     turns: Vec<ThreadTurnRecord>,
     events: Vec<StreamEnvelope>,
     #[serde(default)]
+    identity_binding_failures: Vec<IdentityBindingFailure>,
+    #[serde(default)]
     response_idempotency_keys: Vec<String>,
     #[serde(default)]
     response_idempotency_digests: HashMap<String, String>,
@@ -337,6 +340,7 @@ pub(super) struct LoadedThreadJournal {
     pub(super) state: ThreadProtocolState,
     pub(super) cursor: u64,
     pub(super) events: VecDeque<StreamEnvelope>,
+    pub(super) identity_binding_failures: VecDeque<IdentityBindingFailure>,
     pub(super) response_idempotency_keys: HashSet<String>,
     pub(super) response_idempotency_digests: HashMap<String, String>,
     pub(super) response_request_owners: HashMap<String, String>,
@@ -371,6 +375,7 @@ impl ThreadJournal {
                 state: ThreadProtocolState::new(thread_id.to_string()),
                 cursor: 0,
                 events: VecDeque::new(),
+                identity_binding_failures: VecDeque::new(),
                 response_idempotency_keys: HashSet::new(),
                 response_idempotency_digests: HashMap::new(),
                 response_request_owners: HashMap::new(),
@@ -404,6 +409,7 @@ impl ThreadJournal {
             state: ThreadProtocolState::restore(thread_id.to_string(), document.turns),
             cursor: document.cursor,
             events: document.events.into(),
+            identity_binding_failures: document.identity_binding_failures.into(),
             response_idempotency_keys: document.response_idempotency_keys.into_iter().collect(),
             response_idempotency_digests: document.response_idempotency_digests,
             response_request_owners,
@@ -420,6 +426,7 @@ impl ThreadJournal {
         cursor: u64,
         events: &VecDeque<StreamEnvelope>,
         response_idempotency: ResponseIdempotencyView<'_>,
+        identity_binding_failures: &VecDeque<IdentityBindingFailure>,
     ) -> io::Result<()> {
         let mut response_idempotency_keys = response_idempotency
             .keys
@@ -434,6 +441,7 @@ impl ThreadJournal {
             cursor,
             turns: state.turns.clone(),
             events: events.iter().cloned().collect(),
+            identity_binding_failures: identity_binding_failures.iter().cloned().collect(),
             response_idempotency_keys,
             response_idempotency_digests: response_idempotency.digests.clone(),
             response_request_owners: response_idempotency.request_owners.clone(),
