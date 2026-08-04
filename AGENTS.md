@@ -43,7 +43,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all --check
 ```
 
-`scripts/check-pr.sh [crate]` runs the local PR gates (fmt, clippy `-D warnings`, tests) in one command; pass a crate name to scope clippy and tests, or no argument for workspace-wide.
+`scripts/check-pr.sh [crate]` runs the local PR gates (fmt, clippy `-D warnings`, tests) in one command; pass a crate name to scope the tests, or no argument for workspace-wide. Clippy always runs workspace-wide regardless of scoping — CI's `rust-validation` gates on `cargo clippy --workspace`, and crate-scoped clippy misses cross-crate breaks. A PR verification section that claims clippy passed means the workspace command.
 
 The root `Cargo.lock` is authoritative. Do not add nested Cargo lockfiles or crate-local target directories. New dependencies shared by multiple crates belong in `[workspace.dependencies]`.
 
