@@ -1014,11 +1014,7 @@ impl SubagentManager {
             }
 
             match event {
-                FromAgent::ConversationSnapshot { .. } => {
-                    if terminal_seen {
-                        break;
-                    }
-                }
+                FromAgent::ConversationSnapshot { .. } if terminal_seen => break,
                 FromAgent::ResponseChunk {
                     content,
                     is_thinking: false,
@@ -1052,6 +1048,7 @@ impl SubagentManager {
                         false,
                         Some(ToolResult::failure(reason.clone())),
                         crate::agent::ExecutionSource::Native,
+                        None,
                     ));
                     run_error = Some(reason);
                     agent.cancel();

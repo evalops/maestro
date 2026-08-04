@@ -1446,6 +1446,198 @@ fn drain_available_agent_messages_skips_supervisor_lifecycle_events() {
     assert!(supervisor.poll().is_none());
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bounded_drain_waits_for_a_delayed_response_acknowledgement() {
+    let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
+    assert!(supervisor.register_response_acknowledgement("request-delayed"));
+    let event_tx = supervisor.event_tx.clone();
+    let supervisor = Arc::new(std::sync::Mutex::new(supervisor));
+    let sender = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(20));
+        event_tx
+            .send(SupervisorEvent::ResponseAccepted {
+                request_id: "request-delayed".to_string(),
+            })
+            .expect("delayed response acknowledgement");
+    });
+
+    let (messages, acknowledgement) = AgentSupervisor::wait_for_response_acknowledgement_async(
+        Arc::clone(&supervisor),
+        "request-delayed".to_string(),
+        Duration::from_millis(200),
+    )
+    .await;
+
+    sender.join().expect("acknowledgement sender");
+    assert_eq!(acknowledgement, ResponseAcknowledgement::Consumed);
+    assert!(messages.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_gated_response_stays_queued_instead_of_failing_and_dispatching_twice() {
+    let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
+    assert!(supervisor.register_response_acknowledgement("gated-response"));
+    let event_tx = supervisor.event_tx.clone();
+    let supervisor = Arc::new(std::sync::Mutex::new(supervisor));
+    let executions = Arc::new(AtomicUsize::new(0));
+    let delayed_executions = Arc::clone(&executions);
+    let sender = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(650));
+        delayed_executions.fetch_add(1, Ordering::SeqCst);
+        event_tx
+            .send(SupervisorEvent::ResponseAccepted {
+                request_id: "gated-response".to_string(),
+            })
+            .expect("late native consumption acknowledgement");
+    });
+
+    let (messages, acknowledgement) = AgentSupervisor::wait_for_response_acknowledgement_async(
+        Arc::clone(&supervisor),
+        "gated-response".to_string(),
+        Duration::from_millis(500),
+    )
+    .await;
+
+    assert_eq!(acknowledgement, ResponseAcknowledgement::Queued);
+    assert!(messages.is_empty());
+    sender.join().expect("delayed gated response");
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    let (_, acknowledgement) = supervisor
+        .lock()
+        .expect("supervisor")
+        .wait_for_response_acknowledgement("gated-response");
+    assert_eq!(acknowledgement, ResponseAcknowledgement::Consumed);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_delayed_ack_waiters_do_not_starve_reader_progress() {
+    let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
+    assert!(supervisor.register_response_acknowledgement("concurrent-a"));
+    assert!(supervisor.register_response_acknowledgement("concurrent-b"));
+    let event_tx = supervisor.event_tx.clone();
+    let supervisor = Arc::new(std::sync::Mutex::new(supervisor));
+    let waiter_a = tokio::spawn(AgentSupervisor::wait_for_response_acknowledgement_async(
+        Arc::clone(&supervisor),
+        "concurrent-a".to_string(),
+        Duration::from_millis(300),
+    ));
+    let waiter_b = tokio::spawn(AgentSupervisor::wait_for_response_acknowledgement_async(
+        Arc::clone(&supervisor),
+        "concurrent-b".to_string(),
+        Duration::from_millis(300),
+    ));
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    event_tx
+        .send(SupervisorEvent::ResponseAccepted {
+            request_id: "concurrent-b".to_string(),
+        })
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    event_tx
+        .send(SupervisorEvent::ResponseAccepted {
+            request_id: "concurrent-a".to_string(),
+        })
+        .unwrap();
+
+    assert_eq!(waiter_a.await.unwrap().1, ResponseAcknowledgement::Consumed);
+    assert_eq!(waiter_b.await.unwrap().1, ResponseAcknowledgement::Consumed);
+}
+
+#[test]
+fn out_of_order_response_acknowledgements_are_buffered_by_request_id() {
+    let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
+    assert!(supervisor.register_response_acknowledgement("request-a"));
+    assert!(supervisor.register_response_acknowledgement("request-b"));
+    supervisor
+        .event_tx
+        .send(SupervisorEvent::ResponseAccepted {
+            request_id: "request-b".to_string(),
+        })
+        .expect("B acknowledgement");
+    supervisor
+        .event_tx
+        .send(SupervisorEvent::ResponseAccepted {
+            request_id: "request-a".to_string(),
+        })
+        .expect("A acknowledgement");
+
+    let (_, acknowledgement_a) =
+        supervisor.drain_agent_messages_until_ack(Some("request-a"), Duration::from_millis(20));
+    let (_, acknowledgement_b) =
+        supervisor.drain_agent_messages_until_ack(Some("request-b"), Duration::from_millis(20));
+
+    assert_eq!(acknowledgement_a, ResponseAcknowledgement::Consumed);
+    assert_eq!(acknowledgement_b, ResponseAcknowledgement::Consumed);
+    assert!(supervisor.pending_response_acknowledgements.is_empty());
+}
+
+#[test]
+fn acknowledgement_caps_drop_unowned_ids_without_evicting_expected_ownership() {
+    let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
+    for index in 0..MAX_RESPONSE_ACKNOWLEDGEMENTS {
+        assert!(supervisor.register_response_acknowledgement(&format!("owned-{index}")));
+    }
+    assert!(!supervisor.register_response_acknowledgement("owned-overflow"));
+    for index in 0..(MAX_RESPONSE_ACKNOWLEDGEMENTS * 2) {
+        supervisor
+            .event_tx
+            .send(SupervisorEvent::ResponseAccepted {
+                request_id: format!("unowned-{index}"),
+            })
+            .unwrap();
+    }
+    let _ = supervisor.drain_available_agent_messages();
+    assert!(supervisor.pending_response_acknowledgements.is_empty());
+    assert_eq!(
+        supervisor.expected_response_acknowledgements.len(),
+        MAX_RESPONSE_ACKNOWLEDGEMENTS
+    );
+
+    supervisor
+        .event_tx
+        .send(SupervisorEvent::ResponseAccepted {
+            request_id: "owned-0".to_string(),
+        })
+        .unwrap();
+    let _ = supervisor.drain_available_agent_messages();
+    assert!(supervisor.has_response_acknowledgement("owned-0"));
+    assert_eq!(
+        supervisor.expected_response_acknowledgements.len(),
+        MAX_RESPONSE_ACKNOWLEDGEMENTS
+    );
+}
+
+#[test]
+fn stale_generation_cleanup_preserves_reused_request_acknowledgement() {
+    let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
+    let stale_generation = supervisor.transport_generation();
+    assert!(supervisor.register_response_acknowledgement("reused-request"));
+    for index in 1..MAX_RESPONSE_ACKNOWLEDGEMENTS {
+        assert!(supervisor.register_response_acknowledgement(&format!("owned-{index}")));
+    }
+
+    supervisor.transport_generation += 1;
+    assert!(supervisor.register_response_acknowledgement("reused-request"));
+    supervisor.discard_response_acknowledgement("reused-request", stale_generation);
+    assert_eq!(
+        supervisor.response_acknowledgement_count(),
+        MAX_RESPONSE_ACKNOWLEDGEMENTS
+    );
+
+    supervisor
+        .event_tx
+        .send(SupervisorEvent::ResponseAccepted {
+            request_id: "reused-request".to_string(),
+        })
+        .unwrap();
+    let _ = supervisor.drain_available_agent_messages();
+    assert!(supervisor.take_response_acknowledgement("reused-request"));
+    assert_eq!(
+        supervisor.response_acknowledgement_count(),
+        MAX_RESPONSE_ACKNOWLEDGEMENTS - 1
+    );
+}
+
 #[cfg(unix)]
 fn create_test_headless_script(dir: &Path) -> std::io::Result<std::path::PathBuf> {
     let script_path = dir.join("fake-maestro-headless.sh");
@@ -1469,6 +1661,82 @@ done
     permissions.set_mode(0o755);
     fs::set_permissions(&script_path, permissions)?;
     Ok(script_path)
+}
+
+#[cfg(unix)]
+fn create_delayed_ack_headless_script(dir: &Path) -> std::io::Result<std::path::PathBuf> {
+    let script_path = dir.join("fake-maestro-delayed-ack.sh");
+    fs::write(
+        &script_path,
+        r#"#!/bin/sh
+log_file="${MAESTRO_TEST_LOG:-}"
+: > "$log_file"
+printf '{"type":"ready","model":"test","provider":"test"}\n'
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$log_file"
+  case "$line" in
+    *'"type":"tool_response"'*)
+      sleep 0.65
+      printf '{"type":"response_accepted","request_id":"gated-call"}\n'
+      ;;
+  esac
+done
+"#,
+    )?;
+    let mut permissions = fs::metadata(&script_path)?.permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&script_path, permissions)?;
+    Ok(script_path)
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_native_tool_consumption_is_queued_success_with_one_dispatch() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let script_path = create_delayed_ack_headless_script(temp.path()).expect("script");
+    let log_path = temp.path().join("messages.log");
+    let mut config = SupervisorConfig::default();
+    config.transport.cli_path = script_path.to_string_lossy().into_owned();
+    config.transport.env.push((
+        "MAESTRO_TEST_LOG".to_string(),
+        log_path.display().to_string(),
+    ));
+    config.auto_reconnect = false;
+    let mut supervisor = AgentSupervisor::new(config);
+    supervisor.connect().await.expect("connect");
+    let _ = supervisor.recv().await.expect("connected");
+    let _ = supervisor.recv().await.expect("healthy");
+    let _ = supervisor.recv().await.expect("ready");
+
+    let (_messages, acknowledgement) = supervisor
+        .send_and_drain_agent_messages_with_ack(ToAgentMessage::ToolResponse {
+            call_id: "gated-call".to_string(),
+            tool_execution_id: Some("gated-execution".to_string()),
+            approved: true,
+            result: None,
+        })
+        .expect("queue gated tool response");
+
+    assert_eq!(acknowledgement, ResponseAcknowledgement::Queued);
+    let supervisor = Arc::new(std::sync::Mutex::new(supervisor));
+    let (_messages, acknowledgement) = AgentSupervisor::wait_for_response_acknowledgement_async(
+        Arc::clone(&supervisor),
+        "gated-call".to_string(),
+        Duration::from_millis(800),
+    )
+    .await;
+    assert_eq!(acknowledgement, ResponseAcknowledgement::Consumed);
+    assert_eq!(
+        fs::read_to_string(log_path)
+            .expect("message log")
+            .lines()
+            .filter(|line| line.contains("\"type\":\"tool_response\""))
+            .count(),
+        1,
+        "the queued response must not be dispatched a second time while awaiting consumption"
+    );
+    supervisor.lock().expect("supervisor").shutdown();
+    tokio::time::sleep(Duration::from_millis(50)).await;
 }
 
 #[cfg(unix)]

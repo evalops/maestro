@@ -793,6 +793,7 @@ pub(crate) async fn run_a2a_native_turn(
                         true,
                         Some(result),
                         ExecutionSource::Native,
+                        None,
                     ));
                     if !success {
                         finish_tool_metadata(&mut output.tools, &call_id, false);
@@ -803,6 +804,7 @@ pub(crate) async fn run_a2a_native_turn(
                         auto_approve_tools,
                         None,
                         ExecutionSource::RemoteClient,
+                        None,
                     ));
                     if !auto_approve_tools {
                         finish_tool_metadata(&mut output.tools, &call_id, false);

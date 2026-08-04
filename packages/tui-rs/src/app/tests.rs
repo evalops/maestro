@@ -3329,7 +3329,7 @@ async fn guardian_auto_approve_executes_without_modal() {
     assert_eq!(app.active_modal, ActiveModal::None);
     let exec = app.tool_history.get("call-g1").expect("history entry");
     assert_eq!(exec.approved, Some(true));
-    let (relayed_call_id, relayed_approved, relayed_result, relayed_source) =
+    let (relayed_call_id, relayed_approved, relayed_result, relayed_source, _consumed) =
         rx.try_recv().expect("approval relayed to the native agent");
     assert_eq!(relayed_call_id, "call-g1");
     assert!(relayed_approved);
@@ -3954,7 +3954,7 @@ async fn deny_never_executes_and_relays_the_denial_to_the_agent() {
     .await
     .expect("handle deny");
 
-    let (call_id, approved, result, _source) = rx
+    let (call_id, approved, result, _source, _consumed) = rx
         .try_recv()
         .expect("deny must send a response back to the native agent");
     assert_eq!(call_id, "call-3");

@@ -1813,6 +1813,7 @@ rl.on("line", (line) => {
             true,
             None,
             ExecutionSource::RemoteClient,
+            None,
         ))
         .expect("approval response should send");
     let result = run.await.expect("headless run should join");
@@ -2057,6 +2058,7 @@ rl.on("line", (line) => {
             true,
             None,
             ExecutionSource::RemoteClient,
+            None,
         ))
         .expect("approval response should send");
     let result = run.await.expect("headless run should join");

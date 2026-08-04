@@ -10,7 +10,9 @@ use fd_lock::RwLock as FileLock;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{FromAgentMessage, ServerRequestType, StreamEnvelope, ToAgentMessage};
+use super::{
+    response_ack_request_id, FromAgentMessage, ServerRequestType, StreamEnvelope, ToAgentMessage,
+};
 
 pub(super) const THREAD_PROTOCOL_VERSION: &str = "evalops.maestro.thread.v1";
 const MAX_TURN_ID_BYTES: usize = 128;
@@ -300,6 +302,8 @@ struct DurableThreadDocument {
     #[serde(default)]
     response_idempotency_digests: HashMap<String, String>,
     #[serde(default)]
+    response_request_owners: HashMap<String, String>,
+    #[serde(default)]
     pending_response_idempotency: HashMap<String, ToAgentMessage>,
     #[serde(default)]
     response_idempotency_order: Vec<String>,
@@ -335,6 +339,7 @@ pub(super) struct LoadedThreadJournal {
     pub(super) events: VecDeque<StreamEnvelope>,
     pub(super) response_idempotency_keys: HashSet<String>,
     pub(super) response_idempotency_digests: HashMap<String, String>,
+    pub(super) response_request_owners: HashMap<String, String>,
     pub(super) pending_response_idempotency: HashMap<String, ToAgentMessage>,
     pub(super) response_idempotency_order: VecDeque<String>,
     pub(super) pending_response_idempotency_order: VecDeque<String>,
@@ -343,6 +348,7 @@ pub(super) struct LoadedThreadJournal {
 pub(super) struct ResponseIdempotencyView<'a> {
     pub(super) keys: &'a HashSet<String>,
     pub(super) digests: &'a HashMap<String, String>,
+    pub(super) request_owners: &'a HashMap<String, String>,
     pub(super) pending: &'a HashMap<String, ToAgentMessage>,
     pub(super) order: &'a VecDeque<String>,
     pub(super) pending_order: &'a VecDeque<String>,
@@ -367,6 +373,7 @@ impl ThreadJournal {
                 events: VecDeque::new(),
                 response_idempotency_keys: HashSet::new(),
                 response_idempotency_digests: HashMap::new(),
+                response_request_owners: HashMap::new(),
                 pending_response_idempotency: HashMap::new(),
                 response_idempotency_order: VecDeque::new(),
                 pending_response_idempotency_order: VecDeque::new(),
@@ -384,6 +391,14 @@ impl ThreadJournal {
                 "durable thread journal is owned by a newer runtime generation",
             ));
         }
+        let mut response_request_owners = document.response_request_owners;
+        for (key, message) in &document.pending_response_idempotency {
+            if let Some(request_id) = response_ack_request_id(message) {
+                response_request_owners
+                    .entry(request_id.to_string())
+                    .or_insert_with(|| key.clone());
+            }
+        }
         Ok(LoadedThreadJournal {
             journal,
             state: ThreadProtocolState::restore(thread_id.to_string(), document.turns),
@@ -391,6 +406,7 @@ impl ThreadJournal {
             events: document.events.into(),
             response_idempotency_keys: document.response_idempotency_keys.into_iter().collect(),
             response_idempotency_digests: document.response_idempotency_digests,
+            response_request_owners,
             pending_response_idempotency: document.pending_response_idempotency,
             response_idempotency_order: document.response_idempotency_order.into(),
             pending_response_idempotency_order: document.pending_response_idempotency_order.into(),
@@ -420,6 +436,7 @@ impl ThreadJournal {
             events: events.iter().cloned().collect(),
             response_idempotency_keys,
             response_idempotency_digests: response_idempotency.digests.clone(),
+            response_request_owners: response_idempotency.request_owners.clone(),
             pending_response_idempotency: response_idempotency.pending.clone(),
             response_idempotency_order: response_idempotency.order.iter().cloned().collect(),
             pending_response_idempotency_order: response_idempotency

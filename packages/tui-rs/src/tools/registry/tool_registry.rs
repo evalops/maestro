@@ -443,11 +443,7 @@ impl ToolRegistry {
                         "query": {"type": "string", "description": "Words describing the capability to find"},
                         "names": {"type": "array", "items": {"type": "string"}, "description": "Exact tool names to activate"},
                         "maxResults": {"type": "number", "description": "Maximum matches to activate (default 8)"}
-                    },
-                    "anyOf": [
-                        {"required": ["query"]},
-                        {"required": ["names"]}
-                    ]
+                    }
                 })),
                 requires_approval: false,
             },

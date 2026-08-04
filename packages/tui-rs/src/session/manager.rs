@@ -777,18 +777,26 @@ impl SessionManager {
     /// for why removing it while still held would be unsafe).
     fn remove_session_and_checkpoints(&self, session: &SessionInfo) -> std::io::Result<()> {
         let store = crate::checkpoints::CheckpointStore::new(&self.sessions_dir, &session.id);
-        let checkpoint_root = store.root();
-        let legacy_checkpoint_root = store.legacy_root().to_path_buf();
+        let mut checkpoint_roots = vec![store.root().to_path_buf()];
+        let legacy_root_is_exclusive =
+            !self.legacy_checkpoint_root_has_other_live_owner(session, store.legacy_root())?;
+        if legacy_root_is_exclusive {
+            checkpoint_roots.push(store.legacy_root().to_path_buf());
+        }
         let staging_dir = Self::prune_staging_dir(&self.sessions_dir);
         // `fs::rename`'s target parent must already exist; `create_dir_all`
         // is a no-op (not an error) if another prune already created it.
         fs::create_dir_all(&staging_dir)?;
-        let staged = staging_dir.join(
-            checkpoint_root
-                .file_name()
-                .map(std::ffi::OsStr::to_os_string)
-                .unwrap_or_default(),
-        );
+        let staged_roots = checkpoint_roots
+            .iter()
+            .map(|root| {
+                staging_dir.join(
+                    root.file_name()
+                        .map(std::ffi::OsStr::to_os_string)
+                        .unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>();
 
         // Hold a lock on the staging entry itself -- the same `SessionLock`
         // mechanism used for a session's own sidecar lock, reused here
@@ -801,17 +809,22 @@ impl SessionManager {
         // lock prevents two transcript prunes, while this separate lock
         // prevents a concurrent sweep from mutating the checkpoint
         // transaction underneath this process.
-        let staging_lock = SessionLock::acquire(&Self::prune_staging_lock_key(&staged))
-            .map_err(|error| std::io::Error::other(format!("lock checkpoint staging: {error}")))?;
+        let mut staging_locks = Vec::with_capacity(staged_roots.len());
+        for staged in &staged_roots {
+            staging_locks.push(
+                SessionLock::acquire(&Self::prune_staging_lock_key(staged)).map_err(|error| {
+                    std::io::Error::other(format!("lock checkpoint staging: {error}"))
+                })?,
+            );
+        }
 
         // A previous interrupted prune may have left older checkpoints in
         // staging while a resumed session created newer checkpoints at the
         // live root. Merge retained history back before staging this
         // transaction; deleting it here would discard rewind points before
         // transcript deletion commits.
-        if let Err(error) = Self::restore_retained_checkpoint_history(&staged, checkpoint_root) {
-            drop(staging_lock);
-            return Err(error);
+        for (staged, checkpoint_root) in staged_roots.iter().zip(&checkpoint_roots) {
+            Self::restore_retained_checkpoint_history(staged, checkpoint_root)?;
         }
 
         // Stage the checkpoint directory aside (a same-filesystem rename,
@@ -822,38 +835,59 @@ impl SessionManager {
         // rather than leaving the session's rewind history permanently
         // gone while the session itself (per its surviving `.jsonl`) stays
         // listed.
-        let staged_exists = match fs::rename(checkpoint_root, &staged) {
-            Ok(()) => true,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-            Err(e) => {
-                drop(staging_lock);
-                return Err(e);
+        let mut staged_exists = vec![false; checkpoint_roots.len()];
+        for (index, (checkpoint_root, staged)) in
+            checkpoint_roots.iter().zip(&staged_roots).enumerate()
+        {
+            match fs::rename(checkpoint_root, staged) {
+                Ok(()) => staged_exists[index] = true,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    for ((root, staged), exists) in checkpoint_roots
+                        .iter()
+                        .zip(&staged_roots)
+                        .zip(&staged_exists)
+                    {
+                        if *exists {
+                            let _ = fs::rename(staged, root);
+                        }
+                    }
+                    return Err(e);
+                }
             }
-        };
+        }
 
         let result = match fs::remove_file(&session.path) {
             Ok(()) => {
-                if staged_exists {
+                for (staged, exists) in staged_roots.iter().zip(&staged_exists) {
+                    if !*exists {
+                        continue;
+                    }
                     // Best-effort: the session and its `.jsonl` are already
                     // gone, so a failure here just leaves an orphaned
                     // staged directory (swept by
                     // `sweep_stale_checkpoint_staging` on the next
                     // `prune_sessions` run) rather than an error the caller
                     // could act on.
-                    let _ = fs::remove_dir_all(&staged);
+                    let _ = fs::remove_dir_all(staged);
                 }
-                // Old sessions may still have checkpoints under the
-                // pre-v2 sanitized root. The transcript is gone now, so
-                // remove that sibling best-effort just like the staged v2
-                // directory.
-                let _ = fs::remove_dir_all(&legacy_checkpoint_root);
+                if !legacy_root_is_exclusive {
+                    self.cleanup_orphaned_legacy_checkpoint_root(store.legacy_root());
+                }
                 Ok(())
             }
             Err(e) => {
-                if staged_exists {
+                for ((checkpoint_root, staged), exists) in checkpoint_roots
+                    .iter()
+                    .zip(&staged_roots)
+                    .zip(&staged_exists)
+                {
+                    if !*exists {
+                        continue;
+                    }
                     // Restore: the `.jsonl` (and therefore the session)
                     // is still around, so its checkpoints must be too.
-                    if let Err(rollback_err) = fs::rename(&staged, checkpoint_root) {
+                    if let Err(rollback_err) = fs::rename(staged, checkpoint_root) {
                         // The rollback itself failed (a transient sharing
                         // violation, a permissions error, ...): `staged`
                         // still holds this session's checkpoints, sitting
@@ -886,9 +920,113 @@ impl SessionManager {
         // inode at the same path, splitting mutual exclusion across two
         // files. Empty sidecars are intentionally inert and are ignored by
         // the staging sweep.
-        drop(staging_lock);
+        drop(staging_locks);
 
         result
+    }
+
+    fn legacy_checkpoint_root_has_other_live_owner(
+        &self,
+        session: &SessionInfo,
+        legacy_root: &Path,
+    ) -> std::io::Result<bool> {
+        if !self.sessions_dir.exists() {
+            return Ok(false);
+        }
+        for entry in fs::read_dir(&self.sessions_dir)? {
+            let path = entry?.path();
+            if path == session.path
+                || path
+                    .extension()
+                    .is_none_or(|extension| extension != "jsonl")
+            {
+                continue;
+            }
+            let Ok((header, _, _)) = SessionReader::read_header(&path) else {
+                return Ok(true);
+            };
+            let other_store =
+                crate::checkpoints::CheckpointStore::new(&self.sessions_dir, &header.id);
+            if other_store.legacy_root() == legacy_root {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn legacy_checkpoint_root_has_any_live_owner(
+        &self,
+        legacy_root: &Path,
+    ) -> std::io::Result<bool> {
+        if !self.sessions_dir.exists() {
+            return Ok(false);
+        }
+        for entry in fs::read_dir(&self.sessions_dir)? {
+            let path = entry?.path();
+            if path
+                .extension()
+                .is_none_or(|extension| extension != "jsonl")
+            {
+                continue;
+            }
+            let Ok((header, _, _)) = SessionReader::read_header(&path) else {
+                return Ok(true);
+            };
+            let store = crate::checkpoints::CheckpointStore::new(&self.sessions_dir, &header.id);
+            if store.legacy_root() == legacy_root {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn cleanup_orphaned_legacy_checkpoint_root(&self, legacy_root: &Path) {
+        let staging_dir = Self::prune_staging_dir(&self.sessions_dir);
+        if let Err(error) = fs::create_dir_all(&staging_dir) {
+            eprintln!("Failed to create legacy checkpoint cleanup staging: {error}");
+            return;
+        }
+        let staged = staging_dir.join(
+            legacy_root
+                .file_name()
+                .map(std::ffi::OsStr::to_os_string)
+                .unwrap_or_default(),
+        );
+        let lock_key = Self::prune_staging_lock_key(&staged);
+        let _staging_lock = {
+            let mut attempts = 0;
+            loop {
+                match SessionLock::acquire(&lock_key) {
+                    Ok(lock) => break lock,
+                    Err(super::writer::SessionWriteError::Locked(_)) if attempts < 100 => {
+                        attempts += 1;
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Err(_) => return,
+                }
+            }
+        };
+        match self.legacy_checkpoint_root_has_any_live_owner(legacy_root) {
+            Ok(true) => return,
+            Err(error) => {
+                eprintln!("Failed to verify legacy checkpoint ownership: {error}");
+                return;
+            }
+            Ok(false) => {}
+        }
+        if let Err(error) = Self::restore_retained_checkpoint_history(&staged, legacy_root) {
+            eprintln!("Failed to restore retained legacy checkpoints before cleanup: {error}");
+            return;
+        }
+        match fs::rename(legacy_root, &staged) {
+            Ok(()) => {
+                let _ = fs::remove_dir_all(&staged);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                eprintln!("Failed to stage orphaned legacy checkpoints for cleanup: {error}");
+            }
+        }
     }
 
     /// Restore checkpoint entries retained by an interrupted prune.
@@ -1031,12 +1169,12 @@ impl SessionManager {
                 .is_some_and(|extension| extension == "jsonl")
             {
                 let (header, _, _) = SessionReader::read_header(&path)?;
-                if let Some(name) =
-                    crate::checkpoints::CheckpointStore::new(&self.sessions_dir, &header.id)
-                        .root()
-                        .file_name()
-                {
-                    names.insert(name.to_os_string());
+                let store =
+                    crate::checkpoints::CheckpointStore::new(&self.sessions_dir, &header.id);
+                for root in [store.root(), store.legacy_root()] {
+                    if let Some(name) = root.file_name() {
+                        names.insert(name.to_os_string());
+                    }
                 }
             }
         }
@@ -2192,6 +2330,9 @@ mod tests {
         let checkpoint_dir = store.root().join("chk1");
         fs::create_dir_all(&checkpoint_dir).unwrap();
         fs::write(checkpoint_dir.join("checkpoint.json"), b"{}").unwrap();
+        let legacy_checkpoint_dir = store.legacy_root().join("legacy-chk");
+        fs::create_dir_all(&legacy_checkpoint_dir).unwrap();
+        fs::write(legacy_checkpoint_dir.join("checkpoint.json"), b"legacy").unwrap();
 
         let session_path = dir.path().join("fake-session.jsonl");
         fs::create_dir_all(&session_path).unwrap();
@@ -2226,6 +2367,10 @@ mod tests {
             "checkpoints must be restored when jsonl removal fails"
         );
         assert!(checkpoint_dir.join("checkpoint.json").exists());
+        assert!(
+            legacy_checkpoint_dir.join("checkpoint.json").exists(),
+            "legacy checkpoints must roll back before a failed transcript prune returns"
+        );
         let staged =
             SessionManager::prune_staging_dir(dir.path()).join(store.root().file_name().unwrap());
         assert!(
@@ -2236,6 +2381,146 @@ mod tests {
             lock_path_for(&SessionManager::prune_staging_lock_key(&staged)).is_file(),
             "the reusable staging lock sidecar must remain linked so later cleanup attempts lock the same inode"
         );
+    }
+
+    #[test]
+    fn pruning_one_session_preserves_a_colliding_live_legacy_root() {
+        let dir = TempDir::new().unwrap();
+        let pruned_id = "legacy:collision";
+        let live_id = "legacy?collision";
+        create_test_session_file(dir.path(), pruned_id);
+        create_test_session_file(dir.path(), live_id);
+
+        let pruned_store = crate::checkpoints::CheckpointStore::new(dir.path(), pruned_id);
+        let live_store = crate::checkpoints::CheckpointStore::new(dir.path(), live_id);
+        assert_eq!(pruned_store.legacy_root(), live_store.legacy_root());
+        assert_ne!(pruned_store.root(), live_store.root());
+
+        let shared_legacy_checkpoint = pruned_store
+            .legacy_root()
+            .join("shared")
+            .join("checkpoint.json");
+        fs::create_dir_all(shared_legacy_checkpoint.parent().unwrap()).unwrap();
+        fs::write(&shared_legacy_checkpoint, b"shared legacy history").unwrap();
+        let pruned_v2_checkpoint = pruned_store.root().join("owned").join("checkpoint.json");
+        fs::create_dir_all(pruned_v2_checkpoint.parent().unwrap()).unwrap();
+        fs::write(&pruned_v2_checkpoint, b"owned v2 history").unwrap();
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+        let session = manager
+            .list_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == pruned_id)
+            .unwrap();
+        assert!(manager
+            .legacy_checkpoint_root_has_other_live_owner(&session, pruned_store.legacy_root())
+            .unwrap());
+
+        manager.remove_session_and_checkpoints(&session).unwrap();
+
+        assert!(!session.path.exists());
+        assert!(!pruned_store.root().exists());
+        assert!(shared_legacy_checkpoint.exists());
+        assert!(manager
+            .list_sessions()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate.id == live_id));
+    }
+
+    #[test]
+    fn malformed_journal_preserves_legacy_root_without_blocking_prune() {
+        let dir = TempDir::new().unwrap();
+        let pruned_id = "valid-session";
+        create_test_session_file(dir.path(), pruned_id);
+        let malformed = dir.path().join("malformed.jsonl");
+        fs::write(&malformed, b"not-json\n").unwrap();
+
+        let store = crate::checkpoints::CheckpointStore::new(dir.path(), pruned_id);
+        let v2_checkpoint = store.root().join("owned").join("checkpoint.json");
+        fs::create_dir_all(v2_checkpoint.parent().unwrap()).unwrap();
+        fs::write(&v2_checkpoint, b"v2").unwrap();
+        let legacy_checkpoint = store.legacy_root().join("legacy").join("checkpoint.json");
+        fs::create_dir_all(legacy_checkpoint.parent().unwrap()).unwrap();
+        fs::write(&legacy_checkpoint, b"legacy").unwrap();
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+        let session = manager.list_sessions().unwrap().pop().unwrap();
+
+        manager.remove_session_and_checkpoints(&session).unwrap();
+
+        assert!(!session.path.exists());
+        assert!(!store.root().exists());
+        assert!(malformed.exists());
+        assert!(legacy_checkpoint.exists());
+    }
+
+    #[test]
+    fn post_delete_reconciliation_removes_shared_legacy_root_after_all_owners_exit() {
+        let dir = TempDir::new().unwrap();
+        let first_id = "legacy:concurrent";
+        let second_id = "legacy?concurrent";
+        create_test_session_file(dir.path(), first_id);
+        create_test_session_file(dir.path(), second_id);
+        let first_store = crate::checkpoints::CheckpointStore::new(dir.path(), first_id);
+        let second_store = crate::checkpoints::CheckpointStore::new(dir.path(), second_id);
+        assert_eq!(first_store.legacy_root(), second_store.legacy_root());
+        let checkpoint = first_store
+            .legacy_root()
+            .join("shared")
+            .join("checkpoint.json");
+        fs::create_dir_all(checkpoint.parent().unwrap()).unwrap();
+        fs::write(&checkpoint, b"shared history").unwrap();
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+        let sessions = manager.list_sessions().unwrap();
+        for session in &sessions {
+            assert!(manager
+                .legacy_checkpoint_root_has_other_live_owner(session, first_store.legacy_root(),)
+                .unwrap());
+        }
+
+        // Model two pruners that both made the conservative shared-owner
+        // decision before either transcript deletion committed.
+        for session in sessions {
+            fs::remove_file(session.path).unwrap();
+        }
+        let staging_dir = SessionManager::prune_staging_dir(dir.path());
+        fs::create_dir_all(&staging_dir).unwrap();
+        let staged = staging_dir.join(first_store.legacy_root().file_name().unwrap());
+        let held_cleanup_lock =
+            SessionLock::acquire(&SessionManager::prune_staging_lock_key(&staged)).unwrap();
+        let sessions_dir = dir.path().to_path_buf();
+        let legacy_root = first_store.legacy_root().to_path_buf();
+        let cleanup = std::thread::spawn(move || {
+            let manager = SessionManager {
+                cwd: "/tmp".to_string(),
+                sessions_dir,
+                current_session_id: None,
+                writer: None,
+            };
+            manager.cleanup_orphaned_legacy_checkpoint_root(&legacy_root);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        drop(held_cleanup_lock);
+        cleanup.join().unwrap();
+
+        assert!(!first_store.legacy_root().exists());
     }
 
     #[test]
@@ -2549,6 +2834,38 @@ mod tests {
         assert!(
             store.root().join("chk1").join("checkpoint.json").exists(),
             "an interrupted staging entry for a still-listed session must be restored to its normal location"
+        );
+    }
+
+    #[test]
+    fn test_sweep_restores_interrupted_legacy_staging_for_a_live_session() {
+        let dir = TempDir::new().unwrap();
+        let id = "interrupted-legacy-prune";
+        create_test_session_file(dir.path(), id);
+
+        let store = crate::checkpoints::CheckpointStore::new(dir.path(), id);
+        let staged = SessionManager::prune_staging_dir(dir.path())
+            .join(store.legacy_root().file_name().unwrap());
+        fs::create_dir_all(staged.join("legacy-chk")).unwrap();
+        fs::write(staged.join("legacy-chk").join("checkpoint.json"), b"legacy").unwrap();
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        manager.sweep_stale_checkpoint_staging();
+
+        assert!(!staged.exists());
+        assert!(
+            store
+                .legacy_root()
+                .join("legacy-chk")
+                .join("checkpoint.json")
+                .exists(),
+            "a listed session must retain ownership of its pre-v2 staged checkpoints"
         );
     }
 
@@ -3107,7 +3424,7 @@ mod tests {
     fn test_remove_session_with_dot_only_id_does_not_escape_checkpoints_dir() {
         let dir = TempDir::new().unwrap();
         create_test_session_file(dir.path(), "..");
-        let decoy = dir.path().join("decoy.jsonl");
+        let decoy = dir.path().join("decoy.txt");
         fs::write(&decoy, b"keep me").unwrap();
 
         let manager = SessionManager {

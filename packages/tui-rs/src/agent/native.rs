@@ -126,15 +126,75 @@ use crate::tools::{ToolExecutionOptions, ToolExecutor, ToolRegistry};
 mod read_only_tools;
 
 /// Payload of the tool-response channel: `(call_id, approved, result,
-/// source)`. `source` records the provenance of a caller-supplied `result`:
+/// source, consumed)`. `source` records the provenance of a caller-supplied `result`:
 /// [`ExecutionSource::Native`] when the caller executed the tool locally on
 /// this process's behalf (the interactive TUI) and
 /// [`ExecutionSource::RemoteClient`] when a remote/headless client executed
 /// it. Preserving that provenance is what lets
 /// `ToolExecution::model_content` wrap client-authored results in the
 /// untrusted-content envelope without wrapping locally executed ones.
-/// Ignored when `result` is `None` (a bare approval/denial).
-pub type ToolResponseMessage = (String, bool, Option<ToolResult>, ExecutionSource);
+/// Ignored when `result` is `None` (a bare approval/denial). `consumed` lets
+/// headless transports acknowledge a response only after the native runner
+/// has removed it from the channel.
+pub type ToolResponseMessage = (
+    String,
+    bool,
+    Option<ToolResult>,
+    ExecutionSource,
+    Option<tokio::sync::oneshot::Sender<ToolResponseConsumption>>,
+);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolResponseConsumption {
+    Accepted,
+    Rejected { reason: String },
+}
+type PendingToolResponse = (
+    bool,
+    Option<ToolResult>,
+    ExecutionSource,
+    Option<tokio::sync::oneshot::Sender<ToolResponseConsumption>>,
+);
+const MAX_CANCELLED_TOOL_TOMBSTONES: usize = 4096;
+
+#[derive(Debug, Default)]
+struct CancelledToolTombstones {
+    ids: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl CancelledToolTombstones {
+    fn insert(&mut self, call_id: String) {
+        if !self.ids.insert(call_id.clone()) {
+            return;
+        }
+        self.order.push_back(call_id);
+        while self.order.len() > MAX_CANCELLED_TOOL_TOMBSTONES {
+            if let Some(evicted) = self.order.pop_front() {
+                self.ids.remove(&evicted);
+            }
+        }
+    }
+
+    fn remove(&mut self, call_id: &str) {
+        if self.ids.remove(call_id) {
+            self.order.retain(|entry| entry != call_id);
+        }
+    }
+
+    fn contains(&self, call_id: &str) -> bool {
+        self.ids.contains(call_id)
+    }
+
+    fn clear(&mut self) {
+        self.ids.clear();
+        self.order.clear();
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.ids.len()
+    }
+}
 
 use self::read_only_tools::{
     execute_native_read_only_tool_wave, is_explicit_inline_read_only_tool,
@@ -1030,6 +1090,7 @@ impl NativeAgent {
             follow_up_mode: QueueMode::All,
             deferred_commands: VecDeque::new(),
             pending_tool_approvals: HashMap::new(),
+            cancelled_tool_responses: CancelledToolTombstones::default(),
             prompt_context: None,
         };
 
@@ -1633,7 +1694,10 @@ struct NativeAgentRunner {
     deferred_commands: VecDeque<AgentCommand>,
 
     /// Buffered tool approvals that arrived out of order
-    pending_tool_approvals: HashMap<String, (bool, Option<ToolResult>, ExecutionSource)>,
+    pending_tool_approvals: HashMap<String, PendingToolResponse>,
+
+    /// Recently cancelled call IDs whose late responses must be rejected.
+    cancelled_tool_responses: CancelledToolTombstones,
 
     /// Extra system prompt context for the current request
     ///
@@ -2072,7 +2136,7 @@ impl NativeAgentRunner {
                             });
                         }
                     }
-                    self.pending_tool_approvals.clear();
+                    self.reject_pending_tool_responses_on_cancel();
                     cancelled = true;
                 }
                 AgentCommand::CancelQueued { id } => {
@@ -2157,12 +2221,37 @@ impl NativeAgentRunner {
     fn repair_orphaned_tool_calls(&mut self) {
         // Stash late results delivered after we stopped waiting (e.g. the app
         // still reports the outcome of a tool it cancelled).
-        while let Ok((id, approved, result, source)) = self.tool_response_rx.try_recv() {
-            self.pending_tool_approvals
-                .insert(id, (approved, result, source));
+        while let Ok(response) = self.tool_response_rx.try_recv() {
+            buffer_or_reject_tool_response(
+                response,
+                &mut self.pending_tool_approvals,
+                &self.cancelled_tool_responses,
+            );
         }
         let messages = Arc::make_mut(&mut self.messages);
         repair_orphaned_tool_calls(messages, &mut self.pending_tool_approvals);
+    }
+
+    fn reset_tool_response_state(&mut self) {
+        for (_, _, _, consumed) in self.pending_tool_approvals.drain().map(|(_, value)| value) {
+            if let Some(consumed) = consumed {
+                let _ = consumed.send(ToolResponseConsumption::Rejected {
+                    reason: "tool response invalidated by session boundary".to_string(),
+                });
+            }
+        }
+        while let Ok((_, _, _, _, consumed)) = self.tool_response_rx.try_recv() {
+            if let Some(consumed) = consumed {
+                let _ = consumed.send(ToolResponseConsumption::Rejected {
+                    reason: "tool response invalidated by session boundary".to_string(),
+                });
+            }
+        }
+        self.cancelled_tool_responses.clear();
+    }
+
+    fn reject_pending_tool_responses_on_cancel(&mut self) {
+        reject_buffered_tool_responses_on_cancel(&mut self.pending_tool_approvals);
     }
 
     fn drain_leading_pending_messages(
@@ -2819,7 +2908,7 @@ impl NativeAgentRunner {
                             });
                         }
                     }
-                    self.pending_tool_approvals.clear();
+                    self.reject_pending_tool_responses_on_cancel();
                 }
                 AgentCommand::CancelQueued { id } => {
                     if let Some(removed) = self.pending_messages.remove_by_id(id) {
@@ -2921,6 +3010,7 @@ impl NativeAgentRunner {
                     self.config.system_prompt = Some(system_prompt);
                 }
                 AgentCommand::ClearHistory => {
+                    self.reset_tool_response_state();
                     self.messages_mut().clear();
                     self.codex_session = None;
                     self.codex_history_restore_prefix_len = None;
@@ -2930,6 +3020,7 @@ impl NativeAgentRunner {
                     self.credential_vault.clear();
                 }
                 AgentCommand::ReplaceHistory { messages } => {
+                    self.reset_tool_response_state();
                     let restored_prefix_len = messages.len();
                     self.messages = Arc::new(messages);
                     self.codex_session = None;
@@ -3525,6 +3616,7 @@ impl NativeAgentRunner {
                         return Ok(());
                     }
                 };
+                self.cancelled_tool_responses.remove(&call_id);
 
                 // Prefer the original registry key (case-insensitive / sanitized).
                 let registry_name = self
@@ -3581,19 +3673,40 @@ impl NativeAgentRunner {
                         requires_approval: true,
                         approval_inline_env: None,
                     });
-                    // Wait for the UI approval on the tool-response channel.
-                    let (approved, provided_result) = loop {
-                        match self.tool_response_rx.recv().await {
-                            Some((id, approved, result, _source)) if id == call_id => {
-                                break (approved, result);
-                            }
-                            Some(_) => continue,
-                            None => {
-                                let error = "Tool approval channel closed".to_owned();
-                                self.record_codex_tool_result(&call_id, error.clone(), true);
-                                request.respond(tool_call_error_result(error));
-                                return Ok(());
-                            }
+                    // Codex can issue multiple server tool calls. Reuse the
+                    // keyed waiter so an approval for a later call is retained
+                    // with its consumption receipt until that call waits.
+                    let approval_cancel = self.shutdown_token.child_token();
+                    self.set_active_approval_cancel_token(Some(approval_cancel.clone()));
+                    let response = wait_for_codex_tool_response(
+                        &call_id,
+                        &mut self.tool_response_rx,
+                        &mut self.pending_tool_approvals,
+                        &self.cancelled_tool_responses,
+                        &approval_cancel,
+                    )
+                    .await;
+                    self.set_active_approval_cancel_token(None);
+                    let (approved, provided_result, _source) = match response {
+                        ToolResponseWait::Response(response) => response,
+                        ToolResponseWait::Cancelled => {
+                            let cancelled_ids = HashSet::from([call_id.clone()]);
+                            discard_cancelled_tool_responses(
+                                &cancelled_ids,
+                                &mut self.tool_response_rx,
+                                &mut self.pending_tool_approvals,
+                                &mut self.cancelled_tool_responses,
+                            );
+                            let error = "Tool approval cancelled".to_owned();
+                            self.record_codex_tool_result(&call_id, error.clone(), true);
+                            request.respond(tool_call_error_result(error));
+                            return Ok(());
+                        }
+                        ToolResponseWait::Closed => {
+                            let error = "Tool approval channel closed".to_owned();
+                            self.record_codex_tool_result(&call_id, error.clone(), true);
+                            request.respond(tool_call_error_result(error));
+                            return Ok(());
                         }
                     };
                     if !approved {
@@ -3720,6 +3833,7 @@ impl NativeAgentRunner {
             let mut usage = TokenUsage::default();
             let mut pending_tool_calls: Vec<(String, String, serde_json::Value, Option<String>)> =
                 Vec::new();
+            let mut stream_failed = false;
 
             // Process stream events
             while let Some(event) = rx.recv().await {
@@ -3878,6 +3992,11 @@ impl NativeAgentRunner {
                         break;
                     }
                     StreamEvent::Error { message } => {
+                        stream_failed = true;
+                        abort_pending_tools_after_stream_error(
+                            &mut assistant_content,
+                            &mut pending_tool_calls,
+                        );
                         let _ = self.event_tx.send(FromAgent::Error {
                             message,
                             // A provider stream error ends this response. Mark it
@@ -3940,6 +4059,11 @@ impl NativeAgentRunner {
                 usage: Some(usage),
             });
 
+            if stream_failed {
+                self.set_tool_batch_active(false);
+                return Ok(());
+            }
+
             if self.drain_pending_commands() {
                 self.repair_orphaned_tool_calls();
                 return Err(anyhow::anyhow!("Request cancelled"));
@@ -3964,6 +4088,7 @@ impl NativeAgentRunner {
                 while let Some((call_id, tool_name, args, parse_error)) =
                     pending_tool_calls_iter.next()
                 {
+                    self.cancelled_tool_responses.remove(&call_id);
                     if processed_any_tool {
                         if self.drain_pending_commands() {
                             if !tool_results.is_empty() {
@@ -4344,6 +4469,7 @@ impl NativeAgentRunner {
                         &cancelled_ids,
                         &mut self.tool_response_rx,
                         &mut self.pending_tool_approvals,
+                        &mut self.cancelled_tool_responses,
                     );
                 }
                 while let Some(deferred_call) = deferred_tool_calls_iter.next() {
@@ -4355,6 +4481,7 @@ impl NativeAgentRunner {
                                 &call.call_id,
                                 &mut self.tool_response_rx,
                                 &mut self.pending_tool_approvals,
+                                &self.cancelled_tool_responses,
                                 &approval_cancel,
                             )
                             .await;
@@ -4382,6 +4509,7 @@ impl NativeAgentRunner {
                                         &cancelled_ids,
                                         &mut self.tool_response_rx,
                                         &mut self.pending_tool_approvals,
+                                        &mut self.cancelled_tool_responses,
                                     );
                                     break;
                                 }
@@ -4772,6 +4900,7 @@ impl NativeAgentRunner {
                             &cancelled_ids,
                             &mut self.tool_response_rx,
                             &mut self.pending_tool_approvals,
+                            &mut self.cancelled_tool_responses,
                         );
                         break;
                     }
@@ -5192,6 +5321,7 @@ impl NativeAgentRunner {
             &cancelled_ids,
             &mut self.tool_response_rx,
             &mut self.pending_tool_approvals,
+            &mut self.cancelled_tool_responses,
         );
         true
     }
@@ -5472,6 +5602,14 @@ fn parse_tool_input(tool_name: &str, json: &str) -> Result<serde_json::Value, St
     }
     serde_json::from_str(json)
         .map_err(|err| format!("Failed to parse tool input JSON for '{tool_name}': {err}"))
+}
+
+fn abort_pending_tools_after_stream_error(
+    assistant_content: &mut Vec<ContentBlock>,
+    pending_tool_calls: &mut Vec<(String, String, Value, Option<String>)>,
+) {
+    pending_tool_calls.clear();
+    assistant_content.retain(|block| !matches!(block, ContentBlock::ToolUse { .. }));
 }
 
 /// Lifecycle managers must receive opaque credential references so child
@@ -5855,13 +5993,61 @@ fn cancel_deferred_suffix(
 fn discard_cancelled_tool_responses(
     cancelled_ids: &HashSet<String>,
     rx: &mut mpsc::UnboundedReceiver<ToolResponseMessage>,
-    pending: &mut HashMap<String, (bool, Option<ToolResult>, ExecutionSource)>,
+    pending: &mut HashMap<String, PendingToolResponse>,
+    tombstones: &mut CancelledToolTombstones,
 ) {
-    pending.retain(|call_id, _| !cancelled_ids.contains(call_id));
-    while let Ok((call_id, approved, result, source)) = rx.try_recv() {
-        if !cancelled_ids.contains(&call_id) {
-            pending.insert(call_id, (approved, result, source));
+    for call_id in cancelled_ids {
+        tombstones.insert(call_id.clone());
+    }
+    let pending_cancelled = pending
+        .keys()
+        .filter(|call_id| cancelled_ids.contains(*call_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    for call_id in pending_cancelled {
+        if let Some((_, _, _, Some(consumed))) = pending.remove(&call_id) {
+            let _ = consumed.send(ToolResponseConsumption::Rejected {
+                reason: "tool response cancelled before native consumption".to_string(),
+            });
         }
+    }
+    while let Ok((call_id, approved, result, source, consumed)) = rx.try_recv() {
+        if tombstones.contains(&call_id) {
+            if let Some(consumed) = consumed {
+                let _ = consumed.send(ToolResponseConsumption::Rejected {
+                    reason: "tool response cancelled before native consumption".to_string(),
+                });
+            }
+        } else {
+            pending.insert(call_id, (approved, result, source, consumed));
+        }
+    }
+}
+
+fn reject_buffered_tool_responses_on_cancel(pending: &mut HashMap<String, PendingToolResponse>) {
+    for (_, _, _, consumed) in pending.drain().map(|(_, value)| value) {
+        if let Some(consumed) = consumed {
+            let _ = consumed.send(ToolResponseConsumption::Rejected {
+                reason: "tool response cancelled before native consumption".to_string(),
+            });
+        }
+    }
+}
+
+fn buffer_or_reject_tool_response(
+    response: ToolResponseMessage,
+    pending: &mut HashMap<String, PendingToolResponse>,
+    tombstones: &CancelledToolTombstones,
+) {
+    let (call_id, approved, result, source, consumed) = response;
+    if tombstones.contains(&call_id) {
+        if let Some(consumed) = consumed {
+            let _ = consumed.send(ToolResponseConsumption::Rejected {
+                reason: "tool response cancelled before native consumption".to_string(),
+            });
+        }
+    } else {
+        pending.insert(call_id, (approved, result, source, consumed));
     }
 }
 
@@ -5871,17 +6057,31 @@ enum ToolResponseWait {
     Closed,
 }
 
+async fn wait_for_codex_tool_response(
+    call_id: &str,
+    rx: &mut mpsc::UnboundedReceiver<ToolResponseMessage>,
+    pending: &mut HashMap<String, PendingToolResponse>,
+    tombstones: &CancelledToolTombstones,
+    cancel: &CancellationToken,
+) -> ToolResponseWait {
+    wait_for_tool_response(call_id, rx, pending, tombstones, cancel).await
+}
+
 async fn wait_for_tool_response(
     call_id: &str,
     rx: &mut mpsc::UnboundedReceiver<ToolResponseMessage>,
-    pending: &mut HashMap<String, (bool, Option<ToolResult>, ExecutionSource)>,
+    pending: &mut HashMap<String, PendingToolResponse>,
+    tombstones: &CancelledToolTombstones,
     cancel: &CancellationToken,
 ) -> ToolResponseWait {
     if cancel.is_cancelled() {
         return ToolResponseWait::Cancelled;
     }
-    if let Some(result) = pending.remove(call_id) {
-        return ToolResponseWait::Response(result);
+    if let Some((approved, result, source, consumed)) = pending.remove(call_id) {
+        if let Some(consumed) = consumed {
+            let _ = consumed.send(ToolResponseConsumption::Accepted);
+        }
+        return ToolResponseWait::Response((approved, result, source));
     }
 
     loop {
@@ -5890,13 +6090,24 @@ async fn wait_for_tool_response(
             () = cancel.cancelled() => return ToolResponseWait::Cancelled,
             response = rx.recv() => response,
         };
-        let Some((id, approved, result, source)) = response else {
+        let Some((id, approved, result, source, consumed)) = response else {
             return ToolResponseWait::Closed;
         };
+        if tombstones.contains(&id) {
+            if let Some(consumed) = consumed {
+                let _ = consumed.send(ToolResponseConsumption::Rejected {
+                    reason: "tool response cancelled before native consumption".to_string(),
+                });
+            }
+            continue;
+        }
         if id == call_id {
+            if let Some(consumed) = consumed {
+                let _ = consumed.send(ToolResponseConsumption::Accepted);
+            }
             return ToolResponseWait::Response((approved, result, source));
         }
-        pending.insert(id, (approved, result, source));
+        pending.insert(id, (approved, result, source, consumed));
     }
 }
 
@@ -5912,7 +6123,7 @@ async fn wait_for_tool_response(
 /// "cancelled by user" failure is synthesized.
 fn repair_orphaned_tool_calls(
     messages: &mut Vec<Message>,
-    pending_tool_approvals: &mut HashMap<String, (bool, Option<ToolResult>, ExecutionSource)>,
+    pending_tool_approvals: &mut HashMap<String, PendingToolResponse>,
 ) {
     let mut answered: HashSet<String> = HashSet::new();
     for message in messages.iter() {
@@ -5951,7 +6162,15 @@ fn repair_orphaned_tool_calls(
         let repairs: Vec<ContentBlock> = missing
             .into_iter()
             .map(|(id, name)| {
-                let (content, is_error) = match pending_tool_approvals.remove(&id) {
+                let pending = pending_tool_approvals.remove(&id).map(
+                    |(approved, result, source, consumed)| {
+                        if let Some(consumed) = consumed {
+                            let _ = consumed.send(ToolResponseConsumption::Accepted);
+                        }
+                        (approved, result, source)
+                    },
+                );
+                let (content, is_error) = match pending {
                     Some((true, Some(result), source)) => {
                         let execution = ToolExecution::from_legacy(&id, &name, source, result);
                         (execution.model_content(), execution.is_error())
@@ -8582,6 +8801,33 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
     }
 
     #[test]
+    fn fatal_stream_error_discards_completed_tool_calls() {
+        let mut assistant_content = vec![
+            ContentBlock::Text {
+                text: "partial response".to_string(),
+            },
+            ContentBlock::ToolUse {
+                id: "call-1".to_string(),
+                name: "bash".to_string(),
+                input: serde_json::json!({"command": "true"}),
+            },
+        ];
+        let mut pending_tool_calls = vec![(
+            "call-1".to_string(),
+            "bash".to_string(),
+            serde_json::json!({"command": "true"}),
+            None,
+        )];
+
+        abort_pending_tools_after_stream_error(&mut assistant_content, &mut pending_tool_calls);
+
+        assert!(pending_tool_calls.is_empty());
+        assert!(assistant_content
+            .iter()
+            .all(|block| !matches!(block, ContentBlock::ToolUse { .. })));
+    }
+
+    #[test]
     fn lifecycle_tool_args_preserve_opaque_credential_references() {
         let vault = CredentialVault::new();
         let reference = vault.store("secret-value", crate::agent::CredentialType::Token);
@@ -8637,42 +8883,321 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
     async fn test_wait_for_tool_response_buffers_out_of_order() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut pending = HashMap::new();
+        let tombstones = CancelledToolTombstones::default();
         let cancel = CancellationToken::new();
+        let (consumed_tx, mut consumed_rx) = tokio::sync::oneshot::channel();
+        let (buffered_consumed_tx, mut buffered_consumed_rx) = tokio::sync::oneshot::channel();
 
-        tx.send(("id-2".to_string(), true, None, ExecutionSource::Native))
-            .unwrap();
+        tx.send((
+            "id-2".to_string(),
+            true,
+            None,
+            ExecutionSource::Native,
+            Some(buffered_consumed_tx),
+        ))
+        .unwrap();
         tx.send((
             "id-1".to_string(),
             false,
             None,
             ExecutionSource::RemoteClient,
+            Some(consumed_tx),
         ))
         .unwrap();
 
-        let result = wait_for_tool_response("id-1", &mut rx, &mut pending, &cancel).await;
+        let result =
+            wait_for_tool_response("id-1", &mut rx, &mut pending, &tombstones, &cancel).await;
         assert!(matches!(
             result,
             ToolResponseWait::Response((false, None, ExecutionSource::RemoteClient))
         ));
+        assert!(
+            consumed_rx.try_recv().is_ok(),
+            "the receipt must fire only when the native wait consumes the response"
+        );
         assert!(pending.contains_key("id-2"));
+        assert!(
+            matches!(
+                buffered_consumed_rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ),
+            "buffering an out-of-order response must not acknowledge consumption"
+        );
 
-        let result = wait_for_tool_response("id-2", &mut rx, &mut pending, &cancel).await;
+        let result =
+            wait_for_tool_response("id-2", &mut rx, &mut pending, &tombstones, &cancel).await;
         assert!(matches!(
             result,
             ToolResponseWait::Response((true, None, ExecutionSource::Native))
+        ));
+        assert!(buffered_consumed_rx.try_recv().is_ok());
+        assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn codex_concurrent_approvals_buffer_second_response_delivered_first() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut pending = HashMap::new();
+        let tombstones = CancelledToolTombstones::default();
+        let cancel = CancellationToken::new();
+        let (second_consumed_tx, mut second_consumed_rx) = tokio::sync::oneshot::channel();
+        let (first_consumed_tx, mut first_consumed_rx) = tokio::sync::oneshot::channel();
+        tx.send((
+            "codex-call-b".to_string(),
+            true,
+            None,
+            ExecutionSource::RemoteClient,
+            Some(second_consumed_tx),
+        ))
+        .unwrap();
+        tx.send((
+            "codex-call-a".to_string(),
+            true,
+            None,
+            ExecutionSource::RemoteClient,
+            Some(first_consumed_tx),
+        ))
+        .unwrap();
+
+        let first = wait_for_codex_tool_response(
+            "codex-call-a",
+            &mut rx,
+            &mut pending,
+            &tombstones,
+            &cancel,
+        )
+        .await;
+        assert!(matches!(
+            first,
+            ToolResponseWait::Response((true, None, ExecutionSource::RemoteClient))
+        ));
+        assert!(first_consumed_rx.try_recv().is_ok());
+        assert!(matches!(
+            second_consumed_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+
+        let second = wait_for_codex_tool_response(
+            "codex-call-b",
+            &mut rx,
+            &mut pending,
+            &tombstones,
+            &cancel,
+        )
+        .await;
+        assert!(matches!(
+            second,
+            ToolResponseWait::Response((true, None, ExecutionSource::RemoteClient))
+        ));
+        assert!(second_consumed_rx.try_recv().is_ok());
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn deferred_cancellation_completes_receipt_with_correlated_rejection() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (buffered_tx, buffered_rx) = tokio::sync::oneshot::channel();
+        let (queued_tx, queued_rx) = tokio::sync::oneshot::channel();
+        let mut pending = HashMap::from([(
+            "cancelled-buffered".to_string(),
+            (true, None, ExecutionSource::RemoteClient, Some(buffered_tx)),
+        )]);
+        tx.send((
+            "cancelled-queued".to_string(),
+            true,
+            None,
+            ExecutionSource::RemoteClient,
+            Some(queued_tx),
+        ))
+        .unwrap();
+        let cancelled = HashSet::from([
+            "cancelled-buffered".to_string(),
+            "cancelled-queued".to_string(),
+        ]);
+        let mut tombstones = CancelledToolTombstones::default();
+
+        discard_cancelled_tool_responses(&cancelled, &mut rx, &mut pending, &mut tombstones);
+
+        for outcome in [buffered_rx.blocking_recv(), queued_rx.blocking_recv()] {
+            assert!(matches!(
+                outcome,
+                Ok(ToolResponseConsumption::Rejected { ref reason })
+                    if reason.contains("cancelled before native consumption")
+            ));
+        }
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn cancellation_rejects_all_buffered_response_receipts() {
+        let (consumed_tx, consumed_rx) = tokio::sync::oneshot::channel();
+        let mut pending = HashMap::from([
+            (
+                "buffered-with-receipt".to_string(),
+                (true, None, ExecutionSource::RemoteClient, Some(consumed_tx)),
+            ),
+            (
+                "buffered-without-receipt".to_string(),
+                (false, None, ExecutionSource::RemoteClient, None),
+            ),
+        ]);
+
+        reject_buffered_tool_responses_on_cancel(&mut pending);
+
+        assert!(matches!(
+            consumed_rx.blocking_recv(),
+            Ok(ToolResponseConsumption::Rejected { ref reason })
+                if reason.contains("cancelled before native consumption")
         ));
         assert!(pending.is_empty());
     }
 
     #[tokio::test]
+    async fn standard_cancel_first_response_later_rejects_tombstoned_call() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut pending = HashMap::new();
+        let mut tombstones = CancelledToolTombstones::default();
+        tombstones.insert("cancelled-standard".to_string());
+        let (late_tx, mut late_rx) = tokio::sync::oneshot::channel();
+        tx.send((
+            "cancelled-standard".to_string(),
+            true,
+            None,
+            ExecutionSource::RemoteClient,
+            Some(late_tx),
+        ))
+        .unwrap();
+        tx.send((
+            "active-standard".to_string(),
+            true,
+            None,
+            ExecutionSource::RemoteClient,
+            None,
+        ))
+        .unwrap();
+
+        let result = wait_for_tool_response(
+            "active-standard",
+            &mut rx,
+            &mut pending,
+            &tombstones,
+            &CancellationToken::new(),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            ToolResponseWait::Response((true, None, _))
+        ));
+        assert!(matches!(
+            late_rx.try_recv(),
+            Ok(ToolResponseConsumption::Rejected { ref reason })
+                if reason.contains("cancelled before native consumption")
+        ));
+        assert!(!pending.contains_key("cancelled-standard"));
+    }
+
+    #[tokio::test]
+    async fn codex_cancel_first_response_later_rejects_tombstoned_call() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut pending = HashMap::new();
+        let mut tombstones = CancelledToolTombstones::default();
+        tombstones.insert("cancelled-codex".to_string());
+        let (late_tx, mut late_rx) = tokio::sync::oneshot::channel();
+        tx.send((
+            "cancelled-codex".to_string(),
+            true,
+            None,
+            ExecutionSource::RemoteClient,
+            Some(late_tx),
+        ))
+        .unwrap();
+        tx.send((
+            "active-codex".to_string(),
+            false,
+            None,
+            ExecutionSource::RemoteClient,
+            None,
+        ))
+        .unwrap();
+
+        let result = wait_for_codex_tool_response(
+            "active-codex",
+            &mut rx,
+            &mut pending,
+            &tombstones,
+            &CancellationToken::new(),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            ToolResponseWait::Response((false, None, _))
+        ));
+        assert!(matches!(
+            late_rx.try_recv(),
+            Ok(ToolResponseConsumption::Rejected { ref reason })
+                if reason.contains("cancelled before native consumption")
+        ));
+        assert!(!pending.contains_key("cancelled-codex"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_tombstones_are_bounded_and_allow_legitimate_id_reuse() {
+        let mut tombstones = CancelledToolTombstones::default();
+        for index in 0..(MAX_CANCELLED_TOOL_TOMBSTONES + 10) {
+            tombstones.insert(format!("cancelled-{index}"));
+        }
+        assert_eq!(tombstones.len(), MAX_CANCELLED_TOOL_TOMBSTONES);
+        assert!(!tombstones.contains("cancelled-0"));
+        let reused = format!("cancelled-{}", MAX_CANCELLED_TOOL_TOMBSTONES + 9);
+        assert!(tombstones.contains(&reused));
+        tombstones.remove(&reused);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (consumed_tx, mut consumed_rx) = tokio::sync::oneshot::channel();
+        tx.send((
+            reused.clone(),
+            true,
+            None,
+            ExecutionSource::RemoteClient,
+            Some(consumed_tx),
+        ))
+        .unwrap();
+        let mut pending = HashMap::new();
+        let result = wait_for_tool_response(
+            &reused,
+            &mut rx,
+            &mut pending,
+            &tombstones,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            ToolResponseWait::Response((true, None, _))
+        ));
+        assert_eq!(
+            consumed_rx.try_recv(),
+            Ok(ToolResponseConsumption::Accepted)
+        );
+        tombstones.clear();
+        assert_eq!(tombstones.len(), 0);
+    }
+
+    #[tokio::test]
     async fn approval_wait_honors_cancellation_before_buffered_decisions() {
         let (_tx, mut rx) = mpsc::unbounded_channel();
-        let mut pending =
-            HashMap::from([("id-1".to_string(), (true, None, ExecutionSource::Native))]);
+        let mut pending = HashMap::from([(
+            "id-1".to_string(),
+            (true, None, ExecutionSource::Native, None),
+        )]);
         let cancel = CancellationToken::new();
+        let tombstones = CancelledToolTombstones::default();
         cancel.cancel();
 
-        let result = wait_for_tool_response("id-1", &mut rx, &mut pending, &cancel).await;
+        let result =
+            wait_for_tool_response("id-1", &mut rx, &mut pending, &tombstones, &cancel).await;
 
         assert!(matches!(result, ToolResponseWait::Cancelled));
         assert!(pending.contains_key("id-1"));
@@ -8684,9 +9209,11 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         let mut pending = HashMap::new();
         let shutdown_token = CancellationToken::new();
         let cancel = shutdown_token.child_token();
+        let tombstones = CancelledToolTombstones::default();
 
         let waiting = tokio::spawn(async move {
-            let result = wait_for_tool_response("id-1", &mut rx, &mut pending, &cancel).await;
+            let result =
+                wait_for_tool_response("id-1", &mut rx, &mut pending, &tombstones, &cancel).await;
             (result, pending)
         });
         tokio::task::yield_now().await;
@@ -9270,6 +9797,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             true,
             None,
             ExecutionSource::Native,
+            None,
         ))
         .expect("queue cancelled approval");
         tx.send((
@@ -9277,33 +9805,35 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             false,
             None,
             ExecutionSource::Native,
+            None,
         ))
         .expect("queue unrelated approval");
         let mut pending = HashMap::from([
             (
                 "call-cancelled-buffered".to_string(),
-                (true, None, ExecutionSource::Native),
+                (true, None, ExecutionSource::Native, None),
             ),
             (
                 "call-existing".to_string(),
-                (false, None, ExecutionSource::Native),
+                (false, None, ExecutionSource::Native, None),
             ),
         ]);
 
-        discard_cancelled_tool_responses(&cancelled_ids, &mut rx, &mut pending);
+        let mut tombstones = CancelledToolTombstones::default();
+        discard_cancelled_tool_responses(&cancelled_ids, &mut rx, &mut pending, &mut tombstones);
 
         assert!(!pending.contains_key("call-cancelled-buffered"));
         assert!(!pending.contains_key("call-cancelled-queued"));
         assert_eq!(
             pending
                 .get("call-existing")
-                .map(|(approved, _, _)| *approved),
+                .map(|(approved, _, _, _)| *approved),
             Some(false)
         );
         assert_eq!(
             pending
                 .get("call-unrelated")
-                .map(|(approved, _, _)| *approved),
+                .map(|(approved, _, _, _)| *approved),
             Some(false)
         );
         assert!(rx.try_recv().is_err());
@@ -9535,6 +10065,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
                 true,
                 Some(ToolResult::failure("Command cancelled")),
                 ExecutionSource::Native,
+                None,
             ),
         );
 
@@ -9554,7 +10085,10 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
     fn test_repair_orphaned_tool_calls_records_denials() {
         let mut messages = vec![assistant_tool_use_message(&[("call_1", "write")])];
         let mut pending = HashMap::new();
-        pending.insert("call_1".to_string(), (false, None, ExecutionSource::Native));
+        pending.insert(
+            "call_1".to_string(),
+            (false, None, ExecutionSource::Native, None),
+        );
 
         repair_orphaned_tool_calls(&mut messages, &mut pending);
 

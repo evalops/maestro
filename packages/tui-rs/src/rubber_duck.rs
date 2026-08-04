@@ -552,7 +552,13 @@ async fn drain_events(
                     ),
                     Err(message) => (false, crate::agent::ToolResult::failure(message)),
                 };
-                let _ = tool_tx.send((call_id, approved, Some(result), ExecutionSource::Native));
+                let _ = tool_tx.send((
+                    call_id,
+                    approved,
+                    Some(result),
+                    ExecutionSource::Native,
+                    None,
+                ));
             }
             FromAgent::ResponseEnd { response_id, .. } if drain.on_response_end(&response_id) => {
                 break;

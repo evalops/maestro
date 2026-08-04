@@ -3,6 +3,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Condvar;
 use tempfile::tempdir;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use super::*;
 use crate::headless::messages::{CodexSubagentContinuityEdge, ToolRetryDecisionAction};
 use crate::headless::PendingApproval;
@@ -271,10 +274,12 @@ impl HostedRunnerHeadlessMessageExecutor for SteeringLifecycleExecutor {
         ))
     }
 
-    fn drain(&self) -> Result<Vec<FromAgentMessage>, HostedRunnerError> {
-        Ok(std::mem::take(
-            &mut *self.queued.lock().expect("steering lifecycle events"),
-        ))
+    fn drain(&self) -> Result<HostedRunnerDrainResult, HostedRunnerError> {
+        Ok(HostedRunnerDrainResult {
+            messages: std::mem::take(&mut *self.queued.lock().expect("steering lifecycle events")),
+            consumed_response_keys: Vec::new(),
+            rejected_response_keys: Vec::new(),
+        })
     }
 }
 
@@ -439,7 +444,7 @@ impl HostedRunnerHeadlessMessageExecutor for FailingPumpRuntimeExecutor {
         ))
     }
 
-    fn drain(&self) -> Result<Vec<FromAgentMessage>, HostedRunnerError> {
+    fn drain(&self) -> Result<HostedRunnerDrainResult, HostedRunnerError> {
         Err(HostedRunnerError::internal("pump drain failed"))
     }
 }
@@ -475,10 +480,12 @@ impl HostedRunnerHeadlessMessageExecutor for PumpOnlyRuntimeExecutor {
         ))
     }
 
-    fn drain(&self) -> Result<Vec<FromAgentMessage>, HostedRunnerError> {
-        Ok(std::mem::take(
-            &mut *self.queued.lock().expect("queued messages"),
-        ))
+    fn drain(&self) -> Result<HostedRunnerDrainResult, HostedRunnerError> {
+        Ok(HostedRunnerDrainResult {
+            messages: std::mem::take(&mut *self.queued.lock().expect("queued messages")),
+            consumed_response_keys: Vec::new(),
+            rejected_response_keys: Vec::new(),
+        })
     }
 }
 
@@ -625,6 +632,179 @@ async fn attach_thread_controller(
             .expect("subscription id")
             .to_string(),
     )
+}
+
+fn response_headers(
+    connection_id: &str,
+    subscription_id: &str,
+    capability: &str,
+    idempotency_key: &str,
+) -> HashMap<String, String> {
+    [
+        (
+            "x-maestro-headless-connection-id".to_string(),
+            connection_id.to_string(),
+        ),
+        (
+            "x-maestro-headless-subscriber-id".to_string(),
+            subscription_id.to_string(),
+        ),
+        (
+            "x-maestro-headless-connection-capability".to_string(),
+            capability.to_string(),
+        ),
+        (
+            "x-maestro-idempotency-key".to_string(),
+            idempotency_key.to_string(),
+        ),
+    ]
+    .into_iter()
+    .collect()
+}
+
+#[cfg(unix)]
+fn create_response_consumer_script(
+    directory: &Path,
+    name: &str,
+    log_path: &Path,
+    acknowledge: bool,
+    acknowledgement_delay: Option<&str>,
+) -> PathBuf {
+    let script_path = directory.join(name);
+    let action = if acknowledge {
+        if let Some(delay) = acknowledgement_delay {
+            format!(
+                "sleep {delay}; printf '{{\"type\":\"response_accepted\",\"request_id\":\"restart-call\"}}\\n'"
+            )
+        } else {
+            "printf '{\"type\":\"response_accepted\",\"request_id\":\"restart-call\"}\\n'"
+                .to_string()
+        }
+    } else {
+        "sleep 1.1; exit 0".to_string()
+    };
+    std::fs::write(
+        &script_path,
+        format!(
+            r#"#!/bin/sh
+printf '{{"type":"ready","model":"test","provider":"test"}}\n'
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"tool_response"'*)
+      printf '%s\n' "$line" >> "{}"
+      {action}
+      ;;
+  esac
+done
+"#,
+            log_path.display()
+        ),
+    )
+    .expect("response consumer script");
+    let mut permissions = std::fs::metadata(&script_path)
+        .expect("script metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&script_path, permissions).expect("script permissions");
+    script_path
+}
+
+#[cfg(unix)]
+fn create_reject_then_accept_script(
+    directory: &Path,
+    log_path: &Path,
+    rejection_delay: Option<&str>,
+) -> PathBuf {
+    let script_path = directory.join("reject-then-accept.sh");
+    let count_path = directory.join("reject-count");
+    std::fs::write(
+        &script_path,
+        format!(
+            r#"#!/bin/sh
+printf '{{"type":"ready","model":"test","provider":"test"}}\n'
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"tool_response"'*)
+      printf '%s\n' "$line" >> "{}"
+      count=0
+      if [ -f "{}" ]; then count=$(cat "{}"); fi
+      count=$((count + 1))
+      printf '%s' "$count" > "{}"
+      if [ "$count" -eq 1 ]; then
+        {}
+        printf '{{"type":"error","request_id":"retry-call","message":"tool call retry-call is not awaiting a decision","fatal":false,"error_type":"protocol"}}\n'
+      else
+        printf '{{"type":"response_accepted","request_id":"retry-call"}}\n'
+      fi
+      ;;
+  esac
+done
+"#,
+            log_path.display(),
+            count_path.display(),
+            count_path.display(),
+            count_path.display(),
+            rejection_delay
+                .map(|delay| format!("sleep {delay}"))
+                .unwrap_or_default(),
+        ),
+    )
+    .expect("reject-then-accept script");
+    let mut permissions = std::fs::metadata(&script_path)
+        .expect("script metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&script_path, permissions).expect("script permissions");
+    script_path
+}
+
+#[cfg(unix)]
+fn create_delayed_identity_ack_script(
+    directory: &Path,
+    name: &str,
+    log_path: &Path,
+    message_type: &str,
+    request_id: &str,
+) -> PathBuf {
+    let script_path = directory.join(name);
+    std::fs::write(
+        &script_path,
+        format!(
+            r#"#!/bin/sh
+printf '{{"type":"ready","model":"test","provider":"test"}}\n'
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"{message_type}"'*)
+      printf '%s\n' "$line" >> "{}"
+      sleep 0.65
+      printf '{{"type":"response_accepted","request_id":"{request_id}"}}\n'
+      ;;
+  esac
+done
+"#,
+            log_path.display(),
+        ),
+    )
+    .expect("delayed identity acknowledgement script");
+    let mut permissions = std::fs::metadata(&script_path)
+        .expect("script metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&script_path, permissions).expect("script permissions");
+    script_path
+}
+
+#[cfg(unix)]
+async fn connected_supervisor_for_script(script_path: &Path) -> Arc<Mutex<AgentSupervisor>> {
+    let mut config = crate::headless::SupervisorConfig::default();
+    config.transport.cli_path = script_path.display().to_string();
+    config.auto_reconnect = false;
+    let mut supervisor = AgentSupervisor::new(config);
+    supervisor.connect().await.expect("connect scripted child");
+    let _ = supervisor.recv().await.expect("connected");
+    let _ = supervisor.recv().await.expect("healthy");
+    let _ = supervisor.recv().await.expect("ready");
+    Arc::new(Mutex::new(supervisor))
 }
 
 #[tokio::test]
@@ -6689,6 +6869,1306 @@ async fn response_messages_cover_input_client_tool_retry_and_persist_idempotency
     restored.shutdown().await;
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queued_response_restarts_pending_and_consumes_once_after_child_exit() {
+    let workspace = tempdir().expect("workspace");
+    let fixtures = tempdir().expect("fixtures");
+    let first_log = fixtures.path().join("first.log");
+    let first_script =
+        create_response_consumer_script(fixtures.path(), "first-child.sh", &first_log, false, None);
+    let first_supervisor = connected_supervisor_for_script(&first_script).await;
+    let first_executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(
+        &first_supervisor,
+    )));
+    let first = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        first_executor.clone(),
+    )
+    .await
+    .expect("first hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &first.base_url(), "conn_restart_first").await;
+    let headers = |connection_id: &str, capability: &str, subscription_id: &str| {
+        [
+            (
+                "x-maestro-headless-connection-id".to_string(),
+                connection_id.to_string(),
+            ),
+            (
+                "x-maestro-headless-subscriber-id".to_string(),
+                subscription_id.to_string(),
+            ),
+            (
+                "x-maestro-headless-connection-capability".to_string(),
+                capability.to_string(),
+            ),
+            (
+                "x-maestro-idempotency-key".to_string(),
+                "restart-key".to_string(),
+            ),
+        ]
+        .into_iter()
+        .collect::<HashMap<_, _>>()
+    };
+    let response = ToAgentMessage::ToolResponse {
+        call_id: "restart-call".to_string(),
+        tool_execution_id: Some("restart-execution".to_string()),
+        approved: true,
+        result: None,
+    };
+
+    let first_result = handle_message(
+        first.shared.clone(),
+        "sess_test",
+        headers("conn_restart_first", &capability, &subscription_id),
+        response.clone(),
+    )
+    .await
+    .expect("queue response in first child");
+    let ResponseBody::Json { body, .. } = first_result else {
+        panic!("queued response must return JSON");
+    };
+    assert!(body["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("pending native consumption")));
+    let duplicate_while_queued = handle_message(
+        first.shared.clone(),
+        "sess_test",
+        headers("conn_restart_first", &capability, &subscription_id),
+        response.clone(),
+    )
+    .await
+    .expect("live queued response must reconcile without redispatch");
+    let ResponseBody::Json { body, .. } = duplicate_while_queued else {
+        panic!("queued reconciliation must return JSON");
+    };
+    assert!(body["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("pending native consumption")));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    first.shutdown().await;
+    first_supervisor
+        .lock()
+        .expect("first supervisor")
+        .shutdown();
+    assert_eq!(
+        std::fs::read_to_string(&first_log)
+            .expect("first child log")
+            .lines()
+            .count(),
+        1
+    );
+
+    let second_log = fixtures.path().join("second.log");
+    let second_script = create_response_consumer_script(
+        fixtures.path(),
+        "second-child.sh",
+        &second_log,
+        true,
+        None,
+    );
+    let second_supervisor = connected_supervisor_for_script(&second_script).await;
+    let second_executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(
+        &second_supervisor,
+    )));
+    let second = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        second_executor,
+    )
+    .await
+    .expect("restarted hosted runner");
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &second.base_url(), "conn_restart_second").await;
+    let retry_headers = headers("conn_restart_second", &capability, &subscription_id);
+
+    handle_message(
+        second.shared.clone(),
+        "sess_test",
+        retry_headers.clone(),
+        response.clone(),
+    )
+    .await
+    .expect("restart must redispatch pending response");
+    let replay = handle_message(second.shared.clone(), "sess_test", retry_headers, response)
+        .await
+        .expect("completed response replay");
+    let ResponseBody::Json { body, .. } = replay else {
+        panic!("replay must return JSON");
+    };
+    assert_eq!(body["replayed"], true);
+    assert_eq!(
+        std::fs::read_to_string(&second_log)
+            .expect("second child log")
+            .lines()
+            .count(),
+        1,
+        "restart retry must be consumed exactly once"
+    );
+    second.shutdown().await;
+    second_supervisor
+        .lock()
+        .expect("second supervisor")
+        .shutdown();
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn correlated_protocol_rejection_rolls_back_ownership_and_allows_retry() {
+    let workspace = tempdir().expect("workspace");
+    let fixtures = tempdir().expect("fixtures");
+    let log_path = fixtures.path().join("rejected-responses.log");
+    let script = create_reject_then_accept_script(fixtures.path(), &log_path, None);
+    let supervisor = connected_supervisor_for_script(&script).await;
+    let executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(
+        &supervisor,
+    )));
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+    )
+    .await
+    .expect("hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), "conn_rejection").await;
+    let headers = response_headers(
+        "conn_rejection",
+        &subscription_id,
+        &capability,
+        "rejected-key",
+    );
+    let response = ToAgentMessage::ToolResponse {
+        call_id: "retry-call".to_string(),
+        tool_execution_id: Some("retry-execution".to_string()),
+        approved: true,
+        result: None,
+    };
+
+    let error = match handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        headers.clone(),
+        response.clone(),
+    )
+    .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("correlated protocol rejection must not return success"),
+    };
+    assert_eq!(error.code, HostedRunnerErrorCode::RuntimeFailed);
+    assert!(error.message.contains("not awaiting a decision"));
+    {
+        let state = handle
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!state
+            .pending_response_idempotency
+            .contains_key("rejected-key"));
+    }
+    assert!(!executor
+        .queued_responses
+        .lock()
+        .expect("queued responses")
+        .contains_key("rejected-key"));
+    assert!(
+        !load_executor_response_ledger(workspace.path(), "sess_test")
+            .expect("response ledger")
+            .iter()
+            .any(|(key, _)| key == "rejected-key")
+    );
+
+    handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        headers.clone(),
+        response.clone(),
+    )
+    .await
+    .expect("corrected retry dispatches");
+    let replay = handle_message(handle.shared.clone(), "sess_test", headers, response)
+        .await
+        .expect("accepted retry replays");
+    let ResponseBody::Json { body, .. } = replay else {
+        panic!("accepted retry replay must return JSON");
+    };
+    assert_eq!(body["replayed"], true);
+    assert_eq!(
+        std::fs::read_to_string(&log_path)
+            .expect("rejected response log")
+            .lines()
+            .count(),
+        2,
+        "one rejected dispatch and one corrected dispatch are expected"
+    );
+    handle.shutdown().await;
+    supervisor.lock().expect("supervisor").shutdown();
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_protocol_rejection_after_queued_return_is_rolled_back_by_event_pump() {
+    let workspace = tempdir().expect("workspace");
+    let fixtures = tempdir().expect("fixtures");
+    let log_path = fixtures.path().join("delayed-rejection.log");
+    let script = create_reject_then_accept_script(fixtures.path(), &log_path, Some("0.65"));
+    let supervisor = connected_supervisor_for_script(&script).await;
+    let executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(
+        &supervisor,
+    )));
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+    )
+    .await
+    .expect("hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), "conn_delayed_rejection").await;
+    let headers = response_headers(
+        "conn_delayed_rejection",
+        &subscription_id,
+        &capability,
+        "delayed-rejected-key",
+    );
+    let response = ToAgentMessage::ToolResponse {
+        call_id: "retry-call".to_string(),
+        tool_execution_id: Some("delayed-retry-execution".to_string()),
+        approved: true,
+        result: None,
+    };
+
+    let queued = handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        headers.clone(),
+        response.clone(),
+    )
+    .await
+    .expect("response is queued before delayed rejection");
+    let ResponseBody::Json { body, .. } = queued else {
+        panic!("queued response must return JSON");
+    };
+    assert!(body["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("pending native consumption")));
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    {
+        let state = handle
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!state
+            .pending_response_idempotency
+            .contains_key("delayed-rejected-key"));
+    }
+    assert!(!executor
+        .queued_responses
+        .lock()
+        .expect("queued responses")
+        .contains_key("delayed-rejected-key"));
+    assert!(!executor
+        .memory_completed_responses
+        .lock()
+        .expect("memory completion")
+        .contains_key("delayed-rejected-key"));
+    assert!(
+        !load_executor_response_ledger(workspace.path(), "sess_test")
+            .expect("response ledger")
+            .iter()
+            .any(|(key, _)| key == "delayed-rejected-key")
+    );
+
+    handle_message(handle.shared.clone(), "sess_test", headers, response)
+        .await
+        .expect("corrected same-key retry dispatches after delayed rollback");
+    assert_eq!(
+        std::fs::read_to_string(&log_path)
+            .expect("delayed rejection log")
+            .lines()
+            .count(),
+        2
+    );
+    handle.shutdown().await;
+    supervisor.lock().expect("supervisor").shutdown();
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_rejection_rollback_survives_thread_persistence_failure() {
+    let workspace = tempdir().expect("workspace");
+    let fixtures = tempdir().expect("fixtures");
+    let log_path = fixtures.path().join("delayed-rejection-persistence.log");
+    let script = create_reject_then_accept_script(fixtures.path(), &log_path, Some("0.65"));
+    let supervisor = connected_supervisor_for_script(&script).await;
+    let executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(
+        &supervisor,
+    )));
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+    )
+    .await
+    .expect("hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), "conn_rejection_persist").await;
+    let headers = response_headers(
+        "conn_rejection_persist",
+        &subscription_id,
+        &capability,
+        "rejection-persist-key",
+    );
+    let response = ToAgentMessage::ToolResponse {
+        call_id: "retry-call".to_string(),
+        tool_execution_id: Some("rejection-persist-execution".to_string()),
+        approved: true,
+        result: None,
+    };
+
+    handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        headers.clone(),
+        response.clone(),
+    )
+    .await
+    .expect("response is queued before delayed rejection");
+    // The pump's rejection tick persists twice: publishing the correlated
+    // protocol Error is a lifecycle boundary, then the rejection rollback
+    // persists the removed pending records. Fail both so the rollback path
+    // itself observes a journal write failure.
+    handle.shared.fail_next_thread_persistences(2);
+    tokio::time::sleep(Duration::from_millis(900)).await;
+
+    // The in-memory rollback happened even though the journal write failed,
+    // and the event pump must survive to retry the persistence.
+    {
+        let state = handle
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!state
+            .pending_response_idempotency
+            .contains_key("rejection-persist-key"));
+    }
+    assert!(!executor
+        .queued_responses
+        .lock()
+        .expect("queued responses")
+        .contains_key("rejection-persist-key"));
+    assert!(!handle
+        .shared
+        .event_pump_task
+        .lock()
+        .await
+        .as_ref()
+        .expect("event pump task")
+        .is_finished());
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !handle
+                .shared
+                .thread_persistence_retry_pending
+                .load(Ordering::Acquire)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("event pump retries the thread journal persistence");
+    assert_eq!(
+        std::fs::read_to_string(&log_path)
+            .expect("delayed rejection log")
+            .lines()
+            .count(),
+        1,
+        "only the rejected dispatch reaches the native child in this test"
+    );
+    handle.shutdown().await;
+    supervisor.lock().expect("supervisor").shutdown();
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_rejection_survives_ledger_cleanup_failure() {
+    let workspace = tempdir().expect("workspace");
+    let fixtures = tempdir().expect("fixtures");
+    let log_path = fixtures.path().join("delayed-rejection-ledger.log");
+    let script = create_reject_then_accept_script(fixtures.path(), &log_path, Some("0.65"));
+    let supervisor = connected_supervisor_for_script(&script).await;
+    let executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(
+        &supervisor,
+    )));
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+    )
+    .await
+    .expect("hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), "conn_rejection_ledger_pump").await;
+    let headers = response_headers(
+        "conn_rejection_ledger_pump",
+        &subscription_id,
+        &capability,
+        "pump-ledger-key",
+    );
+    let response = ToAgentMessage::ToolResponse {
+        call_id: "retry-call".to_string(),
+        tool_execution_id: Some("pump-ledger-execution".to_string()),
+        approved: true,
+        result: None,
+    };
+
+    handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        headers.clone(),
+        response.clone(),
+    )
+    .await
+    .expect("response is queued before delayed rejection");
+    executor.fail_next_ledger_persistences(1);
+    tokio::time::sleep(Duration::from_millis(900)).await;
+
+    // The executor drain observed the rejection; the ledger cleanup failure
+    // must not fail the drain and kill the event pump.
+    assert!(!handle
+        .shared
+        .event_pump_task
+        .lock()
+        .await
+        .as_ref()
+        .expect("event pump task")
+        .is_finished());
+    {
+        let state = handle
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!state
+            .pending_response_idempotency
+            .contains_key("pump-ledger-key"));
+    }
+    assert!(!executor
+        .queued_responses
+        .lock()
+        .expect("queued responses")
+        .contains_key("pump-ledger-key"));
+    assert!(load_executor_response_ledger(workspace.path(), "sess_test")
+        .expect("response ledger")
+        .iter()
+        .any(|(key, dispatched)| key == "pump-ledger-key" && !dispatched));
+
+    handle_message(handle.shared.clone(), "sess_test", headers, response)
+        .await
+        .expect("corrected same-key retry dispatches despite the stale pending entry");
+    assert_eq!(
+        std::fs::read_to_string(&log_path)
+            .expect("delayed rejection ledger log")
+            .lines()
+            .count(),
+        2
+    );
+    handle.shutdown().await;
+    supervisor.lock().expect("supervisor").shutdown();
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejected_response_releases_ownership_when_ledger_cleanup_fails() {
+    let workspace = tempdir().expect("workspace");
+    let fixtures = tempdir().expect("fixtures");
+    let log_path = fixtures.path().join("rejected-ledger-failure.log");
+    let script = create_reject_then_accept_script(fixtures.path(), &log_path, None);
+    let supervisor = connected_supervisor_for_script(&script).await;
+    let executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(
+        &supervisor,
+    )));
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+    )
+    .await
+    .expect("hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), "conn_rejection_ledger").await;
+    let headers = response_headers(
+        "conn_rejection_ledger",
+        &subscription_id,
+        &capability,
+        "ownership-rejected-key",
+    );
+    let response = ToAgentMessage::ToolResponse {
+        call_id: "retry-call".to_string(),
+        tool_execution_id: Some("ownership-retry-execution".to_string()),
+        approved: true,
+        result: None,
+    };
+
+    executor.fail_next_ledger_persistences(1);
+    let error = match handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        headers.clone(),
+        response.clone(),
+    )
+    .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("correlated protocol rejection must not return success"),
+    };
+    // The caller still sees the rejection, not the internal ledger failure.
+    assert_eq!(error.code, HostedRunnerErrorCode::RuntimeFailed);
+    assert!(error.message.contains("not awaiting a decision"));
+    // The in-memory ownership slot is released even though the ledger
+    // cleanup failed; only the stale pending entry remains on disk.
+    assert!(!executor
+        .queued_responses
+        .lock()
+        .expect("queued responses")
+        .contains_key("ownership-rejected-key"));
+    assert!(load_executor_response_ledger(workspace.path(), "sess_test")
+        .expect("response ledger")
+        .iter()
+        .any(|(key, dispatched)| key == "ownership-rejected-key" && !dispatched));
+
+    // A same-key retry is admitted (pending entries never dedup) and the
+    // accepted retry marks the stale entry dispatched.
+    handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        headers.clone(),
+        response.clone(),
+    )
+    .await
+    .expect("corrected retry dispatches despite the stale pending entry");
+    assert!(load_executor_response_ledger(workspace.path(), "sess_test")
+        .expect("response ledger after retry")
+        .iter()
+        .any(|(key, dispatched)| key == "ownership-rejected-key" && *dispatched));
+    assert_eq!(
+        std::fs::read_to_string(&log_path)
+            .expect("rejected ledger failure log")
+            .lines()
+            .count(),
+        2
+    );
+    handle.shutdown().await;
+    supervisor.lock().expect("supervisor").shutdown();
+}
+
+#[cfg(unix)]
+async fn assert_unique_protocol_request_owner_across_restart(
+    message: ToAgentMessage,
+    message_type: &str,
+    request_id: &str,
+) {
+    let workspace = tempdir().expect("workspace");
+    let fixtures = tempdir().expect("fixtures");
+    let first_log = fixtures.path().join(format!("{message_type}-first.log"));
+    let first_script = create_delayed_identity_ack_script(
+        fixtures.path(),
+        &format!("{message_type}-first.sh"),
+        &first_log,
+        message_type,
+        request_id,
+    );
+    let first_supervisor = connected_supervisor_for_script(&first_script).await;
+    let first_executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(
+        &first_supervisor,
+    )));
+    let first = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        first_executor,
+    )
+    .await
+    .expect("first hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &first.base_url(), "conn_identity_first").await;
+    let owner_headers = response_headers(
+        "conn_identity_first",
+        &subscription_id,
+        &capability,
+        "identity-owner-key",
+    );
+    let competing_headers = response_headers(
+        "conn_identity_first",
+        &subscription_id,
+        &capability,
+        "identity-competing-key",
+    );
+
+    handle_message(
+        first.shared.clone(),
+        "sess_test",
+        owner_headers.clone(),
+        message.clone(),
+    )
+    .await
+    .expect("owner response queues");
+    let conflict = match handle_message(
+        first.shared.clone(),
+        "sess_test",
+        competing_headers.clone(),
+        message.clone(),
+    )
+    .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("second key must not own the same protocol request"),
+    };
+    assert_eq!(conflict.code, HostedRunnerErrorCode::IdempotencyConflict);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let replay = handle_message(
+        first.shared.clone(),
+        "sess_test",
+        owner_headers,
+        message.clone(),
+    )
+    .await
+    .expect("owner key replays after delayed acknowledgement");
+    let ResponseBody::Json { body, .. } = replay else {
+        panic!("owner replay must return JSON");
+    };
+    assert_eq!(body["replayed"], true);
+    assert_eq!(
+        std::fs::read_to_string(&first_log)
+            .expect("first child log")
+            .lines()
+            .count(),
+        1
+    );
+    first.shutdown().await;
+    first_supervisor
+        .lock()
+        .expect("first supervisor")
+        .shutdown();
+
+    let second_log = fixtures.path().join(format!("{message_type}-second.log"));
+    let second_script = create_delayed_identity_ack_script(
+        fixtures.path(),
+        &format!("{message_type}-second.sh"),
+        &second_log,
+        message_type,
+        request_id,
+    );
+    let second_supervisor = connected_supervisor_for_script(&second_script).await;
+    let second_executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(
+        &second_supervisor,
+    )));
+    let second = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        second_executor,
+    )
+    .await
+    .expect("restarted hosted runner");
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &second.base_url(), "conn_identity_second").await;
+    let replay = handle_message(
+        second.shared.clone(),
+        "sess_test",
+        response_headers(
+            "conn_identity_second",
+            &subscription_id,
+            &capability,
+            "identity-owner-key",
+        ),
+        message.clone(),
+    )
+    .await
+    .expect("durable owner key replays");
+    let ResponseBody::Json { body, .. } = replay else {
+        panic!("durable owner replay must return JSON");
+    };
+    assert_eq!(body["replayed"], true);
+    let conflict = match handle_message(
+        second.shared.clone(),
+        "sess_test",
+        response_headers(
+            "conn_identity_second",
+            &subscription_id,
+            &capability,
+            "identity-competing-key",
+        ),
+        message,
+    )
+    .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("request ownership must survive restart"),
+    };
+    assert_eq!(conflict.code, HostedRunnerErrorCode::IdempotencyConflict);
+    assert!(
+        !second_log.exists(),
+        "restart must not redispatch either key"
+    );
+    second.shutdown().await;
+    second_supervisor
+        .lock()
+        .expect("second supervisor")
+        .shutdown();
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_tool_response_has_one_idempotency_owner_across_restart() {
+    assert_unique_protocol_request_owner_across_restart(
+        ToAgentMessage::ToolResponse {
+            call_id: "unique-tool-call".to_string(),
+            tool_execution_id: Some("unique-tool-execution".to_string()),
+            approved: true,
+            result: None,
+        },
+        "tool_response",
+        "unique-tool-call",
+    )
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_server_request_response_has_one_idempotency_owner_across_restart() {
+    assert_unique_protocol_request_owner_across_restart(
+        ToAgentMessage::ServerRequestResponse {
+            request_id: "unique-server-request".to_string(),
+            request_type: ServerRequestType::UserInput,
+            approved: None,
+            result: None,
+            content: Some(Vec::new()),
+            is_error: Some(false),
+            decision_action: None,
+            reason: Some("answer".to_string()),
+        },
+        "server_request_response",
+        "unique-server-request",
+    )
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_ack_event_pump_finalizes_before_restart_without_redispatch() {
+    let workspace = tempdir().expect("workspace");
+    let fixtures = tempdir().expect("fixtures");
+    let first_log = fixtures.path().join("delayed-first.log");
+    let first_script = create_response_consumer_script(
+        fixtures.path(),
+        "delayed-first-child.sh",
+        &first_log,
+        true,
+        Some("0.65"),
+    );
+    let first_supervisor = connected_supervisor_for_script(&first_script).await;
+    let first_executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(
+        &first_supervisor,
+    )));
+    let first = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        first_executor.clone(),
+    )
+    .await
+    .expect("first hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &first.base_url(), "conn_delayed_first").await;
+    let response = ToAgentMessage::ToolResponse {
+        call_id: "restart-call".to_string(),
+        tool_execution_id: Some("delayed-restart-execution".to_string()),
+        approved: true,
+        result: None,
+    };
+    let headers = response_headers(
+        "conn_delayed_first",
+        &subscription_id,
+        &capability,
+        "delayed-restart-key",
+    );
+
+    handle_message(first.shared.clone(), "sess_test", headers, response.clone())
+        .await
+        .expect("queued delayed response");
+    first_executor.fail_next_ledger_persistences(1);
+    first.shared.fail_next_thread_persistences(1);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let memory_empty = first_executor
+                .memory_completed_responses
+                .lock()
+                .expect("memory-completed responses")
+                .is_empty();
+            let ledger_completed = load_executor_response_ledger(workspace.path(), "sess_test")
+                .is_ok_and(|ledger| {
+                    ledger
+                        .iter()
+                        .any(|(key, dispatched)| key == "delayed-restart-key" && *dispatched)
+                });
+            if memory_empty && ledger_completed {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("event pump ledger persistence recovery");
+    {
+        let state = first
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(state
+            .response_idempotency_keys
+            .contains("delayed-restart-key"));
+        assert!(!state
+            .pending_response_idempotency
+            .contains_key("delayed-restart-key"));
+    }
+    assert!(first_executor
+        .memory_completed_responses
+        .lock()
+        .expect("memory-completed responses")
+        .is_empty());
+    assert!(load_executor_response_ledger(workspace.path(), "sess_test")
+        .expect("recovered executor ledger")
+        .iter()
+        .any(|(key, dispatched)| key == "delayed-restart-key" && *dispatched));
+    assert!(!first
+        .shared
+        .thread_persistence_retry_pending
+        .load(Ordering::Acquire));
+    assert!(!first
+        .shared
+        .event_pump_task
+        .lock()
+        .await
+        .as_ref()
+        .expect("event pump task")
+        .is_finished());
+    first.shutdown().await;
+    first_supervisor
+        .lock()
+        .expect("first supervisor")
+        .shutdown();
+    assert_eq!(
+        std::fs::read_to_string(&first_log)
+            .expect("first child log")
+            .lines()
+            .count(),
+        1
+    );
+
+    let second_log = fixtures.path().join("delayed-second.log");
+    let second_script = create_response_consumer_script(
+        fixtures.path(),
+        "delayed-second-child.sh",
+        &second_log,
+        true,
+        None,
+    );
+    let second_supervisor = connected_supervisor_for_script(&second_script).await;
+    let second_executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(
+        &second_supervisor,
+    )));
+    let second = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        second_executor,
+    )
+    .await
+    .expect("restarted hosted runner");
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &second.base_url(), "conn_delayed_second").await;
+    let replay = handle_message(
+        second.shared.clone(),
+        "sess_test",
+        response_headers(
+            "conn_delayed_second",
+            &subscription_id,
+            &capability,
+            "delayed-restart-key",
+        ),
+        response,
+    )
+    .await
+    .expect("completed delayed response replay");
+    let ResponseBody::Json { body, .. } = replay else {
+        panic!("replay must return JSON");
+    };
+    assert_eq!(body["replayed"], true);
+    assert!(
+        !second_log.exists(),
+        "restart must not redispatch the response"
+    );
+    second.shutdown().await;
+    second_supervisor
+        .lock()
+        .expect("second supervisor")
+        .shutdown();
+}
+
+#[tokio::test]
+async fn pending_response_capacity_deduplicates_retries_without_evicting_live_key() {
+    let workspace = tempdir().expect("workspace");
+    let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+        .await
+        .expect("hosted runner");
+    let live_message = ToAgentMessage::ToolResponse {
+        call_id: "live-call".to_string(),
+        tool_execution_id: Some("live-execution".to_string()),
+        approved: true,
+        result: None,
+    };
+    {
+        let mut state = handle
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .pending_response_idempotency
+            .insert("live-key".to_string(), live_message.clone());
+        state.pending_response_idempotency_order =
+            std::iter::repeat_n("live-key".to_string(), MAX_RESPONSE_IDEMPOTENCY_RECORDS).collect();
+
+        upsert_pending_response_idempotency(
+            &mut state,
+            "live-key".to_string(),
+            live_message.clone(),
+        )
+        .unwrap();
+        for index in 0..(MAX_RESPONSE_IDEMPOTENCY_RECORDS - 1) {
+            upsert_pending_response_idempotency(
+                &mut state,
+                format!("other-key-{index:04}"),
+                ToAgentMessage::ToolResponse {
+                    call_id: format!("other-call-{index:04}"),
+                    tool_execution_id: None,
+                    approved: true,
+                    result: None,
+                },
+            )
+            .unwrap();
+        }
+
+        assert!(state.pending_response_idempotency.contains_key("live-key"));
+        assert_eq!(
+            state.pending_response_idempotency.len(),
+            MAX_RESPONSE_IDEMPOTENCY_RECORDS
+        );
+        assert_eq!(
+            state
+                .pending_response_idempotency_order
+                .iter()
+                .filter(|key| key.as_str() == "live-key")
+                .count(),
+            1
+        );
+    }
+    handle.shutdown().await;
+}
+
+#[test]
+fn executor_queue_capacity_rejects_new_ownership_without_evicting_live_keys() {
+    let workspace = tempdir().expect("workspace");
+    let supervisor = Arc::new(Mutex::new(AgentSupervisor::new(
+        crate::headless::SupervisorConfig::default(),
+    )));
+    let executor = AgentSupervisorHostedRunnerMessageExecutor::new(supervisor);
+    {
+        let mut queued = executor.queued_responses.lock().expect("queued responses");
+        for index in 0..MAX_RESPONSE_IDEMPOTENCY_RECORDS {
+            queued.insert(
+                format!("live-key-{index}"),
+                QueuedResponseOwnership {
+                    request_id: format!("live-call-{index}"),
+                    transport_generation: 0,
+                    workspace_root: workspace.path().to_path_buf(),
+                    session_id: "sess_test".to_string(),
+                },
+            );
+        }
+    }
+    let context = HostedRunnerHeadlessMessageContext {
+        session_id: "sess_test".to_string(),
+        connection_id: "conn_test".to_string(),
+        subscription_id: None,
+        role: ConnectionRole::Controller,
+        controller_connection_id: Some("conn_test".to_string()),
+        client_protocol_version: None,
+        client_info: None,
+        capabilities: None,
+        opt_out_notifications: None,
+        lease_expires_at: Utc::now().to_rfc3339(),
+        workspace_root: workspace.path().to_path_buf(),
+        response_idempotency_key: Some("overflow-key".to_string()),
+    };
+
+    let error = executor
+        .execute(
+            &context,
+            ToAgentMessage::ToolResponse {
+                call_id: "overflow-call".to_string(),
+                tool_execution_id: None,
+                approved: true,
+                result: None,
+            },
+        )
+        .expect_err("new ownership must be backpressured");
+
+    assert_eq!(error.code, HostedRunnerErrorCode::ResponseCapacity);
+    let queued = executor.queued_responses.lock().expect("queued responses");
+    assert_eq!(queued.len(), MAX_RESPONSE_IDEMPOTENCY_RECORDS);
+    assert!(queued.contains_key("live-key-0"));
+    drop(queued);
+    executor
+        .queued_responses
+        .lock()
+        .expect("queued responses")
+        .clear();
+    let live_ledger = (0..MAX_RESPONSE_IDEMPOTENCY_RECORDS)
+        .map(|index| (format!("ledger-live-{index}"), false))
+        .collect::<Vec<_>>();
+    persist_executor_response_ledger(workspace.path(), "sess_test", &live_ledger).unwrap();
+    let error = executor
+        .execute(
+            &context,
+            ToAgentMessage::ToolResponse {
+                call_id: "ledger-overflow-call".to_string(),
+                tool_execution_id: None,
+                approved: true,
+                result: None,
+            },
+        )
+        .expect_err("live ledger capacity must be backpressured");
+    assert_eq!(error.code, HostedRunnerErrorCode::ResponseCapacity);
+    let reloaded = load_executor_response_ledger(workspace.path(), "sess_test").unwrap();
+    assert_eq!(reloaded.len(), MAX_RESPONSE_IDEMPOTENCY_RECORDS);
+    assert!(reloaded
+        .iter()
+        .any(|(key, dispatched)| key == "ledger-live-0" && !*dispatched));
+}
+
+#[test]
+fn ledger_transaction_prevents_stale_admission_from_overwriting_delayed_ack() {
+    let workspace = tempdir().expect("workspace");
+    persist_executor_response_ledger(
+        workspace.path(),
+        "sess_test",
+        &[("acknowledged-key".to_string(), false)],
+    )
+    .unwrap();
+    let executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::new(
+        Mutex::new(AgentSupervisor::new(
+            crate::headless::SupervisorConfig::default(),
+        )),
+    )));
+    let loaded = Arc::new(std::sync::Barrier::new(2));
+    let resume = Arc::new(std::sync::Barrier::new(2));
+    executor.set_ledger_admission_barriers(Arc::clone(&loaded), Arc::clone(&resume));
+
+    let admission_executor = Arc::clone(&executor);
+    let admission_workspace = workspace.path().to_path_buf();
+    let admission = std::thread::spawn(move || {
+        admission_executor.admit_response_key(
+            &admission_workspace,
+            "sess_test",
+            "new-admission-key",
+            true,
+        )
+    });
+    loaded.wait();
+
+    let ownership = QueuedResponseOwnership {
+        request_id: "acknowledged-request".to_string(),
+        transport_generation: 0,
+        workspace_root: workspace.path().to_path_buf(),
+        session_id: "sess_test".to_string(),
+    };
+    let acknowledgement_executor = Arc::clone(&executor);
+    let (ack_done_tx, ack_done_rx) = std::sync::mpsc::channel();
+    let acknowledgement = std::thread::spawn(move || {
+        let result =
+            acknowledgement_executor.persist_consumed_response("acknowledged-key", &ownership);
+        ack_done_tx.send(()).unwrap();
+        result
+    });
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(
+        ack_done_rx.try_recv().is_err(),
+        "delayed acknowledgement must wait for the admission transaction"
+    );
+
+    resume.wait();
+    assert!(!admission.join().unwrap().unwrap());
+    acknowledgement.join().unwrap().unwrap();
+    let ledger = load_executor_response_ledger(workspace.path(), "sess_test").unwrap();
+    assert!(ledger
+        .iter()
+        .any(|(key, dispatched)| key == "acknowledged-key" && *dispatched));
+    assert!(ledger
+        .iter()
+        .any(|(key, dispatched)| key == "new-admission-key" && !*dispatched));
+
+    let restarted = AgentSupervisorHostedRunnerMessageExecutor::new(Arc::new(Mutex::new(
+        AgentSupervisor::new(crate::headless::SupervisorConfig::default()),
+    )));
+    let result = restarted
+        .execute(
+            &HostedRunnerHeadlessMessageContext {
+                session_id: "sess_test".to_string(),
+                connection_id: "conn_restart".to_string(),
+                subscription_id: None,
+                role: ConnectionRole::Controller,
+                controller_connection_id: Some("conn_restart".to_string()),
+                client_protocol_version: None,
+                client_info: None,
+                capabilities: None,
+                opt_out_notifications: None,
+                lease_expires_at: Utc::now().to_rfc3339(),
+                workspace_root: workspace.path().to_path_buf(),
+                response_idempotency_key: Some("acknowledged-key".to_string()),
+            },
+            ToAgentMessage::ToolResponse {
+                call_id: "acknowledged-request".to_string(),
+                tool_execution_id: None,
+                approved: true,
+                result: None,
+            },
+        )
+        .expect("restart must reconcile the completed ledger without transport");
+    assert_eq!(
+        result.execution,
+        HostedRunnerHeadlessMessageExecution::RuntimeHandled
+    );
+    assert!(restarted
+        .queued_responses
+        .lock()
+        .expect("restarted queued responses")
+        .is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn response_4097_is_backpressured_and_first_live_key_dispatches_once() {
+    let workspace = tempdir().expect("workspace");
+    let fixtures = tempdir().expect("fixtures");
+    let log_path = fixtures.path().join("capacity.log");
+    let script = create_response_consumer_script(
+        fixtures.path(),
+        "capacity-child.sh",
+        &log_path,
+        false,
+        None,
+    );
+    let supervisor = connected_supervisor_for_script(&script).await;
+    let executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(
+        &supervisor,
+    )));
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor,
+    )
+    .await
+    .expect("hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), "conn_capacity").await;
+    let first_message = ToAgentMessage::ToolResponse {
+        call_id: "restart-call".to_string(),
+        tool_execution_id: Some("capacity-first".to_string()),
+        approved: true,
+        result: None,
+    };
+    let first_headers = response_headers(
+        "conn_capacity",
+        &subscription_id,
+        &capability,
+        "capacity-key-0000",
+    );
+    handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        first_headers.clone(),
+        first_message.clone(),
+    )
+    .await
+    .expect("first queued response");
+    {
+        let mut state = handle
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for index in 1..MAX_RESPONSE_IDEMPOTENCY_RECORDS {
+            let key = format!("capacity-key-{index:04}");
+            state.pending_response_idempotency.insert(
+                key.clone(),
+                ToAgentMessage::ToolResponse {
+                    call_id: format!("capacity-call-{index:04}"),
+                    tool_execution_id: None,
+                    approved: true,
+                    result: None,
+                },
+            );
+            state.pending_response_idempotency_order.push_back(key);
+        }
+    }
+
+    let overflow = match handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        response_headers(
+            "conn_capacity",
+            &subscription_id,
+            &capability,
+            "capacity-key-4096",
+        ),
+        ToAgentMessage::ToolResponse {
+            call_id: "capacity-call-4096".to_string(),
+            tool_execution_id: None,
+            approved: true,
+            result: None,
+        },
+    )
+    .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("4097th distinct live response must be backpressured"),
+    };
+    assert_eq!(overflow.code, HostedRunnerErrorCode::ResponseCapacity);
+
+    handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        first_headers,
+        first_message,
+    )
+    .await
+    .expect("existing key reconciliation remains admitted");
+    assert_eq!(
+        std::fs::read_to_string(&log_path)
+            .expect("capacity child log")
+            .lines()
+            .count(),
+        1,
+        "the first live response must not be evicted or redispatched"
+    );
+    handle.shutdown().await;
+    supervisor.lock().expect("supervisor").shutdown();
+}
+
 #[test]
 fn response_ledger_read_errors_fail_closed() {
     let workspace = tempdir().expect("workspace");
@@ -6699,6 +8179,26 @@ fn response_ledger_read_errors_fail_closed() {
     let error = load_executor_response_ledger(workspace.path(), "sess_test")
         .expect_err("invalid ledger bytes must not be treated as an empty ledger");
     assert_eq!(error.code, HostedRunnerErrorCode::Internal);
+}
+
+#[test]
+fn acknowledged_response_ledger_write_failure_is_memory_only() {
+    let workspace = tempdir().expect("workspace");
+    std::fs::write(workspace.path().join(".maestro"), b"not a directory")
+        .expect("blocking ledger parent");
+
+    let executor = AgentSupervisorHostedRunnerMessageExecutor::new(Arc::new(Mutex::new(
+        AgentSupervisor::new(crate::headless::SupervisorConfig::default()),
+    )));
+    let ownership = QueuedResponseOwnership {
+        request_id: "request-acknowledged".to_string(),
+        transport_generation: 0,
+        workspace_root: workspace.path().to_path_buf(),
+        session_id: "sess_acknowledged".to_string(),
+    };
+    assert!(executor
+        .persist_consumed_response("response-key", &ownership)
+        .is_err());
 }
 
 #[tokio::test]
@@ -7180,4 +8680,94 @@ fn subscribe_accepts_supported_protocol_version() {
         Ok(_) => {}
         Err(error) => panic!("subscribe must accept the current protocol version: {error:?}"),
     }
+}
+
+#[cfg(unix)]
+async fn assert_unkeyed_delayed_response_releases_acknowledgement(script: &Path, call_id: &str) {
+    let workspace = tempdir().expect("workspace");
+    let supervisor = connected_supervisor_for_script(script).await;
+    let executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(
+        &supervisor,
+    )));
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+    )
+    .await
+    .expect("hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), "conn_unkeyed").await;
+    let mut request_headers = response_headers(
+        "conn_unkeyed",
+        &subscription_id,
+        &capability,
+        "removed-before-send",
+    );
+    request_headers.remove("x-maestro-idempotency-key");
+
+    handle_message(
+        handle.shared.clone(),
+        "sess_test",
+        request_headers,
+        ToAgentMessage::ToolResponse {
+            call_id: call_id.to_string(),
+            tool_execution_id: Some(format!("{call_id}-execution")),
+            approved: true,
+            result: None,
+        },
+    )
+    .await
+    .expect("queue unkeyed delayed response");
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let _ = executor.drain().expect("drain response outcome");
+            if executor
+                .queued_unkeyed_responses
+                .lock()
+                .expect("queued unkeyed responses")
+                .is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("unkeyed response acknowledgement cleanup");
+    assert_eq!(
+        supervisor
+            .lock()
+            .expect("supervisor")
+            .response_acknowledgement_count(),
+        0
+    );
+
+    handle.shutdown().await;
+    supervisor.lock().expect("supervisor").shutdown();
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_unkeyed_acceptance_releases_acknowledgement_capacity() {
+    let fixtures = tempdir().expect("fixtures");
+    let log = fixtures.path().join("accepted.log");
+    let script = create_response_consumer_script(
+        fixtures.path(),
+        "accept-unkeyed.sh",
+        &log,
+        true,
+        Some("0.65"),
+    );
+    assert_unkeyed_delayed_response_releases_acknowledgement(&script, "restart-call").await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_unkeyed_rejection_releases_acknowledgement_capacity() {
+    let fixtures = tempdir().expect("fixtures");
+    let log = fixtures.path().join("rejected.log");
+    let script = create_reject_then_accept_script(fixtures.path(), &log, Some("0.65"));
+    assert_unkeyed_delayed_response_releases_acknowledgement(&script, "retry-call").await;
 }

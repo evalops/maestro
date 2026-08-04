@@ -272,6 +272,7 @@ pub(super) async fn handle_pending_request_resume_endpoint(
             approved,
             result,
             ExecutionSource::RemoteClient,
+            None,
         ))
         .is_err()
     {
