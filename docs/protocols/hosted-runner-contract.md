@@ -42,7 +42,7 @@ flags or environment variables, but the resolved values are the contract.
 | Workspace root | `--workspace-root`, `MAESTRO_WORKSPACE_ROOT`, `WORKSPACE_ROOT` | yes |
 | Listen address | `--listen`, `--host`, `--port`, `MAESTRO_HOSTED_RUNNER_LISTEN`, `MAESTRO_HOSTED_RUNNER_HOST`, `MAESTRO_HOSTED_RUNNER_PORT`, `PORT` | yes |
 | Owner generation | `--owner-instance-id`, `MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID`, `REMOTE_RUNNER_OWNER_INSTANCE_ID` | required when Platform fences owners |
-| Runtime generation | `MAESTRO_SANDBOXWICH_PLACEMENT_GENERATION`, `MAESTRO_REMOTE_RUNNER_GENERATION` | required for managed durable threads |
+| Runtime generation | `MAESTRO_PLACEMENT_GENERATION`, `MAESTRO_SANDBOXWICH_PLACEMENT_GENERATION`, `MAESTRO_REMOTE_RUNNER_GENERATION` | required for managed durable threads; the canonical placement variable takes precedence |
 | Snapshot root | `--snapshot-root`, `MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT`, `REMOTE_RUNNER_SNAPSHOT_ROOT` | optional |
 | Restore manifest | `MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST`, `REMOTE_RUNNER_RESTORE_MANIFEST` | optional |
 | Workspace id | `--workspace-id`, `MAESTRO_REMOTE_RUNNER_WORKSPACE_ID`, `MAESTRO_WORKSPACE_ID` | optional |

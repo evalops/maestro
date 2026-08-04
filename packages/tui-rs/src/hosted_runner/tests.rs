@@ -2337,6 +2337,33 @@ fn resolves_env_config_with_hosted_runner_contract_names() {
 }
 
 #[test]
+fn canonical_placement_generation_wins_for_runtime_fencing() {
+    let workspace = tempdir().expect("workspace");
+    let mut env = base_hosted_runner_env(workspace.path());
+    let token_file = workspace.path().join("projected-token");
+    add_workload_identity_env(&mut env, &token_file);
+    env.insert(
+        "MAESTRO_SANDBOXWICH_PLACEMENT_GENERATION".to_string(),
+        "11".to_string(),
+    );
+    env.insert(
+        "MAESTRO_REMOTE_RUNNER_GENERATION".to_string(),
+        "12".to_string(),
+    );
+
+    let config = HostedRunnerConfig::from_env_map(&env).expect("config");
+
+    assert_eq!(config.runtime_generation, 7);
+    assert_eq!(
+        config
+            .workload_identity
+            .expect("workload identity")
+            .placement_generation,
+        7
+    );
+}
+
+#[test]
 fn defaults_env_only_hosted_runner_bind_to_wildcard_with_legacy_auth() {
     let workspace = tempdir().expect("workspace");
     let mut env = base_hosted_runner_env(workspace.path());
