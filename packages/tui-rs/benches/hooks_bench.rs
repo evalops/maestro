@@ -176,6 +176,7 @@ fn bench_integrated_system_post_tool_use(c: &mut Criterion) {
                 black_box(&serde_json::json!({"command": "ls"})),
                 black_box("output"),
                 black_box(false),
+                black_box(0),
             );
             black_box(result)
         });

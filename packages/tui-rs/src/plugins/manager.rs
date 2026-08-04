@@ -21,6 +21,7 @@ const PLUGIN_CLONE_TIMEOUT: Duration = Duration::from_mins(2);
 #[serde(rename_all = "lowercase")]
 pub enum PluginCapability {
     Skills,
+    Agents,
     Commands,
     Hooks,
     Mcp,
@@ -30,11 +31,22 @@ impl PluginCapability {
     pub fn parse(value: &str) -> Result<Self> {
         match value {
             "skills" => Ok(Self::Skills),
+            "agents" => Ok(Self::Agents),
             "commands" => Ok(Self::Commands),
             "hooks" => Ok(Self::Hooks),
             "mcp" => Ok(Self::Mcp),
             _ => bail!("unknown plugin capability: {value}"),
         }
+    }
+
+    /// Whether a missing capability entry in legacy `plugin-state.json`
+    /// should be treated as enabled.
+    ///
+    /// Pre-existing capabilities default on so older state files keep their
+    /// prior behavior. Capabilities introduced after those files were written
+    /// default off until an explicit grant is recorded.
+    fn defaults_enabled_when_absent(self) -> bool {
+        !matches!(self, Self::Agents)
     }
 }
 
@@ -85,7 +97,16 @@ impl PluginState {
         self.plugins
             .get(&plugin.to_lowercase())
             .is_none_or(|state| {
-                state.enabled && state.capabilities.get(&capability).copied().unwrap_or(true)
+                state.enabled
+                    && state
+                        .capabilities
+                        .get(&capability)
+                        .copied()
+                        // Missing entries for capabilities that existed when
+                        // the state file was written stay enabled. Newly
+                        // introduced capabilities (Agents) default off so an
+                        // upgrade does not activate them without a grant.
+                        .unwrap_or_else(|| capability.defaults_enabled_when_absent())
             })
     }
 }
@@ -332,6 +353,9 @@ fn capabilities_for(components: &super::PluginComponents) -> BTreeSet<PluginCapa
     let mut values = BTreeSet::new();
     if components.skills_dir.is_some() {
         values.insert(PluginCapability::Skills);
+    }
+    if components.agents_dir.is_some() {
+        values.insert(PluginCapability::Agents);
     }
     if components.commands_dir.is_some() {
         values.insert(PluginCapability::Commands);
@@ -617,6 +641,31 @@ mod tests {
 
         assert!(error.to_string().contains("invalid plugin-state.json"));
         assert!(!destination_root.join("retryable-plugin").exists());
+    }
+
+    #[test]
+    fn agents_capability_defaults_off_when_absent_from_legacy_state() {
+        let state = PluginState {
+            plugins: BTreeMap::from([(
+                "legacy".to_string(),
+                PluginTrustState {
+                    trusted_source: "local".to_string(),
+                    enabled: true,
+                    // No Agents entry: pre-dates that capability.
+                    capabilities: BTreeMap::from([(PluginCapability::Skills, true)]),
+                    ..Default::default()
+                },
+            )]),
+        };
+        assert!(state.capability_enabled("legacy", PluginCapability::Skills));
+        assert!(
+            !state.capability_enabled("legacy", PluginCapability::Agents),
+            "legacy state without an Agents grant must not activate agents/"
+        );
+        assert!(
+            state.capability_enabled("legacy", PluginCapability::Commands),
+            "pre-existing capabilities without an entry stay enabled"
+        );
     }
 
     #[test]

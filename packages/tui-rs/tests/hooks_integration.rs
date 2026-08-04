@@ -221,8 +221,8 @@ fn test_metrics_tracking() {
     system.execute_pre_tool_use("Write", "2", &serde_json::json!({}));
     system.execute_pre_tool_use("Bash", "3", &serde_json::json!({ "command": "ls" }));
 
-    system.execute_post_tool_use("Read", "1", &serde_json::json!({}), "content", false);
-    system.execute_post_tool_use("Write", "2", &serde_json::json!({}), "ok", false);
+    system.execute_post_tool_use("Read", "1", &serde_json::json!({}), "content", false, 0);
+    system.execute_post_tool_use("Write", "2", &serde_json::json!({}), "ok", false, 0);
 
     let metrics = system.metrics();
     assert_eq!(metrics.pre_tool_use_count, 3);
@@ -846,6 +846,7 @@ fn test_registry_post_tool_use_hook() {
         tool_input: serde_json::json!({"command": "ls"}),
         tool_output: "file1.txt\nfile2.txt".to_string(),
         is_error: false,
+        duration_ms: 0,
     };
 
     let result = registry.execute_post_tool_use(&input);
@@ -1267,7 +1268,7 @@ fn test_integrated_system_all_events_when_disabled() {
         HookResult::Continue
     ));
     assert!(matches!(
-        system.execute_post_tool_use("Bash", "1", &serde_json::json!({}), "output", false),
+        system.execute_post_tool_use("Bash", "1", &serde_json::json!({}), "output", false, 0),
         HookResult::Continue
     ));
     assert!(matches!(
@@ -1333,7 +1334,7 @@ fn test_integrated_system_metrics_comprehensive() {
     // Execute various hooks
     system.execute_pre_tool_use("Bash", "1", &serde_json::json!({}));
     system.execute_pre_tool_use("Read", "2", &serde_json::json!({}));
-    system.execute_post_tool_use("Bash", "1", &serde_json::json!({}), "output", false);
+    system.execute_post_tool_use("Bash", "1", &serde_json::json!({}), "output", false, 0);
 
     let metrics = system.metrics();
     assert_eq!(metrics.pre_tool_use_count, 2);

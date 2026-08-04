@@ -339,6 +339,8 @@ fn test_registry_exposes_subagent_lifecycle_tools() {
         "wait_subagent",
         "resume_subagent",
         "cancel_subagent",
+        "inspect_subagent",
+        "cleanup_subagent",
     ] {
         assert!(registry.get(tool).is_some(), "missing tool {tool}");
     }
@@ -350,6 +352,10 @@ fn test_registry_exposes_subagent_lifecycle_tools() {
     assert!(registry.requires_approval(
         "resume_subagent",
         &serde_json::json!({"subagent_id": "child-1", "task": "continue"})
+    ));
+    assert!(registry.requires_approval(
+        "cleanup_subagent",
+        &serde_json::json!({"subagent_id": "child-1"})
     ));
     assert!(registry
         .missing_required(
@@ -365,6 +371,7 @@ fn test_registry_exposes_subagent_lifecycle_tools() {
         "get_subagent",
         "wait_subagent",
         "cancel_subagent",
+        "inspect_subagent",
     ] {
         assert!(!registry.requires_approval(tool, &serde_json::json!({"subagent_id": "child-1"})));
     }
@@ -718,7 +725,7 @@ async fn test_mcp_status_clears_removed_server_state() {
 fn test_registry_tool_count() {
     let registry = ToolRegistry::new();
     let count = registry.tools().count();
-    assert_eq!(count, 48); // includes parity tools + IDE stubs + goals + subagent lifecycle + perf tools
+    assert_eq!(count, 50); // includes parity tools + IDE stubs + goals + subagent lifecycle + perf tools
 }
 
 #[test]

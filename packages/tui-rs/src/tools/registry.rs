@@ -117,7 +117,7 @@ use super::image::{ImageTool, ReadImageArgs, ScreenshotArgs};
 use super::inline::{load_inline_tools, InlineTool, InlineToolExecutor};
 use super::notebook_edit;
 use super::status;
-use super::subagents::SubagentManager;
+use super::subagents::{SubagentLifecycleEvent, SubagentManager};
 use super::todo;
 use super::versions::ToolVersionOverrides;
 use super::web_fetch::{WebFetchArgs, WebFetchTool};
@@ -619,6 +619,8 @@ fn is_reserved_execute_dispatch_name(name: &str) -> bool {
             | "wait_subagent"
             | "resume_subagent"
             | "cancel_subagent"
+            | "inspect_subagent"
+            | "cleanup_subagent"
             | "todo"
             | "get_goal"
             | "update_goal"
@@ -935,6 +937,33 @@ impl ToolExecutor {
 
     pub(crate) fn credential_generation(&self) -> u64 {
         self.credential_vault.generation()
+    }
+
+    pub(crate) fn with_subagent_parent_scope(mut self, parent_scope_id: String) -> Self {
+        self.subagents = Arc::new(SubagentManager::with_parent_scope(
+            PathBuf::from(&self.cwd),
+            parent_scope_id,
+        ));
+        self
+    }
+
+    pub(crate) fn subagent_parent_scope_id(&self) -> String {
+        self.subagents.parent_scope_id()
+    }
+
+    /// Point this executor's subagent scope at a different conversation.
+    ///
+    /// Takes `&self` because the executor is shared behind an `Arc` that
+    /// outlives any one session; a new or resumed session rotates the scope
+    /// rather than replacing the executor, which would drop its inline tools
+    /// and MCP state.
+    pub(crate) fn set_subagent_parent_scope(&self, parent_scope_id: String) {
+        self.subagents.set_parent_scope_id(parent_scope_id);
+    }
+
+    /// Drain terminal child-agent notifications for this parent executor.
+    pub(crate) fn poll_subagent_lifecycle_events(&self) -> Vec<SubagentLifecycleEvent> {
+        self.subagents.poll_lifecycle_events()
     }
 
     /// Get the list of loaded inline tools

@@ -16,8 +16,8 @@ The Rust TUI includes a comprehensive hook system for intercepting and modifying
 | Event | When | Can Block | Can Modify |
 |-------|------|-----------|------------|
 | `PreToolUse` | Before tool execution | Yes | Yes (input) |
-| `PostToolUse` | After tool execution | No | Yes (context) |
-| `PostToolUseFailure` | After tool failure | No | No |
+| `PostToolUse` | After successful tool execution | No | Yes (context) |
+| `PostToolUseFailure` | After failed tool execution | No | No |
 | `SessionStart` | Session begins | No | No |
 | `SessionEnd` | Session ends | No | No |
 | `UserPromptSubmit` | User submits prompt | Yes | Yes |

@@ -104,6 +104,10 @@ pub struct HookDefinition {
     #[serde(default)]
     pub command: Option<String>,
 
+    /// HTTP endpoint to POST hook input to
+    #[serde(default)]
+    pub http: Option<String>,
+
     /// Prompt template (static context)
     #[serde(default)]
     pub prompt: Option<String>,
@@ -131,6 +135,11 @@ pub struct HookDefinition {
     /// Hook description
     #[serde(default)]
     pub description: Option<String>,
+
+    /// Working directory for package-owned external hooks.
+    #[serde(skip)]
+    #[serde(default)]
+    pub(crate) working_dir: Option<PathBuf>,
 }
 
 /// Raw JSON hooks configuration
@@ -163,6 +172,10 @@ struct RawHookDef {
     #[serde(default)]
     command: Option<String>,
     #[serde(default)]
+    http: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
     prompt: Option<String>,
     #[serde(default)]
     timeout: Option<u64>,
@@ -191,6 +204,8 @@ pub struct LoadedHook {
 pub enum HookSource {
     /// Shell command
     Command(String),
+    /// HTTP endpoint
+    Http(String),
     /// Prompt template
     Prompt(String),
     /// Inline Lua script
@@ -319,21 +334,11 @@ fn load_hook_config_with_trust_and_plugins(
                 continue;
             }
         };
-        if plugin_config
-            .hooks
-            .iter()
-            .any(|hook| hook.command.is_some())
-        {
-            eprintln!(
-                "[hooks] Skipping plugin config with command hooks unsupported by the Rust runtime: {}",
-                plugin_path.display()
-            );
-            continue;
+        let plugin_root = plugin_path.parent().unwrap_or(Path::new("."));
+        for hook in &mut plugin_config.hooks {
+            hook.working_dir = Some(plugin_root.to_path_buf());
         }
-        absolutize_hook_payload_paths(
-            &mut plugin_config,
-            plugin_path.parent().unwrap_or(Path::new(".")),
-        );
+        absolutize_hook_payload_paths(&mut plugin_config, plugin_root);
         plugin_config.settings = HookSettings::default();
         merge_config(&mut config, plugin_config);
         source_paths.push(plugin_path.clone());
@@ -464,6 +469,7 @@ fn parse_raw_hooks_config(raw: RawHooksConfig, base_dir: &Path) -> Result<HookCo
                             event,
                             tools: tools.clone(),
                             command: None,
+                            http: None,
                             prompt: Some(prompt),
                             lua: None,
                             lua_file: None,
@@ -471,6 +477,30 @@ fn parse_raw_hooks_config(raw: RawHooksConfig, base_dir: &Path) -> Result<HookCo
                             timeout_ms: hook.timeout,
                             enabled: true,
                             description: None,
+                            working_dir: None,
+                        });
+                        continue;
+                    }
+                    let hook_type = hook.hook_type.as_deref();
+                    let http = hook.http.or(hook.url);
+                    if hook_type == Some("http") || http.is_some() {
+                        let Some(http) = http else {
+                            eprintln!("[hooks] HTTP hook missing URL");
+                            continue;
+                        };
+                        config.hooks.push(HookDefinition {
+                            event,
+                            tools: tools.clone(),
+                            command: None,
+                            http: Some(http),
+                            prompt: None,
+                            lua: None,
+                            lua_file: None,
+                            wasm: None,
+                            timeout_ms: hook.timeout,
+                            enabled: true,
+                            description: None,
+                            working_dir: None,
                         });
                         continue;
                     }
@@ -484,6 +514,7 @@ fn parse_raw_hooks_config(raw: RawHooksConfig, base_dir: &Path) -> Result<HookCo
                         event,
                         tools: tools.clone(),
                         command: Some(command),
+                        http: None,
                         prompt: None,
                         lua: None,
                         lua_file: None,
@@ -491,6 +522,7 @@ fn parse_raw_hooks_config(raw: RawHooksConfig, base_dir: &Path) -> Result<HookCo
                         timeout_ms: hook.timeout,
                         enabled: true,
                         description: None,
+                        working_dir: None,
                     });
                 }
             }
@@ -548,6 +580,10 @@ fn determine_hook_source(def: &HookDefinition, cwd: &Path) -> Option<HookSource>
 
     if let Some(ref cmd) = def.command {
         return Some(HookSource::Command(cmd.clone()));
+    }
+
+    if let Some(ref http) = def.http {
+        return Some(HookSource::Http(http.clone()));
     }
 
     if let Some(ref lua) = def.lua {
@@ -630,7 +666,7 @@ lua_file = "guard.lua"
     }
 
     #[test]
-    fn plugin_command_hooks_are_rejected_as_unsupported() {
+    fn plugin_command_hooks_are_loaded_for_native_execution() {
         let temp = tempfile::tempdir().unwrap();
         let plugin_dir = temp.path().join("plugin");
         std::fs::create_dir_all(&plugin_dir).unwrap();
@@ -651,8 +687,52 @@ command = "./hooks/validate-tool.sh"
             std::slice::from_ref(&plugin_config),
         )
         .unwrap();
-        assert!(loaded.hooks.is_empty());
-        assert!(!loaded.source_paths.contains(&plugin_config));
+        assert_eq!(loaded.hooks.len(), 1);
+        assert!(loaded.source_paths.contains(&plugin_config));
+        assert!(matches!(
+            loaded.hooks.as_slice(),
+            [LoadedHook {
+                source: HookSource::Command(command),
+                definition,
+            }] if command == "./hooks/validate-tool.sh"
+                && definition.working_dir.as_deref() == plugin_config.parent()
+        ));
+    }
+
+    #[test]
+    fn plugin_json_http_hooks_are_loaded_for_native_execution() {
+        let temp = tempfile::tempdir().unwrap();
+        let plugin_config = temp.path().join("hooks.json");
+        std::fs::write(
+            &plugin_config,
+            r#"
+{
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Bash",
+      "hooks": [{"type": "http", "url": "http://127.0.0.1:9/hook", "timeout": 250}]
+    }]
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let loaded = load_hook_config_with_trust_and_plugins(
+            temp.path(),
+            false,
+            std::slice::from_ref(&plugin_config),
+        )
+        .unwrap();
+        assert!(matches!(
+            loaded.hooks.as_slice(),
+            [LoadedHook {
+                source: HookSource::Http(url),
+                definition,
+            }] if url == "http://127.0.0.1:9/hook"
+                && definition.tools == vec!["Bash"]
+                && definition.timeout_ms == Some(250)
+        ));
     }
 
     #[test]

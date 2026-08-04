@@ -1606,6 +1606,24 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     .push(format_background_task_tool_note(&event));
                 needs_redraw = true;
             }
+            for event in self.tool_executor.poll_subagent_lifecycle_events() {
+                let status = format!("{:?}", event.status).to_ascii_lowercase();
+                let outcome = event
+                    .error
+                    .as_deref()
+                    .or(event.summary.as_deref())
+                    .unwrap_or("no summary");
+                let outcome = outcome.replace(['\n', '\r'], " ");
+                self.state.add_system_message(format!(
+                    "Subagent {} **{}**: {}",
+                    event.subagent_id, status, outcome
+                ));
+                self.pending_agent_tool_notes.push(format!(
+                    "Subagent {} finished with status {}. {}",
+                    event.subagent_id, status, outcome
+                ));
+                needs_redraw = true;
+            }
             if !self.state.busy {
                 self.flush_pending_agent_tool_notes();
             }
@@ -1732,6 +1750,14 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             if self.should_quit {
                 break;
             }
+        }
+
+        // Close the active session for hooks before teardown. This is the
+        // orderly exit; a crash or a kill cannot run it, which is stated in
+        // docs/design/HOOKS_SYSTEM.md so nobody builds cleanup that depends on
+        // `SessionEnd` always arriving.
+        if self.state.session_id.is_some() {
+            self.adopt_session_context(None, "exit");
         }
 
         // Cleanup background processes before exit
@@ -1863,12 +1889,22 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
         self.state.status = Some(format!("Initializing agent ({model})..."));
 
-        match NativeAgent::new_with_credential_vault(config, self.credential_vault.clone()) {
+        let subagent_parent_scope_id = self.tool_executor.subagent_parent_scope_id();
+        match NativeAgent::new_with_credential_vault_and_subagent_scope(
+            config,
+            self.credential_vault.clone(),
+            subagent_parent_scope_id,
+        ) {
             Ok((agent, event_rx)) => {
                 let tool_tx = agent.tool_response_sender();
                 self.native_agent = Some(agent);
                 self.native_event_rx = Some(event_rx);
                 self.tool_response_tx = Some(tool_tx);
+
+                // A session restored at startup exists before the runner does,
+                // so it never passed through any of the transitions that adopt
+                // a session context. Capture it here and adopt it below.
+                let restored_session_id = session_id.clone();
 
                 // Send ready event
                 if let Some(agent) = &self.native_agent {
@@ -1882,6 +1918,16 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     agent.send_session_info(&cwd, session_id, git_branch);
                     let _ = agent.set_steering_mode(self.state.steering_mode);
                     let _ = agent.set_follow_up_mode(self.state.follow_up_mode);
+                }
+
+                // `send_session_info` is an outbound event to the UI and sets
+                // nothing on the runner. Without this the runner kept the tool
+                // executor's initial random subagent scope and a hook
+                // `session_id` of `None`, so completions parked for this
+                // session's own children were never drained and every hook
+                // payload published a null session.
+                if let Some(restored_session_id) = restored_session_id {
+                    self.adopt_session_context(Some(&restored_session_id), "restore");
                 }
 
                 // Ensure busy is false so user can type
@@ -2097,6 +2143,39 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     pub(super) fn sync_agent_approval_mode(&mut self) {
         if let Some(agent) = &self.native_agent {
             let _ = agent.set_approval_mode(self.state.approval_mode);
+        }
+    }
+
+    /// Point the subagent scope at `session_id`'s conversation.
+    ///
+    /// Call this wherever the active conversation changes. The tool executor
+    /// lives behind an `Arc` for the whole process, so without a rotation a
+    /// child started by an earlier conversation reported its completion into
+    /// whichever conversation happened to be active when it finished, and that
+    /// summary went on to the next model request.
+    ///
+    /// The scope is derived from the session id rather than random, so resuming
+    /// a session re-adopts the scope its own children were stamped with and
+    /// their parked completions surface then. `None` means no session id exists
+    /// yet; the placeholder is unique so it can never collide with another
+    /// conversation, and it is replaced when the session file is created.
+    /// Point both the subagent scope and the hook system at `session_id`.
+    ///
+    /// `reason` is published to `SessionStart` / `SessionEnd` hooks as their
+    /// `source` / `reason` field. The hook system lives in the runner, so the
+    /// session id and the lifecycle dispatch both travel as a command; the
+    /// runner compares against the session it holds and fires the transition.
+    pub(super) fn adopt_session_context(&mut self, session_id: Option<&str>, reason: &str) {
+        let scope = subagent_scope_for_session(session_id);
+        self.tool_executor.set_subagent_parent_scope(scope.clone());
+        let Some(agent) = &self.native_agent else {
+            return;
+        };
+        if let Err(e) = agent.set_subagent_parent_scope(scope) {
+            self.state.error = Some(format!("Failed to rotate subagent scope: {e}"));
+        }
+        if let Err(e) = agent.set_session_context(session_id.map(str::to_owned), reason) {
+            self.state.error = Some(format!("Failed to update session context: {e}"));
         }
     }
 
@@ -3742,6 +3821,20 @@ fn combine_approval_reason(
         (Some(firewall), None) => Some(firewall),
         (None, Some(bypass)) => Some(bypass),
         (None, None) => None,
+    }
+}
+
+/// The subagent scope that identifies one conversation.
+///
+/// Derived from the session id so that resuming a session produces the same
+/// scope its own children were stamped with, which is what lets their parked
+/// completions surface on resume instead of being lost. A session that has no
+/// id yet gets a unique placeholder, which cannot collide with any other
+/// conversation and is replaced when the session file is created.
+fn subagent_scope_for_session(session_id: Option<&str>) -> String {
+    match session_id {
+        Some(session_id) => format!("session:{session_id}"),
+        None => format!("pending:{}", uuid::Uuid::new_v4()),
     }
 }
 

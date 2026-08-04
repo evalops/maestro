@@ -125,7 +125,7 @@ pub fn run_plugins(args: &[String]) -> Result<i32> {
         }
         "capability" => {
             let name = parsed.positionals.first().context(
-                "Usage: maestro plugins capability <name> <skills|commands|hooks|mcp> <on|off>",
+                "Usage: maestro plugins capability <name> <skills|agents|commands|hooks|mcp> <on|off>",
             )?;
             let capability = parsed
                 .positionals
@@ -213,7 +213,7 @@ Commands:\n\
   marketplace [list]     List curated catalog (id, tier, source)\n\
   marketplace install <id>  Install catalog entry; non-official needs --trust\n\
   enable|disable <name>  Toggle the whole plugin\n\
-  capability <name> <skills|commands|hooks|mcp> <on|off>\n\
+  capability <name> <skills|agents|commands|hooks|mcp> <on|off>\n\
   <name>                 Alias for info <name>\n\n\
 Options:\n\
   --json                 Emit machine-readable JSON\n\
@@ -352,7 +352,7 @@ fn run_list(registry: &PluginRegistry, json: bool) -> Result<i32> {
         println!("  ~/.maestro/plugins/<name>/ (user)");
         println!();
         println!(
-            "Each plugin may include plugin.json, skills/, commands/, hooks, and MCP configs."
+            "Each plugin may include plugin.json, skills/, agents/, commands/, hooks, and MCP configs."
         );
         return Ok(0);
     }
@@ -572,6 +572,7 @@ mod tests {
             manifest: None,
             components: crate::plugins::PluginComponents {
                 skills_dir: Some(PathBuf::from("/p/x/skills")),
+                agents_dir: None,
                 commands_dir: None,
                 hooks_config: None,
                 mcp_path: Some(PathBuf::from("/p/x/mcp.json")),

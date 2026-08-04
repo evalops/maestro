@@ -97,28 +97,28 @@ struct RuleSource {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum Scope {
+pub(crate) enum Scope {
     Project,
     User,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Profile {
-    name: String,
+pub(crate) struct Profile {
+    pub(crate) name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-    prompt: String,
+    pub(crate) description: Option<String>,
+    pub(crate) prompt: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<String>>,
+    pub(crate) tools: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    model: Option<String>,
-    scope: Scope,
-    path: PathBuf,
+    pub(crate) model: Option<String>,
+    pub(crate) scope: Scope,
+    pub(crate) path: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
-    created_at: Option<String>,
+    pub(crate) created_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    updated_at: Option<String>,
+    pub(crate) updated_at: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -677,9 +677,37 @@ fn profile_delete(args: &[String], json: bool) -> Result<()> {
 }
 
 fn profiles() -> Result<Vec<Profile>> {
+    profiles_for_workspace(&std::env::current_dir()?)
+}
+
+/// Load specialist profiles using an explicit project workspace. Native child
+/// agents may run from a worktree, so they must not depend on the process cwd.
+pub(crate) fn profiles_for_workspace(cwd: &Path) -> Result<Vec<Profile>> {
+    profiles_for_workspace_with_agent_dirs(cwd, &[])
+}
+
+/// Load project/user profiles plus plugin-provided agent directories.
+pub(crate) fn profiles_for_workspace_with_agent_dirs(
+    cwd: &Path,
+    agent_dirs: &[PathBuf],
+) -> Result<Vec<Profile>> {
     let mut found = BTreeMap::new();
+    for dir in agent_dirs {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|kind| kind.is_file())
+                && entry.path().extension().is_some_and(|ext| ext == "md")
+            {
+                if let Ok(profile) = read_profile(&entry.path(), Scope::Project) {
+                    found.insert(profile.name.clone(), profile);
+                }
+            }
+        }
+    }
     for scope in [Scope::User, Scope::Project] {
-        let Ok(entries) = fs::read_dir(profile_dir(scope)?) else {
+        let Ok(entries) = fs::read_dir(profile_dir_for(cwd, scope)?) else {
             continue;
         };
         for entry in entries.flatten() {
@@ -695,7 +723,7 @@ fn profiles() -> Result<Vec<Profile>> {
     Ok(found.into_values().collect())
 }
 
-fn read_profile(path: &Path, scope: Scope) -> Result<Profile> {
+pub(crate) fn read_profile(path: &Path, scope: Scope) -> Result<Profile> {
     let content = fs::read_to_string(path)?;
     let (meta, body) = if let Some(rest) = content.strip_prefix("---\n") {
         if let Some(end) = rest.find("\n---") {
@@ -778,8 +806,12 @@ fn scope_name(scope: Scope) -> &'static str {
     }
 }
 fn profile_dir(scope: Scope) -> Result<PathBuf> {
+    profile_dir_for(&std::env::current_dir()?, scope)
+}
+
+fn profile_dir_for(cwd: &Path, scope: Scope) -> Result<PathBuf> {
     match scope {
-        Scope::Project => Ok(std::env::current_dir()?.join(".maestro/agent-profiles")),
+        Scope::Project => Ok(cwd.join(".maestro/agent-profiles")),
         Scope::User => crate::path_utils::maestro_home_dir()
             .map(|p| p.join("agent-profiles"))
             .context("Unable to resolve Maestro home directory"),
@@ -801,6 +833,34 @@ mod tests {
             .unwrap()
             .contains("# Repository Guidelines"));
         assert!(matches!(result, Outcome::Generate { prompt, .. } if prompt.contains("AGENTS.md")));
+    }
+
+    #[test]
+    fn loads_plugin_profiles_alongside_workspace_profiles() {
+        let workspace = tempfile::tempdir().unwrap();
+        let plugin_agents = workspace.path().join("plugin/agents");
+        fs::create_dir_all(&plugin_agents).unwrap();
+        fs::write(
+            plugin_agents.join("reviewer.md"),
+            "---\nname: reviewer\ntools: [read, grep]\n---\nReview only for regressions.\n",
+        )
+        .unwrap();
+
+        let profiles = profiles_for_workspace_with_agent_dirs(
+            workspace.path(),
+            std::slice::from_ref(&plugin_agents),
+        )
+        .unwrap();
+        let reviewer = profiles
+            .into_iter()
+            .find(|profile| profile.name == "reviewer")
+            .expect("plugin profile should be discovered");
+        assert_eq!(reviewer.scope, Scope::Project);
+        assert_eq!(reviewer.prompt, "Review only for regressions.");
+        assert_eq!(
+            reviewer.tools,
+            Some(vec!["read".to_string(), "grep".to_string()])
+        );
     }
     #[test]
     fn existing_file_is_only_previewed() {

@@ -6,7 +6,7 @@
 //! durable record and can therefore observe or resume a child from another
 //! `ToolExecutor` in the same process.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -21,6 +21,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::{CredentialVault, FromAgent, NativeAgent, NativeAgentConfig, ToolResult};
@@ -35,18 +36,150 @@ use crate::worktree::WorktreeSession;
 /// Built-in tools which belong to this lifecycle surface and must not be
 /// advertised to a child. Without this guard a child could recursively spawn
 /// an unbounded tree of agents.
-pub(crate) const SUBAGENT_TOOL_NAMES: [&str; 6] = [
+pub(crate) const SUBAGENT_TOOL_NAMES: [&str; 8] = [
     "spawn_subagent",
     "list_subagents",
     "get_subagent",
     "wait_subagent",
     "resume_subagent",
     "cancel_subagent",
+    "inspect_subagent",
+    "cleanup_subagent",
 ];
 
 const MAX_TASK_BYTES: usize = 64 * 1024;
 const MAX_WAIT_MS: u64 = 300_000;
 const TERMINAL_SNAPSHOT_WAIT: Duration = Duration::from_millis(500);
+const DEFAULT_CHILD_MAX_TOKENS: u32 = 16_384;
+const MAX_CHILD_MAX_TOKENS: u32 = 131_072;
+const DEFAULT_CHILD_TIMEOUT_MS: u64 = 7_200_000;
+const MAX_CHILD_TIMEOUT_MS: u64 = 86_400_000;
+const DEFAULT_MAX_RUNNING_SUBAGENTS: usize = 4;
+const MAX_RUNNING_SUBAGENTS: usize = 32;
+
+/// Characters of streamed assistant text counted as one output token when the
+/// runtime reports no usage.
+///
+/// Four characters per token is the common English approximation. Code and
+/// other dense text run closer to three, so this under-counts them: the
+/// estimate reaches the budget later than the true token count would, never
+/// earlier, and the run is cut off late rather than prematurely.
+const CHILD_OUTPUT_CHARS_PER_TOKEN: u64 = 4;
+
+/// Estimate output tokens from a count of streamed characters.
+fn estimate_output_tokens(streamed_chars: u64) -> u64 {
+    streamed_chars.div_ceil(CHILD_OUTPUT_CHARS_PER_TOKEN)
+}
+
+/// Whether the run has spent its cumulative output allowance, counting text
+/// streamed since the last response boundary at the estimated rate.
+///
+/// Checked while a response streams so one long turn cannot overrun the budget
+/// and only be noticed at the boundary that follows it. Only meaningful for a
+/// runtime that reports no usage: see [`child_output_is_metered`].
+fn child_output_budget_exhausted(used_tokens: u64, streamed_chars: u64, max_tokens: u32) -> bool {
+    used_tokens.saturating_add(estimate_output_tokens(streamed_chars)) >= u64::from(max_tokens)
+}
+
+/// Characters of model-produced output carried by one tool call.
+///
+/// The tool name and its serialized arguments are tokens the model generated,
+/// so they count against an unmetered run's budget exactly like assistant text.
+/// A tool call whose arguments cannot be serialized contributes only its name;
+/// under-counting is the safe direction, matching the estimate itself.
+fn tool_call_output_chars(tool: &str, args: &serde_json::Value) -> u64 {
+    let argument_chars = serde_json::to_string(args)
+        .map(|json| json.chars().count())
+        .unwrap_or(0);
+    (tool.chars().count() as u64).saturating_add(argument_chars as u64)
+}
+
+/// Whether the child's runtime reports exact output-token usage.
+///
+/// Everything except the Codex app-server path returns usage on every
+/// `ResponseEnd`, and the runner clamps each request to the unspent budget from
+/// that exact count, so those runs are already bounded. Applying the
+/// four-characters-per-token estimate on top of an exact count can only make
+/// the parent cancel a response the budget still allowed, so the estimate is
+/// confined to the unmetered path.
+fn child_output_is_metered(model: &str) -> bool {
+    !crate::codex_auth::model_uses_openai_codex(model)
+}
+
+/// Tracks whether a child's runtime actually reports output-token usage.
+///
+/// The model name is not a reliable answer. An OpenAI-compatible endpoint may
+/// omit the usage chunk on any turn, in which case `ResponseEnd` carries no
+/// usage even though the model is not Codex, and a name-based rule charged that
+/// turn nothing at all. Observation decides instead: a turn that reports usage
+/// is charged exactly, and a turn that reports none is charged the estimate.
+#[derive(Debug, Default, Clone, Copy)]
+struct ChildOutputMetering {
+    /// True for the Codex app-server path, which reports no usage by design and
+    /// also accepts no per-request `max_tokens`.
+    known_unmetered: bool,
+    /// Set once a turn has ended without a usage report.
+    observed_missing_usage: bool,
+}
+
+impl ChildOutputMetering {
+    fn for_model(model: &str) -> Self {
+        Self {
+            known_unmetered: !child_output_is_metered(model),
+            observed_missing_usage: false,
+        }
+    }
+
+    /// Characters to charge for a turn that reported `usage`, if any.
+    ///
+    /// `None` means "do not estimate": the provider reported real numbers, so
+    /// the exact count is used and the streamed characters are discarded rather
+    /// than charged on top of it.
+    fn estimate_for_turn(&mut self, usage_reported: bool, streamed_chars: u64) -> Option<u64> {
+        if usage_reported {
+            return None;
+        }
+        self.observed_missing_usage = true;
+        Some(streamed_chars)
+    }
+
+    /// Whether to police the budget from streamed text before a turn ends.
+    ///
+    /// Only where an overrun would otherwise go unbounded. The Codex path sends
+    /// no per-request `max_tokens`, so it is policed from the first turn. Every
+    /// other runtime is bounded per request by the runner's clamp, so
+    /// mid-stream estimation waits until a turn has actually failed to report
+    /// usage -- estimating before that could cancel a response a metering
+    /// provider would have allowed.
+    fn enforces_mid_stream(self) -> bool {
+        self.known_unmetered || self.observed_missing_usage
+    }
+}
+
+/// Add one response's output tokens to the run total and report whether the
+/// cumulative budget is spent.
+///
+/// The Codex app-server runtime reports no usage: `turn/start`
+/// (`codex_app_server.rs`) carries no token fields in either direction, so
+/// `ResponseEnd` arrives with `usage: None` and an unestimated run was never
+/// charged for anything it produced. `estimate_chars` carries the assistant
+/// text observed for that response and is `None` on a metered runtime, where an
+/// absent usage report is a provider anomaly rather than the norm and guessing
+/// would risk cancelling a response the budget still allowed.
+fn record_child_output_tokens(
+    used_tokens: &mut u64,
+    usage: Option<&crate::agent::TokenUsage>,
+    estimate_chars: Option<u64>,
+    max_tokens: u32,
+) -> bool {
+    let spent = match (usage, estimate_chars) {
+        (Some(usage), _) => usage.output_tokens,
+        (None, Some(chars)) => estimate_output_tokens(chars),
+        (None, None) => 0,
+    };
+    *used_tokens = used_tokens.saturating_add(spent);
+    *used_tokens >= u64::from(max_tokens)
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -56,11 +189,16 @@ pub(crate) enum SubagentStatus {
     Completed,
     Failed,
     Cancelled,
+    TimedOut,
+    Interrupted,
 }
 
 impl SubagentStatus {
     fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Cancelled | Self::TimedOut | Self::Interrupted
+        )
     }
 }
 
@@ -94,6 +232,15 @@ impl SubagentRole {
             Self::Review => "review",
         }
     }
+
+    /// Whether a child in this role is allowed to change anything.
+    ///
+    /// `Code` is the only role that writes. The others are advertised to the
+    /// user as read-only, so the sandbox policy and the native-approval gate
+    /// both have to enforce that, not just the advertised tool list.
+    fn can_mutate(self) -> bool {
+        matches!(self, Self::Code)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -126,6 +273,17 @@ pub(crate) struct SubagentResult {
     pub files_modified: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct SubagentLifecycleEvent {
+    pub subagent_id: String,
+    pub parent_scope_id: String,
+    pub parent_call_id: String,
+    pub status: SubagentStatus,
+    pub summary: Option<String>,
+    pub error: Option<String>,
+    pub finished_at_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SubagentRecord {
     pub id: String,
@@ -136,10 +294,22 @@ pub(crate) struct SubagentRecord {
     pub task: String,
     pub current_prompt: String,
     pub role: SubagentRole,
+    #[serde(default)]
+    pub profile: Option<String>,
+    #[serde(default)]
+    pub profile_prompt: Option<String>,
+    #[serde(default)]
+    pub profile_tools: Option<Vec<String>>,
     pub model: Option<String>,
+    #[serde(default = "default_child_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_child_max_tokens")]
+    pub max_tokens: u32,
     pub isolation: SubagentIsolation,
     pub cwd: String,
     pub worktree_path: Option<String>,
+    #[serde(default)]
+    pub worktree_cleaned: bool,
     #[serde(default)]
     pub initial_files: Vec<String>,
     #[serde(default)]
@@ -162,7 +332,12 @@ pub(crate) struct SubagentRecord {
 struct SpawnRequest {
     task: String,
     role: SubagentRole,
+    profile: Option<String>,
+    profile_prompt: Option<String>,
+    profile_tools: Option<Vec<String>>,
     model: Option<String>,
+    timeout_ms: u64,
+    max_tokens: u32,
     run_in_background: bool,
     isolation: SubagentIsolation,
     worktree_name: Option<String>,
@@ -229,14 +404,40 @@ impl Drop for WorktreeSetupGuard {
 struct RuntimeRegistry {
     cancellation: Mutex<HashMap<String, CancellationToken>>,
     credential_scopes: Mutex<HashMap<String, CredentialVault>>,
+    concurrency: Arc<Semaphore>,
+    lifecycle_events: Mutex<VecDeque<SubagentLifecycleEvent>>,
 }
 
 impl RuntimeRegistry {
     fn new() -> Self {
+        let configured = std::env::var("MAESTRO_MAX_RUNNING_SUBAGENTS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_MAX_RUNNING_SUBAGENTS)
+            .clamp(1, MAX_RUNNING_SUBAGENTS);
+        Self::with_capacity(configured)
+    }
+
+    fn with_capacity(max_running: usize) -> Self {
         Self {
             cancellation: Mutex::new(HashMap::new()),
             credential_scopes: Mutex::new(HashMap::new()),
+            concurrency: Arc::new(Semaphore::new(max_running.max(1))),
+            lifecycle_events: Mutex::new(VecDeque::new()),
         }
+    }
+
+    async fn acquire_permit(&self) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+        self.concurrency
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|error| format!("subagent scheduler closed: {error}"))
+    }
+
+    #[cfg(test)]
+    fn available_permits(&self) -> usize {
+        self.concurrency.available_permits()
     }
 
     fn insert(&self, id: &str, token: CancellationToken) {
@@ -275,6 +476,31 @@ impl RuntimeRegistry {
             .get(id)
             .cloned()
     }
+
+    fn push_event(&self, event: SubagentLifecycleEvent) {
+        self.lifecycle_events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push_back(event);
+    }
+
+    fn poll_events(&self, parent_scope_id: &str) -> Vec<SubagentLifecycleEvent> {
+        let mut events = self
+            .lifecycle_events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut matching = Vec::new();
+        let mut remaining = VecDeque::with_capacity(events.len());
+        while let Some(event) = events.pop_front() {
+            if event.parent_scope_id == parent_scope_id {
+                matching.push(event);
+            } else {
+                remaining.push_back(event);
+            }
+        }
+        *events = remaining;
+        matching
+    }
 }
 
 fn runtime_registry() -> Arc<RuntimeRegistry> {
@@ -289,7 +515,14 @@ fn runtime_registry() -> Arc<RuntimeRegistry> {
 pub(crate) struct SubagentManager {
     cwd: PathBuf,
     root: PathBuf,
-    parent_scope_id: String,
+    /// Scope that owns the children this manager spawns and the lifecycle
+    /// events it drains.
+    ///
+    /// Shared and mutable because the tool executor holding this manager lives
+    /// behind an `Arc` for the whole process while the conversation it serves
+    /// does not: a new or resumed session rotates the scope in place so a child
+    /// started by an earlier conversation cannot report into a later one.
+    parent_scope_id: Arc<Mutex<String>>,
     runtime: Arc<RuntimeRegistry>,
 }
 
@@ -301,12 +534,50 @@ impl SubagentManager {
     }
 
     fn with_root(cwd: PathBuf, root: PathBuf) -> Self {
+        Self::with_root_and_parent_scope(cwd, root, uuid::Uuid::new_v4().to_string())
+    }
+
+    pub(crate) fn with_parent_scope(
+        cwd: impl Into<PathBuf>,
+        parent_scope_id: impl Into<String>,
+    ) -> Self {
+        let cwd = cwd.into();
+        let root = default_root(&cwd);
+        Self::with_root_and_parent_scope(cwd, root, parent_scope_id.into())
+    }
+
+    fn with_root_and_parent_scope(cwd: PathBuf, root: PathBuf, parent_scope_id: String) -> Self {
         Self {
             cwd,
             root,
-            parent_scope_id: uuid::Uuid::new_v4().to_string(),
+            parent_scope_id: Arc::new(Mutex::new(parent_scope_id)),
             runtime: runtime_registry(),
         }
+    }
+
+    pub(crate) fn parent_scope_id(&self) -> String {
+        self.parent_scope_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Point this manager at a different scope.
+    ///
+    /// Children already running keep the scope they were spawned under -- the
+    /// record snapshots it -- so their completions stay addressed to the
+    /// conversation that started them and are drained only by a manager holding
+    /// that same scope.
+    pub(crate) fn set_parent_scope_id(&self, parent_scope_id: String) {
+        let mut current = self
+            .parent_scope_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *current = parent_scope_id;
+    }
+
+    pub(crate) fn poll_lifecycle_events(&self) -> Vec<SubagentLifecycleEvent> {
+        self.runtime.poll_events(&self.parent_scope_id())
     }
 
     fn record_path(&self, id: &str) -> PathBuf {
@@ -333,8 +604,101 @@ impl SubagentManager {
         let path = self.record_path(&id);
         let bytes =
             std::fs::read(&path).map_err(|error| format!("read subagent {id} record: {error}"))?;
-        serde_json::from_slice(&bytes)
-            .map_err(|error| format!("parse subagent {id} record: {error}"))
+        let mut record: SubagentRecord = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("parse subagent {id} record: {error}"))?;
+        if matches!(
+            record.status,
+            SubagentStatus::Queued | SubagentStatus::Running
+        ) && self.runtime.get(&record.id).is_none()
+            && !Self::execution_lease_is_held(&record)
+        {
+            record.status = SubagentStatus::Interrupted;
+            record.finished_at_ms = Some(now_millis());
+            record.error = Some(
+                "Maestro restarted while this subagent was queued or running; resume it to continue"
+                    .to_string(),
+            );
+            self.write_record(&record)?;
+        }
+        Ok(record)
+    }
+
+    /// Whether some process still holds the execution lease for `record`.
+    ///
+    /// `self.runtime` only knows about children this process launched, so a
+    /// second Maestro sharing the workspace sees every live child of the first
+    /// one as orphaned. The lease — the advisory lock the run path holds on
+    /// the child's timeline file for as long as the child runs (see `spawn`,
+    /// `resume`, and `run_child`) — is the cross-process signal, so consult it
+    /// before rewriting a record to `Interrupted`. `Interrupted` is terminal,
+    /// and `cleanup` force-removes the worktree of any terminal child.
+    ///
+    /// Anything other than a clean "nobody holds it" answer counts as held.
+    /// A false positive leaves a genuinely dead record `Running` until the
+    /// next load; a false negative deletes a live child's worktree underneath
+    /// it.
+    fn execution_lease_is_held(record: &SubagentRecord) -> bool {
+        match SessionLock::is_held(&Self::timeline_path(record)) {
+            Ok(held) => held,
+            Err(error) => {
+                eprintln!(
+                    "subagent {}: could not read the execution lease ({error}); treating the child as still running",
+                    record.id
+                );
+                true
+            }
+        }
+    }
+
+    /// Take the execution lease for `record` so a cleanup cannot run
+    /// concurrently with a resume.
+    ///
+    /// Returns `Ok(None)` when the child's session directory is gone: the lock
+    /// file lives in that directory, so nothing can be holding a lease and no
+    /// `resume` could start one either — it opens the same directory and would
+    /// fail first. This mirrors [`SessionLock::is_held`], which reports a
+    /// missing directory as "not held", and keeps cleanup usable for a record
+    /// whose transcript has already been pruned.
+    ///
+    /// Every other failure — including an unreadable lock file — is reported
+    /// as "in use". A false positive leaves a worktree on disk for the user to
+    /// remove; a false negative deletes the worktree of a running child.
+    /// Re-read `id` under a held execution lease and confirm it can still run.
+    ///
+    /// `cleanup` takes the same lease around its own check and removal, so once
+    /// this lease is held the record on disk is settled: a cleanup either
+    /// completed before it or cannot start until it is released. A child whose
+    /// worktree has been removed cannot be resumed, and saying so leaves the
+    /// record untouched rather than relaunching into a directory that is gone.
+    fn revalidate_resumable_under_lease(&self, id: &str) -> Result<SubagentRecord, String> {
+        let record = self.load_record(id)?;
+        if record.worktree_cleaned {
+            return Err(format!(
+                "subagent {id} cannot be resumed: its worktree was cleaned up; spawn a new child instead"
+            ));
+        }
+        let cwd = deserialize_repository_path(&record.cwd);
+        if !cwd.exists() {
+            return Err(format!(
+                "subagent {id} cannot be resumed: its working directory {} no longer exists",
+                cwd.display()
+            ));
+        }
+        Ok(record)
+    }
+
+    fn acquire_cleanup_lease(record: &SubagentRecord) -> Result<Option<SessionLock>, String> {
+        if !Self::session_dir(record).exists() {
+            return Ok(None);
+        }
+        SessionLock::acquire(&Self::timeline_path(record))
+            .map(Some)
+            .map_err(|error| {
+                format!(
+                    "subagent {} is being run by another process; not removing its worktree ({error})",
+                    record.id
+                )
+            })
     }
 
     fn session_dir(record: &SubagentRecord) -> PathBuf {
@@ -360,8 +724,11 @@ impl SubagentManager {
         let child_credential_vault = credential_vault.fork();
 
         if let Err(error) =
-            apply_subagent_start_hook(&mut request, &self.cwd, &self.parent_scope_id)
+            apply_subagent_start_hook(&mut request, &self.cwd, &self.parent_scope_id())
         {
+            return ToolResult::failure(error);
+        }
+        if let Err(error) = resolve_spawn_profile(&mut request, &self.cwd) {
             return ToolResult::failure(error);
         }
         // Resolve through the current parent scope first, then re-vault into
@@ -426,19 +793,25 @@ impl SubagentManager {
         let cwd = serialize_repository_path(&child_cwd);
         let record = SubagentRecord {
             id: id.clone(),
-            parent_scope_id: self.parent_scope_id.clone(),
+            parent_scope_id: self.parent_scope_id(),
             parent_call_id: parent_call_id.to_string(),
-            last_parent_scope_id: self.parent_scope_id.clone(),
+            last_parent_scope_id: self.parent_scope_id(),
             last_call_id: parent_call_id.to_string(),
             task: request.task.clone(),
             current_prompt: request.task.clone(),
             role: request.role,
+            profile: request.profile.clone(),
+            profile_prompt: request.profile_prompt.clone(),
+            profile_tools: request.profile_tools.clone(),
             model: request.model.clone(),
+            timeout_ms: request.timeout_ms,
+            max_tokens: request.max_tokens,
             isolation: request.isolation,
             cwd,
             worktree_path: worktree_path
                 .as_ref()
                 .map(|path| serialize_repository_path(path)),
+            worktree_cleaned: false,
             initial_files,
             initial_file_fingerprints,
             initial_head,
@@ -615,6 +988,138 @@ impl SubagentManager {
         }
     }
 
+    pub(crate) fn inspect(&self, args: &serde_json::Value) -> ToolResult {
+        let Some(id) = subagent_id(args) else {
+            return ToolResult::failure("subagent_id is required");
+        };
+        let record = match self.load_record(id) {
+            Ok(record) => record,
+            Err(error) => return ToolResult::failure(error),
+        };
+        let Some(serialized_path) = record.worktree_path.as_deref() else {
+            return ToolResult::success(format!("Subagent {id} does not have a worktree"))
+                .with_details(serde_json::json!({
+                    "subagentId": record.id,
+                    "worktreePath": null,
+                    "worktreeCleaned": record.worktree_cleaned,
+                }));
+        };
+        let path = deserialize_repository_path(serialized_path);
+        let exists = path.exists();
+        let status = if exists {
+            git_worktree_command(&path, ["status", "--short"], None)
+                .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+                .unwrap_or_else(|error| format!("unable to inspect status: {error}"))
+        } else {
+            "worktree path does not exist".to_string()
+        };
+        let diff_stat = if exists {
+            git_worktree_command(&path, ["diff", "--stat"], None)
+                .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let details = serde_json::json!({
+            "subagentId": record.id,
+            "worktreePath": display_repository_path(&path),
+            "worktreeCleaned": record.worktree_cleaned,
+            "exists": exists,
+            "status": status,
+            "diffStat": diff_stat,
+            "filesModified": record.result.as_ref().map(|result| &result.files_modified),
+        });
+        ToolResult::success(format!("Inspected worktree for subagent {id}")).with_details(details)
+    }
+
+    pub(crate) fn cleanup(&self, args: &serde_json::Value) -> ToolResult {
+        let Some(id) = subagent_id(args) else {
+            return ToolResult::failure("subagent_id is required");
+        };
+        // First load: learn where this child's lease lives, and let the
+        // orphan reclassification in `load_record` run while no lease is held,
+        // so a child left `Running` by a crashed process settles to
+        // `Interrupted` before the check below rather than blocking cleanup.
+        let record = match self.load_record(id) {
+            Ok(record) => record,
+            Err(error) => return ToolResult::failure(error),
+        };
+
+        // Take the execution lease before reading the status that decides
+        // whether to delete, and hold it through the removal. A one-shot check
+        // followed by an unguarded `git worktree remove --force` could pass
+        // while another process was acquiring the lease in `resume`; cleanup
+        // then deleted the worktree out from under a child that had just been
+        // restarted. The lease is what `resume` and `run_child` hold for a
+        // child's whole run, so taking it here makes the two mutually
+        // exclusive: whoever gets it first wins, and the loser does nothing.
+        let _lease = match Self::acquire_cleanup_lease(&record) {
+            Ok(lease) => lease,
+            Err(error) => return ToolResult::failure(error),
+        };
+
+        // Second load, now under the lease. A resume that beat us to the lease
+        // has already rewritten this record, and one that arrives after cannot
+        // start until we release it, so this status cannot change underneath
+        // the removal below.
+        let mut record = match self.load_record(id) {
+            Ok(record) => record,
+            Err(error) => return ToolResult::failure(error),
+        };
+        if !record.status.is_terminal() {
+            return ToolResult::failure(format!(
+                "subagent {id} must be terminal before its worktree can be cleaned up"
+            ));
+        }
+        if record.worktree_cleaned {
+            return ToolResult::success(format!("Worktree for subagent {id} is already cleaned"))
+                .with_details(record_details(&record));
+        }
+        // Shared children never create a worktree. Leave `worktree_cleaned`
+        // unset so a later `resume_subagent` is not rejected for a cleanup that
+        // removed nothing.
+        let Some(serialized_path) = record.worktree_path.as_deref() else {
+            return ToolResult::success(format!("Subagent {id} did not have a worktree"))
+                .with_details(record_details(&record));
+        };
+        let path = deserialize_repository_path(serialized_path);
+        if path == self.cwd {
+            return ToolResult::failure(
+                "refusing to clean the parent workspace as a subagent worktree",
+            );
+        }
+        if path.exists() {
+            if !git_worktree_is_registered(&self.cwd, &path) {
+                return ToolResult::failure(format!(
+                    "refusing to remove unregistered worktree path {}",
+                    path.display()
+                ));
+            }
+            let output = match git_worktree_command(
+                &self.cwd,
+                ["worktree", "remove", "--force"],
+                Some(&path),
+            ) {
+                Ok(output) => output,
+                Err(error) => return ToolResult::failure(error),
+            };
+            if !output.status.success() {
+                return ToolResult::failure(format!(
+                    "remove subagent worktree {}: {}",
+                    path.display(),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            let _ = git_worktree_command(&self.cwd, ["worktree", "prune"], None);
+        }
+        record.worktree_cleaned = true;
+        if let Err(error) = self.write_record(&record) {
+            return ToolResult::failure(error);
+        }
+        ToolResult::success(format!("Cleaned worktree for subagent {id}"))
+            .with_details(record_details(&record))
+    }
+
     pub(crate) async fn wait(
         &self,
         args: &serde_json::Value,
@@ -682,7 +1187,7 @@ impl SubagentManager {
             return ToolResult::failure(format!("subagent {id} is still running"));
         }
 
-        let mut record = match self.load_record(id) {
+        let initial = match self.load_record(id) {
             Ok(record) => record,
             Err(error) => return ToolResult::failure(error),
         };
@@ -692,18 +1197,23 @@ impl SubagentManager {
             .unwrap_or_else(|| credential_vault.fork());
         let mut request = SpawnRequest {
             task: prompt,
-            role: record.role,
-            model: record.model.clone(),
+            role: initial.role,
+            profile: initial.profile.clone(),
+            profile_prompt: initial.profile_prompt.clone(),
+            profile_tools: initial.profile_tools.clone(),
+            model: initial.model.clone(),
+            timeout_ms: initial.timeout_ms,
+            max_tokens: initial.max_tokens,
             run_in_background: args
                 .get("run_in_background")
                 .or_else(|| args.get("runInBackground"))
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(true),
-            isolation: record.isolation,
+            isolation: initial.isolation,
             worktree_name: None,
         };
         if let Err(error) =
-            apply_subagent_start_hook(&mut request, &self.cwd, &self.parent_scope_id)
+            apply_subagent_start_hook(&mut request, &self.cwd, &self.parent_scope_id())
         {
             return ToolResult::failure(error);
         }
@@ -714,12 +1224,9 @@ impl SubagentManager {
         let parent_resolved_task = credential_vault.resolve_all(&request.task);
         request.task = child_credential_vault.vault_in_text(&parent_resolved_task);
         let prompt = request.task;
-        let previous_prompt = record.current_prompt.clone();
-        let next_attempt = record.attempt.saturating_add(1);
         let run_in_background = request.run_in_background;
-        record.role = request.role;
-        let session_dir = Self::session_dir(&record);
-        let lease = match SessionLock::acquire(&Self::timeline_path(&record)) {
+        let session_dir = Self::session_dir(&initial);
+        let lease = match SessionLock::acquire(&Self::timeline_path(&initial)) {
             Ok(lease) => lease,
             Err(error) => {
                 return ToolResult::failure(format!(
@@ -727,6 +1234,27 @@ impl SubagentManager {
                 ));
             }
         };
+
+        // Reload under the lease. Everything above was decided from a record
+        // read before the lease existed: another process can have completed a
+        // full resume attempt in that window, and `cleanup` can have removed
+        // the worktree. Using the pre-lease copy would rewrite the attempt
+        // counter and transcript sequence backward, or relaunch into a
+        // deleted directory.
+        let mut record = match Self::revalidate_resumable_under_lease(self, id) {
+            Ok(record) => record,
+            Err(error) => return ToolResult::failure(error),
+        };
+        let previous_prompt = record.current_prompt.clone();
+        let next_attempt = record.attempt.saturating_add(1);
+        record.role = request.role;
+        record.profile = request.profile.clone();
+        record.profile_prompt = request.profile_prompt.clone();
+        record.profile_tools = request.profile_tools.clone();
+        record.model = request.model.clone();
+        record.timeout_ms = request.timeout_ms;
+        record.max_tokens = request.max_tokens;
+
         let mut recorder = match SessionRecorder::resume(&session_dir, id) {
             Ok(recorder) => recorder,
             Err(error) => {
@@ -756,7 +1284,7 @@ impl SubagentManager {
         record.status = SubagentStatus::Queued;
         record.current_prompt = prompt.clone();
         record.attempt = next_attempt;
-        record.last_parent_scope_id = self.parent_scope_id.clone();
+        record.last_parent_scope_id = self.parent_scope_id();
         record.last_call_id = parent_call_id.to_string();
         record.started_at_ms = None;
         record.finished_at_ms = None;
@@ -872,6 +1400,22 @@ impl SubagentManager {
             vault: &parent_credential_vault,
             generation: parent_credential_generation,
         };
+        let _permit = tokio::select! {
+            biased;
+            () = token.cancelled() => {
+                return self.finish_record(
+                    record,
+                    SubagentStatus::Cancelled,
+                    None,
+                    Some("subagent cancelled while queued".to_string()),
+                    &credential_vault,
+                    &parent_credential_scope,
+                );
+            }
+            permit = self.runtime.acquire_permit() => permit.map_err(|error| {
+                format!("acquire subagent scheduler permit: {error}")
+            })?,
+        };
         let _lease = match lease {
             Some(lease) => lease,
             None => SessionLock::acquire(&Self::timeline_path(&record)).map_err(|error| {
@@ -906,22 +1450,30 @@ impl SubagentManager {
             }
         };
 
-        let child_policy = child_sandbox_policy(sandbox_policy);
+        let child_policy = child_sandbox_policy(record.role, sandbox_policy);
         let model = record
             .model
             .clone()
             .unwrap_or_else(crate::codex_auth::resolve_default_model);
+        // Captured before `model` moves into the config below.
+        let mut output_metering = ChildOutputMetering::for_model(&model);
         let system_prompt = format!(
             "You are a delegated Maestro subagent in the {} role. Work independently on the assigned task.\n\
              Working directory: {}\n\
+             {}\
              Return a concise result for the parent agent, including files changed and any remaining risk.\n\
              You are a child run: do not delegate further work.",
             record.role.label(),
-            child_cwd.display()
+            child_cwd.display(),
+            record
+                .profile_prompt
+                .as_deref()
+                .map(|prompt| format!("Specialist profile instructions:\n{prompt}\n"))
+                .unwrap_or_default()
         );
         let config = NativeAgentConfig {
             model,
-            max_tokens: 16_384,
+            max_tokens: record.max_tokens,
             system_prompt: Some(system_prompt),
             thinking_enabled: false,
             thinking_budget: 0,
@@ -929,7 +1481,8 @@ impl SubagentManager {
             approval_mode: ApprovalMode::Yolo,
             sandbox_policy: child_policy,
         };
-        let allowed_tools = child_allowed_tools();
+        let allowed_tools =
+            child_allowed_tools_for_role(record.role, record.profile_tools.as_deref());
         let (agent, mut events) =
             match NativeAgent::new_with_allowed_tools_and_credential_vault_runner(
                 config,
@@ -955,6 +1508,35 @@ impl SubagentManager {
         agent.send_ready();
         let child_cwd_display = display_repository_path(&child_cwd);
         agent.send_session_info(&child_cwd_display, Some(record.id.clone()), None);
+        // Stamp the durable child id onto the runner's hook system and fire
+        // SessionStart. send_session_info only emits a UI event; without this
+        // every child PreToolUse/PostToolUse payload carries sessionId: null.
+        if let Err(error) = agent.set_session_context(Some(record.id.clone()), "subagent_start") {
+            agent.shutdown().await;
+            return self.finish_record(
+                record,
+                SubagentStatus::Failed,
+                None,
+                Some(format!("set child session context: {error}")),
+                &credential_vault,
+                &parent_credential_scope,
+            );
+        }
+        // Hand the whole-run allowance to the runner before the prompt that
+        // spends it. The runner subtracts each response and clamps the request
+        // it is about to build, so the cap does not depend on a per-response
+        // update arriving before the next request is built.
+        if let Err(error) = agent.set_output_token_budget(record.max_tokens) {
+            agent.shutdown().await;
+            return self.finish_record(
+                record,
+                SubagentStatus::Failed,
+                None,
+                Some(format!("set child output budget: {error}")),
+                &credential_vault,
+                &parent_credential_scope,
+            );
+        }
         let execution_prompt = credential_vault.resolve_all(&prompt);
         if let Err(error) = agent.prompt(execution_prompt, Vec::new()).await {
             agent.shutdown().await;
@@ -973,8 +1555,15 @@ impl SubagentManager {
         let mut terminal_seen = false;
         let mut blocked_seen = false;
         let mut cancelled = false;
+        let mut timed_out = false;
+        let mut output_tokens_used = 0_u64;
+        // Assistant characters streamed since the last response boundary, used
+        // to charge runtimes that report no usage.
+        let mut streamed_output_chars = 0_u64;
         let mut run_error = None;
         let mut recording_error = None;
+        let deadline = tokio::time::sleep(Duration::from_millis(record.timeout_ms));
+        tokio::pin!(deadline);
 
         loop {
             let event = if terminal_seen {
@@ -986,6 +1575,11 @@ impl SubagentManager {
                     biased;
                     () = token.cancelled() => {
                         cancelled = true;
+                        agent.cancel();
+                        break;
+                    }
+                    () = &mut deadline => {
+                        timed_out = true;
                         agent.cancel();
                         break;
                     }
@@ -1014,13 +1608,60 @@ impl SubagentManager {
             }
 
             match event {
-                FromAgent::ConversationSnapshot { .. } if terminal_seen => break,
+                // The post-terminal snapshot is the last event this loop waits
+                // for; an earlier snapshot carries nothing it needs, so it
+                // falls through to the catch-all arm.
+                FromAgent::ConversationSnapshot { .. } if terminal_seen => {
+                    break;
+                }
                 FromAgent::ResponseChunk {
                     content,
-                    is_thinking: false,
+                    is_thinking,
                     ..
-                } => current_output.push_str(&content),
-                FromAgent::ResponseEnd { response_id, .. } => {
+                } => {
+                    // Thinking text is billed as output too, so it counts
+                    // against the budget even though it is not the child's
+                    // answer.
+                    streamed_output_chars =
+                        streamed_output_chars.saturating_add(content.chars().count() as u64);
+                    if !is_thinking {
+                        current_output.push_str(&content);
+                    }
+                    // Only an unmetered runtime is policed mid-stream. A
+                    // metered one is bounded per request by the runner's clamp
+                    // and charged exactly at the boundary, so estimating here
+                    // could only cancel a response the budget still allowed.
+                    if output_metering.enforces_mid_stream()
+                        && child_output_budget_exhausted(
+                            output_tokens_used,
+                            streamed_output_chars,
+                            record.max_tokens,
+                        )
+                    {
+                        run_error = Some(format!(
+                            "subagent exhausted its cumulative {} output-token budget",
+                            record.max_tokens
+                        ));
+                        agent.cancel();
+                        break;
+                    }
+                }
+                FromAgent::ResponseEnd { response_id, usage } => {
+                    let budget_exhausted = record_child_output_tokens(
+                        &mut output_tokens_used,
+                        usage.as_ref(),
+                        output_metering.estimate_for_turn(usage.is_some(), streamed_output_chars),
+                        record.max_tokens,
+                    );
+                    streamed_output_chars = 0;
+                    if budget_exhausted && response_id != "done" && response_id != "blocked" {
+                        run_error = Some(format!(
+                            "subagent exhausted its cumulative {} output-token budget",
+                            record.max_tokens
+                        ));
+                        agent.cancel();
+                        break;
+                    }
                     if response_id == "done" || response_id == "blocked" {
                         blocked_seen = response_id == "blocked";
                         terminal_seen = true;
@@ -1032,6 +1673,11 @@ impl SubagentManager {
                         // A non-terminal response boundary means a previous
                         // recoverable tool error did not prevent progress.
                         run_error = None;
+                        // The next request's allowance needs no update here:
+                        // the runner holds the whole-run budget sent before the
+                        // prompt and clamps each request it builds. Lowering it
+                        // from this loop raced the request the child had
+                        // already started building.
                     }
                 }
                 FromAgent::ToolCall {
@@ -1053,6 +1699,54 @@ impl SubagentManager {
                     run_error = Some(reason);
                     agent.cancel();
                     break;
+                }
+                FromAgent::CodexNativeOperation {
+                    method,
+                    output_chars,
+                } => {
+                    // Codex runs `commandExecution` and `fileChange` itself, so
+                    // these never arrive as `ToolCall`. Without this arm a child
+                    // could run repeated large native operations with no
+                    // assistant text and never reach its budget.
+                    let _ = method;
+                    streamed_output_chars = streamed_output_chars.saturating_add(output_chars);
+                    if output_metering.enforces_mid_stream()
+                        && child_output_budget_exhausted(
+                            output_tokens_used,
+                            streamed_output_chars,
+                            record.max_tokens,
+                        )
+                    {
+                        run_error = Some(format!(
+                            "subagent exhausted its cumulative {} output-token budget",
+                            record.max_tokens
+                        ));
+                        agent.cancel();
+                        break;
+                    }
+                }
+                FromAgent::ToolCall { tool, args, .. } => {
+                    // A tool call is model-produced output even though it never
+                    // arrives as assistant text. Counting only `ResponseChunk`
+                    // let a child emit large `write`/`edit` arguments, or call
+                    // tools with no prose at all, and never reach its budget;
+                    // the time limit was the only thing that stopped it.
+                    streamed_output_chars =
+                        streamed_output_chars.saturating_add(tool_call_output_chars(&tool, &args));
+                    if output_metering.enforces_mid_stream()
+                        && child_output_budget_exhausted(
+                            output_tokens_used,
+                            streamed_output_chars,
+                            record.max_tokens,
+                        )
+                    {
+                        run_error = Some(format!(
+                            "subagent exhausted its cumulative {} output-token budget",
+                            record.max_tokens
+                        ));
+                        agent.cancel();
+                        break;
+                    }
                 }
                 FromAgent::Error { message, fatal } => {
                     run_error = Some(message);
@@ -1107,6 +1801,14 @@ impl SubagentManager {
             (
                 SubagentStatus::Cancelled,
                 Some("subagent cancelled".to_string()),
+            )
+        } else if timed_out {
+            (
+                SubagentStatus::TimedOut,
+                Some(format!(
+                    "subagent exceeded its {} ms execution budget",
+                    record.timeout_ms
+                )),
             )
         } else if blocked_seen {
             (
@@ -1168,6 +1870,12 @@ impl SubagentManager {
             .unwrap_or_default();
         let result_text = record.result.as_ref().map(|result| result.output.as_str());
         let mut hooks = IntegratedHookSystem::load_from_config(&self.cwd.to_string_lossy());
+        // Local load skips the runner's SetSessionContext wiring, so stamp the
+        // raw parent session id (not the `session:` routing scope) before
+        // dispatching so payloads match every other hook in that session.
+        hooks.set_session_id(Some(hook_session_id_from_parent_scope(
+            &record.last_parent_scope_id,
+        )));
         let _ = hooks.execute_subagent_stop(
             record.role.label(),
             &record.id,
@@ -1175,8 +1883,28 @@ impl SubagentManager {
             duration_ms,
             status == SubagentStatus::Completed,
         );
+        // Address the completion to the scope and call that most recently
+        // launched this child, not the original spawn. After a resume from a
+        // different app or executor — the restart case — the spawning scope no
+        // longer has a consumer, so an event queued under it is never polled
+        // and the current parent never learns the child finished.
+        let event = SubagentLifecycleEvent {
+            subagent_id: record.id.clone(),
+            parent_scope_id: record.last_parent_scope_id.clone(),
+            parent_call_id: record.last_call_id.clone(),
+            status,
+            summary: record
+                .result
+                .as_ref()
+                .map(|result| result.output.trim().chars().take(500).collect::<String>()),
+            error: record.error.clone(),
+            finished_at_ms,
+        };
         match self.write_record(&record) {
-            Ok(()) => Ok(record),
+            Ok(()) => {
+                self.runtime.push_event(event);
+                Ok(record)
+            }
             Err(error) => Err(format!(
                 "persist terminal subagent record {}: {error}",
                 record.id
@@ -1222,6 +1950,13 @@ fn parse_spawn_request(args: &serde_json::Value) -> Result<SpawnRequest, String>
     }
 
     let role = SubagentRole::parse(args.get("role").and_then(serde_json::Value::as_str))?;
+    let profile = args
+        .get("profile")
+        .or_else(|| args.get("agent_profile"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|profile| !profile.is_empty())
+        .map(str::to_ascii_lowercase);
     let isolation =
         SubagentIsolation::parse(args.get("isolation").and_then(serde_json::Value::as_str))?;
     let model = args
@@ -1230,6 +1965,8 @@ fn parse_spawn_request(args: &serde_json::Value) -> Result<SpawnRequest, String>
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .map(str::to_string);
+    let timeout_ms = parse_child_timeout(args)?;
+    let max_tokens = parse_child_max_tokens(args)?;
     let run_in_background = args
         .get("run_in_background")
         .or_else(|| args.get("runInBackground"))
@@ -1246,11 +1983,73 @@ fn parse_spawn_request(args: &serde_json::Value) -> Result<SpawnRequest, String>
     Ok(SpawnRequest {
         task,
         role,
+        profile,
+        profile_prompt: None,
+        profile_tools: None,
         model,
+        timeout_ms,
+        max_tokens,
         run_in_background,
         isolation,
         worktree_name,
     })
+}
+
+fn default_child_timeout_ms() -> u64 {
+    DEFAULT_CHILD_TIMEOUT_MS
+}
+
+fn default_child_max_tokens() -> u32 {
+    DEFAULT_CHILD_MAX_TOKENS
+}
+
+fn parse_child_timeout(args: &serde_json::Value) -> Result<u64, String> {
+    let Some(value) = args.get("timeout_ms").or_else(|| args.get("timeoutMs")) else {
+        return Ok(DEFAULT_CHILD_TIMEOUT_MS);
+    };
+    let timeout_ms = value
+        .as_u64()
+        .ok_or_else(|| "timeout_ms must be a positive integer".to_string())?;
+    if timeout_ms == 0 {
+        return Err("timeout_ms must be a positive integer".to_string());
+    }
+    Ok(timeout_ms.min(MAX_CHILD_TIMEOUT_MS))
+}
+
+fn parse_child_max_tokens(args: &serde_json::Value) -> Result<u32, String> {
+    let Some(value) = args.get("max_tokens").or_else(|| args.get("maxTokens")) else {
+        return Ok(DEFAULT_CHILD_MAX_TOKENS);
+    };
+    let max_tokens = value
+        .as_u64()
+        .ok_or_else(|| "max_tokens must be a positive integer".to_string())?;
+    if max_tokens == 0 {
+        return Err("max_tokens must be a positive integer".to_string());
+    }
+    Ok(max_tokens.min(u64::from(MAX_CHILD_MAX_TOKENS)) as u32)
+}
+
+fn resolve_spawn_profile(request: &mut SpawnRequest, cwd: &Path) -> Result<(), String> {
+    let Some(profile_name) = request.profile.as_deref() else {
+        return Ok(());
+    };
+    let plugin_registry = crate::plugins::PluginRegistry::discover_for_workspace(cwd);
+    let agent_dirs = plugin_registry.agent_dirs();
+    let profiles = crate::agents_cli::profiles_for_workspace_with_agent_dirs(cwd, &agent_dirs)
+        .map_err(|error| format!("load agent profiles: {error}"))?;
+    let Some(profile) = profiles
+        .into_iter()
+        .find(|profile| profile.name == profile_name)
+    else {
+        return Err(format!("agent profile `{profile_name}` was not found"));
+    };
+    request.profile = Some(profile.name);
+    request.profile_prompt = Some(profile.prompt);
+    request.profile_tools = profile.tools;
+    if request.model.is_none() {
+        request.model = profile.model;
+    }
+    Ok(())
 }
 
 fn fallback_history_from_prompt(prompt: &str) -> Option<Vec<crate::ai::Message>> {
@@ -1302,19 +2101,102 @@ fn parse_wait_timeout(args: &serde_json::Value) -> Result<u64, String> {
         .ok_or_else(|| "timeout_ms must be a non-negative integer".to_string())
 }
 
-fn child_allowed_tools() -> HashSet<String> {
-    ToolRegistry::new()
+const READ_ONLY_CHILD_TOOLS: [&str; 21] = [
+    "read",
+    "glob",
+    "grep",
+    "list",
+    "diff",
+    "status",
+    "parallel_ripgrep",
+    "search",
+    "web_fetch",
+    "websearch",
+    "codesearch",
+    "read_image",
+    "screenshot",
+    "vscode_get_diagnostics",
+    "jetbrains_get_diagnostics",
+    "vscode_get_definition",
+    "jetbrains_get_definition",
+    "vscode_find_references",
+    "jetbrains_find_references",
+    "mcp_list_resources",
+    "mcp_read_resource",
+];
+
+fn child_allowed_tools_for_role(
+    role: SubagentRole,
+    profile_tools: Option<&[String]>,
+) -> HashSet<String> {
+    let mut tools = ToolRegistry::new()
         .tools()
         .filter(|definition| {
             let name = definition.tool.name.to_ascii_lowercase();
-            !SUBAGENT_TOOL_NAMES.contains(&name.as_str())
+            let globally_allowed = !SUBAGENT_TOOL_NAMES.contains(&name.as_str())
                 && !matches!(
                     name.as_str(),
                     "get_goal" | "update_goal" | "todo" | "background_tasks"
-                )
+                );
+            let role_allowed = matches!(role, SubagentRole::Code)
+                || READ_ONLY_CHILD_TOOLS.contains(&name.as_str());
+            globally_allowed && role_allowed
         })
         .map(|definition| definition.tool.name.to_ascii_lowercase())
-        .collect()
+        .collect::<HashSet<_>>();
+
+    if let Some(profile_tools) = profile_tools {
+        let requested = profile_tools
+            .iter()
+            .map(|name| name.to_ascii_lowercase())
+            .collect::<HashSet<_>>();
+        tools.retain(|name| requested.contains(name));
+    }
+    tools
+}
+
+fn git_worktree_command<const N: usize>(
+    cwd: &Path,
+    args: [&str; N],
+    appended_path: Option<&Path>,
+) -> Result<std::process::Output, String> {
+    let mut command = Command::new("git");
+    command.args(args).current_dir(cwd);
+    if let Some(path) = appended_path {
+        command.arg(path);
+    }
+    command.output().map_err(|error| {
+        format!(
+            "run git {}: {error}",
+            command.get_program().to_string_lossy()
+        )
+    })
+}
+
+fn git_worktree_is_registered(cwd: &Path, path: &Path) -> bool {
+    let Ok(output) = git_worktree_command(cwd, ["worktree", "list", "--porcelain"], None) else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(Path::new)
+        .any(|candidate| candidate == path)
+}
+
+/// Raw session id for hook payloads derived from a subagent parent scope.
+///
+/// Parent scopes are routing keys (`session:<uuid>` or `pending:<uuid>`). Hook
+/// `sessionId` fields use the bare session uuid so lifecycle events correlate
+/// with every other hook in that conversation.
+fn hook_session_id_from_parent_scope(parent_scope_id: &str) -> String {
+    parent_scope_id
+        .strip_prefix("session:")
+        .unwrap_or(parent_scope_id)
+        .to_string()
 }
 
 fn apply_subagent_start_hook(
@@ -1323,6 +2205,10 @@ fn apply_subagent_start_hook(
     parent_scope_id: &str,
 ) -> Result<(), String> {
     let mut hooks = IntegratedHookSystem::load_from_config(&cwd.to_string_lossy());
+    // Local load skips the runner's SetSessionContext wiring, so stamp the
+    // raw parent session id (not the `session:` routing scope) before
+    // dispatching so payloads match every other hook in that session.
+    hooks.set_session_id(Some(hook_session_id_from_parent_scope(parent_scope_id)));
     match hooks.execute_subagent_start(request.role.label(), &request.task, Some(parent_scope_id)) {
         HookResult::Continue => Ok(()),
         HookResult::Block { reason } => Err(format!("subagent spawn blocked by hook: {reason}")),
@@ -1362,7 +2248,23 @@ fn apply_subagent_start_hook(
     Ok(())
 }
 
-fn child_sandbox_policy(policy: Option<SandboxPolicy>) -> Option<SandboxPolicy> {
+/// Sandbox policy for a child in `role`, given the parent's `policy`.
+///
+/// A role that is not allowed to mutate gets [`SandboxPolicy::ReadOnly`]
+/// outright rather than inheriting the parent's. Restricting the advertised
+/// tool list is not enough on its own: on the Codex app-server transport the
+/// child also reaches native `commandExecution` and `fileChange` operations,
+/// which never pass through the Maestro tool registry, and with
+/// `isolation=shared` those act on the parent's own checkout. The policy is
+/// what both transports enforce against, so it is where the role has to be
+/// expressed.
+fn child_sandbox_policy(
+    role: SubagentRole,
+    policy: Option<SandboxPolicy>,
+) -> Option<SandboxPolicy> {
+    if !role.can_mutate() {
+        return Some(SandboxPolicy::ReadOnly);
+    }
     match policy {
         Some(SandboxPolicy::WorkspaceWrite {
             writable_roots,
@@ -1754,6 +2656,8 @@ fn status_label(status: SubagentStatus) -> &'static str {
         SubagentStatus::Completed => "completed",
         SubagentStatus::Failed => "failed",
         SubagentStatus::Cancelled => "cancelled",
+        SubagentStatus::TimedOut => "timed_out",
+        SubagentStatus::Interrupted => "interrupted",
     }
 }
 
@@ -1776,10 +2680,14 @@ fn record_details(record: &SubagentRecord) -> serde_json::Value {
         "task": record.task,
         "currentPrompt": record.current_prompt,
         "role": record.role,
+        "profile": record.profile,
         "model": record.model,
+        "timeoutMs": record.timeout_ms,
+        "maxTokens": record.max_tokens,
         "isolation": record.isolation,
         "cwd": display_repository_path(&cwd),
         "worktreePath": worktree_path,
+        "worktreeCleaned": record.worktree_cleaned,
         "sessionDir": display_repository_path(&session_dir),
         "timelinePath": display_repository_path(&timeline_path),
         "status": record.status,
@@ -1790,7 +2698,13 @@ fn record_details(record: &SubagentRecord) -> serde_json::Value {
         "finishedAtMs": record.finished_at_ms,
         "result": record.result,
         "error": record.error,
-        "recoverable": matches!(record.status, SubagentStatus::Queued | SubagentStatus::Running)
+        "recoverable": matches!(
+            record.status,
+            SubagentStatus::Queued
+                | SubagentStatus::Running
+                | SubagentStatus::TimedOut
+                | SubagentStatus::Interrupted
+        )
     })
 }
 
@@ -1805,7 +2719,10 @@ fn tool_result_for_record(record: SubagentRecord) -> ToolResult {
         .unwrap_or_else(|| format!("Subagent {} is {status}", record.id));
     if matches!(
         record.status,
-        SubagentStatus::Failed | SubagentStatus::Cancelled
+        SubagentStatus::Failed
+            | SubagentStatus::Cancelled
+            | SubagentStatus::TimedOut
+            | SubagentStatus::Interrupted
     ) {
         ToolResult::failure(
             record
@@ -2018,6 +2935,427 @@ mod tests {
         );
         assert!(parse_wait_timeout(&serde_json::json!({"timeout_ms": 1000.0})).is_err());
         assert!(parse_wait_timeout(&serde_json::json!({"timeout_ms": -1})).is_err());
+    }
+
+    #[test]
+    fn spawn_budgets_are_bounded_and_have_safe_defaults() {
+        let request = parse_spawn_request(&serde_json::json!({
+            "task": "inspect the parser",
+            "timeout_ms": 2500,
+            "max_tokens": 4096
+        }))
+        .expect("budgeted request should parse");
+        assert_eq!(request.timeout_ms, 2500);
+        assert_eq!(request.max_tokens, 4096);
+
+        assert!(parse_spawn_request(&serde_json::json!({
+            "task": "inspect",
+            "timeout_ms": 0
+        }))
+        .is_err());
+        assert!(parse_spawn_request(&serde_json::json!({
+            "task": "inspect",
+            "max_tokens": 0
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn child_output_budget_accumulates_across_responses() {
+        let mut used_tokens = 0;
+        let first = crate::agent::TokenUsage {
+            output_tokens: 3,
+            ..Default::default()
+        };
+        let second = crate::agent::TokenUsage {
+            output_tokens: 2,
+            ..Default::default()
+        };
+
+        assert!(!record_child_output_tokens(
+            &mut used_tokens,
+            Some(&first),
+            None,
+            5
+        ));
+        assert!(record_child_output_tokens(
+            &mut used_tokens,
+            Some(&second),
+            None,
+            5
+        ));
+        assert_eq!(used_tokens, 5);
+    }
+
+    #[test]
+    fn child_output_is_estimated_when_the_runtime_reports_no_usage() {
+        // The Codex app-server path emits `ResponseEnd { usage: None }`, so a
+        // run under it was charged nothing and never reached its budget.
+        let mut used_tokens = 0;
+
+        assert!(
+            !record_child_output_tokens(&mut used_tokens, None, Some(40), 100),
+            "40 characters is about 10 tokens, well inside a 100-token budget"
+        );
+        assert_eq!(used_tokens, 10);
+
+        assert!(
+            record_child_output_tokens(&mut used_tokens, None, Some(400), 100),
+            "an unmetered runtime must still exhaust the budget"
+        );
+        assert_eq!(used_tokens, 110);
+    }
+
+    #[test]
+    fn exact_usage_wins_over_the_estimate() {
+        let mut used_tokens = 0;
+        let usage = crate::agent::TokenUsage {
+            output_tokens: 3,
+            ..Default::default()
+        };
+
+        assert!(!record_child_output_tokens(
+            &mut used_tokens,
+            Some(&usage),
+            Some(4_000),
+            100
+        ));
+        assert_eq!(
+            used_tokens, 3,
+            "streamed characters must be ignored when the provider reports usage"
+        );
+    }
+
+    #[test]
+    fn a_metered_runtime_is_never_charged_an_estimate() {
+        // A metered provider that omits usage on one response must not be
+        // charged a guess: it is already bounded per request by the runner's
+        // clamp, and a guess can only cancel a response the budget allowed.
+        let mut used_tokens = 0;
+
+        assert!(!record_child_output_tokens(
+            &mut used_tokens,
+            None,
+            None,
+            100
+        ));
+        assert_eq!(used_tokens, 0);
+    }
+
+    #[test]
+    fn tool_call_payloads_count_against_an_unmetered_budget() {
+        // A write-heavy child emits its output as tool-call arguments, not as
+        // assistant text. Counting only `ResponseChunk` left `max_tokens`
+        // ineffective for exactly the children most able to do damage.
+        let big_patch = "x".repeat(4_000);
+        let charged = tool_call_output_chars(
+            "write",
+            &serde_json::json!({"path": "src/main.rs", "content": big_patch}),
+        );
+        assert!(
+            charged > 4_000,
+            "the serialized arguments must be charged, got {charged}"
+        );
+
+        let mut used_tokens = 0;
+        assert!(
+            record_child_output_tokens(&mut used_tokens, None, Some(charged), 100),
+            "a tool-call-heavy child must reach its budget"
+        );
+    }
+
+    #[test]
+    fn a_tool_call_with_no_prose_is_still_charged() {
+        assert!(
+            tool_call_output_chars("read", &serde_json::json!({})) > 0,
+            "even an argument-free call is model-produced output"
+        );
+    }
+
+    #[test]
+    fn read_only_child_roles_get_a_read_only_sandbox() {
+        // The advertised tool list is not the only way a child acts: on the
+        // Codex transport it also reaches native commandExecution and
+        // fileChange, which never pass through the tool registry.
+        for role in [
+            SubagentRole::Explore,
+            SubagentRole::Plan,
+            SubagentRole::Review,
+        ] {
+            assert!(!role.can_mutate(), "{} must be read-only", role.label());
+            assert!(
+                matches!(
+                    child_sandbox_policy(role, Some(SandboxPolicy::DangerFullAccess)),
+                    Some(SandboxPolicy::ReadOnly)
+                ),
+                "{} must not inherit a writable parent policy",
+                role.label()
+            );
+            assert!(
+                matches!(
+                    child_sandbox_policy(role, None),
+                    Some(SandboxPolicy::ReadOnly)
+                ),
+                "{} must be restricted even with no parent policy",
+                role.label()
+            );
+        }
+    }
+
+    #[test]
+    fn a_code_child_still_inherits_the_parent_sandbox() {
+        assert!(SubagentRole::Code.can_mutate());
+        assert!(matches!(
+            child_sandbox_policy(SubagentRole::Code, Some(SandboxPolicy::DangerFullAccess)),
+            Some(SandboxPolicy::DangerFullAccess)
+        ));
+        assert!(child_sandbox_policy(SubagentRole::Code, None).is_none());
+    }
+
+    #[test]
+    fn a_turn_without_usage_is_charged_the_estimate_even_on_a_metered_model() {
+        // An OpenAI-compatible endpoint may omit the usage chunk on any turn.
+        // Deciding by model name charged that turn nothing, so a tool-calling
+        // child got its full allowance again every turn.
+        let mut metering = ChildOutputMetering::for_model("openai/gpt-4o");
+        assert!(
+            !metering.enforces_mid_stream(),
+            "a metered model is not policed mid-stream until it fails to report"
+        );
+
+        let estimate = metering.estimate_for_turn(false, 4_000);
+        assert_eq!(
+            estimate,
+            Some(4_000),
+            "a turn that reported no usage must be estimated"
+        );
+        assert!(
+            metering.enforces_mid_stream(),
+            "once a turn reports no usage the run is policed mid-stream"
+        );
+
+        let mut used_tokens = 0;
+        assert!(record_child_output_tokens(
+            &mut used_tokens,
+            None,
+            estimate,
+            100
+        ));
+    }
+
+    #[test]
+    fn a_reported_turn_is_charged_exactly_and_not_also_estimated() {
+        let mut metering = ChildOutputMetering::for_model("openai/gpt-4o");
+
+        assert_eq!(
+            metering.estimate_for_turn(true, 4_000),
+            None,
+            "streamed characters must not be charged on top of real usage"
+        );
+        assert!(
+            !metering.enforces_mid_stream(),
+            "a reporting provider stays unpoliced by the estimate"
+        );
+
+        let mut used_tokens = 0;
+        let usage = crate::agent::TokenUsage {
+            output_tokens: 7,
+            ..Default::default()
+        };
+        assert!(!record_child_output_tokens(
+            &mut used_tokens,
+            Some(&usage),
+            None,
+            100
+        ));
+        assert_eq!(used_tokens, 7);
+    }
+
+    #[test]
+    fn the_codex_path_is_policed_from_its_first_turn() {
+        // Codex sends no per-request `max_tokens`, so an unpoliced first turn
+        // has no bound at all. Every other runtime is bounded per request by
+        // the runner's clamp, which is why they wait for evidence.
+        let metering = ChildOutputMetering::for_model("openai-codex/gpt-5.5");
+        assert!(metering.enforces_mid_stream());
+    }
+
+    #[test]
+    fn only_the_codex_app_server_path_counts_as_unmetered() {
+        assert!(!child_output_is_metered("openai-codex/gpt-5.5"));
+        assert!(child_output_is_metered("claude-sonnet-4-5-20250514"));
+        assert!(child_output_is_metered("openai/gpt-4o"));
+    }
+
+    #[test]
+    fn streamed_output_exhausts_the_budget_before_the_response_boundary() {
+        // Without the mid-stream check a single turn could produce far more
+        // than the budget and only be stopped at the boundary after it.
+        assert!(!child_output_budget_exhausted(0, 40, 100));
+        assert!(
+            child_output_budget_exhausted(50, 200, 100),
+            "50 spent plus about 50 streamed reaches a 100-token budget"
+        );
+    }
+
+    #[test]
+    fn resumed_child_completion_is_routed_to_the_current_parent_scope() {
+        let root = tempfile::tempdir().expect("records root should exist");
+        let manager =
+            SubagentManager::with_root(root.path().to_path_buf(), root.path().join("records"));
+        let spawn_scope = format!("spawn-scope-{}", uuid::Uuid::new_v4());
+        let resume_scope = format!("resume-scope-{}", uuid::Uuid::new_v4());
+        let record = SubagentRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_scope_id: spawn_scope.clone(),
+            parent_call_id: "spawn-call".to_string(),
+            last_parent_scope_id: resume_scope.clone(),
+            last_call_id: "resume-call".to_string(),
+            task: "inspect".to_string(),
+            current_prompt: "inspect".to_string(),
+            role: SubagentRole::Explore,
+            profile: None,
+            profile_prompt: None,
+            profile_tools: None,
+            model: None,
+            timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
+            max_tokens: DEFAULT_CHILD_MAX_TOKENS,
+            isolation: SubagentIsolation::Shared,
+            cwd: serialize_repository_path(root.path()),
+            worktree_path: None,
+            worktree_cleaned: false,
+            initial_files: Vec::new(),
+            initial_file_fingerprints: HashMap::new(),
+            initial_head: None,
+            session_dir: serialize_repository_path(&root.path().join("session")),
+            status: SubagentStatus::Running,
+            attempt: 2,
+            snapshot_attempt: None,
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            finished_at_ms: None,
+            result: None,
+            error: None,
+        };
+
+        let child_vault = CredentialVault::new();
+        let parent_vault = CredentialVault::new();
+        let parent_scope = ParentCredentialScope {
+            vault: &parent_vault,
+            generation: parent_vault.generation(),
+        };
+        manager
+            .finish_record(
+                record,
+                SubagentStatus::Completed,
+                Some(SubagentResult {
+                    output: "done".to_string(),
+                    files_modified: Vec::new(),
+                }),
+                None,
+                &child_vault,
+                &parent_scope,
+            )
+            .expect("terminal record should persist");
+
+        assert!(
+            manager.runtime.poll_events(&spawn_scope).is_empty(),
+            "the original spawn scope no longer has a consumer"
+        );
+        let events = manager.runtime.poll_events(&resume_scope);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].parent_call_id, "resume-call");
+        assert_eq!(events[0].status, SubagentStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn runtime_registry_queues_after_its_concurrency_limit() {
+        let runtime = RuntimeRegistry::with_capacity(1);
+        let first = runtime.acquire_permit().await.expect("first permit");
+        assert_eq!(runtime.available_permits(), 0);
+
+        let second =
+            tokio::time::timeout(Duration::from_millis(10), runtime.acquire_permit()).await;
+        assert!(second.is_err(), "second child should remain queued");
+        drop(first);
+        let _second = runtime
+            .acquire_permit()
+            .await
+            .expect("permit should be reusable");
+    }
+
+    #[test]
+    fn lifecycle_events_are_parent_scoped_and_consumed_once() {
+        let runtime = RuntimeRegistry::with_capacity(1);
+        runtime.push_event(SubagentLifecycleEvent {
+            subagent_id: "child-1".to_string(),
+            parent_scope_id: "parent-a".to_string(),
+            parent_call_id: "call-1".to_string(),
+            status: SubagentStatus::Completed,
+            summary: Some("done".to_string()),
+            error: None,
+            finished_at_ms: 10,
+        });
+        runtime.push_event(SubagentLifecycleEvent {
+            subagent_id: "child-2".to_string(),
+            parent_scope_id: "parent-b".to_string(),
+            parent_call_id: "call-2".to_string(),
+            status: SubagentStatus::Failed,
+            summary: None,
+            error: Some("failed".to_string()),
+            finished_at_ms: 11,
+        });
+
+        let events = runtime.poll_events("parent-a");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].subagent_id, "child-1");
+        assert!(runtime.poll_events("parent-a").is_empty());
+        assert_eq!(runtime.poll_events("parent-b").len(), 1);
+    }
+
+    #[test]
+    fn a_manager_scope_rotates_behind_a_shared_handle() {
+        // The tool executor holding this manager is behind an `Arc` that
+        // outlives any one conversation, so the scope has to rotate through
+        // `&self` rather than by rebuilding the executor.
+        let manager = SubagentManager::with_parent_scope(PathBuf::from("/tmp"), "session:alpha");
+        let shared = manager.clone();
+        assert_eq!(shared.parent_scope_id(), "session:alpha");
+
+        manager.set_parent_scope_id("session:beta".to_string());
+
+        assert_eq!(manager.parent_scope_id(), "session:beta");
+        assert_eq!(
+            shared.parent_scope_id(),
+            "session:beta",
+            "every handle to one executor's manager must see the rotation"
+        );
+    }
+
+    #[test]
+    fn a_rotated_scope_leaves_the_previous_conversation_events_parked() {
+        // A child that finishes after its conversation ended must not be
+        // drained by the next one, and must still be there when its own
+        // session is resumed.
+        let runtime = RuntimeRegistry::with_capacity(1);
+        runtime.push_event(SubagentLifecycleEvent {
+            subagent_id: "child-1".to_string(),
+            parent_scope_id: "session:alpha".to_string(),
+            parent_call_id: "call-1".to_string(),
+            status: SubagentStatus::Completed,
+            summary: Some("done".to_string()),
+            error: None,
+            finished_at_ms: 10,
+        });
+
+        assert!(
+            runtime.poll_events("session:beta").is_empty(),
+            "the new conversation must not see the previous one's child"
+        );
+
+        let resumed = runtime.poll_events("session:alpha");
+        assert_eq!(resumed.len(), 1);
+        assert_eq!(resumed[0].subagent_id, "child-1");
     }
 
     #[test]
@@ -2283,10 +3621,16 @@ mod tests {
             task: "inspect".to_string(),
             current_prompt: "inspect".to_string(),
             role: SubagentRole::Explore,
+            profile: None,
+            profile_prompt: None,
+            profile_tools: None,
             model: None,
+            timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
+            max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             isolation: SubagentIsolation::Shared,
             cwd: serialize_repository_path(&cwd),
             worktree_path: None,
+            worktree_cleaned: false,
             initial_files: Vec::new(),
             initial_file_fingerprints: HashMap::new(),
             initial_head: None,
@@ -2406,10 +3750,16 @@ mod tests {
             task: "inspect".to_string(),
             current_prompt: "inspect".to_string(),
             role: SubagentRole::Explore,
+            profile: None,
+            profile_prompt: None,
+            profile_tools: None,
             model: None,
+            timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
+            max_tokens: DEFAULT_CHILD_MAX_TOKENS,
             isolation: SubagentIsolation::Shared,
             cwd: "/workspace".to_string(),
             worktree_path: None,
+            worktree_cleaned: false,
             initial_files: Vec::new(),
             initial_file_fingerprints: HashMap::new(),
             initial_head: None,
@@ -2436,8 +3786,438 @@ mod tests {
     }
 
     #[test]
+    fn terminal_subagent_without_worktree_can_be_inspected_and_cleaned() {
+        let root = tempfile::tempdir().expect("records root should exist");
+        let manager =
+            SubagentManager::with_root(PathBuf::from("/workspace"), root.path().join("records"));
+        let id = uuid::Uuid::new_v4().to_string();
+        let record = SubagentRecord {
+            id: id.clone(),
+            parent_scope_id: "parent-scope".to_string(),
+            parent_call_id: "call-1".to_string(),
+            last_parent_scope_id: "parent-scope".to_string(),
+            last_call_id: "call-1".to_string(),
+            task: "inspect".to_string(),
+            current_prompt: "inspect".to_string(),
+            role: SubagentRole::Explore,
+            profile: None,
+            profile_prompt: None,
+            profile_tools: None,
+            model: None,
+            timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
+            max_tokens: DEFAULT_CHILD_MAX_TOKENS,
+            isolation: SubagentIsolation::Shared,
+            cwd: "/workspace".to_string(),
+            worktree_path: None,
+            worktree_cleaned: false,
+            initial_files: Vec::new(),
+            initial_file_fingerprints: HashMap::new(),
+            initial_head: None,
+            session_dir: root.path().join("session").display().to_string(),
+            status: SubagentStatus::Completed,
+            attempt: 1,
+            snapshot_attempt: None,
+            created_at_ms: 1,
+            started_at_ms: Some(1),
+            finished_at_ms: Some(2),
+            result: None,
+            error: None,
+        };
+        manager
+            .write_record(&record)
+            .expect("record should persist");
+
+        let inspected = manager.inspect(&serde_json::json!({"subagent_id": id}));
+        assert!(inspected.success);
+        let cleaned = manager.cleanup(&serde_json::json!({"subagent_id": record.id}));
+        assert!(cleaned.success);
+        assert!(
+            !manager
+                .load_record(&record.id)
+                .expect("record should remain durable")
+                .worktree_cleaned,
+            "shared children have no worktree, so cleanup must leave them resumable"
+        );
+    }
+
+    #[test]
+    fn shared_child_remains_resumable_after_noop_cleanup() {
+        let root = tempfile::tempdir().expect("records root should exist");
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace should exist");
+        let manager = SubagentManager::with_root(workspace.clone(), root.path().join("records"));
+        let id = uuid::Uuid::new_v4().to_string();
+        let session_dir = root.path().join("session");
+        std::fs::create_dir_all(&session_dir).expect("session directory should exist");
+        let record = SubagentRecord {
+            id: id.clone(),
+            parent_scope_id: "parent-scope".to_string(),
+            parent_call_id: "call-1".to_string(),
+            last_parent_scope_id: "parent-scope".to_string(),
+            last_call_id: "call-1".to_string(),
+            task: "inspect".to_string(),
+            current_prompt: "inspect".to_string(),
+            role: SubagentRole::Explore,
+            profile: None,
+            profile_prompt: None,
+            profile_tools: None,
+            model: None,
+            timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
+            max_tokens: DEFAULT_CHILD_MAX_TOKENS,
+            isolation: SubagentIsolation::Shared,
+            cwd: serialize_repository_path(&workspace),
+            worktree_path: None,
+            worktree_cleaned: false,
+            initial_files: Vec::new(),
+            initial_file_fingerprints: HashMap::new(),
+            initial_head: None,
+            session_dir: serialize_repository_path(&session_dir),
+            status: SubagentStatus::Completed,
+            attempt: 1,
+            snapshot_attempt: None,
+            created_at_ms: 1,
+            started_at_ms: Some(1),
+            finished_at_ms: Some(2),
+            result: None,
+            error: None,
+        };
+        manager
+            .write_record(&record)
+            .expect("record should persist");
+
+        let cleaned = manager.cleanup(&serde_json::json!({"subagent_id": id}));
+        assert!(cleaned.success);
+        assert!(
+            manager.revalidate_resumable_under_lease(&id).is_ok(),
+            "a shared child must remain resumable after a no-op cleanup"
+        );
+    }
+
+    #[test]
+    fn a_child_holding_the_execution_lease_is_not_marked_interrupted() {
+        let root = tempfile::tempdir().expect("records root should exist");
+        let manager =
+            SubagentManager::with_root(PathBuf::from("/workspace"), root.path().join("records"));
+        let id = uuid::Uuid::new_v4().to_string();
+        let session_dir = root.path().join("session");
+        std::fs::create_dir_all(&session_dir).expect("session directory should exist");
+        let record = SubagentRecord {
+            id: id.clone(),
+            parent_scope_id: "parent-scope".to_string(),
+            parent_call_id: "call-1".to_string(),
+            last_parent_scope_id: "parent-scope".to_string(),
+            last_call_id: "call-1".to_string(),
+            task: "inspect".to_string(),
+            current_prompt: "inspect".to_string(),
+            role: SubagentRole::Explore,
+            profile: None,
+            profile_prompt: None,
+            profile_tools: None,
+            model: None,
+            timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
+            max_tokens: DEFAULT_CHILD_MAX_TOKENS,
+            isolation: SubagentIsolation::Shared,
+            cwd: "/workspace".to_string(),
+            worktree_path: None,
+            worktree_cleaned: false,
+            initial_files: Vec::new(),
+            initial_file_fingerprints: HashMap::new(),
+            initial_head: None,
+            session_dir: serialize_repository_path(&session_dir),
+            status: SubagentStatus::Running,
+            attempt: 1,
+            snapshot_attempt: None,
+            created_at_ms: 1,
+            started_at_ms: Some(1),
+            finished_at_ms: None,
+            result: None,
+            error: None,
+        };
+        manager
+            .write_record(&record)
+            .expect("record should persist");
+
+        // Stands in for a second Maestro process running this child: the
+        // lease is held, but this process's runtime registry never saw the
+        // child, so `runtime.get` reports nothing.
+        let lease = SessionLock::acquire(&SubagentManager::timeline_path(&record))
+            .expect("execution lease should be held");
+
+        assert_eq!(
+            manager.load_record(&id).expect("record should load").status,
+            SubagentStatus::Running,
+            "a leased child must not be rewritten to a terminal status"
+        );
+        let cleaned = manager.cleanup(&serde_json::json!({"subagent_id": id}));
+        assert!(
+            !cleaned.success,
+            "cleanup must refuse a child whose execution lease is still held"
+        );
+
+        drop(lease);
+        assert_eq!(
+            manager.load_record(&id).expect("record should load").status,
+            SubagentStatus::Interrupted,
+            "a child with no live lease is an orphan from a previous run"
+        );
+    }
+
+    #[test]
+    fn cleanup_refuses_a_terminal_child_whose_lease_another_process_holds() {
+        // The dangerous ordering is not "cleanup sees a running child" -- that
+        // is already refused -- but "cleanup sees a terminal child, then a
+        // second Maestro resumes it". `resume` takes the execution lease before
+        // it rewrites the record, so a cleanup that does not hold the lease can
+        // pass its status check and then force-remove a worktree the resumed
+        // child is working in.
+        let root = tempfile::tempdir().expect("records root should exist");
+        let manager =
+            SubagentManager::with_root(PathBuf::from("/workspace"), root.path().join("records"));
+        let id = uuid::Uuid::new_v4().to_string();
+        let session_dir = root.path().join("session");
+        std::fs::create_dir_all(&session_dir).expect("session directory should exist");
+        let record = SubagentRecord {
+            id: id.clone(),
+            parent_scope_id: "parent-scope".to_string(),
+            parent_call_id: "call-1".to_string(),
+            last_parent_scope_id: "parent-scope".to_string(),
+            last_call_id: "call-1".to_string(),
+            task: "inspect".to_string(),
+            current_prompt: "inspect".to_string(),
+            role: SubagentRole::Explore,
+            profile: None,
+            profile_prompt: None,
+            profile_tools: None,
+            model: None,
+            timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
+            max_tokens: DEFAULT_CHILD_MAX_TOKENS,
+            isolation: SubagentIsolation::Shared,
+            cwd: "/workspace".to_string(),
+            worktree_path: None,
+            worktree_cleaned: false,
+            initial_files: Vec::new(),
+            initial_file_fingerprints: HashMap::new(),
+            initial_head: None,
+            session_dir: serialize_repository_path(&session_dir),
+            // Terminal, so the status check on its own would let cleanup run.
+            status: SubagentStatus::Completed,
+            attempt: 1,
+            snapshot_attempt: None,
+            created_at_ms: 1,
+            started_at_ms: Some(1),
+            finished_at_ms: Some(2),
+            result: None,
+            error: None,
+        };
+        manager
+            .write_record(&record)
+            .expect("record should persist");
+
+        // Stands in for a second Maestro process that has just resumed this
+        // child: it holds the lease, and this process's runtime registry never
+        // saw the child.
+        let lease = SessionLock::acquire(&SubagentManager::timeline_path(&record))
+            .expect("execution lease should be held");
+
+        let cleaned = manager.cleanup(&serde_json::json!({"subagent_id": id}));
+        assert!(
+            !cleaned.success,
+            "cleanup must refuse a terminal child whose execution lease is held"
+        );
+        assert!(
+            !manager
+                .load_record(&id)
+                .expect("record should load")
+                .worktree_cleaned,
+            "a refused cleanup must leave the record alone"
+        );
+
+        drop(lease);
+
+        let cleaned = manager.cleanup(&serde_json::json!({"subagent_id": id}));
+        assert!(
+            cleaned.success,
+            "cleanup must proceed once no process holds the lease"
+        );
+        // This fixture is isolation=shared (no worktree). Cleanup is a no-op
+        // and must not flip worktree_cleaned, which would block resume.
+        assert!(
+            !manager
+                .load_record(&id)
+                .expect("record should load")
+                .worktree_cleaned,
+            "no-op cleanup must not mark a shared child as cleaned"
+        );
+    }
+
+    #[test]
+    fn a_cleaned_child_cannot_be_resumed() {
+        // `cleanup` holds the execution lease across its check and removal, so
+        // a resume that acquires the lease afterwards is looking at a record it
+        // read before the removal. Relaunching on that stale copy would put the
+        // child in a directory that no longer exists.
+        let root = tempfile::tempdir().expect("records root should exist");
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace should exist");
+        let manager = SubagentManager::with_root(workspace.clone(), root.path().join("records"));
+        let id = uuid::Uuid::new_v4().to_string();
+        let session_dir = root.path().join("session");
+        std::fs::create_dir_all(&session_dir).expect("session directory should exist");
+        let mut record = SubagentRecord {
+            id: id.clone(),
+            parent_scope_id: "parent-scope".to_string(),
+            parent_call_id: "call-1".to_string(),
+            last_parent_scope_id: "parent-scope".to_string(),
+            last_call_id: "call-1".to_string(),
+            task: "inspect".to_string(),
+            current_prompt: "inspect".to_string(),
+            role: SubagentRole::Explore,
+            profile: None,
+            profile_prompt: None,
+            profile_tools: None,
+            model: None,
+            timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
+            max_tokens: DEFAULT_CHILD_MAX_TOKENS,
+            isolation: SubagentIsolation::Shared,
+            cwd: serialize_repository_path(&workspace),
+            worktree_path: None,
+            worktree_cleaned: false,
+            initial_files: Vec::new(),
+            initial_file_fingerprints: HashMap::new(),
+            initial_head: None,
+            session_dir: serialize_repository_path(&session_dir),
+            status: SubagentStatus::Completed,
+            attempt: 1,
+            snapshot_attempt: None,
+            created_at_ms: 1,
+            started_at_ms: Some(1),
+            finished_at_ms: Some(2),
+            result: None,
+            error: None,
+        };
+        manager
+            .write_record(&record)
+            .expect("record should persist");
+
+        assert!(
+            manager.revalidate_resumable_under_lease(&id).is_ok(),
+            "an uncleaned child with a live cwd is resumable"
+        );
+
+        record.worktree_cleaned = true;
+        manager
+            .write_record(&record)
+            .expect("record should persist");
+
+        let refused = manager
+            .revalidate_resumable_under_lease(&id)
+            .expect_err("a cleaned child must not be resumable");
+        assert!(refused.contains("worktree was cleaned up"), "{refused}");
+    }
+
+    #[test]
+    fn a_child_whose_working_directory_is_gone_cannot_be_resumed() {
+        let root = tempfile::tempdir().expect("records root should exist");
+        let manager =
+            SubagentManager::with_root(PathBuf::from("/workspace"), root.path().join("records"));
+        let id = uuid::Uuid::new_v4().to_string();
+        let session_dir = root.path().join("session");
+        std::fs::create_dir_all(&session_dir).expect("session directory should exist");
+        let record = SubagentRecord {
+            id: id.clone(),
+            parent_scope_id: "parent-scope".to_string(),
+            parent_call_id: "call-1".to_string(),
+            last_parent_scope_id: "parent-scope".to_string(),
+            last_call_id: "call-1".to_string(),
+            task: "inspect".to_string(),
+            current_prompt: "inspect".to_string(),
+            role: SubagentRole::Explore,
+            profile: None,
+            profile_prompt: None,
+            profile_tools: None,
+            model: None,
+            timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
+            max_tokens: DEFAULT_CHILD_MAX_TOKENS,
+            isolation: SubagentIsolation::Shared,
+            cwd: serialize_repository_path(&root.path().join("removed-worktree")),
+            worktree_path: None,
+            worktree_cleaned: false,
+            initial_files: Vec::new(),
+            initial_file_fingerprints: HashMap::new(),
+            initial_head: None,
+            session_dir: serialize_repository_path(&session_dir),
+            status: SubagentStatus::Completed,
+            attempt: 1,
+            snapshot_attempt: None,
+            created_at_ms: 1,
+            started_at_ms: Some(1),
+            finished_at_ms: Some(2),
+            result: None,
+            error: None,
+        };
+        manager
+            .write_record(&record)
+            .expect("record should persist");
+
+        let refused = manager
+            .revalidate_resumable_under_lease(&id)
+            .expect_err("a missing working directory must refuse the resume");
+        assert!(refused.contains("no longer exists"), "{refused}");
+    }
+
+    #[test]
+    fn cleanup_proceeds_when_the_session_directory_is_already_gone() {
+        // The lock file lives in the session directory, so a pruned transcript
+        // means no lease can exist and no resume can start one. Cleanup must
+        // stay usable rather than refusing forever.
+        let root = tempfile::tempdir().expect("records root should exist");
+        let manager =
+            SubagentManager::with_root(PathBuf::from("/workspace"), root.path().join("records"));
+        let id = uuid::Uuid::new_v4().to_string();
+        let record = SubagentRecord {
+            id: id.clone(),
+            parent_scope_id: "parent-scope".to_string(),
+            parent_call_id: "call-1".to_string(),
+            last_parent_scope_id: "parent-scope".to_string(),
+            last_call_id: "call-1".to_string(),
+            task: "inspect".to_string(),
+            current_prompt: "inspect".to_string(),
+            role: SubagentRole::Explore,
+            profile: None,
+            profile_prompt: None,
+            profile_tools: None,
+            model: None,
+            timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
+            max_tokens: DEFAULT_CHILD_MAX_TOKENS,
+            isolation: SubagentIsolation::Shared,
+            cwd: "/workspace".to_string(),
+            worktree_path: None,
+            worktree_cleaned: false,
+            initial_files: Vec::new(),
+            initial_file_fingerprints: HashMap::new(),
+            initial_head: None,
+            session_dir: serialize_repository_path(&root.path().join("missing-session")),
+            status: SubagentStatus::Completed,
+            attempt: 1,
+            snapshot_attempt: None,
+            created_at_ms: 1,
+            started_at_ms: Some(1),
+            finished_at_ms: Some(2),
+            result: None,
+            error: None,
+        };
+        manager
+            .write_record(&record)
+            .expect("record should persist");
+
+        let cleaned = manager.cleanup(&serde_json::json!({"subagent_id": id}));
+
+        assert!(cleaned.success, "cleanup: {}", cleaned.output);
+    }
+
+    #[test]
     fn child_tool_set_excludes_parent_global_tools() {
-        let tools = child_allowed_tools();
+        let tools = child_allowed_tools_for_role(SubagentRole::Code, None);
         for name in SUBAGENT_TOOL_NAMES {
             assert!(!tools.contains(name), "child advertised {name}");
         }
@@ -2446,6 +4226,81 @@ mod tests {
         assert!(!tools.contains("todo"));
         assert!(!tools.contains("background_tasks"));
         assert!(tools.contains("read"));
+    }
+
+    #[test]
+    fn role_tool_policies_prevent_read_only_roles_from_mutating() {
+        for role in [
+            SubagentRole::Explore,
+            SubagentRole::Plan,
+            SubagentRole::Review,
+        ] {
+            let tools = child_allowed_tools_for_role(role, None);
+            assert!(tools.contains("read"), "{role:?} should read files");
+            assert!(tools.contains("grep"), "{role:?} should search files");
+            assert!(
+                !tools.contains("bash"),
+                "{role:?} must not run shell commands"
+            );
+            assert!(!tools.contains("write"), "{role:?} must not write files");
+            assert!(!tools.contains("edit"), "{role:?} must not edit files");
+        }
+
+        let code_tools = child_allowed_tools_for_role(SubagentRole::Code, None);
+        assert!(code_tools.contains("bash"));
+        assert!(code_tools.contains("write"));
+        assert!(code_tools.contains("edit"));
+    }
+
+    #[test]
+    fn profile_tools_only_narrow_a_role_policy() {
+        let requested = ["read".to_string(), "write".to_string(), "bash".to_string()];
+        let explore_tools = child_allowed_tools_for_role(SubagentRole::Explore, Some(&requested));
+        assert_eq!(explore_tools, HashSet::from(["read".to_string()]));
+
+        let code_tools = child_allowed_tools_for_role(SubagentRole::Code, Some(&requested));
+        assert_eq!(
+            code_tools,
+            HashSet::from(["read".to_string(), "write".to_string(), "bash".to_string()])
+        );
+    }
+
+    #[test]
+    fn project_profile_resolves_prompt_tools_and_model_for_a_child() {
+        let root = tempfile::tempdir().expect("profile root should exist");
+        let profile_dir = root.path().join(".maestro/agent-profiles");
+        std::fs::create_dir_all(&profile_dir).expect("profile directory should be created");
+        std::fs::write(
+            profile_dir.join("rust-reviewer.md"),
+            "---\nname: rust-reviewer\ntools: [read, grep]\nmodel: review-model\n---\n\nFocus on correctness and regressions.\n",
+        )
+        .expect("profile should be written");
+
+        let mut request = SpawnRequest {
+            task: "review the change".to_string(),
+            role: SubagentRole::Review,
+            profile: Some("rust-reviewer".to_string()),
+            profile_prompt: None,
+            profile_tools: None,
+            model: None,
+            timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
+            max_tokens: DEFAULT_CHILD_MAX_TOKENS,
+            run_in_background: true,
+            isolation: SubagentIsolation::Shared,
+            worktree_name: None,
+        };
+        resolve_spawn_profile(&mut request, root.path()).expect("profile should resolve");
+
+        assert_eq!(request.profile.as_deref(), Some("rust-reviewer"));
+        assert_eq!(
+            request.profile_prompt.as_deref(),
+            Some("Focus on correctness and regressions.")
+        );
+        assert_eq!(
+            request.profile_tools,
+            Some(vec!["read".to_string(), "grep".to_string()])
+        );
+        assert_eq!(request.model.as_deref(), Some("review-model"));
     }
 
     #[test]

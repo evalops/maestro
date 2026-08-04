@@ -67,13 +67,82 @@ impl App {
             .await
     }
 
+    /// Activate any skills whose triggers match `content`, and push the
+    /// resulting system prompt to the agent.
+    ///
+    /// Must run before the prompt is handed to the agent. `set_system_prompt`
+    /// and the prompt itself both travel on the agent's command channel in
+    /// order, so activating first is what guarantees the runner holds the
+    /// skill's system prompt before it builds the request for this prompt.
+    pub(super) fn auto_activate_skills_for_prompt(&mut self, content: &str) {
+        let auto_activated = self.skill_registry.auto_activate_for_input(content);
+        if auto_activated.is_empty() {
+            return;
+        }
+        self.update_agent_system_prompt();
+        self.state.add_system_message(format!(
+            "Automatically activated skills: {}",
+            auto_activated.join(", ")
+        ));
+    }
+
+    /// Activate any skills whose triggers match `content`, and stage the
+    /// resulting system prompt for the queued prompt `queue_id`.
+    ///
+    /// Used instead of [`Self::auto_activate_skills_for_prompt`] when the agent
+    /// is busy. `set_system_prompt` takes effect as soon as the runner drains
+    /// it, which happens inside the running turn's tool loop, so pushing it here
+    /// would apply these skills to a turn that is not this prompt's.
+    ///
+    /// Staged against this prompt's own id. A single shared staged value let a
+    /// prompt run with instructions that only a later queued prompt triggered,
+    /// which is wrong however the queue is ordered; keying it means a steer
+    /// that jumps ahead does not leak its skills into the prompts behind it.
+    pub(super) fn auto_activate_skills_for_queued_prompt(&mut self, content: &str, queue_id: u64) {
+        let auto_activated = self.skill_registry.auto_activate_for_input(content);
+
+        // Staged for every queued prompt, including one that activates nothing.
+        // An empty activation set is a statement about this prompt -- "adds no
+        // skills of its own" -- not an absence of information. Skipping it left
+        // the prompt with no entry, so a steer that jumped the queue and applied
+        // its own skills first left them in place for the prompt behind it,
+        // which is the leak keying was supposed to prevent.
+        let system_prompt = self.build_system_prompt();
+        if let Some(agent) = &self.native_agent {
+            if let Err(e) = agent.set_system_prompt_for_queued_prompt(queue_id, system_prompt) {
+                self.state.error = Some(format!("Failed to update system prompt: {e}"));
+            }
+        }
+
+        if auto_activated.is_empty() {
+            return;
+        }
+        self.state.add_system_message(format!(
+            "Automatically activated skills: {}",
+            auto_activated.join(", ")
+        ));
+    }
+
     pub(super) async fn queue_prompt(
         &mut self,
         content: String,
         kind: PromptKind,
         front: bool,
     ) -> Result<bool> {
+        // A prompt submitted while the agent is busy is handed to the runner
+        // here and drained later by `NativeAgentRunner::prepare_pending_message`,
+        // which never passes through `submit_prompt_with_kind`. Without this
+        // call a queued prompt never activated a matching skill at all.
+        //
+        // The activation is staged against this prompt's own queue id rather
+        // than pushed to the agent: the runner drains commands inside the
+        // running turn's tool loop, so pushing it here would change that turn's
+        // system prompt. Side questions are excluded because their direct path
+        // does not activate skills either.
         let queue_id = self.reserve_queue_id();
+        if kind != PromptKind::SideQuestion {
+            self.auto_activate_skills_for_queued_prompt(&content, queue_id);
+        }
         let Some(agent) = &self.native_agent else {
             self.state.error = Some("Agent not initialized".to_string());
             return Ok(false);
@@ -474,6 +543,8 @@ impl App {
             self.state.error = Some(format!("Failed to start session: {err}"));
             return Ok(false);
         }
+
+        self.auto_activate_skills_for_prompt(&content);
 
         // Snapshot the worktree so `/rewind files` can restore what this turn changes.
         self.begin_file_checkpoint(&content);

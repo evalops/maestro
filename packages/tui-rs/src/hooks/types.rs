@@ -86,6 +86,12 @@ pub struct PostToolUseInput {
     pub tool_input: serde_json::Value,
     pub tool_output: String,
     pub is_error: bool,
+    /// Wall-clock time the tool itself took, in milliseconds.
+    ///
+    /// Part of the documented contract (`docs/design/HOOKS_SYSTEM.md`), which
+    /// publishes it as `durationMs`. Measured around the execution only, so it
+    /// excludes the hook dispatch that reports it.
+    pub duration_ms: u64,
 }
 
 /// Input data for `SessionStart` hooks
@@ -749,10 +755,12 @@ mod tests {
             tool_input: json!({"path": "/tmp/file"}),
             tool_output: "file contents".to_string(),
             is_error: false,
+            duration_ms: 250,
         };
         let json = serde_json::to_value(&input).unwrap();
         assert_eq!(json["tool_output"], "file contents");
         assert_eq!(json["is_error"], false);
+        assert_eq!(json["duration_ms"], 250);
     }
 
     #[test]

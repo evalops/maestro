@@ -8,6 +8,7 @@ use std::path::{Component, Path, PathBuf};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PluginComponents {
     pub skills_dir: Option<PathBuf>,
+    pub agents_dir: Option<PathBuf>,
     pub commands_dir: Option<PathBuf>,
     pub hooks_config: Option<PathBuf>,
     pub mcp_path: Option<PathBuf>,
@@ -33,6 +34,11 @@ pub fn resolve_components(
         manifest.and_then(|m| m.skills.as_deref()),
         &["skills"],
     );
+    let agents_dir = resolve_dir(
+        plugin_root,
+        manifest.and_then(|m| m.agents.as_deref()),
+        &["agents"],
+    );
     let commands_dir = resolve_dir(
         plugin_root,
         manifest.and_then(|m| m.commands.as_deref()),
@@ -56,6 +62,7 @@ pub fn resolve_components(
 
     PluginComponents {
         skills_dir,
+        agents_dir,
         commands_dir,
         hooks_config,
         mcp_path,
@@ -131,12 +138,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
         fs::create_dir_all(root.join("skills")).unwrap();
+        fs::create_dir_all(root.join("agents")).unwrap();
         fs::create_dir_all(root.join("commands")).unwrap();
         write_file(&root.join("hooks/hooks.toml"), "enabled = true\n");
         write_file(&root.join("mcp.json"), "{}\n");
 
         let components = resolve_components(root, None);
         assert_eq!(components.skills_dir, Some(root.join("skills")));
+        assert_eq!(components.agents_dir, Some(root.join("agents")));
         assert_eq!(components.commands_dir, Some(root.join("commands")));
         assert_eq!(components.hooks_config, Some(root.join("hooks/hooks.toml")));
         assert_eq!(components.mcp_path, Some(root.join("mcp.json")));

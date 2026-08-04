@@ -79,6 +79,11 @@ impl App {
         self.flush_session();
 
         self.state.session_id = Some(session_id.clone());
+        // The session now has an id, so replace the placeholder scope with the
+        // id-derived one. Children can only be started by a model turn, and a
+        // turn cannot begin before this point, so no child is ever stamped with
+        // the placeholder.
+        self.adopt_session_context(Some(&session_id), "new");
         crate::plan_mode::set_active_session_id(Some(session_id.clone()));
         self.session_started_at = SystemTime::now();
         self.session_resume_failed = false;

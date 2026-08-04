@@ -938,6 +938,11 @@ impl App {
                     crate::session::reconstruct_plan_review(&session.plan_review_events);
                 let session_id = session.header.id.clone();
                 self.state.session_id = Some(session_id.clone());
+                // Acquire the writer before adopting the session scope. Adopting
+                // first fires SessionEnd/SessionStart and switches the subagent
+                // parent scope even when the transcript is locked; a failure
+                // then leaves hooks and child completion routing on a session
+                // that is not open for append.
                 if let Err(err) = self
                     .session_manager
                     .resume_session_by_path(session_id.clone(), session.file_path.as_str())
@@ -948,6 +953,7 @@ impl App {
                     self.state.error = Some(format!("Failed to resume session writer: {err}"));
                     return;
                 }
+                self.adopt_session_context(Some(&session_id), "resume");
                 self.session_resume_failed = false;
                 crate::plan_mode::set_active_session_id(Some(session_id.clone()));
                 self.hydrate_usage_from_session(&session);
@@ -1056,6 +1062,10 @@ impl App {
             self.usage_tracker.set_model(self.current_model.clone());
         }
 
+        // Acquire the writer before adopting the session scope. Adopting first
+        // fires SessionEnd/SessionStart and switches the subagent parent scope
+        // even when the transcript is locked; a failure then leaves hooks and
+        // child completion routing on a session that is not open for append.
         if let Err(err) = self
             .session_manager
             .resume_session_by_path(session_id.clone(), session.file_path.as_str())
@@ -1068,6 +1078,9 @@ impl App {
                 "Session resume failed ({session_id}); use /new to continue"
             ));
         } else {
+            // Re-adopt this session's own scope: completions from children it
+            // started earlier are parked, not discarded, and surface from here.
+            self.adopt_session_context(Some(&session_id), "resume");
             self.session_resume_failed = false;
             crate::plan_mode::set_active_session_id(Some(session_id.clone()));
         }
@@ -1118,6 +1131,11 @@ impl App {
             return;
         }
         self.credential_vault.clear();
+        // A child still running under the previous conversation must not report
+        // into this one. The scope rotates now; the session id does not exist
+        // until the first message creates the session file, which rotates it
+        // again to the id-derived scope.
+        self.adopt_session_context(None, "new");
         self.state.messages.clear();
         self.plan_review_comments.clear();
         self.state.scroll_offset = 0;
@@ -1168,6 +1186,9 @@ impl App {
         let parent_session = self.state.session_id.clone();
         self.session_manager.reset_session();
         self.state.session_id = None;
+        // A fork becomes its own session on the next message. Children the
+        // parent session started belong to the parent, not to the fork.
+        self.adopt_session_context(None, "fork");
         crate::plan_mode::set_active_session_id(None);
         self.session_started_at = SystemTime::now();
         self.session_resume_failed = false;

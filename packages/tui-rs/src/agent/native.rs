@@ -609,6 +609,45 @@ enum AgentCommand {
     /// Enables or disables the extended thinking mode and sets the token budget.
     SetThinking { enabled: bool, budget: u32 },
 
+    /// Update the per-request output-token limit
+    ///
+    /// `max_tokens` bounds a single provider response, so a caller enforcing a
+    /// budget across a whole run (the subagent scheduler) lowers it between
+    /// requests to the allowance that is still unspent.
+    SetMaxTokens { max_tokens: u32 },
+
+    /// Cap the cumulative output tokens this runner may request across a run.
+    ///
+    /// A caller enforcing a whole-run budget cannot do it with `SetMaxTokens`:
+    /// that bounds one request, so the caller has to lower it between
+    /// responses, and the command can arrive after the runner has already built
+    /// the next request. This hands the accounting to the runner, which
+    /// subtracts what each response spent and clamps the request it is about to
+    /// build. Sent once, before the prompt it applies to.
+    SetOutputTokenBudget { max_total_output_tokens: u32 },
+
+    /// Point the runner's tool executor at a different subagent scope.
+    ///
+    /// The runner's executor -- not the caller's -- is the one that spawns
+    /// children, so it stamps the scope onto every child it starts. A new or
+    /// resumed conversation rotates the scope on both sides; without this the
+    /// caller would drain a scope no new child is ever tagged with.
+    SetSubagentParentScope { parent_scope_id: String },
+
+    /// Tell the runner which conversation is active.
+    ///
+    /// The hook system lives here, not in the caller, so this is the only way
+    /// the active session id reaches hook payloads and the only place
+    /// `SessionStart` and `SessionEnd` can be dispatched from. The runner
+    /// compares against the session it currently holds and fires the
+    /// transition, so callers just report the new state.
+    SetSessionContext {
+        session_id: Option<String>,
+        /// Why the session changed, published as the hook's `source` /
+        /// `reason` (`new`, `resume`, `fork`, `exit`).
+        reason: String,
+    },
+
     /// Update whether the goal lifecycle tools are exposed to the model.
     SetGoalToolsVisible { visible: bool },
 
@@ -629,6 +668,26 @@ enum AgentCommand {
     ///
     /// Replaces the base system prompt used for subsequent requests.
     SetSystemPrompt { system_prompt: String },
+
+    /// Stage a system prompt to take effect when the next queued prompt runs.
+    ///
+    /// A prompt queued while the agent is busy needs its skills active for its
+    /// own turn. `SetSystemPrompt` cannot express that: the runner drains
+    /// commands inside the tool loop, so a prompt sent at enqueue time changes
+    /// the turn that is already running.
+    ///
+    /// Keyed by queue id so each queued prompt gets the skills its own text
+    /// triggered. An unkeyed staged value let a prompt inherit instructions
+    /// activated only by a later queued prompt, which is wrong regardless of
+    /// the order they run in.
+    ///
+    /// Applying an older entry after a newer one is correct here, not a bug:
+    /// each entry is that prompt's own state, so a steer that jumps the queue
+    /// does not leak its skills into the prompts behind it.
+    SetSystemPromptForQueuedPrompt {
+        queue_id: u64,
+        system_prompt: String,
+    },
 
     /// Clear conversation history
     ///
@@ -858,6 +917,24 @@ impl NativeAgent {
         Self::new_with_tools_and_credential_vault(config, Vec::new(), credential_vault)
     }
 
+    /// Create an agent whose runner shares the caller's subagent lifecycle
+    /// scope. The interactive app uses this so auto-executed delegation calls
+    /// report terminal events to the same executor that owns the UI.
+    pub(crate) fn new_with_credential_vault_and_subagent_scope(
+        config: NativeAgentConfig,
+        credential_vault: CredentialVault,
+        subagent_parent_scope_id: String,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
+        Self::new_with_tools_and_credential_vault_filtered(
+            config,
+            Vec::new(),
+            credential_vault,
+            None,
+            None,
+            Some(subagent_parent_scope_id),
+        )
+    }
+
     /// Create an agent that advertises only the selected built-in tools and
     /// delegates their execution to the caller through `tool_response_sender`.
     pub fn new_with_allowed_tools_and_credential_vault(
@@ -881,6 +958,7 @@ impl NativeAgent {
             credential_vault,
             Some(allowed_tools),
             None,
+            None,
         )
     }
 
@@ -898,6 +976,7 @@ impl NativeAgent {
             Vec::new(),
             credential_vault,
             Some(allowed_tools),
+            None,
             None,
         )
     }
@@ -927,6 +1006,7 @@ impl NativeAgent {
             credential_vault,
             None,
             None,
+            None,
         )
     }
 
@@ -943,6 +1023,7 @@ impl NativeAgent {
             CredentialVault::new(),
             None,
             Some(client),
+            None,
         )
     }
 
@@ -962,6 +1043,7 @@ impl NativeAgent {
             CredentialVault::new(),
             Some(allowed_tools),
             Some(client),
+            None,
         )
     }
 
@@ -976,6 +1058,7 @@ impl NativeAgent {
             CredentialVault::new(),
             None,
             Some(client),
+            None,
         )
     }
 
@@ -985,6 +1068,7 @@ impl NativeAgent {
         credential_vault: CredentialVault,
         allowed_tools: Option<&HashSet<String>>,
         client_override: Option<UnifiedClient>,
+        subagent_parent_scope_id: Option<String>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
         let policy_id = policy_model_id(&config.model);
         if let Some(reason) = check_model_allowed(&policy_id) {
@@ -1037,6 +1121,7 @@ impl NativeAgent {
             &config.cwd,
             credential_vault.clone(),
             config.sandbox_policy.clone(),
+            subagent_parent_scope_id,
         ));
 
         // Load hook system from config files
@@ -1092,6 +1177,10 @@ impl NativeAgent {
             pending_tool_approvals: HashMap::new(),
             cancelled_tool_responses: CancelledToolTombstones::default(),
             prompt_context: None,
+            output_token_budget: None,
+            output_tokens_spent: 0,
+            queued_system_prompts: HashMap::new(),
+            system_prompt_revision: 0,
         };
 
         // Spawn the background task
@@ -1289,6 +1378,82 @@ impl NativeAgent {
         self.command_tx
             .send(AgentCommand::SetThinking { enabled, budget })
             .map_err(|e| anyhow::anyhow!("Failed to set thinking: {e}"))?;
+        Ok(())
+    }
+
+    /// Set the per-request output-token limit.
+    ///
+    /// The limit applies to each provider response, so a caller that owns a
+    /// budget for an entire run must lower it between requests. The runner
+    /// drains this command in its tool loop, so it takes effect on the next
+    /// request it builds.
+    pub fn set_max_tokens(&self, max_tokens: u32) -> Result<()> {
+        self.command_tx
+            .send(AgentCommand::SetMaxTokens { max_tokens })
+            .map_err(|e| anyhow::anyhow!("Failed to set max tokens: {e}"))?;
+        Ok(())
+    }
+
+    /// Cap the cumulative output tokens this agent may request across a run.
+    ///
+    /// Send this before the prompt it applies to. The runner then owns the
+    /// accounting and clamps each request it builds to the unspent remainder,
+    /// so no per-request update has to arrive before the next request is built.
+    pub fn set_output_token_budget(&self, max_total_output_tokens: u32) -> Result<()> {
+        self.command_tx
+            .send(AgentCommand::SetOutputTokenBudget {
+                max_total_output_tokens,
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to set output token budget: {e}"))?;
+        Ok(())
+    }
+
+    /// Stage a system prompt for the next queued prompt to start.
+    ///
+    /// Applied when the runner prepares the next pending message, so it does
+    /// not change the turn that is running when it is sent. Superseded by any
+    /// later `set_system_prompt`, which is authoritative.
+    pub fn set_system_prompt_for_queued_prompt(
+        &self,
+        queue_id: u64,
+        system_prompt: String,
+    ) -> Result<()> {
+        self.command_tx
+            .send(AgentCommand::SetSystemPromptForQueuedPrompt {
+                queue_id,
+                system_prompt,
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to set queued system prompt: {e}"))?;
+        Ok(())
+    }
+
+    /// Point the runner's tool executor at a different subagent scope.
+    ///
+    /// Send this whenever the caller rotates its own scope, so children started
+    /// after the change are stamped with the scope the caller now drains.
+    pub fn set_subagent_parent_scope(&self, parent_scope_id: String) -> Result<()> {
+        self.command_tx
+            .send(AgentCommand::SetSubagentParentScope { parent_scope_id })
+            .map_err(|e| anyhow::anyhow!("Failed to set subagent parent scope: {e}"))?;
+        Ok(())
+    }
+
+    /// Tell the runner which conversation is active.
+    ///
+    /// Stamps the session id onto subsequent hook payloads and dispatches the
+    /// `SessionEnd` / `SessionStart` hooks for the transition. Pass `None` to
+    /// report that the active session ended without a replacement.
+    pub fn set_session_context(
+        &self,
+        session_id: Option<String>,
+        reason: impl Into<String>,
+    ) -> Result<()> {
+        self.command_tx
+            .send(AgentCommand::SetSessionContext {
+                session_id,
+                reason: reason.into(),
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to set session context: {e}"))?;
         Ok(())
     }
 
@@ -1703,6 +1868,338 @@ struct NativeAgentRunner {
     ///
     /// Set by prompt-related hooks and cleared after each request completes.
     prompt_context: Option<String>,
+
+    /// Cumulative output-token ceiling for the whole run, if a caller set one.
+    ///
+    /// Set by `SetOutputTokenBudget`. `None` means unbounded, which is the
+    /// interactive default; the subagent scheduler sets it for delegated runs.
+    output_token_budget: Option<u32>,
+
+    /// Output tokens this runner has already spent against
+    /// [`Self::output_token_budget`].
+    output_tokens_spent: u64,
+
+    /// System prompt staged for the next queued prompt to start, with the
+    /// [`Self::system_prompt_revision`] that was current when it was staged.
+    ///
+    /// Populated by `SetSystemPromptForQueuedPrompt` and consumed in
+    /// `prepare_pending_message`. A mismatched revision means an authoritative
+    /// `SetSystemPrompt` landed after the staging, so the staged value is stale
+    /// and dropped.
+    queued_system_prompts: HashMap<u64, (u64, String)>,
+
+    /// Bumped by every authoritative system-prompt update.
+    ///
+    /// Used only to detect that a staged queued prompt has been overtaken.
+    system_prompt_revision: u64,
+}
+
+/// One finished Codex tool call, ready to be turned into a wire response.
+struct CodexToolOutcome<'a> {
+    tool_name: &'a str,
+    call_id: &'a str,
+    args: &'a Value,
+    /// Raw tool output, which is what the hooks contract on.
+    hook_output: &'a str,
+    /// Model-facing body that injected context is appended to.
+    result_text: String,
+    is_error: bool,
+    /// Context a `PreToolUse` hook asked to add to this call's result.
+    pre_hook_context: Option<&'a str>,
+    /// Wall-clock time the tool took, for the hooks' `durationMs`.
+    duration_ms: u64,
+}
+
+/// The staged system prompt to apply to a queued message starting now.
+///
+/// `None` when nothing is staged, or when an authoritative `SetSystemPrompt`
+/// arrived after the staging and bumped `current_revision`. In that case the
+/// authoritative prompt is newer and, because skill activation is cumulative,
+/// already contains the skills the staged one carried; applying the stale
+/// snapshot would revert the newer update.
+fn staged_system_prompt_to_apply(
+    staged: Option<(u64, String)>,
+    current_revision: u64,
+) -> Option<String> {
+    match staged {
+        Some((staged_revision, prompt)) if staged_revision == current_revision => Some(prompt),
+        _ => None,
+    }
+}
+
+/// The tool name a Codex-native operation is presented to policy hooks under.
+///
+/// Codex runs these itself, so they have no entry in the Maestro tool registry.
+/// A hook still has to be able to name them, and matching on the raw app-server
+/// method would tie a policy to protocol spelling, so they are mapped to stable
+/// names alongside the tools a hook already knows.
+fn codex_native_policy_tool(method: &str) -> &'static str {
+    match method {
+        "item/fileChange/requestApproval" | "applyPatchApproval" => "codex_file_change",
+        _ => "codex_command_execution",
+    }
+}
+
+/// Characters of model-generated payload in a Codex-native operation request.
+///
+/// The approval request carries the command line or the patch the model wrote,
+/// which is the model-produced half of the exchange. The matching
+/// `item/completed` notification carries the operation's *output*, which is
+/// input to the model rather than output from it and is deliberately not
+/// counted here.
+fn codex_native_operation_chars(params: Option<&Value>) -> u64 {
+    params
+        .and_then(|params| serde_json::to_string(params).ok())
+        .map_or(0, |json| json.chars().count() as u64)
+}
+
+/// The Codex `sandbox` value matching a Maestro sandbox policy.
+///
+/// Codex accepts `read-only`, `workspace-write`, and `danger-full-access` on
+/// `thread/start`. `None` means the caller set no policy, which leaves the
+/// Codex default in place.
+fn codex_sandbox_mode(policy: Option<&crate::sandbox::SandboxPolicy>) -> Option<String> {
+    match policy? {
+        crate::sandbox::SandboxPolicy::ReadOnly => Some("read-only".to_owned()),
+        crate::sandbox::SandboxPolicy::WorkspaceWrite { .. } => Some("workspace-write".to_owned()),
+        crate::sandbox::SandboxPolicy::DangerFullAccess => Some("danger-full-access".to_owned()),
+    }
+}
+
+/// Whether this configuration forbids the agent from changing anything.
+///
+/// Used to decline Codex-native mutation approvals outright. Codex is asked to
+/// sandbox itself via `thread/start`, but that is an external process honoring
+/// a request; refusing the approval RPC is enforcement inside Maestro.
+fn config_denies_mutation(policy: Option<&crate::sandbox::SandboxPolicy>) -> bool {
+    matches!(policy, Some(crate::sandbox::SandboxPolicy::ReadOnly))
+}
+
+/// Whether the active tool allowlist excludes the Codex-native operation.
+///
+/// A restrictive specialist profile such as `tools: [read, grep]` removes
+/// Maestro mutation tools from the registry-facing set, but Codex-native
+/// `commandExecution` and `fileChange` never pass through that set. Without
+/// this check, Yolo + a writable sandbox would still accept those RPCs and
+/// break the profile's documented narrowing.
+fn codex_native_denied_by_active_tools(
+    method: &str,
+    active_tool_names: &HashSet<String>,
+) -> Option<&'static str> {
+    let has = |name: &str| {
+        active_tool_names
+            .iter()
+            .any(|active| active.eq_ignore_ascii_case(name))
+    };
+    match codex_native_policy_tool(method) {
+        "codex_file_change" => {
+            if has("write") || has("edit") {
+                None
+            } else {
+                Some("active tool allowlist excludes file mutation tools (write/edit)")
+            }
+        }
+        _ => {
+            if has("bash") {
+                None
+            } else {
+                Some("active tool allowlist excludes command execution (bash)")
+            }
+        }
+    }
+}
+
+/// Paths named in a Codex file-change approval.
+///
+/// Observed Codex shapes:
+/// - legacy `applyPatchApproval`: paths are keys of a `fileChanges` object
+/// - speculative/array forms (`files`, `changes`, single `path`) still accepted
+/// - v2 `item/fileChange/requestApproval` often carries only `itemId` and no
+///   paths; callers must fail closed when this returns empty
+fn codex_native_file_change_paths(params: &Value) -> Vec<String> {
+    let mut paths = Vec::new();
+    let push_path = |paths: &mut Vec<String>, path: &str| {
+        if !paths.iter().any(|existing| existing == path) {
+            paths.push(path.to_owned());
+        }
+    };
+
+    if let Some(path) = params
+        .get("file_path")
+        .or_else(|| params.get("path"))
+        .or_else(|| params.get("filePath"))
+        .and_then(Value::as_str)
+    {
+        push_path(&mut paths, path);
+    }
+
+    // Legacy applyPatchApproval: { "fileChanges": { "/path": {...}, ... } }
+    if let Some(file_changes) = params
+        .get("fileChanges")
+        .or_else(|| params.get("file_changes"))
+        .and_then(Value::as_object)
+    {
+        for path in file_changes.keys() {
+            push_path(&mut paths, path);
+        }
+    }
+
+    if let Some(files) = params.get("files").and_then(Value::as_array) {
+        for file in files {
+            if let Some(path) = file.as_str() {
+                push_path(&mut paths, path);
+            } else if let Some(path) = file
+                .get("path")
+                .or_else(|| file.get("file_path"))
+                .and_then(Value::as_str)
+            {
+                push_path(&mut paths, path);
+            }
+        }
+    }
+
+    if let Some(changes) = params.get("changes").and_then(Value::as_array) {
+        for change in changes {
+            if let Some(path) = change
+                .get("path")
+                .or_else(|| change.get("file_path"))
+                .and_then(Value::as_str)
+            {
+                push_path(&mut paths, path);
+            }
+        }
+    }
+
+    paths
+}
+
+/// Map a Codex-native approval request onto Maestro tool argument sets the
+/// action firewall already understands.
+///
+/// Codex does not speak Maestro tool names; its approval params carry the
+/// command line or the paths being patched. Normalizing them to `bash` /
+/// `write` lets the same dangerous-command and path checks that guard
+/// `item/tool/call` also guard the native mutation RPCs. File-change
+/// requests with multiple paths produce one `write` argument set per path.
+fn codex_native_firewall_arg_sets(
+    method: &str,
+    params: Option<&Value>,
+) -> Vec<(&'static str, Value)> {
+    let Some(params) = params else {
+        return Vec::new();
+    };
+    match codex_native_policy_tool(method) {
+        "codex_file_change" => {
+            let content = params
+                .get("content")
+                .or_else(|| params.get("diff"))
+                .or_else(|| params.get("patch"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            codex_native_file_change_paths(params)
+                .into_iter()
+                .map(|path| {
+                    (
+                        "write",
+                        json!({
+                            "file_path": path,
+                            "content": content,
+                        }),
+                    )
+                })
+                .collect()
+        }
+        _ => {
+            let command = params
+                .get("command")
+                .or_else(|| params.get("command_line"))
+                .or_else(|| params.get("commandLine"))
+                .or_else(|| params.get("cmd"))
+                .and_then(|value| {
+                    if let Some(text) = value.as_str() {
+                        return Some(text.to_owned());
+                    }
+                    value.as_array().map(|parts| {
+                        parts
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                });
+            command
+                .map(|command| vec![("bash", json!({ "command": command }))])
+                .unwrap_or_default()
+        }
+    }
+}
+
+/// Run the action firewall on a Codex-native mutation.
+///
+/// Returns `Some(reason)` when any equivalent Maestro tool call would be
+/// blocked or would require approval. Native approvals have no interactive
+/// path, so a RequireApproval verdict is also a denial. Every mutated path
+/// is checked so a safe first path cannot launder a later out-of-workspace
+/// path through a multi-file request.
+fn codex_native_firewall_denial(
+    cwd: &str,
+    method: &str,
+    params: Option<&Value>,
+    workflow_state: Option<&crate::safety::WorkflowStateSnapshot>,
+) -> Option<String> {
+    let arg_sets = codex_native_firewall_arg_sets(method, params);
+    if arg_sets.is_empty() {
+        // Fail closed: a file-change approval with no recoverable paths (the
+        // common v2 itemId-only shape) or a command approval with no command
+        // string would otherwise auto-accept under Yolo with no containment.
+        return Some(match codex_native_policy_tool(method) {
+            "codex_file_change" => {
+                "Codex file-change approval carried no recoverable paths for the action firewall"
+                    .to_string()
+            }
+            _ => "Codex command approval carried no recoverable command for the action firewall"
+                .to_string(),
+        });
+    }
+    let firewall = ActionFirewall::new(cwd);
+    for (tool_name, args) in arg_sets {
+        match firewall.check_tool_with_context(FirewallContext {
+            tool_name,
+            args: &args,
+            workflow_state,
+            annotations: None,
+        }) {
+            FirewallVerdict::Block { reason } | FirewallVerdict::RequireApproval { reason } => {
+                return Some(reason);
+            }
+            FirewallVerdict::Allow => {}
+        }
+    }
+    None
+}
+
+/// Output allowance for one request under an optional cumulative budget.
+///
+/// `configured` is the per-request `max_tokens`. With no budget it is used
+/// unchanged, which is the interactive case. With a budget the request is also
+/// clamped to the unspent part, so a run that calls tools is not granted the
+/// full allowance again on every request.
+///
+/// The floor of 1 keeps the request valid for providers that reject
+/// `max_tokens: 0`; ending a run that has spent its budget is the job of the
+/// caller that set it.
+fn output_token_allowance(configured: u32, budget: Option<u32>, spent: u64) -> u32 {
+    let Some(budget) = budget else {
+        return configured;
+    };
+    let unspent = u64::from(budget).saturating_sub(spent);
+    let unspent = u32::try_from(unspent).unwrap_or(u32::MAX);
+    let allowance = configured.min(unspent);
+    if allowance == 0 {
+        1
+    } else {
+        allowance
+    }
 }
 
 async fn recv_command_or_shutdown(
@@ -2140,6 +2637,9 @@ impl NativeAgentRunner {
                     cancelled = true;
                 }
                 AgentCommand::CancelQueued { id } => {
+                    // The staged system prompt is not keyed by id and stays
+                    // staged: the skills it carries are still active in the UI,
+                    // so the next message to start should see them.
                     if let Some(removed) = self.pending_messages.remove_by_id(id) {
                         let _ = self.event_tx.send(FromAgent::Status {
                             message: format!(
@@ -2165,6 +2665,21 @@ impl NativeAgentRunner {
                     self.config.thinking_enabled = enabled;
                     self.config.thinking_budget = budget;
                 }
+                AgentCommand::SetMaxTokens { max_tokens } => {
+                    self.config.max_tokens = max_tokens;
+                }
+                AgentCommand::SetOutputTokenBudget {
+                    max_total_output_tokens,
+                } => {
+                    self.output_token_budget = Some(max_total_output_tokens);
+                }
+                AgentCommand::SetSubagentParentScope { parent_scope_id } => {
+                    self.tool_executor
+                        .set_subagent_parent_scope(parent_scope_id);
+                }
+                AgentCommand::SetSessionContext { session_id, reason } => {
+                    self.apply_session_context(session_id, &reason);
+                }
                 AgentCommand::SetGoalToolsVisible { visible } => {
                     self.set_goal_tools_visible(visible);
                 }
@@ -2179,6 +2694,14 @@ impl NativeAgentRunner {
                 }
                 AgentCommand::SetSystemPrompt { system_prompt } => {
                     self.config.system_prompt = Some(system_prompt);
+                    self.system_prompt_revision = self.system_prompt_revision.saturating_add(1);
+                }
+                AgentCommand::SetSystemPromptForQueuedPrompt {
+                    queue_id,
+                    system_prompt,
+                } => {
+                    self.queued_system_prompts
+                        .insert(queue_id, (self.system_prompt_revision, system_prompt));
                 }
                 AgentCommand::InjectUserNote { content } => {
                     // Defer until idle so we never insert a user message mid-tool-loop.
@@ -2313,6 +2836,21 @@ impl NativeAgentRunner {
         &mut self,
         pending: &PendingMessage,
     ) -> Result<Option<(Message, Option<String>)>> {
+        // The skills this specific prompt's text triggered take effect here,
+        // which is the first point that belongs to its own turn. Applying them
+        // at enqueue time would have changed the turn that was still running,
+        // and sharing one staged value across the queue let a prompt inherit
+        // skills only a later prompt triggered. A staged prompt overtaken by an
+        // authoritative
+        // `SetSystemPrompt` is dropped: that update is newer and, because skill
+        // activation is cumulative, already contains these skills.
+        if let Some(system_prompt) = staged_system_prompt_to_apply(
+            self.queued_system_prompts.remove(&pending.id),
+            self.system_prompt_revision,
+        ) {
+            self.config.system_prompt = Some(system_prompt);
+        }
+
         let mut prompt = pending.content.clone();
         let mut attachments = pending.attachments.clone();
         let mut prompt_context: Option<String> = None;
@@ -2879,6 +3417,12 @@ impl NativeAgentRunner {
                         let _ = self.drain_pending_commands();
                     }
 
+                    // Count only turns that produced a completion the session
+                    // still owns. SessionEnd reports this as turnCount.
+                    if !terminal_request_failure && !request_cancelled {
+                        self.hooks.increment_turn();
+                    }
+
                     self.busy = false;
                     self.set_active_request_cancel_token(None);
                     self.prompt_context = None;
@@ -2911,6 +3455,9 @@ impl NativeAgentRunner {
                     self.reject_pending_tool_responses_on_cancel();
                 }
                 AgentCommand::CancelQueued { id } => {
+                    // The staged system prompt is not keyed by id and stays
+                    // staged: the skills it carries are still active in the UI,
+                    // so the next message to start should see them.
                     if let Some(removed) = self.pending_messages.remove_by_id(id) {
                         let _ = self.event_tx.send(FromAgent::Status {
                             message: format!(
@@ -2994,6 +3541,21 @@ impl NativeAgentRunner {
                     self.config.thinking_enabled = enabled;
                     self.config.thinking_budget = budget;
                 }
+                AgentCommand::SetMaxTokens { max_tokens } => {
+                    self.config.max_tokens = max_tokens;
+                }
+                AgentCommand::SetOutputTokenBudget {
+                    max_total_output_tokens,
+                } => {
+                    self.output_token_budget = Some(max_total_output_tokens);
+                }
+                AgentCommand::SetSubagentParentScope { parent_scope_id } => {
+                    self.tool_executor
+                        .set_subagent_parent_scope(parent_scope_id);
+                }
+                AgentCommand::SetSessionContext { session_id, reason } => {
+                    self.apply_session_context(session_id, &reason);
+                }
                 AgentCommand::SetGoalToolsVisible { visible } => {
                     self.set_goal_tools_visible(visible);
                 }
@@ -3008,6 +3570,14 @@ impl NativeAgentRunner {
                 }
                 AgentCommand::SetSystemPrompt { system_prompt } => {
                     self.config.system_prompt = Some(system_prompt);
+                    self.system_prompt_revision = self.system_prompt_revision.saturating_add(1);
+                }
+                AgentCommand::SetSystemPromptForQueuedPrompt {
+                    queue_id,
+                    system_prompt,
+                } => {
+                    self.queued_system_prompts
+                        .insert(queue_id, (self.system_prompt_revision, system_prompt));
                 }
                 AgentCommand::ClearHistory => {
                     self.reset_tool_response_state();
@@ -3016,6 +3586,8 @@ impl NativeAgentRunner {
                     self.codex_history_restore_prefix_len = None;
                     self.codex_current_prompt_started = false;
                     self.pending_messages.clear();
+                    // The prompts it was staged for are gone with the queue.
+                    self.queued_system_prompts.clear();
                     self.safety.reset(); // Reset doom loop / rate limit state
                     self.credential_vault.clear();
                 }
@@ -3028,6 +3600,8 @@ impl NativeAgentRunner {
                     self.codex_current_prompt_started = false;
                     self.compact_codex_history_for_boundary();
                     self.pending_messages.clear();
+                    // The prompts it was staged for are gone with the queue.
+                    self.queued_system_prompts.clear();
                     self.safety.reset();
                     // Replacing history is used for session restore. References
                     // from the previous active session must not cross that boundary.
@@ -3044,6 +3618,8 @@ impl NativeAgentRunner {
                     self.codex_current_prompt_started = false;
                     self.compact_codex_history_for_boundary();
                     self.pending_messages.clear();
+                    // The prompts it was staged for are gone with the queue.
+                    self.queued_system_prompts.clear();
                     self.safety.reset();
                 }
                 AgentCommand::Continue => {
@@ -3105,7 +3681,56 @@ impl NativeAgentRunner {
                 }
             }
         }
+
+        // Close the active session for hooks here rather than from the caller.
+        // The app's own exit path is skipped entirely on SIGINT/SIGTERM --
+        // `run_with_shutdown` drops the `app.run()` future and then cancels the
+        // runner -- and a command sent at that point would race the
+        // cancellation. This runs on every way out of the loop, so a handled
+        // signal, a normal quit, and a closed command channel all emit it.
+        self.apply_session_context(None, "shutdown");
+
         self.tool_executor.shutdown_background_processes().await;
+    }
+
+    /// Apply a session transition to the hook system.
+    ///
+    /// Dispatches `SessionEnd` for the session being left and `SessionStart`
+    /// for the one being entered, and stamps the new id onto every subsequent
+    /// hook payload. The end fires before the id changes so its payload names
+    /// the session that actually ended.
+    ///
+    /// Both events are advisory: their results are logged by the hook system
+    /// and cannot block a session transition the user has already made.
+    fn apply_session_context(&mut self, session_id: Option<String>, reason: &str) {
+        if self.hooks.session_id() == session_id.as_deref() {
+            return;
+        }
+        if self.hooks.session_id().is_some() {
+            let _ = self.hooks.on_session_end(reason);
+        }
+        self.hooks.set_session_id(session_id.clone());
+        if session_id.is_some() {
+            let _ = self.hooks.on_session_start(reason);
+        }
+    }
+
+    /// Output allowance for the request this runner is about to build.
+    ///
+    /// Without a cumulative budget this is the configured per-request
+    /// `max_tokens`. With one, the request is additionally clamped to the part
+    /// of the budget the run has not spent, so a run that calls tools cannot be
+    /// granted the full allowance again on every request.
+    ///
+    /// The floor of 1 keeps the request valid for providers that reject
+    /// `max_tokens: 0`. A run that has reached its budget is stopped by the
+    /// caller that set it; this function does not end turns.
+    fn remaining_output_token_allowance(&self) -> u32 {
+        output_token_allowance(
+            self.config.max_tokens,
+            self.output_token_budget,
+            self.output_tokens_spent,
+        )
     }
 
     /// Build request configuration
@@ -3194,7 +3819,7 @@ impl NativeAgentRunner {
 
         RequestConfig {
             model,
-            max_tokens: self.config.max_tokens,
+            max_tokens: self.remaining_output_token_allowance(),
             temperature: if self.config.thinking_enabled {
                 None // Temperature must be 1 or omitted for thinking
             } else {
@@ -3300,14 +3925,30 @@ impl NativeAgentRunner {
         let cwd = self.config.cwd.clone();
         // Codex approvalPolicy values: never | on-request | on-failure | untrusted.
         // Safe is intentionally stricter than Selective (untrusted).
+        //
+        // Yolo uses `on-request`, not `never`. `never` means Codex never asks
+        // Maestro, so the requestApproval handler — profile allowlist,
+        // PreToolUse/PermissionRequest hooks, ActionFirewall — never runs and
+        // a restricted code child can still mutate through the native path.
+        // The handler still auto-accepts under Yolo after those checks pass.
         let approval_policy = match self.config.approval_mode {
-            ApprovalMode::Yolo => Some("never".to_owned()),
-            ApprovalMode::Selective => Some("on-request".to_owned()),
+            ApprovalMode::Yolo | ApprovalMode::Selective => Some("on-request".to_owned()),
             ApprovalMode::Safe => Some("untrusted".to_owned()),
         };
-        let sandbox = std::env::var("MAESTRO_SANDBOX_MODE")
-            .ok()
-            .filter(|mode| !mode.is_empty() && mode != "default" && mode != "inherit");
+        // The configured sandbox policy previously reached only the Maestro
+        // tool executor, so on this transport Codex ran its own
+        // `commandExecution` and `fileChange` operations under whatever
+        // `MAESTRO_SANDBOX_MODE` said -- nothing at all by default. A
+        // read-only policy is a hard floor here: it is how a read-only
+        // subagent role is expressed, so the environment override must not be
+        // able to loosen it.
+        let sandbox = match self.config.sandbox_policy {
+            Some(crate::sandbox::SandboxPolicy::ReadOnly) => Some("read-only".to_owned()),
+            _ => std::env::var("MAESTRO_SANDBOX_MODE")
+                .ok()
+                .filter(|mode| !mode.is_empty() && mode != "default" && mode != "inherit")
+                .or_else(|| codex_sandbox_mode(self.config.sandbox_policy.as_ref())),
+        };
         let dynamic_tools = super::codex_app_server_turns::dynamic_tools_from_native(&self.tools);
         // Same standing instructions the HTTP path puts in RequestConfig.system.
         let instructions = {
@@ -3596,6 +4237,46 @@ impl NativeAgentRunner {
         append_codex_tool_result(self.messages_mut(), call_id, content, is_error);
     }
 
+    /// Run `PostToolUse` for a Codex tool call, fold in any injected context,
+    /// record the result in history, and return the text for the wire.
+    ///
+    /// Both history and the wire response carry the appended context, so the
+    /// model sees the same result the transcript records.
+    ///
+    /// Returns the wire text and whether the call must be reported as failed,
+    /// which an `EvalGate` rejection can turn on for an otherwise successful
+    /// tool.
+    fn finalize_codex_tool_result(&mut self, outcome: CodexToolOutcome<'_>) -> (String, bool) {
+        let CodexToolOutcome {
+            tool_name,
+            call_id,
+            args,
+            hook_output,
+            result_text,
+            is_error,
+            pre_hook_context,
+            duration_ms,
+        } = outcome;
+        let hook_outcome = run_post_execution_hooks(
+            &mut self.hooks,
+            tool_name,
+            call_id,
+            args,
+            hook_output,
+            is_error,
+            duration_ms,
+        );
+        let mut text = append_hook_context(result_text, pre_hook_context);
+        text = append_hook_context(text, hook_outcome.context.as_deref());
+        if let Some(reason) = &hook_outcome.rejected {
+            text = format!("{text}\n\n[Eval gate rejected this result: {reason}]");
+        }
+        let reported_error = is_error || hook_outcome.rejected.is_some();
+        let response = resolve_codex_tool_result_for_wire(&self.credential_vault, &text);
+        self.record_codex_tool_result(call_id, text, reported_error);
+        (response, reported_error)
+    }
+
     async fn handle_codex_server_request(
         &mut self,
         request: crate::codex_app_server::IncomingServerRequest,
@@ -3631,6 +4312,28 @@ impl NativeAgentRunner {
 
                 let tool_key = registry_name.to_lowercase();
                 self.record_codex_tool_use(&call_id, &registry_name, &args);
+
+                // This handler is the second place that decides whether a tool
+                // executes. The HTTP tool loop runs `PreToolUse` before the
+                // firewall so the firewall vets whatever the hook rewrote; the
+                // same order applies here, otherwise a policy hook is enforced
+                // for one transport and skipped for the other.
+                let (args, pre_hook_context) =
+                    match run_pre_tool_use_hook(&mut self.hooks, &registry_name, &call_id, &args) {
+                        Ok(outcome) => outcome,
+                        Err(reason) => {
+                            let _ = self.event_tx.send(FromAgent::HookBlocked {
+                                call_id: call_id.clone(),
+                                tool: registry_name.clone(),
+                                reason: reason.clone(),
+                            });
+                            let error = format!("Tool blocked by hook: {reason}");
+                            self.record_codex_tool_result(&call_id, error.clone(), true);
+                            request.respond(tool_call_error_result(error));
+                            return Ok(());
+                        }
+                    };
+
                 let is_external_tool = self.external_tools.contains(&tool_key);
                 let annotations = self.tool_executor.tool_annotations(&tool_key);
                 let workflow_snapshot = self.workflow_state.snapshot();
@@ -3664,6 +4367,28 @@ impl NativeAgentRunner {
                     &registry_name,
                     &args,
                 );
+
+                // The approval decision is the `PermissionRequest` boundary on
+                // this transport, matching the HTTP tool loop. A `block`
+                // denies the call and the user is never asked.
+                if requires_approval {
+                    let permission = self.hooks.execute_permission_request(
+                        &registry_name,
+                        &call_id,
+                        &args,
+                        "tool requires approval",
+                    );
+                    if let HookResult::Block { reason } = permission {
+                        let message = format!("Tool denied by permission hook: {reason}");
+                        let _ = self.event_tx.send(FromAgent::Error {
+                            message: message.clone(),
+                            fatal: false,
+                        });
+                        self.record_codex_tool_result(&call_id, message.clone(), true);
+                        request.respond(tool_call_error_result(message));
+                        return Ok(());
+                    }
+                }
 
                 if requires_approval {
                     let _ = self.event_tx.send(FromAgent::ToolCall {
@@ -3716,23 +4441,30 @@ impl NativeAgentRunner {
                         return Ok(());
                     }
                     if let Some(result) = provided_result {
-                        if result.success {
-                            let vaulted_output = result.output;
-                            let response = resolve_codex_tool_result_for_wire(
-                                &self.credential_vault,
-                                &vaulted_output,
-                            );
-                            self.record_codex_tool_result(&call_id, vaulted_output, false);
-                            request.respond(tool_call_success_result(response));
+                        let is_error = !result.success;
+                        let vaulted_text = if result.success {
+                            result.output
                         } else {
-                            let vaulted_error =
-                                result.error.unwrap_or_else(|| result.output.clone());
-                            let response = resolve_codex_tool_result_for_wire(
-                                &self.credential_vault,
-                                &vaulted_error,
-                            );
-                            self.record_codex_tool_result(&call_id, vaulted_error, true);
+                            result.error.unwrap_or_else(|| result.output.clone())
+                        };
+                        let hook_output = vaulted_text.clone();
+                        // A UI-supplied result was not executed here, so there
+                        // is no interval this path can measure.
+                        let (response, is_error) =
+                            self.finalize_codex_tool_result(CodexToolOutcome {
+                                tool_name: &registry_name,
+                                call_id: &call_id,
+                                args: &args,
+                                hook_output: &hook_output,
+                                result_text: vaulted_text,
+                                is_error,
+                                pre_hook_context: pre_hook_context.as_deref(),
+                                duration_ms: 0,
+                            });
+                        if is_error {
                             request.respond(tool_call_error_result(response));
+                        } else {
+                            request.respond(tool_call_success_result(response));
                         }
                         return Ok(());
                     }
@@ -3749,14 +4481,22 @@ impl NativeAgentRunner {
                 let execution = self
                     .execute_tool(&registry_name, &args, &call_id, None)
                     .await;
-                let vaulted_text = execution.model_content();
-                let response =
-                    resolve_codex_tool_result_for_wire(&self.credential_vault, &vaulted_text);
-                if execution.is_error() {
-                    self.record_codex_tool_result(&call_id, vaulted_text, true);
+                let is_error = execution.is_error();
+                let hook_output = execution.raw_content();
+                let duration_ms = execution.receipt.duration_ms.unwrap_or(0);
+                let (response, is_error) = self.finalize_codex_tool_result(CodexToolOutcome {
+                    tool_name: &registry_name,
+                    call_id: &call_id,
+                    args: &args,
+                    hook_output: &hook_output,
+                    result_text: execution.model_content(),
+                    is_error,
+                    pre_hook_context: pre_hook_context.as_deref(),
+                    duration_ms,
+                });
+                if is_error {
                     request.respond(tool_call_error_result(response));
                 } else {
-                    self.record_codex_tool_result(&call_id, vaulted_text, false);
                     request.respond(tool_call_success_result(response));
                 }
                 Ok(())
@@ -3768,13 +4508,95 @@ impl NativeAgentRunner {
                 // Partial: only Yolo auto-accepts Codex-native exec approvals.
                 // Selective/Safe decline; Maestro dynamic tools still use the
                 // normal ToolCall approval path above.
-                let accept = matches!(self.config.approval_mode, ApprovalMode::Yolo);
+                //
+                // A read-only sandbox policy overrides the approval mode. Every
+                // subagent runs in Yolo, because a delegated child cannot
+                // answer an approval prompt, so without this a read-only child
+                // role -- explore, plan, review -- had its native exec and
+                // file-change requests auto-accepted, and with
+                // `isolation=shared` those act on the parent's own checkout.
+                // Codex is also asked to sandbox itself on `thread/start`, but
+                // that is a request to another process; this is the part
+                // Maestro enforces.
+                // Report the operation for output accounting before deciding
+                // on it. Codex runs these itself instead of through
+                // `item/tool/call`, so they produce no `ToolCall` event and a
+                // caller metering this stream -- the subagent scheduler --
+                // never charged the command or patch the model generated.
+                // Charged whether or not it is approved: the model produced
+                // the payload either way.
+                let _ = self.event_tx.send(FromAgent::CodexNativeOperation {
+                    method: request.method.clone(),
+                    output_chars: codex_native_operation_chars(request.params.as_ref()),
+                });
+
+                // Policy hooks govern this branch too. Round 4 routed
+                // `item/tool/call` through the pipeline, but a Codex-native
+                // mutation is approved here instead, so a hook that blocks
+                // shell commands or file writes was bypassed on exactly the
+                // operations it exists to stop.
+                //
+                // The operation is presented under a stable synthetic tool name
+                // so a policy can match it, with the request params as its
+                // arguments. Only `block` is actionable: Codex has already
+                // decided what to run and there is no way to hand it rewritten
+                // arguments, so a `ModifyInput` rewrite is treated as a denial
+                // rather than silently approving the unsanitized original.
+                // A hook that must rewrite a command has to use the
+                // `item/tool/call` path.
+                let policy_tool = codex_native_policy_tool(&request.method);
+                let policy_args = request.params.clone().unwrap_or(Value::Null);
+                let policy_call_id = Uuid::new_v4().to_string();
+                let hook_denial = match run_pre_tool_use_hook(
+                    &mut self.hooks,
+                    policy_tool,
+                    &policy_call_id,
+                    &policy_args,
+                ) {
+                    Err(reason) => Some(reason),
+                    Ok((rewritten, _)) if rewritten != policy_args => Some(
+                        "PreToolUse rewrote the Codex-native operation, which cannot accept rewritten parameters"
+                            .to_string(),
+                    ),
+                    Ok(_) => match self.hooks.execute_permission_request(
+                        policy_tool,
+                        &policy_call_id,
+                        &policy_args,
+                        "Codex-native mutation",
+                    ) {
+                        HookResult::Block { reason } => Some(reason),
+                        _ => None,
+                    },
+                };
+
+                let denies_mutation = config_denies_mutation(self.config.sandbox_policy.as_ref());
+                let profile_denial =
+                    codex_native_denied_by_active_tools(&request.method, &self.active_tool_names);
+                let firewall_denial = codex_native_firewall_denial(
+                    &self.config.cwd,
+                    &request.method,
+                    request.params.as_ref(),
+                    Some(&self.workflow_state.snapshot()),
+                );
+                let accept = matches!(self.config.approval_mode, ApprovalMode::Yolo)
+                    && !denies_mutation
+                    && profile_denial.is_none()
+                    && hook_denial.is_none()
+                    && firewall_denial.is_none();
                 if !accept {
+                    let reason = if let Some(reason) = &hook_denial {
+                        format!("blocked by a policy hook: {reason}")
+                    } else if let Some(reason) = &firewall_denial {
+                        format!("blocked by the action firewall: {reason}")
+                    } else if let Some(reason) = profile_denial {
+                        reason.to_string()
+                    } else if denies_mutation {
+                        "the sandbox policy is read-only".to_string()
+                    } else {
+                        "approval mode is not Yolo; use Maestro tools or switch to Yolo".to_string()
+                    };
                     let _ = self.event_tx.send(FromAgent::Status {
-                        message: format!(
-                            "Declined Codex-native {} (approval mode is not Yolo; use Maestro tools or switch to Yolo)",
-                            request.method
-                        ),
+                        message: format!("Declined Codex-native {} ({reason})", request.method),
                     });
                 }
                 request.respond(approval_decision(accept));
@@ -3831,9 +4653,18 @@ impl NativeAgentRunner {
             let mut pending_tool_inputs: std::collections::HashMap<usize, String> =
                 std::collections::HashMap::new();
             let mut usage = TokenUsage::default();
+            // An OpenAI-compatible endpoint may omit the usage chunk entirely
+            // (`packages/ai-rs/src/openai.rs` only emits `StreamEvent::Usage`
+            // when the chunk carries one). Reporting the zero-valued default as
+            // `Some(usage)` made "the provider says this turn cost nothing"
+            // indistinguishable from "the provider said nothing", and a caller
+            // metering the run believed the zero. The side-question loop
+            // already made this distinction; the main turn loop did not.
+            let mut saw_usage = false;
             let mut pending_tool_calls: Vec<(String, String, serde_json::Value, Option<String>)> =
                 Vec::new();
             let mut stream_failed = false;
+            let mut stream_error_message: Option<String> = None;
 
             // Process stream events
             while let Some(event) = rx.recv().await {
@@ -3935,6 +4766,7 @@ impl NativeAgentRunner {
                         usage.output_tokens = output_tokens;
                         usage.cache_read_tokens = cache_read_tokens.unwrap_or(0);
                         usage.cache_write_tokens = cache_creation_tokens.unwrap_or(0);
+                        saw_usage = true;
                     }
                     StreamEvent::MessageStop {
                         stop_reason: reason,
@@ -3993,6 +4825,7 @@ impl NativeAgentRunner {
                     }
                     StreamEvent::Error { message } => {
                         stream_failed = true;
+                        stream_error_message = Some(message.clone());
                         abort_pending_tools_after_stream_error(
                             &mut assistant_content,
                             &mut pending_tool_calls,
@@ -4053,14 +4886,27 @@ impl NativeAgentRunner {
                 stop_reason_label,
             );
 
-            // Signal response end
+            // Charge this response against any cumulative output budget before
+            // the next request is built; `build_config` reads the running total.
+            self.output_tokens_spent = self.output_tokens_spent.saturating_add(usage.output_tokens);
+
+            // Signal response end. `None` means the provider reported nothing
+            // for this turn, which is not the same as reporting zero.
             let _ = self.event_tx.send(FromAgent::ResponseEnd {
                 response_id: response_id.clone(),
-                usage: Some(usage),
+                usage: saw_usage.then_some(usage),
             });
 
             if stream_failed {
                 self.set_tool_batch_active(false);
+                // Terminal recovery boundary: the provider stream failed and no
+                // further attempt will produce a valid completion for this turn.
+                let last_assistant = (!response_text.is_empty()).then_some(response_text.as_str());
+                let _ = self.hooks.execute_stop_failure(
+                    "api_error",
+                    stream_error_message.as_deref(),
+                    last_assistant,
+                );
                 return Ok(());
             }
 
@@ -4321,6 +5167,42 @@ impl NativeAgentRunner {
                         &tool_name,
                         &args,
                     );
+
+                    // `PermissionRequest` hooks are documented to run when a
+                    // tool needs approval (docs/design/HOOKS_SYSTEM.md). This is
+                    // the one place that decides that, so it is the only place
+                    // the hook can run without disagreeing with the decision.
+                    // A `Block` denies the call outright and the user is never
+                    // asked; every other result falls through to the normal
+                    // approval path, because an approval gate has nothing to do
+                    // with modified input or injected context.
+                    if requires_approval {
+                        let permission = self.hooks.execute_permission_request(
+                            &tool_name,
+                            &call_id,
+                            &args,
+                            "tool requires approval",
+                        );
+                        if let HookResult::Block { reason } = permission {
+                            self.drain_read_only_tool_calls(
+                                &mut pending_read_only_tool_calls,
+                                &mut tool_results,
+                            )
+                            .await?;
+                            let message = format!("Tool denied by permission hook: {reason}");
+                            let _ = self.event_tx.send(FromAgent::Error {
+                                message: message.clone(),
+                                fatal: false,
+                            });
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: call_id,
+                                content: message,
+                                is_error: Some(true),
+                            });
+                            continue;
+                        }
+                    }
+
                     let can_parallelize_read_only = is_native_parallel_read_only_tool_call(
                         &tool_key,
                         requires_approval,
@@ -5186,6 +6068,10 @@ impl NativeAgentRunner {
         let terminal_drain_required =
             native_tool_requires_terminal_drain(&self.tool_executor, tool_name, args);
         self.set_active_tool_cancel_token(Some(cancel.clone()), terminal_drain_required);
+        // Timed here because this is the one place the runner owns a single
+        // tool's execution. `ExecutionReceipt::duration_ms` had no producer, so
+        // the documented `durationMs` hook field could never be populated.
+        let started = Instant::now();
         let execution = self
             .tool_executor
             .execute_with_receipt_cancellable_inline_env(
@@ -5200,6 +6086,7 @@ impl NativeAgentRunner {
                 },
             )
             .await;
+        let execution = execution.with_duration(started.elapsed().as_millis() as u64);
         self.set_active_tool_cancel_token(None, false);
         // Direct Codex/native dispatch does not pass through the main turn's
         // serial-tool boundary. Keep the warm executor honest after a Bash,
@@ -5264,25 +6151,35 @@ impl NativeAgentRunner {
         let content = result.model_content();
         let is_error = result.is_error();
 
-        if approved {
+        let hook_outcome = if approved {
             // Execute hooks only for tools that were allowed to run.
             // Hooks contract on raw tool output, not the model-facing
             // envelope (see `ToolExecution::raw_content`).
-            let _post_result = self.hooks.execute_post_tool_use(
+            run_post_execution_hooks(
+                &mut self.hooks,
                 &tool_name,
                 &call_id,
                 &args,
                 &result.raw_content(),
                 is_error,
-            );
-        }
-
-        // Append injected context if any
-        let mut result_content = if let Some(ref ctx) = extra_context {
-            format!("{content}\n\n{ctx}")
+                result.receipt.duration_ms.unwrap_or(0),
+            )
         } else {
-            content
+            PostExecutionHooks::default()
         };
+        // The gate's verdict changes what the model is told, not what the
+        // workflow bookkeeping below records: the tool really did run.
+        let reported_error = is_error || hook_outcome.rejected.is_some();
+
+        // Append injected context if any. A `PostToolUse` hook's context was
+        // computed and then dropped, so a hook that returned `contextToAdd`
+        // had no effect on the request that followed.
+        let mut result_content = append_hook_context(content, extra_context.as_deref());
+        result_content = append_hook_context(result_content, hook_outcome.context.as_deref());
+        if let Some(reason) = &hook_outcome.rejected {
+            result_content =
+                format!("{result_content}\n\n[Eval gate rejected this result: {reason}]");
+        }
 
         if approved {
             if let Err(err) = apply_workflow_state_hooks(
@@ -5304,7 +6201,7 @@ impl NativeAgentRunner {
         ContentBlock::ToolResult {
             tool_use_id: call_id,
             content: result_content,
-            is_error: Some(is_error),
+            is_error: Some(reported_error),
         }
     }
 
@@ -5338,6 +6235,12 @@ impl NativeAgentRunner {
         let pending_calls = std::mem::take(pending);
         let cancel_token = CancellationToken::new();
         self.set_active_tool_cancel_token(Some(cancel_token.clone()), false);
+        // These calls run concurrently in one batch, so the batch is the only
+        // interval this path can measure. Each call is reported with the batch
+        // elapsed, which is an upper bound on its own -- documented in
+        // `docs/design/HOOKS_SYSTEM.md` so a hook reading `durationMs` knows
+        // what it is looking at.
+        let wave_started = Instant::now();
         let mut results_by_call_id = execute_native_read_only_tool_wave(
             Arc::clone(&self.tool_executor),
             &self.event_tx,
@@ -5345,6 +6248,7 @@ impl NativeAgentRunner {
             Some(cancel_token),
         )
         .await;
+        let wave_duration_ms = wave_started.elapsed().as_millis() as u64;
         self.set_active_tool_cancel_token(None, false);
 
         for call in pending_calls {
@@ -5361,19 +6265,23 @@ impl NativeAgentRunner {
 
             // Hooks contract on raw tool output, not the model-facing
             // envelope (see `ToolExecution::raw_content`).
-            let _post_result = self.hooks.execute_post_tool_use(
+            let hook_outcome = run_post_execution_hooks(
+                &mut self.hooks,
                 &call.tool_name,
                 &call.call_id,
                 &call.args,
                 &result.raw_content(),
                 is_error,
+                result.receipt.duration_ms.unwrap_or(wave_duration_ms),
             );
+            let reported_error = is_error || hook_outcome.rejected.is_some();
 
-            let mut final_content = if let Some(ref ctx) = call.extra_context {
-                format!("{content}\n\n{ctx}")
-            } else {
-                content
-            };
+            let mut final_content = append_hook_context(content, call.extra_context.as_deref());
+            final_content = append_hook_context(final_content, hook_outcome.context.as_deref());
+            if let Some(reason) = &hook_outcome.rejected {
+                final_content =
+                    format!("{final_content}\n\n[Eval gate rejected this result: {reason}]");
+            }
 
             if let Err(err) = apply_workflow_state_hooks(
                 &call.tool_name,
@@ -5391,7 +6299,7 @@ impl NativeAgentRunner {
             tool_results.push(ContentBlock::ToolResult {
                 tool_use_id: call.call_id,
                 content: final_content,
-                is_error: Some(is_error),
+                is_error: Some(reported_error),
             });
         }
 
@@ -5546,10 +6454,15 @@ fn build_runner_tool_executor(
     cwd: &str,
     credential_vault: CredentialVault,
     sandbox_policy: Option<crate::sandbox::SandboxPolicy>,
+    subagent_parent_scope_id: Option<String>,
 ) -> ToolExecutor {
     let executor = ToolExecutor::with_credential_vault(cwd, credential_vault);
-    match sandbox_policy {
+    let executor = match sandbox_policy {
         Some(policy) => executor.with_sandbox_policy(policy),
+        None => executor,
+    };
+    match subagent_parent_scope_id {
+        Some(parent_scope_id) => executor.with_subagent_parent_scope(parent_scope_id),
         None => executor,
     }
 }
@@ -5674,15 +6587,106 @@ fn deferred_tool_call_disposition(
     }
 }
 
+/// Run `PreToolUse` for one call and reduce the result to the arguments to
+/// execute with plus any context the hook injected.
+///
+/// `Err` carries the block reason. Every path that decides whether a tool runs
+/// uses this, so a policy hook cannot be enforced on one transport and skipped
+/// on another.
+fn run_pre_tool_use_hook(
+    hooks: &mut IntegratedHookSystem,
+    tool_name: &str,
+    call_id: &str,
+    args: &serde_json::Value,
+) -> Result<(serde_json::Value, Option<String>), String> {
+    match hooks.execute_pre_tool_use(tool_name, call_id, args) {
+        HookResult::Block { reason } => Err(reason),
+        HookResult::ModifyInput { new_input } => Ok((new_input, None)),
+        HookResult::InjectContext { context } => Ok((args.clone(), Some(context))),
+        HookResult::Continue => Ok((args.clone(), None)),
+    }
+}
+
 fn rerun_deferred_pre_tool_use(
     hooks: &mut IntegratedHookSystem,
     call: &ToolCallContext,
 ) -> Result<(serde_json::Value, Option<String>), String> {
-    match hooks.execute_pre_tool_use(&call.tool_name, &call.call_id, &call.pre_hook_args) {
-        HookResult::Block { reason } => Err(reason),
-        HookResult::ModifyInput { new_input } => Ok((new_input, None)),
-        HookResult::InjectContext { context } => Ok((call.pre_hook_args.clone(), Some(context))),
-        HookResult::Continue => Ok((call.pre_hook_args.clone(), None)),
+    run_pre_tool_use_hook(hooks, &call.tool_name, &call.call_id, &call.pre_hook_args)
+}
+
+/// The context a hook asked to add, if it asked for any.
+///
+/// `PostToolUse` hooks return `hookSpecificOutput.contextToAdd` as
+/// `InjectContext`; the documented effect is that the text reaches the model
+/// with the tool result.
+fn hook_injected_context(result: HookResult) -> Option<String> {
+    match result {
+        HookResult::InjectContext { context } => Some(context),
+        _ => None,
+    }
+}
+
+/// What the post-execution hooks asked for on one finished tool call.
+#[derive(Default)]
+struct PostExecutionHooks {
+    /// Context the hooks asked to add to the tool result.
+    context: Option<String>,
+    /// Why an `EvalGate` hook rejected the result, if it did.
+    rejected: Option<String>,
+}
+
+/// Run `PostToolUse` and then `EvalGate` for one finished tool call.
+///
+/// `EvalGate` receives the same tool name, arguments, and raw output; its input
+/// type is shaped for exactly this point and it had no dispatch site at all, so
+/// a configured evaluation hook silently never ran. It runs after `PostToolUse`
+/// so a gate scores the result a `PostToolUse` hook has already observed.
+///
+/// A gate's `block` cannot un-run the tool, so it is reported as a failed tool
+/// result rather than pretending the call was prevented.
+fn run_post_execution_hooks(
+    hooks: &mut IntegratedHookSystem,
+    tool_name: &str,
+    call_id: &str,
+    args: &serde_json::Value,
+    raw_output: &str,
+    is_error: bool,
+    duration_ms: u64,
+) -> PostExecutionHooks {
+    let mut outcome = PostExecutionHooks {
+        context: hook_injected_context(hooks.execute_post_tool_use(
+            tool_name,
+            call_id,
+            args,
+            raw_output,
+            is_error,
+            duration_ms,
+        )),
+        rejected: None,
+    };
+
+    match hooks.execute_eval_gate(tool_name, call_id, args, raw_output) {
+        HookResult::Block { reason } => outcome.rejected = Some(reason),
+        gate => {
+            if let Some(gate_context) = hook_injected_context(gate) {
+                outcome.context = Some(match outcome.context {
+                    Some(existing) => format!("{existing}\n\n{gate_context}"),
+                    None => gate_context,
+                });
+            }
+        }
+    }
+    outcome
+}
+
+/// Append hook-injected context to a tool result body.
+///
+/// Empty or whitespace-only context is dropped rather than appended as blank
+/// lines the model has to read.
+fn append_hook_context(content: String, context: Option<&str>) -> String {
+    match context {
+        Some(context) if !context.trim().is_empty() => format!("{content}\n\n{context}"),
+        _ => content,
     }
 }
 
@@ -7362,6 +8366,28 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         assert!(!completed_delay, "cancelled backoff must not begin a retry");
     }
 
+    struct ContextInjectingPostToolUseHook {
+        context: String,
+    }
+
+    impl crate::hooks::PostToolUseHook for ContextInjectingPostToolUseHook {
+        fn on_post_tool_use(&self, _input: &crate::hooks::PostToolUseInput) -> HookResult {
+            HookResult::InjectContext {
+                context: self.context.clone(),
+            }
+        }
+    }
+
+    struct BlockingPreToolUseHook;
+
+    impl crate::hooks::PreToolUseHook for BlockingPreToolUseHook {
+        fn on_pre_tool_use(&self, _input: &crate::hooks::PreToolUseInput) -> HookResult {
+            HookResult::Block {
+                reason: "policy denied".to_string(),
+            }
+        }
+    }
+
     struct StateDependentPreToolUseHook {
         block: Arc<AtomicBool>,
     }
@@ -8250,6 +9276,484 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
     }
 
     #[test]
+    fn post_tool_use_injected_context_reaches_the_tool_result() {
+        // A `PostToolUse` hook returning `contextToAdd` had its result dropped,
+        // so the context never reached the request that followed.
+        let mut hooks = IntegratedHookSystem::new("/tmp");
+        hooks
+            .registry
+            .register_post_tool_use(Arc::new(ContextInjectingPostToolUseHook {
+                context: "remember: the build is pinned".to_string(),
+            }));
+
+        let post_context = hook_injected_context(hooks.execute_post_tool_use(
+            "bash",
+            "call-1",
+            &serde_json::json!({"command": "ls"}),
+            "file1.txt",
+            false,
+            42,
+        ));
+        assert_eq!(
+            post_context.as_deref(),
+            Some("remember: the build is pinned")
+        );
+
+        let content = append_hook_context("file1.txt".to_string(), post_context.as_deref());
+        assert_eq!(content, "file1.txt\n\nremember: the build is pinned");
+    }
+
+    #[test]
+    fn pre_and_post_hook_context_are_both_appended() {
+        let content = append_hook_context("output".to_string(), Some("from pre"));
+        let content = append_hook_context(content, Some("from post"));
+        assert_eq!(content, "output\n\nfrom pre\n\nfrom post");
+    }
+
+    #[test]
+    fn blank_hook_context_is_not_appended() {
+        assert_eq!(append_hook_context("output".to_string(), None), "output");
+        assert_eq!(
+            append_hook_context("output".to_string(), Some("  ")),
+            "output"
+        );
+    }
+
+    #[test]
+    fn a_blocking_pre_tool_use_hook_stops_any_transport() {
+        // The Codex app-server handler runs this same helper, so a policy hook
+        // cannot be enforced for HTTP tool calls and skipped for Codex ones.
+        let mut hooks = IntegratedHookSystem::new("/tmp");
+        hooks
+            .registry
+            .register_pre_tool_use(Arc::new(BlockingPreToolUseHook));
+
+        assert_eq!(
+            run_pre_tool_use_hook(
+                &mut hooks,
+                "bash",
+                "call-1",
+                &serde_json::json!({"command": "ls"})
+            ),
+            Err("policy denied".to_string())
+        );
+    }
+
+    #[test]
+    fn each_queued_prompt_consumes_only_its_own_staged_skills() {
+        // A single shared staged value let a prompt run with instructions only
+        // a later queued prompt triggered. Keyed entries are consumed by the
+        // prompt they belong to, in whatever order the queue drains.
+        let mut staged: HashMap<u64, (u64, String)> = HashMap::new();
+        staged.insert(1, (0, "base + skill-a".to_string()));
+        staged.insert(2, (0, "base + skill-a + skill-b".to_string()));
+
+        // A steer jumps the queue and runs second-in-line first.
+        assert_eq!(
+            staged_system_prompt_to_apply(staged.remove(&2), 0).as_deref(),
+            Some("base + skill-a + skill-b")
+        );
+        // The earlier prompt still gets its own prompt, without skill-b.
+        assert_eq!(
+            staged_system_prompt_to_apply(staged.remove(&1), 0).as_deref(),
+            Some("base + skill-a"),
+            "an earlier prompt must not inherit a later prompt's skills"
+        );
+        assert!(staged.is_empty(), "each entry is consumed once");
+    }
+
+    #[test]
+    fn a_prompt_that_activates_nothing_still_gets_its_own_entry() {
+        // Skipping the staging for a prompt with no new activations left it
+        // with no entry, so a steer that jumped the queue and applied its own
+        // skills first left them in place for the prompt behind it. An empty
+        // activation set is a statement about that prompt, not an absence.
+        let mut staged: HashMap<u64, (u64, String)> = HashMap::new();
+        staged.insert(1, (0, "base".to_string()));
+        staged.insert(2, (0, "base + steer-skill".to_string()));
+        staged.insert(3, (0, "base + steer-skill".to_string()));
+
+        // The steer jumps ahead and applies its own skills.
+        assert_eq!(
+            staged_system_prompt_to_apply(staged.remove(&2), 0).as_deref(),
+            Some("base + steer-skill")
+        );
+        // The prompt behind it activated nothing and must fall back to its own
+        // snapshot, not keep the steer's.
+        assert_eq!(
+            staged_system_prompt_to_apply(staged.remove(&1), 0).as_deref(),
+            Some("base"),
+            "a prompt that activates nothing must not inherit the steer's skills"
+        );
+        // A prompt queued after the steer legitimately carries its skills.
+        assert_eq!(
+            staged_system_prompt_to_apply(staged.remove(&3), 0).as_deref(),
+            Some("base + steer-skill")
+        );
+    }
+
+    #[test]
+    fn a_staged_queued_prompt_applies_only_while_it_is_current() {
+        let staged = Some((3, "with skills".to_string()));
+        assert_eq!(
+            staged_system_prompt_to_apply(staged.clone(), 3).as_deref(),
+            Some("with skills")
+        );
+        assert_eq!(
+            staged_system_prompt_to_apply(staged, 4),
+            None,
+            "an authoritative update after the staging supersedes it"
+        );
+        assert_eq!(staged_system_prompt_to_apply(None, 0), None);
+    }
+
+    struct RejectingEvalGateHook;
+
+    impl crate::hooks::EvalGateHook for RejectingEvalGateHook {
+        fn on_eval_gate(&self, _input: &crate::hooks::EvalGateInput) -> HookResult {
+            HookResult::Block {
+                reason: "score 0.2 below threshold 0.8".to_string(),
+            }
+        }
+    }
+
+    struct ScoringEvalGateHook;
+
+    impl crate::hooks::EvalGateHook for ScoringEvalGateHook {
+        fn on_eval_gate(&self, _input: &crate::hooks::EvalGateInput) -> HookResult {
+            HookResult::InjectContext {
+                context: "eval score 0.9".to_string(),
+            }
+        }
+    }
+
+    #[test]
+    fn an_eval_gate_hook_runs_after_every_tool_call() {
+        // `EvalGate` had no dispatch site at all, so a configured evaluation
+        // hook observed nothing.
+        let mut hooks = IntegratedHookSystem::new("/tmp");
+        hooks
+            .registry
+            .register_eval_gate(Arc::new(ScoringEvalGateHook));
+
+        let outcome = run_post_execution_hooks(
+            &mut hooks,
+            "bash",
+            "call-1",
+            &serde_json::json!({"command": "ls"}),
+            "file1.txt",
+            false,
+            12,
+        );
+
+        assert_eq!(outcome.context.as_deref(), Some("eval score 0.9"));
+        assert!(outcome.rejected.is_none());
+    }
+
+    #[test]
+    fn a_rejecting_eval_gate_marks_the_tool_result_failed() {
+        let mut hooks = IntegratedHookSystem::new("/tmp");
+        hooks
+            .registry
+            .register_eval_gate(Arc::new(RejectingEvalGateHook));
+
+        let outcome = run_post_execution_hooks(
+            &mut hooks,
+            "bash",
+            "call-1",
+            &serde_json::json!({"command": "ls"}),
+            "file1.txt",
+            false,
+            12,
+        );
+
+        assert_eq!(
+            outcome.rejected.as_deref(),
+            Some("score 0.2 below threshold 0.8")
+        );
+    }
+
+    #[test]
+    fn post_tool_use_and_eval_gate_context_are_both_delivered() {
+        let mut hooks = IntegratedHookSystem::new("/tmp");
+        hooks
+            .registry
+            .register_post_tool_use(Arc::new(ContextInjectingPostToolUseHook {
+                context: "from post".to_string(),
+            }));
+        hooks
+            .registry
+            .register_eval_gate(Arc::new(ScoringEvalGateHook));
+
+        let outcome = run_post_execution_hooks(
+            &mut hooks,
+            "bash",
+            "call-1",
+            &serde_json::json!({}),
+            "out",
+            false,
+            0,
+        );
+
+        assert_eq!(
+            outcome.context.as_deref(),
+            Some("from post\n\neval score 0.9")
+        );
+    }
+
+    #[test]
+    fn codex_native_operations_are_named_for_policy_hooks() {
+        assert_eq!(
+            codex_native_policy_tool("item/fileChange/requestApproval"),
+            "codex_file_change"
+        );
+        assert_eq!(
+            codex_native_policy_tool("applyPatchApproval"),
+            "codex_file_change"
+        );
+        assert_eq!(
+            codex_native_policy_tool("item/commandExecution/requestApproval"),
+            "codex_command_execution"
+        );
+        assert_eq!(
+            codex_native_policy_tool("execCommandApproval"),
+            "codex_command_execution"
+        );
+    }
+
+    #[test]
+    fn a_policy_hook_blocks_a_codex_native_mutation() {
+        // Round 4 routed `item/tool/call` through the hook pipeline. A
+        // Codex-native mutation is approved on a different branch, so a hook
+        // that blocks shell commands was bypassed on exactly those operations.
+        let mut hooks = IntegratedHookSystem::new("/tmp");
+        hooks
+            .registry
+            .register_pre_tool_use(Arc::new(BlockingPreToolUseHook));
+
+        assert_eq!(
+            run_pre_tool_use_hook(
+                &mut hooks,
+                codex_native_policy_tool("item/commandExecution/requestApproval"),
+                "call-1",
+                &serde_json::json!({"command": "rm -rf /"}),
+            ),
+            Err("policy denied".to_string())
+        );
+    }
+
+    #[test]
+    fn a_codex_native_operation_is_charged_its_generated_payload() {
+        // Codex runs commandExecution and fileChange itself, so these never
+        // appear as `ToolCall` and were charged nothing at all.
+        let patch = "x".repeat(4_000);
+        let charged = codex_native_operation_chars(Some(&serde_json::json!({
+            "changes": {"src/main.rs": patch},
+        })));
+
+        assert!(
+            charged > 4_000,
+            "the generated patch must be charged, got {charged}"
+        );
+        assert_eq!(
+            codex_native_operation_chars(None),
+            0,
+            "an operation with no params carries no model output"
+        );
+    }
+
+    #[test]
+    fn a_read_only_policy_maps_to_the_codex_read_only_sandbox() {
+        use crate::sandbox::SandboxPolicy;
+
+        assert_eq!(
+            codex_sandbox_mode(Some(&SandboxPolicy::ReadOnly)).as_deref(),
+            Some("read-only")
+        );
+        assert_eq!(
+            codex_sandbox_mode(Some(&SandboxPolicy::DangerFullAccess)).as_deref(),
+            Some("danger-full-access")
+        );
+        assert_eq!(
+            codex_sandbox_mode(Some(&SandboxPolicy::WorkspaceWrite {
+                writable_roots: Vec::new(),
+                network_access: false,
+                exclude_tmpdir_env_var: true,
+                exclude_slash_tmp: true,
+            }))
+            .as_deref(),
+            Some("workspace-write")
+        );
+        assert_eq!(codex_sandbox_mode(None), None);
+    }
+
+    #[test]
+    fn a_read_only_policy_declines_codex_native_mutation() {
+        use crate::sandbox::SandboxPolicy;
+
+        // Every subagent runs in Yolo, because a delegated child cannot answer
+        // an approval prompt. Without this the approval mode alone decided,
+        // and a read-only child had its native exec and file-change requests
+        // auto-accepted.
+        assert!(config_denies_mutation(Some(&SandboxPolicy::ReadOnly)));
+        assert!(!config_denies_mutation(Some(
+            &SandboxPolicy::DangerFullAccess
+        )));
+        assert!(!config_denies_mutation(None));
+    }
+
+    #[test]
+    fn codex_native_mutations_are_normalized_for_the_action_firewall() {
+        let command_sets = codex_native_firewall_arg_sets(
+            "item/commandExecution/requestApproval",
+            Some(&json!({"command": "rm -rf /"})),
+        );
+        assert_eq!(command_sets.len(), 1);
+        assert_eq!(command_sets[0].0, "bash");
+        assert_eq!(command_sets[0].1["command"], "rm -rf /");
+
+        let file_sets = codex_native_firewall_arg_sets(
+            "item/fileChange/requestApproval",
+            Some(&json!({"path": "/etc/passwd", "content": "x"})),
+        );
+        assert_eq!(file_sets.len(), 1);
+        assert_eq!(file_sets[0].0, "write");
+        assert_eq!(file_sets[0].1["file_path"], "/etc/passwd");
+
+        let multi = codex_native_firewall_arg_sets(
+            "item/fileChange/requestApproval",
+            Some(&json!({
+                "files": ["src/main.rs", "/etc/passwd"],
+                "content": "x"
+            })),
+        );
+        assert_eq!(multi.len(), 2);
+        assert_eq!(multi[0].1["file_path"], "src/main.rs");
+        assert_eq!(multi[1].1["file_path"], "/etc/passwd");
+
+        let legacy = codex_native_firewall_arg_sets(
+            "applyPatchApproval",
+            Some(&json!({
+                "fileChanges": {
+                    "src/ok.rs": {"type": "update"},
+                    "/etc/passwd": {"type": "update"}
+                }
+            })),
+        );
+        assert_eq!(legacy.len(), 2);
+
+        let denial = codex_native_firewall_denial(
+            "/tmp",
+            "item/commandExecution/requestApproval",
+            Some(&json!({"command": "rm -rf /"})),
+            None,
+        );
+        assert!(
+            denial.is_some(),
+            "dangerous commands must be blocked by the firewall"
+        );
+
+        let multi_denial = codex_native_firewall_denial(
+            "/tmp/workspace",
+            "item/fileChange/requestApproval",
+            Some(&json!({
+                "files": ["/tmp/workspace/ok.rs", "/etc/passwd"],
+                "content": "x"
+            })),
+            None,
+        );
+        assert!(
+            multi_denial.is_some(),
+            "a later out-of-workspace path must fail the whole multi-file request"
+        );
+
+        let item_id_only = codex_native_firewall_denial(
+            "/tmp/workspace",
+            "item/fileChange/requestApproval",
+            Some(&json!({
+                "itemId": "item-1",
+                "threadId": "t",
+                "turnId": "u",
+                "startedAtMs": 1
+            })),
+            None,
+        );
+        assert!(
+            item_id_only.is_some(),
+            "itemId-only file-change approvals must fail closed with no recoverable paths"
+        );
+    }
+
+    #[test]
+    fn a_restrictive_tool_profile_declines_codex_native_mutation() {
+        // A code-role child with profile tools [read, grep] still has a
+        // writable sandbox; the allowlist is what must stop Codex-native
+        // commandExecution and fileChange from running outside that set.
+        let read_only: HashSet<String> = ["read", "grep"].into_iter().map(str::to_owned).collect();
+        assert!(codex_native_denied_by_active_tools(
+            "item/commandExecution/requestApproval",
+            &read_only
+        )
+        .is_some());
+        assert!(
+            codex_native_denied_by_active_tools("item/fileChange/requestApproval", &read_only)
+                .is_some()
+        );
+
+        let with_bash: HashSet<String> = ["bash", "read"].into_iter().map(str::to_owned).collect();
+        assert!(codex_native_denied_by_active_tools(
+            "item/commandExecution/requestApproval",
+            &with_bash
+        )
+        .is_none());
+        assert!(
+            codex_native_denied_by_active_tools("item/fileChange/requestApproval", &with_bash)
+                .is_some()
+        );
+
+        let with_write: HashSet<String> =
+            ["write", "read"].into_iter().map(str::to_owned).collect();
+        assert!(codex_native_denied_by_active_tools(
+            "item/fileChange/requestApproval",
+            &with_write
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn output_allowance_is_unchanged_without_a_cumulative_budget() {
+        assert_eq!(output_token_allowance(16_384, None, 0), 16_384);
+        assert_eq!(
+            output_token_allowance(16_384, None, 1_000_000),
+            16_384,
+            "spend is only meaningful against a budget"
+        );
+    }
+
+    #[test]
+    fn output_allowance_shrinks_to_the_unspent_budget() {
+        // The runner owns this arithmetic so a delegated run cannot be granted
+        // its whole allowance again on every request past a tool boundary.
+        assert_eq!(output_token_allowance(4_096, Some(4_096), 0), 4_096);
+        assert_eq!(output_token_allowance(4_096, Some(4_096), 4_000), 96);
+        assert_eq!(
+            output_token_allowance(4_096, Some(65_536), 0),
+            4_096,
+            "a budget above the per-request limit does not raise the limit"
+        );
+    }
+
+    #[test]
+    fn a_spent_budget_still_yields_a_valid_request() {
+        assert_eq!(
+            output_token_allowance(4_096, Some(4_096), 4_096),
+            1,
+            "providers reject max_tokens: 0"
+        );
+        assert_eq!(output_token_allowance(4_096, Some(4_096), 9_000), 1);
+    }
+
+    #[test]
     fn clear_pending_cancel_drops_only_prompts_stashed_before_boundary() {
         let mut deferred_commands = VecDeque::from([
             AgentCommand::SetThinking {
@@ -8434,16 +9938,33 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             ".",
             credential_vault.clone(),
             Some(crate::sandbox::SandboxPolicy::ReadOnly),
+            None,
         );
         assert!(
             sandboxed.requires_sandbox_bypass_approval("bash", &bypass_args),
             "a configured sandbox_policy must reach the runner's own executor"
         );
 
-        let unsandboxed = build_runner_tool_executor(".", credential_vault, None);
+        let unsandboxed = build_runner_tool_executor(".", credential_vault, None, None);
         assert!(
             !unsandboxed.requires_sandbox_bypass_approval("bash", &bypass_args),
             "no sandbox_policy configured must produce no sandbox awareness"
+        );
+    }
+
+    #[test]
+    fn runner_tool_executor_uses_the_parent_subagent_scope() {
+        let executor = build_runner_tool_executor(
+            ".",
+            CredentialVault::new(),
+            None,
+            Some("app-parent-scope".to_string()),
+        );
+
+        assert_eq!(
+            executor.subagent_parent_scope_id(),
+            "app-parent-scope",
+            "auto-executed delegation must publish events to the caller's scope"
         );
     }
 

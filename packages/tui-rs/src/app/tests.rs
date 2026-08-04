@@ -1150,6 +1150,68 @@ async fn test_queue_response_start_drains_all_leading_steers_in_all_mode() {
     );
 }
 
+#[tokio::test]
+async fn test_queued_prompt_activates_matching_skills() {
+    let mut app = new_test_app();
+    app.skill_registry.register(
+        crate::skills::SkillDefinition::new("parser", "Parser")
+            .with_triggers(vec!["parser".into()])
+            .with_system_prompt("Use parser conventions."),
+    );
+
+    // Busy, so the follow-up is queued for the runner to drain instead of
+    // being submitted through `submit_prompt_with_kind`.
+    app.state.busy = true;
+    app.handle_follow_up_submit("Review the parser changes".to_string())
+        .await
+        .expect("queue the follow-up");
+
+    assert!(
+        app.skill_registry
+            .get("parser")
+            .expect("skill is registered")
+            .is_active(),
+        "a queued prompt must activate the skills its triggers match"
+    );
+    assert!(app
+        .skill_registry
+        .active_system_prompt_additions()
+        .contains("parser conventions"));
+    assert!(
+        app.state.messages.iter().any(|message| message
+            .content
+            .contains("Automatically activated skills: parser")),
+        "the activation must be reported the same way a direct submission reports it"
+    );
+}
+
+#[tokio::test]
+async fn test_queued_side_question_does_not_activate_skills() {
+    let mut app = new_test_app();
+    app.skill_registry.register(
+        crate::skills::SkillDefinition::new("parser", "Parser")
+            .with_triggers(vec!["parser".into()])
+            .with_system_prompt("Use parser conventions."),
+    );
+
+    app.state.busy = true;
+    app.queue_prompt(
+        "What does the parser do?".to_string(),
+        PromptKind::SideQuestion,
+        false,
+    )
+    .await
+    .expect("queue the side question");
+
+    assert!(
+        !app.skill_registry
+            .get("parser")
+            .expect("skill is registered")
+            .is_active(),
+        "side questions do not activate skills on the direct path either"
+    );
+}
+
 #[test]
 fn test_queue_enqueue_pending_prompt_preserves_steer_fifo() {
     let mut app = new_test_app();
@@ -1842,6 +1904,90 @@ async fn test_alerts_command_without_alerts() {
         .expect("alerts listing message")
         .content;
     assert!(listing.contains("No alerts recorded"), "listing: {listing}");
+}
+
+#[test]
+fn a_startup_restored_session_adopts_its_own_scope() {
+    // A session restored at startup exists before the runner does, so it never
+    // passed through any transition that adopts a session context: the executor
+    // kept its initial random scope and completions parked for this session's
+    // own children were never drained.
+    let mut app = new_test_app();
+    let initial = app.tool_executor.subagent_parent_scope_id();
+    app.state.session_id = Some("restored-alpha".to_string());
+
+    app.adopt_session_context(Some("restored-alpha"), "restore");
+
+    assert_ne!(app.tool_executor.subagent_parent_scope_id(), initial);
+    assert_eq!(
+        app.tool_executor.subagent_parent_scope_id(),
+        "session:restored-alpha",
+        "a restored session must drain the scope its own children carry"
+    );
+}
+
+#[tokio::test]
+async fn a_new_session_rotates_the_subagent_scope() {
+    use crate::commands::{CommandAction, SessionAction};
+
+    // The tool executor lives behind an `Arc` for the whole process, so
+    // without a rotation a child still running under the previous conversation
+    // reported its completion into this one, and that summary went on to the
+    // next model request.
+    let mut app = new_test_app();
+    app.adopt_session_context(Some("alpha"), "resume");
+    assert_eq!(
+        app.tool_executor.subagent_parent_scope_id(),
+        "session:alpha"
+    );
+
+    app.handle_command_action(CommandAction::Session(SessionAction::New))
+        .await;
+
+    assert_ne!(
+        app.tool_executor.subagent_parent_scope_id(),
+        "session:alpha",
+        "a new session must not drain the previous session's children"
+    );
+}
+
+#[tokio::test]
+async fn resuming_a_session_re_adopts_the_scope_it_rotated_away_from() {
+    use crate::commands::{CommandAction, SessionAction};
+
+    // Completions from a session's own children are parked rather than
+    // discarded, so re-adopting the same scope is what surfaces them.
+    let mut app = new_test_app();
+    app.adopt_session_context(Some("alpha"), "resume");
+    app.handle_command_action(CommandAction::Session(SessionAction::New))
+        .await;
+    assert_ne!(
+        app.tool_executor.subagent_parent_scope_id(),
+        "session:alpha"
+    );
+
+    app.adopt_session_context(Some("alpha"), "resume");
+
+    assert_eq!(
+        app.tool_executor.subagent_parent_scope_id(),
+        "session:alpha",
+        "resuming a session must return to the scope its children carry"
+    );
+}
+
+#[test]
+fn a_session_scope_is_derived_from_its_id() {
+    assert_eq!(subagent_scope_for_session(Some("alpha")), "session:alpha");
+    assert_eq!(
+        subagent_scope_for_session(Some("alpha")),
+        subagent_scope_for_session(Some("alpha")),
+        "resuming the same session must produce the same scope"
+    );
+    assert_ne!(
+        subagent_scope_for_session(None),
+        subagent_scope_for_session(None),
+        "a session with no id yet must not collide with another"
+    );
 }
 
 #[tokio::test]
