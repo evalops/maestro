@@ -1117,6 +1117,11 @@ impl IntegratedHookSystem {
         self.session_id = session_id;
     }
 
+    /// Point `log_event` at a file so dispatches become assertable in tests.
+    pub fn set_log_file(&mut self, path: Option<String>) {
+        self.log_file = path;
+    }
+
     /// The session id stamped onto every hook payload, if one is set.
     #[must_use]
     pub fn session_id(&self) -> Option<&str> {

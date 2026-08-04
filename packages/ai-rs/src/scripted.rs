@@ -43,9 +43,31 @@ pub enum ScriptedBlock {
 pub struct ScriptedResponse {
     pub blocks: Vec<ScriptedBlock>,
     pub stop_reason: StopReason,
+    /// When set, the stream ends with `StreamEvent::Error` after any blocks
+    /// (and before a normal `MessageStop`). Used to exercise terminal recovery
+    /// paths such as `StopFailure` hooks without a live provider.
+    pub error: Option<String>,
 }
 
 impl ScriptedResponse {
+    #[must_use]
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            blocks: vec![ScriptedBlock::Text(text.into())],
+            stop_reason: StopReason::EndTurn,
+            error: None,
+        }
+    }
+
+    #[must_use]
+    pub fn stream_error(message: impl Into<String>) -> Self {
+        Self {
+            blocks: Vec::new(),
+            stop_reason: StopReason::EndTurn,
+            error: Some(message.into()),
+        }
+    }
+
     #[must_use]
     pub fn has_tool_use(&self) -> bool {
         self.blocks
@@ -144,9 +166,13 @@ impl ScriptedClient {
             cache_read_tokens: Some(0),
             cache_creation_tokens: Some(0),
         });
-        let _ = tx.send(StreamEvent::MessageStop {
-            stop_reason: Some(response.stop_reason),
-        });
+        if let Some(message) = response.error {
+            let _ = tx.send(StreamEvent::Error { message });
+        } else {
+            let _ = tx.send(StreamEvent::MessageStop {
+                stop_reason: Some(response.stop_reason),
+            });
+        }
         Ok(rx)
     }
 }
@@ -167,10 +193,12 @@ mod tests {
                     },
                 ],
                 stop_reason: StopReason::ToolUse,
+                error: None,
             },
             ScriptedResponse {
                 blocks: vec![ScriptedBlock::Text("Done.".to_string())],
                 stop_reason: StopReason::EndTurn,
+                error: None,
             },
         ]
     }
@@ -243,6 +271,7 @@ mod tests {
             vec![ScriptedResponse {
                 blocks: vec![],
                 stop_reason: StopReason::EndTurn,
+                error: None,
             }],
         );
         client

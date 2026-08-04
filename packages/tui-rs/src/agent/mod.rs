@@ -90,11 +90,14 @@
 pub mod codex_app_server_turns;
 pub mod compaction;
 pub mod credential_store;
+#[cfg(test)]
+pub mod harness;
 pub mod message_queue;
 mod native;
 pub mod protocol;
 pub mod retry;
 pub mod safety;
+pub mod session_scope;
 pub mod token_counting;
 pub mod token_estimation;
 
@@ -119,3 +122,4 @@ pub use protocol::{
 };
 pub use retry::{ErrorKind, RetryConfig, RetryDecision, RetryPolicy};
 pub use safety::{is_context_overflow, is_retryable_error, SafetyController, SafetyVerdict};
+pub use session_scope::{parent_scope_for_session, ParentScopeId, SessionId};

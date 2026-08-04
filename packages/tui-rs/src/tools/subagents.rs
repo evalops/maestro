@@ -1873,9 +1873,9 @@ impl SubagentManager {
         // Local load skips the runner's SetSessionContext wiring, so stamp the
         // raw parent session id (not the `session:` routing scope) before
         // dispatching so payloads match every other hook in that session.
-        hooks.set_session_id(Some(hook_session_id_from_parent_scope(
-            &record.last_parent_scope_id,
-        )));
+        let hook_session =
+            crate::agent::ParentScopeId::from_raw(&record.last_parent_scope_id).hook_session_id();
+        hooks.set_session_id(Some(hook_session.into_string()));
         let _ = hooks.execute_subagent_stop(
             record.role.label(),
             &record.id,
@@ -2187,18 +2187,6 @@ fn git_worktree_is_registered(cwd: &Path, path: &Path) -> bool {
         .any(|candidate| candidate == path)
 }
 
-/// Raw session id for hook payloads derived from a subagent parent scope.
-///
-/// Parent scopes are routing keys (`session:<uuid>` or `pending:<uuid>`). Hook
-/// `sessionId` fields use the bare session uuid so lifecycle events correlate
-/// with every other hook in that conversation.
-fn hook_session_id_from_parent_scope(parent_scope_id: &str) -> String {
-    parent_scope_id
-        .strip_prefix("session:")
-        .unwrap_or(parent_scope_id)
-        .to_string()
-}
-
 fn apply_subagent_start_hook(
     request: &mut SpawnRequest,
     cwd: &Path,
@@ -2208,7 +2196,8 @@ fn apply_subagent_start_hook(
     // Local load skips the runner's SetSessionContext wiring, so stamp the
     // raw parent session id (not the `session:` routing scope) before
     // dispatching so payloads match every other hook in that session.
-    hooks.set_session_id(Some(hook_session_id_from_parent_scope(parent_scope_id)));
+    let hook_session = crate::agent::ParentScopeId::from_raw(parent_scope_id).hook_session_id();
+    hooks.set_session_id(Some(hook_session.into_string()));
     match hooks.execute_subagent_start(request.role.label(), &request.task, Some(parent_scope_id)) {
         HookResult::Continue => Ok(()),
         HookResult::Block { reason } => Err(format!("subagent spawn blocked by hook: {reason}")),

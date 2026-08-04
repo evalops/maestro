@@ -329,6 +329,33 @@ impl CodexAppServerTurnSession {
             .take_notifications_where(|n| n.method.starts_with("item/agentMessage"))
             .await
     }
+
+    /// Drain buffered notifications that may carry file-change paths.
+    ///
+    /// v2 `item/fileChange/requestApproval` often has only `itemId`. Paths
+    /// arrive earlier on item notifications; the native runner feeds those
+    /// into its correlation map before deciding the approval. Assistant and
+    /// tool-call traffic is left in the buffer so the turn loop still sees it.
+    pub async fn take_file_change_item_notifications(&self) -> Vec<Notification> {
+        self.client
+            .take_notifications_where(is_file_change_item_notification)
+            .await
+    }
+}
+
+/// True for buffered item notifications that may carry file-change paths.
+///
+/// Excludes assistant message traffic (including v2 `item/completed`
+/// agentMessage items) so `take_completed_assistant_text` still sees them.
+fn is_file_change_item_notification(n: &Notification) -> bool {
+    if is_agent_message_notification(n) || n.method == "item/tool/call" {
+        return false;
+    }
+    let method = n.method.as_str();
+    method.contains("fileChange")
+        || method.contains("FileChange")
+        || method.contains("file_change")
+        || method.starts_with("item/")
 }
 
 fn assistant_text_from_notifications(notes: &[Notification]) -> (String, bool) {
@@ -622,6 +649,48 @@ mod tests {
             assistant_text_from_notifications(&notes),
             ("full answer".to_owned(), true)
         );
+    }
+
+    #[test]
+    fn file_change_drain_preserves_assistant_completions() {
+        let assistant_completed = Notification {
+            method: "item/completed".to_owned(),
+            params: Some(json!({
+                "item": {
+                    "id": "message-1",
+                    "type": "agentMessage",
+                    "text": "full answer"
+                }
+            })),
+        };
+        let assistant_delta = Notification {
+            method: "item/agentMessage/delta".to_owned(),
+            params: Some(json!({ "delta": "partial" })),
+        };
+        let file_change_item = Notification {
+            method: "item/completed".to_owned(),
+            params: Some(json!({
+                "item": {
+                    "id": "fc-1",
+                    "type": "fileChange",
+                    "changes": [{ "path": "src/lib.rs", "kind": "update" }]
+                }
+            })),
+        };
+        let file_change_named = Notification {
+            method: "item/fileChange/updated".to_owned(),
+            params: Some(json!({ "itemId": "fc-2" })),
+        };
+        let tool_call = Notification {
+            method: "item/tool/call".to_owned(),
+            params: Some(json!({ "tool": "read" })),
+        };
+
+        assert!(!is_file_change_item_notification(&assistant_completed));
+        assert!(!is_file_change_item_notification(&assistant_delta));
+        assert!(!is_file_change_item_notification(&tool_call));
+        assert!(is_file_change_item_notification(&file_change_item));
+        assert!(is_file_change_item_notification(&file_change_named));
     }
 
     #[test]
