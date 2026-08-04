@@ -204,6 +204,7 @@ use self::read_only_tools::{
 fn provider_id(provider: AiProvider) -> &'static str {
     match provider {
         AiProvider::Anthropic => "anthropic",
+        AiProvider::Bedrock => "bedrock",
         AiProvider::OpenAI => "openai",
         AiProvider::Mistral => "mistral",
         AiProvider::Google => "google",

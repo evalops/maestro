@@ -3768,6 +3768,7 @@ fn to_headless_usage(usage: &crate::agent::TokenUsage) -> crate::headless::Token
 fn provider_id(provider: AiProvider) -> &'static str {
     match provider {
         AiProvider::Anthropic => "anthropic",
+        AiProvider::Bedrock => "bedrock",
         AiProvider::OpenAI => "openai",
         AiProvider::Mistral => "mistral",
         AiProvider::Google => "google",

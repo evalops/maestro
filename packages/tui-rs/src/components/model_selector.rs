@@ -90,7 +90,7 @@ impl ModelSelector {
         let Some(model) = self
             .models
             .iter_mut()
-            .find(|model| model.id == catalog_model.id)
+            .find(|model| model.id == catalog_model.id && model.provider == catalog_model.provider)
         else {
             return false;
         };
@@ -277,12 +277,16 @@ impl ModelSelector {
                 slice.push(idx);
             }
         }
-        for provider in crate::model_catalog::CATALOG_PROVIDERS {
+        for provider in crate::model_catalog::MODEL_SELECTOR_PROVIDERS {
             let Some(default_id) = crate::model_catalog::default_model_for_provider(provider)
             else {
                 continue;
             };
-            if let Some(idx) = self.models.iter().position(|model| model.id == default_id) {
+            if let Some(idx) = self
+                .models
+                .iter()
+                .position(|model| model.id == default_id && model.provider == *provider)
+            {
                 if !slice.contains(&idx) {
                     slice.push(idx);
                 }
@@ -536,6 +540,33 @@ mod tests {
         assert!(!selector.set_verification("anthropic/gpt-4o", verification));
     }
 
+    #[test]
+    fn verification_updates_vertex_row_without_touching_google_row() {
+        let mut selector = ModelSelector::new();
+        let verification = ModelVerification {
+            state: crate::model_catalog::VerificationState::Verified,
+            source: "test".to_owned(),
+            detail: None,
+        };
+        assert!(selector.set_verification("vertex/gemini-2.5-pro", verification.clone()));
+        assert_eq!(
+            selector
+                .models
+                .iter()
+                .find(|model| model.provider == "vertex-ai" && model.id == "gemini-2.5-pro")
+                .map(|model| &model.verification),
+            Some(&verification)
+        );
+        assert_ne!(
+            selector
+                .models
+                .iter()
+                .find(|model| model.provider == "google" && model.id == "gemini-2.5-pro")
+                .map(|model| &model.verification),
+            Some(&verification)
+        );
+    }
+
     fn test_model(id: &str, provider: &str) -> ModelInfo {
         ModelInfo {
             id: id.to_owned(),
@@ -554,12 +585,13 @@ mod tests {
         }
     }
 
-    /// The four real provider defaults plus filler models, so the focused
+    /// The real provider defaults plus filler models, so the focused
     /// slice exercises `default_model_for_provider` against known ids.
     fn slice_catalog() -> Vec<ModelInfo> {
         let mut models = vec![
             test_model("claude-sonnet-4-6", "anthropic"),
             test_model("gemini-2.5-pro", "google"),
+            test_model("gemini-2.5-pro", "vertex-ai"),
             test_model("gpt-5.5", "openai"),
             test_model("grok-4.5", "xai"),
         ];
@@ -584,6 +616,12 @@ mod tests {
         for default in ["claude-sonnet-4-6", "gemini-2.5-pro", "gpt-5.5"] {
             assert!(ids.contains(&default), "slice must include {default}");
         }
+        let default_providers: Vec<&str> = selector
+            .filtered
+            .iter()
+            .map(|&idx| selector.models[idx].provider.as_str())
+            .collect();
+        assert!(default_providers.contains(&"vertex-ai"));
         assert!(ids.len() <= FOCUSED_SLICE_LIMIT);
         assert!(!ids.iter().any(|id| id.starts_with("filler-")));
         assert!(selector.show_all_affordance);

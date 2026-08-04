@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 use tracing::Instrument;
 
 use super::anthropic::AnthropicClient;
+use super::bedrock::BedrockClient;
 use super::google::GoogleClient;
 use super::openai::OpenAiClient;
 use super::providers::{ProviderProtocol, ProviderRegistry, ResolvedProvider};
@@ -22,6 +23,8 @@ use super::vertex::VertexAiClient;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiProvider {
     Anthropic,
+    /// Amazon Bedrock Converse API (AWS SigV4).
+    Bedrock,
     OpenAI,
     /// Mistral AI - uses OpenAI-compatible API with special tool handling
     Mistral,
@@ -258,6 +261,8 @@ pub trait AiClient: Send + Sync {
 #[derive(Clone)]
 pub enum UnifiedClient {
     Anthropic(AnthropicClient),
+    /// Amazon Bedrock Converse API.
+    Bedrock(BedrockClient),
     OpenAI(OpenAiClient),
     /// Mistral uses `OpenAI` client with custom base URL
     Mistral(OpenAiClient),
@@ -286,6 +291,12 @@ impl UnifiedClient {
     /// Create client for Anthropic
     pub fn anthropic() -> Result<Self> {
         Ok(Self::Anthropic(AnthropicClient::from_env()?))
+    }
+
+    /// Create a client for Amazon Bedrock using the AWS runtime credential
+    /// provider chain.
+    pub fn bedrock() -> Result<Self> {
+        Ok(Self::Bedrock(BedrockClient::from_env()?))
     }
 
     /// Create client for `OpenAI`
@@ -342,6 +353,7 @@ impl UnifiedClient {
     pub fn from_provider(provider: AiProvider) -> Result<Self> {
         match provider {
             AiProvider::Anthropic => Self::anthropic(),
+            AiProvider::Bedrock => Self::bedrock(),
             AiProvider::OpenAI => Self::openai(),
             AiProvider::Mistral => Self::mistral(),
             AiProvider::Google => Self::google(),
@@ -361,7 +373,19 @@ impl UnifiedClient {
     /// Create client based on model name
     pub fn from_model(model: &str) -> Result<Self> {
         let env = std::env::vars().collect();
-        let resolved = ProviderRegistry::require(model, &env)?;
+        // Bedrock credentials are resolved by the AWS SDK's default chain at
+        // request time. Unlike API-key providers, that chain may be backed by
+        // a profile file without any credential environment variable. Keep
+        // the registry's strict `require` contract for every other provider.
+        let resolved = ProviderRegistry::resolve(model, &env)?;
+        if resolved.provider.protocol != ProviderProtocol::Bedrock && resolved.credential.is_none()
+        {
+            anyhow::bail!(
+                "provider {} requires one of: {}",
+                resolved.provider.id,
+                resolved.provider.auth_env.join(", ")
+            );
+        }
         Self::from_resolved_provider(&resolved, &env)
     }
 
@@ -369,17 +393,45 @@ impl UnifiedClient {
         resolved: &ResolvedProvider,
         env: &HashMap<String, String>,
     ) -> Result<Self> {
-        let credential = resolved
-            .credential
-            .as_deref()
-            .context("provider credential unexpectedly missing")?;
         match resolved.provider.protocol {
-            ProviderProtocol::Anthropic => Ok(Self::Anthropic(AnthropicClient::new(credential)?)),
-            ProviderProtocol::Google => Ok(Self::Google(GoogleClient::new(credential))),
-            ProviderProtocol::Bedrock => {
-                anyhow::bail!("native Bedrock transport requires AWS SigV4 runtime configuration")
+            ProviderProtocol::Anthropic => {
+                let credential = resolved
+                    .credential
+                    .as_deref()
+                    .context("provider credential unexpectedly missing")?;
+                Ok(Self::Anthropic(AnthropicClient::new(credential)?))
             }
+            ProviderProtocol::Google => {
+                let credential = resolved
+                    .credential
+                    .as_deref()
+                    .context("provider credential unexpectedly missing")?;
+                Ok(Self::Google(GoogleClient::new(credential)))
+            }
+            ProviderProtocol::VertexAi => {
+                let credential = resolved
+                    .credential
+                    .as_deref()
+                    .context("provider credential unexpectedly missing")?;
+                let auth_source = resolved
+                    .auth_source
+                    .as_deref()
+                    .context("Vertex AI credential source unexpectedly missing")?;
+                Ok(Self::VertexAi(VertexAiClient::from_resolved_env(
+                    env,
+                    credential,
+                    auth_source,
+                )?))
+            }
+            ProviderProtocol::Bedrock => Ok(Self::Bedrock(BedrockClient::from_runtime_env(
+                env,
+                resolved.base_url.as_deref(),
+            )?)),
             ProviderProtocol::Managed => {
+                let credential = resolved
+                    .credential
+                    .as_deref()
+                    .context("provider credential unexpectedly missing")?;
                 let base_url = resolved
                     .base_url
                     .as_deref()
@@ -463,6 +515,10 @@ impl UnifiedClient {
             | ProviderProtocol::OpenAiCompatible
             | ProviderProtocol::Codex
             | ProviderProtocol::AzureOpenAi => {
+                let credential = resolved
+                    .credential
+                    .as_deref()
+                    .context("provider credential unexpectedly missing")?;
                 let base_url = resolved
                     .base_url
                     .as_deref()
@@ -488,6 +544,7 @@ impl UnifiedClient {
     pub fn provider(&self) -> AiProvider {
         match self {
             Self::Anthropic(_) => AiProvider::Anthropic,
+            Self::Bedrock(_) => AiProvider::Bedrock,
             Self::OpenAI(_) => AiProvider::OpenAI,
             Self::Mistral(_) => AiProvider::Mistral,
             Self::Google(_) => AiProvider::Google,
@@ -512,6 +569,7 @@ impl UnifiedClient {
     pub fn provider_name(&self) -> &str {
         match self {
             Self::Anthropic(_) => "anthropic",
+            Self::Bedrock(_) => "bedrock",
             Self::OpenAI(client) => client.routed_provider().unwrap_or("openai"),
             Self::Mistral(_) => "mistral",
             Self::Google(_) => "google",
@@ -653,6 +711,7 @@ impl UnifiedClient {
     ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
         match self {
             Self::Anthropic(client) => client.stream(messages, config).await,
+            Self::Bedrock(client) => client.stream(messages, config).await,
             Self::OpenAI(client) => client.stream(messages, config).await,
             Self::Mistral(client) => client.stream(messages, config).await,
             Self::Google(client) => client.stream(messages, config).await,
@@ -919,8 +978,10 @@ pub fn create_client_for_model(model: &str) -> Result<UnifiedClient> {
 
 fn ai_provider_for_descriptor(id: &str) -> AiProvider {
     match id {
-        "anthropic" | "bedrock" => AiProvider::Anthropic,
+        "anthropic" => AiProvider::Anthropic,
+        "bedrock" => AiProvider::Bedrock,
         "google" | "google-gemini-cli" | "google-antigravity" => AiProvider::Google,
+        "vertex-ai" => AiProvider::VertexAi,
         "mistral" => AiProvider::Mistral,
         "groq" => AiProvider::Groq,
         "deepseek" => AiProvider::DeepSeek,
@@ -953,6 +1014,22 @@ mod tests {
         assert_eq!(
             AiProvider::from_model("anthropic/claude"),
             AiProvider::Anthropic
+        );
+    }
+
+    #[test]
+    fn test_provider_from_model_bedrock() {
+        assert_eq!(
+            AiProvider::from_model("bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0"),
+            AiProvider::Bedrock
+        );
+        assert_eq!(
+            AiProvider::from_model("aws-bedrock/mistral.mistral-large-2407-v1:0"),
+            AiProvider::Bedrock
+        );
+        assert_eq!(
+            provider_model_name("bedrock/amazon.nova-pro-v1:0"),
+            "amazon.nova-pro-v1:0"
         );
     }
 
@@ -1009,6 +1086,22 @@ mod tests {
         );
         // Case insensitive
         assert_eq!(AiProvider::from_model("Gemini-Pro"), AiProvider::Google);
+    }
+
+    #[test]
+    fn test_provider_from_model_vertex_ai() {
+        assert_eq!(
+            AiProvider::from_model("vertex-ai/gemini-2.5-pro"),
+            AiProvider::VertexAi
+        );
+        assert_eq!(
+            AiProvider::from_model("vertex/gemini-2.5-pro"),
+            AiProvider::VertexAi
+        );
+        assert_eq!(
+            provider_model_name("vertex-ai/gemini-2.5-pro"),
+            "gemini-2.5-pro"
+        );
     }
 
     #[test]
@@ -1226,6 +1319,68 @@ mod tests {
     }
 
     #[test]
+    fn bedrock_provider_matrix_constructs_native_client() {
+        let env = HashMap::from([
+            ("AWS_ACCESS_KEY_ID".to_string(), "access".to_string()),
+            ("AWS_SECRET_ACCESS_KEY".to_string(), "secret".to_string()),
+            ("AWS_REGION".to_string(), "eu-west-1".to_string()),
+            (
+                "AWS_BEDROCK_ENDPOINT".to_string(),
+                "http://localhost:4566/".to_string(),
+            ),
+        ]);
+        let resolved =
+            ProviderRegistry::require("bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0", &env)
+                .unwrap();
+        assert_eq!(resolved.provider.protocol, ProviderProtocol::Bedrock);
+        let client = UnifiedClient::from_resolved_provider(&resolved, &env).unwrap();
+        assert_eq!(client.provider(), AiProvider::Bedrock);
+        assert_eq!(client.provider_name(), "bedrock");
+        let UnifiedClient::Bedrock(client) = client else {
+            panic!("bedrock descriptor must construct the native Bedrock client");
+        };
+        assert_eq!(client.region(), "eu-west-1");
+        assert_eq!(client.endpoint_url(), Some("http://localhost:4566"));
+    }
+
+    #[test]
+    fn bedrock_alias_and_allowlist_remain_scoped() {
+        let env = HashMap::from([
+            ("AWS_ACCESS_KEY_ID".to_string(), "access".to_string()),
+            ("AWS_SECRET_ACCESS_KEY".to_string(), "secret".to_string()),
+        ]);
+        let resolved =
+            ProviderRegistry::require("aws-bedrock/amazon.nova-lite-v1:0", &env).unwrap();
+        assert_eq!(resolved.provider.id, "bedrock");
+        assert_eq!(resolved.provider.protocol, ProviderProtocol::Bedrock);
+        assert!(ProviderRegistry::resolve("openai/gpt-4o", &env)
+            .unwrap()
+            .credential
+            .is_none());
+
+        let unrelated = HashMap::from([("OPENAI_API_KEY".to_string(), "secret".to_string())]);
+        let error = ProviderRegistry::require("bedrock/amazon.nova-lite-v1:0", &unrelated)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("AWS_ACCESS_KEY_ID"));
+        assert!(error.contains("AWS_PROFILE"));
+    }
+
+    #[test]
+    fn bedrock_client_construction_reports_precise_missing_credentials() {
+        let env = HashMap::new();
+        let resolved = ProviderRegistry::resolve("bedrock/amazon.nova-lite-v1:0", &env).unwrap();
+        let error = match UnifiedClient::from_resolved_provider(&resolved, &env) {
+            Ok(_) => panic!("missing AWS configuration must fail closed"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.starts_with("Bedrock requires AWS credentials."));
+        assert!(error.contains("AWS_SECRET_ACCESS_KEY"));
+        assert!(error.contains("AWS_CONFIG_FILE"));
+        assert!(error.contains("AWS_CONTAINER_CREDENTIALS_FULL_URI"));
+    }
+
+    #[test]
     fn provider_name_preserves_openrouter_route_identity() {
         let env = HashMap::from([("OPENROUTER_API_KEY".to_string(), "secret".to_string())]);
         let resolved =
@@ -1235,6 +1390,24 @@ mod tests {
         assert!(matches!(client, UnifiedClient::OpenAI(_)));
         assert_eq!(client.provider(), AiProvider::OpenAI);
         assert_eq!(client.provider_name(), "openrouter");
+    }
+
+    #[test]
+    fn vertex_provider_builds_native_client_from_resolved_env() {
+        let env = HashMap::from([
+            ("VERTEX_ACCESS_TOKEN".to_string(), "oauth-token".to_string()),
+            (
+                "GOOGLE_CLOUD_PROJECT".to_string(),
+                "project-123".to_string(),
+            ),
+            ("VERTEX_REGION".to_string(), "europe-west4".to_string()),
+        ]);
+        let resolved = ProviderRegistry::require("vertex-ai/gemini-2.5-pro", &env).unwrap();
+        let client = UnifiedClient::from_resolved_provider(&resolved, &env).unwrap();
+
+        assert!(matches!(client, UnifiedClient::VertexAi(_)));
+        assert_eq!(client.provider(), AiProvider::VertexAi);
+        assert_eq!(client.provider_name(), "vertex-ai");
     }
 
     #[test]

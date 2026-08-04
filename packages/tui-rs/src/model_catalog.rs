@@ -14,7 +14,7 @@
 //! 3. Unknown model ids are not in the catalog at all and keep passing
 //!    through to the provider registry unchanged.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
@@ -115,6 +115,11 @@ const REFRESH_TTL_SECS: u64 = 4 * 60 * 60;
 const REFRESH_TIMEOUT_SECS: u64 = 15;
 /// Providers mirrored into the catalog, in the order they are merged.
 pub(crate) const CATALOG_PROVIDERS: &[&str] = &["anthropic", "google", "openai", "xai"];
+/// Providers whose defaults are shown in the model selector. Vertex AI uses
+/// the Google catalog rows mirrored by [`available_models`], but is kept out
+/// of [`CATALOG_PROVIDERS`] because models.dev has no separate Vertex entry.
+pub(crate) const MODEL_SELECTOR_PROVIDERS: &[&str] =
+    &["anthropic", "google", "vertex-ai", "openai", "xai"];
 
 const BUNDLED_CATALOG_JSON: &str = include_str!("model_catalog_data.json");
 
@@ -160,7 +165,7 @@ pub fn default_model_for_provider(provider: &str) -> Option<&'static str> {
         "anthropic" | "claude" => Some("claude-sonnet-4-6"),
         "openai" => Some("gpt-5.5"),
         "openai-codex" | "codex" => Some("gpt-5.5"),
-        "google" | "gemini" => Some("gemini-2.5-pro"),
+        "google" | "gemini" | "vertex-ai" | "vertex" => Some("gemini-2.5-pro"),
         "xai" | "grok" => Some("grok-4.5"),
         _ => None,
     }
@@ -173,7 +178,31 @@ pub fn default_model_for_provider(provider: &str) -> Option<&'static str> {
 pub fn available_models() -> Vec<ModelInfo> {
     maybe_spawn_background_refresh();
     let cache = catalog_cache_path().and_then(|path| load_cache(&path));
-    select_models(&BUNDLED_CATALOG, cache.as_ref()).to_vec()
+    let mut models = select_models(&BUNDLED_CATALOG, cache.as_ref()).to_vec();
+    mirror_vertex_models(&mut models);
+    models
+}
+
+/// Vertex AI serves the same Gemini model family as Google's public API. Keep
+/// a distinct provider row so qualified Vertex routes are cataloged without
+/// requiring models.dev to expose a second copy of every Gemini model.
+fn mirror_vertex_models(models: &mut Vec<ModelInfo>) {
+    let vertex_model_ids: HashSet<&str> = models
+        .iter()
+        .filter(|model| model.provider == "vertex-ai")
+        .map(|model| model.id.as_str())
+        .collect();
+    let mirrored = models
+        .iter()
+        .filter(|model| model.provider == "google" && model.id.starts_with("gemini-"))
+        .filter(|model| !vertex_model_ids.contains(model.id.as_str()))
+        .cloned()
+        .map(|mut model| {
+            model.provider = "vertex-ai".to_owned();
+            model
+        })
+        .collect::<Vec<_>>();
+    models.extend(mirrored);
 }
 
 /// Inspect the exact native model/provider resolution while retaining per-field
@@ -584,6 +613,7 @@ pub fn protocol_name(protocol: ProviderProtocol) -> &'static str {
         ProviderProtocol::OpenAi => "openai",
         ProviderProtocol::OpenAiCompatible => "openai-compatible",
         ProviderProtocol::Google => "google",
+        ProviderProtocol::VertexAi => "vertex-ai",
         ProviderProtocol::Codex => "codex-app-server",
         ProviderProtocol::AzureOpenAi => "azure-openai",
         ProviderProtocol::Bedrock => "bedrock",
@@ -663,6 +693,27 @@ mod tests {
             assert_eq!(model.provider, provider);
         }
         assert_eq!(default_model_for_provider("nope"), None);
+        assert_eq!(
+            default_model_for_provider("vertex-ai"),
+            Some("gemini-2.5-pro")
+        );
+        assert_eq!(default_model_for_provider("vertex"), Some("gemini-2.5-pro"));
+    }
+
+    #[test]
+    fn catalog_mirrors_google_gemini_models_for_vertex_routes() {
+        let google = find_model("google/gemini-2.5-pro").expect("Google Gemini catalog row");
+        let vertex = find_model("vertex-ai/gemini-2.5-pro").expect("Vertex Gemini catalog row");
+        let vertex_alias = find_model("vertex/gemini-2.5-pro").expect("Vertex alias catalog row");
+
+        assert_eq!(vertex.provider, "vertex-ai");
+        assert_eq!(vertex_alias.provider, "vertex-ai");
+        assert_eq!(vertex.id, google.id);
+        assert_eq!(vertex.capabilities, google.capabilities);
+        assert_eq!(vertex.verification, google.verification);
+        assert!(!has_provider_mismatch("vertex-ai/gemini-2.5-pro"));
+        assert!(!has_provider_mismatch("vertex/gemini-2.5-pro"));
+        assert!(find_model("vertex-ai/future-gemini").is_none());
     }
 
     #[test]

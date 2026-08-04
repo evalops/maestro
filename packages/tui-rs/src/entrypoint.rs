@@ -324,6 +324,7 @@ fn infer_provider_from_model(model: &str) -> &'static str {
     // Explicit "provider/model" prefixes win over heuristic name matching.
     if let Some((prefix, _)) = model_lower.split_once('/') {
         match prefix {
+            "vertex-ai" | "vertex" => return "vertex-ai",
             "deepseek" => return "deepseek",
             "moonshot" | "kimi" => return "moonshot",
             "dashscope" | "qwen" => return "dashscope",
@@ -623,6 +624,7 @@ fn default_model_for_provider(provider: &str) -> &'static str {
     }
     match provider.to_ascii_lowercase().as_str() {
         "bedrock" | "aws-bedrock" => "claude-sonnet-4-6",
+        "vertex-ai" | "vertex" => "gemini-2.5-pro",
         "google-gemini-cli" | "google-antigravity" => "gemini-2.5-pro",
         "groq" => "llama-3.3-70b-versatile",
         "deepseek" => "deepseek-chat",
@@ -638,26 +640,31 @@ fn default_model_for_provider(provider: &str) -> &'static str {
 }
 
 fn set_provider_api_key(provider: &str, api_key: &str) {
+    std::env::set_var(provider_api_key_env(provider), api_key);
+}
+
+fn provider_api_key_env(provider: &str) -> &'static str {
     match provider {
-        "openai" => std::env::set_var("OPENAI_API_KEY", api_key),
-        "openai-codex" => std::env::set_var("OPENAI_CODEX_TOKEN", api_key),
-        "google" | "gemini" => std::env::set_var("GEMINI_API_KEY", api_key),
-        "google-gemini-cli" => std::env::set_var("GOOGLE_GEMINI_CLI_TOKEN", api_key),
-        "google-antigravity" => std::env::set_var("GOOGLE_ANTIGRAVITY_TOKEN", api_key),
-        "evalops" | "maestro-managed" => std::env::set_var("MAESTRO_EVALOPS_ACCESS_TOKEN", api_key),
-        "azure-openai" | "azure" => std::env::set_var("AZURE_OPENAI_API_KEY", api_key),
-        "mistral" => std::env::set_var("MISTRAL_API_KEY", api_key),
-        "xai" => std::env::set_var("XAI_API_KEY", api_key),
-        "groq" => std::env::set_var("GROQ_API_KEY", api_key),
-        "cerebras" => std::env::set_var("CEREBRAS_API_KEY", api_key),
-        "openrouter" => std::env::set_var("OPENROUTER_API_KEY", api_key),
-        "deepseek" => std::env::set_var("DEEPSEEK_API_KEY", api_key),
-        "moonshot" | "kimi" => std::env::set_var("MOONSHOT_API_KEY", api_key),
-        "dashscope" | "qwen" => std::env::set_var("DASHSCOPE_API_KEY", api_key),
-        "minimax" => std::env::set_var("MINIMAX_API_KEY", api_key),
-        "zai" | "zhipu" => std::env::set_var("ZAI_API_KEY", api_key),
-        "writer" => std::env::set_var("WRITER_API_KEY", api_key),
-        _ => std::env::set_var("ANTHROPIC_API_KEY", api_key),
+        "openai" => "OPENAI_API_KEY",
+        "openai-codex" => "OPENAI_CODEX_TOKEN",
+        "google" | "gemini" => "GEMINI_API_KEY",
+        "vertex-ai" | "vertex" => "GOOGLE_API_KEY",
+        "google-gemini-cli" => "GOOGLE_GEMINI_CLI_TOKEN",
+        "google-antigravity" => "GOOGLE_ANTIGRAVITY_TOKEN",
+        "evalops" | "maestro-managed" => "MAESTRO_EVALOPS_ACCESS_TOKEN",
+        "azure-openai" | "azure" => "AZURE_OPENAI_API_KEY",
+        "mistral" => "MISTRAL_API_KEY",
+        "xai" => "XAI_API_KEY",
+        "groq" => "GROQ_API_KEY",
+        "cerebras" => "CEREBRAS_API_KEY",
+        "openrouter" => "OPENROUTER_API_KEY",
+        "deepseek" => "DEEPSEEK_API_KEY",
+        "moonshot" | "kimi" => "MOONSHOT_API_KEY",
+        "dashscope" | "qwen" => "DASHSCOPE_API_KEY",
+        "minimax" => "MINIMAX_API_KEY",
+        "zai" | "zhipu" => "ZAI_API_KEY",
+        "writer" => "WRITER_API_KEY",
+        _ => "ANTHROPIC_API_KEY",
     }
 }
 
@@ -1341,9 +1348,14 @@ fn configure_agents_api_key(raw_args: &[std::ffi::OsString]) {
     let model = raw_option_value(raw_args, &["--model", "-m"]);
     let provider = raw_option_value(raw_args, &["--provider"])
         .unwrap_or_else(|| infer_provider_from_model(model.as_deref().unwrap_or("")).to_string());
-    let variable = match provider.as_str() {
+    let variable = configure_agents_api_key_env(&provider);
+    std::env::set_var(variable, api_key);
+}
+
+fn configure_agents_api_key_env(provider: &str) -> &'static str {
+    match provider {
         "openai" => "OPENAI_API_KEY",
-        "google" => "GOOGLE_API_KEY",
+        "google" | "vertex-ai" | "vertex" => "GOOGLE_API_KEY",
         "xai" => "XAI_API_KEY",
         "groq" => "GROQ_API_KEY",
         "cerebras" => "CEREBRAS_API_KEY",
@@ -1354,8 +1366,7 @@ fn configure_agents_api_key(raw_args: &[std::ffi::OsString]) {
         "minimax" => "MINIMAX_API_KEY",
         "zai" | "zhipu" => "ZAI_API_KEY",
         _ => "ANTHROPIC_API_KEY",
-    };
-    std::env::set_var(variable, api_key);
+    }
 }
 
 #[cfg(test)]
@@ -1690,6 +1701,26 @@ mod tests {
     fn codex_models_infer_openai_provider() {
         assert_eq!(infer_provider_from_model("gpt-5.1-codex-max"), "openai");
         assert_eq!(infer_provider_from_model("codex-mini-latest"), "openai");
+    }
+
+    #[test]
+    fn vertex_models_infer_vertex_provider() {
+        assert_eq!(
+            infer_provider_from_model("vertex-ai/gemini-2.5-pro"),
+            "vertex-ai"
+        );
+        assert_eq!(
+            infer_provider_from_model("vertex/gemini-2.5-pro"),
+            "vertex-ai"
+        );
+        assert_eq!(
+            native_exec_model(Some("vertex-ai"), None).as_deref(),
+            Some("vertex-ai/gemini-2.5-pro")
+        );
+        assert_eq!(provider_api_key_env("vertex-ai"), "GOOGLE_API_KEY");
+        assert_eq!(provider_api_key_env("vertex"), "GOOGLE_API_KEY");
+        assert_eq!(configure_agents_api_key_env("vertex-ai"), "GOOGLE_API_KEY");
+        assert_eq!(configure_agents_api_key_env("vertex"), "GOOGLE_API_KEY");
     }
 
     #[test]

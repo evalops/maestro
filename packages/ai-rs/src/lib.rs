@@ -77,6 +77,7 @@
 
 mod anthropic;
 pub mod app_message;
+mod bedrock;
 mod client;
 mod error;
 mod google;
@@ -91,6 +92,7 @@ mod vertex;
 
 pub use anthropic::AnthropicClient;
 pub use app_message::{from_api_messages, transform_to_api_messages, AppMessage, BashExecution};
+pub use bedrock::BedrockClient;
 pub use client::{
     canonical_managed_credential_name, canonical_managed_environment, create_client,
     create_client_for_model, provider_model_name, AiClient, AiProvider, UnifiedClient,

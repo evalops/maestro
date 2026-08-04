@@ -189,6 +189,7 @@ fn metadata_request(
             .bearer_auth(token),
         ProviderProtocol::Anthropic
         | ProviderProtocol::Google
+        | ProviderProtocol::VertexAi
         | ProviderProtocol::Codex
         | ProviderProtocol::AzureOpenAi
         | ProviderProtocol::Bedrock
@@ -203,14 +204,14 @@ fn metadata_contains_model(
     model: &str,
 ) -> bool {
     let entries = match protocol {
-        ProviderProtocol::Google => payload.get("models"),
+        ProviderProtocol::Google | ProviderProtocol::VertexAi => payload.get("models"),
         _ => payload.get("data"),
     }
     .and_then(serde_json::Value::as_array);
     entries.is_some_and(|entries| {
         entries.iter().any(|entry| {
             let id = match protocol {
-                ProviderProtocol::Google => entry.get("name"),
+                ProviderProtocol::Google | ProviderProtocol::VertexAi => entry.get("name"),
                 _ => entry.get("id"),
             }
             .and_then(serde_json::Value::as_str)
@@ -363,7 +364,14 @@ async fn live_metadata_check(model: &SelectedModelReport) -> DoctorCheck {
 }
 
 /// Providers covered by the doctor auth health section.
-const AUTH_HEALTH_PROVIDERS: &[&str] = &["openai", "openai-codex", "anthropic", "google", "xai"];
+const AUTH_HEALTH_PROVIDERS: &[&str] = &[
+    "openai",
+    "openai-codex",
+    "anthropic",
+    "google",
+    "vertex-ai",
+    "xai",
+];
 
 /// Report credential availability for each well-known provider without ever
 /// printing secret values. `op://` references are actually resolved through
