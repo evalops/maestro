@@ -97,7 +97,7 @@ use std::time::Instant;
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::Utc;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use tokio::fs;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -648,6 +648,13 @@ enum AgentCommand {
         reason: String,
     },
 
+    /// Point the hook system at a log file (test harness / diagnostics).
+    ///
+    /// Does not load project hook config; only enables
+    /// [`IntegratedHookSystem`]'s existing `log_event` writer so session and
+    /// recovery dispatches become assertable without trusting a temp workspace.
+    SetHookLogFile { path: String },
+
     /// Update whether the goal lifecycle tools are exposed to the model.
     SetGoalToolsVisible { visible: bool },
 
@@ -1181,6 +1188,7 @@ impl NativeAgent {
             output_tokens_spent: 0,
             queued_system_prompts: HashMap::new(),
             system_prompt_revision: 0,
+            codex_file_change_paths_by_item: HashMap::new(),
         };
 
         // Spawn the background task
@@ -1454,6 +1462,14 @@ impl NativeAgent {
                 reason: reason.into(),
             })
             .map_err(|e| anyhow::anyhow!("Failed to set session context: {e}"))?;
+        Ok(())
+    }
+
+    /// Enable hook event logging to `path` (test harness / diagnostics).
+    pub fn set_hook_log_file(&self, path: impl Into<String>) -> Result<()> {
+        self.command_tx
+            .send(AgentCommand::SetHookLogFile { path: path.into() })
+            .map_err(|e| anyhow::anyhow!("Failed to set hook log file: {e}"))?;
         Ok(())
     }
 
@@ -1892,7 +1908,18 @@ struct NativeAgentRunner {
     ///
     /// Used only to detect that a staged queued prompt has been overtaken.
     system_prompt_revision: u64,
+
+    /// File-change correlation for Codex items, keyed by item id.
+    ///
+    /// v2 `item/fileChange/requestApproval` often carries only `itemId`. Paths
+    /// and per-path metadata (kind, content, move_path, …) arrive on earlier
+    /// item notifications; this map correlates them so the action firewall and
+    /// path-sensitive policy hooks see the same full change set.
+    codex_file_change_paths_by_item: CodexFileChangeItemCache,
 }
+
+/// itemId → path → per-path patch metadata (may be an empty object).
+type CodexFileChangeItemCache = HashMap<String, Map<String, Value>>;
 
 /// One finished Codex tool call, ready to be turned into a wire response.
 struct CodexToolOutcome<'a> {
@@ -2009,55 +2036,148 @@ fn codex_native_denied_by_active_tools(
     }
 }
 
-/// Paths named in a Codex file-change approval.
+/// Merge patch metadata objects.
+///
+/// Keys present in `from` overwrite `into` (later notifications win). Keys
+/// only present in `into` are kept so a partial update does not erase fields
+/// the later payload omitted.
+fn merge_json_object_fields(into: &mut Value, from: Value) {
+    let Value::Object(from_map) = from else {
+        if into.is_null() || into == &Value::Object(Map::new()) {
+            *into = from;
+        }
+        return;
+    };
+    let Value::Object(into_map) = into else {
+        *into = Value::Object(from_map);
+        return;
+    };
+    for (key, value) in from_map {
+        into_map.insert(key, value);
+    }
+}
+
+/// Record one path and its patch metadata. Later updates for the same path
+/// overwrite keys they carry and keep keys they omit.
+fn insert_file_change_entry(entries: &mut Map<String, Value>, path: &str, meta: Value) {
+    if let Some(existing) = entries.get_mut(path) {
+        merge_json_object_fields(existing, meta);
+    } else {
+        entries.insert(path.to_owned(), meta);
+    }
+}
+
+/// Move destinations named on a path entry (`move_path` / `kind.move_path`).
+fn file_change_move_destinations(meta: &Value) -> Vec<&str> {
+    let mut dests = Vec::new();
+    if let Some(dest) = meta
+        .get("move_path")
+        .or_else(|| meta.get("movePath"))
+        .and_then(Value::as_str)
+    {
+        dests.push(dest);
+    }
+    if let Some(dest) = meta
+        .pointer("/kind/move_path")
+        .or_else(|| meta.pointer("/kind/movePath"))
+        .and_then(Value::as_str)
+    {
+        dests.push(dest);
+    }
+    dests
+}
+
+/// Record a path in encounter order and merge its metadata.
+fn push_file_change_entry(
+    order: &mut Vec<String>,
+    entries: &mut Map<String, Value>,
+    path: &str,
+    meta: Value,
+) {
+    if !entries.contains_key(path) {
+        order.push(path.to_owned());
+    }
+    insert_file_change_entry(entries, path, meta);
+}
+
+/// Record a source path and every move destination it names.
+fn push_file_change_entry_with_moves(
+    order: &mut Vec<String>,
+    entries: &mut Map<String, Value>,
+    path: &str,
+    meta: Value,
+) {
+    for dest in file_change_move_destinations(&meta) {
+        push_file_change_entry(order, entries, dest, json!({}));
+    }
+    push_file_change_entry(order, entries, path, meta);
+}
+
+/// Paths plus per-path metadata named in a Codex file-change payload.
+///
+/// Encounter order is preserved (not map-key sort order) so multi-path
+/// firewall checks keep a stable first-to-last path sequence.
+///
+/// Every shape that can carry a rename/move must push **both** the source and
+/// every destination path. Missing a destination in one shape is the class of
+/// bug that lets Yolo approve a contained source while the out-of-workspace
+/// destination is never firewall-checked.
 ///
 /// Observed Codex shapes:
 /// - legacy `applyPatchApproval`: paths are keys of a `fileChanges` object
 /// - speculative/array forms (`files`, `changes`, single `path`) still accepted
-/// - v2 `item/fileChange/requestApproval` often carries only `itemId` and no
-///   paths; callers must fail closed when this returns empty
-fn codex_native_file_change_paths(params: &Value) -> Vec<String> {
-    let mut paths = Vec::new();
-    let push_path = |paths: &mut Vec<String>, path: &str| {
-        if !paths.iter().any(|existing| existing == path) {
-            paths.push(path.to_owned());
-        }
-    };
+/// - v2 `item/fileChange/requestApproval` often carries only `itemId`; pass
+///   previously observed item entries via `known_item_paths`
+fn codex_native_file_change_entries(
+    params: &Value,
+    known_item_paths: Option<&CodexFileChangeItemCache>,
+) -> Vec<(String, Value)> {
+    let mut order: Vec<String> = Vec::new();
+    let mut entries = Map::new();
 
+    // Top-level single path with optional sibling patch fields as metadata.
     if let Some(path) = params
         .get("file_path")
         .or_else(|| params.get("path"))
         .or_else(|| params.get("filePath"))
         .and_then(Value::as_str)
     {
-        push_path(&mut paths, path);
+        let mut meta = Map::new();
+        for key in ["content", "diff", "patch", "kind", "move_path", "movePath"] {
+            if let Some(value) = params.get(key) {
+                meta.insert(key.to_owned(), value.clone());
+            }
+        }
+        push_file_change_entry_with_moves(&mut order, &mut entries, path, Value::Object(meta));
     }
 
-    // Legacy applyPatchApproval: { "fileChanges": { "/path": {...}, ... } }
+    // Legacy applyPatchApproval: { "fileChanges": { "/path": {..., "move_path"?}, ... } }
     if let Some(file_changes) = params
         .get("fileChanges")
         .or_else(|| params.get("file_changes"))
         .and_then(Value::as_object)
     {
-        for path in file_changes.keys() {
-            push_path(&mut paths, path);
+        for (path, value) in file_changes {
+            push_file_change_entry_with_moves(&mut order, &mut entries, path, value.clone());
         }
     }
 
     if let Some(files) = params.get("files").and_then(Value::as_array) {
         for file in files {
             if let Some(path) = file.as_str() {
-                push_path(&mut paths, path);
+                push_file_change_entry(&mut order, &mut entries, path, json!({}));
             } else if let Some(path) = file
                 .get("path")
                 .or_else(|| file.get("file_path"))
                 .and_then(Value::as_str)
             {
-                push_path(&mut paths, path);
+                push_file_change_entry_with_moves(&mut order, &mut entries, path, file.clone());
             }
         }
     }
 
+    // v2 FileChangePatchUpdatedNotification: changes[].path plus
+    // changes[].kind.move_path for renames/moves.
     if let Some(changes) = params.get("changes").and_then(Value::as_array) {
         for change in changes {
             if let Some(path) = change
@@ -2065,12 +2185,178 @@ fn codex_native_file_change_paths(params: &Value) -> Vec<String> {
                 .or_else(|| change.get("file_path"))
                 .and_then(Value::as_str)
             {
-                push_path(&mut paths, path);
+                push_file_change_entry_with_moves(&mut order, &mut entries, path, change.clone());
+            } else {
+                // Pathless change objects still contribute any move destinations.
+                for dest in file_change_move_destinations(change) {
+                    push_file_change_entry(&mut order, &mut entries, dest, json!({}));
+                }
             }
         }
     }
 
-    paths
+    // Nested item payload (some notifications wrap the file change).
+    if let Some(item) = params.get("item") {
+        for (path, meta) in codex_native_file_change_entries(item, None) {
+            push_file_change_entry(&mut order, &mut entries, &path, meta);
+        }
+    }
+
+    // Always union entries cached under this itemId.
+    if let Some(item_id) = params
+        .get("itemId")
+        .or_else(|| params.get("item_id"))
+        .and_then(Value::as_str)
+    {
+        if let Some(known) = known_item_paths.and_then(|map| map.get(item_id)) {
+            for (path, meta) in known {
+                push_file_change_entry(&mut order, &mut entries, path, meta.clone());
+            }
+        }
+    }
+
+    order
+        .into_iter()
+        .filter_map(|path| entries.remove(&path).map(|meta| (path, meta)))
+        .collect()
+}
+
+/// Paths named in a Codex file-change payload (encounter order).
+fn codex_native_file_change_paths(
+    params: &Value,
+    known_item_paths: Option<&CodexFileChangeItemCache>,
+) -> Vec<String> {
+    codex_native_file_change_entries(params, known_item_paths)
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect()
+}
+
+/// Record paths and patch metadata on a Codex notification under its item id.
+fn remember_codex_file_change_item_paths(
+    params: &Value,
+    known_item_paths: &mut CodexFileChangeItemCache,
+) {
+    let Some(item_id) = params
+        .get("itemId")
+        .or_else(|| params.get("item_id"))
+        .or_else(|| params.pointer("/item/id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        return;
+    };
+    let entries = codex_native_file_change_entries(params, None);
+    if entries.is_empty() {
+        return;
+    }
+    let entry = known_item_paths.entry(item_id).or_default();
+    for (path, meta) in entries {
+        insert_file_change_entry(entry, &path, meta);
+    }
+}
+
+/// Canonical policy-hook input for a Codex-native file-change approval.
+///
+/// # Contract (class fix for alias/metadata review loops)
+///
+/// Policy hooks must treat these fields as authoritative:
+/// - `paths`: ordered full path set (sources + move destinations)
+/// - `fileChanges`: path → metadata object (kind/content/diff/move_path/…)
+///
+/// Every original path-bearing alias present on the approval is also fully
+/// rewritten to that same complete set (`file_changes`, `files`, `changes`).
+/// Prefer `paths` + `fileChanges`; aliases exist only for back-compat.
+///
+/// Correlation: v2 itemId-only approvals are filled from
+/// `known_item_paths` (path + metadata cache from earlier notifications).
+fn codex_native_policy_hook_args(
+    method: &str,
+    params: Option<&Value>,
+    known_item_paths: &CodexFileChangeItemCache,
+) -> Value {
+    let base = params.cloned().unwrap_or(Value::Null);
+    if codex_native_policy_tool(method) != "codex_file_change" {
+        return base;
+    }
+    let empty = Value::Null;
+    let raw = params.unwrap_or(&empty);
+    let correlated_entries = codex_native_file_change_entries(raw, Some(known_item_paths));
+    if correlated_entries.is_empty() {
+        return base;
+    }
+
+    let mut enriched = match base {
+        Value::Object(map) => map,
+        Value::Null => Map::new(),
+        other => {
+            let mut map = Map::new();
+            map.insert("original".to_owned(), other);
+            map
+        }
+    };
+
+    let had_files = enriched.contains_key("files");
+    let had_changes = enriched.contains_key("changes");
+    let files_prefer_objects = enriched
+        .get("files")
+        .and_then(Value::as_array)
+        .is_some_and(|items| items.iter().any(Value::is_object));
+
+    // Canonical complete views — always rewritten from the correlated set.
+    let paths: Vec<String> = correlated_entries
+        .iter()
+        .map(|(path, _)| path.clone())
+        .collect();
+    let mut file_changes = Map::new();
+    for (path, meta) in &correlated_entries {
+        file_changes.insert(path.clone(), meta.clone());
+    }
+    let file_changes_value = Value::Object(file_changes);
+
+    enriched.insert("paths".to_owned(), json!(paths));
+    // Dual-write map aliases so neither camelCase nor snake_case consumers
+    // can see a partial view (the class of bug that produced serial P1s).
+    enriched.insert("fileChanges".to_owned(), file_changes_value.clone());
+    enriched.insert("file_changes".to_owned(), file_changes_value);
+
+    // Fully rewrite original array aliases to the complete correlated set.
+    if had_files {
+        enriched.insert(
+            "files".to_owned(),
+            materialize_path_array(&correlated_entries, files_prefer_objects),
+        );
+    }
+    if had_changes {
+        enriched.insert(
+            "changes".to_owned(),
+            materialize_path_array(&correlated_entries, true),
+        );
+    }
+
+    Value::Object(enriched)
+}
+
+/// Build a `files`/`changes` array from the correlated path/metadata set.
+fn materialize_path_array(entries: &[(String, Value)], as_objects: bool) -> Value {
+    let items: Vec<Value> = entries
+        .iter()
+        .map(|(path, meta)| {
+            if as_objects {
+                let mut entry = match meta {
+                    Value::Object(map) => map.clone(),
+                    _ => Map::new(),
+                };
+                entry
+                    .entry("path".to_owned())
+                    .or_insert_with(|| Value::String(path.clone()));
+                Value::Object(entry)
+            } else {
+                Value::String(path.clone())
+            }
+        })
+        .collect();
+    Value::Array(items)
 }
 
 /// Map a Codex-native approval request onto Maestro tool argument sets the
@@ -2084,6 +2370,7 @@ fn codex_native_file_change_paths(params: &Value) -> Vec<String> {
 fn codex_native_firewall_arg_sets(
     method: &str,
     params: Option<&Value>,
+    known_item_paths: Option<&CodexFileChangeItemCache>,
 ) -> Vec<(&'static str, Value)> {
     let Some(params) = params else {
         return Vec::new();
@@ -2096,7 +2383,7 @@ fn codex_native_firewall_arg_sets(
                 .or_else(|| params.get("patch"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            codex_native_file_change_paths(params)
+            codex_native_file_change_paths(params, known_item_paths)
                 .into_iter()
                 .map(|path| {
                     (
@@ -2146,8 +2433,9 @@ fn codex_native_firewall_denial(
     method: &str,
     params: Option<&Value>,
     workflow_state: Option<&crate::safety::WorkflowStateSnapshot>,
+    known_item_paths: Option<&CodexFileChangeItemCache>,
 ) -> Option<String> {
-    let arg_sets = codex_native_firewall_arg_sets(method, params);
+    let arg_sets = codex_native_firewall_arg_sets(method, params, known_item_paths);
     if arg_sets.is_empty() {
         // Fail closed: a file-change approval with no recoverable paths (the
         // common v2 itemId-only shape) or a command approval with no command
@@ -2679,6 +2967,9 @@ impl NativeAgentRunner {
                 }
                 AgentCommand::SetSessionContext { session_id, reason } => {
                     self.apply_session_context(session_id, &reason);
+                }
+                AgentCommand::SetHookLogFile { path } => {
+                    self.hooks.set_log_file(Some(path));
                 }
                 AgentCommand::SetGoalToolsVisible { visible } => {
                     self.set_goal_tools_visible(visible);
@@ -3556,6 +3847,9 @@ impl NativeAgentRunner {
                 AgentCommand::SetSessionContext { session_id, reason } => {
                     self.apply_session_context(session_id, &reason);
                 }
+                AgentCommand::SetHookLogFile { path } => {
+                    self.hooks.set_log_file(Some(path));
+                }
                 AgentCommand::SetGoalToolsVisible { visible } => {
                     self.set_goal_tools_visible(visible);
                 }
@@ -4277,6 +4571,26 @@ impl NativeAgentRunner {
         (response, reported_error)
     }
 
+    /// Pull file-change item notifications into the correlation map.
+    ///
+    /// Must run before handling a pathless `item/fileChange/requestApproval`
+    /// so ordinary Codex edits are not fail-closed solely because the approval
+    /// RPC omits paths.
+    async fn ingest_codex_file_change_notifications(&mut self) {
+        let Some(session) = self.codex_session.as_ref() else {
+            return;
+        };
+        let notes = session.take_file_change_item_notifications().await;
+        for note in notes {
+            if let Some(params) = note.params.as_ref() {
+                remember_codex_file_change_item_paths(
+                    params,
+                    &mut self.codex_file_change_paths_by_item,
+                );
+            }
+        }
+    }
+
     async fn handle_codex_server_request(
         &mut self,
         request: crate::codex_app_server::IncomingServerRequest,
@@ -4285,6 +4599,10 @@ impl NativeAgentRunner {
             approval_decision, parse_tool_call_params, tool_call_error_result,
             tool_call_success_result,
         };
+
+        // Always ingest first: file-change paths may have arrived as earlier
+        // notifications still sitting in the client buffer.
+        self.ingest_codex_file_change_notifications().await;
 
         let method = request.method.clone();
         match method.as_str() {
@@ -4544,8 +4862,23 @@ impl NativeAgentRunner {
                 // rather than silently approving the unsanitized original.
                 // A hook that must rewrite a command has to use the
                 // `item/tool/call` path.
+                //
+                // Capture any paths on the approval itself before hooks run,
+                // then hand hooks the same correlated path set the firewall
+                // uses. itemId-only v2 approvals otherwise leave path-sensitive
+                // PreToolUse / PermissionRequest hooks blind.
+                if let Some(params) = request.params.as_ref() {
+                    remember_codex_file_change_item_paths(
+                        params,
+                        &mut self.codex_file_change_paths_by_item,
+                    );
+                }
                 let policy_tool = codex_native_policy_tool(&request.method);
-                let policy_args = request.params.clone().unwrap_or(Value::Null);
+                let policy_args = codex_native_policy_hook_args(
+                    &request.method,
+                    request.params.as_ref(),
+                    &self.codex_file_change_paths_by_item,
+                );
                 let policy_call_id = Uuid::new_v4().to_string();
                 let hook_denial = match run_pre_tool_use_hook(
                     &mut self.hooks,
@@ -4577,6 +4910,7 @@ impl NativeAgentRunner {
                     &request.method,
                     request.params.as_ref(),
                     Some(&self.workflow_state.snapshot()),
+                    Some(&self.codex_file_change_paths_by_item),
                 );
                 let accept = matches!(self.config.approval_mode, ApprovalMode::Yolo)
                     && !denies_mutation
@@ -9607,6 +9941,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         let command_sets = codex_native_firewall_arg_sets(
             "item/commandExecution/requestApproval",
             Some(&json!({"command": "rm -rf /"})),
+            None,
         );
         assert_eq!(command_sets.len(), 1);
         assert_eq!(command_sets[0].0, "bash");
@@ -9615,6 +9950,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         let file_sets = codex_native_firewall_arg_sets(
             "item/fileChange/requestApproval",
             Some(&json!({"path": "/etc/passwd", "content": "x"})),
+            None,
         );
         assert_eq!(file_sets.len(), 1);
         assert_eq!(file_sets[0].0, "write");
@@ -9626,6 +9962,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
                 "files": ["src/main.rs", "/etc/passwd"],
                 "content": "x"
             })),
+            None,
         );
         assert_eq!(multi.len(), 2);
         assert_eq!(multi[0].1["file_path"], "src/main.rs");
@@ -9639,6 +9976,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
                     "/etc/passwd": {"type": "update"}
                 }
             })),
+            None,
         );
         assert_eq!(legacy.len(), 2);
 
@@ -9646,6 +9984,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             "/tmp",
             "item/commandExecution/requestApproval",
             Some(&json!({"command": "rm -rf /"})),
+            None,
             None,
         );
         assert!(
@@ -9660,6 +9999,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
                 "files": ["/tmp/workspace/ok.rs", "/etc/passwd"],
                 "content": "x"
             })),
+            None,
             None,
         );
         assert!(
@@ -9677,10 +10017,356 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
                 "startedAtMs": 1
             })),
             None,
+            None,
         );
         assert!(
             item_id_only.is_some(),
             "itemId-only file-change approvals must fail closed with no recoverable paths"
+        );
+
+        let mut known = HashMap::new();
+        remember_codex_file_change_item_paths(
+            &json!({
+                "itemId": "item-2",
+                "path": "/tmp/workspace/ok.rs",
+                "content": "safe"
+            }),
+            &mut known,
+        );
+        let correlated = codex_native_firewall_arg_sets(
+            "item/fileChange/requestApproval",
+            Some(&json!({"itemId": "item-2"})),
+            Some(&known),
+        );
+        assert_eq!(correlated.len(), 1);
+        assert_eq!(correlated[0].1["file_path"], "/tmp/workspace/ok.rs");
+
+        // Path-sensitive policy hooks must receive the same correlated paths.
+        let hook_args = codex_native_policy_hook_args(
+            "item/fileChange/requestApproval",
+            Some(&json!({"itemId": "item-2"})),
+            &known,
+        );
+        assert_eq!(
+            hook_args["paths"],
+            json!(["/tmp/workspace/ok.rs"]),
+            "itemId-only approvals must surface correlated paths to hooks"
+        );
+        assert_eq!(
+            hook_args["fileChanges"]["/tmp/workspace/ok.rs"]["content"], "safe",
+            "itemId-only approvals must replay cached patch metadata: {hook_args}"
+        );
+        // Path present but sparse: still replay cached content metadata.
+        let already_pathed = codex_native_policy_hook_args(
+            "item/fileChange/requestApproval",
+            Some(&json!({
+                "itemId": "item-2",
+                "path": "/tmp/workspace/ok.rs"
+            })),
+            &known,
+        );
+        assert_eq!(
+            already_pathed["fileChanges"]["/tmp/workspace/ok.rs"]["content"], "safe",
+            "sparse path-only approvals must still receive cached metadata: {already_pathed}"
+        );
+
+        // Later notifications overwrite earlier metadata for the same path.
+        let mut stale = HashMap::new();
+        remember_codex_file_change_item_paths(
+            &json!({
+                "itemId": "item-stale",
+                "path": "/tmp/workspace/x.rs",
+                "content": "old",
+                "kind": "update"
+            }),
+            &mut stale,
+        );
+        remember_codex_file_change_item_paths(
+            &json!({
+                "itemId": "item-stale",
+                "path": "/tmp/workspace/x.rs",
+                "content": "new"
+            }),
+            &mut stale,
+        );
+        assert_eq!(
+            stale["item-stale"]["/tmp/workspace/x.rs"]["content"], "new",
+            "later content must replace earlier content: {stale:?}"
+        );
+        assert_eq!(
+            stale["item-stale"]["/tmp/workspace/x.rs"]["kind"], "update",
+            "fields omitted from the later update must be retained: {stale:?}"
+        );
+
+        // Approval names only the rename source; cache also has the destination.
+        let mut partial = HashMap::new();
+        remember_codex_file_change_item_paths(
+            &json!({
+                "itemId": "item-partial",
+                "changes": [{
+                    "path": "/tmp/workspace/src.rs",
+                    "kind": { "move_path": "/etc/passwd" }
+                }]
+            }),
+            &mut partial,
+        );
+        let partial_merged = codex_native_file_change_paths(
+            &json!({
+                "itemId": "item-partial",
+                "path": "/tmp/workspace/src.rs"
+            }),
+            Some(&partial),
+        );
+        assert!(
+            partial_merged.iter().any(|p| p == "/tmp/workspace/src.rs"),
+            "direct source must remain: {partial_merged:?}"
+        );
+        assert!(
+            partial_merged.iter().any(|p| p == "/etc/passwd"),
+            "cached destination must merge even when approval already has a path: {partial_merged:?}"
+        );
+        let partial_hook = codex_native_policy_hook_args(
+            "item/fileChange/requestApproval",
+            Some(&json!({
+                "itemId": "item-partial",
+                "path": "/tmp/workspace/src.rs"
+            })),
+            &partial,
+        );
+        assert!(
+            partial_hook["paths"]
+                .as_array()
+                .is_some_and(|paths| paths.iter().any(|p| p == "/etc/passwd")),
+            "hooks must see the cached destination: {partial_hook}"
+        );
+
+        // Existing fileChanges metadata must survive enrichment.
+        let mut with_meta = HashMap::new();
+        remember_codex_file_change_item_paths(
+            &json!({
+                "itemId": "item-meta",
+                "path": "/tmp/workspace/extra.rs"
+            }),
+            &mut with_meta,
+        );
+        let meta_hook = codex_native_policy_hook_args(
+            "item/fileChange/requestApproval",
+            Some(&json!({
+                "itemId": "item-meta",
+                "fileChanges": {
+                    "/tmp/workspace/src.rs": {
+                        "kind": { "move_path": "/tmp/workspace/dst.rs" },
+                        "content": "patched"
+                    }
+                }
+            })),
+            &with_meta,
+        );
+        assert_eq!(
+            meta_hook["fileChanges"]["/tmp/workspace/src.rs"]["content"], "patched",
+            "original fileChanges metadata must be preserved: {meta_hook}"
+        );
+        assert!(
+            meta_hook["fileChanges"]
+                .as_object()
+                .is_some_and(|m| m.contains_key("/tmp/workspace/extra.rs")),
+            "correlated missing paths must still be added: {meta_hook}"
+        );
+
+        // Snake-case file_changes must be updated in place (not only a new
+        // camelCase field) so hooks that read the original alias see correlated
+        // paths.
+        let snake_hook = codex_native_policy_hook_args(
+            "item/fileChange/requestApproval",
+            Some(&json!({
+                "itemId": "item-meta",
+                "file_changes": {
+                    "/tmp/workspace/src.rs": {
+                        "content": "snake-meta"
+                    }
+                }
+            })),
+            &with_meta,
+        );
+        assert_eq!(
+            snake_hook["file_changes"]["/tmp/workspace/src.rs"]["content"], "snake-meta",
+            "snake-case metadata must be preserved: {snake_hook}"
+        );
+        assert!(
+            snake_hook["file_changes"]
+                .as_object()
+                .is_some_and(|m| m.contains_key("/tmp/workspace/extra.rs")),
+            "snake-case file_changes must include correlated paths: {snake_hook}"
+        );
+        assert_eq!(
+            snake_hook["fileChanges"]["/tmp/workspace/src.rs"]["content"], "snake-meta",
+            "canonical fileChanges always mirrors the complete set: {snake_hook}"
+        );
+
+        // Array aliases (files / changes) must also receive correlated paths.
+        let files_hook = codex_native_policy_hook_args(
+            "item/fileChange/requestApproval",
+            Some(&json!({
+                "itemId": "item-meta",
+                "files": ["/tmp/workspace/src.rs"]
+            })),
+            &with_meta,
+        );
+        let files = files_hook["files"].as_array().cloned().unwrap_or_default();
+        assert!(
+            files
+                .iter()
+                .any(|v| v.as_str() == Some("/tmp/workspace/src.rs")),
+            "original files entry preserved: {files_hook}"
+        );
+        assert!(
+            files
+                .iter()
+                .any(|v| v.as_str() == Some("/tmp/workspace/extra.rs")),
+            "correlated path must appear in files: {files_hook}"
+        );
+        assert!(
+            files_hook["fileChanges"]
+                .as_object()
+                .is_some_and(|m| m.contains_key("/tmp/workspace/extra.rs")),
+            "canonical fileChanges always present: {files_hook}"
+        );
+
+        let changes_hook = codex_native_policy_hook_args(
+            "item/fileChange/requestApproval",
+            Some(&json!({
+                "itemId": "item-meta",
+                "changes": [{
+                    "path": "/tmp/workspace/src.rs",
+                    "kind": { "update": {} },
+                    "content": "keep-me"
+                }]
+            })),
+            &with_meta,
+        );
+        let changes = changes_hook["changes"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            changes[0]["content"], "keep-me",
+            "existing change metadata preserved: {changes_hook}"
+        );
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.get("path").and_then(Value::as_str) == Some("/tmp/workspace/extra.rs")),
+            "correlated path must appear in changes: {changes_hook}"
+        );
+
+        // Notification-shaped payload (paths arrive before the approval RPC).
+        let mut from_notification = HashMap::new();
+        remember_codex_file_change_item_paths(
+            &json!({
+                "item": {
+                    "id": "item-3",
+                    "type": "fileChange",
+                    "path": "/tmp/workspace/from-notification.rs"
+                }
+            }),
+            &mut from_notification,
+        );
+        assert!(
+            from_notification
+                .get("item-3")
+                .is_some_and(|paths| paths.contains_key("/tmp/workspace/from-notification.rs")),
+            "notification paths must be cached under item id: {from_notification:?}"
+        );
+
+        // Cached change metadata must be replayed for itemId-only approvals.
+        let mut kind_cache = HashMap::new();
+        remember_codex_file_change_item_paths(
+            &json!({
+                "itemId": "item-kind",
+                "changes": [{
+                    "path": "/tmp/workspace/delete-me.rs",
+                    "kind": "delete",
+                    "diff": "-gone"
+                }]
+            }),
+            &mut kind_cache,
+        );
+        let kind_hook = codex_native_policy_hook_args(
+            "item/fileChange/requestApproval",
+            Some(&json!({"itemId": "item-kind"})),
+            &kind_cache,
+        );
+        assert_eq!(
+            kind_hook["fileChanges"]["/tmp/workspace/delete-me.rs"]["kind"], "delete",
+            "cached kind must be replayed: {kind_hook}"
+        );
+        assert_eq!(
+            kind_hook["fileChanges"]["/tmp/workspace/delete-me.rs"]["diff"], "-gone",
+            "cached diff must be replayed: {kind_hook}"
+        );
+
+        // Rename/move destinations must be checked, not only sources.
+        let move_paths = codex_native_file_change_paths(
+            &json!({
+                "itemId": "item-4",
+                "changes": [{
+                    "path": "/tmp/workspace/src.rs",
+                    "kind": { "move_path": "/etc/passwd" }
+                }]
+            }),
+            None,
+        );
+        assert!(
+            move_paths.iter().any(|p| p == "/tmp/workspace/src.rs"),
+            "source path required: {move_paths:?}"
+        );
+        assert!(
+            move_paths.iter().any(|p| p == "/etc/passwd"),
+            "move destination required: {move_paths:?}"
+        );
+        // Single-path { path, move_path } must also enumerate the destination.
+        let single_move = codex_native_file_change_paths(
+            &json!({
+                "path": "/tmp/workspace/src.rs",
+                "move_path": "/etc/passwd"
+            }),
+            None,
+        );
+        assert!(
+            single_move.iter().any(|p| p == "/tmp/workspace/src.rs"),
+            "single-path source required: {single_move:?}"
+        );
+        assert!(
+            single_move.iter().any(|p| p == "/etc/passwd"),
+            "single-path move destination required: {single_move:?}"
+        );
+        let single_kind_move = codex_native_file_change_paths(
+            &json!({
+                "path": "/tmp/workspace/src.rs",
+                "kind": { "move_path": "/etc/shadow" }
+            }),
+            None,
+        );
+        assert!(
+            single_kind_move.iter().any(|p| p == "/etc/shadow"),
+            "single-path kind.move_path destination required: {single_kind_move:?}"
+        );
+        let move_denial = codex_native_firewall_denial(
+            "/tmp/workspace",
+            "item/fileChange/requestApproval",
+            Some(&json!({
+                "itemId": "item-4",
+                "changes": [{
+                    "path": "/tmp/workspace/src.rs",
+                    "kind": { "move_path": "/etc/passwd" }
+                }]
+            })),
+            None,
+            None,
+        );
+        assert!(
+            move_denial.is_some(),
+            "out-of-workspace move destination must be blocked"
         );
     }
 

@@ -306,6 +306,7 @@ async fn run_scripted_turns(turn_count: usize) {
         .map(|_| ScriptedResponse {
             blocks: vec![ScriptedBlock::Text("Completed this step.".to_string())],
             stop_reason: StopReason::EndTurn,
+            error: None,
         })
         .collect();
     let prompts = (0..turn_count)
@@ -398,11 +399,13 @@ async fn run_scripted_tool_turns(turn_count: usize) {
         .map(|index| ScriptedResponse {
             blocks: vec![scripted_tool_call(index, &cwd, "tool")],
             stop_reason: StopReason::ToolUse,
+            error: None,
         })
         .collect::<Vec<_>>();
     responses.push(ScriptedResponse {
         blocks: vec![ScriptedBlock::Text("Completed the tool loop.".to_string())],
         stop_reason: StopReason::EndTurn,
+        error: None,
     });
     run_scripted_session(
         responses,
@@ -422,6 +425,7 @@ async fn run_scripted_multi_tool_turns(turn_count: usize) {
                 scripted_tool_call(index * 2 + 1, &cwd, "multi-tool-b"),
             ],
             stop_reason: StopReason::ToolUse,
+            error: None,
         })
         .collect::<Vec<_>>();
     responses.push(ScriptedResponse {
@@ -429,6 +433,7 @@ async fn run_scripted_multi_tool_turns(turn_count: usize) {
             "Completed the multi-tool loop.".to_string(),
         )],
         stop_reason: StopReason::EndTurn,
+        error: None,
     });
     run_scripted_session(
         responses,
@@ -445,6 +450,7 @@ async fn run_scripted_long_history(turn_count: usize) {
         .map(|_| ScriptedResponse {
             blocks: vec![ScriptedBlock::Text(response_text.clone())],
             stop_reason: StopReason::EndTurn,
+            error: None,
         })
         .collect();
     let prompt_suffix = " prior context".repeat(24);

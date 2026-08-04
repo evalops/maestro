@@ -3832,10 +3832,7 @@ fn combine_approval_reason(
 /// id yet gets a unique placeholder, which cannot collide with any other
 /// conversation and is replaced when the session file is created.
 fn subagent_scope_for_session(session_id: Option<&str>) -> String {
-    match session_id {
-        Some(session_id) => format!("session:{session_id}"),
-        None => format!("pending:{}", uuid::Uuid::new_v4()),
-    }
+    crate::agent::parent_scope_for_session(session_id).into_string()
 }
 
 fn uncurses_input_enabled(value: Option<&std::ffi::OsStr>) -> bool {

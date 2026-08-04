@@ -186,6 +186,7 @@ fn scenario_to_scripted_responses(scenario: &ScriptedScenario) -> Result<Vec<Scr
             } else {
                 StopReason::EndTurn
             },
+            error: None,
         });
     }
     if responses.is_empty() {
