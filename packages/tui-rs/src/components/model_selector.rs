@@ -16,6 +16,58 @@ pub use crate::model_catalog::{available_models, ModelInfo, ModelVerification};
 /// "show all models" affordance expands the full catalog.
 const FOCUSED_SLICE_LIMIT: usize = 8;
 
+/// Return the route that must be passed to the native agent for a catalog
+/// selection. Google and Vertex share Gemini ids, so both rows need an
+/// explicit provider qualifier to keep Enter and Ctrl+D selections distinct;
+/// other providers retain the historical bare-id behavior.
+#[must_use]
+pub(crate) fn selection_model_id(model: &ModelInfo) -> String {
+    match model.provider.as_str() {
+        "google" | "vertex-ai" => format!("{}/{}", model.provider, model.id),
+        _ => model.id.clone(),
+    }
+}
+
+fn canonical_current_route(model_id: &str, models: &[ModelInfo]) -> Option<String> {
+    let (provider, bare_id) = model_id
+        .split_once('/')
+        .map_or((None, model_id), |(provider, model)| {
+            (Some(provider), model)
+        });
+    if let Some(provider) = provider {
+        let descriptor = crate::ai::ProviderRegistry::descriptor(provider)?;
+        if let Some(model) = models
+            .iter()
+            .find(|model| model.id == bare_id && model.provider == descriptor.id)
+        {
+            return Some(selection_model_id(model));
+        }
+        if descriptor.id == "openai-codex" {
+            if let Some(model) = models
+                .iter()
+                .find(|model| model.id == bare_id && model.provider == "openai")
+            {
+                return Some(selection_model_id(model));
+            }
+        }
+    } else if let Some(model) = models.iter().find(|model| model.id == bare_id) {
+        return Some(selection_model_id(model));
+    }
+    let provider = provider?;
+    let descriptor = crate::ai::ProviderRegistry::descriptor(provider)?;
+    Some(format!("{}/{}", descriptor.id, bare_id))
+}
+
+fn model_matches_current(
+    model: &ModelInfo,
+    raw_current: &str,
+    canonical_current: Option<&str>,
+) -> bool {
+    let route = selection_model_id(model);
+    canonical_current == Some(route.as_str())
+        || (canonical_current.is_none() && raw_current == model.id && model.provider != "vertex-ai")
+}
+
 /// Model selector modal state
 pub struct ModelSelector {
     /// Available models
@@ -208,6 +260,13 @@ impl ModelSelector {
             .and_then(|&idx| self.models.get(idx))
     }
 
+    /// Get the selected model route, preserving provider identity for shared
+    /// Google/Vertex model ids. Used by both Enter and Ctrl+D paths.
+    #[must_use]
+    pub fn selected_model_id(&self) -> Option<String> {
+        self.selected_model().map(selection_model_id)
+    }
+
     /// Confirm selection and return the model ID. Confirming the "show all
     /// models" affordance row expands the full catalog instead of closing.
     pub fn confirm(&mut self) -> Option<String> {
@@ -215,7 +274,7 @@ impl ModelSelector {
             self.toggle_show_all();
             return None;
         }
-        let id = self.selected_model().map(|m| m.id.clone());
+        let id = self.selected_model_id();
         self.hide();
         id
     }
@@ -268,12 +327,10 @@ impl ModelSelector {
     fn focused_slice(&self) -> Vec<usize> {
         let mut slice: Vec<usize> = Vec::new();
         if let Some(current) = &self.current_model {
-            let qualified = |model: &ModelInfo| format!("{}/{}", model.provider, model.id);
-            if let Some(idx) = self
-                .models
-                .iter()
-                .position(|model| &model.id == current || qualified(model) == *current)
-            {
+            let canonical_current = canonical_current_route(current, &self.models);
+            if let Some(idx) = self.models.iter().position(|model| {
+                model_matches_current(model, current, canonical_current.as_deref())
+            }) {
                 slice.push(idx);
             }
         }
@@ -355,12 +412,18 @@ impl ModelSelector {
         frame.render_widget(search_text, chunks[0]);
 
         // Model list
+        let canonical_current = self
+            .current_model
+            .as_deref()
+            .and_then(|current| canonical_current_route(current, &self.models));
         let mut items: Vec<ListItem> = self
             .filtered
             .iter()
             .map(|&model_idx| {
                 let model = &self.models[model_idx];
-                let is_current = self.current_model.as_ref().is_some_and(|c| c == &model.id);
+                let is_current = self.current_model.as_deref().is_some_and(|current| {
+                    model_matches_current(model, current, canonical_current.as_deref())
+                });
 
                 let mut spans = vec![
                     Span::styled(&model.name, Style::default().add_modifier(Modifier::BOLD)),
@@ -518,6 +581,73 @@ mod tests {
         let model_id = selector.confirm();
         assert!(model_id.is_some());
         assert!(!selector.is_visible());
+    }
+
+    #[test]
+    fn duplicate_google_and_vertex_rows_keep_provider_qualified_selection() {
+        let mut selector = ModelSelector::with_models(vec![
+            test_model("gemini-2.5-pro", "google"),
+            test_model("gemini-2.5-pro", "vertex-ai"),
+        ]);
+        selector.show();
+
+        assert_eq!(
+            selector.confirm().as_deref(),
+            Some("google/gemini-2.5-pro"),
+            "Enter must preserve the Google route"
+        );
+
+        selector.show();
+        selector.move_down();
+        assert_eq!(
+            selector.confirm().as_deref(),
+            Some("vertex-ai/gemini-2.5-pro"),
+            "Enter must preserve the Vertex route"
+        );
+    }
+
+    #[test]
+    fn ctrl_d_selection_route_preserves_vertex_provider_for_persistence() {
+        let mut selector = ModelSelector::with_models(vec![
+            test_model("gemini-2.5-pro", "google"),
+            test_model("gemini-2.5-pro", "vertex-ai"),
+        ]);
+        selector.show();
+
+        assert_eq!(
+            selector.selected_model_id().as_deref(),
+            Some("google/gemini-2.5-pro")
+        );
+        selector.move_down();
+        assert_eq!(
+            selector.selected_model_id().as_deref(),
+            Some("vertex-ai/gemini-2.5-pro")
+        );
+    }
+
+    #[test]
+    fn focused_slice_canonicalizes_current_google_and_vertex_aliases() {
+        for (current, expected_provider) in [
+            ("vertex-ai/gemini-2.5-pro", "vertex-ai"),
+            ("vertex/gemini-2.5-pro", "vertex-ai"),
+            ("google/gemini-2.5-pro", "google"),
+            ("gemini/gemini-2.5-pro", "google"),
+            ("gemini-2.5-pro", "google"),
+        ] {
+            let mut selector = ModelSelector::with_models(vec![
+                test_model("gemini-2.5-pro", "google"),
+                test_model("gemini-2.5-pro", "vertex-ai"),
+            ]);
+            selector.set_current_model(Some(current.to_owned()));
+            selector.show();
+
+            let first = selector.filtered.first().map(|&idx| &selector.models[idx]);
+            assert_eq!(
+                first.map(|model| model.provider.as_str()),
+                Some(expected_provider),
+                "current route {current} must lead its canonical provider row"
+            );
+        }
     }
 
     #[test]
