@@ -58,6 +58,11 @@ struct RuntimeMeta {
     pending_tool_calls: HashSet<String>,
     transcript_grade: crate::transcript::TranscriptGrade,
     response_chunks: Vec<(String, bool)>,
+    /// Detached consumption-receipt acknowledgement tasks. Shutdown drains
+    /// these so a dropped receipt's protocol error and rollback are emitted
+    /// before the process exits. Shared behind an `Arc` because `RuntimeMeta`
+    /// is `Clone` and every clone must observe the same registry.
+    receipt_tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 }
 
 impl RuntimeMeta {
@@ -150,6 +155,7 @@ impl HeadlessState {
                 pending_tool_calls: HashSet::new(),
                 transcript_grade: crate::transcript::TranscriptGrade::Delta,
                 response_chunks: Vec::new(),
+                receipt_tasks: Arc::new(Mutex::new(Vec::new())),
             })),
             agent: None,
             tool_tx: None,
@@ -609,6 +615,7 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                             | ServerRequestResolutionStatus::Aborted
                     ));
                     send_tool_response_with_consumption_ack(
+                        &state.meta,
                         tool_tx,
                         (
                             request_id.clone(),
@@ -829,6 +836,13 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
         agent.shutdown().await;
     }
     if let Some(task) = state.event_task.take() {
+        let _ = task.await;
+    }
+    // The agent shutdown resolved every outstanding consumption receipt
+    // (consumed or dropped); drain the acknowledgement tasks so dropped
+    // receipts emit their protocol error and rollback before the process
+    // exits and before the interrupted terminals are taken.
+    for task in take_receipt_tasks(&state.meta) {
         let _ = task.await;
     }
     for message in take_interrupted_tool_terminal_messages(&state.meta) {
@@ -1759,7 +1773,7 @@ fn dispatch_accepted_tool_response(
         accepted,
         request_id,
         |message| emit(message).map_err(|error| format!("emit tool lifecycle: {error:#}")),
-        |request_id, outcome| {
+        |request_id, outcome, _dropped| {
             let _ = emit(&response_consumption_message(request_id, outcome));
         },
     )
@@ -1775,7 +1789,7 @@ fn dispatch_accepted_tool_response_with<Emit, Acknowledge>(
 ) -> std::result::Result<(), String>
 where
     Emit: FnMut(&FromAgentMessage) -> std::result::Result<(), String>,
-    Acknowledge: FnOnce(String, ToolResponseConsumption) + Send + 'static,
+    Acknowledge: FnOnce(String, ToolResponseConsumption, bool) + Send + 'static,
 {
     for message in &accepted.messages {
         if let Err(error) = emit_lifecycle(message) {
@@ -1786,18 +1800,26 @@ where
     // A queued response can still be rejected by the consumption receipt (for
     // example when the call is cancelled before native consumption). Restore
     // the pending decision before surfacing the receipt so a corrected retry
-    // is not refused as "not awaiting a decision".
+    // is not refused as "not awaiting a decision". A dropped receipt means
+    // the native side is gone: keep the execution binding so the shutdown
+    // cleanup can still emit the interrupted ToolEnd that closes the exposed
+    // tool lifecycle.
     let rejection_rollback = accepted.rollback.clone();
     let rejection_meta = Arc::clone(meta);
     if send_tool_response_with_consumption_ack_using(
+        meta,
         tool_tx,
         accepted.agent_response,
         request_id,
-        move |request_id, outcome| {
+        move |request_id, outcome, dropped| {
             if matches!(outcome, ToolResponseConsumption::Rejected { .. }) {
-                rollback_accepted_tool_response(&rejection_meta, rejection_rollback);
+                if dropped {
+                    rollback_dropped_tool_response(&rejection_meta, rejection_rollback);
+                } else {
+                    rollback_accepted_tool_response(&rejection_meta, rejection_rollback);
+                }
             }
-            acknowledge(request_id, outcome);
+            acknowledge(request_id, outcome, dropped);
         },
     ) {
         return Ok(());
@@ -1817,19 +1839,69 @@ fn rollback_accepted_tool_response(meta: &Arc<Mutex<RuntimeMeta>>, rollback: Too
     }
 }
 
+/// Rollback for a response whose consumption receipt was dropped: the native
+/// side shut down without consuming the queued message. The pending decision
+/// and the reserved governed decision are restored like
+/// [`rollback_accepted_tool_response`], but the `tool_execution_ids` binding
+/// is deliberately preserved so [`take_interrupted_tool_terminal_messages`]
+/// can still emit the interrupted `ToolEnd` for the lifecycle that was
+/// already exposed to clients.
+fn rollback_dropped_tool_response(meta: &Arc<Mutex<RuntimeMeta>>, rollback: ToolResponseRollback) {
+    let mut meta = meta
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    meta.pending_tool_calls.insert(rollback.call_id.clone());
+    if let Some(tool_execution_id) = rollback.tool_execution_id {
+        meta.decided_tool_execution_ids.remove(&tool_execution_id);
+    }
+}
+
 fn send_tool_response_with_consumption_ack(
+    meta: &Arc<Mutex<RuntimeMeta>>,
     tool_tx: &mpsc::UnboundedSender<ToolResponseMessage>,
     response: ToolResponseMessage,
     request_id: String,
 ) -> bool {
     send_tool_response_with_consumption_ack_using(
+        meta,
         tool_tx,
         response,
         request_id,
-        |request_id, outcome| {
+        |request_id, outcome, _dropped| {
             let _ = emit(&response_consumption_message(request_id, outcome));
         },
     )
+}
+
+/// Record a detached consumption-receipt acknowledgement task so shutdown can
+/// drain it before the process exits. Completed handles are pruned in place.
+fn record_receipt_task(meta: &Arc<Mutex<RuntimeMeta>>, task: tokio::task::JoinHandle<()>) {
+    let registry = meta
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .receipt_tasks
+        .clone();
+    let mut tasks = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    tasks.retain(|task| !task.is_finished());
+    tasks.push(task);
+}
+
+/// Take the outstanding receipt acknowledgement tasks for draining. After the
+/// native agent shuts down, every receipt sender is either consumed or
+/// dropped, so awaiting these completes promptly and guarantees the dropped
+/// receipts' protocol errors and rollbacks are emitted before exit.
+fn take_receipt_tasks(meta: &Arc<Mutex<RuntimeMeta>>) -> Vec<tokio::task::JoinHandle<()>> {
+    let registry = meta
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .receipt_tasks
+        .clone();
+    let mut tasks = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::mem::take(&mut *tasks)
 }
 
 fn response_consumption_message(
@@ -1848,24 +1920,39 @@ fn response_consumption_message(
 }
 
 fn send_tool_response_with_consumption_ack_using<Acknowledge>(
+    meta: &Arc<Mutex<RuntimeMeta>>,
     tool_tx: &mpsc::UnboundedSender<ToolResponseMessage>,
     mut response: ToolResponseMessage,
     request_id: String,
     acknowledge: Acknowledge,
 ) -> bool
 where
-    Acknowledge: FnOnce(String, ToolResponseConsumption) + Send + 'static,
+    Acknowledge: FnOnce(String, ToolResponseConsumption, bool) + Send + 'static,
 {
     let (consumed_tx, consumed_rx) = tokio::sync::oneshot::channel();
     response.4 = Some(consumed_tx);
     if tool_tx.send(response).is_err() {
         return false;
     }
-    tokio::spawn(async move {
-        if let Ok(outcome) = consumed_rx.await {
-            acknowledge(request_id, outcome);
-        }
+    let task = tokio::spawn(async move {
+        // A dropped receipt sender means the native agent shut down or the
+        // receiver was dropped before consuming the queued message. Treat it
+        // as a rejection so the acknowledgement/rollback path restores the
+        // pending decision instead of leaving the request stuck; the flag
+        // lets the caller distinguish the dropped case from an explicit
+        // rejection.
+        let (outcome, dropped) = match consumed_rx.await {
+            Ok(outcome) => (outcome, false),
+            Err(_) => (
+                ToolResponseConsumption::Rejected {
+                    reason: "native agent dropped the response before consuming it".to_string(),
+                },
+                true,
+            ),
+        };
+        acknowledge(request_id, outcome, dropped);
     });
+    record_receipt_task(meta, task);
     true
 }
 
@@ -2733,6 +2820,68 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
         ));
     }
 
+    #[tokio::test]
+    async fn dropped_response_receipt_restores_governed_response_for_retry() {
+        let meta = Arc::new(Mutex::new(RuntimeMeta::default()));
+        meta.lock()
+            .expect("runtime metadata")
+            .pending_tool_calls
+            .insert("dropped-call".to_string());
+        let (tool_tx, tool_rx) = mpsc::unbounded_channel();
+        let accepted = prepare_tool_response(
+            &meta,
+            "dropped-call".to_string(),
+            Some("dropped-execution".to_string()),
+            true,
+            None,
+        )
+        .expect("initial governed response");
+
+        dispatch_accepted_tool_response(&meta, &tool_tx, accepted, "dropped-call".to_string())
+            .expect("response reaches native channel");
+        // Dropping the receiver discards the queued message together with its
+        // receipt sender: the native agent never consumed the response.
+        drop(tool_rx);
+
+        // Drain the recorded acknowledgement tasks exactly like the shutdown
+        // path does, so the rollback is guaranteed to have run without
+        // relying on scheduler timing.
+        for task in take_receipt_tasks(&meta) {
+            task.await.expect("receipt acknowledgement task");
+        }
+        {
+            let meta = meta.lock().expect("runtime metadata");
+            assert!(meta.pending_tool_calls.contains("dropped-call"));
+            assert!(!meta
+                .decided_tool_execution_ids
+                .contains("dropped-execution"));
+        }
+
+        // The execution binding is preserved for the shutdown cleanup so the
+        // exposed tool lifecycle is still closed with an interrupted ToolEnd.
+        assert_eq!(
+            meta.lock()
+                .expect("runtime metadata")
+                .tool_execution_ids
+                .get("dropped-call")
+                .map(String::as_str),
+            Some("dropped-execution")
+        );
+        let terminals = take_interrupted_tool_terminal_messages(&meta);
+        assert!(
+            terminals.iter().any(|message| matches!(
+                message,
+                FromAgentMessage::ToolEnd {
+                    call_id,
+                    tool_execution_id: Some(tool_execution_id),
+                    success: false,
+                    ..
+                } if call_id == "dropped-call" && tool_execution_id == "dropped-execution"
+            )),
+            "shutdown cleanup must terminalize the dropped governed response: {terminals:?}"
+        );
+    }
+
     #[test]
     fn deferred_consumption_rejection_is_a_correlated_protocol_error() {
         assert!(matches!(
@@ -2805,7 +2954,7 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
                     .push(label.to_string());
                 Ok(())
             },
-            move |_, outcome| {
+            move |_, outcome, _dropped| {
                 assert_eq!(outcome, ToolResponseConsumption::Accepted);
                 acknowledgement_events
                     .lock()
