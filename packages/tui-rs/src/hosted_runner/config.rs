@@ -107,6 +107,7 @@ impl HostedRunnerConfig {
         let runtime_generation = first_env(
             env,
             &[
+                "MAESTRO_PLACEMENT_GENERATION",
                 "MAESTRO_SANDBOXWICH_PLACEMENT_GENERATION",
                 "MAESTRO_REMOTE_RUNNER_GENERATION",
             ],
