@@ -8787,3 +8787,219 @@ async fn delayed_unkeyed_rejection_releases_acknowledgement_capacity() {
     let script = create_reject_then_accept_script(fixtures.path(), &log, Some("0.65"));
     assert_unkeyed_delayed_response_releases_acknowledgement(&script, "retry-call").await;
 }
+
+/// Executor whose `drain()` returns a scripted sequence of results, so pump
+/// ticks can be driven deterministically without a child process or the
+/// `EVENT_PUMP_INTERVAL` timer.
+struct ScriptedDrainExecutor {
+    results: Mutex<std::collections::VecDeque<HostedRunnerDrainResult>>,
+}
+
+impl ScriptedDrainExecutor {
+    fn new(results: Vec<HostedRunnerDrainResult>) -> Self {
+        Self {
+            results: Mutex::new(results.into()),
+        }
+    }
+}
+
+impl HostedRunnerHeadlessMessageExecutor for ScriptedDrainExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        _message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        Ok(HostedRunnerHeadlessMessageResult::transport_only(
+            Vec::new(),
+            "scripted",
+        ))
+    }
+
+    fn drain(&self) -> Result<HostedRunnerDrainResult, HostedRunnerError> {
+        Ok(self
+            .results
+            .lock()
+            .expect("scripted drain results")
+            .pop_front()
+            .unwrap_or_default())
+    }
+}
+
+fn scripted_shared(results: Vec<HostedRunnerDrainResult>, workspace: &Path) -> SharedRunner {
+    SharedRunner::new_with_message_executor_and_restore(
+        test_config(workspace.to_path_buf()),
+        Arc::new(ScriptedDrainExecutor::new(results)),
+        None,
+    )
+}
+
+fn seed_pending_response(shared: &SharedRunner, key: &str, request_id: &str) {
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    state.pending_response_idempotency.insert(
+        key.to_string(),
+        ToAgentMessage::ToolResponse {
+            call_id: "matrix-call".to_string(),
+            tool_execution_id: None,
+            approved: true,
+            result: None,
+        },
+    );
+    state
+        .pending_response_idempotency_order
+        .push_back(key.to_string());
+    state
+        .response_request_owners
+        .insert(request_id.to_string(), key.to_string());
+}
+
+/// Fault matrix: for each response outcome, a thread-journal write failure at
+/// the pump's persistence point must leave the pump running, apply the
+/// in-memory transition, arm the retry flag, and clear it on the next tick.
+#[tokio::test]
+async fn pump_tick_survives_journal_failure_for_each_response_outcome() {
+    for outcome in ["consumed", "rejected"] {
+        let workspace = tempdir().expect("workspace");
+        let drained = match outcome {
+            "consumed" => HostedRunnerDrainResult {
+                consumed_response_keys: vec!["matrix-key".to_string()],
+                ..Default::default()
+            },
+            _ => HostedRunnerDrainResult {
+                rejected_response_keys: vec!["matrix-key".to_string()],
+                ..Default::default()
+            },
+        };
+        let shared = scripted_shared(vec![drained], workspace.path());
+        seed_pending_response(&shared, "matrix-key", "matrix-request");
+        // Two injected failures: the first defers the helper's write, the
+        // second fails the same tick's in-line retry, so the flag stays armed
+        // across the tick boundary and the next tick must recover.
+        shared.fail_next_thread_persistences(2);
+
+        assert_eq!(
+            pump_tick(&shared),
+            PumpTick::Continue,
+            "{outcome}: a journal write failure must not stop the pump"
+        );
+        {
+            let state = shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(
+                !state
+                    .pending_response_idempotency
+                    .contains_key("matrix-key"),
+                "{outcome}: pending record must be transitioned in memory"
+            );
+            match outcome {
+                "consumed" => {
+                    assert!(state.response_idempotency_keys.contains("matrix-key"));
+                    assert!(state.response_request_owners.contains_key("matrix-request"));
+                }
+                _ => {
+                    assert!(!state.response_idempotency_keys.contains("matrix-key"));
+                    assert!(
+                        !state.response_request_owners.contains_key("matrix-request"),
+                        "rejected: request ownership must be rolled back"
+                    );
+                }
+            }
+        }
+        assert!(
+            shared
+                .thread_persistence_retry_pending
+                .load(Ordering::Acquire),
+            "{outcome}: the failed write must arm the retry flag"
+        );
+
+        assert_eq!(pump_tick(&shared), PumpTick::Continue);
+        assert!(
+            !shared
+                .thread_persistence_retry_pending
+                .load(Ordering::Acquire),
+            "{outcome}: the next tick must retry the journal write to completion"
+        );
+    }
+}
+
+#[tokio::test]
+async fn pump_tick_stops_on_executor_drain_error_and_when_draining() {
+    struct FailingDrainExecutor;
+    impl HostedRunnerHeadlessMessageExecutor for FailingDrainExecutor {
+        fn execute(
+            &self,
+            _context: &HostedRunnerHeadlessMessageContext,
+            _message: ToAgentMessage,
+        ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+            Ok(HostedRunnerHeadlessMessageResult::transport_only(
+                Vec::new(),
+                "scripted",
+            ))
+        }
+        fn drain(&self) -> Result<HostedRunnerDrainResult, HostedRunnerError> {
+            Err(HostedRunnerError::internal("scripted drain failure"))
+        }
+    }
+
+    let workspace = tempdir().expect("workspace");
+    let failing = SharedRunner::new_with_message_executor_and_restore(
+        test_config(workspace.path().to_path_buf()),
+        Arc::new(FailingDrainExecutor),
+        None,
+    );
+    assert_eq!(pump_tick(&failing), PumpTick::Stop);
+
+    let workspace = tempdir().expect("workspace");
+    let draining = scripted_shared(Vec::new(), workspace.path());
+    draining
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .draining = true;
+    assert_eq!(pump_tick(&draining), PumpTick::Stop);
+}
+
+/// The drain endpoint must succeed even when the journal write for the
+/// drained response keys fails: aborting after `draining` was set rejected
+/// every later drain as "already draining" with no manifest ever produced.
+#[tokio::test]
+async fn drain_succeeds_despite_journal_failure_for_drained_keys() {
+    let workspace = tempdir().expect("workspace");
+    let drained = HostedRunnerDrainResult {
+        consumed_response_keys: vec!["drain-key".to_string()],
+        ..Default::default()
+    };
+    let shared = scripted_shared(vec![drained], workspace.path());
+    seed_pending_response(&shared, "drain-key", "drain-request");
+    shared.fail_next_thread_persistences(1);
+
+    let response = handle_drain(
+        shared.clone(),
+        DrainRequest {
+            reason: Some("matrix-test".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    .expect("drain must succeed despite the journal write failure");
+    let ResponseBody::Json { status, body } = response else {
+        panic!("drain must return JSON");
+    };
+    assert_eq!(status, 200);
+    assert_eq!(body["status"], "drained");
+    assert!(body["manifest_path"]
+        .as_str()
+        .is_some_and(|p| !p.is_empty()));
+    {
+        let state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(state.response_idempotency_keys.contains("drain-key"));
+    }
+}

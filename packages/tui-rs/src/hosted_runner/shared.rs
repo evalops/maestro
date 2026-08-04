@@ -129,6 +129,9 @@ impl SharedRunner {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Startup: failing construction is the correct response to an
+            // unwritable journal, so the raw call is intentional here.
+            #[allow(clippy::disallowed_methods)]
             shared.persist_thread(&state)?;
         }
         Ok(shared)
@@ -399,6 +402,15 @@ impl SharedRunner {
         snapshot
     }
 
+    /// Raw thread-journal write. Do not call this directly outside the
+    /// wrappers below and the startup/publish/retry paths: raw persistence
+    /// errors have repeatedly wedged the runtime (dead event pump, drains
+    /// permanently rejected as "already draining", leaked ownership slots).
+    /// Pick the wrapper that states the caller's failure semantics:
+    /// [`Self::persist_thread_or_defer`] for runtime-event paths,
+    /// [`Self::persist_thread_for_request`] for request-scoped paths, and
+    /// [`Self::persist_thread_best_effort`] for error-path cleanup.
+    /// Enforced by `disallowed-methods` in `clippy.toml`.
     pub(super) fn persist_thread(&self, state: &RunnerState) -> io::Result<()> {
         #[cfg(test)]
         {
@@ -427,6 +439,49 @@ impl SharedRunner {
                 pending_order: &state.pending_response_idempotency_order,
             },
         )
+    }
+
+    /// Persist for a runtime-event path (event pump, executor drain, the
+    /// `/drain` handler). The in-memory mutation has already happened; a
+    /// journal write failure is deferred to the event pump's retry instead of
+    /// propagated, because an error return on these paths wedges the runtime
+    /// rather than the failing operation.
+    pub(super) fn persist_thread_or_defer(&self, state: &RunnerState, site: &'static str) {
+        #[allow(clippy::disallowed_methods)]
+        if let Err(error) = self.persist_thread(state) {
+            self.thread_persistence_retry_pending
+                .store(true, std::sync::atomic::Ordering::Release);
+            tracing::warn!(
+                event = "thread_journal_persistence_deferred",
+                site,
+                error = %error,
+                "thread journal write failed; keeping live-process state and retrying from the event pump",
+            );
+        }
+    }
+
+    /// Persist for a request-scoped path where failing the request is safe:
+    /// the caller rolls back its own mutation or reports the error to the
+    /// client, and nothing process-wide is left wedged.
+    pub(super) fn persist_thread_for_request(&self, state: &RunnerState) -> io::Result<()> {
+        #[allow(clippy::disallowed_methods)]
+        self.persist_thread(state)
+    }
+
+    /// Best-effort persist on a cleanup path that is already returning an
+    /// error. The failure is logged, never propagated; the next successful
+    /// journal write covers the missed one because the full state is
+    /// serialized on every persist.
+    pub(super) fn persist_thread_best_effort(&self, state: &RunnerState, site: &'static str) {
+        #[allow(clippy::disallowed_methods)]
+        if let Err(error) = self.persist_thread(state) {
+            tracing::warn!(
+                event = "thread_journal_persistence_skipped",
+                site,
+                error = %error,
+                "best-effort thread journal write failed on a cleanup path",
+            );
+        }
     }
 
     #[cfg(test)]
@@ -595,6 +650,10 @@ impl SharedRunner {
         let _ = self.events.send(envelope);
         let _ = self.controller_events.send(controller_envelope);
         if persist_lifecycle_boundary {
+            // Publish path: a failed boundary write deliberately degrades the
+            // runner to not-ready instead of deferring, so controllers stop
+            // sending work against a journal that is not durable.
+            #[allow(clippy::disallowed_methods)]
             if let Err(error) = self.persist_thread(state) {
                 state.ready = false;
                 state.last_error = Some(format!("durable thread journal write failed: {error}"));
@@ -617,6 +676,9 @@ impl SharedRunner {
         }
         let _ = self.events.send(envelope.clone());
         let _ = self.controller_events.send(envelope);
+        // Snapshot publish: same deliberate not-ready degradation as
+        // publish_message above.
+        #[allow(clippy::disallowed_methods)]
         if let Err(error) = self.persist_thread(state) {
             state.ready = false;
             state.last_error = Some(format!("durable thread journal write failed: {error}"));

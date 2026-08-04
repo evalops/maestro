@@ -21,4 +21,10 @@
 disallowed-methods = [
     { path = "std::fs::canonicalize", reason = "returns \\\\?\\ verbatim paths on Windows; use dunce::canonicalize" },
     { path = "std::path::Path::canonicalize", reason = "returns \\\\?\\ verbatim paths on Windows; use dunce::canonicalize" },
+    # Raw hosted-runner journal writes have repeatedly wedged the runtime when
+    # their errors were propagated from event paths (dead event pump, drains
+    # permanently rejected as "already draining"). Callers must pick the
+    # wrapper that states their failure semantics; see the doc comment on
+    # SharedRunner::persist_thread.
+    { path = "maestro_tui::hosted_runner::SharedRunner::persist_thread", reason = "use persist_thread_or_defer / persist_thread_for_request / persist_thread_best_effort; raw journal-write errors wedge the runtime" },
 ]
