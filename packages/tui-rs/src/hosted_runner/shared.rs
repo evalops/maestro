@@ -28,18 +28,10 @@ impl SharedRunner {
         message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
         restore_manifest: Option<SnapshotManifest>,
     ) -> io::Result<Self> {
-        let session_id = config
-            .maestro_session_id
-            .clone()
-            .or_else(|| {
-                restore_manifest
-                    .as_ref()
-                    .map(|manifest| manifest.maestro_session_id.clone())
-            })
-            .unwrap_or_else(|| config.runner_session_id.clone());
+        let binding = HostedRunnerBinding::from_config(&config, restore_manifest.as_ref());
         let loaded_thread = ThreadJournal::load(
             &config.workspace_root,
-            &session_id,
+            binding.maestro_session_id.as_str(),
             config.runtime_generation,
         )?;
         let (events, _) = broadcast::channel(MAX_EVENTS);
@@ -69,11 +61,12 @@ impl SharedRunner {
         });
         let restore_last_error_type = restore_last_error.as_ref().map(|_| "protocol".to_string());
         let shared = Self {
+            binding: binding.clone(),
             config: Arc::new(config),
             state: Arc::new(Mutex::new(RunnerState {
                 ready: restore_ready,
                 draining: false,
-                session_id,
+                session_id: binding.maestro_session_id.as_str().to_string(),
                 cursor: restored_cursor.unwrap_or(0).max(loaded_thread.cursor),
                 last_init,
                 last_status: Some(
@@ -84,6 +77,7 @@ impl SharedRunner {
                 ),
                 last_error: restore_last_error,
                 last_error_type: restore_last_error_type,
+                identity_binding_failures: loaded_thread.identity_binding_failures,
                 restored_snapshot,
                 controller_connection_id: None,
                 controller_stream_cancellation: CancellationToken::new(),
@@ -144,7 +138,7 @@ impl SharedRunner {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         HostedRunnerIdentity {
             protocol_version: HOSTED_RUNNER_IDENTITY_PROTOCOL_VERSION.to_string(),
-            runner_session_id: self.config.runner_session_id.clone(),
+            runner_session_id: self.binding.runner_session_id.as_str().to_string(),
             owner_instance_id: self.config.owner_instance_id.clone(),
             ready: state.ready,
             draining: state.draining,
@@ -402,6 +396,37 @@ impl SharedRunner {
         snapshot
     }
 
+    pub(super) fn record_identity_failure(
+        &self,
+        state: &mut RunnerState,
+        operation: &'static str,
+        requested_session_id: &str,
+    ) -> HostedResult<IdentityBindingFailure> {
+        let failure = IdentityBindingFailure::new(
+            &self.binding,
+            operation,
+            requested_session_id,
+            self.config.runtime_generation,
+        );
+        let evicted = if state.identity_binding_failures.len() >= MAX_IDENTITY_BINDING_FAILURES {
+            state.identity_binding_failures.pop_front()
+        } else {
+            None
+        };
+        state.identity_binding_failures.push_back(failure.clone());
+        if let Err(error) = self.persist_thread_for_request(state) {
+            state.identity_binding_failures.pop_back();
+            if let Some(evicted) = evicted {
+                state.identity_binding_failures.push_front(evicted);
+            }
+            return Err(HostedError::new(
+                HostedRunnerErrorCode::RuntimeFailed,
+                format!("failed to persist identity binding failure evidence: {error}"),
+            ));
+        }
+        Ok(failure)
+    }
+
     /// Raw thread-journal write. Do not call this directly outside the
     /// wrappers below and the startup/publish/retry paths: raw persistence
     /// errors have repeatedly wedged the runtime (dead event pump, drains
@@ -438,6 +463,7 @@ impl SharedRunner {
                 order: &state.response_idempotency_order,
                 pending_order: &state.pending_response_idempotency_order,
             },
+            &state.identity_binding_failures,
         )
     }
 

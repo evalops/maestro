@@ -98,6 +98,196 @@ fn new_connection_adopts_private_capability_for_idempotent_retry() {
     assert_eq!(downgrade.code, HostedRunnerErrorCode::AccessDenied);
 }
 
+#[tokio::test]
+async fn hosted_runner_identity_binding_rejects_thread_ids_and_accepts_runner_session_id() {
+    let workspace = tempdir().expect("workspace");
+    let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+        .await
+        .expect("start hosted runner");
+    let client = reqwest::Client::new();
+
+    let mismatched = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .json(&json!({
+            "sessionId": "thread-canary-1",
+            "connectionId": "conn-thread-canary",
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("mismatched connection response");
+    assert_eq!(mismatched.status(), StatusCode::NOT_FOUND);
+    let mismatch_body: serde_json::Value =
+        mismatched.json().await.expect("mismatched connection json");
+    assert_eq!(mismatch_body["error_type"], "stale_session");
+    assert_eq!(
+        mismatch_body["details"]["identity_binding"]["requested_session_id"],
+        "thread-canary-1"
+    );
+    assert_eq!(
+        mismatch_body["details"]["identity_binding"]["expected_runner_session_id"],
+        "mrs_test"
+    );
+    assert_eq!(
+        mismatch_body["details"]["identity_binding"]["bound_maestro_session_id"],
+        "sess_test"
+    );
+
+    let journal_path = workspace
+        .path()
+        .join(".maestro")
+        .join("hosted-runner")
+        .join("threads");
+    let journal_path = std::fs::read_dir(journal_path)
+        .expect("identity failure journal directory")
+        .map(|entry| entry.expect("identity failure journal entry").path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .expect("identity failure journal");
+    let journal: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&journal_path).expect("identity failure journal"))
+            .expect("identity failure journal json");
+    assert_eq!(
+        journal["identity_binding_failures"][0]["requested_session_id"],
+        "thread-canary-1"
+    );
+
+    let connection = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .json(&json!({
+            "sessionId": "mrs_test",
+            "connectionId": "conn-runner-session",
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("runner session connection response");
+    assert_eq!(connection.status(), StatusCode::OK);
+
+    let state = client
+        .get(format!(
+            "{}/api/headless/sessions/mrs_test/state",
+            handle.base_url()
+        ))
+        .send()
+        .await
+        .expect("runner session state response");
+    assert_eq!(state.status(), StatusCode::OK);
+    let state_body: serde_json::Value = state.json().await.expect("runner session state json");
+    assert_eq!(state_body["session_id"], "sess_test");
+
+    handle.shutdown().await;
+
+    let restarted = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+        .await
+        .expect("restart hosted runner");
+    let reloaded_journal: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&journal_path).expect("reloaded identity failure journal"),
+    )
+    .expect("reloaded identity failure journal json");
+    assert_eq!(
+        reloaded_journal["identity_binding_failures"]
+            .as_array()
+            .expect("reloaded identity failure list")
+            .len(),
+        1
+    );
+
+    let runner_alias_thread = client
+        .get(format!(
+            "{}/api/headless/threads/mrs_test",
+            restarted.base_url()
+        ))
+        .send()
+        .await
+        .expect("runner alias thread response");
+    assert_eq!(runner_alias_thread.status(), StatusCode::NOT_FOUND);
+
+    let runner_alias_thread_events = client
+        .get(format!(
+            "{}/api/headless/threads/mrs_test/events?cursor=0",
+            restarted.base_url()
+        ))
+        .send()
+        .await
+        .expect("runner alias thread events response");
+    assert_eq!(runner_alias_thread_events.status(), StatusCode::NOT_FOUND);
+
+    let thread = client
+        .get(format!(
+            "{}/api/headless/threads/sess_test",
+            restarted.base_url()
+        ))
+        .send()
+        .await
+        .expect("thread response");
+    assert_eq!(thread.status(), StatusCode::OK);
+
+    let restarted_state = client
+        .get(format!(
+            "{}/api/headless/sessions/mrs_test/state",
+            restarted.base_url()
+        ))
+        .send()
+        .await
+        .expect("restarted runner session state response");
+    assert_eq!(restarted_state.status(), StatusCode::OK);
+
+    restarted.shutdown().await;
+}
+
+#[test]
+fn hosted_runner_events_validate_the_route_identity_boundary() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+
+    let thread_alias = match handle_events(
+        shared.clone(),
+        "mrs_test",
+        HashMap::new(),
+        EventsRouteIdentity::Thread,
+    ) {
+        Ok(_) => panic!("thread events must reject the runner-session alias"),
+        Err(error) => error,
+    };
+    assert_eq!(thread_alias.code, HostedRunnerErrorCode::StaleSession);
+
+    handle_events(
+        shared.clone(),
+        "sess_test",
+        HashMap::new(),
+        EventsRouteIdentity::Thread,
+    )
+    .expect("thread events should accept the bound Maestro thread id");
+    handle_events(
+        shared,
+        "mrs_test",
+        HashMap::new(),
+        EventsRouteIdentity::Session,
+    )
+    .expect("session events should accept the runner session id");
+}
+
+#[test]
+fn identity_binding_failure_ids_are_bounded_without_changing_short_ids() {
+    let short = "thread-canary-1";
+    assert_eq!(bounded_identity_binding_id(short), short);
+
+    let oversized = "x".repeat(MAX_IDENTITY_BINDING_FAILURE_ID_BYTES + 128);
+    let bounded = bounded_identity_binding_id(&oversized);
+    assert_eq!(bounded.len(), MAX_IDENTITY_BINDING_FAILURE_ID_BYTES);
+    assert!(bounded.ends_with('…'));
+    assert_eq!(
+        bounded,
+        format!(
+            "{}…",
+            "x".repeat(MAX_IDENTITY_BINDING_FAILURE_ID_BYTES - "…".len())
+        )
+    );
+}
+
 #[derive(Debug)]
 struct ScriptedRuntimeExecutor;
 
