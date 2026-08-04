@@ -17,6 +17,15 @@ const forbiddenPublicPaths = [
 	"test/scenario-pack.test.ts",
 ];
 
+// Internal mirror orchestration legitimately exists in the internal source
+// checkout, which is identifiable by the internal-only mirror exclude file.
+// These are enforced only when inspecting a public or prepared tree, so the
+// documented internal invocation of this checker keeps working.
+const forbiddenMirrorOrchestrationPaths = [
+	"scripts/check-public-mirror-drift.mjs",
+	"scripts/prepare-public-release-mirror.mjs",
+];
+
 const openAiProof = ["OpenAI", "Proof"];
 const forbiddenProofArtifactLabels = [
 	["Maestro", ...openAiProof].join(" "),
@@ -161,7 +170,10 @@ if (existsSync(resolve(mirrorExcludePath))) {
 	}
 }
 
-for (const path of forbiddenPublicPaths) {
+const enforcedForbiddenPaths = existsSync(resolve(mirrorExcludePath))
+	? forbiddenPublicPaths
+	: [...forbiddenPublicPaths, ...forbiddenMirrorOrchestrationPaths];
+for (const path of enforcedForbiddenPaths) {
 	if (existsSync(resolve(path))) {
 		errors.push(`${path} must not exist in the mirrored public source tree.`);
 	}

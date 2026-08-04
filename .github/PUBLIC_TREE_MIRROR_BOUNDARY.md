@@ -73,7 +73,15 @@ kept the import would not compile its own tests. The generator itself is
 internal-only and is excluded from the public tree, and it is listed in the
 generator's stale-target deletion set so an already-published copy is removed
 from the public repository on the next sync rather than being frozen there by
-the exclusion.
+the exclusion. `scripts/check-public-mirror-drift.mjs` spawns the generator, so
+it gets the same treatment: excluded, stale-deleted, and listed in the surface
+boundary checker's forbidden public paths so the prepared-tree smoke fails if
+either script ships publicly again. The boundary checker enforces those two
+entries only when `.github/public-release-mirror.exclude` is absent (a public
+or prepared tree); in the internal checkout, where both scripts legitimately
+exist, the documented direct invocation still passes. The drift audit runs
+only from an internal checkout via
+`.github/workflows/public-mirror-drift-audit.yml`.
 
 The same rewrites are available in place through
 `node scripts/prepare-public-release-mirror.mjs --sanitize-workspace <dir>`.

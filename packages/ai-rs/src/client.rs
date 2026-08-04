@@ -204,6 +204,26 @@ fn telemetry_provider_model(provider: &str, model: &str) -> String {
     }
 }
 
+fn canonical_managed_environment(value: Option<&str>) -> String {
+    let value = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("production");
+    if value.eq_ignore_ascii_case("prod") {
+        "production".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn canonical_managed_credential_name(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("default")
+        .to_string()
+}
+
 /// Default maximum time a streaming response may go without delivering any
 /// event before the attempt is abandoned as stalled.
 ///
@@ -384,18 +404,17 @@ impl UnifiedClient {
                 let environment = env
                     .get("MAESTRO_EVALOPS_ENVIRONMENT")
                     .map(String::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or("prod");
+                    .map(str::trim);
                 let mut provider_ref = serde_json::json!({
                     "provider": provider,
-                    "environment": environment,
+                    "environment": canonical_managed_environment(environment),
+                    "credential_name": canonical_managed_credential_name(
+                        env.get("MAESTRO_EVALOPS_CREDENTIAL_NAME")
+                            .map(String::as_str),
+                    ),
                 });
                 if let Some(object) = provider_ref.as_object_mut() {
-                    for (env_name, field) in [
-                        ("MAESTRO_EVALOPS_CREDENTIAL_NAME", "credential_name"),
-                        ("MAESTRO_EVALOPS_TEAM_ID", "team_id"),
-                    ] {
+                    for (env_name, field) in [("MAESTRO_EVALOPS_TEAM_ID", "team_id")] {
                         if let Some(value) = env
                             .get(env_name)
                             .map(String::as_str)
@@ -406,6 +425,23 @@ impl UnifiedClient {
                         }
                     }
                 }
+                tracing::info!(
+                    target: "maestro.llm",
+                    event = "managed_provider_ref_configured",
+                    provider = %provider,
+                    environment = %provider_ref["environment"],
+                    credential_name_present = provider_ref
+                        .get("credential_name")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|value| !value.is_empty()),
+                    team_id_present = provider_ref
+                        .get("team_id")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|value| !value.is_empty()),
+                    organization_id = %organization_id,
+                    workspace_id_present = workspace_id.is_some(),
+                    "managed provider reference prepared"
+                );
                 let client = OpenAiClient::with_base_url(credential, base_url)?
                     .with_route_provider(provider);
                 let client = if let Some(workspace_id) = workspace_id {
@@ -1115,6 +1151,22 @@ mod tests {
         assert_eq!(
             telemetry_provider_model("openai", "openai/gpt-5.5"),
             "gpt-5.5"
+        );
+    }
+
+    #[test]
+    fn managed_provider_ref_defaults_are_canonical() {
+        assert_eq!(canonical_managed_environment(None), "production");
+        assert_eq!(canonical_managed_environment(Some("prod")), "production");
+        assert_eq!(
+            canonical_managed_environment(Some(" Production ")),
+            "Production"
+        );
+        assert_eq!(canonical_managed_environment(Some("staging")), "staging");
+        assert_eq!(canonical_managed_credential_name(None), "default");
+        assert_eq!(
+            canonical_managed_credential_name(Some(" team-shared ")),
+            "team-shared"
         );
     }
 
