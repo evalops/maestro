@@ -44,6 +44,7 @@ use crate::headless::{
 mod config;
 mod handle;
 mod manifests;
+pub mod rendezvous_carrier;
 pub mod rendezvous_protocol;
 mod shared;
 mod snapshots;
