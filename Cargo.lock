@@ -3034,6 +3034,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonwebtoken"
+version = "11.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "881733cbc631fc9e472e24447ce32a64bedf2da498d6d8570b08edc87de71f65"
+dependencies = [
+ "base64",
+ "getrandom 0.2.17",
+ "js-sys",
+ "pem",
+ "serde",
+ "serde_json",
+ "signature",
+ "simple_asn1",
+ "zeroize",
+]
+
+[[package]]
 name = "kani-verifier"
 version = "0.67.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3299,7 +3316,7 @@ dependencies = [
  "dunce",
  "getrandom 0.3.4",
  "hmac 0.12.1",
- "jsonwebtoken",
+ "jsonwebtoken 11.0.0",
  "libc",
  "maestro-tui",
  "pdf-extract",
@@ -3911,7 +3928,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-timeout",
  "hyper-util",
- "jsonwebtoken",
+ "jsonwebtoken 9.3.1",
  "once_cell",
  "percent-encoding",
  "pin-project",
@@ -5576,7 +5593,6 @@ checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
 dependencies = [
  "winapi-util",
 ]
-
 
 [[package]]
 name = "textwrap"
