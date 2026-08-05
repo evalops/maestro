@@ -7,6 +7,9 @@ use std::process::Stdio;
 use tokio::net::TcpStream;
 use tokio::process::Command;
 
+use maestro_tui::checkpoints::{restore_latest, CheckpointStore};
+use maestro_tui::session::SessionManager;
+
 use crate::http::{json_response, read_request_body, RequestHead};
 use crate::{
     run_git, AppState, BackgroundSettings, BackgroundUpdateRequest, CommandPrefs,
@@ -748,15 +751,99 @@ pub(super) async fn update_background_response(
     )
 }
 
-pub(super) fn undo_response(head: &RequestHead) -> Value {
+pub(super) fn undo_response(head: &RequestHead, cwd: &Path) -> Value {
+    let Some(store) = checkpoint_store_for_request(head, cwd) else {
+        return match head.query.get("action").map(String::as_str) {
+            Some("history") => serde_json::json!({ "history": [] }),
+            _ => serde_json::json!({
+                "totalChanges": 0,
+                "canUndo": false,
+                "checkpoints": []
+            }),
+        };
+    };
+    undo_response_for_store(head, &store)
+}
+
+pub(super) fn undo_response_for_store(head: &RequestHead, store: &CheckpointStore) -> Value {
     match head.query.get("action").map(String::as_str) {
         Some("history") => serde_json::json!({ "history": [] }),
-        _ => serde_json::json!({
-            "totalChanges": 0,
-            "canUndo": false,
-            "checkpoints": []
+        _ => {
+            let checkpoints = store.list();
+            let total_changes = checkpoints
+                .iter()
+                .map(|checkpoint| checkpoint.entries.len())
+                .sum::<usize>();
+            serde_json::json!({
+                "totalChanges": total_changes,
+                "canUndo": !checkpoints.is_empty(),
+                "checkpoints": checkpoints.into_iter().map(|checkpoint| {
+                    serde_json::json!({
+                        "id": checkpoint.id,
+                        "createdAt": checkpoint.created_at,
+                        "prompt": checkpoint.prompt,
+                        "changedFiles": checkpoint.entries.len(),
+                        "canUndo": true
+                    })
+                }).collect::<Vec<_>>()
+            })
+        }
+    }
+}
+
+pub(super) fn restore_undo_response(head: &RequestHead, cwd: &Path) -> Value {
+    let Some(store) = checkpoint_store_for_request(head, cwd) else {
+        return serde_json::json!({
+            "success": false,
+            "message": "No session checkpoint is available to undo.",
+            "changedFiles": []
+        });
+    };
+    restore_undo_response_for_store(&store)
+}
+
+pub(super) fn restore_undo_response_for_store(store: &CheckpointStore) -> Value {
+    match restore_latest(store) {
+        Ok(Some(report)) => {
+            let mut changed_files = report.restored;
+            changed_files.extend(report.deleted);
+            serde_json::json!({
+                "success": true,
+                "message": format!("Restored files from checkpoint {}.", report.checkpoint_id),
+                "checkpointId": report.checkpoint_id,
+                "changedFiles": changed_files,
+                "skippedFiles": report.skipped,
+                "goneFiles": report.gone
+            })
+        }
+        Ok(None) => serde_json::json!({
+            "success": false,
+            "message": "No session checkpoint is available to undo.",
+            "changedFiles": []
+        }),
+        Err(error) => serde_json::json!({
+            "success": false,
+            "message": format!("Failed to restore checkpoint: {error}"),
+            "changedFiles": []
         }),
     }
+}
+
+fn checkpoint_store_for_request(head: &RequestHead, cwd: &Path) -> Option<CheckpointStore> {
+    let manager = SessionManager::new(cwd.to_string_lossy().to_string());
+    let session_id = head
+        .query
+        .get("sessionId")
+        .or_else(|| head.query.get("session_id"))
+        .cloned()
+        .or_else(|| {
+            manager
+                .list_sessions()
+                .ok()?
+                .first()
+                .map(|session| session.id.clone())
+        })?;
+    Some(CheckpointStore::new(manager.sessions_dir(), &session_id))
 }
 
 pub(super) async fn changes_snapshot(cwd: &Path) -> Value {

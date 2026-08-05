@@ -178,7 +178,13 @@ where
             "maestro hosted-runner requires MAESTRO_HOSTED_RUNNER_AUTH_TOKEN or MAESTRO_WEB_API_KEY; set MAESTRO_WEB_REQUIRE_KEY=0 only for local testing"
         );
     }
-    let mut supervisor = SupervisorConfig::default();
+    // The hosted resident owns one attested child generation. If that child
+    // exits, the resident must revoke readiness and let the external runtime
+    // owner replace the generation instead of reconnecting behind its lease.
+    let mut supervisor = SupervisorConfig {
+        auto_reconnect: false,
+        ..SupervisorConfig::default()
+    };
     supervisor.transport.cli_path = first_env(
         &merged_env,
         &[
@@ -746,6 +752,7 @@ mod tests {
             config.supervisor.transport.cli_path,
             agent.to_string_lossy()
         );
+        assert!(!config.supervisor.auto_reconnect);
         assert_eq!(config.agent_id.as_deref(), Some("agent_cli"));
         assert!(config
             .supervisor

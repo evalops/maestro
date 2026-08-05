@@ -4992,6 +4992,7 @@ async fn event_pump_failure_marks_runtime_failed_and_rejects_admission() {
 #[tokio::test]
 async fn child_exit_after_ready_revokes_identity_and_fails_closed() {
     let workspace = tempdir().expect("workspace");
+    let workspace_root = dunce::canonicalize(workspace.path()).expect("canonical workspace");
     let child_log = workspace.path().join("child.log");
     let script = create_response_consumer_script(
         workspace.path(),
@@ -5005,7 +5006,7 @@ async fn child_exit_after_ready_revokes_identity_and_fails_closed() {
         &supervisor,
     )));
     let shared = SharedRunner::new_with_message_executor_and_restore(
-        test_config(workspace.path().to_path_buf()),
+        test_config(workspace_root),
         executor,
         None,
     );
@@ -5040,6 +5041,30 @@ async fn child_exit_after_ready_revokes_identity_and_fails_closed() {
         .ensure_mutation_allowed()
         .expect_err("dead child must reject the next mutation");
     assert_eq!(admission.code, HostedRunnerErrorCode::RuntimeFailed);
+
+    let response = handle_drain(
+        shared.clone(),
+        DrainRequest {
+            reason: Some("runtime-failed".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    .expect("terminal runtime must remain drainable for durable export");
+    let ResponseBody::Json { status, body } = response else {
+        panic!("drain must return JSON");
+    };
+    assert_eq!(status, 200);
+    assert_eq!(body["status"], "drained");
+    let manifest_path = body["manifest_path"].as_str().expect("drain manifest path");
+    assert!(Path::new(manifest_path).is_file());
+    let state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(state.runtime_failed);
+    assert!(!state.ready);
 }
 
 #[tokio::test]

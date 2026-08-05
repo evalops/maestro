@@ -110,7 +110,7 @@ pub use codex_app_server_turns::{
 pub use compaction::{CompactionConfig, CompactionResult, ContextCompactor, CutPoint};
 pub use credential_store::{CredentialStats, CredentialStore, CredentialType, CredentialVault};
 pub use message_queue::{
-    MessageQueue, PendingMessage, PromptKind, QueueStats, MAX_PENDING_MESSAGES,
+    MessageQueue, PendingMessage, PromptKind, QueuePlacement, QueueStats, MAX_PENDING_MESSAGES,
 };
 pub use native::{
     NativeAgent, NativeAgentConfig, ToolDefinition, ToolResponseConsumption, ToolResponseMessage,

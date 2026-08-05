@@ -299,6 +299,8 @@ pub enum CommandAction {
     Loop(LoopAction),
     /// Structured goal mode (create / pause / block / complete).
     Goal(GoalAction),
+    /// Durable continual-harness refinement actions.
+    Harness(HarnessAction),
     /// Change status-bar footer density.
     SetFooterStyle(FooterStyle),
     /// Manage files queued for the next prompt (`/attach`).
@@ -388,6 +390,33 @@ pub enum LoopAction {
     Status,
 }
 
+/// Continual-harness slash actions.
+#[derive(Debug, Clone)]
+pub enum HarnessAction {
+    /// Show harness metadata and entries visible to the current scope.
+    Status,
+    /// List entries visible to the current scope.
+    List,
+    /// Add a scoped record. Evidence may be supplied after `--evidence`.
+    Add {
+        scope: String,
+        kind: String,
+        name: String,
+        content: String,
+        evidence: Option<String>,
+    },
+    /// Update a record's content. Evidence may be supplied after `--evidence`.
+    Update {
+        id: String,
+        content: String,
+        evidence: Option<String>,
+    },
+    /// Delete a record by id.
+    Delete(String),
+    /// Restore the entries captured at a prior revision.
+    Rollback(u64),
+}
+
 #[derive(Debug, Clone)]
 pub enum BackgroundMonitorAction {
     Add { task_id: String, pattern: String },
@@ -464,6 +493,14 @@ pub enum QueueModeKind {
     FollowUp,
 }
 
+/// Direction for moving a queued prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueMoveDirection {
+    Up,
+    Down,
+    Now,
+}
+
 /// Queue-related actions.
 #[derive(Debug, Clone)]
 pub enum QueueAction {
@@ -471,6 +508,11 @@ pub enum QueueAction {
     Show,
     /// Cancel a queued prompt by id
     Cancel { id: u64 },
+    /// Move a queued prompt relative to the other pending prompts.
+    Move {
+        id: u64,
+        direction: QueueMoveDirection,
+    },
     /// Set queue mode
     Mode {
         kind: QueueModeKind,

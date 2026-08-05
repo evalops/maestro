@@ -104,8 +104,8 @@ pub use registry::{
 pub use types::{
     A2aAction, AttachAction, BackgroundMonitorAction, Command, CommandAction, CommandArgument,
     CommandArgumentType, CommandCategory, CommandContext, CommandError, CommandHandler,
-    CommandOutput, CommandResult, ExportAction, FooterStyle, GoalAction, HistoryAction,
-    HooksAction, LoopAction, MagicTraceAction, McpAction, ModalType, PlanReviewAction,
-    PluginsAction, QueueAction, QueueModeKind, SessionAction, SkillsAction, ToolHistoryAction,
-    TrustAction, UsageAction,
+    CommandOutput, CommandResult, ExportAction, FooterStyle, GoalAction, HarnessAction,
+    HistoryAction, HooksAction, LoopAction, MagicTraceAction, McpAction, ModalType,
+    PlanReviewAction, PluginsAction, QueueAction, QueueModeKind, QueueMoveDirection, SessionAction,
+    SkillsAction, ToolHistoryAction, TrustAction, UsageAction,
 };

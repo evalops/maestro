@@ -103,7 +103,9 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use super::message_queue::{MessageQueue, PendingMessage, PromptKind, MAX_PENDING_MESSAGES};
+use super::message_queue::{
+    MessageQueue, PendingMessage, PromptKind, QueuePlacement, MAX_PENDING_MESSAGES,
+};
 use super::protocol::InlineToolApprovalContext;
 use super::safety::{SafetyController, SafetyVerdict};
 use super::{
@@ -598,6 +600,9 @@ enum AgentCommand {
 
     /// Cancel a queued prompt by id
     CancelQueued { id: u64 },
+
+    /// Reorder a queued prompt without changing its id or contents.
+    ReorderQueued { id: u64, placement: QueuePlacement },
 
     /// Change the active model
     ///
@@ -1330,6 +1335,12 @@ impl NativeAgent {
 
     pub fn cancel_queued(&self, id: u64) {
         let _ = self.command_tx.send(AgentCommand::CancelQueued { id });
+    }
+
+    pub fn reorder_queued(&self, id: u64, placement: QueuePlacement) {
+        let _ = self
+            .command_tx
+            .send(AgentCommand::ReorderQueued { id, placement });
     }
 
     fn cancel_with_options(&self, clear_pending: bool) {
@@ -2943,6 +2954,13 @@ impl NativeAgentRunner {
                         });
                     }
                 }
+                AgentCommand::ReorderQueued { id, placement } => {
+                    if !self.pending_messages.move_by_id(id, placement) {
+                        let _ = self.event_tx.send(FromAgent::Status {
+                            message: format!("No queued prompt found with id #{id}"),
+                        });
+                    }
+                }
                 AgentCommand::RequeueFollowUpFront {
                     content,
                     attachments,
@@ -3759,6 +3777,13 @@ impl NativeAgentRunner {
                             ),
                         });
                     } else {
+                        let _ = self.event_tx.send(FromAgent::Status {
+                            message: format!("No queued prompt found with id #{id}"),
+                        });
+                    }
+                }
+                AgentCommand::ReorderQueued { id, placement } => {
+                    if !self.pending_messages.move_by_id(id, placement) {
                         let _ = self.event_tx.send(FromAgent::Status {
                             message: format!("No queued prompt found with id #{id}"),
                         });

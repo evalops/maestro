@@ -76,9 +76,9 @@ use std::sync::Arc;
 use super::types::{
     A2aAction, ArgumentValue, AttachAction, BackgroundMonitorAction, Command, CommandAction,
     CommandArgument, CommandCategory, CommandContext, CommandError, CommandOutput, CommandResult,
-    ExportAction, FooterStyle, GoalAction, HistoryAction, HooksAction, LoopAction, McpAction,
-    ModalType, PlanReviewAction, PluginsAction, QueueAction, QueueModeKind, SessionAction,
-    SkillsAction, ToolHistoryAction, UsageAction,
+    ExportAction, FooterStyle, GoalAction, HarnessAction, HistoryAction, HooksAction, LoopAction,
+    McpAction, ModalType, PlanReviewAction, PluginsAction, QueueAction, QueueModeKind,
+    QueueMoveDirection, SessionAction, SkillsAction, ToolHistoryAction, UsageAction,
 };
 use crate::git;
 use crate::keybindings::{
@@ -1200,9 +1200,39 @@ pub fn build_command_registry() -> CommandRegistry {
                     )));
                 }
 
+                if action.eq_ignore_ascii_case("move") || action.eq_ignore_ascii_case("send") {
+                    let raw_id = parts.next().ok_or_else(|| {
+                        if action.eq_ignore_ascii_case("send") {
+                            CommandError::new("Usage: /queue send <id>")
+                        } else {
+                            CommandError::new("Usage: /queue move <id> <up|down>")
+                        }
+                    })?;
+                    let trimmed = raw_id.trim_start_matches('#');
+                    let id = trimmed.parse::<u64>().map_err(|_| {
+                        CommandError::new("Queue id must be a number (e.g. /queue send 12)")
+                    })?;
+                    let direction = if action.eq_ignore_ascii_case("send") {
+                        QueueMoveDirection::Now
+                    } else {
+                        match parts.next().map(str::to_ascii_lowercase).as_deref() {
+                            Some("up") => QueueMoveDirection::Up,
+                            Some("down") => QueueMoveDirection::Down,
+                            _ => {
+                                return Err(CommandError::new(
+                                    "Usage: /queue move <id> <up|down>",
+                                ));
+                            }
+                        }
+                    };
+                    return Ok(CommandOutput::Action(CommandAction::Queue(
+                        QueueAction::Move { id, direction },
+                    )));
+                }
+
                 if action != "mode" {
                     return Err(CommandError::new(
-                        "Usage: /queue [list|cancel <id>|mode [steer|followup] <one|all>]",
+                        "Usage: /queue [list|cancel <id>|move <id> <up|down>|send <id>|mode [steer|followup] <one|all>]",
                     ));
                 }
 
@@ -1245,7 +1275,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 )))
             }),
         )
-        .usage("/queue [list|cancel <id>|mode [steer|followup] <one|all>]"),
+        .usage("/queue [list|cancel <id>|move <id> <up|down>|send <id>|mode [steer|followup] <one|all>]"),
     );
 
     // Steer command
@@ -2098,6 +2128,24 @@ pub fn build_command_registry() -> CommandRegistry {
         ),
     );
 
+    // Continual harness (Prime Agent-inspired durable refinement records).
+    registry.register(
+        Command::new(
+            "harness",
+            "Manage durable prompt, memory, skill, and subagent context",
+            CommandCategory::Context,
+            Box::new(|ctx| {
+                Ok(CommandOutput::Action(CommandAction::Harness(
+                    parse_harness_action(&ctx.raw_args)?,
+                )))
+            }),
+        )
+        .alias("refine")
+        .usage(
+            "/harness [status|list|add <scope> <kind> <name> <content> [--evidence <text>]|update <id> <content>|delete <id>|rollback <revision>]",
+        ),
+    );
+
     // Attach path (image/video) for multimodal next prompt
     registry.register(
         Command::new(
@@ -2674,6 +2722,94 @@ fn parse_goal_action(raw: &str) -> Result<GoalAction, CommandError> {
             })
         }
     }
+}
+
+fn parse_harness_action(raw: &str) -> Result<HarnessAction, CommandError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("status") {
+        return Ok(HarnessAction::Status);
+    }
+    if trimmed.eq_ignore_ascii_case("list") {
+        return Ok(HarnessAction::List);
+    }
+
+    let mut parts = trimmed.splitn(2, char::is_whitespace);
+    let subcommand = parts.next().unwrap_or_default().to_ascii_lowercase();
+    let rest = parts.next().unwrap_or_default().trim();
+    match subcommand.as_str() {
+        "add" | "create" => {
+            let mut fields = rest.splitn(4, char::is_whitespace);
+            let scope = fields.next().unwrap_or_default();
+            let kind = fields.next().unwrap_or_default();
+            let name = fields.next().unwrap_or_default();
+            let content = fields.next().unwrap_or_default().trim();
+            if scope.is_empty() || kind.is_empty() || name.is_empty() || content.is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /harness add <scope> <kind> <name> <content> [--evidence <text>]",
+                ));
+            }
+            let (content, evidence) = split_harness_evidence(content);
+            if content.is_empty() {
+                return Err(CommandError::new(
+                    "Harness content is required before --evidence",
+                ));
+            }
+            Ok(HarnessAction::Add {
+                scope: scope.to_string(),
+                kind: kind.to_string(),
+                name: name.to_string(),
+                content,
+                evidence,
+            })
+        }
+        "update" | "set" => {
+            let mut fields = rest.splitn(2, char::is_whitespace);
+            let id = fields.next().unwrap_or_default();
+            let content = fields.next().unwrap_or_default().trim();
+            if id.is_empty() || content.is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /harness update <id> <content> [--evidence <text>]",
+                ));
+            }
+            let (content, evidence) = split_harness_evidence(content);
+            if content.is_empty() {
+                return Err(CommandError::new(
+                    "Harness content is required before --evidence",
+                ));
+            }
+            Ok(HarnessAction::Update {
+                id: id.to_string(),
+                content,
+                evidence,
+            })
+        }
+        "delete" | "remove" => {
+            if rest.is_empty() {
+                return Err(CommandError::new("Usage: /harness delete <id>"));
+            }
+            Ok(HarnessAction::Delete(rest.to_string()))
+        }
+        "rollback" | "restore" => {
+            let revision = rest.parse::<u64>().map_err(|_| {
+                CommandError::new("Usage: /harness rollback <revision> (revision must be numeric)")
+            })?;
+            Ok(HarnessAction::Rollback(revision))
+        }
+        _ => Err(CommandError::new(format!(
+            "Unknown harness action '{subcommand}'. Use status, list, add, update, delete, or rollback."
+        ))),
+    }
+}
+
+fn split_harness_evidence(content: &str) -> (String, Option<String>) {
+    let Some((content, evidence)) = content.split_once(" --evidence ") else {
+        return (content.trim().to_string(), None);
+    };
+    let evidence = evidence.trim();
+    (
+        content.trim().to_string(),
+        (!evidence.is_empty()).then(|| evidence.to_string()),
+    )
 }
 
 /// Built-ins + Grok-style skill/prompt slash extensions. Built-ins always win.

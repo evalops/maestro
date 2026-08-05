@@ -78,6 +78,14 @@ pub struct PendingMessage {
     pub priority: u8,
 }
 
+/// Destination for an explicit queue reorder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueuePlacement {
+    Front,
+    Before(u64),
+    Back,
+}
+
 impl PendingMessage {
     /// Create a new pending message with current timestamp
     pub fn new(content: impl Into<String>) -> Self {
@@ -344,6 +352,26 @@ impl MessageQueue {
     pub fn remove_by_id(&mut self, id: u64) -> Option<PendingMessage> {
         let index = self.queue.iter().position(|msg| msg.id == id)?;
         self.queue.remove(index)
+    }
+
+    /// Move a message before another message, or to the front when `before_id`
+    /// is `None`. Queue ids and message metadata are preserved.
+    pub fn move_by_id(&mut self, id: u64, placement: QueuePlacement) -> bool {
+        let Some(index) = self.queue.iter().position(|msg| msg.id == id) else {
+            return false;
+        };
+        let message = self.queue.remove(index).expect("queue index just found");
+        let target = match placement {
+            QueuePlacement::Front => 0,
+            QueuePlacement::Before(target_id) => self
+                .queue
+                .iter()
+                .position(|msg| msg.id == target_id)
+                .unwrap_or(self.queue.len()),
+            QueuePlacement::Back => self.queue.len(),
+        };
+        self.queue.insert(target, message);
+        true
     }
 
     /// Clear all pending messages
@@ -652,6 +680,30 @@ mod tests {
         assert_eq!(removed.id, first_id);
         assert_eq!(queue.len(), 1);
         assert_eq!(queue.peek().unwrap().id, second_id);
+    }
+
+    #[test]
+    fn test_move_by_id_before_preserves_queue_ids_and_order() {
+        let mut queue = MessageQueue::new();
+
+        let first_id = queue.reserve_id();
+        let second_id = queue.reserve_id();
+        let third_id = queue.reserve_id();
+        queue.push_with_kind_and_id("First", PromptKind::Prompt, first_id);
+        queue.push_with_kind_and_id("Second", PromptKind::Prompt, second_id);
+        queue.push_with_kind_and_id("Third", PromptKind::Prompt, third_id);
+
+        assert!(queue.move_by_id(third_id, QueuePlacement::Before(first_id)));
+        assert_eq!(
+            queue.iter().map(|message| message.id).collect::<Vec<_>>(),
+            vec![third_id, first_id, second_id]
+        );
+        assert!(queue.move_by_id(second_id, QueuePlacement::Front));
+        assert_eq!(
+            queue.iter().map(|message| message.id).collect::<Vec<_>>(),
+            vec![second_id, third_id, first_id]
+        );
+        assert!(!queue.move_by_id(999, QueuePlacement::Front));
     }
 
     #[test]

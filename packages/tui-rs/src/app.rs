@@ -70,14 +70,14 @@ use tokio::sync::mpsc;
 use crate::agent::MAX_PENDING_MESSAGES;
 use crate::agent::{
     CredentialVault, ExecutionSource, FromAgent, NativeAgent, NativeAgentConfig, PromptKind,
-    ToolExecution, ToolResponseMessage, ToolResult,
+    QueuePlacement, ToolExecution, ToolResponseMessage, ToolResult,
 };
 use crate::ai::AiProvider;
 use crate::clipboard::ClipboardManager;
 use crate::commands::{
     build_command_registry_with_extensions, BackgroundMonitorAction, CommandAction, CommandOutput,
     CommandRegistry, FooterStyle, LoopAction, ModalType, PlanReviewAction, QueueAction,
-    QueueModeKind, SlashCommandMatcher, SlashCycleState,
+    QueueModeKind, QueueMoveDirection, SlashCommandMatcher, SlashCycleState,
 };
 use crate::components::{
     approval_modal_kind, calculate_input_height, ApprovalController, ApprovalDecision,
@@ -89,6 +89,7 @@ use crate::config_watcher::{ConfigEvent, ConfigWatcher, ConfigWatcherBuilder};
 use crate::files::{get_workspace_files, WorkspaceFile};
 use crate::git;
 use crate::goal::GoalStore;
+use crate::harness::HarnessStore;
 use crate::keybindings::load_rust_tui_keybindings;
 use crate::keybindings::{is_keybindings_config_path, summarize_keybindings_config_issues};
 use crate::mcp::{
@@ -699,6 +700,9 @@ pub struct App {
     /// Structured goal mode store (`/goal`).
     goal_store: GoalStore,
 
+    /// Durable supplemental context used by `/harness` and `/refine`.
+    harness_store: HarnessStore,
+
     /// When true and the agent is idle, fire one goal continuation prompt.
     /// Armed on create/resume/auto-on, and after a worker turn if the goal is
     /// still active (worker did not call `update_goal` complete|blocked).
@@ -1126,6 +1130,16 @@ impl App {
 
         let terminal_size = terminal.size().ok().map(|area| (area.width, area.height));
 
+        let harness_store = match HarnessStore::load_default() {
+            Ok(store) => store,
+            Err(error) => {
+                state.add_system_message(format!(
+                    "Failed to load the continual harness; starting with an empty store: {error:#}"
+                ));
+                HarnessStore::default()
+            }
+        };
+
         Self {
             state,
             native_agent: None,
@@ -1186,6 +1200,7 @@ impl App {
             last_esc_at: None,
             loop_schedule: None,
             goal_store: GoalStore::load_for_process_start(),
+            harness_store,
             goal_auto_continue_armed: false,
             footer_style: crate::ui_prefs::UiPrefs::load_default().footer_style(),
             pending_attachments: Vec::new(),
@@ -1263,10 +1278,11 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         additions.join("\n\n")
     }
 
-    fn build_system_prompt_with_context(
+    fn build_system_prompt_with_harness_context(
         cwd: &str,
         current_year: i32,
         skills_section: Option<String>,
+        harness_section: Option<String>,
         active_prompt: &str,
     ) -> String {
         let mut sections = vec![Self::build_base_system_prompt(cwd)];
@@ -1274,6 +1290,12 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         if let Some(skills) = skills_section {
             if !skills.trim().is_empty() {
                 sections.push(skills);
+            }
+        }
+
+        if let Some(harness) = harness_section {
+            if !harness.trim().is_empty() {
+                sections.push(harness);
             }
         }
 
@@ -1988,9 +2010,18 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         } else {
             Some(skills_to_prompt(&self.loaded_skills))
         };
+        let harness_section = self
+            .harness_store
+            .prompt_section(std::path::Path::new(&cwd), self.state.session_id.as_deref());
         let active_prompt = self.skill_registry.active_system_prompt_additions();
 
-        Self::build_system_prompt_with_context(&cwd, current_year, skills_section, &active_prompt)
+        Self::build_system_prompt_with_harness_context(
+            &cwd,
+            current_year,
+            skills_section,
+            harness_section,
+            &active_prompt,
+        )
     }
 
     fn refresh_skills(&mut self, preserve_active: bool) {

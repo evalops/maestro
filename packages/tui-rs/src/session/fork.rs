@@ -5,12 +5,14 @@
 //! `ForkPersistence::Copied`): the fork re-persists the full history under a
 //! fresh id and then appends independently of the source.
 
-use std::fs;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use super::entries::{SessionEntry, SessionHeader};
 use super::writer::generate_session_filename;
+
+const MAX_SESSION_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Result of forking a session file.
 #[derive(Debug, Clone)]
@@ -35,29 +37,14 @@ pub struct ForkedSession {
 /// Returns an I/O error if the source cannot be read or the fork cannot be
 /// written, and `InvalidData` if the source has no parseable session header.
 pub fn fork_session_file(source_path: &Path) -> io::Result<ForkedSession> {
-    let raw = fs::read_to_string(source_path)?;
-    let mut lines: Vec<&str> = raw.split_inclusive('\n').collect();
-
-    // `source_path` may belong to a session another Maestro process has open
-    // right now (forking a session someone else is actively using is exactly
-    // what a fast session switcher makes easy to do). This read can land
-    // mid-append, leaving the final line a torn, incomplete JSON fragment;
-    // every earlier line was already a complete, newline-terminated write.
-    // Drop a torn trailing line rather than copy the fragment verbatim into
-    // the fork's own file -- the source file itself is never touched, and
-    // the fork will simply be missing the one message that was still being
-    // written when the fork ran.
-    if let Some(last) = lines.last() {
-        if serde_json::from_str::<serde_json::Value>(last.trim_end()).is_err() {
-            lines.pop();
-        }
+    let source = fs::File::open(source_path)?;
+    let mut reader = BufReader::new(source);
+    let mut line = String::new();
+    let header_bytes = read_bounded_line(&mut reader, &mut line)?;
+    if header_bytes == 0 {
+        return Err(invalid_data("empty session file"));
     }
-
-    let mut lines = lines.into_iter();
-    let header_line = lines
-        .next()
-        .ok_or_else(|| invalid_data("empty session file"))?;
-    let mut header: SessionHeader = serde_json::from_str(header_line.trim_end())
+    let mut header: SessionHeader = serde_json::from_str(line.trim_end())
         .map_err(|err| invalid_data(format!("invalid session header: {err}")))?;
 
     let source_id = std::mem::replace(&mut header.id, uuid::Uuid::new_v4().to_string());
@@ -69,18 +56,88 @@ pub fn fork_session_file(source_path: &Path) -> io::Result<ForkedSession> {
         .ok_or_else(|| invalid_data("session path has no parent directory"))?;
     let id = header.id.clone();
     let path = dir.join(generate_session_filename(&id));
+    let temp_path = dir.join(format!(".{id}.fork-{}.tmp", uuid::Uuid::new_v4()));
 
-    let mut out = serde_json::to_string(&SessionEntry::Session(header))
-        .map_err(|err| invalid_data(format!("failed to encode session header: {err}")))?;
-    out.push('\n');
-    out.extend(lines);
-    fs::write(&path, out)?;
+    let write_result = (|| -> io::Result<()> {
+        let output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        let mut writer = BufWriter::new(output);
+
+        let mut header = serde_json::to_string(&SessionEntry::Session(header))
+            .map_err(|err| invalid_data(format!("failed to encode session header: {err}")))?;
+        header.push('\n');
+        writer.write_all(header.as_bytes())?;
+
+        // Keep only one line buffered beyond the writer. This preserves the
+        // existing behavior of dropping a torn final line without loading the
+        // whole session into memory, and it also bounds every individual line.
+        let mut pending = String::new();
+        let mut next = String::new();
+        let mut has_pending = false;
+        loop {
+            let bytes = read_bounded_line(&mut reader, &mut next)?;
+            if bytes == 0 {
+                break;
+            }
+            if has_pending {
+                writer.write_all(pending.as_bytes())?;
+            }
+            std::mem::swap(&mut pending, &mut next);
+            has_pending = true;
+        }
+
+        if has_pending && serde_json::from_str::<serde_json::Value>(pending.trim_end()).is_ok() {
+            writer.write_all(pending.as_bytes())?;
+        }
+        writer.flush()
+    })();
+
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&temp_path, &path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
 
     Ok(ForkedSession {
         id,
         path,
         source_id,
     })
+}
+
+fn read_bounded_line<R: BufRead>(reader: &mut R, line: &mut String) -> io::Result<usize> {
+    line.clear();
+    let mut total = 0;
+
+    loop {
+        let chunk = reader.fill_buf()?;
+        if chunk.is_empty() {
+            return Ok(total);
+        }
+
+        let newline = chunk.iter().position(|byte| *byte == b'\n');
+        let chunk_len = newline.map_or(chunk.len(), |index| index + 1);
+        if total.saturating_add(chunk_len) > MAX_SESSION_LINE_BYTES {
+            return Err(invalid_data(format!(
+                "session line exceeds {MAX_SESSION_LINE_BYTES} bytes"
+            )));
+        }
+
+        let text = std::str::from_utf8(&chunk[..chunk_len])
+            .map_err(|err| invalid_data(format!("session file is not UTF-8: {err}")))?;
+        line.push_str(text);
+        reader.consume(chunk_len);
+        total += chunk_len;
+
+        if newline.is_some() {
+            return Ok(total);
+        }
+    }
 }
 
 fn invalid_data(message: impl Into<String>) -> io::Error {
@@ -254,5 +311,22 @@ mod tests {
 
         // Failed forks leave no stray files behind.
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn fork_rejects_a_session_line_over_the_streaming_limit() {
+        let temp = TempDir::new().unwrap();
+        let source_path = temp.path().join("oversized.jsonl");
+        let mut file = fs::File::create(&source_path).unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"session","id":"source-id","timestamp":"2024-01-15T10:30:00Z","cwd":"/tmp/project"}}"#
+        )
+        .unwrap();
+        let payload = "x".repeat(8 * 1024 * 1024);
+        writeln!(file, r#"{{"type":"message","payload":"{payload}"}}"#).unwrap();
+
+        let error = fork_session_file(&source_path).expect_err("oversized line must be bounded");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 }
