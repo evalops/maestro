@@ -49,7 +49,27 @@ jobs:
           RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
         run: |
           set -euo pipefail
-          published_version="$(npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" version 2>/dev/null || true)"
+
+          # `npm view ... 2>/dev/null || true` collapsed "this version is not
+          # published" and "the registry is unreachable" into the same
+          # published=false, and published=false is what lets the
+          # dispatch-public-release job fire. A registry outage must not be able
+          # to dispatch a duplicate release, so E404 (genuinely unpublished) is
+          # separated from every other npm failure here.
+          npm_stderr="$RUNNER_TEMP/npm-view.stderr"
+          npm_status=0
+          published_version="$(npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" version 2>"$npm_stderr")" || npm_status=$?
+
+          if [[ "$npm_status" -ne 0 ]]; then
+            if grep -q "E404" "$npm_stderr"; then
+              published_version=""
+            else
+              echo "::error::npm view ${PACKAGE_NAME}@${RELEASE_VERSION} failed with status ${npm_status} and no E404; refusing to treat an unreachable registry as 'not published'."
+              cat "$npm_stderr" >&2
+              exit 1
+            fi
+          fi
+
           if [[ "${published_version}" == "${RELEASE_VERSION}" ]]; then
             echo "published=true" >> "$GITHUB_OUTPUT"
             echo "${PACKAGE_NAME}@${RELEASE_VERSION} is published on npm."
@@ -82,8 +102,12 @@ jobs:
             echo "Found ${active_count} active release workflow run(s) for ${RELEASE_TAG}; not dispatching another."
           fi
 
+      # Fail only when the version is already tagged at another commit, package
+      # inputs changed, the version is not on npm, and no release run is still
+      # in flight (queued/waiting/in_progress). A release waiting on the
+      # npm-release environment approval must not red every subsequent main push.
       - name: Require version bump for existing release tag
-        if: ${{ github.repository == 'evalops/maestro' && steps.release.outputs.tag_exists == 'true' && steps.release.outputs.tag_matches_head != 'true' && steps.release.outputs.package_changed_since_tag == 'true' && steps.registry-release.outputs.published != 'true' }}
+        if: ${{ github.repository == 'evalops/maestro' && steps.release.outputs.tag_exists == 'true' && steps.release.outputs.tag_matches_head != 'true' && steps.release.outputs.package_changed_since_tag == 'true' && steps.registry-release.outputs.published != 'true' && (steps.active-release.outputs.active_count == '0' || steps.active-release.outputs.active_count == '') }}
         env:
           RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
           RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
@@ -96,20 +120,32 @@ jobs:
           exit 1
 
       - name: Summarize tag status
+        env:
+          TAG_EXISTS: ${{ steps.release.outputs.tag_exists }}
+          TAG_MATCHES_HEAD: ${{ steps.release.outputs.tag_matches_head }}
+          PACKAGE_CHANGED_SINCE_TAG: ${{ steps.release.outputs.package_changed_since_tag }}
+          REGISTRY_PUBLISHED: ${{ steps.registry-release.outputs.published }}
+          ACTIVE_RELEASE_COUNT: ${{ steps.active-release.outputs.active_count }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
         run: |
-          if [[ "${{ steps.release.outputs.tag_exists }}" == "true" && "${{ steps.release.outputs.tag_matches_head }}" == "true" ]]; then
-            echo "Semver tag ${{ steps.release.outputs.release_tag }} already exists at this commit."
-          elif [[ "${{ steps.release.outputs.tag_exists }}" == "true" && "${{ steps.release.outputs.package_changed_since_tag }}" == "true" && "${{ steps.registry-release.outputs.published }}" == "true" ]]; then
-            echo "Semver tag ${{ steps.release.outputs.release_tag }} already exists at another commit."
-            echo "${{ steps.release.outputs.package_name }}@${{ steps.release.outputs.release_version }} is already published on npm; no new release dispatch is needed."
-          elif [[ "${{ steps.release.outputs.tag_exists }}" == "true" && "${{ steps.release.outputs.package_changed_since_tag }}" == "true" ]]; then
-            echo "Semver tag ${{ steps.release.outputs.release_tag }} already exists at another commit."
+          if [[ "$TAG_EXISTS" == "true" && "$TAG_MATCHES_HEAD" == "true" ]]; then
+            echo "Semver tag ${RELEASE_TAG} already exists at this commit."
+          elif [[ "$TAG_EXISTS" == "true" && "$PACKAGE_CHANGED_SINCE_TAG" == "true" && "$REGISTRY_PUBLISHED" == "true" ]]; then
+            echo "Semver tag ${RELEASE_TAG} already exists at another commit."
+            echo "${PACKAGE_NAME}@${RELEASE_VERSION} is already published on npm; no new release dispatch is needed."
+          elif [[ "$TAG_EXISTS" == "true" && "$PACKAGE_CHANGED_SINCE_TAG" == "true" && "$ACTIVE_RELEASE_COUNT" != "0" && -n "$ACTIVE_RELEASE_COUNT" ]]; then
+            echo "Semver tag ${RELEASE_TAG} already exists at another commit."
+            echo "Release workflow for ${RELEASE_TAG} is still in flight (${ACTIVE_RELEASE_COUNT} active run(s)); not failing main for an in-progress publish."
+          elif [[ "$TAG_EXISTS" == "true" && "$PACKAGE_CHANGED_SINCE_TAG" == "true" ]]; then
+            echo "Semver tag ${RELEASE_TAG} already exists at another commit."
             echo "Package-impacting source inputs changed since the existing tag."
-          elif [[ "${{ steps.release.outputs.tag_exists }}" == "true" ]]; then
-            echo "Semver tag ${{ steps.release.outputs.release_tag }} already exists."
+          elif [[ "$TAG_EXISTS" == "true" ]]; then
+            echo "Semver tag ${RELEASE_TAG} already exists."
             echo "No package-impacting source inputs changed since the existing tag."
           else
-            echo "Created semver tag ${{ steps.release.outputs.release_tag }}."
+            echo "Created semver tag ${RELEASE_TAG}."
           fi
 
   verify-published-registry-package:
