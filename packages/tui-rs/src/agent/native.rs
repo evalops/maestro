@@ -9095,9 +9095,18 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         let parent_pid_path = workspace.path().join("background-parent.pid");
         let child_pid_path = workspace.path().join("background-child.pid");
         let sentinel_path = workspace.path().join("background-post-shutdown-sentinel");
+        // The child records its PID immediately but delays the workspace
+        // mutation for 30s. A 0.4s delay raced the setup path on loaded CI
+        // runners: if pid-file polls and pre-shutdown assertions were
+        // starved past the mutation, the sentinel existed before shutdown
+        // ran, and the post-shutdown assertion failed even though the kill
+        // path worked (evalops/maestro-internal run 31023856096). 30s
+        // matches the sibling bash shutdown fixtures and gives the
+        // poll-plus-shutdown path a large margin while the process-group
+        // assertions remain the kill-correctness proof.
         let command = format!(
             "printf '%s\n' \"$$\" > '{}'; \
-             (sleep 0.4; printf leaked > '{}') & child=$!; \
+             (sleep 30; printf leaked > '{}') & child=$!; \
              printf '%s\n' \"$child\" > '{}'; wait \"$child\"",
             parent_pid_path.display(),
             sentinel_path.display(),
