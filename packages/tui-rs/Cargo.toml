@@ -90,13 +90,13 @@ zeroize = "1"
 x509-parser.workspace = true
 
 # Markdown parsing
-pulldown-cmark = "0.12"
+pulldown-cmark = "0.13"
 
 # Syntax highlighting for code blocks
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "parsing", "regex-fancy"] }
 
 # Diff generation
-similar = "2"
+similar = "3"
 
 # Random selection for tooltips
 rand = "0.9"
@@ -130,16 +130,16 @@ arboard = { version = "3", optional = true }
 mlua = { version = "0.10", features = ["lua54", "serialize", "vendored", "send"], optional = true }
 
 # WASM runtime for hook plugins (optional)
-wasmtime = { version = "36", optional = true }
+wasmtime = { version = "47", optional = true }
 
 # File watching for hot reload
-notify = { version = "7", optional = true }
+notify = { version = "8", optional = true }
 tiktoken-rs = { version = "0.12.0", default-features = false }
 
 # Linux sandboxing (Landlock + seccomp)
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4.5"
-seccompiler = "0.4"
+seccompiler = "0.5"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

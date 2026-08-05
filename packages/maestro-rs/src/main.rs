@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 // runtime spawns worker threads — so the prctl/setrlimit calls and the
 // environment sanitization stay race-free. See
 // `maestro_tui::process_hardening` for details and the opt-out env var.
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn pre_main_hardening() {
     maestro_tui::process_hardening::pre_main_hardening();
 }

@@ -868,6 +868,12 @@ impl HostedRunnerHeadlessMessageExecutor for AgentSupervisorHostedRunnerMessageE
             .map_err(|_| HostedRunnerError::internal("agent supervisor mutex poisoned"))?;
         let messages = supervisor.drain_available_agent_messages();
         let generation = supervisor.transport_generation();
+        if generation != 0 && !supervisor.is_connected() {
+            return Err(HostedRunnerError::new(
+                HostedRunnerErrorCode::RuntimeFailed,
+                "native headless agent disconnected after becoming ready",
+            ));
+        }
         let mut queued = self
             .queued_responses
             .lock()
