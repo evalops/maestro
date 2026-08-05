@@ -4988,6 +4988,60 @@ async fn event_pump_failure_marks_runtime_failed_and_rejects_admission() {
     handle.shutdown().await;
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn child_exit_after_ready_revokes_identity_and_fails_closed() {
+    let workspace = tempdir().expect("workspace");
+    let child_log = workspace.path().join("child.log");
+    let script = create_response_consumer_script(
+        workspace.path(),
+        "ready-until-disconnected.sh",
+        &child_log,
+        true,
+        None,
+    );
+    let supervisor = connected_supervisor_for_script(&script).await;
+    let executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(
+        &supervisor,
+    )));
+    let shared = SharedRunner::new_with_message_executor_and_restore(
+        test_config(workspace.path().to_path_buf()),
+        executor,
+        None,
+    );
+
+    assert!(shared.identity().ready);
+    shared
+        .ensure_mutation_allowed()
+        .expect("live ready child admits mutations");
+
+    supervisor
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .disconnect();
+    assert_eq!(pump_tick(&shared), PumpTick::Stop);
+    assert!(!shared.identity().ready);
+
+    {
+        let state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(state.runtime_failed);
+        assert_eq!(state.last_status.as_deref(), Some("Runtime failed"));
+        assert_eq!(state.last_error_type.as_deref(), Some("fatal"));
+        assert_eq!(
+            state.last_error.as_deref(),
+            Some("native headless agent disconnected after becoming ready")
+        );
+    }
+
+    let admission = shared
+        .ensure_mutation_allowed()
+        .expect_err("dead child must reject the next mutation");
+    assert_eq!(admission.code, HostedRunnerErrorCode::RuntimeFailed);
+}
+
 #[tokio::test]
 async fn authenticated_current_controller_gets_byte_faithful_client_tool_arguments() {
     let workspace = tempdir().expect("workspace");

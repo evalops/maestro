@@ -275,8 +275,9 @@ impl WasmHookExecutor {
         }
 
         // Compile the module
-        let module = Module::new(engine, &bytes)
-            .with_context(|| format!("Failed to compile WASM module: {}", path.display()))?;
+        let module = Module::new(engine, &bytes).map_err(|error| {
+            anyhow::anyhow!("Failed to compile WASM module {}: {error}", path.display())
+        })?;
 
         self.plugins.push(CompiledPlugin {
             path: path.to_path_buf(),
@@ -332,7 +333,7 @@ impl WasmHookExecutor {
 
         // Create instance
         let instance = Instance::new(&mut store, &plugin.module, &[])
-            .with_context(|| "Failed to instantiate WASM module")?;
+            .map_err(|error| anyhow::anyhow!("Failed to instantiate WASM module: {error}"))?;
 
         // Get memory export
         let memory = instance
@@ -342,14 +343,14 @@ impl WasmHookExecutor {
         // Get function exports
         let alloc_fn = instance
             .get_typed_func::<i32, i32>(&mut store, "alloc")
-            .with_context(|| "Missing 'alloc' export")?;
+            .map_err(|error| anyhow::anyhow!("Missing 'alloc' export: {error}"))?;
         let dealloc_fn = instance
             .get_typed_func::<(i32, i32), ()>(&mut store, "dealloc")
             .ok();
 
         let on_pre_tool_use_fn = instance
             .get_typed_func::<(i32, i32), i32>(&mut store, "on_pre_tool_use")
-            .with_context(|| "Missing 'on_pre_tool_use' export")?;
+            .map_err(|error| anyhow::anyhow!("Missing 'on_pre_tool_use' export: {error}"))?;
 
         let get_result_len_fn = instance
             .get_typed_func::<(), i32>(&mut store, "get_result_len")
@@ -391,7 +392,7 @@ impl WasmHookExecutor {
                 if timed_out.load(Ordering::Relaxed) {
                     return Err(anyhow::anyhow!("WASM hook execution timed out"));
                 }
-                return Err(err);
+                return Err(err.into());
             }
         };
 
@@ -555,7 +556,7 @@ impl WasmHookExecutor {
         store.set_epoch_deadline(1);
 
         let instance = Instance::new(&mut store, &plugin.module, &[])
-            .with_context(|| "Failed to instantiate WASM module")?;
+            .map_err(|error| anyhow::anyhow!("Failed to instantiate WASM module: {error}"))?;
 
         let memory = instance
             .get_memory(&mut store, "memory")
@@ -564,7 +565,7 @@ impl WasmHookExecutor {
         // Get alloc function
         let alloc_fn = instance
             .get_typed_func::<i32, i32>(&mut store, "alloc")
-            .with_context(|| "Missing 'alloc' export")?;
+            .map_err(|error| anyhow::anyhow!("Missing 'alloc' export: {error}"))?;
 
         // Try to get on_post_tool_use - if not present, skip silently
         let on_post_tool_use_fn =
@@ -606,7 +607,7 @@ impl WasmHookExecutor {
                 if timed_out.load(Ordering::Relaxed) {
                     return Err(anyhow::anyhow!("WASM post-hook execution timed out"));
                 }
-                return Err(err);
+                return Err(err.into());
             }
         }
 

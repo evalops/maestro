@@ -4733,7 +4733,7 @@ async fn platform_a2a_push_callback_accepts_workspace_derived_token() {
     // HMAC variant instead of the raw shared secret.
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
 
     let _guard = ENV_LOCK.lock().await;
@@ -4775,7 +4775,7 @@ async fn platform_a2a_push_callback_accepts_workspace_derived_token() {
 async fn platform_a2a_push_callback_rejects_workspace_derived_token_with_wrong_workspace() {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
 
     let _guard = ENV_LOCK.lock().await;
