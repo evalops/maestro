@@ -70,10 +70,10 @@ impl ProviderRegistry {
         } else {
             descriptor_for_bare_model(requested)
         };
-        let (auth_source, credential) = match first_env(env, descriptor.auth_env) {
+        let (auth_source, credential) = match first_env_or_file(env, descriptor.auth_env)? {
             Some((name, value)) => {
-                let credential = op_secret::resolve_credential(name, value)?;
-                (Some(name.to_string()), Some(credential))
+                let credential = op_secret::resolve_credential(&name, &value)?;
+                (Some(name), Some(credential))
             }
             None => (None, None),
         };
@@ -95,7 +95,7 @@ impl ProviderRegistry {
         let resolved = Self::resolve(model_or_provider, env)?;
         if resolved.credential.is_none() {
             bail!(
-                "provider {} requires one of: {}",
+                "provider {} requires one of: {} (or the matching *_FILE path)",
                 resolved.provider.id,
                 resolved.provider.auth_env.join(", ")
             );
@@ -115,6 +115,39 @@ fn first_env<'a>(
             .filter(|value| !value.is_empty())
             .map(|value| (*name, value))
     })
+}
+
+/// Resolve a provider credential from a direct env value or a sibling
+/// `NAME_FILE` path. Platform Runner Host delivers tenant mints only as
+/// bootstrap files (`MAESTRO_EVALOPS_ACCESS_TOKEN_FILE`); the raw bearer must
+/// not be required in the process environment.
+fn first_env_or_file(
+    env: &HashMap<String, String>,
+    names: &[&'static str],
+) -> Result<Option<(String, String)>> {
+    if let Some((name, value)) = first_env(env, names) {
+        return Ok(Some((name.to_string(), value.to_string())));
+    }
+    for name in names {
+        let file_key = format!("{name}_FILE");
+        let Some(path) = env
+            .get(&file_key)
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let contents = std::fs::read_to_string(path).map_err(|error| {
+            anyhow::anyhow!("failed to read provider credential file {file_key}={path}: {error}")
+        })?;
+        let contents = contents.trim();
+        if contents.is_empty() {
+            bail!("provider credential file {file_key}={path} is empty");
+        }
+        return Ok(Some((file_key, contents.to_string())));
+    }
+    Ok(None)
 }
 
 fn normalize_base_url(value: &str) -> String {
@@ -433,5 +466,58 @@ mod tests {
             ProviderRegistry::descriptor("vertex").map(|value| value.id),
             Some("vertex-ai")
         );
+    }
+
+    #[test]
+    fn evalops_managed_provider_reads_token_from_access_token_file() {
+        let dir =
+            std::env::temp_dir().join(format!("maestro-ai-rs-token-file-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("evalops-access-token");
+        std::fs::write(&path, "tenant-mint-from-bootstrap\n").expect("write token file");
+        let env = HashMap::from([(
+            "MAESTRO_EVALOPS_ACCESS_TOKEN_FILE".to_string(),
+            path.display().to_string(),
+        )]);
+        let resolved = ProviderRegistry::require("evalops/gpt-4o-mini", &env).unwrap();
+        assert_eq!(
+            resolved.credential.as_deref(),
+            Some("tenant-mint-from-bootstrap")
+        );
+        assert_eq!(
+            resolved.auth_source.as_deref(),
+            Some("MAESTRO_EVALOPS_ACCESS_TOKEN_FILE")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn evalops_direct_token_env_wins_over_token_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "maestro-ai-rs-token-file-pref-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("evalops-access-token");
+        std::fs::write(&path, "from-file").expect("write token file");
+        let env = HashMap::from([
+            (
+                "MAESTRO_EVALOPS_ACCESS_TOKEN".to_string(),
+                "from-env".to_string(),
+            ),
+            (
+                "MAESTRO_EVALOPS_ACCESS_TOKEN_FILE".to_string(),
+                path.display().to_string(),
+            ),
+        ]);
+        let resolved = ProviderRegistry::require("evalops/gpt-4o-mini", &env).unwrap();
+        assert_eq!(resolved.credential.as_deref(), Some("from-env"));
+        assert_eq!(
+            resolved.auth_source.as_deref(),
+            Some("MAESTRO_EVALOPS_ACCESS_TOKEN")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
