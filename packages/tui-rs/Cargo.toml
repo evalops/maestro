@@ -133,7 +133,7 @@ mlua = { version = "0.10", features = ["lua54", "serialize", "vendored", "send"]
 wasmtime = { version = "36", optional = true }
 
 # File watching for hot reload
-notify = { version = "7", optional = true }
+notify = { version = "8", optional = true }
 tiktoken-rs = { version = "0.12.0", default-features = false }
 
 # Linux sandboxing (Landlock + seccomp)
