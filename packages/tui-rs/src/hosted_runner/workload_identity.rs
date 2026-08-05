@@ -23,8 +23,8 @@ const MAX_CERTIFICATE_TTL_SECONDS: i64 = 300;
 // Identity holds the Sandboxwich placement fence for up to ~30s while the
 // attestation becomes live. The resident must outwait that window or the first
 // provision after a cold start fails closed with identity_exchange_failed.
-const INITIAL_EXCHANGE_TIMEOUT: StdDuration = StdDuration::from_secs(45);
-const INITIAL_EXCHANGE_MIN_BACKOFF: StdDuration = StdDuration::from_millis(100);
+const INITIAL_EXCHANGE_TIMEOUT: StdDuration = StdDuration::from_secs(12);
+const INITIAL_EXCHANGE_MIN_BACKOFF: StdDuration = StdDuration::from_millis(25);
 const INITIAL_EXCHANGE_MAX_BACKOFF: StdDuration = StdDuration::from_secs(2);
 const INITIAL_EXCHANGE_JITTER_FACTOR: f64 = 0.2;
 pub(super) const RUNNER_HOST_CLIENT_URI: &str = "spiffe://identity.evalops.dev/service/runner-host";
