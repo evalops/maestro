@@ -340,7 +340,12 @@ impl ControlPlaneConfig {
                 trimmed_env("MAESTRO_OPENROUTER_API_KEY")
                     .or_else(|| trimmed_env("OPENROUTER_API_KEY"))
             } else {
+                // Prefer an explicit gateway bearer when present; otherwise read
+                // the tenant mint that Platform delivers as a bootstrap file.
                 trimmed_env("MAESTRO_LLM_GATEWAY_TOKEN")
+                    .or_else(|| trimmed_env("MAESTRO_EVALOPS_ACCESS_TOKEN"))
+                    .or_else(|| trimmed_env_file("MAESTRO_LLM_GATEWAY_TOKEN_FILE"))
+                    .or_else(|| trimmed_env_file("MAESTRO_EVALOPS_ACCESS_TOKEN_FILE"))
             },
             llm_gateway_org_id: if openrouter_models {
                 None
@@ -1585,6 +1590,21 @@ fn trimmed_env(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn trimmed_env_file(name: &str) -> Option<String> {
+    let path = trimmed_env(name)?;
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => {
+            let contents = contents.trim();
+            if contents.is_empty() {
+                None
+            } else {
+                Some(contents.to_string())
+            }
+        }
+        Err(_) => None,
+    }
 }
 
 fn truthy_env(name: &str) -> bool {

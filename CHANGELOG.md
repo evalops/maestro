@@ -34,6 +34,37 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.63] - 2026-08-05
+
+### Added
+
+- Add native Bedrock Converse streaming (#3316). <!-- maestro-release-note:f4aeff49e521 -->
+- Harden subagent ops after #3282 (#3306). <!-- maestro-release-note:7c3f737bd63a -->
+- Add governed subagent operations (#3282). <!-- maestro-release-note:8a2e03f9d12c -->
+- Expose startup lifecycle evidence (#3303). <!-- maestro-release-note:0ec56139987b -->
+
+### Changed
+
+- Create replay gate output parent (#3313). <!-- maestro-release-note:ca8cf4d726df -->
+- Parallelize scenario replay and add tracing. <!-- maestro-release-note:9de19764c992 -->
+- Fix hosted runner identity binding (#3310). <!-- maestro-release-note:c62cbe9d55ec -->
+- Make journal-write failure semantics explicit (#3307). <!-- maestro-release-note:2281aa94572b -->
+
+### Fixed
+
+- Resolve EvalOps gateway token from ACCESS_TOKEN_FILE (#3320). <!-- maestro-release-note:50de7ad45cd2 -->
+- Make fatal runtime state terminal (#3319). <!-- maestro-release-note:38d70671d1be -->
+- Honor canonical placement generation (#3318). <!-- maestro-release-note:97668edd5bc6 -->
+- Preserve provider on model selection (#3317). <!-- maestro-release-note:f594e345f2e2 -->
+- Guard the boundary lists and shipped-script references (#3308). <!-- maestro-release-note:3c47e9801843 -->
+- Route explicit Vertex AI models (#3315). <!-- maestro-release-note:24bd9bd442dc -->
+- Catalog Vertex Gemini routes (#3314). <!-- maestro-release-note:46e282fcedca -->
+- Run workspace clippy from check-pr.sh even when crate-scoped (#3309). <!-- maestro-release-note:a3f0632ee255 -->
+- Treat a dropped response receipt as a rejection (#3305). <!-- maestro-release-note:5a9d80d5cca2 -->
+- Canonicalize the stored login providerRef tuple (#3304). <!-- maestro-release-note:61073de5bcb9 -->
+- Close hosted response lifecycle races (#3296). <!-- maestro-release-note:ed73aa4b93f5 -->
+- Stop shipping the drift checker to the public tree (#3301). <!-- maestro-release-note:c240568988cc -->
+
 ## [0.10.62] - 2026-08-03
 
 ### Added
