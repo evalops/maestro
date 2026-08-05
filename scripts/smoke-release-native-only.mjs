@@ -30,8 +30,10 @@ chmodSync(binary, 0o755);
 const env = {
 	HOME: sandbox,
 	MAESTRO_HOME: join(sandbox, ".maestro"),
+	MAESTRO_MODEL: "gpt-5.5",
 	MAESTRO_WEB_REQUIRE_KEY: "0",
 	MAESTRO_WEB_REQUIRE_REDIS: "0",
+	OPENAI_API_KEY: "native-release-smoke-test-key",
 	PATH: pathDir,
 	TERM: "xterm-256color",
 };
@@ -55,7 +57,12 @@ const headless = run(
 	["--headless"],
 	`${JSON.stringify({ type: "hello", protocol_version: protocolVersion, client_info: { name: "native-smoke", version: "1" }, role: "controller" })}\n${JSON.stringify({ type: "shutdown" })}\n`,
 );
-if (!headless.includes('"type":"hello_ok"')) throw new Error("headless smoke failed");
+if (
+	!headless.includes('"type":"ready"') ||
+	!headless.includes('"model":"gpt-5.5"') ||
+	!headless.includes('"type":"hello_ok"')
+)
+	throw new Error("headless smoke failed");
 
 const scenario = resolve("test/fixtures/scripted-replay/basic.json");
 if (existsSync(scenario)) run(["scenario", "run", scenario, "--json"]);

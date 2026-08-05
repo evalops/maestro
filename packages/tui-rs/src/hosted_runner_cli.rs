@@ -8,11 +8,16 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use serde_json::json;
 
-use crate::headless::{AgentSupervisor, SessionRecorder, SupervisorConfig};
+use crate::headless::{
+    AgentEvent, AgentSupervisor, SessionRecorder, SupervisorConfig, SupervisorEvent,
+};
 use crate::hosted_runner::{
     load_hosted_runner_session_replay, start_hosted_runner_with_message_executor,
     AgentSupervisorHostedRunnerMessageExecutor, HostedRunnerConfig, HostedRunnerHandle,
 };
+
+const RESIDENT_MODEL_READY_CONTRACT_REVISION: &str = "maestro-resident-model-ready-v2";
+const HEADLESS_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -163,6 +168,7 @@ where
     let cli = HostedRunnerCliArgs::try_parse_from(args)?;
     let mut merged_env = env.clone();
     apply_cli_env_overrides(&mut merged_env, &cli);
+    validate_resident_contract(&merged_env)?;
 
     let runner = HostedRunnerConfig::from_env_map(&merged_env)?;
     let auth_required =
@@ -223,6 +229,17 @@ where
     if let Some(replay) = restore_replay.as_ref() {
         recorder.apply_snapshot(replay.state.clone(), replay.last_init.clone())?;
     }
+    let child_env = config
+        .supervisor
+        .transport
+        .env
+        .iter()
+        .cloned()
+        .collect::<HashMap<_, _>>();
+    let expected_model = crate::headless_server::resolve_headless_model(None, &child_env);
+    let expected_provider = managed_model(&expected_model).then(|| {
+        first_env(&child_env, &["MAESTRO_EVALOPS_PROVIDER"]).unwrap_or_else(|| "openai".to_string())
+    });
     let mut supervisor = AgentSupervisor::new(config.supervisor).with_session_recorder(recorder);
     if let Some(replay) = restore_replay {
         supervisor.restore_session_replay(crate::headless::SessionReplay {
@@ -235,6 +252,12 @@ where
         supervisor.restore_session_replay(recorded_replay);
     }
     supervisor.connect().await?;
+    await_headless_ready(
+        &mut supervisor,
+        &expected_model,
+        expected_provider.as_deref(),
+    )
+    .await?;
     let executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::new(
         Mutex::new(supervisor),
     )));
@@ -384,6 +407,22 @@ fn hosted_agent_env(
                 .to_string()
         }),
     ));
+    let model = crate::headless_server::resolve_headless_model(None, merged_env);
+    env.push(("MAESTRO_MODEL".to_string(), model));
+    for key in [
+        "MAESTRO_EVALOPS_BASE_URL",
+        "MAESTRO_EVALOPS_ORG_ID",
+        "MAESTRO_EVALOPS_WORKSPACE_ID",
+        "MAESTRO_EVALOPS_PROVIDER",
+        "MAESTRO_EVALOPS_ENVIRONMENT",
+        "MAESTRO_EVALOPS_CREDENTIAL_NAME",
+        "MAESTRO_EVALOPS_TEAM_ID",
+        "MAESTRO_RESIDENT_CONTRACT_REVISION",
+    ] {
+        if let Some(value) = first_env(merged_env, &[key]) {
+            env.push((key.to_string(), value));
+        }
+    }
     if let Some(owner_instance_id) = runner.owner_instance_id.as_ref() {
         env.push((
             "MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID".to_string(),
@@ -456,8 +495,115 @@ fn hosted_agent_env(
             "MAESTRO_EVALOPS_ACCESS_TOKEN".to_string(),
             token.to_string(),
         ));
+    } else if let Some(token) = first_env(merged_env, &["MAESTRO_EVALOPS_ACCESS_TOKEN"]) {
+        env.push(("MAESTRO_EVALOPS_ACCESS_TOKEN".to_string(), token));
+    }
+    if managed_model(
+        env.iter()
+            .find(|(key, _)| key == "MAESTRO_MODEL")
+            .map(|(_, value)| value.as_str())
+            .unwrap_or_default(),
+    ) {
+        for required in [
+            "MAESTRO_EVALOPS_ACCESS_TOKEN",
+            "MAESTRO_EVALOPS_BASE_URL",
+            "MAESTRO_EVALOPS_ORG_ID",
+            "MAESTRO_EVALOPS_WORKSPACE_ID",
+            "MAESTRO_EVALOPS_PROVIDER",
+        ] {
+            if !env
+                .iter()
+                .any(|(key, value)| key == required && !value.trim().is_empty())
+            {
+                anyhow::bail!("managed headless model requires {required}");
+            }
+        }
     }
     Ok(env)
+}
+
+fn managed_model(model: &str) -> bool {
+    ["evalops/", "maestro-managed/"].into_iter().any(|prefix| {
+        model
+            .trim()
+            .get(..prefix.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+    })
+}
+
+fn validate_resident_contract(env: &HashMap<String, String>) -> Result<()> {
+    let model = crate::headless_server::resolve_headless_model(None, env);
+    if !managed_model(&model) {
+        return Ok(());
+    }
+    let revision = first_env(env, &["MAESTRO_RESIDENT_CONTRACT_REVISION"]);
+    if revision.as_deref() != Some(RESIDENT_MODEL_READY_CONTRACT_REVISION) {
+        anyhow::bail!(
+            "managed hosted runner requires MAESTRO_RESIDENT_CONTRACT_REVISION={RESIDENT_MODEL_READY_CONTRACT_REVISION}"
+        );
+    }
+    Ok(())
+}
+
+fn validate_ready_binding(
+    expected_model: &str,
+    reported_model: &str,
+    expected_provider: Option<&str>,
+    reported_provider: &str,
+) -> Result<()> {
+    if expected_model != reported_model {
+        anyhow::bail!(
+            "headless model binding mismatch: expected {expected_model}, reported {reported_model}"
+        );
+    }
+    if let Some(expected_provider) = expected_provider {
+        if !expected_provider.eq_ignore_ascii_case(reported_provider) {
+            anyhow::bail!(
+                "headless provider binding mismatch: expected {expected_provider}, reported {reported_provider}"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn await_headless_ready(
+    supervisor: &mut AgentSupervisor,
+    expected_model: &str,
+    expected_provider: Option<&str>,
+) -> Result<()> {
+    tokio::time::timeout(HEADLESS_READY_TIMEOUT, async {
+        loop {
+            match supervisor.recv().await {
+                Some(SupervisorEvent::Agent(event)) => match *event {
+                    AgentEvent::Ready {
+                        model, provider, ..
+                    } => {
+                        return validate_ready_binding(
+                            expected_model,
+                            &model,
+                            expected_provider,
+                            &provider,
+                        )
+                    }
+                    AgentEvent::Error {
+                        message,
+                        fatal: true,
+                        ..
+                    } => anyhow::bail!("headless provider validation failed: {message}"),
+                    _ => {}
+                },
+                Some(SupervisorEvent::Disconnected { error }) => {
+                    anyhow::bail!("headless runtime exited before Ready: {error}")
+                }
+                Some(SupervisorEvent::ShuttingDown) | None => {
+                    anyhow::bail!("headless runtime stopped before Ready")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .context("headless runtime did not become ready before startup timeout")?
 }
 
 fn set_env_value(env: &mut Vec<(String, String)>, key: &str, value: &str) {
@@ -646,6 +792,130 @@ mod tests {
     }
 
     #[test]
+    fn managed_gateway_configuration_is_forwarded_as_one_headless_child_cohort() {
+        let workspace = tempdir().expect("workspace");
+        let credential = workspace.path().join("gateway-token");
+        fs::write(&credential, "tenant-token\n").expect("credential");
+        let runner = HostedRunnerConfig::new("runner", workspace.path()).expect("runner config");
+        let env = HashMap::from([
+            (
+                "MAESTRO_DEFAULT_MODEL".to_string(),
+                "evalops/gpt-5.5".to_string(),
+            ),
+            (
+                "MAESTRO_EVALOPS_ACCESS_TOKEN_FILE".to_string(),
+                credential.to_string_lossy().into_owned(),
+            ),
+            (
+                "MAESTRO_EVALOPS_BASE_URL".to_string(),
+                "https://gateway.example/v1".to_string(),
+            ),
+            ("MAESTRO_EVALOPS_ORG_ID".to_string(), "org_1".to_string()),
+            (
+                "MAESTRO_EVALOPS_WORKSPACE_ID".to_string(),
+                "ws_1".to_string(),
+            ),
+            (
+                "MAESTRO_EVALOPS_PROVIDER".to_string(),
+                "openrouter".to_string(),
+            ),
+            (
+                "MAESTRO_EVALOPS_ENVIRONMENT".to_string(),
+                "production".to_string(),
+            ),
+            (
+                "MAESTRO_EVALOPS_CREDENTIAL_NAME".to_string(),
+                "platform-default".to_string(),
+            ),
+            ("MAESTRO_EVALOPS_TEAM_ID".to_string(), "team_1".to_string()),
+            (
+                "MAESTRO_RESIDENT_CONTRACT_REVISION".to_string(),
+                RESIDENT_MODEL_READY_CONTRACT_REVISION.to_string(),
+            ),
+        ]);
+
+        let child_env = hosted_agent_env(&runner, &env).expect("child environment");
+        let child_env = child_env.into_iter().collect::<HashMap<_, _>>();
+
+        assert_eq!(
+            child_env.get("MAESTRO_MODEL"),
+            Some(&"evalops/gpt-5.5".to_string())
+        );
+        assert_eq!(
+            child_env.get("MAESTRO_EVALOPS_ACCESS_TOKEN"),
+            Some(&"tenant-token".to_string())
+        );
+        for key in [
+            "MAESTRO_EVALOPS_BASE_URL",
+            "MAESTRO_EVALOPS_ORG_ID",
+            "MAESTRO_EVALOPS_WORKSPACE_ID",
+            "MAESTRO_EVALOPS_PROVIDER",
+            "MAESTRO_EVALOPS_ENVIRONMENT",
+            "MAESTRO_EVALOPS_CREDENTIAL_NAME",
+            "MAESTRO_EVALOPS_TEAM_ID",
+            "MAESTRO_RESIDENT_CONTRACT_REVISION",
+        ] {
+            assert_eq!(child_env.get(key), env.get(key), "missing child key {key}");
+        }
+        assert!(!child_env.contains_key("MAESTRO_EVALOPS_ACCESS_TOKEN_FILE"));
+    }
+
+    #[test]
+    fn managed_resident_contract_revision_must_match_before_launch() {
+        let env = HashMap::from([
+            (
+                "MAESTRO_DEFAULT_MODEL".to_string(),
+                "evalops/gpt-5.5".to_string(),
+            ),
+            (
+                "MAESTRO_RESIDENT_CONTRACT_REVISION".to_string(),
+                "maestro-resident-model-ready-v1".to_string(),
+            ),
+        ]);
+
+        let error = validate_resident_contract(&env).expect_err("stale revision must fail");
+        assert!(error
+            .to_string()
+            .contains(RESIDENT_MODEL_READY_CONTRACT_REVISION));
+    }
+
+    #[test]
+    fn managed_child_environment_rejects_missing_materialized_credential() {
+        let workspace = tempdir().expect("workspace");
+        let runner = HostedRunnerConfig::new("runner", workspace.path()).expect("runner config");
+        let env = HashMap::from([
+            ("MAESTRO_MODEL".to_string(), "evalops/gpt-5.5".to_string()),
+            (
+                "MAESTRO_EVALOPS_BASE_URL".to_string(),
+                "https://gateway.example/v1".to_string(),
+            ),
+            ("MAESTRO_EVALOPS_ORG_ID".to_string(), "org_1".to_string()),
+        ]);
+
+        let error = hosted_agent_env(&runner, &env).expect_err("missing token must fail");
+        assert!(error.to_string().contains("MAESTRO_EVALOPS_ACCESS_TOKEN"));
+    }
+
+    #[test]
+    fn ready_binding_must_match_the_model_forwarded_to_the_child() {
+        validate_ready_binding(
+            "evalops/gpt-5.5",
+            "evalops/gpt-5.5",
+            Some("openrouter"),
+            "openrouter",
+        )
+        .expect("matching binding");
+        let error = validate_ready_binding(
+            "evalops/gpt-5.5",
+            "gpt-5.5",
+            Some("openrouter"),
+            "openrouter",
+        )
+        .expect_err("rewritten binding must fail");
+        assert!(error.to_string().contains("model binding mismatch"));
+    }
+
+    #[test]
     fn session_recorder_id_is_stable_and_path_safe() {
         let recorder_id = session_recorder_id("../../session/with spaces");
 
@@ -710,7 +980,7 @@ mod tests {
         writeln!(script, "#!/bin/sh").expect("write shebang");
         writeln!(
             script,
-            "printf '%s\\n' '{{\"type\":\"ready\",\"model\":\"fake\",\"provider\":\"test\",\"session_id\":\"sess_fake\"}}'"
+            "printf '%s\\n' '{{\"type\":\"ready\",\"model\":\"gpt-5.5\",\"provider\":\"test\",\"session_id\":\"sess_fake\"}}'"
         )
         .expect("write ready");
         writeln!(script, "while IFS= read -r line; do").expect("write loop");
@@ -793,7 +1063,7 @@ mod tests {
         writeln!(source_script, "#!/bin/sh").expect("write shebang");
         writeln!(
             source_script,
-            "printf '%s\\n' '{{\"type\":\"ready\",\"model\":\"fake\",\"provider\":\"test\",\"session_id\":\"sess_restore\"}}'"
+            "printf '%s\\n' '{{\"type\":\"ready\",\"model\":\"gpt-5.5\",\"provider\":\"test\",\"session_id\":\"sess_restore\"}}'"
         )
         .expect("write ready");
         writeln!(source_script, "while IFS= read -r line; do").expect("write loop");
@@ -1026,7 +1296,7 @@ mod tests {
         .expect("write session capture");
         writeln!(
             restored_script,
-            "printf '%s\\n' \"{{\\\"type\\\":\\\"ready\\\",\\\"model\\\":\\\"fake\\\",\\\"provider\\\":\\\"test\\\",\\\"session_id\\\":\\\"$MAESTRO_SESSION_ID\\\"}}\""
+            "printf '%s\\n' \"{{\\\"type\\\":\\\"ready\\\",\\\"model\\\":\\\"gpt-5.5\\\",\\\"provider\\\":\\\"test\\\",\\\"session_id\\\":\\\"$MAESTRO_SESSION_ID\\\"}}\""
         )
         .expect("write ready");
         writeln!(restored_script, "while IFS= read -r line; do").expect("write loop");

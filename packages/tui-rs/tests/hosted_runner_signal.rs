@@ -17,7 +17,7 @@ fn assert_signal_drains(signal: &str) {
     writeln!(script, "#!/bin/sh").expect("write shebang");
     writeln!(
         script,
-        "printf '%s\\n' '{{\"type\":\"ready\",\"model\":\"fake\",\"provider\":\"test\",\"session_id\":\"signal_session\"}}'"
+        "printf '%s\\n' '{{\"type\":\"ready\",\"model\":\"gpt-5.5\",\"provider\":\"test\",\"session_id\":\"signal_session\"}}'"
     )
     .expect("write ready");
     writeln!(script, "while IFS= read -r line; do :; done").expect("write loop");
