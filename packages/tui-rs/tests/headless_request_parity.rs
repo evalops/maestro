@@ -35,6 +35,8 @@ fn every_contract_request_is_handled_or_typed_unsupported() {
         + "\n";
     let mut child = Command::new(env!("CARGO_BIN_EXE_maestro-tui"))
         .arg("--headless")
+        .env("MAESTRO_MODEL", "gpt-5.5")
+        .env("OPENAI_API_KEY", "headless-parity-test-key")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

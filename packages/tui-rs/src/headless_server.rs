@@ -4,8 +4,8 @@
 //! native TUI headless client, IDE bridges, and tests) send `ToAgentMessage`
 //! lines on stdin and receive `FromAgentMessage` lines on stdout.
 //!
-//! The agent is created lazily on first `Prompt` so `Hello`/`Init` handshakes
-//! work without credentials.
+//! The provider client is created before the first `Ready` message so clients
+//! never admit a runtime whose configured model or credential is invalid.
 //!
 //! ## Tool execution ownership
 //!
@@ -127,10 +127,7 @@ struct UtilityCommandOptions {
 
 impl HeadlessState {
     fn new(model_override: Option<String>) -> Self {
-        let model = model_override
-            .filter(|model| !model.trim().is_empty())
-            .or_else(|| std::env::var("MAESTRO_MODEL").ok())
-            .unwrap_or_else(|| "gpt-5.5".to_string());
+        let model = resolve_headless_model(model_override, &std::env::vars().collect());
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
@@ -231,36 +228,12 @@ impl HeadlessState {
             let meta_bg = Arc::clone(&self.meta);
             let reported_model = self.model.clone();
             let routed_provider = managed_provider_override();
-            let event_task = tokio::spawn(async move {
-                while let Some(msg) = event_rx.recv().await {
-                    if let Err(err) = handle_agent_event(
-                        msg,
-                        &meta_bg,
-                        &tool_tx_bg,
-                        &reported_model,
-                        routed_provider.as_deref(),
-                    )
-                    .await
-                    {
-                        let _ = emit(&FromAgentMessage::Error {
-                            request_id: None,
-                            message: format!("headless event bridge failed: {err:#}"),
-                            fatal: false,
-                            error_type: Some(HeadlessErrorType::Protocol),
-                        });
-                    }
-                }
-            });
-            self.tool_tx = Some(tool_tx);
-            self.event_task = Some(event_task);
-            self.agent = Some(agent);
 
-            // Bind a session id once the real agent boots and surface it on Ready.
+            // Hold native events until the validated Ready boundary has been
+            // written. In particular, SessionInfo must never race ahead of
+            // the first protocol event.
             let session_id = self.ensure_session_id();
             let git_branch = git::current_branch(Path::new(&self.cwd));
-            if let Some(agent) = self.agent.as_ref() {
-                agent.send_session_info(&self.cwd, Some(session_id.clone()), git_branch);
-            }
             let (model, provider) = reported_identity(
                 &self.model,
                 infer_provider_label(&self.model),
@@ -284,6 +257,30 @@ impl HeadlessState {
                 provider,
                 session_id: Some(session_id),
             })?;
+            agent.send_session_info(&self.cwd, self.session_id(), git_branch);
+            let event_task = tokio::spawn(async move {
+                while let Some(msg) = event_rx.recv().await {
+                    if let Err(err) = handle_agent_event(
+                        msg,
+                        &meta_bg,
+                        &tool_tx_bg,
+                        &reported_model,
+                        routed_provider.as_deref(),
+                    )
+                    .await
+                    {
+                        let _ = emit(&FromAgentMessage::Error {
+                            request_id: None,
+                            message: format!("headless event bridge failed: {err:#}"),
+                            fatal: false,
+                            error_type: Some(HeadlessErrorType::Protocol),
+                        });
+                    }
+                }
+            });
+            self.tool_tx = Some(tool_tx);
+            self.event_task = Some(event_task);
+            self.agent = Some(agent);
         }
         Ok(self.agent.as_ref().expect("agent just created"))
     }
@@ -326,31 +323,19 @@ async fn submit_prompt_with_kind(
 /// Run the native headless protocol server until EOF or shutdown.
 pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> {
     let mut state = HeadlessState::new(model_override);
-    let (reported_model, reported_provider) = reported_identity(
-        &state.model,
-        infer_provider_label(&state.model),
-        managed_provider_override().as_deref(),
-    );
     tracing::info!(
         target: "maestro.model_binding",
         event = "maestro_model_binding_selected",
         session_id = ?state.session_id(),
         configured_model = %state.model,
         configured_provider = infer_provider_label(&state.model),
-        reported_model = %reported_model,
-        reported_provider = %reported_provider,
         routed_provider = managed_provider_override().as_deref().unwrap_or(""),
         binding_mode = model_binding_mode(&state.model),
     );
 
-    // Emit ready immediately so clients can proceed with Hello/Init without credentials.
-    // Include session_id when already available (e.g. MAESTRO_SESSION_ID).
-    emit(&FromAgentMessage::Ready {
-        protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
-        model: reported_model,
-        provider: reported_provider,
-        session_id: state.session_id(),
-    })?;
+    // Provider construction resolves the exact model route and validates its
+    // credential before `ensure_agent` emits the first Ready boundary.
+    state.ensure_agent()?;
 
     // stdin reader on a blocking thread → channel
     let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<String>();
@@ -1645,30 +1630,45 @@ fn managed_provider_override() -> Option<String> {
         .filter(|provider| !provider.is_empty())
 }
 
+pub(crate) fn resolve_headless_model(
+    model_override: Option<String>,
+    env: &HashMap<String, String>,
+) -> String {
+    model_override
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            ["MAESTRO_MODEL", "MAESTRO_DEFAULT_MODEL"]
+                .into_iter()
+                .filter_map(|key| env.get(key))
+                .map(String::as_str)
+                .map(str::trim)
+                .find(|model| !model.is_empty())
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| "gpt-5.5".to_string())
+}
+
 /// Return the identity of the provider/model selected by the hosted caller.
-/// `evalops/` and `maestro-managed/` are transport prefixes used to select
-/// Maestro's managed client; they are not the model identity Platform selected
-/// for the turn.
+/// Managed model prefixes remain part of the advertised binding so the hosted
+/// parent can compare Ready against the exact model it passed to the child.
 fn reported_identity(
     model: &str,
     fallback_provider: &str,
     routed_provider: Option<&str>,
 ) -> (String, String) {
     let model = model.trim();
-    let managed = ["evalops/", "maestro-managed/"]
-        .into_iter()
-        .find_map(|prefix| {
-            model
-                .get(..prefix.len())
-                .filter(|candidate| candidate.eq_ignore_ascii_case(prefix))
-                .map(|_| &model[prefix.len()..])
-        })
-        .filter(|model| !model.trim().is_empty());
-    let reported_model = managed.unwrap_or(model);
-    let inferred_provider = infer_provider_label(reported_model);
+    let managed = ["evalops/", "maestro-managed/"].into_iter().any(|prefix| {
+        model
+            .get(..prefix.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+    });
+    let inferred_provider = infer_provider_label(model);
     (
-        reported_model.to_string(),
-        if managed.is_some() {
+        model.to_string(),
+        if managed {
             routed_provider
                 .filter(|provider| !provider.trim().is_empty())
                 .unwrap_or(inferred_provider)
@@ -2142,10 +2142,41 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn headless_model_resolution_uses_canonical_precedence_without_rewriting_managed_ids() {
+        let env = HashMap::from([
+            ("MAESTRO_MODEL".to_string(), " evalops/gpt-5.6 ".to_string()),
+            (
+                "MAESTRO_DEFAULT_MODEL".to_string(),
+                "evalops/gpt-5.5".to_string(),
+            ),
+        ]);
+
+        assert_eq!(
+            resolve_headless_model(Some(" maestro-managed/gpt-5.7 ".to_string()), &env),
+            "maestro-managed/gpt-5.7"
+        );
+        assert_eq!(resolve_headless_model(None, &env), "evalops/gpt-5.6");
+        assert_eq!(
+            resolve_headless_model(
+                None,
+                &HashMap::from([(
+                    "MAESTRO_DEFAULT_MODEL".to_string(),
+                    " evalops/gpt-5.5 ".to_string(),
+                )]),
+            ),
+            "evalops/gpt-5.5"
+        );
+        assert_eq!(resolve_headless_model(None, &HashMap::new()), "gpt-5.5");
+    }
+
+    #[test]
     fn managed_headless_identity_reports_the_platform_route() {
         assert_eq!(
             reported_identity("evalops/openai/gpt-5.6", "OpenAI", Some("openrouter"),),
-            ("openai/gpt-5.6".to_string(), "openrouter".to_string())
+            (
+                "evalops/openai/gpt-5.6".to_string(),
+                "openrouter".to_string()
+            )
         );
         assert_eq!(
             reported_identity(
@@ -2153,7 +2184,10 @@ mod tests {
                 "OpenAI",
                 Some("openrouter"),
             ),
-            ("openai/gpt-5.6".to_string(), "openrouter".to_string())
+            (
+                "MAESTRO-MANAGED/openai/gpt-5.6".to_string(),
+                "openrouter".to_string()
+            )
         );
 
         let usage = to_headless_usage(
@@ -2161,7 +2195,7 @@ mod tests {
             "evalops/openai/gpt-5.6",
             Some("openrouter"),
         );
-        assert_eq!(usage.model_id.as_deref(), Some("openai/gpt-5.6"));
+        assert_eq!(usage.model_id.as_deref(), Some("evalops/openai/gpt-5.6"));
         assert_eq!(usage.provider.as_deref(), Some("openrouter"));
     }
 
@@ -2199,10 +2233,68 @@ mod tests {
             (
                 "evalops/openai/gpt-5.6".to_string(),
                 "OpenAI".to_string(),
-                "openai/gpt-5.6".to_string(),
+                "evalops/openai/gpt-5.6".to_string(),
                 "openrouter".to_string(),
             )
         );
+    }
+
+    #[tokio::test]
+    async fn pod_shaped_managed_default_validates_before_qualified_ready() {
+        if std::env::var_os("MAESTRO_HEADLESS_MANAGED_READY_FIXTURE").is_some() {
+            assert_eq!(
+                run_headless_server(None).await.expect("headless fixture"),
+                0
+            );
+            return;
+        }
+
+        let root = tempfile::tempdir().expect("fixture root");
+        let token = root.path().join("gateway-token");
+        std::fs::write(&token, "tenant-token\n").expect("gateway token");
+        let current = std::env::current_exe().expect("current test binary");
+        let mut child = std::process::Command::new(current)
+            .arg("headless_server::tests::pod_shaped_managed_default_validates_before_qualified_ready")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env("MAESTRO_HEADLESS_MANAGED_READY_FIXTURE", "1")
+            .env_remove("MAESTRO_MODEL")
+            .env_remove("OPENAI_API_KEY")
+            .env("MAESTRO_DEFAULT_MODEL", "evalops/gpt-5.5")
+            .env("MAESTRO_EVALOPS_ACCESS_TOKEN_FILE", &token)
+            .env("MAESTRO_EVALOPS_BASE_URL", "https://gateway.example/v1")
+            .env("MAESTRO_EVALOPS_ORG_ID", "org_1")
+            .env("MAESTRO_EVALOPS_WORKSPACE_ID", "ws_1")
+            .env("MAESTRO_EVALOPS_PROVIDER", "openrouter")
+            .env("MAESTRO_EVALOPS_ENVIRONMENT", "production")
+            .env("MAESTRO_EVALOPS_CREDENTIAL_NAME", "platform-default")
+            .env("MAESTRO_EVALOPS_TEAM_ID", "team_1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn managed headless fixture");
+        writeln!(
+            child.stdin.take().expect("fixture stdin"),
+            "{}",
+            json!({"type":"shutdown"})
+        )
+        .expect("write shutdown");
+        let output = child.wait_with_output().expect("headless fixture output");
+
+        assert!(
+            output.status.success(),
+            "fixture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let ready = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .expect("first protocol message");
+        assert_eq!(ready["type"], "ready");
+        assert_eq!(ready["model"], "evalops/gpt-5.5");
+        assert_eq!(ready["provider"], "openrouter");
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("OPENAI_API_KEY"));
     }
 
     #[tokio::test]
