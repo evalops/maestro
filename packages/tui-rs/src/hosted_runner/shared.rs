@@ -50,9 +50,13 @@ impl SharedRunner {
         let restore_status = restore_manifest
             .as_ref()
             .map(|manifest| manifest.runtime.flush_status);
+        let restore_runtime_failed = restored_snapshot
+            .as_ref()
+            .is_some_and(runtime_snapshot_is_failed);
         let restore_ready = restore_status
             .map(RuntimeFlushStatus::is_completed)
-            .unwrap_or(true);
+            .unwrap_or(true)
+            && !restore_runtime_failed;
         let restore_last_error = restore_manifest.as_ref().and_then(|manifest| {
             manifest
                 .runtime
@@ -66,6 +70,7 @@ impl SharedRunner {
             state: Arc::new(Mutex::new(RunnerState {
                 ready: restore_ready,
                 draining: false,
+                runtime_failed: restore_runtime_failed,
                 session_id: binding.maestro_session_id.as_str().to_string(),
                 cursor: restored_cursor.unwrap_or(0).max(loaded_thread.cursor),
                 last_init,
@@ -151,8 +156,8 @@ impl SharedRunner {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !state.ready || state.draining {
-            return Err(HostedError::new(
-                HostedRunnerErrorCode::RuntimeNotReady,
+            return Err(runtime_availability_error(
+                &state,
                 "hosted runner is not accepting new attachments",
             ));
         }
@@ -652,6 +657,18 @@ impl SharedRunner {
                 1
             },
         );
+        if let FromAgentMessage::Error {
+            message,
+            fatal: true,
+            ..
+        } = &message
+        {
+            state.runtime_failed = true;
+            state.ready = false;
+            state.last_status = Some("Runtime failed".to_string());
+            state.last_error = Some(message.clone());
+            state.last_error_type = Some("fatal".to_string());
+        }
         state.thread.apply_agent_message(&message, state.cursor);
         let controller_envelope = StreamEnvelope::Message {
             cursor: state.cursor,
@@ -681,8 +698,10 @@ impl SharedRunner {
             // sending work against a journal that is not durable.
             #[allow(clippy::disallowed_methods)]
             if let Err(error) = self.persist_thread(state) {
+                state.runtime_failed = true;
                 state.ready = false;
                 state.last_error = Some(format!("durable thread journal write failed: {error}"));
+                state.last_status = Some("Runtime failed".to_string());
                 state.last_error_type = Some("internal".to_string());
             }
         }
@@ -706,8 +725,10 @@ impl SharedRunner {
         // publish_message above.
         #[allow(clippy::disallowed_methods)]
         if let Err(error) = self.persist_thread(state) {
+            state.runtime_failed = true;
             state.ready = false;
             state.last_error = Some(format!("durable thread journal write failed: {error}"));
+            state.last_status = Some("Runtime failed".to_string());
             state.last_error_type = Some("internal".to_string());
         }
     }

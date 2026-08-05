@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -182,7 +183,7 @@ where
     )
     .unwrap_or_else(|| "maestro".to_string());
     supervisor.transport.cwd = Some(runner.workspace_root.to_string_lossy().to_string());
-    supervisor.transport.env = hosted_agent_env(&runner, &merged_env);
+    supervisor.transport.env = hosted_agent_env(&runner, &merged_env)?;
 
     Ok(HostedRunnerLaunchConfig {
         runner,
@@ -358,7 +359,7 @@ fn apply_cli_env_overrides(env: &mut HashMap<String, String>, cli: &HostedRunner
 fn hosted_agent_env(
     runner: &HostedRunnerConfig,
     merged_env: &HashMap<String, String>,
-) -> Vec<(String, String)> {
+) -> Result<Vec<(String, String)>> {
     let profile =
         first_env(merged_env, &["MAESTRO_PROFILE"]).unwrap_or_else(|| "hosted-runner".to_string());
     let mut env = vec![
@@ -427,7 +428,36 @@ fn hosted_agent_env(
         ));
         env.push(("MAESTRO_AGENT_ID".to_string(), agent_id));
     }
-    env
+    if let Some(path) = first_env(merged_env, &["MAESTRO_EVALOPS_ACCESS_TOKEN_FILE"]) {
+        const MAX_MANAGED_TOKEN_BYTES: usize = 16 * 1024;
+        let metadata = fs::metadata(&path)
+            .with_context(|| "managed gateway credential file is unavailable")?;
+        if !metadata.is_file()
+            || metadata.len() == 0
+            || metadata.len() > MAX_MANAGED_TOKEN_BYTES as u64
+        {
+            anyhow::bail!("managed gateway credential file is invalid");
+        }
+        let token =
+            fs::read(&path).with_context(|| "managed gateway credential file is unreadable")?;
+        if token.is_empty() || token.len() > MAX_MANAGED_TOKEN_BYTES {
+            anyhow::bail!("managed gateway credential file is invalid");
+        }
+        let token = String::from_utf8(token)
+            .with_context(|| "managed gateway credential file is not valid UTF-8")?;
+        let token = token.trim();
+        if token.is_empty() || token.chars().any(char::is_control) {
+            anyhow::bail!("managed gateway credential file is invalid");
+        }
+        // The control-plane resident request carries only the fixed file path;
+        // the child receives the credential in its private process environment
+        // after the encrypted bootstrap has been materialized by Sandboxwich.
+        env.push((
+            "MAESTRO_EVALOPS_ACCESS_TOKEN".to_string(),
+            token.to_string(),
+        ));
+    }
+    Ok(env)
 }
 
 fn set_env_value(env: &mut Vec<(String, String)>, key: &str, value: &str) {
@@ -592,6 +622,27 @@ mod tests {
                         .join(".maestro/agent")
                         .to_string_lossy()
         }));
+    }
+
+    #[test]
+    fn managed_gateway_bootstrap_file_is_loaded_only_for_the_headless_child() {
+        let workspace = tempdir().expect("workspace");
+        let credential = workspace.path().join("gateway-token");
+        fs::write(&credential, "tenant-token\n").expect("credential");
+        let runner = HostedRunnerConfig::new("runner", workspace.path()).expect("runner config");
+        let env = HashMap::from([(
+            "MAESTRO_EVALOPS_ACCESS_TOKEN_FILE".to_string(),
+            credential.to_string_lossy().into_owned(),
+        )]);
+
+        let child_env = hosted_agent_env(&runner, &env).expect("child environment");
+
+        assert!(child_env.iter().any(|(key, value)| {
+            key == "MAESTRO_EVALOPS_ACCESS_TOKEN" && value == "tenant-token"
+        }));
+        assert!(!child_env
+            .iter()
+            .any(|(key, _)| key == "MAESTRO_EVALOPS_ACCESS_TOKEN_FILE"));
     }
 
     #[test]

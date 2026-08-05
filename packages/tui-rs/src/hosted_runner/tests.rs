@@ -51,6 +51,67 @@ fn status_reason_covers_runner_error_statuses() {
 }
 
 #[test]
+fn fatal_runtime_rejects_mutations_as_terminal_runtime_failed() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    {
+        let mut state = shared.state.lock().expect("state");
+        state.ready = false;
+        state.runtime_failed = true;
+        state.last_status = Some("Runtime failed".to_string());
+        state.last_error_type = Some("fatal".to_string());
+    }
+
+    let error = shared
+        .ensure_mutation_allowed()
+        .expect_err("fatal runtime must reject new mutations");
+    assert_eq!(error.code, HostedRunnerErrorCode::RuntimeFailed);
+    assert_eq!(error.status, 500);
+}
+
+#[test]
+fn fatal_agent_event_transitions_the_hosted_runtime_to_terminal_state() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    let mut state = shared.state.lock().expect("state");
+    shared.publish_message(
+        &mut state,
+        crate::headless::messages::FromAgentMessage::Error {
+            request_id: None,
+            message: "managed model credential rejected".to_string(),
+            fatal: true,
+            error_type: Some(crate::headless::messages::HeadlessErrorType::Fatal),
+        },
+    );
+
+    assert!(state.runtime_failed);
+    assert!(!state.ready);
+    assert_eq!(state.last_status.as_deref(), Some("Runtime failed"));
+    drop(state);
+    let error = shared
+        .ensure_mutation_allowed()
+        .expect_err("fatal agent event must close the mutation boundary");
+    assert_eq!(error.code, HostedRunnerErrorCode::RuntimeFailed);
+}
+
+#[test]
+fn ordinary_not_ready_runtime_remains_retryable() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    {
+        let mut state = shared.state.lock().expect("state");
+        state.ready = false;
+        state.runtime_failed = false;
+    }
+
+    let error = shared
+        .ensure_mutation_allowed()
+        .expect_err("ordinary not-ready runtime must remain retryable");
+    assert_eq!(error.code, HostedRunnerErrorCode::RuntimeNotReady);
+    assert_eq!(error.status, 503);
+}
+
+#[test]
 fn new_connection_adopts_private_capability_for_idempotent_retry() {
     let workspace = tempdir().expect("workspace");
     let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
@@ -4873,7 +4934,7 @@ async fn utility_command_completion_after_drain_does_not_mutate_snapshot_state()
 }
 
 #[tokio::test]
-async fn event_pump_failure_marks_runner_not_ready_and_rejects_admission() {
+async fn event_pump_failure_marks_runtime_failed_and_rejects_admission() {
     let workspace = tempdir().expect("workspace");
     let handle = start_hosted_runner_with_message_executor(
         test_config(workspace.path().to_path_buf()),
@@ -4882,6 +4943,16 @@ async fn event_pump_failure_marks_runner_not_ready_and_rejects_admission() {
     .await
     .expect("start hosted runner");
     wait_for_condition(|| !handle.shared.identity().ready).await;
+    {
+        let state = handle
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(state.runtime_failed);
+        assert_eq!(state.last_status.as_deref(), Some("Runtime failed"));
+        assert_eq!(state.last_error_type.as_deref(), Some("fatal"));
+    }
     let client = reqwest::Client::new();
 
     let ready = client
@@ -4889,14 +4960,18 @@ async fn event_pump_failure_marks_runner_not_ready_and_rejects_admission() {
         .send()
         .await
         .expect("ready response");
-    assert_eq!(ready.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(ready.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let ready_body: serde_json::Value = ready.json().await.expect("ready body");
+    assert_eq!(ready_body["code"], "runtime_failed");
     let admission = client
         .post(format!("{}/api/headless/connections", handle.base_url()))
         .json(&json!({"sessionId": "sess_test", "role": "controller"}))
         .send()
         .await
         .expect("connection response");
-    assert_eq!(admission.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(admission.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let admission_body: serde_json::Value = admission.json().await.expect("admission body");
+    assert_eq!(admission_body["code"], "runtime_failed");
 
     let (events, _) = handle.shared.subscribe_from(0);
     assert!(matches!(

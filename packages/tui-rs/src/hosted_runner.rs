@@ -201,6 +201,7 @@ struct SharedRunner {
 struct RunnerState {
     ready: bool,
     draining: bool,
+    runtime_failed: bool,
     session_id: String,
     cursor: u64,
     last_init: Option<InitConfig>,
@@ -226,6 +227,22 @@ struct RunnerState {
     controller_envelopes: VecDeque<StreamEnvelope>,
     pending_controller_events: VecDeque<FromAgentMessage>,
     thread: ThreadProtocolState,
+}
+
+fn runtime_snapshot_is_failed(snapshot: &RuntimeSnapshot) -> bool {
+    snapshot.state.last_status.as_deref() == Some("Runtime failed")
+        || snapshot.state.last_error_type.as_deref() == Some("fatal")
+}
+
+fn runtime_availability_error(state: &RunnerState, message: &'static str) -> HostedError {
+    if state.runtime_failed {
+        HostedError::new(
+            HostedRunnerErrorCode::RuntimeFailed,
+            "hosted runner runtime failed",
+        )
+    } else {
+        HostedError::new(HostedRunnerErrorCode::RuntimeNotReady, message)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1758,8 +1775,8 @@ impl SharedRunner {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !state.ready || state.draining {
-            return Err(HostedError::new(
-                HostedRunnerErrorCode::RuntimeNotReady,
+            return Err(runtime_availability_error(
+                &state,
                 "hosted runner is draining or not ready",
             ));
         }
@@ -1790,6 +1807,7 @@ impl SharedRunner {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.runtime_failed = true;
         state.ready = false;
         state.last_status = Some("Runtime failed".to_string());
         state.last_error = Some(error.message.clone());
@@ -2384,12 +2402,15 @@ async fn route_request_inner(
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", HOSTED_RUNNER_IDENTITY_PATH) => json_response(200, shared.identity()),
         ("GET", "/readyz" | "/healthz") => {
-            let identity = shared.identity();
-            if identity.ready && !identity.draining {
+            let state = shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.ready && !state.draining {
                 json_response(200, json!({"ok": true}))
             } else {
-                Err(HostedError::new(
-                    HostedRunnerErrorCode::RuntimeNotReady,
+                Err(runtime_availability_error(
+                    &state,
                     "hosted runner is draining or not ready",
                 ))
             }
@@ -2908,8 +2929,8 @@ async fn handle_append_turn(
         )?;
         assert_controller(&state, Some(connection_id.as_str()))?;
         if !state.ready || state.draining {
-            return Err(HostedError::new(
-                HostedRunnerErrorCode::RuntimeNotReady,
+            return Err(runtime_availability_error(
+                &state,
                 "hosted thread runtime is not accepting turns",
             ));
         }
@@ -3183,8 +3204,8 @@ async fn handle_message_inner(
         )?;
         assert_controller(&state, Some(resolved_connection_id.as_str()))?;
         if !state.ready || state.draining {
-            return Err(HostedError::new(
-                HostedRunnerErrorCode::RuntimeNotReady,
+            return Err(runtime_availability_error(
+                &state,
                 "hosted runner is draining",
             ));
         }
@@ -3462,8 +3483,8 @@ async fn handle_message_inner(
         )?;
         assert_controller(&state, Some(resolved_connection_id.as_str()))?;
         if !state.ready || state.draining {
-            return Err(HostedError::new(
-                HostedRunnerErrorCode::RuntimeNotReady,
+            return Err(runtime_availability_error(
+                &state,
                 "hosted runner is draining",
             ));
         }
