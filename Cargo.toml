@@ -29,7 +29,7 @@ aws-types = "1.5.0"
 base64 = "0.22"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
-ctor = "0.6.3"
+ctor = "1.0.11"
 dirs = "6"
 dunce = "1"
 eventsource-stream = "0.2"
