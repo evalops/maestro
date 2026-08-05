@@ -6,9 +6,12 @@ on:
       - main
   pull_request:
 
+# Main image publishes rewrite the shared `main`/`latest` tags. Cancelling an
+# in-flight push when the next mirror lands leaves incomplete blobs and produces
+# intermittent GHCR 403 / "blob not found" failures. Only cancel PR dry-runs.
 concurrency:
   group: ghcr-publish-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   IMAGE_NAME: ghcr.io/evalops/maestro
@@ -31,11 +34,14 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
+      # Use the org/repo owner as the GHCR username. github.actor can be a bot or
+      # human depending on the merge path; the linked package is org-scoped and
+      # GITHUB_TOKEN package write is granted for the repository, not the actor.
       - name: Log in to GHCR
         uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4.5.0
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract image metadata
@@ -48,17 +54,51 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build image
+      # Push immutable sha- tags first so a race on mutable main/latest tags does
+      # not drop the only reference to this build. Then move main/latest.
+      - name: Build and push immutable image tag
+        id: push-sha
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Retag main and latest from the immutable digest
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          SOURCE_SHA: ${{ github.sha }}
+          DIGEST: ${{ steps.push-sha.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DIGEST}" ]]; then
+            echo "::error::Build/push did not produce an image digest."
+            exit 1
+          fi
+          short_sha="${SOURCE_SHA:0:7}"
+          source_ref="${IMAGE_NAME}@${DIGEST}"
+          # Retries absorb intermittent GHCR intermediary 403s without rebuilding.
+          attempt=1
+          until docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:main" \
+            --tag "${IMAGE_NAME}:latest" \
+            --tag "${IMAGE_NAME}:sha-${short_sha}" \
+            "${source_ref}"; do
+            if [[ "$attempt" -ge 4 ]]; then
+              echo "::error::Failed to retag ${source_ref} after ${attempt} attempts."
+              exit 1
+            fi
+            echo "::warning::GHCR retag attempt ${attempt} failed; retrying..."
+            attempt=$((attempt + 1))
+            sleep $((attempt * 5))
+          done
+          echo "Published ${source_ref} as main, latest, and sha-${short_sha}."
 
       - name: Dispatch deploy GitOps image sync
         env:
