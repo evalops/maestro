@@ -130,6 +130,68 @@ fn built_in_commands_exist() {
     assert!(registry.get("a2a").is_some());
     assert!(registry.get("operations").is_some());
     assert!(registry.get("rubber-duck").is_some());
+    assert!(registry.get("harness").is_some());
+    assert!(registry.get("refine").is_some());
+}
+
+#[test]
+fn harness_command_parses_scoped_records_and_rollback() {
+    use crate::commands::HarnessAction;
+
+    let registry = build_command_registry();
+
+    match registry
+        .execute(
+            "/refine add workspace memory release-proof native smoke --evidence runbook.md",
+            "/tmp",
+            Some("session-1"),
+            None,
+        )
+        .expect("/refine add")
+    {
+        CommandOutput::Action(CommandAction::Harness(HarnessAction::Add {
+            scope,
+            kind,
+            name,
+            content,
+            evidence,
+        })) => {
+            assert_eq!(scope, "workspace");
+            assert_eq!(kind, "memory");
+            assert_eq!(name, "release-proof");
+            assert_eq!(content, "native smoke");
+            assert_eq!(evidence.as_deref(), Some("runbook.md"));
+        }
+        other => panic!("expected Harness::Add, got {other:?}"),
+    }
+
+    match registry
+        .execute(
+            "/harness update h-1234 proof --evidence test.log",
+            "/tmp",
+            None,
+            None,
+        )
+        .expect("/harness update")
+    {
+        CommandOutput::Action(CommandAction::Harness(HarnessAction::Update {
+            id,
+            content,
+            evidence,
+        })) => {
+            assert_eq!(id, "h-1234");
+            assert_eq!(content, "proof");
+            assert_eq!(evidence.as_deref(), Some("test.log"));
+        }
+        other => panic!("expected Harness::Update, got {other:?}"),
+    }
+
+    assert!(matches!(
+        registry
+            .execute("/harness rollback 7", "/tmp", None, None)
+            .expect("/harness rollback"),
+        CommandOutput::Action(CommandAction::Harness(HarnessAction::Rollback(7)))
+    ));
 }
 
 #[test]
@@ -1380,5 +1442,29 @@ fn alerts_command_returns_show_alerts_action() {
     assert!(matches!(
         output,
         CommandOutput::Action(CommandAction::ShowAlerts)
+    ));
+}
+
+#[test]
+fn queue_command_parses_reorder_and_send_now_actions() {
+    let registry = build_command_registry();
+
+    assert!(matches!(
+        registry
+            .execute("/queue move 12 up", "/tmp", None, None)
+            .expect("queue move"),
+        CommandOutput::Action(CommandAction::Queue(QueueAction::Move {
+            id: 12,
+            direction: QueueMoveDirection::Up
+        }))
+    ));
+    assert!(matches!(
+        registry
+            .execute("/queue send 12", "/tmp", None, None)
+            .expect("queue send"),
+        CommandOutput::Action(CommandAction::Queue(QueueAction::Move {
+            id: 12,
+            direction: QueueMoveDirection::Now
+        }))
     ));
 }

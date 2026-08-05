@@ -1427,6 +1427,38 @@ fn test_queue_cancel_by_id() {
     assert_eq!(app.state.queued_prompt_count, 1);
 }
 
+#[test]
+fn test_queue_reorder_and_send_now_preserve_all_prompts() {
+    let mut app = new_test_app();
+    let first_id = app.reserve_queue_id();
+    let second_id = app.reserve_queue_id();
+    let third_id = app.reserve_queue_id();
+    app.enqueue_pending_prompt(first_id, "first".to_string(), PromptKind::FollowUp, false);
+    app.enqueue_pending_prompt(second_id, "second".to_string(), PromptKind::FollowUp, false);
+    app.enqueue_pending_prompt(third_id, "third".to_string(), PromptKind::FollowUp, false);
+
+    assert!(app
+        .move_queued_prompt(second_id, QueueMoveDirection::Down)
+        .is_some());
+    assert_eq!(
+        app.queued_prompts
+            .iter()
+            .map(|prompt| prompt.id)
+            .collect::<Vec<_>>(),
+        vec![first_id, third_id, second_id]
+    );
+    assert!(app
+        .move_queued_prompt(second_id, QueueMoveDirection::Now)
+        .is_some());
+    assert_eq!(
+        app.queued_prompts
+            .iter()
+            .map(|prompt| prompt.id)
+            .collect::<Vec<_>>(),
+        vec![second_id, first_id, third_id]
+    );
+}
+
 #[tokio::test]
 async fn test_alt_up_restores_most_recent_queued_follow_up() {
     let mut app = new_test_app();
@@ -2432,10 +2464,27 @@ fn test_system_prompt_contains_tools() {
 
 #[test]
 fn test_system_prompt_includes_year_hint() {
-    let prompt = App::build_system_prompt_with_context("/tmp", 2026, None, "");
+    let prompt = App::build_system_prompt_with_harness_context("/tmp", 2026, None, None, "");
 
     assert!(prompt.contains("websearch/codesearch"));
     assert!(prompt.contains("current year (2026)"));
+}
+
+#[test]
+fn test_system_prompt_includes_harness_context() {
+    let prompt = App::build_system_prompt_with_harness_context(
+        "/tmp",
+        2026,
+        None,
+        Some(
+            "## Supplemental Maestro harness\n\n### memory · release-proof\nUse the native smoke command."
+                .to_string(),
+        ),
+        "",
+    );
+
+    assert!(prompt.contains("Supplemental Maestro harness"));
+    assert!(prompt.contains("release-proof"));
 }
 
 #[test]
@@ -2455,7 +2504,7 @@ fn test_system_prompt_instructs_untrusted_content_is_data_not_instruction() {
     assert!(prompt_template.contains("the operator"));
 
     // Present regardless of skills/custom-prompt state.
-    let prompt = App::build_system_prompt_with_context("/tmp", 2026, None, "");
+    let prompt = App::build_system_prompt_with_harness_context("/tmp", 2026, None, None, "");
     assert!(prompt.contains("<untrusted_content"));
 }
 

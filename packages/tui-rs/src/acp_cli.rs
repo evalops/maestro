@@ -12,6 +12,11 @@ use tokio::process::Command;
 use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
 
+use crate::session::{
+    AppMessage, ContentBlock, MessageContent, MessageEntry, SessionEntry, SessionHeader,
+    SessionManager, SessionWriter, ThinkingLevel,
+};
+
 type SharedStdout = Arc<Mutex<tokio::io::Stdout>>;
 type ActivePrompts = Arc<Mutex<HashMap<String, Option<oneshot::Sender<()>>>>>;
 type SharedSessions = Arc<Mutex<HashMap<String, AcpSession>>>;
@@ -70,7 +75,9 @@ impl Utf8StreamDecoder {
 
 #[derive(Debug)]
 struct AcpSession {
+    id: String,
     cwd: PathBuf,
+    path: PathBuf,
     history: Vec<(String, String)>,
 }
 
@@ -114,7 +121,7 @@ pub async fn run_acp(_args: &[String]) -> Result<i32> {
                     json!({
                         "protocolVersion": 1,
                         "agentCapabilities": {
-                            "loadSession": false,
+                            "loadSession": true,
                             "promptCapabilities": {
                                 "image": false,
                                 "audio": false,
@@ -142,14 +149,66 @@ pub async fn run_acp(_args: &[String]) -> Result<i32> {
                     continue;
                 }
                 let session_id = Uuid::new_v4().to_string();
-                sessions.lock().await.insert(
-                    session_id.clone(),
-                    AcpSession {
-                        cwd,
-                        history: Vec::new(),
-                    },
-                );
+                let session = match create_acp_session(&session_id, &cwd) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        write_error(&stdout, id, -32000, &error.to_string()).await?;
+                        continue;
+                    }
+                };
+                sessions.lock().await.insert(session_id.clone(), session);
                 write_result(&stdout, id, json!({"sessionId": session_id})).await?;
+            }
+            "session/load" | "session/resume" => {
+                let Some(session_id) = params.get("sessionId").and_then(Value::as_str) else {
+                    write_error(&stdout, id, -32602, "missing sessionId").await?;
+                    continue;
+                };
+                let requested_cwd = params
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from)
+                    .unwrap_or(std::env::current_dir()?);
+                let session = match load_acp_session(session_id, &requested_cwd) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        write_error(&stdout, id, -32602, &error.to_string()).await?;
+                        continue;
+                    }
+                };
+                let should_replay = method == "session/load";
+                let loaded_id = session.id.clone();
+                let history = session.history.clone();
+                sessions.lock().await.insert(loaded_id.clone(), session);
+                if should_replay {
+                    for (user, assistant) in history {
+                        write_user_chunk(&stdout, &loaded_id, &user).await?;
+                        write_agent_chunk(&stdout, &loaded_id, &assistant).await?;
+                    }
+                }
+                write_result(&stdout, id, json!({"sessionId": loaded_id})).await?;
+            }
+            "session/list" => {
+                let cwd = params
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from)
+                    .unwrap_or(std::env::current_dir()?);
+                let manager = SessionManager::new(cwd.to_string_lossy().to_string());
+                let summaries = manager
+                    .list_sessions()
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?
+                    .into_iter()
+                    .map(|session| {
+                        json!({
+                            "sessionId": session.id,
+                            "cwd": session.cwd,
+                            "title": session.title(),
+                            "updatedAt": session.timestamp
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                write_result(&stdout, id, json!({"sessions": summaries})).await?;
             }
             "session/prompt" => {
                 let Some(session_id) = params.get("sessionId").and_then(Value::as_str) else {
@@ -198,14 +257,52 @@ pub async fn run_acp(_args: &[String]) -> Result<i32> {
                     task_active.lock().await.remove(&task_session_id);
                     match result {
                         Ok(Some(text)) => {
-                            if let Some(session) =
-                                task_sessions.lock().await.get_mut(&task_session_id)
-                            {
-                                session.history.push((prompt, text.clone()));
-                            }
-                            let _ =
-                                write_result(&task_stdout, id, json!({"stopReason":"end_turn"}))
+                            let session =
+                                task_sessions
+                                    .lock()
+                                    .await
+                                    .get(&task_session_id)
+                                    .map(|session| AcpSession {
+                                        id: session.id.clone(),
+                                        cwd: session.cwd.clone(),
+                                        path: session.path.clone(),
+                                        history: session.history.clone(),
+                                    });
+                            match session {
+                                Some(session) => match append_acp_turn(&session, &prompt, &text) {
+                                    Ok(()) => {
+                                        if let Some(session) =
+                                            task_sessions.lock().await.get_mut(&task_session_id)
+                                        {
+                                            session.history.push((prompt, text.clone()));
+                                        }
+                                        let _ = write_result(
+                                            &task_stdout,
+                                            id,
+                                            json!({"stopReason":"end_turn"}),
+                                        )
+                                        .await;
+                                    }
+                                    Err(error) => {
+                                        let _ = write_error(
+                                            &task_stdout,
+                                            id,
+                                            -32000,
+                                            &format!("failed to persist ACP session: {error}"),
+                                        )
+                                        .await;
+                                    }
+                                },
+                                None => {
+                                    let _ = write_error(
+                                        &task_stdout,
+                                        id,
+                                        -32000,
+                                        "session was closed before the prompt completed",
+                                    )
                                     .await;
+                                }
+                            }
                         }
                         Ok(None) => {
                             let _ =
@@ -233,11 +330,156 @@ pub async fn run_acp(_args: &[String]) -> Result<i32> {
                     write_result(&stdout, id, json!({})).await?;
                 }
             }
+            "session/close" => {
+                let Some(session_id) = params.get("sessionId").and_then(Value::as_str) else {
+                    write_error(&stdout, id, -32602, "missing sessionId").await?;
+                    continue;
+                };
+                if let Some(sender) = active_prompts
+                    .lock()
+                    .await
+                    .get_mut(session_id)
+                    .and_then(Option::take)
+                {
+                    let _ = sender.send(());
+                }
+                sessions.lock().await.remove(session_id);
+                if !id.is_null() {
+                    write_result(&stdout, id, json!({})).await?;
+                }
+            }
             _ if request.get("id").is_none() => {}
             _ => write_error(&stdout, id, -32601, "method not found").await?,
         }
     }
     Ok(0)
+}
+
+fn create_acp_session(session_id: &str, cwd: &Path) -> Result<AcpSession> {
+    create_acp_session_in(session_id, cwd, None)
+}
+
+fn create_acp_session_in(
+    session_id: &str,
+    cwd: &Path,
+    sessions_dir: Option<&Path>,
+) -> Result<AcpSession> {
+    let header = SessionHeader {
+        version: Some(1),
+        id: session_id.to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        cwd: cwd.to_string_lossy().into_owned(),
+        model: String::new(),
+        subject: None,
+        model_metadata: None,
+        thinking_level: ThinkingLevel::Medium,
+        system_prompt: None,
+        prompt_metadata: None,
+        prompt_context_manifest: None,
+        unified_context_manifest: None,
+        tools: Vec::new(),
+        branched_from: None,
+        parent_session: None,
+    };
+    let mut manager = sessions_dir.map_or_else(
+        || SessionManager::new(cwd.to_string_lossy().to_string()),
+        |sessions_dir| {
+            SessionManager::with_sessions_dir(cwd.to_string_lossy().to_string(), sessions_dir)
+        },
+    );
+    manager
+        .start_session(header)
+        .context("failed to create ACP session")?;
+    manager
+        .flush()
+        .context("failed to flush ACP session header")?;
+    let path = manager
+        .current_session_path()
+        .context("ACP session did not receive a durable path")?;
+    drop(manager);
+    Ok(AcpSession {
+        id: session_id.to_string(),
+        cwd: cwd.to_path_buf(),
+        path,
+        history: Vec::new(),
+    })
+}
+
+fn load_acp_session(session_id: &str, cwd: &Path) -> Result<AcpSession> {
+    let manager = SessionManager::new(cwd.to_string_lossy().to_string());
+    let parsed = manager
+        .load_session(session_id)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let session_id = parsed.header.id.clone();
+    let saved_cwd = PathBuf::from(&parsed.header.cwd);
+    let session_cwd = if saved_cwd.is_dir() {
+        saved_cwd
+    } else {
+        cwd.to_path_buf()
+    };
+    Ok(AcpSession {
+        id: session_id,
+        cwd: session_cwd,
+        path: PathBuf::from(parsed.file_path),
+        history: history_from_messages(&parsed.messages),
+    })
+}
+
+fn history_from_messages(messages: &[AppMessage]) -> Vec<(String, String)> {
+    let mut history = Vec::new();
+    let mut pending_user = None;
+    for message in messages {
+        match message {
+            AppMessage::User { .. } => pending_user = Some(message.text_content()),
+            AppMessage::Assistant { .. } => {
+                if let Some(user) = pending_user.take() {
+                    history.push((user, message.text_content()));
+                }
+            }
+            AppMessage::ToolResult { .. } => {}
+        }
+    }
+    history
+}
+
+fn append_acp_turn(session: &AcpSession, prompt: &str, response: &str) -> Result<()> {
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    let timestamp_millis = chrono::Utc::now().timestamp_millis().max(0) as u64;
+    let entries = vec![
+        SessionEntry::Message(MessageEntry {
+            id: None,
+            parent_id: None,
+            timestamp: timestamp.clone(),
+            message: AppMessage::User {
+                content: MessageContent::Text(prompt.to_string()),
+                attachments: None,
+                timestamp: timestamp_millis,
+            },
+        }),
+        SessionEntry::Message(MessageEntry {
+            id: None,
+            parent_id: None,
+            timestamp,
+            message: AppMessage::Assistant {
+                content: vec![ContentBlock::Text {
+                    text: response.to_string(),
+                }],
+                api: None,
+                provider: None,
+                model: None,
+                usage: None,
+                stop_reason: Some("end_turn".to_string()),
+                timestamp: timestamp_millis,
+            },
+        }),
+    ];
+    let mut writer = SessionWriter::open_existing(&session.path)
+        .context("failed to open ACP session for append")?;
+    writer
+        .write_entries(entries)
+        .context("failed to append ACP session turn")?;
+    writer.flush().context("failed to flush ACP session turn")?;
+    Ok(())
 }
 
 fn prompt_with_history(history: &[(String, String)], prompt: &str) -> String {
@@ -379,6 +621,24 @@ async fn write_agent_chunk(stdout: &SharedStdout, session_id: &str, text: &str) 
     .await
 }
 
+async fn write_user_chunk(stdout: &SharedStdout, session_id: &str, text: &str) -> Result<()> {
+    write_message(
+        stdout,
+        &json!({
+            "jsonrpc":"2.0",
+            "method":"session/update",
+            "params":{
+                "sessionId":session_id,
+                "update":{
+                    "sessionUpdate":"user_message_chunk",
+                    "content":{"type":"text","text":text}
+                }
+            }
+        }),
+    )
+    .await
+}
+
 async fn write_result(stdout: &SharedStdout, id: Value, result: Value) -> Result<()> {
     write_message(stdout, &json!({"jsonrpc":"2.0","id":id,"result":result})).await
 }
@@ -449,6 +709,46 @@ mod tests {
         assert!(prompt.contains("<user>\nRemember the codename is Juniper.\n</user>"));
         assert!(prompt.contains("<assistant>\nI will remember Juniper.\n</assistant>"));
         assert!(prompt.ends_with("<user>\nWhat is the codename?\n</user>"));
+    }
+
+    #[test]
+    fn durable_history_pairs_user_and_assistant_messages() {
+        let messages = vec![
+            AppMessage::User {
+                content: MessageContent::Text("hello".to_string()),
+                attachments: None,
+                timestamp: 1,
+            },
+            AppMessage::Assistant {
+                content: vec![ContentBlock::Text {
+                    text: "hi".to_string(),
+                }],
+                api: None,
+                provider: None,
+                model: None,
+                usage: None,
+                stop_reason: Some("end_turn".to_string()),
+                timestamp: 2,
+            },
+        ];
+
+        assert_eq!(
+            history_from_messages(&messages),
+            vec![("hello".into(), "hi".into())]
+        );
+    }
+
+    #[test]
+    fn new_acp_session_header_is_persisted() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sessions_dir = temp.path().join("sessions");
+        let session =
+            create_acp_session_in("acp-session", temp.path(), Some(&sessions_dir)).unwrap();
+        let parsed = crate::session::SessionReader::read_file(&session.path).unwrap();
+
+        assert_eq!(parsed.header.id, "acp-session");
+        assert_eq!(parsed.header.cwd, temp.path().to_string_lossy());
+        assert!(parsed.messages.is_empty());
     }
 
     #[test]

@@ -88,12 +88,12 @@ Statuses mirror [NATIVE_TUI_PARITY.md](../NATIVE_TUI_PARITY.md):
 | Trailing interactive prompt | `maestro "…"` → native TUI | **Present** | Grok-style handoff; `--mode text\|json` stays scripted |
 | Worktrees | `--worktree[=name]` under `.maestro/worktrees/` | **Present** | Documented in [FEATURES.md](../FEATURES.md) |
 | Skills as slash commands | `.maestro/skills`, prompts/commands dirs | **Present** | Built-ins win on collision |
-| Session resume / continue / fork / rewind | JSONL sessions, `/new`, `/fork`, `/rewind` | **Present** | See [SESSIONS.md](../SESSIONS.md) |
+| Session resume / continue / fork / rewind | JSONL sessions, `/new`, `/fork`, `/rewind`, checkpoint-backed undo | **Present** | See [SESSIONS.md](../SESSIONS.md) |
 | Approvals + sandbox + firewall | YOLO / Selective / Safe; Seatbelt / Landlock | **Present** | [SAFETY.md](../SAFETY.md) |
 | MCP (stdio / HTTP / SSE) | `packages/tui-rs/src/mcp/` | **Present** | `/mcp`; project + user config |
 | Hooks (native / Lua / WASM) | `packages/tui-rs/src/hooks/` | **Present** | WASM depth still partial |
 | Background tasks | `tools/background_tasks.rs` + slash | **Present** | Logs under `~/.maestro/logs` |
-| Prompt queue / steer | Follow-up + steer queues | **Present** | [PROMPT_QUEUE.md](../PROMPT_QUEUE.md) |
+| Prompt queue / steer | Follow-up + steer queues, `/queue move`, `/queue send` | **Present** | [PROMPT_QUEUE.md](../PROMPT_QUEUE.md) |
 | Context compaction | Auto ~0.85 threshold | **Present** | Inspired by Grok-class thresholds; not identical policy |
 | Modes cycle (Normal / Plan / Always-approve) | Shift+Tab + `/plan` | **Partial** | Mode chrome exists; plan depth is weaker (below) |
 | Plan mode (deep) | Todo gate before mutating tools | **Partial** | No durable `plan.md`, no enter/exit plan tools, no plan-approval UI with line comments |
@@ -101,7 +101,7 @@ Statuses mirror [NATIVE_TUI_PARITY.md](../NATIVE_TUI_PARITY.md):
 | Cross-session memory | Shared memory + `maestro memory` inspect | **Partial** | No dream/flush consolidation UX or hybrid FTS+vector product path |
 | Config story | JSON + TOML mix (`~/.maestro/*`, legacy composer) | **Partial** | Native reads `config.toml` in places; public story still multi-format |
 | Plugins + marketplace | Skills + MCP + hooks separately | **Open** | No installable plugin unit, no marketplace tab, no trust-scoped plugin dir |
-| ACP (Agent Client Protocol) | IDE extensions own their protocols | **Open** | No first-class ACP server for arbitrary editors |
+| ACP (Agent Client Protocol) | Native stdio server with durable `new` / `load` / `resume` / `list` / `close` / `prompt` | **Partial** | First-class session persistence is present; broader protocol coverage remains |
 | One-liner install | Release binaries + npm | **Partial** | Manual curl-to-binary; no polished `install.sh` PATH installer UX |
 | First-run auth UX | Multi-provider login (Codex, keys, EvalOps) | **Partial** | Powerful but not a single guided browser-first path |
 | Numbered user guide | Docs index + FEATURES + QUICKSTART | **Partial** | Excellent contributor docs; not a 01–N progressive user guide |

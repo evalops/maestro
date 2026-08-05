@@ -1155,20 +1155,13 @@ async fn handle_local_endpoint(
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            json_response(200, &undo_response(&head))
+            json_response(200, &undo_response(&head, &state.config.cwd))
         }
         ("POST", "/api/undo") => {
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            json_response(
-                200,
-                &serde_json::json!({
-                    "success": false,
-                    "message": "Undo checkpoints are not available in the Rust control plane yet",
-                    "changedFiles": []
-                }),
-            )
+            json_response(200, &restore_undo_response(&head, &state.config.cwd))
         }
         ("GET", "/api/changes") => {
             if let Err(response) = authorize(&head, &state.config) {

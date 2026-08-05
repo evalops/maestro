@@ -1,5 +1,5 @@
 use super::*;
-use crate::commands::{AttachAction, GoalAction};
+use crate::commands::{AttachAction, GoalAction, HarnessAction};
 use crate::state::ApprovalMode;
 
 /// Normalize a slash-completion string to a single leading `/`.
@@ -407,6 +407,7 @@ impl App {
                 },
             },
             CommandAction::Goal(action) => self.handle_goal_action(action),
+            CommandAction::Harness(action) => self.handle_harness_action(action),
             CommandAction::SetFooterStyle(style) => {
                 self.footer_style = style;
                 let mut prefs = crate::ui_prefs::UiPrefs::load_default();
@@ -2820,6 +2821,111 @@ Manual snapshot: `/magic-trace stop`",
         }
     }
 
+    /// Handle `/harness` and `/refine` continual-context actions.
+    pub(super) fn handle_harness_action(&mut self, action: HarnessAction) {
+        let workspace = self.state.cwd.clone().unwrap_or_else(|| ".".to_string());
+        let workspace = std::path::Path::new(&workspace);
+        let session_id = self.state.session_id.clone();
+        let session_id = session_id.as_deref();
+
+        match action {
+            HarnessAction::Status => {
+                self.state
+                    .add_system_message(self.harness_store.report(workspace, session_id));
+            }
+            HarnessAction::List => {
+                self.state
+                    .add_system_message(self.harness_store.list_report(workspace, session_id));
+            }
+            HarnessAction::Add {
+                scope,
+                kind,
+                name,
+                content,
+                evidence,
+            } => {
+                let scope = match crate::harness::HarnessScope::parse(&scope) {
+                    Ok(scope) => scope,
+                    Err(error) => {
+                        self.state.error = Some(format!("Harness add failed: {error:#}"));
+                        return;
+                    }
+                };
+                let kind = match crate::harness::HarnessKind::parse(&kind) {
+                    Ok(kind) => kind,
+                    Err(error) => {
+                        self.state.error = Some(format!("Harness add failed: {error:#}"));
+                        return;
+                    }
+                };
+                let scope_key =
+                    match crate::harness::HarnessStore::scope_key(scope, workspace, session_id) {
+                        Ok(scope_key) => scope_key,
+                        Err(error) => {
+                            self.state.error = Some(format!("Harness add failed: {error:#}"));
+                            return;
+                        }
+                    };
+                let entry_name = name.clone();
+                match self
+                    .harness_store
+                    .add(kind, scope, scope_key, name, content, evidence)
+                {
+                    Ok(id) => {
+                        self.update_agent_system_prompt();
+                        self.state.status = Some(format!("Harness entry {id} added"));
+                        self.state.add_system_message(format!(
+                            "Added {} harness entry `{entry_name}` in {} scope as `{id}`.",
+                            kind.as_str(),
+                            scope.as_str()
+                        ));
+                    }
+                    Err(error) => {
+                        self.state.error = Some(format!("Harness add failed: {error:#}"));
+                    }
+                }
+            }
+            HarnessAction::Update {
+                id,
+                content,
+                evidence,
+            } => match self.harness_store.update(&id, content, evidence) {
+                Ok(()) => {
+                    self.update_agent_system_prompt();
+                    self.state.status = Some(format!("Harness entry {id} updated"));
+                    self.state
+                        .add_system_message(format!("Updated harness entry `{id}`."));
+                }
+                Err(error) => {
+                    self.state.error = Some(format!("Harness update failed: {error:#}"));
+                }
+            },
+            HarnessAction::Delete(id) => match self.harness_store.delete(&id) {
+                Ok(()) => {
+                    self.update_agent_system_prompt();
+                    self.state.status = Some(format!("Harness entry {id} deleted"));
+                    self.state
+                        .add_system_message(format!("Deleted harness entry `{id}`."));
+                }
+                Err(error) => {
+                    self.state.error = Some(format!("Harness delete failed: {error:#}"));
+                }
+            },
+            HarnessAction::Rollback(revision) => match self.harness_store.rollback(revision) {
+                Ok(()) => {
+                    self.update_agent_system_prompt();
+                    self.state.status = Some(format!("Harness rolled back to revision {revision}"));
+                    self.state.add_system_message(format!(
+                        "Restored harness snapshot at revision {revision}."
+                    ));
+                }
+                Err(error) => {
+                    self.state.error = Some(format!("Harness rollback failed: {error:#}"));
+                }
+            },
+        }
+    }
+
     pub(super) fn handle_queue_action(&mut self, action: QueueAction) {
         match action {
             QueueAction::Show => {
@@ -2886,7 +2992,7 @@ Manual snapshot: `/magic-trace stop`",
                     }
                 }
                 msg.push_str(
-                    "\nUse /queue cancel <id> to remove a prompt. Use /queue mode [steer|followup] <one|all> to change behavior.",
+                    "\nUse /queue cancel <id> to remove a prompt, /queue move <id> <up|down> to reorder, or /queue send <id> to send one next. Use /queue mode [steer|followup] <one|all> to change behavior.",
                 );
                 self.state.add_system_message(msg);
             }
@@ -2926,6 +3032,44 @@ Manual snapshot: `/magic-trace stop`",
                             .status
                             .replace(format!("No queued prompt found with id #{id}."));
                     }
+                }
+            }
+            QueueAction::Move { id, direction } => {
+                if !self.queued_prompts.iter().any(|prompt| prompt.id == id) {
+                    self.state
+                        .status
+                        .replace(format!("No queued prompt found with id #{id}."));
+                    return;
+                }
+                if self
+                    .queued_prompt_active
+                    .as_ref()
+                    .is_some_and(|prompt| prompt.id == id)
+                    || self
+                        .queued_prompt_inflight
+                        .is_some_and(|prompt| prompt.id == id)
+                {
+                    self.state
+                        .status
+                        .replace(format!("Queued prompt #{id} is already processing."));
+                    return;
+                }
+                if let Some(placement) = self.move_queued_prompt(id, direction) {
+                    if let Some(agent) = &self.native_agent {
+                        agent.reorder_queued(id, placement);
+                    }
+                    let action = match direction {
+                        QueueMoveDirection::Up => "moved up",
+                        QueueMoveDirection::Down => "moved down",
+                        QueueMoveDirection::Now => "will send next",
+                    };
+                    self.state
+                        .status
+                        .replace(format!("Queued prompt #{id} {action}."));
+                } else {
+                    self.state
+                        .status
+                        .replace(format!("Queued prompt #{id} is already in that position."));
                 }
             }
             QueueAction::Mode { kind, mode } => {

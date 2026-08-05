@@ -44,6 +44,7 @@ use crate::headless::{
 mod config;
 mod handle;
 mod manifests;
+pub mod rendezvous_protocol;
 mod shared;
 mod snapshots;
 mod thread_protocol;
@@ -510,6 +511,13 @@ pub trait HostedRunnerHeadlessMessageExecutor: Send + Sync {
         Ok(HostedRunnerDrainResult::default())
     }
 
+    /// Report whether a runtime that was previously connected has lost its
+    /// transport. Hosted mode owns one child generation, so the event pump
+    /// treats this as terminal while leaving `drain` available for export.
+    fn disconnected_after_ready(&self) -> Result<bool, HostedRunnerError> {
+        Ok(false)
+    }
+
     fn state(&self) -> Result<Option<AgentState>, HostedRunnerError> {
         Ok(None)
     }
@@ -868,12 +876,6 @@ impl HostedRunnerHeadlessMessageExecutor for AgentSupervisorHostedRunnerMessageE
             .map_err(|_| HostedRunnerError::internal("agent supervisor mutex poisoned"))?;
         let messages = supervisor.drain_available_agent_messages();
         let generation = supervisor.transport_generation();
-        if generation != 0 && !supervisor.is_connected() {
-            return Err(HostedRunnerError::new(
-                HostedRunnerErrorCode::RuntimeFailed,
-                "native headless agent disconnected after becoming ready",
-            ));
-        }
         let mut queued = self
             .queued_responses
             .lock()
@@ -984,6 +986,14 @@ impl HostedRunnerHeadlessMessageExecutor for AgentSupervisorHostedRunnerMessageE
             consumed_response_keys,
             rejected_response_keys,
         })
+    }
+
+    fn disconnected_after_ready(&self) -> Result<bool, HostedRunnerError> {
+        let supervisor = self
+            .supervisor
+            .lock()
+            .map_err(|_| HostedRunnerError::internal("agent supervisor mutex poisoned"))?;
+        Ok(supervisor.transport_generation() != 0 && !supervisor.is_connected())
     }
 
     fn state(&self) -> Result<Option<AgentState>, HostedRunnerError> {
@@ -1643,6 +1653,14 @@ enum PumpTick {
 fn pump_tick(shared: &SharedRunner) -> PumpTick {
     match shared.message_executor.drain() {
         Ok(drained) => {
+            let disconnected_after_ready = match shared.message_executor.disconnected_after_ready()
+            {
+                Ok(disconnected) => disconnected,
+                Err(error) => {
+                    shared.publish_runtime_error("event_pump_failed", error);
+                    return PumpTick::Stop;
+                }
+            };
             let mut state = shared
                 .state
                 .lock()
@@ -1656,6 +1674,17 @@ fn pump_tick(shared: &SharedRunner) -> PumpTick {
             shared.finalize_consumed_response_keys(&mut state, &drained.consumed_response_keys);
             shared.rollback_rejected_response_keys(&mut state, &drained.rejected_response_keys);
             shared.retry_thread_persistence(&state);
+            if disconnected_after_ready {
+                drop(state);
+                shared.publish_runtime_error(
+                    "event_pump_failed",
+                    HostedRunnerError::new(
+                        HostedRunnerErrorCode::RuntimeFailed,
+                        "native headless agent disconnected after becoming ready",
+                    ),
+                );
+                return PumpTick::Stop;
+            }
             PumpTick::Continue
         }
         Err(error) => {

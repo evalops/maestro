@@ -158,6 +158,9 @@ pub mod clipboard;
 /// Interactive goal mode (create / pause / block / complete + auto-continue).
 pub mod goal;
 
+/// Durable supplemental prompt, memory, skill, and subagent context.
+pub mod harness;
+
 /// Lightweight UI prefs (`~/.maestro/ui.json`), e.g. footer density.
 pub mod ui_prefs;
 

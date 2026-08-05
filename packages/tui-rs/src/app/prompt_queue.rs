@@ -231,6 +231,48 @@ impl App {
         removed
     }
 
+    pub(super) fn move_queued_prompt(
+        &mut self,
+        id: u64,
+        direction: QueueMoveDirection,
+    ) -> Option<QueuePlacement> {
+        if self
+            .queued_prompt_active
+            .as_ref()
+            .is_some_and(|prompt| prompt.id == id)
+            || self
+                .queued_prompt_inflight
+                .is_some_and(|prompt| prompt.id == id)
+        {
+            return None;
+        }
+
+        let index = self
+            .queued_prompts
+            .iter()
+            .position(|prompt| prompt.id == id)?;
+        let last_index = self.queued_prompts.len().saturating_sub(1);
+        let new_index = match direction {
+            QueueMoveDirection::Up if index > 0 => index - 1,
+            QueueMoveDirection::Down if index < last_index => index + 1,
+            QueueMoveDirection::Now if index > 0 => 0,
+            _ => return None,
+        };
+
+        let prompt = self.queued_prompts.remove(index)?;
+        self.queued_prompts.insert(new_index, prompt);
+        let placement = match direction {
+            QueueMoveDirection::Now => QueuePlacement::Front,
+            QueueMoveDirection::Up | QueueMoveDirection::Down => self
+                .queued_prompts
+                .get(new_index + 1)
+                .map(|prompt| QueuePlacement::Before(prompt.id))
+                .unwrap_or(QueuePlacement::Back),
+        };
+        self.sync_queue_prompt_count();
+        Some(placement)
+    }
+
     pub(super) async fn try_restore_last_queued_follow_up(
         &mut self,
         code: KeyCode,
