@@ -1617,6 +1617,33 @@ async fn wait_for_retry_delay(
     }
 }
 
+async fn wait_for_codex_auth_refresh(
+    auth_path: &std::path::Path,
+    request_cancel: &CancellationToken,
+    shutdown_token: &CancellationToken,
+    max_wait: Duration,
+) -> bool {
+    let baseline = tokio::fs::read(auth_path).await.ok();
+    let wait = async {
+        loop {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let current = tokio::fs::read(auth_path).await.ok();
+            if current != baseline
+                && crate::codex_identity::inspect_codex_auth(auth_path)
+                    .state
+                    .is_usable()
+            {
+                return true;
+            }
+        }
+    };
+    tokio::select! {
+        result = tokio::time::timeout(max_wait, wait) => result.unwrap_or(false),
+        () = request_cancel.cancelled() => false,
+        () = shutdown_token.cancelled() => false,
+    }
+}
+
 enum CancellableLoad<T> {
     Loaded(T),
     RequestCancelled,
@@ -3809,6 +3836,9 @@ impl NativeAgentRunner {
                     let active_cancellation = Arc::clone(&self.active_cancellation);
                     let mut request_cancelled = false;
                     let mut terminal_request_failure = false;
+                    let mut waited_for_codex_login = false;
+                    let mut codex_transport_restarted = false;
+                    let mut codex_auth_resumed = false;
                     loop {
                         let result = run_request_with_cancellation(
                             self.run_loop(),
@@ -3832,6 +3862,59 @@ impl NativeAgentRunner {
 
                                 // Classify error and check if we should retry
                                 let error_kind = super::retry::ErrorKind::classify(&msg);
+                                if current_prompt_uses_codex
+                                    && !self.codex_current_prompt_started
+                                    && !waited_for_codex_login
+                                    && matches!(error_kind, super::retry::ErrorKind::AuthFailure)
+                                {
+                                    waited_for_codex_login = true;
+                                    let requested_profile = std::env::var("MAESTRO_CODEX_PROFILE")
+                                        .ok()
+                                        .filter(|value| !value.trim().is_empty());
+                                    let identity =
+                                        match crate::codex_identity::resolve_codex_identity(
+                                            requested_profile.as_deref(),
+                                            std::path::Path::new(&self.config.cwd),
+                                        ) {
+                                            Ok(identity) => identity,
+                                            Err(error) => {
+                                                let _ = self.event_tx.send(FromAgent::Error {
+                                                    message: format!(
+                                                        "Codex identity selection failed: {error:#}"
+                                                    ),
+                                                    fatal: false,
+                                                });
+                                                terminal_request_failure = true;
+                                                break;
+                                            }
+                                        };
+                                    let profile_arg = requested_profile
+                                        .as_deref()
+                                        .map(|name| format!(" --profile {name}"))
+                                        .unwrap_or_default();
+                                    let _ = self.event_tx.send(FromAgent::Status {
+                                        message: format!(
+                                            "Codex sign-in needs attention. Run `maestro codex login{profile_arg} --force`; this prompt will resume after sign-in."
+                                        ),
+                                    });
+                                    if wait_for_codex_auth_refresh(
+                                        &identity.auth_path(),
+                                        &cancel_token,
+                                        &shutdown_token,
+                                        Duration::from_mins(5),
+                                    )
+                                    .await
+                                    {
+                                        self.codex_session = None;
+                                        codex_auth_resumed = true;
+                                        continue;
+                                    }
+                                    if cancel_token.is_cancelled() || shutdown_token.is_cancelled()
+                                    {
+                                        request_cancelled = cancel_token.is_cancelled();
+                                        break;
+                                    }
+                                }
 
                                 match self.retry_policy.should_retry(error_kind) {
                                     super::retry::RetryDecision::Retry {
@@ -3839,6 +3922,16 @@ impl NativeAgentRunner {
                                         attempt,
                                         reason,
                                     } => {
+                                        if current_prompt_uses_codex
+                                            && !self.codex_current_prompt_started
+                                        {
+                                            self.codex_session = None;
+                                            codex_transport_restarted = true;
+                                            let _ = self.event_tx.send(FromAgent::Status {
+                                                message: "Codex app-server disconnected before the turn started; restarting it safely"
+                                                    .to_owned(),
+                                            });
+                                        }
                                         // Notify UI about retry
                                         let _ = self.event_tx.send(FromAgent::Status {
                                             message: format!(
@@ -3924,6 +4017,24 @@ impl NativeAgentRunner {
 
                     self.busy = false;
                     self.set_active_request_cancel_token(None);
+                    if current_prompt_uses_codex {
+                        let outcome = if request_cancelled {
+                            "cancelled"
+                        } else if terminal_request_failure {
+                            "failed"
+                        } else {
+                            "completed"
+                        };
+                        let _ = self.event_tx.send(FromAgent::CodexTransportReceipt {
+                            provider: "openai-codex".to_owned(),
+                            transport: "codex-app-server".to_owned(),
+                            outcome: outcome.to_owned(),
+                            transport_restarted: codex_transport_restarted,
+                            auth_resumed: codex_auth_resumed,
+                            cancellation_requested: request_cancelled,
+                        });
+                    }
+
                     self.prompt_context = None;
 
                     self.repair_orphaned_tool_calls();
@@ -5236,10 +5347,18 @@ impl NativeAgentRunner {
                     let _ = self.event_tx.send(FromAgent::Status {
                         message: format!("Declined Codex-native {} ({reason})", request.method),
                     });
+                    let _ = self.event_tx.send(FromAgent::CodexNativeDecision {
+                        method: request.method.clone(),
+                        decision: "denied_policy".to_owned(),
+                    });
                     request.respond(approval_decision(false));
                     return Ok(());
                 }
                 if !codex_native_approval_requires_user(self.config.approval_mode) {
+                    let _ = self.event_tx.send(FromAgent::CodexNativeDecision {
+                        method: request.method.clone(),
+                        decision: "approved_policy".to_owned(),
+                    });
                     request.respond(approval_decision(true));
                     return Ok(());
                 }
@@ -5271,10 +5390,18 @@ impl NativeAgentRunner {
                             &mut self.pending_tool_approvals,
                             &mut self.cancelled_tool_responses,
                         );
+                        let _ = self.event_tx.send(FromAgent::CodexNativeDecision {
+                            method: request.method.clone(),
+                            decision: "cancelled".to_owned(),
+                        });
                         request.respond(approval_decision(false));
                         return Ok(());
                     }
                     ToolResponseWait::Closed => {
+                        let _ = self.event_tx.send(FromAgent::CodexNativeDecision {
+                            method: request.method.clone(),
+                            decision: "channel_closed".to_owned(),
+                        });
                         request.respond(approval_decision(false));
                         return Ok(());
                     }
@@ -5284,6 +5411,15 @@ impl NativeAgentRunner {
                         message: format!("Declined Codex-native {} (user denied)", request.method),
                     });
                 }
+                let _ = self.event_tx.send(FromAgent::CodexNativeDecision {
+                    method: request.method.clone(),
+                    decision: if approved {
+                        "approved_user"
+                    } else {
+                        "denied_user"
+                    }
+                    .to_owned(),
+                });
                 request.respond(approval_decision(approved));
                 Ok(())
             }
@@ -7937,9 +8073,33 @@ mod tests {
         let (client, provider, route) =
             resolve_native_client("openai-codex/gpt-5.5", None).expect("Codex transport");
         assert!(client.is_none());
-
         assert_eq!(provider, "openai-codex");
         assert!(route.uses_app_server());
+    }
+
+    #[tokio::test]
+    async fn auth_refresh_waiter_resumes_only_after_usable_credentials_change() {
+        let root = tempfile::tempdir().expect("auth root");
+        let auth_path = root.path().join("auth.json");
+        let writer_path = auth_path.clone();
+        let writer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            tokio::fs::write(
+                writer_path,
+                r#"{"auth_mode":"apikey","OPENAI_API_KEY":"refreshed"}"#,
+            )
+            .await
+            .expect("write refreshed auth");
+        });
+        let resumed = wait_for_codex_auth_refresh(
+            &auth_path,
+            &CancellationToken::new(),
+            &CancellationToken::new(),
+            Duration::from_secs(1),
+        )
+        .await;
+        writer.await.unwrap();
+        assert!(resumed);
     }
 
     #[test]
@@ -8603,6 +8763,7 @@ const scenario=process.env.MAESTRO_CODEX_FAILURE_SCENARIO;
 const log=process.env.MAESTRO_CODEX_FAILURE_LOG;
 const observed=process.env.MAESTRO_CODEX_FAILURE_ITEMS;
 const marker=process.env.MAESTRO_CODEX_FAILURE_MARKER;
+fs.appendFileSync(log,'START\n');
 function send(x){fs.appendFileSync(log,'OUT '+JSON.stringify(x)+'\n');process.stdout.write(JSON.stringify(x)+'\n')}
 function fail(x){send({id:x.id,error:{code:-32000,message:'429 rate limit retry-after: 0 seconds'}})}
 rl.on('line',line=>{fs.appendFileSync(log,line+'\n');const x=JSON.parse(line);
@@ -8707,6 +8868,12 @@ else if(x.method==='turn/start'){
             2,
             "the frozen restore prefix must survive one failed injection: {transient_log}"
         );
+        assert_eq!(
+            transient_log.matches("START").count(),
+            2,
+            "a pre-turn failure must replace the app-server exactly once: {transient_log}"
+        );
+
         assert_eq!(
             transient_log.matches("ACCEPT ").count(),
             1,

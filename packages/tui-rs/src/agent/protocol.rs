@@ -1200,6 +1200,19 @@ pub enum FromAgent {
         output_chars: u64,
     },
 
+    /// Privacy-safe decision receipt for a Codex-native operation.
+    CodexNativeDecision { method: String, decision: String },
+
+    /// Privacy-safe lifecycle receipt for one Codex prompt.
+    CodexTransportReceipt {
+        provider: String,
+        transport: String,
+        outcome: String,
+        transport_restarted: bool,
+        auth_resumed: bool,
+        cancellation_requested: bool,
+    },
+
     /// Agent wants to call a tool
     ///
     /// The agent has requested to execute a tool (bash, read, write, etc.).
@@ -1501,6 +1514,32 @@ mod tests {
         let json = r#"{"type":"response_chunk","response_id":"123","content":"Hello","is_thinking":false}"#;
         let msg: FromAgent = serde_json::from_str(json).unwrap();
         assert!(matches!(msg, FromAgent::ResponseChunk { content, .. } if content == "Hello"));
+    }
+
+    #[test]
+    fn codex_receipts_are_serialized_without_sensitive_payloads() {
+        let decision = serde_json::to_value(FromAgent::CodexNativeDecision {
+            method: "item/fileChange/requestApproval".to_owned(),
+            decision: "denied_policy".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(decision["type"], "codex_native_decision");
+        assert!(decision.get("params").is_none());
+        assert!(decision.get("command").is_none());
+
+        let transport = serde_json::to_value(FromAgent::CodexTransportReceipt {
+            provider: "openai-codex".to_owned(),
+            transport: "codex-app-server".to_owned(),
+            outcome: "completed".to_owned(),
+            transport_restarted: true,
+            auth_resumed: false,
+            cancellation_requested: false,
+        })
+        .unwrap();
+        assert_eq!(transport["type"], "codex_transport_receipt");
+        assert_eq!(transport["transport_restarted"], true);
+        assert!(transport.get("prompt").is_none());
+        assert!(transport.get("token").is_none());
     }
 
     #[test]

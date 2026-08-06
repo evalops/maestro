@@ -594,6 +594,8 @@ pub(crate) async fn handle_chat_endpoint(
             // Output accounting for Codex-native operations; carries no
             // content for a chat client to render.
             | FromAgent::CodexNativeOperation { .. }
+            | FromAgent::CodexNativeDecision { .. }
+            | FromAgent::CodexTransportReceipt { .. }
             | FromAgent::SessionInfo { .. } => {}
             FromAgent::ResponseStart { .. } => {
                 response_started = true;
@@ -1254,6 +1256,8 @@ pub(crate) async fn handle_chat_websocket_endpoint(
             // Output accounting for Codex-native operations; carries no
             // content for a chat client to render.
             | FromAgent::CodexNativeOperation { .. }
+            | FromAgent::CodexNativeDecision { .. }
+            | FromAgent::CodexTransportReceipt { .. }
             | FromAgent::SessionInfo { .. } => {}
             FromAgent::ResponseStart { .. } => {
                 response_started = true;

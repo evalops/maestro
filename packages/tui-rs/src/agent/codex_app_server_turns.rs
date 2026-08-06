@@ -66,9 +66,19 @@ impl CodexAppServerTurnSession {
     ) -> Result<Self> {
         let model = model.into();
         let (command, args) = codex_app_server_spawn_override_from_env()?;
-        let client = CodexAppServerClient::spawn(command, args, None)
-            .await
-            .context("spawn Codex app-server")?;
+        let requested_profile = env::var("MAESTRO_CODEX_PROFILE")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        let workspace = cwd
+            .as_deref()
+            .map(std::path::Path::new)
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let identity =
+            crate::codex_identity::resolve_codex_identity(requested_profile.as_deref(), workspace)?;
+        let client =
+            CodexAppServerClient::spawn_with_env(command, args, None, &identity.child_env())
+                .await
+                .context("spawn Codex app-server")?;
         client
             .initialize(InitializeOptions {
                 experimental_api: true,
@@ -578,10 +588,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openai_codex_models_select_app_server_turns() {
+    fn explicit_codex_provider_selects_app_server_turns() {
         assert!(model_should_use_app_server_turns("openai-codex/gpt-5.5"));
         assert!(model_should_use_app_server_turns("OPENAI-CODEX/gpt-5.5"));
-        assert!(model_should_use_app_server_turns("gpt-5.1-codex-max"));
+        assert!(!model_should_use_app_server_turns("gpt-5.1-codex-max"));
         assert!(!model_should_use_app_server_turns("openai/gpt-5.5"));
         assert!(!model_should_use_app_server_turns("openai/codex-gpt"));
         assert!(!model_should_use_app_server_turns(
