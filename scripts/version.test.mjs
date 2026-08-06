@@ -164,7 +164,7 @@ test("set fails on a missing Rust package entry and rolls back earlier writes", 
 test("version-bump installs clippy before running release lint", () => {
 	assert.match(
 		versionBumpWorkflow,
-		/uses: \.\/\.github\/actions\/setup-rust\n\s+with: \{ toolchain: stable, components: "rustfmt,clippy" \}/u,
+		/uses: \.\/\.github\/actions\/setup-rust\n\s+with: \{ toolchain: stable, components: "rustfmt,clippy", cache-group: validation \}/u,
 	);
 	assert.match(
 		versionBumpWorkflow,
