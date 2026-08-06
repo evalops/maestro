@@ -12,6 +12,7 @@ use ring::signature::{UnparsedPublicKey, ED25519};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
+use std::io::Write as _;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
@@ -130,6 +131,25 @@ pub struct ManagedPolicyStatus {
     pub metadata: Option<ManagedPolicyMetadata>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedPolicyPublishResult {
+    pub published: bool,
+    pub status: ManagedPolicyStatus,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedPolicyAuditEvent {
+    pub event_id: String,
+    pub action: String,
+    pub actor: Option<String>,
+    pub recorded_at: u64,
+    pub outcome: String,
+    pub metadata: Option<ManagedPolicyMetadata>,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -427,6 +447,11 @@ fn persist_managed_policy_watermark(
     policy_hash: &str,
 ) -> Result<(), String> {
     let state_path = managed_policy_state_path(policy_path);
+    if let Some(parent) = state_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!("Managed policy rollback state directory could not be created: {error}")
+        })?;
+    }
     let serialized = serde_json::to_vec(&ManagedPolicyWatermark {
         policy_version,
         policy_hash: policy_hash.to_string(),
@@ -443,6 +468,143 @@ fn persist_managed_policy_watermark(
     }
     Ok(())
 }
+
+fn managed_policy_audit_path(policy_path: &Path) -> PathBuf {
+    if let Some(path) = env_path("MAESTRO_MANAGED_POLICY_AUDIT_PATH") {
+        return path;
+    }
+    let mut audit = managed_policy_state_path(policy_path)
+        .as_os_str()
+        .to_os_string();
+    audit.push(".audit.jsonl");
+    PathBuf::from(audit)
+}
+
+fn bounded_audit_value(value: Option<String>) -> Option<String> {
+    value.map(|value| value.chars().take(512).collect())
+}
+
+/// Atomically publish an externally signed managed-policy envelope.
+///
+/// Maestro verifies the envelope with its configured public key and never
+/// handles the private key used by the customer KMS or HSM.
+pub fn publish_managed_policy(
+    envelope: ManagedPolicyEnvelope,
+) -> Result<ManagedPolicyPublishResult, String> {
+    let Some(path) = managed_policy_path() else {
+        return Err("Managed policy publish requires MAESTRO_MANAGED_POLICY_PATH".to_string());
+    };
+    if path.exists() && !path.is_file() {
+        return Err("Managed policy publish path is not a regular file".to_string());
+    }
+
+    let verified = verify_managed_policy(envelope.clone())?;
+    if let Some(watermark) = load_managed_policy_watermark(&path)? {
+        if verified.metadata.policy_version < watermark.policy_version {
+            return Err("Managed policy rollback was rejected".to_string());
+        }
+        if verified.metadata.policy_version == watermark.policy_version
+            && verified.metadata.policy_hash != watermark.policy_hash
+        {
+            return Err("Managed policy changed without increasing its version".to_string());
+        }
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!("Managed policy publish directory could not be created: {error}")
+        })?;
+    }
+    let serialized = serde_json::to_vec(&envelope)
+        .map_err(|_| "Managed policy envelope could not be serialized".to_string())?;
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let temp_path = path.with_extension(format!("publish-tmp-{}-{unique}", std::process::id()));
+    if let Err(error) = std::fs::write(&temp_path, serialized) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(format!(
+            "Managed policy envelope could not be written: {error}"
+        ));
+    }
+    // Advance the watermark before activation. If the process dies between
+    // these operations, the older active file fails closed instead of being
+    // accepted as a rollback on the next start.
+    if let Err(error) = persist_managed_policy_watermark(
+        &path,
+        verified.metadata.policy_version,
+        &verified.metadata.policy_hash,
+    ) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error);
+    }
+    if let Err(error) = std::fs::rename(&temp_path, &path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(format!(
+            "Managed policy envelope could not be activated: {error}"
+        ));
+    }
+
+    Ok(ManagedPolicyPublishResult {
+        published: true,
+        status: refresh_managed_policy(),
+    })
+}
+
+/// Append a bounded, non-secret managed-policy audit event.
+pub fn record_managed_policy_audit(mut event: ManagedPolicyAuditEvent) -> Result<(), String> {
+    let Some(policy_path) = managed_policy_path() else {
+        return Err("Managed policy audit requires MAESTRO_MANAGED_POLICY_PATH".to_string());
+    };
+    event.event_id = event.event_id.chars().take(128).collect();
+    event.action = event.action.chars().take(128).collect();
+    event.actor = bounded_audit_value(event.actor);
+    event.outcome = event.outcome.chars().take(128).collect();
+    event.reason = bounded_audit_value(event.reason);
+
+    let audit_path = managed_policy_audit_path(&policy_path);
+    if let Some(parent) = audit_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!("Managed policy audit directory could not be created: {error}")
+        })?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&audit_path)
+        .map_err(|error| format!("Managed policy audit could not be opened: {error}"))?;
+    let serialized = serde_json::to_vec(&event)
+        .map_err(|_| "Managed policy audit event could not be serialized".to_string())?;
+    file.write_all(&serialized)
+        .and_then(|()| file.write_all(b"\n"))
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("Managed policy audit could not be committed: {error}"))
+}
+
+/// Read the newest bounded managed-policy audit events.
+pub fn managed_policy_audit(limit: usize) -> Result<Vec<ManagedPolicyAuditEvent>, String> {
+    let Some(policy_path) = managed_policy_path() else {
+        return Ok(Vec::new());
+    };
+    let audit_path = managed_policy_audit_path(&policy_path);
+    if !audit_path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = std::fs::read_to_string(&audit_path)
+        .map_err(|error| format!("Managed policy audit could not be read: {error}"))?;
+    let mut events = content
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<ManagedPolicyAuditEvent>(line)
+                .map_err(|_| "Managed policy audit contains invalid JSON".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    events.reverse();
+    events.truncate(limit.min(100));
+    Ok(events)
+}
+
 fn load_managed_policy(force: bool) -> Result<Option<VerifiedManagedPolicy>, String> {
     let Some(path) = managed_policy_path() else {
         return Ok(None);
@@ -2101,6 +2263,103 @@ mod tests {
         let rollback = refresh_managed_policy();
         assert!(!rollback.valid);
         assert!(rollback.error.unwrap().contains("rollback"));
+
+        restore_managed_test_env(previous);
+    }
+
+    #[test]
+    fn managed_policy_publish_persists_and_audits() {
+        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let previous = vec![
+            (
+                "MAESTRO_MANAGED_POLICY_PATH",
+                std::env::var("MAESTRO_MANAGED_POLICY_PATH").ok(),
+            ),
+            (
+                "MAESTRO_MANAGED_POLICY_STATE_PATH",
+                std::env::var("MAESTRO_MANAGED_POLICY_STATE_PATH").ok(),
+            ),
+            (
+                "MAESTRO_MANAGED_POLICY_AUDIT_PATH",
+                std::env::var("MAESTRO_MANAGED_POLICY_AUDIT_PATH").ok(),
+            ),
+            (
+                "MAESTRO_MANAGED_POLICY_PUBLIC_KEY",
+                std::env::var("MAESTRO_MANAGED_POLICY_PUBLIC_KEY").ok(),
+            ),
+            (
+                "MAESTRO_MANAGED_POLICY_KEY_ID",
+                std::env::var("MAESTRO_MANAGED_POLICY_KEY_ID").ok(),
+            ),
+            ("MAESTRO_ORG_ID", std::env::var("MAESTRO_ORG_ID").ok()),
+            (
+                "MAESTRO_WORKSPACE_ID",
+                std::env::var("MAESTRO_WORKSPACE_ID").ok(),
+            ),
+        ];
+        let temp = tempfile::tempdir().expect("create managed policy dir");
+        let pkcs8 =
+            ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+                .expect("generate test key");
+        let key_pair =
+            ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("parse test key");
+        let managed_path = temp.path().join("managed-policy.json");
+        let state_path = temp.path().join("managed-policy.state");
+        let audit_path = temp.path().join("managed-policy.audit.jsonl");
+
+        std::env::set_var("MAESTRO_MANAGED_POLICY_PATH", &managed_path);
+        std::env::set_var("MAESTRO_MANAGED_POLICY_STATE_PATH", &state_path);
+        std::env::set_var("MAESTRO_MANAGED_POLICY_AUDIT_PATH", &audit_path);
+        std::env::set_var(
+            "MAESTRO_MANAGED_POLICY_PUBLIC_KEY",
+            URL_SAFE_NO_PAD.encode(key_pair.public_key().as_ref()),
+        );
+        std::env::set_var("MAESTRO_MANAGED_POLICY_KEY_ID", "test-key");
+        std::env::set_var("MAESTRO_ORG_ID", "org-1");
+        std::env::set_var("MAESTRO_WORKSPACE_ID", "workspace-1");
+
+        let envelope = signed_test_envelope(&key_pair, 1, false);
+        let published = publish_managed_policy(envelope.clone()).expect("publish policy");
+        assert!(published.published);
+        assert!(published.status.valid);
+        assert_eq!(
+            published.status.metadata.as_ref().unwrap().policy_version,
+            1
+        );
+        assert!(managed_path.is_file());
+
+        record_managed_policy_audit(ManagedPolicyAuditEvent {
+            event_id: "event-1".to_string(),
+            action: "publish".to_string(),
+            actor: Some("admin@example.com".to_string()),
+            recorded_at: unix_now().expect("test clock"),
+            outcome: "accepted".to_string(),
+            metadata: published.status.metadata.clone(),
+            reason: None,
+        })
+        .expect("record audit event");
+        let audit = managed_policy_audit(10).expect("read audit events");
+        assert_eq!(audit.len(), 1);
+        assert_eq!(audit[0].event_id, "event-1");
+        assert_eq!(audit[0].actor.as_deref(), Some("admin@example.com"));
+        assert_eq!(audit[0].metadata.as_ref().unwrap().policy_version, 1);
+
+        let original = std::fs::read(&managed_path).expect("read active policy");
+        let mut tampered = envelope;
+        tampered.policy.tools.as_mut().unwrap().allowed = Some(vec!["read".to_string()]);
+        let tamper_error = publish_managed_policy(tampered).expect_err("reject tamper");
+        assert!(tamper_error.contains("hash") || tamper_error.contains("signature"));
+        assert_eq!(std::fs::read(&managed_path).unwrap(), original);
+
+        assert!(
+            publish_managed_policy(signed_test_envelope(&key_pair, 2, false))
+                .expect("publish version two")
+                .status
+                .valid
+        );
+        let rollback = publish_managed_policy(signed_test_envelope(&key_pair, 1, false))
+            .expect_err("reject rollback");
+        assert!(rollback.contains("rollback"));
 
         restore_managed_test_env(previous);
     }

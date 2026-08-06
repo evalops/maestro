@@ -88,6 +88,77 @@ with, or revoked fails closed. The local policy may only narrow its limits.
 Authenticated `GET /api/admin/enterprise-policy/status` and
 `POST /api/admin/enterprise-policy/refresh` expose safe status metadata.
 
+#### Managed policy publishing and audit
+
+Keep the private signing key in the organization KMS or HSM. The publisher
+service signs the canonical envelope outside Maestro and submits it through
+the authenticated control plane; Maestro never receives private-key material.
+Configure `MAESTRO_MANAGED_POLICY_AUDIT_PATH` to select the local JSONL audit
+file. By default it is the managed-policy state path with `.audit.jsonl`
+appended.
+
+The publisher endpoints are:
+
+- `POST /api/admin/enterprise-policy/publish` with
+  `{ "envelope": <ManagedPolicyEnvelope> }` validates the signature, scope,
+  expiry, hash, and monotonic version, then atomically activates the bundle.
+- `GET /api/admin/enterprise-policy/audit?limit=50` returns the newest
+  accepted and rejected publication events, capped at 100 entries.
+
+Publication is authenticated and CSRF-protected like other state-changing
+control-plane API calls. A malformed request returns `400`; a rejected
+signature, scope, expiry, rollback, or kill-switch-reason validation returns
+`409`.
+Successful publication returns the safe managed-policy status. A valid
+kill-switch envelope is recorded as published, but its status is invalid so
+policy-gated actions remain blocked. Accepted publications and
+envelope-validation failures are recorded with the authenticated actor,
+outcome, safe policy metadata, and bounded failure reason; malformed HTTP
+requests are rejected before publication processing. Audit records never
+contain the policy signature or private key.
+
+The intended customer flow is:
+
+1. Render a versioned envelope from the organization policy source.
+2. Ask the KMS/HSM to sign the canonical payload and attach the signature and
+   policy hash.
+3. POST the envelope with the publisher service's control-plane credentials.
+4. Monitor the returned status and the audit endpoint, while keeping the
+   remote KMS/HSM and proxy logs as the authoritative organization audit trail.
+
+The request shape is intentionally redacted here; the publisher fills the
+fields from the existing `ManagedPolicyEnvelope` contract and supplies the
+KMS/HSM output:
+
+```sh
+curl -X POST "$MAESTRO_URL/api/admin/enterprise-policy/publish" \
+  -H "Authorization: Bearer <control-plane-credential>" \
+  -H "X-Maestro-CSRF: <csrf-token>" \
+  -H "Content-Type: application/json" \
+  --data @signed-envelope.json
+```
+
+```json
+{
+  "envelope": {
+    "schemaVersion": 1,
+    "orgId": "org-example",
+    "workspaceId": "workspace-example",
+    "policyVersion": 42,
+    "issuedAt": 0,
+    "expiresAt": 0,
+    "keyId": "org-policy-key",
+    "policy": {},
+    "killSwitch": false,
+    "policyHash": "<sha256-of-canonical-payload>",
+    "signature": "<kms-hsm-signature>"
+  }
+}
+```
+
+Use `GET /api/admin/enterprise-policy/audit?limit=50` for the newest local
+events; the endpoint caps reads at 100 records.
+
 ## Safe mode
 
 Set `MAESTRO_SAFE_MODE=1` to enable the safe-mode gates in
