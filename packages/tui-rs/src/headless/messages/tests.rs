@@ -922,6 +922,7 @@ fn state_handles_compaction_event() {
         tokens_before: 7000,
         auto: false,
         custom_instructions: None,
+        continuation: None,
         timestamp: "2026-03-31T12:00:00Z".to_string(),
     });
 

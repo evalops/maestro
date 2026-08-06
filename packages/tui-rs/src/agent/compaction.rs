@@ -38,6 +38,41 @@
 use crate::agent::protocol::close_dangling_untrusted_content_envelope;
 use crate::agent::token_estimation::{self, IMAGE_TOKEN_ESTIMATE};
 use crate::ai::{ContentBlock, Message, MessageContent, Role};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+
+/// Durable state needed to continue a compacted conversation without guessing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContinuationRecord {
+    pub objective: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_questions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<ContinuationCommand>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next_actions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verification: Vec<String>,
+    /// SHA-256 of the exact compacted message slice.
+    pub source_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContinuationCommand {
+    pub tool_call_id: String,
+    pub command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    #[serde(default)]
+    pub failed: bool,
+}
 
 /// Configuration for context compaction
 #[derive(Debug, Clone)]
@@ -80,6 +115,27 @@ impl Default for CompactionConfig {
             auto_compact_enabled: true, // Enabled by default
             intra_compact_enabled: true,
             intra_message_token_budget: 8_000,
+        }
+    }
+}
+
+impl CompactionConfig {
+    /// Resolve compaction limits from the active model catalog, with an explicit
+    /// configuration override taking precedence.
+    #[must_use]
+    pub fn for_model(model: &str, configured_context_window: Option<u64>) -> Self {
+        let max_context_tokens = configured_context_window
+            .or_else(|| {
+                crate::model_catalog::find_model(model)
+                    .map(|entry| u64::from(entry.capabilities.context_tokens))
+            })
+            .filter(|value| *value > 0)
+            .unwrap_or_else(|| Self::default().max_context_tokens);
+        Self {
+            max_context_tokens,
+            target_tokens: max_context_tokens / 2,
+            keep_recent_tokens: (max_context_tokens / 5).clamp(20_000, 100_000),
+            ..Self::default()
         }
     }
 }
@@ -151,6 +207,171 @@ fn is_valid_cut_point(messages: &[Message], index: usize) -> bool {
     // - After an assistant message (complete turn)
     // - After a user message (start of new turn)
     matches!(prev.role, Role::User | Role::Assistant)
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !value.trim().is_empty() && !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
+fn classify_continuation_text(record: &mut ContinuationRecord, text: &str, role: Role) {
+    for sentence in text
+        .split(['\n', '.'])
+        .map(str::trim)
+        .filter(|sentence| !sentence.is_empty())
+    {
+        let lower = sentence.to_ascii_lowercase();
+        if matches!(role, Role::User)
+            && (lower.contains("must ")
+                || lower.starts_with("do not ")
+                || lower.starts_with("never ")
+                || lower.contains("out of scope")
+                || lower.contains("done when"))
+        {
+            push_unique(&mut record.constraints, sentence.to_string());
+        }
+        if matches!(role, Role::Assistant)
+            && (lower.contains("decided")
+                || lower.contains("decision:")
+                || lower.contains("root cause:"))
+        {
+            push_unique(&mut record.decisions, sentence.to_string());
+        }
+        if sentence.contains('?') || lower.contains("unknown") || lower.contains("needs a test") {
+            push_unique(&mut record.open_questions, sentence.to_string());
+        }
+        if lower.starts_with("next:")
+            || lower.starts_with("next ")
+            || lower.contains("todo")
+            || lower.contains("remaining")
+            || lower.contains("blocked")
+        {
+            push_unique(&mut record.next_actions, sentence.to_string());
+        }
+        if lower.contains("test")
+            && (lower.contains("pass")
+                || lower.contains("fail")
+                || lower.contains("could not")
+                || lower.contains("not run"))
+        {
+            push_unique(&mut record.verification, sentence.to_string());
+        }
+    }
+}
+
+fn command_from_input(input: &serde_json::Value) -> Option<String> {
+    ["command", "cmd"]
+        .iter()
+        .find_map(|key| input.get(key).and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+}
+
+fn build_continuation_record(messages: &[Message]) -> ContinuationRecord {
+    let mut record = ContinuationRecord::default();
+    let mut commands_by_id = HashMap::<String, usize>::new();
+
+    for message in messages {
+        if matches!(message.role, Role::User) {
+            if let MessageContent::Text(text) = &message.content {
+                if record.objective.is_none() && !text.trim().is_empty() {
+                    record.objective = Some(text.trim().to_string());
+                }
+            }
+        }
+
+        match &message.content {
+            MessageContent::Text(text) => {
+                classify_continuation_text(&mut record, text, message.role);
+            }
+            MessageContent::Blocks(blocks) => {
+                for block in blocks {
+                    match block {
+                        ContentBlock::Text { text } => {
+                            classify_continuation_text(&mut record, text, message.role);
+                        }
+                        ContentBlock::ToolUse { id, input, .. } => {
+                            if let Some(command) = command_from_input(input) {
+                                commands_by_id.insert(id.clone(), record.commands.len());
+                                record.commands.push(ContinuationCommand {
+                                    tool_call_id: id.clone(),
+                                    command,
+                                    outcome: None,
+                                    failed: false,
+                                });
+                            }
+                        }
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            is_error,
+                        } => {
+                            let bounded = close_dangling_untrusted_content_envelope(
+                                &truncate_text(content, 512),
+                            );
+                            if let Some(index) = commands_by_id.get(tool_use_id).copied() {
+                                record.commands[index].outcome = Some(bounded.clone());
+                                record.commands[index].failed = is_error.unwrap_or(false);
+                            }
+                            push_unique(&mut record.evidence, bounded);
+                        }
+                        ContentBlock::Thinking { .. } | ContentBlock::Image { .. } => {}
+                    }
+                }
+            }
+        }
+    }
+
+    let serialized =
+        serde_json::to_vec(messages).unwrap_or_else(|_| format!("{messages:?}").into_bytes());
+    record.source_hash = format!("{:x}", Sha256::digest(serialized));
+    record
+}
+
+impl ContinuationRecord {
+    fn to_markdown(&self) -> String {
+        let mut sections = Vec::new();
+        if !self.constraints.is_empty() {
+            sections.push(format!(
+                "## Constraints\n- {}",
+                self.constraints.join("\n- ")
+            ));
+        }
+        if !self.decisions.is_empty() {
+            sections.push(format!("## Decisions\n- {}", self.decisions.join("\n- ")));
+        }
+        if !self.open_questions.is_empty() {
+            sections.push(format!(
+                "## Open Questions\n- {}",
+                self.open_questions.join("\n- ")
+            ));
+        }
+        if !self.commands.is_empty() {
+            let commands = self
+                .commands
+                .iter()
+                .map(|command| match command.outcome.as_deref() {
+                    Some(outcome) => format!("- `{}` => {}", command.command, outcome),
+                    None => format!("- `{}` => outcome unknown", command.command),
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            sections.push(format!("## Exact Commands and Outcomes\n{commands}"));
+        }
+        if !self.next_actions.is_empty() {
+            sections.push(format!(
+                "## Next Actions\n- {}",
+                self.next_actions.join("\n- ")
+            ));
+        }
+        if !self.verification.is_empty() {
+            sections.push(format!(
+                "## Verification State\n- {}",
+                self.verification.join("\n- ")
+            ));
+        }
+        sections.join("\n\n")
+    }
 }
 
 /// Find the optimal cut point based on token budget
@@ -295,6 +516,7 @@ impl ContextCompactor {
                 compacted_count: 0,
                 cut_point: None,
                 intra_compacted_count: 0,
+                continuation: None,
             };
         }
 
@@ -305,7 +527,8 @@ impl ContextCompactor {
         let to_compact = &messages[..split_point];
         let to_preserve = &messages[split_point..];
 
-        // Generate summary of compacted messages
+        // Generate summary and durable continuation state from the same exact slice.
+        let continuation = build_continuation_record(to_compact);
         let summary = self.generate_summary(to_compact);
 
         // Build result: summary + preserved messages
@@ -328,6 +551,7 @@ impl ContextCompactor {
             compacted_count: to_compact.len(),
             cut_point: None,
             intra_compacted_count: 0,
+            continuation: Some(continuation),
         }
     }
 
@@ -349,6 +573,7 @@ impl ContextCompactor {
                 compacted_count: 0,
                 cut_point: None,
                 intra_compacted_count: 0,
+                continuation: None,
             };
         }
 
@@ -368,6 +593,7 @@ impl ContextCompactor {
                 compacted_count: 0,
                 cut_point: Some(cut_point),
                 intra_compacted_count: intra,
+                continuation: None,
             };
         }
 
@@ -375,6 +601,7 @@ impl ContextCompactor {
         let to_preserve = &messages[cut_point.first_kept_index..];
 
         // Generate summary with split-turn awareness
+        let continuation = build_continuation_record(to_compact);
         let summary = if cut_point.is_split_turn {
             // When splitting a turn, include context about the partial turn
             let mut parts = vec![self.generate_summary(to_compact)];
@@ -419,6 +646,7 @@ impl ContextCompactor {
             compacted_count: to_compact.len(),
             cut_point: Some(cut_point),
             intra_compacted_count,
+            continuation: Some(continuation),
         }
     }
 
@@ -557,6 +785,11 @@ impl ContextCompactor {
             ));
         }
 
+        let continuation = build_continuation_record(messages).to_markdown();
+        if !continuation.is_empty() {
+            summary_parts.push(continuation);
+        }
+
         if summary_parts.is_empty() {
             "No significant history to summarize.".to_string()
         } else {
@@ -578,6 +811,8 @@ pub struct CompactionResult {
     pub cut_point: Option<CutPoint>,
     /// Number of messages that had content elided via intra-message compaction
     pub intra_compacted_count: usize,
+    /// Typed continuation state derived from the exact compacted slice.
+    pub continuation: Option<ContinuationRecord>,
 }
 
 impl CompactionResult {
@@ -1226,6 +1461,7 @@ mod tests {
             compacted_count: 5,
             cut_point: None,
             intra_compacted_count: 0,
+            continuation: None,
         };
         assert!(result.was_compacted());
 
@@ -1235,6 +1471,7 @@ mod tests {
             compacted_count: 0,
             cut_point: None,
             intra_compacted_count: 0,
+            continuation: None,
         };
         assert!(!result_no_compact.was_compacted());
     }
@@ -1391,6 +1628,7 @@ mod tests {
                 tokens_after: 100,
             }),
             intra_compacted_count: 0,
+            continuation: None,
         };
         assert!(!result_not_split.was_turn_split());
 
@@ -1406,6 +1644,7 @@ mod tests {
                 tokens_after: 100,
             }),
             intra_compacted_count: 0,
+            continuation: None,
         };
         assert!(result_split.was_turn_split());
     }
@@ -1627,5 +1866,76 @@ mod tests {
         assert!(result.intra_compacted_count > 0);
         assert!(result.was_compacted());
         assert!(compactor.estimate_tokens(&result.messages) <= 500);
+    }
+
+    #[test]
+    fn continuation_record_preserves_constraints_commands_and_open_work() {
+        let compactor = ContextCompactor::new(CompactionConfig {
+            preserve_recent_count: 0,
+            ..Default::default()
+        });
+        let messages = vec![
+            make_user_message(
+                "Ship the workflow runtime. Do not deploy it. Done when cargo test passes.",
+            ),
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                    id: "call-1".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({"command": "cargo test -p maestro-tui compaction"}),
+                }]),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-1".to_string(),
+                    content: "FAILED: continuation record is missing".to_string(),
+                    is_error: Some(true),
+                }]),
+            },
+            make_assistant_message(
+                "Root cause: compaction drops durable state. Next: add the record and rerun the test.",
+            ),
+        ];
+
+        let result = compactor.compact(&messages);
+        let continuation = result.continuation.expect("continuation record");
+
+        assert_eq!(
+            continuation.objective.as_deref(),
+            Some("Ship the workflow runtime. Do not deploy it. Done when cargo test passes.")
+        );
+        assert!(continuation
+            .constraints
+            .iter()
+            .any(|constraint| constraint.contains("Do not deploy")));
+        assert!(continuation.commands.iter().any(|command| {
+            command.command == "cargo test -p maestro-tui compaction"
+                && command.outcome.as_deref() == Some("FAILED: continuation record is missing")
+        }));
+        assert!(continuation
+            .next_actions
+            .iter()
+            .any(|action| action.contains("add the record")));
+        assert!(!continuation.source_hash.is_empty());
+    }
+
+    #[test]
+    fn compaction_limits_follow_the_active_model_catalog() {
+        let catalog_tokens = crate::model_catalog::find_model("gpt-5.5")
+            .map(|entry| u64::from(entry.capabilities.context_tokens))
+            .expect("gpt-5.5 catalog entry");
+        let config = CompactionConfig::for_model("gpt-5.5", None);
+        assert_eq!(config.max_context_tokens, catalog_tokens);
+        assert_eq!(config.target_tokens, catalog_tokens / 2);
+        assert_eq!(
+            config.keep_recent_tokens,
+            (catalog_tokens / 5).clamp(20_000, 100_000)
+        );
+
+        let overridden = CompactionConfig::for_model("gpt-5.5", Some(96_000));
+        assert_eq!(overridden.max_context_tokens, 96_000);
+        assert_eq!(overridden.target_tokens, 48_000);
     }
 }

@@ -7,6 +7,56 @@
 
 use serde::{Deserialize, Serialize};
 
+macro_rules! opaque_id {
+    ($name:ident, $doc:literal) => {
+        #[doc = $doc]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[serde(transparent)]
+        pub struct $name(String);
+
+        impl $name {
+            #[must_use]
+            pub fn new(id: impl Into<String>) -> Self {
+                Self(id.into())
+            }
+
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+
+            #[must_use]
+            pub fn into_string(self) -> String {
+                self.0
+            }
+        }
+
+        impl From<String> for $name {
+            fn from(id: String) -> Self {
+                Self(id)
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+
+        impl AsRef<str> for $name {
+            fn as_ref(&self) -> &str {
+                &self.0
+            }
+        }
+    };
+}
+
+opaque_id!(RunnerSessionId, "Runner transport session identifier.");
+opaque_id!(MaestroThreadId, "Maestro conversation thread identifier.");
+opaque_id!(WorkItemId, "Platform work item identifier.");
+opaque_id!(AgentId, "Agent runtime identifier.");
+opaque_id!(ToolExecutionId, "Single tool execution identifier.");
+
 /// Bare conversation id as stamped onto hook payloads and session records.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]

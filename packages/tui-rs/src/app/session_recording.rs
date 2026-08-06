@@ -343,6 +343,7 @@ impl App {
         tokens_before: u64,
         auto: bool,
         custom_instructions: Option<String>,
+        continuation: Option<crate::agent::compaction::ContinuationRecord>,
     ) {
         if self.ensure_session_started().is_err() {
             return;
@@ -358,6 +359,7 @@ impl App {
             tokens_before,
             auto,
             custom_instructions,
+            continuation,
         });
         self.write_session_entry(entry);
     }

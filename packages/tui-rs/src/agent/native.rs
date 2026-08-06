@@ -320,6 +320,7 @@ fn emit_compaction_event(
     messages: &[Message],
     summary: &str,
     cut_point: Option<&super::compaction::CutPoint>,
+    continuation: Option<&super::compaction::ContinuationRecord>,
     auto: bool,
 ) {
     let first_kept_entry_index = cut_point
@@ -333,6 +334,7 @@ fn emit_compaction_event(
         tokens_before,
         auto,
         custom_instructions: None,
+        continuation: continuation.cloned(),
         timestamp: Utc::now().to_rfc3339(),
     });
 }
@@ -361,6 +363,7 @@ fn emit_compaction_event(
 ///     thinking_budget: 20000,
 ///     cwd: "/path/to/project".to_string(),
 ///     approval_mode: ApprovalMode::Selective,
+///     context_window: None,
 ///     sandbox_policy: None,
 /// };
 /// ```
@@ -413,6 +416,10 @@ pub struct NativeAgentConfig {
     /// auto-execute decision and the caller's approval UI never disagree.
     pub approval_mode: ApprovalMode,
 
+    /// Optional explicit context-window override. When absent, the runner uses
+    /// the active model catalog instead of a fixed compaction threshold.
+    pub context_window: Option<u64>,
+
     /// Native OS sandbox policy applied to the runner's *own* tool executor.
     ///
     /// This is the executor that actually runs auto-approved calls: every
@@ -440,6 +447,7 @@ impl Default for NativeAgentConfig {
             cwd: std::env::current_dir()
                 .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string()),
             approval_mode: ApprovalMode::default(),
+            context_window: None,
             sandbox_policy: None,
         }
     }
@@ -1199,7 +1207,9 @@ impl NativeAgent {
         let safety = SafetyController::new();
 
         // Create context compactor for handling long conversations
-        let compactor = super::compaction::ContextCompactor::new(Default::default());
+        let compactor = super::compaction::ContextCompactor::new(
+            super::compaction::CompactionConfig::for_model(&config.model, config.context_window),
+        );
 
         // Create retry policy for transient API errors
         let retry_policy = super::retry::RetryPolicy::default();
@@ -2875,6 +2885,7 @@ impl NativeAgentRunner {
             &self.messages,
             result.summary.as_deref().unwrap_or(&status_message),
             result.cut_point.as_ref(),
+            result.continuation.as_ref(),
             true,
         );
         self.messages = Arc::new(result.messages);
@@ -5632,6 +5643,7 @@ impl NativeAgentRunner {
                                     &self.messages,
                                     result.summary.as_deref().unwrap_or(&status_msg),
                                     result.cut_point.as_ref(),
+                                    result.continuation.as_ref(),
                                     false,
                                 );
                                 let _ = self.event_tx.send(FromAgent::Status {
@@ -6724,6 +6736,7 @@ impl NativeAgentRunner {
                         &self.messages,
                         result.summary.as_deref().unwrap_or(&status_msg),
                         result.cut_point.as_ref(),
+                        result.continuation.as_ref(),
                         true,
                     );
                     let _ = self.event_tx.send(FromAgent::Status {
@@ -9131,7 +9144,8 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         let snapshot_bytes = std::fs::read(&checkpoint).expect("semantic snapshot");
         let snapshot: Vec<Message> =
             serde_json::from_slice(&snapshot_bytes).expect("snapshot messages");
-        let compaction_config = super::super::compaction::CompactionConfig::default();
+        let compaction_config =
+            super::super::compaction::CompactionConfig::for_model("openai-codex/gpt-5.5", None);
         let token_budget = compaction_config.max_context_tokens;
         let compactor = super::super::compaction::ContextCompactor::new(compaction_config);
         assert!(

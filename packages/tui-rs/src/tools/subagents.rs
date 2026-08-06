@@ -1479,6 +1479,7 @@ impl SubagentManager {
             thinking_budget: 0,
             cwd: child_cwd.to_string_lossy().into_owned(),
             approval_mode: ApprovalMode::Yolo,
+            context_window: None,
             sandbox_policy: child_policy,
         };
         let allowed_tools =
@@ -2833,6 +2834,7 @@ fn child_event_to_headless(event: &FromAgent, session_id: &str) -> Option<FromAg
             tokens_before,
             auto,
             custom_instructions,
+            continuation,
             timestamp,
         } => Some(FromAgentMessage::Compaction {
             summary: summary.clone(),
@@ -2840,6 +2842,7 @@ fn child_event_to_headless(event: &FromAgent, session_id: &str) -> Option<FromAg
             tokens_before: *tokens_before,
             auto: *auto,
             custom_instructions: custom_instructions.clone(),
+            continuation: continuation.clone(),
             timestamp: timestamp.clone(),
         }),
         FromAgent::SessionInfo {

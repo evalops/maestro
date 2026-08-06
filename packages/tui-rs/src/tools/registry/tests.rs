@@ -801,6 +801,8 @@ fn test_ask_user_schema_declares_nested_array_items() {
     assert!(questions["items"]["properties"]
         .get("multiSelect")
         .is_some());
+    assert_eq!(schema["properties"]["background"]["type"], "boolean");
+    assert_eq!(schema["properties"]["deadlineSeconds"]["minimum"], 1);
     assert_eq!(
         questions["items"]["properties"]["options"]["items"]["required"],
         serde_json::json!(["label", "description"])

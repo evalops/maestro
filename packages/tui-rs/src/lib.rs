@@ -293,10 +293,12 @@ pub mod mcp_config_cli;
 /// LSP diagnostics bridge (optional Node-based CLI integration).
 pub mod lsp;
 
+pub mod pending_decisions;
 /// Telemetry and wide events.
 /// Canonical turn events with tail sampling for observability.
 pub mod telemetry;
 pub mod transcript;
+pub mod workflow_runtime;
 
 /// Usage and cost tracking.
 /// Tracks token consumption and estimates costs across sessions.
@@ -498,7 +500,8 @@ pub use agent::{NativeAgent, NativeAgentConfig, ToolDefinition};
 
 // Telemetry types - for wide events tracking
 pub use telemetry::{
-    CanonicalTurnEvent, // The wide event emitted per turn
+    CanonicalTurnEvent, // The rich local event emitted per turn
+    ExternalTurnEvent,  // Content-free projection for external exporters
     TailSamplingConfig, // Sampling configuration
     TurnCollector,      // Accumulates context during a turn
     TurnTracker,        // Integrates with agent events

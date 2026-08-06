@@ -732,6 +732,7 @@ fn test_restore_visible_session_messages_applies_compactions() {
             tokens_before: 1000,
             auto: true,
             custom_instructions: None,
+            continuation: None,
         }],
         side_questions: Vec::new(),
         plan_review_events: Vec::new(),
@@ -854,6 +855,7 @@ fn test_restore_visible_session_messages_applies_multiple_compactions_in_order()
                 tokens_before: 1000,
                 auto: true,
                 custom_instructions: None,
+                continuation: None,
             },
             CompactionEntry {
                 id: None,
@@ -865,6 +867,7 @@ fn test_restore_visible_session_messages_applies_multiple_compactions_in_order()
                 tokens_before: 1200,
                 auto: true,
                 custom_instructions: None,
+                continuation: None,
             },
         ],
         side_questions: Vec::new(),
@@ -2815,8 +2818,10 @@ fn open_plan_comments_block_off_cycle_and_approval() {
 }
 
 #[test]
-fn fork_clears_plan_review_state_and_plan_session_identity() {
+fn fork_snapshot_keeps_parent_plan_state_and_session_selected() {
     let mut app = new_test_app();
+    app.ensure_session_started().unwrap();
+    let parent_session = app.state.session_id.clone();
     app.plan_review_comments.push(PlanReviewComment {
         id: 1,
         start_line: 1,
@@ -2826,12 +2831,15 @@ fn fork_clears_plan_review_state_and_plan_session_identity() {
         excerpt: "line".into(),
         resolved: false,
     });
-    crate::plan_mode::set_active_session_id(Some("old-session".into()));
-
     app.fork_session();
 
-    assert!(app.plan_review_comments.is_empty());
-    assert_eq!(crate::plan_mode::active_session_id(), None);
+    assert_eq!(app.plan_review_comments.len(), 1);
+    assert_eq!(app.state.session_id, parent_session);
+    assert!(app
+        .state
+        .status
+        .as_deref()
+        .is_some_and(|status| status.contains("created without switching")));
 }
 
 #[tokio::test]

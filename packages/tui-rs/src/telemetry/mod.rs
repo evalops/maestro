@@ -45,7 +45,7 @@ mod wide_events;
 pub use staged_rollout::record_staged_rollout_surface_usage;
 pub use tracker::{TurnTracker, TurnTrackerConfig, TurnTrackerContext};
 pub use wide_events::{
-    AbortReason, ApprovalMode, CanonicalTurnEvent, ErrorDetails, FeatureFlags, ModelInfo,
-    SampleReason, SandboxMode, TailSamplingConfig, ThinkingLevel, TokenUsage, ToolExecution,
-    TurnCollector, TurnStatus,
+    AbortReason, ApprovalMode, CanonicalTurnEvent, ErrorDetails, ExternalTurnEvent, FeatureFlags,
+    ModelInfo, SampleReason, SandboxMode, TailSamplingConfig, ThinkingLevel, TokenUsage,
+    ToolExecution, TurnCollector, TurnStatus,
 };

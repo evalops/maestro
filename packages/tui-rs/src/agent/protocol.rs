@@ -1368,6 +1368,10 @@ pub enum FromAgent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         custom_instructions: Option<String>,
 
+        /// Durable semantic continuation state for replay and resume.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continuation: Option<super::compaction::ContinuationRecord>,
+
         /// RFC 3339 timestamp when compaction occurred.
         timestamp: String,
     },
