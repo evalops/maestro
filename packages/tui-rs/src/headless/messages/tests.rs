@@ -35,6 +35,7 @@ fn tool_end_serializes_typed_receipt_additively() {
             source: ExecutionSource::Native,
             status: ExecutionStatus::Succeeded,
             duration_ms: Some(4),
+            policy: None,
             details: ToolReceiptDetails::None,
         }),
     };
@@ -58,6 +59,7 @@ fn indeterminate_receipt_survives_headless_wire_and_state() {
             source: ExecutionSource::Native,
             status: ExecutionStatus::Indeterminate,
             duration_ms: Some(2_000),
+            policy: None,
             details: ToolReceiptDetails::None,
         }),
     };

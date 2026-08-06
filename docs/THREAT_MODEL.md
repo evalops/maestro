@@ -213,6 +213,15 @@ The HTTP control plane is authenticated by
   requirement is only accepted for loopback development binds.
 
 `AuthContext` carries an optional subject and an unrestricted API-key status.
+The managed policy boundary is separate from identity and authorization:
+
+- An explicitly configured bundle is verified locally before it can widen
+  capabilities.
+- Missing, invalid, expired, rolled-back, tampered, or kill-switched bundles
+  block policy-gated actions.
+- Execution receipts record the accepted policy version and hash, but are not
+  a tamper-evident audit log.
+
 This repository does not claim a general RBAC, SSO, or tamper-evident audit
 implementation in the Rust control plane. If a reverse proxy supplies identity
 or authorization, configure and review that proxy separately.

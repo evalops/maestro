@@ -71,6 +71,23 @@ The policy loader checks, in order, explicit paths in
 Malformed or unreadable policy fails closed. Keep policy files owner-readable
 and validate changes before deploying them.
 
+#### Managed organization policy
+
+Set `MAESTRO_MANAGED_POLICY_PATH` to opt into a signed organization policy
+bundle. The bundle uses an Ed25519 signature over a canonical payload and
+includes an SHA-256 policy hash, organization/workspace scope, version, expiry,
+and an optional kill switch.
+
+Set `MAESTRO_MANAGED_POLICY_PUBLIC_KEY` to the base64url or hex public key.
+`MAESTRO_MANAGED_POLICY_STATE_PATH` optionally selects the persistent rollback
+watermark; otherwise it is stored beside the managed bundle.
+`MAESTRO_MANAGED_POLICY_KEY_ID`, `MAESTRO_ORG_ID`, and
+`MAESTRO_WORKSPACE_ID` can pin the signing key and deployment scope. A
+configured bundle that is missing, invalid, expired, rolled back, tampered
+with, or revoked fails closed. The local policy may only narrow its limits.
+Authenticated `GET /api/admin/enterprise-policy/status` and
+`POST /api/admin/enterprise-policy/refresh` expose safe status metadata.
+
 ## Safe mode
 
 Set `MAESTRO_SAFE_MODE=1` to enable the safe-mode gates in

@@ -3349,6 +3349,7 @@ dependencies = [
  "rcgen",
  "regex",
  "reqwest",
+ "ring",
  "rustls",
  "seccompiler",
  "semver",

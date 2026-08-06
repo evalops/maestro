@@ -3125,6 +3125,7 @@ mod tests {
                 source: crate::agent::ExecutionSource::Native,
                 status: crate::agent::ExecutionStatus::Succeeded,
                 duration_ms: Some(1),
+                policy: None,
                 details: ToolReceiptDetails::BuiltIn(ToolDetails::Bash(details)),
             }),
             is_error: false,

@@ -11637,6 +11637,16 @@ fn native_run_event_route_is_implemented() {
 }
 
 #[test]
+fn enterprise_policy_admin_routes_are_implemented() {
+    for (method, path) in [
+        ("GET", "/api/admin/enterprise-policy/status"),
+        ("POST", "/api/admin/enterprise-policy/refresh"),
+    ] {
+        let head = csrf_head_for_path(method, path, None);
+        assert!(is_extended_endpoint(&head));
+    }
+}
+#[test]
 fn undo_endpoint_reads_and_consumes_tui_checkpoint_store() {
     use maestro_tui::checkpoints::{Checkpoint, CheckpointStore, EntryKind, FileEntry};
     use sha2::{Digest, Sha256};

@@ -137,6 +137,7 @@ impl App {
                 "argsSummary": args_summary,
                 "outcome": outcome,
                 "reason": reason,
+                "managedPolicy": crate::safety::managed_policy_metadata(),
             })),
         });
         self.write_session_entry(entry);

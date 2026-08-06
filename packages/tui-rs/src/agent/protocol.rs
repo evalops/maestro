@@ -69,6 +69,7 @@
 //! discriminator field, making the JSON format compatible with TypeScript and
 //! other languages.
 
+use crate::safety::ManagedPolicyMetadata;
 use crate::tools::{
     BashDetails, GlobDetails, GrepDetails, ImageDetails, ListDetails, ToolDetails, WebFetchDetails,
 };
@@ -333,6 +334,8 @@ pub struct ExecutionReceipt {
     pub status: ExecutionStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<Box<ManagedPolicyMetadata>>,
     pub details: ToolReceiptDetails,
 }
 
@@ -359,6 +362,7 @@ impl ToolExecution {
                 source: ExecutionSource::Native,
                 status: outcome.status(),
                 duration_ms: Some(0),
+                policy: crate::safety::managed_policy_metadata().map(Box::new),
                 details: ToolReceiptDetails::None,
             },
         }
@@ -422,6 +426,7 @@ impl ToolExecution {
                 source,
                 status: outcome.status(),
                 duration_ms: None,
+                policy: crate::safety::managed_policy_metadata().map(Box::new),
                 details,
             },
         }
@@ -449,6 +454,7 @@ impl ToolExecution {
                 source,
                 status: outcome.status(),
                 duration_ms: Some(0),
+                policy: crate::safety::managed_policy_metadata().map(Box::new),
                 details: ToolReceiptDetails::None,
             },
         }

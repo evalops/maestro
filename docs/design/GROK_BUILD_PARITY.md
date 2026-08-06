@@ -108,6 +108,17 @@ Statuses mirror [NATIVE_TUI_PARITY.md](../NATIVE_TUI_PARITY.md):
 | In-product dashboard / usage | Cost/status/value commands | **Partial** | Operator value reports exist; not a Grok-like usage dashboard product |
 | Pure Rust crate split (pager/shell/tools/workspace) | Monolithic `maestro_tui` + TS monorepo | **Open** | Long-term architecture track |
 
+### 2.1.1 Enterprise control boundary
+
+The highest-leverage enterprise addition is a Maestro-owned managed policy
+plane: organizations publish signed, scoped policy bundles with expiry,
+rollback protection, and an emergency kill switch.
+
+Invalid bundles fail closed, while a local policy can only narrow the managed
+limits. Authenticated status and refresh endpoints expose safe operator
+metadata. This keeps governance separate from Grok-specific UX and excludes a
+marketplace from the enterprise trust boundary.
+
 ### 2.2 Runtime / distribution matrix
 
 | Area | Grok-class shape (public) | Maestro | Status |
