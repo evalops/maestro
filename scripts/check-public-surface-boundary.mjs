@@ -28,11 +28,14 @@ const forbiddenMirrorOrchestrationPaths = [
 	".github/BUGBOT.md",
 	".github/PUBLIC_TREE_MIRROR_BOUNDARY.md",
 	".github/RELEASE_MIRROR_CONTRACT.md",
-	"AGENTS.md",
 	"CLAUDE.md",
 ];
 
-const forbiddenPublicPathPrefixes = [".agents/", ".context/"];
+const forbiddenPublicPathPrefixes = [
+	".agents/",
+	".context/",
+	".github/public-repo/",
+];
 
 const openAiProof = ["OpenAI", "Proof"];
 const forbiddenProofArtifactLabels = [
