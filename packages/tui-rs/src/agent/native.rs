@@ -230,6 +230,31 @@ fn policy_model_id(model: &str) -> String {
     }
 }
 
+/// Resolve the transport-specific client used by the native runner.
+///
+/// Codex models are driven by Codex app-server, which owns ChatGPT auth and
+/// must not require Maestro to materialize the access token as an HTTP client
+/// credential. Other models retain the direct `UnifiedClient` path, including
+/// the legacy API-key compatibility applied from `CODEX_HOME/auth.json`.
+fn resolve_native_client(
+    model: &str,
+    client_override: Option<UnifiedClient>,
+) -> Result<(Option<UnifiedClient>, String)> {
+    if let Some(client) = client_override {
+        let provider_name = client.provider_name().to_string();
+        return Ok((Some(client), provider_name));
+    }
+
+    if super::codex_app_server_turns::model_should_use_app_server_turns(model) {
+        return Ok((None, "openai-codex".to_owned()));
+    }
+
+    let _ = crate::codex_auth::apply_codex_auth_to_process_env();
+    let client = UnifiedClient::from_model(model)?;
+    let provider_name = client.provider_name().to_string();
+    Ok((Some(client), provider_name))
+}
+
 fn is_tool_result_only_user_message(message: &Message) -> bool {
     message.role == Role::User
         && matches!(
@@ -1102,11 +1127,7 @@ impl NativeAgent {
             return Err(anyhow::anyhow!(reason));
         }
 
-        let client = match client_override {
-            Some(client) => client,
-            None => UnifiedClient::from_model(&config.model)?,
-        };
-        let provider_name = client.provider_name().to_string();
+        let (client, provider_name) = resolve_native_client(&config.model, client_override)?;
 
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (tool_response_tx, tool_response_rx) = mpsc::unbounded_channel();
@@ -1745,13 +1766,11 @@ fn command_after_shutdown_check(
 /// }
 /// ```
 struct NativeAgentRunner {
-    /// AI client
+    /// Direct AI client for HTTP-provider turns.
     ///
-    /// Handles communication with AI providers (Anthropic, `OpenAI`, etc.).
-    /// Can be swapped at runtime via `SetModel` commands.
-    /// For `openai-codex/*`, turns are routed through
-    /// [`codex_session`] instead of this HTTP client.
-    client: UnifiedClient,
+    /// This is absent for Codex app-server models: Codex app-server owns the
+    /// ChatGPT login and all turn transport for those models.
+    client: Option<UnifiedClient>,
 
     /// Live Codex app-server session for `openai-codex/*` models.
     ///
@@ -3602,9 +3621,6 @@ impl NativeAgentRunner {
                     let shutdown_token = self.shutdown_token.clone();
                     let active_cancellation = Arc::clone(&self.active_cancellation);
                     let mut request_cancelled = false;
-                    // One-shot: re-read CODEX_HOME/auth.json after 401 and rebuild
-                    // the client before treating auth failure as terminal.
-                    let mut codex_auth_refreshed = false;
                     let mut terminal_request_failure = false;
                     loop {
                         let result = run_request_with_cancellation(
@@ -3629,41 +3645,6 @@ impl NativeAgentRunner {
 
                                 // Classify error and check if we should retry
                                 let error_kind = super::retry::ErrorKind::classify(&msg);
-
-                                // Codex ChatGPT tokens rotate under CODEX_HOME.
-                                // On auth failure, re-read auth.json once and
-                                // rebuild UnifiedClient before giving up.
-                                if matches!(error_kind, super::retry::ErrorKind::AuthFailure)
-                                    && !codex_auth_refreshed
-                                    && crate::codex_auth::model_uses_openai_codex(
-                                        &self.config.model,
-                                    )
-                                {
-                                    codex_auth_refreshed = true;
-                                    let refresh =
-                                        crate::codex_auth::refresh_codex_auth_to_process_env();
-                                    if refresh.auth_present {
-                                        match UnifiedClient::from_model(&self.config.model) {
-                                            Ok(client) => {
-                                                self.client = client;
-                                                let _ = self.event_tx.send(FromAgent::Status {
-                                                    message: "Refreshed Codex credentials from auth.json; retrying…".to_string(),
-                                                });
-                                                continue;
-                                            }
-                                            Err(rebuild_err) => {
-                                                let _ = self.event_tx.send(FromAgent::Error {
-                                                    message: format!(
-                                                        "Agent error: {msg} (auth refresh failed: {rebuild_err})"
-                                                    ),
-                                                    fatal: false,
-                                                });
-                                                terminal_request_failure = true;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
 
                                 match self.retry_policy.should_retry(error_kind) {
                                     super::retry::RetryDecision::Retry {
@@ -3820,11 +3801,8 @@ impl NativeAgentRunner {
                     // next openai-codex prompt opens a fresh app-server session.
                     self.codex_session = None;
 
-                    // Ensure Codex auth is present before resolving openai-codex/*.
-                    let _ = crate::codex_auth::apply_codex_auth_to_process_env();
-                    match UnifiedClient::from_model(&model) {
-                        Ok(client) => {
-                            let provider = client.provider_name().to_string();
+                    match resolve_native_client(&model, None) {
+                        Ok((client, provider)) => {
                             self.client = client;
                             self.config.model = model.clone();
                             self.hooks.set_model(&model);
@@ -3833,30 +3811,7 @@ impl NativeAgentRunner {
                                 .send(FromAgent::ModelChanged { model, provider });
                         }
                         Err(e) => {
-                            // One force-refresh if this looks like a Codex model.
-                            let message = if crate::codex_auth::model_uses_openai_codex(&model) {
-                                let refresh =
-                                    crate::codex_auth::refresh_codex_auth_to_process_env();
-                                if refresh.auth_present {
-                                    match UnifiedClient::from_model(&model) {
-                                        Ok(client) => {
-                                            let provider = client.provider_name().to_string();
-                                            self.client = client;
-                                            self.config.model = model.clone();
-                                            self.hooks.set_model(&model);
-                                            let _ = self
-                                                .event_tx
-                                                .send(FromAgent::ModelChanged { model, provider });
-                                            continue;
-                                        }
-                                        Err(e2) => format!("Failed to set model: {e2}"),
-                                    }
-                                } else {
-                                    format!("Failed to set model: {e}")
-                                }
-                            } else {
-                                format!("Failed to set model: {e}")
-                            };
+                            let message = format!("Failed to set model: {e}");
                             let _ = self.event_tx.send(FromAgent::Error {
                                 message: message.clone(),
                                 fatal: false,
@@ -4163,7 +4118,10 @@ impl NativeAgentRunner {
             tools,
             thinking,
             // Enable prompt caching for Anthropic models
-            cache_system_prompt: self.client.provider() == AiProvider::Anthropic,
+            cache_system_prompt: self
+                .client
+                .as_ref()
+                .is_some_and(|client| client.provider() == AiProvider::Anthropic),
         }
     }
 
@@ -4180,6 +4138,13 @@ impl NativeAgentRunner {
         let shutdown_token = self.shutdown_token.clone();
         let credential_vault = self.credential_vault.clone();
         let result = await_side_question_or_shutdown(&shutdown_token, async {
+            if super::codex_app_server_turns::model_should_use_app_server_turns(&self.config.model)
+            {
+                return self
+                    .run_codex_side_question(&question, &side_id, &mut answer)
+                    .await;
+            }
+
             let mut messages = resolve_provider_history(&self.messages, &credential_vault)?;
             messages.push(Message {
                 role: Role::User,
@@ -4187,7 +4152,11 @@ impl NativeAgentRunner {
             });
             let mut config = self.build_config();
             config.tools = Arc::new(Vec::new());
-            let mut rx = self.client.stream_owned_config(&messages, config).await?;
+            let client = self
+                .client
+                .as_ref()
+                .context("direct provider client missing for side question")?;
+            let mut rx = client.stream_owned_config(&messages, config).await?;
 
             while let Some(event) = rx.recv().await {
                 match event {
@@ -4236,6 +4205,65 @@ impl NativeAgentRunner {
             error: result.err().map(|err| err.to_string()),
             usage: saw_usage.then_some(usage),
         });
+    }
+
+    /// Run a Codex-native side question in an isolated, tool-free app-server
+    /// thread. Side questions must not mutate the live thread or fall back to
+    /// a direct HTTP client that would require copying ChatGPT credentials.
+    async fn run_codex_side_question(
+        &mut self,
+        question: &str,
+        side_id: &str,
+        answer: &mut String,
+    ) -> Result<()> {
+        use super::codex_app_server_turns::TurnWaitEvent;
+
+        let restored_messages = resolve_provider_history(&self.messages, &self.credential_vault)?;
+        let instructions = {
+            let system = match (&self.config.system_prompt, &self.prompt_context) {
+                (Some(base), Some(extra)) if !extra.trim().is_empty() => {
+                    Some(format!("{base}\n\n{extra}"))
+                }
+                (Some(base), _) => Some(base.clone()),
+                (None, Some(extra)) if !extra.trim().is_empty() => Some(extra.clone()),
+                _ => None,
+            };
+            ensure_untrusted_content_policy(system)
+        };
+        let session = super::codex_app_server_turns::CodexAppServerTurnSession::connect(
+            super::codex_app_server_turns::codex_thread_model_id(&self.config.model),
+            Some(self.config.cwd.clone()),
+            Some("untrusted".to_owned()),
+            Some("read-only".to_owned()),
+            &[],
+            instructions,
+            &restored_messages,
+        )
+        .await
+        .context("start Codex app-server side-question session")?;
+        let turn_id = session.start_text_turn(question.to_owned(), None).await?;
+
+        loop {
+            match session
+                .wait_server_request_or_turn_complete(&turn_id, Some(250))
+                .await?
+            {
+                TurnWaitEvent::Pending => {}
+                TurnWaitEvent::ServerRequest(request) => {
+                    request.reject("Codex side questions do not execute tools");
+                }
+                TurnWaitEvent::Completed(result) => {
+                    if !result.assistant_text.is_empty() {
+                        answer.push_str(&result.assistant_text);
+                        let _ = self.event_tx.send(FromAgent::SideQuestionChunk {
+                            side_id: side_id.to_owned(),
+                            content: result.assistant_text,
+                        });
+                    }
+                    return Ok(());
+                }
+            }
+        }
     }
 
     async fn run_queued_side_questions(&mut self) {
@@ -5013,8 +5041,11 @@ impl NativeAgentRunner {
             let config = self.build_config();
             let provider_messages =
                 resolve_provider_history_shared(&self.messages, &self.credential_vault)?;
-            let mut rx = self
+            let client = self
                 .client
+                .as_ref()
+                .context("direct provider client missing for native turn")?;
+            let mut rx = client
                 .stream_owned_config_shared_messages(provider_messages, config)
                 .await?;
 
@@ -7617,6 +7648,14 @@ mod tests {
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn codex_models_resolve_to_app_server_without_http_credentials() {
+        let (client, provider) =
+            resolve_native_client("openai-codex/gpt-5.5", None).expect("Codex transport");
+        assert!(client.is_none());
+        assert_eq!(provider, "openai-codex");
+    }
 
     #[test]
     fn goal_tools_visibility_tracks_update_goal_results() {

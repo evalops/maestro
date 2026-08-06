@@ -34,6 +34,33 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.65] - 2026-08-06
+
+### Added
+
+- Wire rendezvous runtime (#3334). <!-- maestro-release-note:eaf592722c8d -->
+- Improve session recovery and turn feedback (#3337). <!-- maestro-release-note:81ea8c3151aa -->
+- Wire outbound rendezvous runtime (#3335). <!-- maestro-release-note:26d2d91ee06d -->
+- Add persistent agent context surfaces (#3333). <!-- maestro-release-note:810fdb2577ff -->
+- Add outbound rendezvous carrier. <!-- maestro-release-note:1c7ef96d5530 -->
+- Define outbound rendezvous protocol (#3330). <!-- maestro-release-note:2a4c6019ea4b -->
+- Bring Grok-class session controls to Maestro (#3329). <!-- maestro-release-note:867d85014ffd -->
+- Add durable continual harness context (#3326). <!-- maestro-release-note:2018cc17b40b -->
+
+### Changed
+
+- Parallelize initial identity exchanges (#3338). <!-- maestro-release-note:3357831c49cc -->
+- Preserve hosted-runner drain after child exit (#3328). <!-- maestro-release-note:8f8e89cc16b1 -->
+- Clear Rust and devcontainer backlog (#3324). <!-- maestro-release-note:8b0ae8ad918f -->
+
+### Fixed
+
+- Enable UUID serde for macOS release targets (#3336). <!-- maestro-release-note:b203b2869954 -->
+- Deflake shutdown_reaps_registered_background_bash fixture (#3327). <!-- maestro-release-note:e17376585f69 -->
+- Revoke readiness when agent exits (#3325). <!-- maestro-release-note:1be225442b0c -->
+- Validate managed model before ready (#3323). <!-- maestro-release-note:d36bbd202836 -->
+- Wait 45s for initial identity exchange (#3322). <!-- maestro-release-note:4c4ebbea4713 -->
+
 ## [0.10.64] - 2026-08-05
 
 ### Added

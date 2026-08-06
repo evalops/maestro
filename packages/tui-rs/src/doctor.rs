@@ -545,7 +545,7 @@ pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) 
     // load_config always merges DEFAULT_CONFIG.model = "gpt-5.5". When Codex
     // ChatGPT auth is present, prefer openai-codex/gpt-5.5 unless the user
     // set MAESTRO_MODEL or passed --model (same policy as spawn_agent).
-    let codex_auth = crate::codex_auth::apply_codex_auth_to_process_env();
+    let codex_auth = crate::codex_auth::read_codex_auth();
     let requested = model_override
         .map(str::to_owned)
         .filter(|m| !m.trim().is_empty())
@@ -561,7 +561,12 @@ pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) 
                 .as_deref()
                 .map(str::trim)
                 .filter(|m| !m.is_empty());
-            match (configured, codex_auth.preferred_default_model) {
+            match (
+                configured,
+                codex_auth
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.preferred_default_model()),
+            ) {
                 (Some(model), Some(codex_default))
                     if model == "gpt-5.5" || model == "gpt-5.1-codex-max" =>
                 {

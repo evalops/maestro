@@ -920,10 +920,6 @@ pub fn classify_clap_dispatch(raw_args: &[std::ffi::OsString]) -> ClapDispatch {
 /// and headless modes. Returns the process exit code instead of exiting
 /// directly so the caller can run worktree teardown first.
 async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
-    // Prefer Codex ChatGPT auth from CODEX_HOME when present so
-    // openai-codex/* models resolve without a separate OPENAI_API_KEY.
-    let _ = crate::codex_auth::apply_codex_auth_to_process_env();
-
     match classify_agent_entry(&raw_args) {
         AgentEntry::HeadlessSubcommand => {
             let code = crate::headless_server::run_headless_server(raw_option_value(
