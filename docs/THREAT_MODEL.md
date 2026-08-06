@@ -219,12 +219,24 @@ The managed policy boundary is separate from identity and authorization:
   capabilities.
 - Missing, invalid, expired, rolled-back, tampered, or kill-switched bundles
   block policy-gated actions.
+- The publish endpoint accepts only an externally signed envelope. Private
+  signing keys remain in the organization's KMS/HSM and are not handled by
+  Maestro.
+- Successful publication replaces the configured bundle atomically and
+  advances a persistent version/hash watermark, preventing a stale valid
+  bundle from being replayed.
+- Publication attempts are recorded in a bounded local JSONL audit file with
+  actor, outcome, safe metadata, and failure reason. The KMS/HSM and
+  authenticated proxy remain the authoritative organization audit systems.
 - Execution receipts record the accepted policy version and hash, but are not
   a tamper-evident audit log.
 
 This repository does not claim a general RBAC, SSO, or tamper-evident audit
-implementation in the Rust control plane. If a reverse proxy supplies identity
-or authorization, configure and review that proxy separately.
+implementation in the Rust control plane. The publish and audit endpoints are
+authenticated, but organization-level authorization and identity scoping must
+be enforced by the caller or a reviewed reverse proxy. An operator who can
+modify the configured policy or audit files can still alter local state; use
+owner-restricted paths and retain KMS/HSM, proxy, and centralized log records.
 
 ## Deployment checklist
 

@@ -68,6 +68,8 @@ pub(crate) fn is_extended_endpoint(head: &RequestHead) -> bool {
             | "/api/policy/validate"
             | "/api/admin/enterprise-policy/status"
             | "/api/admin/enterprise-policy/refresh"
+            | "/api/admin/enterprise-policy/publish"
+            | "/api/admin/enterprise-policy/audit"
             | "/api/admin/cleanup"
             | "/api/admin/warm-caches"
             | "/api/attribution/record-outcome"
@@ -97,6 +99,33 @@ fn managed_policy_response(status: maestro_tui::safety::ManagedPolicyStatus) -> 
         response_status,
         &serde_json::json!({ "managedPolicy": status }),
     )
+}
+
+fn managed_policy_actor(head: &RequestHead, config: &Config) -> Option<String> {
+    let auth = auth_context(head, config)?;
+    if auth.unrestricted {
+        Some("api-key".to_string())
+    } else {
+        auth.subject
+    }
+}
+
+fn managed_policy_audit_event(
+    action: &str,
+    actor: Option<String>,
+    outcome: &str,
+    metadata: Option<maestro_tui::safety::ManagedPolicyMetadata>,
+    reason: Option<String>,
+) -> maestro_tui::safety::ManagedPolicyAuditEvent {
+    maestro_tui::safety::ManagedPolicyAuditEvent {
+        event_id: format!("managed-policy-{}", now_millis()),
+        action: action.to_string(),
+        actor,
+        recorded_at: now_millis(),
+        outcome: outcome.to_string(),
+        metadata,
+        reason,
+    }
 }
 
 pub(crate) async fn handle_extended_endpoint(
@@ -161,6 +190,81 @@ pub(crate) async fn handle_extended_endpoint(
         }
         ("POST", "/api/admin/enterprise-policy/refresh") => {
             managed_policy_response(maestro_tui::safety::refresh_managed_policy())
+        }
+        ("POST", "/api/admin/enterprise-policy/publish") => {
+            let envelope = match body
+                .get("envelope")
+                .cloned()
+                .ok_or_else(|| "publish request must include an envelope".to_string())
+                .and_then(|value| {
+                    serde_json::from_value::<maestro_tui::safety::ManagedPolicyEnvelope>(value)
+                        .map_err(|error| format!("invalid managed policy envelope: {error}"))
+                }) {
+                Ok(envelope) => envelope,
+                Err(error) => {
+                    return json_response(400, &serde_json::json!({ "error": error }));
+                }
+            };
+            let actor = managed_policy_actor(&head, &state.config);
+            match maestro_tui::safety::publish_managed_policy(envelope) {
+                Ok(result) => {
+                    let event = managed_policy_audit_event(
+                        "publish",
+                        actor,
+                        "accepted",
+                        result.status.metadata.clone(),
+                        result.status.error.clone(),
+                    );
+                    if let Err(error) = maestro_tui::safety::record_managed_policy_audit(event) {
+                        return json_response(
+                            500,
+                            &serde_json::json!({ "error": format!("managed policy published but audit failed: {error}") }),
+                        );
+                    }
+                    json_response(
+                        200,
+                        &serde_json::json!({
+                            "published": result.published,
+                            "managedPolicy": result.status,
+                        }),
+                    )
+                }
+                Err(error) => {
+                    let event = managed_policy_audit_event(
+                        "publish",
+                        actor,
+                        "rejected",
+                        None,
+                        Some(error.clone()),
+                    );
+                    if let Err(audit_error) =
+                        maestro_tui::safety::record_managed_policy_audit(event)
+                    {
+                        return json_response(
+                            500,
+                            &serde_json::json!({ "error": format!("managed policy rejected and audit failed: {audit_error}") }),
+                        );
+                    }
+                    json_response(
+                        409,
+                        &serde_json::json!({ "published": false, "error": error }),
+                    )
+                }
+            }
+        }
+        ("GET", "/api/admin/enterprise-policy/audit") => {
+            let limit = head
+                .query
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(50)
+                .min(100);
+            match maestro_tui::safety::managed_policy_audit(limit) {
+                Ok(events) => {
+                    json_response(200, &serde_json::json!({ "managedPolicyAudit": events }))
+                }
+                Err(error) => json_response(500, &serde_json::json!({ "error": error })),
+            }
         }
         ("POST", "/.well-known/evalops/remote-runner/drain") => {
             json_response(200, &serde_json::json!({ "ok": true, "draining": true }))

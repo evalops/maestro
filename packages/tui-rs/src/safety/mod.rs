@@ -78,8 +78,9 @@ pub use path_containment::{
 };
 pub use policy::{
     check_model_allowed, check_path_allowed, check_session_limits, get_policy_limits,
-    managed_policy_metadata, managed_policy_status, refresh_managed_policy, ManagedPolicyEnvelope,
-    ManagedPolicyMetadata, ManagedPolicyStatus,
+    managed_policy_audit, managed_policy_metadata, managed_policy_status, publish_managed_policy,
+    record_managed_policy_audit, refresh_managed_policy, ManagedPolicyAuditEvent,
+    ManagedPolicyEnvelope, ManagedPolicyMetadata, ManagedPolicyPublishResult, ManagedPolicyStatus,
 };
 pub use safe_mode::{
     is_plan_mode, is_safe_mode_enabled, require_plan, run_validators,

@@ -11641,6 +11641,8 @@ fn enterprise_policy_admin_routes_are_implemented() {
     for (method, path) in [
         ("GET", "/api/admin/enterprise-policy/status"),
         ("POST", "/api/admin/enterprise-policy/refresh"),
+        ("POST", "/api/admin/enterprise-policy/publish"),
+        ("GET", "/api/admin/enterprise-policy/audit"),
     ] {
         let head = csrf_head_for_path(method, path, None);
         assert!(is_extended_endpoint(&head));

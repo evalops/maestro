@@ -116,8 +116,11 @@ rollback protection, and an emergency kill switch.
 
 Invalid bundles fail closed, while a local policy can only narrow the managed
 limits. Authenticated status and refresh endpoints expose safe operator
-metadata. This keeps governance separate from Grok-specific UX and excludes a
-marketplace from the enterprise trust boundary.
+metadata. The authenticated publisher accepts envelopes signed by an external
+KMS/HSM, atomically activates newer versions, and exposes bounded publication
+audit events without handling private keys. This keeps governance separate from
+Grok-specific UX and excludes a marketplace from the enterprise trust
+boundary.
 
 ### 2.2 Runtime / distribution matrix
 
