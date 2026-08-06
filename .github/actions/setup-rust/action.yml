@@ -18,6 +18,10 @@ inputs:
     description: Rust-cache workspaces (newline-separated "$workspace -> $target")
     required: false
     default: ". -> target"
+  cache-group:
+    description: Compatible Cargo artifact group shared across jobs and workflows
+    required: false
+    default: "validation"
   install-cargo-llvm-cov:
     description: Whether to install cargo-llvm-cov (prebuilt)
     required: false
@@ -38,26 +42,19 @@ runs:
         set -euo pipefail
         safe_repo="${GITHUB_REPOSITORY:-repo}"
         safe_repo="${safe_repo//[^A-Za-z0-9_.-]/-}"
-        safe_job="${GITHUB_JOB:-job}"
-        safe_job="${safe_job//[^A-Za-z0-9_.-]/-}"
         safe_toolchain="${TOOLCHAIN_INPUT:-stable}"
         safe_toolchain="${safe_toolchain//[^A-Za-z0-9_.-]/-}"
-        # CARGO_HOME/RUSTUP_HOME must NOT vary per run. Swatinem/rust-cache
-        # hashes every CARGO_*/RUSTUP_* environment variable into its cache key
-        # ("Environment considered: ... CARGO_HOME ... RUSTUP_HOME" in the job
-        # log). Embedding GITHUB_RUN_ID here made that key unique on every run,
-        # so the restore key never matched a stored entry: each job logged
-        # "No cache found.", rebuilt every dependency from scratch, then
-        # uploaded a fresh multi-hundred-megabyte cache nobody could ever read.
-        # Keep the path stable per (repo, job, toolchain) instead; a self-hosted
-        # runner executes one job at a time, so that is still collision-free.
-        base="${RUNNER_TEMP:-${GITHUB_WORKSPACE:-$PWD}/.tmp}/maestro-rust/${safe_repo}/${safe_job}/${safe_toolchain}"
+        case "${RUNNER_OS:-}" in
+          Linux|macOS) cache_root=/tmp/maestro-rust ;;
+          *) cache_root="${RUNNER_TEMP:-${GITHUB_WORKSPACE:-$PWD}/.tmp}/maestro-rust" ;;
+        esac
+        # Cache archive paths and toolchain homes stay stable across compatible
+        # jobs. Profile-specific target artifacts remain separated by cache-group.
+        base="${cache_root%/}/${safe_repo}/${safe_toolchain}"
         root="$base/home"
         cargo_home="$root/cargo"
         rustup_home="$root/rustup"
         mkdir -p "$base"
-        # Sweep per-run directories left behind by the previous layout.
-        find "$base" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -exec rm -rf {} + || true
         if [[ "$root" == "$base"/home ]]; then
           rm -rf "$root"
         fi
@@ -137,7 +134,9 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        if command -v ldd >/dev/null 2>&1; then
+        if command -v getconf >/dev/null 2>&1 && descriptor="$(getconf GNU_LIBC_VERSION 2>/dev/null)" && [[ -n "$descriptor" ]]; then
+          :
+        elif command -v ldd >/dev/null 2>&1; then
           descriptor="$(ldd --version 2>&1 || true)"
           descriptor="${descriptor%%$'\n'*}"
         elif command -v sw_vers >/dev/null 2>&1; then
@@ -152,7 +151,11 @@ runs:
       uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
       with:
         workspaces: ${{ inputs.workspaces }}
-        shared-key: ${{ runner.os }}-${{ runner.arch }}-${{ steps.host-abi.outputs.value }}
+        shared-key: ${{ runner.os }}-${{ runner.arch }}-${{ steps.host-abi.outputs.value }}-${{ inputs.cache-group }}
+        add-job-id-key: "false"
+        # Hash build-affecting variables while keeping the normalized home paths
+        # out of the key so compatible jobs can restore the same archive.
+        env-vars: "CARGO_BUILD_TARGET CARGO_ENCODED_RUSTFLAGS CARGO_INCREMENTAL CARGO_PROFILE RUSTC_WRAPPER RUSTFLAGS CC CFLAGS CXX CMAKE"
 
     - name: Configure Cargo network resilience
       shell: bash
