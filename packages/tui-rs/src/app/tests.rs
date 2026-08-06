@@ -2464,7 +2464,7 @@ fn test_system_prompt_contains_tools() {
 
 #[test]
 fn test_system_prompt_includes_year_hint() {
-    let prompt = App::build_system_prompt_with_harness_context("/tmp", 2026, None, None, "");
+    let prompt = App::build_system_prompt_with_context("/tmp", 2026, None, None, None, None, "");
 
     assert!(prompt.contains("websearch/codesearch"));
     assert!(prompt.contains("current year (2026)"));
@@ -2472,7 +2472,7 @@ fn test_system_prompt_includes_year_hint() {
 
 #[test]
 fn test_system_prompt_includes_harness_context() {
-    let prompt = App::build_system_prompt_with_harness_context(
+    let prompt = App::build_system_prompt_with_context(
         "/tmp",
         2026,
         None,
@@ -2480,11 +2480,38 @@ fn test_system_prompt_includes_harness_context() {
             "## Supplemental Maestro harness\n\n### memory · release-proof\nUse the native smoke command."
                 .to_string(),
         ),
+        None,
+        None,
         "",
     );
 
     assert!(prompt.contains("Supplemental Maestro harness"));
     assert!(prompt.contains("release-proof"));
+}
+
+#[test]
+fn test_system_prompt_includes_rlm_and_mailbox_context() {
+    let mut rlm = crate::rlm::RlmStore::default();
+    rlm.set("plan", "Ship release", None)
+        .expect("seed RLM context");
+    let mut mailbox = crate::mailbox::MailboxStore::default();
+    mailbox
+        .send("child", "maestro", "report ready")
+        .expect("seed mailbox context");
+    let prompt = App::build_system_prompt_with_context(
+        "/tmp",
+        2026,
+        None,
+        None,
+        rlm.prompt_section(),
+        mailbox.prompt_section_for("maestro"),
+        "",
+    );
+
+    assert!(prompt.contains("RLM context variables"));
+    assert!(prompt.contains("{{plan}}"));
+    assert!(prompt.contains("Pending Maestro mailbox messages"));
+    assert!(prompt.contains("report ready"));
 }
 
 #[test]
@@ -2504,7 +2531,7 @@ fn test_system_prompt_instructs_untrusted_content_is_data_not_instruction() {
     assert!(prompt_template.contains("the operator"));
 
     // Present regardless of skills/custom-prompt state.
-    let prompt = App::build_system_prompt_with_harness_context("/tmp", 2026, None, None, "");
+    let prompt = App::build_system_prompt_with_context("/tmp", 2026, None, None, None, None, "");
     assert!(prompt.contains("<untrusted_content"));
 }
 

@@ -1,5 +1,5 @@
 use super::*;
-use crate::commands::{AttachAction, GoalAction, HarnessAction};
+use crate::commands::{AttachAction, GoalAction, HarnessAction, RlmAction};
 use crate::state::ApprovalMode;
 
 /// Normalize a slash-completion string to a single leading `/`.
@@ -408,6 +408,8 @@ impl App {
             },
             CommandAction::Goal(action) => self.handle_goal_action(action),
             CommandAction::Harness(action) => self.handle_harness_action(action),
+            CommandAction::Rlm(action) => self.handle_rlm_action(action),
+            CommandAction::Mailbox(action) => self.handle_mailbox_action(action),
             CommandAction::SetFooterStyle(style) => {
                 self.footer_style = style;
                 let mut prefs = crate::ui_prefs::UiPrefs::load_default();
@@ -2702,10 +2704,15 @@ Manual snapshot: `/magic-trace stop`",
                 criteria,
                 max_turns,
                 token_budget,
-            } => match self
-                .goal_store
-                .create(text, criteria, replace, max_turns, token_budget)
-            {
+                max_duration_secs,
+            } => match self.goal_store.create_with_limits(
+                text,
+                criteria,
+                replace,
+                max_turns,
+                token_budget,
+                max_duration_secs,
+            ) {
                 Ok(goal) => {
                     // Arm only when an agent can actually take a turn. Without
                     // an agent, arming would immediately burn auto_continue
@@ -2714,6 +2721,10 @@ Manual snapshot: `/magic-trace stop`",
                         goal.auto_continue && self.native_agent.is_some();
                     let budget = match goal.token_budget {
                         Some(b) => format!("Token budget: {b}. "),
+                        None => String::new(),
+                    };
+                    let time_budget = match goal.max_duration_secs {
+                        Some(seconds) => format!("Wall-clock budget: {seconds}s. "),
                         None => String::new(),
                     };
                     let kickoff = if self.native_agent.is_some() {
@@ -2725,7 +2736,7 @@ Manual snapshot: `/magic-trace stop`",
                         "Goal {} set (**{}**).\n\n{}\n\n\
                          Auto-continue (Codex-style): after each turn, if the goal is still active the TUI injects a continuation prompt. \
                          Mark done with the **`update_goal`** tool (`complete` or `blocked`) — same model. \
-                         {budget}Safety max_turns={}. `/goal pause` stops. Skipped while `/loop` or queue is active. \
+                         {budget}{time_budget}Safety max_turns={}. `/goal pause` stops. Skipped while `/loop` or queue is active. \
                          Goal tools are hidden from the model when no goal exists.\n\n{kickoff}",
                         goal.id,
                         goal.status.as_str(),
@@ -2837,6 +2848,57 @@ Manual snapshot: `/magic-trace stop`",
                 self.state
                     .add_system_message(self.harness_store.list_report(workspace, session_id));
             }
+            HarnessAction::Review => {
+                self.state
+                    .add_system_message(self.harness_store.proposal_report());
+            }
+            HarnessAction::Propose {
+                scope,
+                kind,
+                name,
+                content,
+                evidence,
+            } => {
+                let scope = match crate::harness::HarnessScope::parse(&scope) {
+                    Ok(scope) => scope,
+                    Err(error) => {
+                        self.state.error = Some(format!("Refinement proposal failed: {error:#}"));
+                        return;
+                    }
+                };
+                let kind = match crate::harness::HarnessKind::parse(&kind) {
+                    Ok(kind) => kind,
+                    Err(error) => {
+                        self.state.error = Some(format!("Refinement proposal failed: {error:#}"));
+                        return;
+                    }
+                };
+                let scope_key =
+                    match crate::harness::HarnessStore::scope_key(scope, workspace, session_id) {
+                        Ok(scope_key) => scope_key,
+                        Err(error) => {
+                            self.state.error =
+                                Some(format!("Refinement proposal failed: {error:#}"));
+                            return;
+                        }
+                    };
+                let proposal_name = name.clone();
+                match self
+                    .harness_store
+                    .propose(kind, scope, scope_key, name, content, evidence)
+                {
+                    Ok(id) => {
+                        self.state.status = Some(format!("Refinement proposal {id} staged"));
+                        self.state.add_system_message(format!(
+                            "Staged refinement proposal `{id}` for {} harness entry `{proposal_name}`. Use `/refine review`, then `/refine apply {id}`.",
+                            kind.as_str()
+                        ));
+                    }
+                    Err(error) => {
+                        self.state.error = Some(format!("Refinement proposal failed: {error:#}"));
+                    }
+                }
+            }
             HarnessAction::Add {
                 scope,
                 kind,
@@ -2921,6 +2983,154 @@ Manual snapshot: `/magic-trace stop`",
                 }
                 Err(error) => {
                     self.state.error = Some(format!("Harness rollback failed: {error:#}"));
+                }
+            },
+            HarnessAction::Apply(id) => match self.harness_store.apply_proposal(&id) {
+                Ok(entry_id) => {
+                    self.update_agent_system_prompt();
+                    self.state.status = Some(format!("Refinement proposal {id} applied"));
+                    self.state.add_system_message(format!(
+                        "Applied refinement proposal `{id}` to harness entry `{entry_id}`."
+                    ));
+                }
+                Err(error) => {
+                    self.state.error = Some(format!("Refinement apply failed: {error:#}"));
+                }
+            },
+            HarnessAction::Reject { id, note } => {
+                match self.harness_store.reject_proposal(&id, note) {
+                    Ok(()) => {
+                        self.state.status = Some(format!("Refinement proposal {id} rejected"));
+                        self.state
+                            .add_system_message(format!("Rejected refinement proposal `{id}`."));
+                    }
+                    Err(error) => {
+                        self.state.error = Some(format!("Refinement reject failed: {error:#}"));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Handle `/rlm` persistent context variable actions.
+    pub(super) fn handle_rlm_action(&mut self, action: RlmAction) {
+        match action {
+            RlmAction::List => self.state.add_system_message(self.rlm_store.report()),
+            RlmAction::Set {
+                name,
+                value,
+                description,
+            } => match self.rlm_store.set(name.clone(), value, description) {
+                Ok(()) => {
+                    self.update_agent_system_prompt();
+                    self.state.status = Some(format!("RLM variable `{name}` saved"));
+                    self.state
+                        .add_system_message(format!("Saved RLM variable `{name}`."));
+                }
+                Err(error) => {
+                    self.state.error = Some(format!("RLM set failed: {error:#}"));
+                }
+            },
+            RlmAction::Append { name, value } => match self.rlm_store.append(name.clone(), value) {
+                Ok(()) => {
+                    self.update_agent_system_prompt();
+                    self.state.status = Some(format!("RLM variable `{name}` appended"));
+                    self.state
+                        .add_system_message(format!("Appended to RLM variable `{name}`."));
+                }
+                Err(error) => {
+                    self.state.error = Some(format!("RLM append failed: {error:#}"));
+                }
+            },
+            RlmAction::Render(template) => match self.rlm_store.render_template(&template) {
+                Ok(rendered) => self
+                    .state
+                    .add_system_message(format!("## RLM rendered context\n\n{rendered}")),
+                Err(error) => {
+                    self.state.error = Some(format!("RLM render failed: {error:#}"));
+                }
+            },
+            RlmAction::Clear(name) => match self.rlm_store.clear(&name) {
+                Ok(true) => {
+                    self.update_agent_system_prompt();
+                    self.state.status = Some(format!("RLM variable `{name}` cleared"));
+                    self.state
+                        .add_system_message(format!("Cleared RLM variable `{name}`."));
+                }
+                Ok(false) => {
+                    self.state.status = Some(format!("No RLM variable named `{name}`"));
+                }
+                Err(error) => {
+                    self.state.error = Some(format!("RLM clear failed: {error:#}"));
+                }
+            },
+        }
+    }
+
+    /// Handle `/mailbox` durable parent/subagent messages.
+    pub(super) fn handle_mailbox_action(&mut self, action: crate::commands::MailboxAction) {
+        match action {
+            crate::commands::MailboxAction::List => {
+                self.state.add_system_message(
+                    self.mailbox_store
+                        .report(Some(crate::mailbox::local_identity().as_str())),
+                );
+            }
+            crate::commands::MailboxAction::Send { recipient, body } => {
+                let sender = crate::mailbox::local_identity();
+                match self.mailbox_store.send(sender, recipient.clone(), body) {
+                    Ok(id) => {
+                        self.update_agent_system_prompt();
+                        self.state.status = Some(format!("Mailbox message {id} sent"));
+                        self.state.add_system_message(format!(
+                            "Sent mailbox message `{id}` to `{recipient}`."
+                        ));
+                    }
+                    Err(error) => {
+                        self.state.error = Some(format!("Mailbox send failed: {error:#}"));
+                    }
+                }
+            }
+            crate::commands::MailboxAction::Read(id) => match self
+                .mailbox_store
+                .read_for(&id, Some(crate::mailbox::local_identity().as_str()))
+            {
+                Ok(message) => {
+                    self.update_agent_system_prompt();
+                    self.state.add_system_message(format!(
+                        "## Mailbox message `{}`\n\nFrom: `{}`\nTo: `{}`\n\n{}",
+                        message.id, message.sender, message.recipient, message.body
+                    ));
+                }
+                Err(error) => {
+                    self.state.error = Some(format!("Mailbox read failed: {error:#}"));
+                }
+            },
+            crate::commands::MailboxAction::Acknowledge(id) => {
+                match self
+                    .mailbox_store
+                    .acknowledge_for(&id, Some(crate::mailbox::local_identity().as_str()))
+                {
+                    Ok(()) => {
+                        self.update_agent_system_prompt();
+                        self.state.status = Some(format!("Mailbox message {id} acknowledged"));
+                        self.state
+                            .add_system_message(format!("Acknowledged mailbox message `{id}`."));
+                    }
+                    Err(error) => {
+                        self.state.error = Some(format!("Mailbox acknowledge failed: {error:#}"));
+                    }
+                }
+            }
+            crate::commands::MailboxAction::Compact => match self.mailbox_store.compact() {
+                Ok(removed) => {
+                    self.update_agent_system_prompt();
+                    self.state.add_system_message(format!(
+                        "Removed {removed} acknowledged mailbox message(s)."
+                    ));
+                }
+                Err(error) => {
+                    self.state.error = Some(format!("Mailbox compact failed: {error:#}"));
                 }
             },
         }

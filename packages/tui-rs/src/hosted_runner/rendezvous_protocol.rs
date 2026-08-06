@@ -12,6 +12,31 @@ use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
+/// Opaque possession proof minted by Platform for one durable activation intent.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct RendezvousNonce(String);
+
+impl RendezvousNonce {
+    /// Nonces are bootstrap secrets: reject empty, oversized, or control-bearing values.
+    pub fn parse(value: impl Into<String>) -> Result<Self, RendezvousLifecycleError> {
+        let value = value.into();
+        if value.is_empty()
+            || value.len() > 256
+            || !value.bytes().all(|byte| byte.is_ascii_graphic())
+        {
+            return Err(RendezvousLifecycleError::InvalidNonce);
+        }
+        Ok(Self(value))
+    }
+}
+
+impl std::fmt::Debug for RendezvousNonce {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RendezvousNonce(<redacted>)")
+    }
+}
+
 /// Version negotiated by both ends of a hosted-runner rendezvous stream.
 pub const RENDEZVOUS_PROTOCOL_VERSION: &str = "evalops.maestro.hosted-runner-rendezvous.v1";
 
@@ -97,6 +122,7 @@ impl RendezvousIdentity {
 pub struct RendezvousOpen {
     pub protocol_version: String,
     pub activation_id: Uuid,
+    pub rendezvous_nonce: RendezvousNonce,
     pub identity: RendezvousIdentity,
     pub mode: RendezvousMode,
     pub resume_after_sequence: Option<u64>,
@@ -167,6 +193,13 @@ pub enum HostToRunnerFrame {
 pub struct RendezvousRotation {
     pub close: RendezvousClose,
     pub open: RendezvousOpen,
+}
+
+/// Whether a request needs execution or is an exact replay already applied.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum RendezvousRequestDisposition {
+    Execute,
+    Replay,
 }
 
 /// Paired latency deltas for one reverse-activation attempt.
@@ -289,6 +322,8 @@ pub enum RendezvousLifecycleError {
     SequenceConflict { sequence: u64 },
     #[error("idempotency key must not be empty")]
     EmptyIdempotencyKey,
+    #[error("rendezvous nonce must be 1..=256 visible ASCII bytes")]
+    InvalidNonce,
     #[error("rendezvous identity field {0} is invalid")]
     InvalidIdentity(&'static str),
 }
@@ -298,6 +333,7 @@ pub enum RendezvousLifecycleError {
 pub struct RendezvousLifecycle {
     mode: RendezvousMode,
     identity: RendezvousIdentity,
+    rendezvous_nonce: RendezvousNonce,
     runtime_ready: bool,
     active_activation_id: Option<Uuid>,
     accepted: bool,
@@ -308,10 +344,15 @@ pub struct RendezvousLifecycle {
 impl RendezvousLifecycle {
     /// Creates a lifecycle with no ready runtime and no active stream.
     #[must_use]
-    pub fn new(mode: RendezvousMode, identity: RendezvousIdentity) -> Self {
+    pub fn new(
+        mode: RendezvousMode,
+        identity: RendezvousIdentity,
+        rendezvous_nonce: RendezvousNonce,
+    ) -> Self {
         Self {
             mode,
             identity,
+            rendezvous_nonce,
             runtime_ready: false,
             active_activation_id: None,
             accepted: false,
@@ -354,7 +395,9 @@ impl RendezvousLifecycle {
             Some(active) if active != activation_id => {
                 return Err(RendezvousLifecycleError::ActivationConflict { active });
             }
-            Some(_) => {}
+            Some(_) => {
+                self.accepted = false;
+            }
             None => {
                 self.active_activation_id = Some(activation_id);
                 self.accepted = false;
@@ -434,6 +477,26 @@ impl RendezvousLifecycle {
         sequence: u64,
         idempotency_key: impl Into<String>,
     ) -> Result<(), RendezvousLifecycleError> {
+        let idempotency_key = idempotency_key.into();
+        match self.request_disposition(sequence, &idempotency_key)? {
+            RendezvousRequestDisposition::Replay => return Ok(()),
+            RendezvousRequestDisposition::Execute => {}
+        }
+        self.last_applied_sequence = Some(sequence);
+        self.replay_records.push_back((sequence, idempotency_key));
+        while self.replay_records.len() > MAX_REPLAY_RECORDS {
+            self.replay_records.pop_front();
+        }
+        Ok(())
+    }
+
+    /// Classifies replay before executing a command so reconnects cannot
+    /// duplicate a request that was already durably applied by this runtime.
+    pub fn request_disposition(
+        &self,
+        sequence: u64,
+        idempotency_key: &str,
+    ) -> Result<RendezvousRequestDisposition, RendezvousLifecycleError> {
         if self.active_activation_id.is_none() {
             return Err(RendezvousLifecycleError::NoActiveActivation);
         }
@@ -443,7 +506,6 @@ impl RendezvousLifecycle {
         if !self.accepted {
             return Err(RendezvousLifecycleError::ActivationNotAccepted);
         }
-        let idempotency_key = idempotency_key.into();
         if idempotency_key.trim().is_empty() {
             return Err(RendezvousLifecycleError::EmptyIdempotencyKey);
         }
@@ -454,7 +516,9 @@ impl RendezvousLifecycle {
                 .iter()
                 .find(|(recorded_sequence, _)| *recorded_sequence == sequence)
             {
-                Some((_, recorded_key)) if recorded_key == &idempotency_key => Ok(()),
+                Some((_, recorded_key)) if recorded_key == idempotency_key => {
+                    Ok(RendezvousRequestDisposition::Replay)
+                }
                 _ => Err(RendezvousLifecycleError::SequenceConflict { sequence }),
             };
         }
@@ -464,12 +528,7 @@ impl RendezvousLifecycle {
                 received: sequence,
             });
         }
-        self.last_applied_sequence = Some(sequence);
-        self.replay_records.push_back((sequence, idempotency_key));
-        while self.replay_records.len() > MAX_REPLAY_RECORDS {
-            self.replay_records.pop_front();
-        }
-        Ok(())
+        Ok(RendezvousRequestDisposition::Execute)
     }
 
     /// Returns the currently authoritative path, or none while unavailable.
@@ -499,6 +558,7 @@ impl RendezvousLifecycle {
         RendezvousOpen {
             protocol_version: RENDEZVOUS_PROTOCOL_VERSION.to_string(),
             activation_id,
+            rendezvous_nonce: self.rendezvous_nonce.clone(),
             identity: self.identity.clone(),
             mode: self.mode,
             resume_after_sequence: self.last_applied_sequence,

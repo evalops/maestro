@@ -3,6 +3,8 @@ use std::fs;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 
+use super::rendezvous_protocol::{RendezvousMode, RendezvousNonce};
+
 const DEFAULT_ENV_LISTEN_HOST: &str = "0.0.0.0";
 const DEFAULT_PROGRAMMATIC_LISTEN_HOST: &str = "127.0.0.1";
 const DEFAULT_LISTEN_PORT: u16 = 8080;
@@ -22,6 +24,7 @@ pub struct HostedRunnerConfig {
     pub attach_audience: Option<String>,
     pub auth_token: Option<String>,
     pub workload_identity: Option<HostedRunnerWorkloadIdentityConfig>,
+    pub rendezvous: Option<HostedRunnerRendezvousConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -33,6 +36,16 @@ pub struct HostedRunnerWorkloadIdentityConfig {
     pub workspace_id: String,
     pub sandbox_id: uuid::Uuid,
     pub placement_generation: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct HostedRunnerRendezvousConfig {
+    pub mode: RendezvousMode,
+    pub endpoint: String,
+    pub server_name: String,
+    pub identity_exchange_url: url::Url,
+    pub activation_id: uuid::Uuid,
+    pub nonce: RendezvousNonce,
 }
 
 impl HostedRunnerConfig {
@@ -72,6 +85,7 @@ impl HostedRunnerConfig {
             &["MAESTRO_HOSTED_RUNNER_AUTH_TOKEN", "MAESTRO_WEB_API_KEY"],
         );
         let workload_identity = parse_workload_identity(env)?;
+        let rendezvous = parse_rendezvous(env, workload_identity.is_some())?;
         if workload_identity.is_some() && auth_token.is_some() {
             return Err(HostedRunnerConfigError::new(
                 "projected workload identity mode forbids static bearer authentication",
@@ -145,6 +159,7 @@ impl HostedRunnerConfig {
             attach_audience: env_value(env, "MAESTRO_ATTACH_AUDIENCE"),
             auth_token,
             workload_identity,
+            rendezvous,
         })
     }
 
@@ -170,6 +185,7 @@ impl HostedRunnerConfig {
             attach_audience: None,
             auth_token: None,
             workload_identity: None,
+            rendezvous: None,
         })
     }
 
@@ -226,6 +242,82 @@ impl HostedRunnerConfig {
         self.maestro_session_id = Some(maestro_session_id.into());
         self
     }
+}
+
+fn parse_rendezvous(
+    env: &HashMap<String, String>,
+    has_workload_identity: bool,
+) -> Result<Option<HostedRunnerRendezvousConfig>, HostedRunnerConfigError> {
+    let Some(mode) = env_value(env, "MAESTRO_RENDEZVOUS_MODE") else {
+        return Ok(None);
+    };
+    let mode = match mode.as_str() {
+        "inbound" => return Ok(None),
+        "outbound_shadow" => RendezvousMode::OutboundShadow,
+        "outbound" => RendezvousMode::Outbound,
+        _ => {
+            return Err(HostedRunnerConfigError::new(
+                "MAESTRO_RENDEZVOUS_MODE must be inbound, outbound_shadow, or outbound",
+            ))
+        }
+    };
+    if !has_workload_identity {
+        return Err(HostedRunnerConfigError::new(
+            "outbound rendezvous requires projected workload identity",
+        ));
+    }
+    if mode == RendezvousMode::Outbound
+        && env_value(env, "MAESTRO_RENDEZVOUS_OUTBOUND_PREFER").as_deref() != Some("true")
+    {
+        return Err(HostedRunnerConfigError::new(
+            "outbound rendezvous authority requires MAESTRO_RENDEZVOUS_OUTBOUND_PREFER=true",
+        ));
+    }
+    let required = |key: &'static str| {
+        env_value(env, key)
+            .ok_or_else(|| HostedRunnerConfigError::new(format!("rendezvous requires {key}")))
+    };
+    let endpoint = required("MAESTRO_RENDEZVOUS_ENDPOINT")?;
+    if endpoint.len() > 512 || endpoint.rsplit_once(':').is_none() {
+        return Err(HostedRunnerConfigError::new(
+            "MAESTRO_RENDEZVOUS_ENDPOINT must be a bounded host:port",
+        ));
+    }
+    let server_name = required("MAESTRO_RENDEZVOUS_SERVER_NAME")?;
+    rustls::pki_types::ServerName::try_from(server_name.clone()).map_err(|_| {
+        HostedRunnerConfigError::new("MAESTRO_RENDEZVOUS_SERVER_NAME must be a valid DNS name")
+    })?;
+    let identity_exchange_url = required("MAESTRO_RENDEZVOUS_IDENTITY_EXCHANGE_URL")?
+        .parse::<url::Url>()
+        .map_err(|_| {
+            HostedRunnerConfigError::new(
+                "MAESTRO_RENDEZVOUS_IDENTITY_EXCHANGE_URL must be a valid HTTPS URL",
+            )
+        })?;
+    if identity_exchange_url.scheme() != "https"
+        || identity_exchange_url.host_str().is_none()
+        || identity_exchange_url.username() != ""
+        || identity_exchange_url.password().is_some()
+    {
+        return Err(HostedRunnerConfigError::new(
+            "MAESTRO_RENDEZVOUS_IDENTITY_EXCHANGE_URL must be HTTPS without userinfo",
+        ));
+    }
+    let activation_id = required("MAESTRO_RENDEZVOUS_ACTIVATION_ID")?
+        .parse()
+        .map_err(|_| {
+            HostedRunnerConfigError::new("MAESTRO_RENDEZVOUS_ACTIVATION_ID must be a UUID")
+        })?;
+    let nonce = RendezvousNonce::parse(required("MAESTRO_RENDEZVOUS_NONCE")?)
+        .map_err(|error| HostedRunnerConfigError::new(error.to_string()))?;
+    Ok(Some(HostedRunnerRendezvousConfig {
+        mode,
+        endpoint,
+        server_name,
+        identity_exchange_url,
+        activation_id,
+        nonce,
+    }))
 }
 
 fn parse_workload_identity(

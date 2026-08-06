@@ -301,6 +301,10 @@ pub enum CommandAction {
     Goal(GoalAction),
     /// Durable continual-harness refinement actions.
     Harness(HarnessAction),
+    /// RLM-style context variable actions.
+    Rlm(RlmAction),
+    /// Durable parent/subagent mailbox actions.
+    Mailbox(MailboxAction),
     /// Change status-bar footer density.
     SetFooterStyle(FooterStyle),
     /// Manage files queued for the next prompt (`/attach`).
@@ -366,6 +370,8 @@ pub enum GoalAction {
         max_turns: Option<u32>,
         /// Optional Codex-style token budget for the goal.
         token_budget: Option<u64>,
+        /// Optional wall-clock budget for autonomous continuation.
+        max_duration_secs: Option<u64>,
     },
     Status,
     Pause,
@@ -397,6 +403,16 @@ pub enum HarnessAction {
     Status,
     /// List entries visible to the current scope.
     List,
+    /// Show pending and reviewed evidence-backed proposals.
+    Review,
+    /// Stage an evidence-backed refinement proposal.
+    Propose {
+        scope: String,
+        kind: String,
+        name: String,
+        content: String,
+        evidence: String,
+    },
     /// Add a scoped record. Evidence may be supplied after `--evidence`.
     Add {
         scope: String,
@@ -415,6 +431,44 @@ pub enum HarnessAction {
     Delete(String),
     /// Restore the entries captured at a prior revision.
     Rollback(u64),
+    /// Apply a pending proposal.
+    Apply(String),
+    /// Reject a pending proposal with an optional operator note.
+    Reject { id: String, note: Option<String> },
+}
+
+/// RLM context variable actions.
+#[derive(Debug, Clone)]
+pub enum RlmAction {
+    /// Show the current variable inventory.
+    List,
+    /// Set or replace a variable.
+    Set {
+        name: String,
+        value: String,
+        description: Option<String>,
+    },
+    /// Append text to a variable.
+    Append { name: String, value: String },
+    /// Render `{{name}}` references in a template.
+    Render(String),
+    /// Remove a variable.
+    Clear(String),
+}
+
+/// Durable local mailbox actions.
+#[derive(Debug, Clone)]
+pub enum MailboxAction {
+    /// Show pending messages.
+    List,
+    /// Send a message.
+    Send { recipient: String, body: String },
+    /// Mark a message read and display it.
+    Read(String),
+    /// Acknowledge a message.
+    Acknowledge(String),
+    /// Remove acknowledged messages.
+    Compact,
 }
 
 #[derive(Debug, Clone)]

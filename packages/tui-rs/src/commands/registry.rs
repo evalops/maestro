@@ -77,8 +77,9 @@ use super::types::{
     A2aAction, ArgumentValue, AttachAction, BackgroundMonitorAction, Command, CommandAction,
     CommandArgument, CommandCategory, CommandContext, CommandError, CommandOutput, CommandResult,
     ExportAction, FooterStyle, GoalAction, HarnessAction, HistoryAction, HooksAction, LoopAction,
-    McpAction, ModalType, PlanReviewAction, PluginsAction, QueueAction, QueueModeKind,
-    QueueMoveDirection, SessionAction, SkillsAction, ToolHistoryAction, UsageAction,
+    MailboxAction, McpAction, ModalType, PlanReviewAction, PluginsAction, QueueAction,
+    QueueModeKind, QueueMoveDirection, RlmAction, SessionAction, SkillsAction, ToolHistoryAction,
+    UsageAction,
 };
 use crate::git;
 use crate::keybindings::{
@@ -2124,7 +2125,7 @@ pub fn build_command_registry() -> CommandRegistry {
             }),
         )
         .usage(
-            "/goal [status|create [--max-turns N] [--token-budget N]|replace|pause|resume|block|complete|clear|auto on|auto off] [text]",
+            "/goal [status|create [--max-turns N] [--token-budget N] [--max-duration-secs N]|replace|pause|resume|block|complete|clear|auto on|auto off] [text]",
         ),
     );
 
@@ -2142,8 +2143,38 @@ pub fn build_command_registry() -> CommandRegistry {
         )
         .alias("refine")
         .usage(
-            "/harness [status|list|add <scope> <kind> <name> <content> [--evidence <text>]|update <id> <content>|delete <id>|rollback <revision>]",
+            "/harness [status|list|review|propose <scope> <kind> <name> <content> --evidence <text>|add <scope> <kind> <name> <content> [--evidence <text>]|update <id> <content>|delete <id>|apply <proposal-id>|reject <proposal-id> [note]|rollback <revision>]",
         ),
+    );
+
+    // RLM-style named context variables.
+    registry.register(
+        Command::new(
+            "rlm",
+            "Compose prompts from persistent named context variables",
+            CommandCategory::Context,
+            Box::new(|ctx| {
+                Ok(CommandOutput::Action(CommandAction::Rlm(parse_rlm_action(
+                    &ctx.raw_args,
+                )?)))
+            }),
+        )
+        .usage("/rlm [list|set <name> <value> [--description <text>]|append <name> <value>|render <template>|clear <name>]"),
+    );
+
+    // Durable messages for parent and delegated agent sessions.
+    registry.register(
+        Command::new(
+            "mailbox",
+            "Send and acknowledge durable messages between agent sessions",
+            CommandCategory::Session,
+            Box::new(|ctx| {
+                Ok(CommandOutput::Action(CommandAction::Mailbox(
+                    parse_mailbox_action(&ctx.raw_args)?,
+                )))
+            }),
+        )
+        .usage("/mailbox [list|send <recipient> <message>|read <id>|ack <id>|compact]"),
     );
 
     // Attach path (image/video) for multimodal next prompt
@@ -2655,11 +2686,11 @@ fn parse_goal_action(raw: &str) -> Result<GoalAction, CommandError> {
     let rest = parts.collect::<Vec<_>>().join(" ");
     match sub.as_str() {
         "create" | "set" | "start" => {
-            let (text, max_turns, token_budget) =
-                crate::goal::strip_goal_flags(&rest).map_err(CommandError::new)?;
+            let (text, max_turns, token_budget, max_duration_secs) =
+                crate::goal::strip_goal_flags_with_duration(&rest).map_err(CommandError::new)?;
             if text.is_empty() {
                 return Err(CommandError::new(
-                    "Usage: /goal create [--max-turns N] [--token-budget N] <text>",
+                    "Usage: /goal create [--max-turns N] [--token-budget N] [--max-duration-secs N] <text>",
                 ));
             }
             Ok(GoalAction::Create {
@@ -2668,14 +2699,15 @@ fn parse_goal_action(raw: &str) -> Result<GoalAction, CommandError> {
                 criteria: None,
                 max_turns,
                 token_budget,
+                max_duration_secs,
             })
         }
         "replace" => {
-            let (text, max_turns, token_budget) =
-                crate::goal::strip_goal_flags(&rest).map_err(CommandError::new)?;
+            let (text, max_turns, token_budget, max_duration_secs) =
+                crate::goal::strip_goal_flags_with_duration(&rest).map_err(CommandError::new)?;
             if text.is_empty() {
                 return Err(CommandError::new(
-                    "Usage: /goal replace [--max-turns N] [--token-budget N] <text>",
+                    "Usage: /goal replace [--max-turns N] [--token-budget N] [--max-duration-secs N] <text>",
                 ));
             }
             Ok(GoalAction::Create {
@@ -2684,6 +2716,7 @@ fn parse_goal_action(raw: &str) -> Result<GoalAction, CommandError> {
                 criteria: None,
                 max_turns,
                 token_budget,
+                max_duration_secs,
             })
         }
         "pause" => Ok(GoalAction::Pause),
@@ -2706,11 +2739,11 @@ fn parse_goal_action(raw: &str) -> Result<GoalAction, CommandError> {
         }
         // Bare text → create without replace (may include flags).
         _ => {
-            let (text, max_turns, token_budget) =
-                crate::goal::strip_goal_flags(trimmed).map_err(CommandError::new)?;
+            let (text, max_turns, token_budget, max_duration_secs) =
+                crate::goal::strip_goal_flags_with_duration(trimmed).map_err(CommandError::new)?;
             if text.is_empty() {
                 return Err(CommandError::new(
-                    "Usage: /goal create [--max-turns N] [--token-budget N] <text>",
+                    "Usage: /goal create [--max-turns N] [--token-budget N] [--max-duration-secs N] <text>",
                 ));
             }
             Ok(GoalAction::Create {
@@ -2719,6 +2752,7 @@ fn parse_goal_action(raw: &str) -> Result<GoalAction, CommandError> {
                 criteria: None,
                 token_budget,
                 max_turns,
+                max_duration_secs,
             })
         }
     }
@@ -2737,6 +2771,37 @@ fn parse_harness_action(raw: &str) -> Result<HarnessAction, CommandError> {
     let subcommand = parts.next().unwrap_or_default().to_ascii_lowercase();
     let rest = parts.next().unwrap_or_default().trim();
     match subcommand.as_str() {
+        "review" | "proposals" => Ok(HarnessAction::Review),
+        "propose" | "suggest" => {
+            let mut fields = rest.splitn(4, char::is_whitespace);
+            let scope = fields.next().unwrap_or_default();
+            let kind = fields.next().unwrap_or_default();
+            let name = fields.next().unwrap_or_default();
+            let content = fields.next().unwrap_or_default().trim();
+            if scope.is_empty() || kind.is_empty() || name.is_empty() || content.is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /refine propose <scope> <kind> <name> <content> --evidence <text>",
+                ));
+            }
+            let (content, evidence) = split_harness_evidence(content);
+            let Some(evidence) = evidence else {
+                return Err(CommandError::new(
+                    "Refinement proposals require --evidence <text>.",
+                ));
+            };
+            if content.is_empty() {
+                return Err(CommandError::new(
+                    "Refinement content is required before --evidence.",
+                ));
+            }
+            Ok(HarnessAction::Propose {
+                scope: scope.to_string(),
+                kind: kind.to_string(),
+                name: name.to_string(),
+                content,
+                evidence,
+            })
+        }
         "add" | "create" => {
             let mut fields = rest.splitn(4, char::is_whitespace);
             let scope = fields.next().unwrap_or_default();
@@ -2789,6 +2854,30 @@ fn parse_harness_action(raw: &str) -> Result<HarnessAction, CommandError> {
             }
             Ok(HarnessAction::Delete(rest.to_string()))
         }
+        "apply" | "accept" => {
+            if rest.is_empty() {
+                return Err(CommandError::new("Usage: /refine apply <proposal-id>"));
+            }
+            Ok(HarnessAction::Apply(rest.to_string()))
+        }
+        "reject" | "decline" => {
+            let mut fields = rest.splitn(2, char::is_whitespace);
+            let id = fields.next().unwrap_or_default();
+            let note = fields
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+            if id.is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /refine reject <proposal-id> [note]",
+                ));
+            }
+            Ok(HarnessAction::Reject {
+                id: id.to_string(),
+                note,
+            })
+        }
         "rollback" | "restore" => {
             let revision = rest.parse::<u64>().map_err(|_| {
                 CommandError::new("Usage: /harness rollback <revision> (revision must be numeric)")
@@ -2796,7 +2885,7 @@ fn parse_harness_action(raw: &str) -> Result<HarnessAction, CommandError> {
             Ok(HarnessAction::Rollback(revision))
         }
         _ => Err(CommandError::new(format!(
-            "Unknown harness action '{subcommand}'. Use status, list, add, update, delete, or rollback."
+            "Unknown harness action '{subcommand}'. Use status, list, review, propose, add, update, apply, reject, delete, or rollback."
         ))),
     }
 }
@@ -2810,6 +2899,114 @@ fn split_harness_evidence(content: &str) -> (String, Option<String>) {
         content.trim().to_string(),
         (!evidence.is_empty()).then(|| evidence.to_string()),
     )
+}
+
+fn parse_rlm_action(raw: &str) -> Result<RlmAction, CommandError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("list") {
+        return Ok(RlmAction::List);
+    }
+    let mut parts = trimmed.splitn(2, char::is_whitespace);
+    let subcommand = parts.next().unwrap_or_default().to_ascii_lowercase();
+    let rest = parts.next().unwrap_or_default().trim();
+    match subcommand.as_str() {
+        "set" => {
+            let mut fields = rest.splitn(2, char::is_whitespace);
+            let name = fields.next().unwrap_or_default();
+            let value = fields.next().unwrap_or_default().trim();
+            let (value, description) = split_rlm_description(value);
+            if name.is_empty() || value.is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /rlm set <name> <value> [--description <text>]",
+                ));
+            }
+            Ok(RlmAction::Set {
+                name: name.to_string(),
+                value,
+                description,
+            })
+        }
+        "append" => {
+            let mut fields = rest.splitn(2, char::is_whitespace);
+            let name = fields.next().unwrap_or_default();
+            let value = fields.next().unwrap_or_default().trim();
+            if name.is_empty() || value.is_empty() {
+                return Err(CommandError::new("Usage: /rlm append <name> <value>"));
+            }
+            Ok(RlmAction::Append {
+                name: name.to_string(),
+                value: value.to_string(),
+            })
+        }
+        "render" | "expand" => {
+            if rest.is_empty() {
+                return Err(CommandError::new("Usage: /rlm render <template>"));
+            }
+            Ok(RlmAction::Render(rest.to_string()))
+        }
+        "clear" | "delete" | "remove" => {
+            if rest.is_empty() {
+                return Err(CommandError::new("Usage: /rlm clear <name>"));
+            }
+            Ok(RlmAction::Clear(rest.to_string()))
+        }
+        _ => Err(CommandError::new(
+            "Usage: /rlm list|set|append|render|clear",
+        )),
+    }
+}
+
+fn split_rlm_description(value: &str) -> (String, Option<String>) {
+    let Some((value, description)) = value.split_once(" --description ") else {
+        return (value.trim().to_string(), None);
+    };
+    let description = description.trim();
+    (
+        value.trim().to_string(),
+        (!description.is_empty()).then(|| description.to_string()),
+    )
+}
+
+fn parse_mailbox_action(raw: &str) -> Result<MailboxAction, CommandError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("list") {
+        return Ok(MailboxAction::List);
+    }
+    let mut parts = trimmed.splitn(2, char::is_whitespace);
+    let subcommand = parts.next().unwrap_or_default().to_ascii_lowercase();
+    let rest = parts.next().unwrap_or_default().trim();
+    match subcommand.as_str() {
+        "send" => {
+            let mut fields = rest.splitn(2, char::is_whitespace);
+            let recipient = fields.next().unwrap_or_default();
+            let body = fields.next().unwrap_or_default().trim();
+            if recipient.is_empty() || body.is_empty() {
+                return Err(CommandError::new(
+                    "Usage: /mailbox send <recipient> <message>",
+                ));
+            }
+            Ok(MailboxAction::Send {
+                recipient: recipient.to_string(),
+                body: body.to_string(),
+            })
+        }
+        "read" => {
+            if rest.is_empty() {
+                return Err(CommandError::new("Usage: /mailbox read <id>"));
+            }
+            Ok(MailboxAction::Read(rest.to_string()))
+        }
+        "ack" | "acknowledge" => {
+            if rest.is_empty() {
+                return Err(CommandError::new("Usage: /mailbox ack <id>"));
+            }
+            Ok(MailboxAction::Acknowledge(rest.to_string()))
+        }
+        "compact" | "clear" => Ok(MailboxAction::Compact),
+        _ => Err(CommandError::new(
+            "Usage: /mailbox list|send|read|ack|compact",
+        )),
+    }
 }
 
 /// Built-ins + Grok-style skill/prompt slash extensions. Built-ins always win.

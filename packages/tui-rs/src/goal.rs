@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 /// Safety circuit-breaker: max auto-continue submissions if the judge keeps
 /// saying "continue". Not the primary completion measure.
 pub const DEFAULT_MAX_AUTO_CONTINUES: u32 = 50;
+pub const MAX_GOAL_DURATION_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// Lifecycle state for a user goal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -91,6 +92,12 @@ pub struct Goal {
     /// Tokens accounted to this goal (sum of turn input+output while active).
     #[serde(default)]
     pub tokens_used: u64,
+    /// Optional wall-clock cap for autonomous continuation.
+    #[serde(default)]
+    pub max_duration_secs: Option<u64>,
+    /// Timestamp at which this goal's current active window began.
+    #[serde(default)]
+    pub started_at_unix: Option<u64>,
 }
 
 fn default_true() -> bool {
@@ -243,6 +250,25 @@ impl GoalStore {
         max_turns: Option<u32>,
         token_budget: Option<u64>,
     ) -> Result<&Goal> {
+        self.create_with_limits(
+            text,
+            success_criteria,
+            replace,
+            max_turns,
+            token_budget,
+            None,
+        )
+    }
+
+    pub fn create_with_limits(
+        &mut self,
+        text: impl Into<String>,
+        success_criteria: Option<String>,
+        replace: bool,
+        max_turns: Option<u32>,
+        token_budget: Option<u64>,
+        max_duration_secs: Option<u64>,
+    ) -> Result<&Goal> {
         let text = text.into().trim().to_string();
         if text.is_empty() {
             bail!("goal text must not be empty");
@@ -270,6 +296,11 @@ impl GoalStore {
                 bail!("token budget must be at least 1 when set");
             }
         }
+        if let Some(duration) = max_duration_secs {
+            if duration == 0 || duration > MAX_GOAL_DURATION_SECS {
+                bail!("goal max duration must be between 1 and {MAX_GOAL_DURATION_SECS} seconds");
+            }
+        }
         let now = now_unix();
         let previous = self.current.clone();
         self.current = Some(Goal {
@@ -286,6 +317,8 @@ impl GoalStore {
             last_judge_reason: None,
             token_budget,
             tokens_used: 0,
+            max_duration_secs,
+            started_at_unix: Some(now),
         });
         self.save_with_rollback(previous)?;
         Ok(self.current.as_ref().expect("just set"))
@@ -306,6 +339,7 @@ impl GoalStore {
         goal.auto_continue = true;
         // Resume resets the auto-continue budget so operators can continue work.
         goal.auto_continue_count = 0;
+        goal.started_at_unix = Some(now_unix());
         goal.updated_at_unix = now_unix();
         self.save_with_rollback(previous)?;
         Ok(self.current.as_ref().expect("just set"))
@@ -344,6 +378,7 @@ impl GoalStore {
             // Re-enable with a fresh budget so `/goal auto on` is usable after
             // a max-turns stop.
             goal.auto_continue_count = 0;
+            goal.started_at_unix = Some(now_unix());
         }
         goal.updated_at_unix = now_unix();
         self.save_with_rollback(previous)?;
@@ -433,6 +468,34 @@ impl GoalStore {
         Ok(hit)
     }
 
+    /// Disable continuation when the wall-clock budget has elapsed.
+    /// Returns the reason when this call changed the goal.
+    pub fn enforce_limits(&mut self) -> Result<Option<String>> {
+        let Some(goal) = self.current.as_ref() else {
+            return Ok(None);
+        };
+        if goal.status != GoalStatus::Active || !goal.auto_continue {
+            return Ok(None);
+        }
+        let Some(max_duration) = goal.max_duration_secs else {
+            return Ok(None);
+        };
+        let elapsed =
+            now_unix().saturating_sub(goal.started_at_unix.unwrap_or(goal.created_at_unix));
+        if elapsed < max_duration {
+            return Ok(None);
+        }
+        let reason = format!("wall-clock budget exhausted: elapsed {elapsed}s of {max_duration}s");
+        let previous = self.current.clone();
+        if let Some(goal) = self.current.as_mut() {
+            goal.auto_continue = false;
+            goal.last_judge_reason = Some(reason.clone());
+            goal.updated_at_unix = now_unix();
+        }
+        self.save_with_rollback(previous)?;
+        Ok(Some(reason))
+    }
+
     /// Whether the TUI should submit a continuation prompt now.
     pub fn should_auto_continue(&self) -> bool {
         self.current.as_ref().is_some_and(|g| {
@@ -440,6 +503,9 @@ impl GoalStore {
                 && g.auto_continue
                 && g.auto_continue_count < g.max_turns
                 && g.token_budget.is_none_or(|budget| g.tokens_used < budget)
+                && g.max_duration_secs.is_none_or(|max| {
+                    now_unix().saturating_sub(g.started_at_unix.unwrap_or(g.created_at_unix)) < max
+                })
         })
     }
 
@@ -486,6 +552,14 @@ impl GoalStore {
                 g.tokens_used, budget, remaining
             ));
         }
+        if let Some(max_duration) = g.max_duration_secs {
+            let elapsed = now_unix().saturating_sub(g.started_at_unix.unwrap_or(g.created_at_unix));
+            prompt.push_str(&format!(
+                " Wall time {elapsed}/{}s ({}s left).",
+                max_duration,
+                max_duration.saturating_sub(elapsed)
+            ));
+        }
         if let Some(criteria) = &g.success_criteria {
             prompt.push_str(&format!(" Success criteria: {criteria}."));
         }
@@ -525,10 +599,17 @@ impl GoalStore {
                 if let Some(j) = &g.last_judge_reason {
                     out.push_str(&format!("\n**Note:** {j}\n"));
                 }
+                if let Some(max_duration) = g.max_duration_secs {
+                    let elapsed =
+                        now_unix().saturating_sub(g.started_at_unix.unwrap_or(g.created_at_unix));
+                    out.push_str(&format!(
+                        "\n**Wall-clock budget:** {elapsed} / {max_duration} seconds\n"
+                    ));
+                }
                 out.push_str(
                     "\nCommands: `/goal pause` · `/goal resume` · `/goal block [reason]` · `/goal complete` · `/goal clear`\n\
                      Agent tools: `get_goal`, `update_goal` (visible only while a goal exists).\n\
-                     Create flags: `--max-turns N` (safety), `--token-budget N` (Codex-style budget).\n",
+                     Create flags: `--max-turns N` (safety), `--token-budget N` (Codex-style budget), `--max-duration-secs N` (wall-clock budget).\n",
                 );
                 out
             }
@@ -576,8 +657,18 @@ fn save_to_path(store: &GoalStore, path: &Path) -> Result<()> {
 /// Strip goal create flags from text.
 /// Returns `(remaining_text, max_turns, token_budget)`.
 pub fn strip_goal_flags(raw: &str) -> Result<(String, Option<u32>, Option<u64>), String> {
+    let (text, max_turns, token_budget, _) = strip_goal_flags_with_duration(raw)?;
+    Ok((text, max_turns, token_budget))
+}
+
+/// Strip goal create flags, including the optional wall-clock budget.
+/// Returns `(remaining_text, max_turns, token_budget, max_duration_secs)`.
+pub type GoalFlagsWithDuration = (String, Option<u32>, Option<u64>, Option<u64>);
+
+pub fn strip_goal_flags_with_duration(raw: &str) -> Result<GoalFlagsWithDuration, String> {
     let mut max_turns = None;
     let mut token_budget = None;
+    let mut max_duration_secs = None;
     let mut out = Vec::new();
     let mut parts = raw.split_whitespace().peekable();
     while let Some(part) = parts.next() {
@@ -603,9 +694,20 @@ pub fn strip_goal_flags(raw: &str) -> Result<(String, Option<u32>, Option<u64>),
             token_budget = Some(parse_token_budget(value)?);
             continue;
         }
+        if let Some(value) = part.strip_prefix("--max-duration-secs=") {
+            max_duration_secs = Some(parse_duration_secs(value)?);
+            continue;
+        }
+        if part == "--max-duration-secs" || part == "--time-budget" {
+            let value = parts
+                .next()
+                .ok_or_else(|| "Usage: --max-duration-secs <N>".to_string())?;
+            max_duration_secs = Some(parse_duration_secs(value)?);
+            continue;
+        }
         out.push(part);
     }
-    Ok((out.join(" "), max_turns, token_budget))
+    Ok((out.join(" "), max_turns, token_budget, max_duration_secs))
 }
 
 /// Back-compat wrapper.
@@ -633,6 +735,18 @@ fn parse_token_budget(raw: &str) -> Result<u64, String> {
         .map_err(|_| format!("invalid --token-budget value '{raw}' (expected positive integer)"))?;
     if n == 0 {
         return Err("--token-budget must be at least 1".to_string());
+    }
+    Ok(n)
+}
+
+fn parse_duration_secs(raw: &str) -> Result<u64, String> {
+    let n: u64 = raw.parse().map_err(|_| {
+        format!("invalid --max-duration-secs value '{raw}' (expected positive integer)")
+    })?;
+    if n == 0 || n > MAX_GOAL_DURATION_SECS {
+        return Err(format!(
+            "--max-duration-secs must be between 1 and {MAX_GOAL_DURATION_SECS}"
+        ));
     }
     Ok(n)
 }
@@ -821,6 +935,18 @@ mod tests {
     }
 
     #[test]
+    fn wall_clock_budget_stops_auto_continue() {
+        let mut store = GoalStore::default();
+        store
+            .create_with_limits("ship it", None, false, None, None, Some(1))
+            .unwrap();
+        store.current.as_mut().unwrap().started_at_unix = Some(now_unix().saturating_sub(2));
+        let reason = store.enforce_limits().unwrap().expect("budget reason");
+        assert!(reason.contains("wall-clock budget"));
+        assert!(!store.should_auto_continue());
+    }
+
+    #[test]
     fn billable_tokens_excludes_openai_style_cache_subset() {
         // prompt=10_000 of which 8_000 cached → 2_000 new input + 100 output
         assert_eq!(GoalStore::billable_tokens(10_000, 100, 8_000), 2_100);
@@ -898,6 +1024,10 @@ mod tests {
         assert_eq!(text, "Ship the thing");
         assert_eq!(n, Some(3));
         assert_eq!(b, Some(5000));
+        let (text, _, _, duration) =
+            strip_goal_flags_with_duration("--max-duration-secs 120 Ship the thing").unwrap();
+        assert_eq!(text, "Ship the thing");
+        assert_eq!(duration, Some(120));
         let (text, n) = strip_max_turns_flag("Ship --max-turns=5 release").unwrap();
         assert_eq!(text, "Ship release");
         assert_eq!(n, Some(5));

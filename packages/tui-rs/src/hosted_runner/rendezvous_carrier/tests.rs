@@ -11,13 +11,14 @@ use uuid::Uuid;
 use crate::headless::{AsyncFrameReader, AsyncFrameWriter};
 use crate::hosted_runner::rendezvous_protocol::{
     CommandAuthority, HostToRunnerFrame, RendezvousAccepted, RendezvousIdentity,
-    RendezvousLifecycle, RendezvousMode, RendezvousRequest, RunnerToHostFrame,
+    RendezvousLifecycle, RendezvousMode, RendezvousNonce, RendezvousRequest, RunnerToHostFrame,
     MAX_IN_FLIGHT_REQUESTS,
 };
 
 use super::{
     bounded_rendezvous_queue, RendezvousCarrier, RendezvousCarrierConfig, RendezvousMetricSink,
-    RendezvousQueueError, CONNECT_DURATION_METRIC, QUEUE_COUNTER_METRIC, RECONNECT_COUNTER_METRIC,
+    RendezvousQueueError, ACTIVATION_CAS_DURATION_METRIC, CONNECT_DURATION_METRIC,
+    QUEUE_COUNTER_METRIC, RECONNECT_COUNTER_METRIC,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -44,6 +45,14 @@ impl RendezvousMetricSink for RecordingMetrics {
         });
     }
 
+    fn observe_activation_cas_duration(&self, outcome: &'static str, _duration: Duration) {
+        self.0.lock().unwrap().push(Observation {
+            metric: ACTIVATION_CAS_DURATION_METRIC,
+            phase: None,
+            outcome,
+        });
+    }
+
     fn increment_counter(&self, metric: &'static str, outcome: &'static str) {
         self.0.lock().unwrap().push(Observation {
             metric,
@@ -63,6 +72,7 @@ fn lifecycle(mode: RendezvousMode) -> RendezvousLifecycle {
             placement_generation: 7,
             runner_session_id: "runner-session-1".into(),
         },
+        RendezvousNonce::parse("proof-0123456789abcdef0123456789abcdef").unwrap(),
     );
     lifecycle.set_runtime_ready(true);
     lifecycle
@@ -185,12 +195,20 @@ async fn mtls_carrier_opens_accepts_and_receives_first_request() {
         Some(CommandAuthority::Outbound)
     );
     assert_eq!(
-        metrics.0.lock().unwrap().as_slice(),
+        &metrics.0.lock().unwrap()[..4],
         ["tcp", "tls", "open", "accepted"].map(|phase| Observation {
             metric: CONNECT_DURATION_METRIC,
             phase: Some(phase),
             outcome: "success",
         })
+    );
+    assert_eq!(
+        metrics.0.lock().unwrap()[4],
+        Observation {
+            metric: ACTIVATION_CAS_DURATION_METRIC,
+            phase: None,
+            outcome: "success",
+        }
     );
     server.await.unwrap();
 }

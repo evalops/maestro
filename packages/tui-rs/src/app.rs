@@ -92,12 +92,14 @@ use crate::goal::GoalStore;
 use crate::harness::HarnessStore;
 use crate::keybindings::load_rust_tui_keybindings;
 use crate::keybindings::{is_keybindings_config_path, summarize_keybindings_config_issues};
+use crate::mailbox::MailboxStore;
 use crate::mcp::{
     append_mcp_prompt_summary, McpConfigScope, McpPrompt, McpRuntimeEvent, McpTransport,
 };
 use crate::palette_resource::{PaletteResource, PaletteResourceKind};
 use crate::plugins::PluginRegistry;
 use crate::prompts::{parse_args, render_prompt, PromptDefinition};
+use crate::rlm::RlmStore;
 use crate::safety::{
     check_model_allowed, check_path_allowed, check_session_limits,
     guardian::{GuardianError, GuardianVerdict},
@@ -703,6 +705,12 @@ pub struct App {
     /// Durable supplemental context used by `/harness` and `/refine`.
     harness_store: HarnessStore,
 
+    /// Persistent named context variables used by `/rlm`.
+    rlm_store: RlmStore,
+
+    /// Durable messages left by or addressed to delegated sessions.
+    mailbox_store: MailboxStore,
+
     /// When true and the agent is idle, fire one goal continuation prompt.
     /// Armed on create/resume/auto-on, and after a worker turn if the goal is
     /// still active (worker did not call `update_goal` complete|blocked).
@@ -1139,6 +1147,26 @@ impl App {
                 HarnessStore::default()
             }
         };
+        let rlm_path = crate::rlm::default_path();
+        let rlm_store = match RlmStore::load_from_path(&rlm_path) {
+            Ok(store) => store,
+            Err(error) => {
+                state.add_system_message(format!(
+                    "Failed to load RLM context; starting with an empty store: {error:#}"
+                ));
+                RlmStore::with_path(rlm_path)
+            }
+        };
+        let mailbox_path = crate::mailbox::default_path();
+        let mailbox_store = match MailboxStore::load_from_path(&mailbox_path) {
+            Ok(store) => store,
+            Err(error) => {
+                state.add_system_message(format!(
+                    "Failed to load the agent mailbox; starting with an empty store: {error:#}"
+                ));
+                MailboxStore::with_path(mailbox_path)
+            }
+        };
 
         Self {
             state,
@@ -1201,6 +1229,8 @@ impl App {
             loop_schedule: None,
             goal_store: GoalStore::load_for_process_start(),
             harness_store,
+            rlm_store,
+            mailbox_store,
             goal_auto_continue_armed: false,
             footer_style: crate::ui_prefs::UiPrefs::load_default().footer_style(),
             pending_attachments: Vec::new(),
@@ -1278,11 +1308,13 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         additions.join("\n\n")
     }
 
-    fn build_system_prompt_with_harness_context(
+    fn build_system_prompt_with_context(
         cwd: &str,
         current_year: i32,
         skills_section: Option<String>,
         harness_section: Option<String>,
+        rlm_section: Option<String>,
+        mailbox_section: Option<String>,
         active_prompt: &str,
     ) -> String {
         let mut sections = vec![Self::build_base_system_prompt(cwd)];
@@ -1296,6 +1328,18 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         if let Some(harness) = harness_section {
             if !harness.trim().is_empty() {
                 sections.push(harness);
+            }
+        }
+
+        if let Some(rlm) = rlm_section {
+            if !rlm.trim().is_empty() {
+                sections.push(rlm);
+            }
+        }
+
+        if let Some(mailbox) = mailbox_section {
+            if !mailbox.trim().is_empty() {
+                sections.push(mailbox);
             }
         }
 
@@ -1683,6 +1727,26 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             // re-arm another continuation (and rewrite goals.json as Active).
             if !self.state.busy && !queue_or_loop_busy && self.goal_auto_continue_armed {
                 self.goal_store.reload_from_disk();
+                match self.goal_store.enforce_limits() {
+                    Ok(Some(reason)) => {
+                        self.goal_auto_continue_armed = false;
+                        self.state
+                            .status
+                            .replace("Goal auto-continue stopped (wall-clock budget)".to_string());
+                        self.state.add_system_message(format!(
+                            "Goal auto-continue stopped: {reason}. Use `/goal resume` to start a new time window."
+                        ));
+                        needs_redraw = true;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.goal_auto_continue_armed = false;
+                        self.state.error = Some(format!(
+                            "Goal wall-clock budget could not be persisted: {error:#}"
+                        ));
+                        needs_redraw = true;
+                    }
+                }
                 if !self.goal_store.should_auto_continue() {
                     self.goal_auto_continue_armed = false;
                 }
@@ -2013,13 +2077,19 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         let harness_section = self
             .harness_store
             .prompt_section(std::path::Path::new(&cwd), self.state.session_id.as_deref());
+        let rlm_section = self.rlm_store.prompt_section();
+        let mailbox_section = self
+            .mailbox_store
+            .prompt_section_for(&crate::mailbox::local_identity());
         let active_prompt = self.skill_registry.active_system_prompt_additions();
 
-        Self::build_system_prompt_with_harness_context(
+        Self::build_system_prompt_with_context(
             &cwd,
             current_year,
             skills_section,
             harness_section,
+            rlm_section,
+            mailbox_section,
             &active_prompt,
         )
     }

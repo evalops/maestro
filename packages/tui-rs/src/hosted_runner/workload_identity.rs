@@ -64,6 +64,95 @@ pub(super) struct IssuedServerIdentity {
     pub service: ServiceIdentity,
 }
 
+pub(super) struct IssuedClientIdentity {
+    pub tls_config: Arc<rustls::ClientConfig>,
+    pub expires_at: DateTime<Utc>,
+    #[cfg(test)]
+    pub uri_san: String,
+}
+
+#[derive(Clone)]
+pub(super) struct ReloadableClientIdentity {
+    active: Arc<RwLock<Option<ActiveClientIdentity>>>,
+}
+
+struct ActiveClientIdentity {
+    tls_config: Arc<rustls::ClientConfig>,
+    expires_at: DateTime<Utc>,
+    connections: CancellationToken,
+}
+
+impl ReloadableClientIdentity {
+    pub(super) fn new(identity: IssuedClientIdentity) -> Self {
+        Self {
+            active: Arc::new(RwLock::new(Some(ActiveClientIdentity::from(identity)))),
+        }
+    }
+
+    pub(super) async fn snapshot(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Option<(Arc<rustls::ClientConfig>, CancellationToken, DateTime<Utc>)> {
+        let active = self.active.read().await;
+        active.as_ref().and_then(|active| {
+            (active.expires_at > now).then(|| {
+                (
+                    active.tls_config.clone(),
+                    active.connections.clone(),
+                    active.expires_at,
+                )
+            })
+        })
+    }
+
+    async fn install(&self, identity: IssuedClientIdentity) {
+        let previous = self
+            .active
+            .write()
+            .await
+            .replace(ActiveClientIdentity::from(identity));
+        if let Some(previous) = previous {
+            previous.connections.cancel();
+        }
+    }
+
+    async fn expires_at(&self) -> Option<DateTime<Utc>> {
+        self.active
+            .read()
+            .await
+            .as_ref()
+            .map(|value| value.expires_at)
+    }
+
+    async fn expire_if_due(&self, now: DateTime<Utc>) {
+        let mut active = self.active.write().await;
+        if active
+            .as_ref()
+            .is_some_and(|identity| identity.expires_at <= now)
+        {
+            if let Some(expired) = active.take() {
+                expired.connections.cancel();
+            }
+        }
+    }
+
+    async fn clear(&self) {
+        if let Some(active) = self.active.write().await.take() {
+            active.connections.cancel();
+        }
+    }
+}
+
+impl From<IssuedClientIdentity> for ActiveClientIdentity {
+    fn from(identity: IssuedClientIdentity) -> Self {
+        Self {
+            tls_config: identity.tls_config,
+            expires_at: identity.expires_at,
+            connections: CancellationToken::new(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct ReloadableServerIdentity {
     active: Arc<RwLock<Option<ActiveServerIdentity>>>,
@@ -295,6 +384,79 @@ impl WorkloadIdentityExchanger {
         build_server_identity(response, key, &self.binding, pod_uid, now)
     }
 
+    pub(super) async fn exchange_client_once(
+        &self,
+        exchange_url: &url::Url,
+        now: DateTime<Utc>,
+    ) -> Result<IssuedClientIdentity, WorkloadIdentityError> {
+        let projected_token = read_bounded_utf8_file(
+            &self.config.kubernetes_token_file,
+            MAX_PROJECTED_TOKEN_BYTES,
+        )?;
+        let projected_token = projected_token.trim();
+        let pod_uid = projected_pod_uid(projected_token)?;
+        let key = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)
+            .map_err(|_| WorkloadIdentityError::Unavailable)?;
+        let csr_pem = CertificateParams::default()
+            .serialize_request(&key)
+            .and_then(|csr| csr.pem())
+            .map_err(|_| WorkloadIdentityError::Unavailable)?;
+        let request = build_exchange_request(projected_token, &csr_pem, &self.binding, pod_uid);
+        let response = self
+            .client
+            .post(exchange_url.clone())
+            .json(&request)
+            .send()
+            .await
+            .map_err(|_| WorkloadIdentityError::Unavailable)?;
+        require_exchange_created(response.status())?;
+        let mut body = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|_| WorkloadIdentityError::Unavailable)?;
+            if body.len().saturating_add(chunk.len()) > MAX_EXCHANGE_RESPONSE_BYTES {
+                return Err(WorkloadIdentityError::Unavailable);
+            }
+            body.extend_from_slice(&chunk);
+        }
+        let response: IdentityExchangeResponse =
+            serde_json::from_slice(&body).map_err(|_| WorkloadIdentityError::Unavailable)?;
+        build_client_identity(response, key, &self.binding, pod_uid, now)
+    }
+
+    pub(super) async fn exchange_client_initial(
+        &self,
+        exchange_url: &url::Url,
+    ) -> Result<IssuedClientIdentity, WorkloadIdentityError> {
+        let deadline = tokio::time::Instant::now() + INITIAL_EXCHANGE_TIMEOUT;
+        let mut backoff = INITIAL_EXCHANGE_MIN_BACKOFF;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(WorkloadIdentityError::Unavailable);
+            }
+            let exchange = tokio::time::timeout(
+                remaining,
+                self.exchange_client_once(exchange_url, Utc::now()),
+            )
+            .await
+            .unwrap_or(Err(WorkloadIdentityError::Unavailable));
+            match exchange {
+                Ok(identity) => return Ok(identity),
+                Err(WorkloadIdentityError::Unavailable) => {
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if remaining.is_zero() {
+                        return Err(WorkloadIdentityError::Unavailable);
+                    }
+                    tokio::time::sleep(jittered_initial_exchange_delay(backoff).min(remaining))
+                        .await;
+                    backoff = backoff.saturating_mul(2).min(INITIAL_EXCHANGE_MAX_BACKOFF);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     pub(super) async fn exchange_initial(
         &self,
     ) -> Result<IssuedServerIdentity, WorkloadIdentityError> {
@@ -323,6 +485,80 @@ impl WorkloadIdentityExchanger {
             }
         }
     }
+}
+
+pub(super) async fn rotate_client_identity(
+    exchanger: Arc<WorkloadIdentityExchanger>,
+    exchange_url: url::Url,
+    state: ReloadableClientIdentity,
+    shutdown: CancellationToken,
+) {
+    const RENEW_BEFORE_EXPIRY_SECONDS: i64 = 60;
+    const MAX_RETRY_SECONDS: u64 = 15;
+    loop {
+        let Some(expires_at) = state.expires_at().await else {
+            break;
+        };
+        let renew_at = expires_at - Duration::seconds(RENEW_BEFORE_EXPIRY_SECONDS);
+        let delay = (renew_at - Utc::now())
+            .to_std()
+            .unwrap_or(StdDuration::ZERO);
+        tokio::select! {
+            () = shutdown.cancelled() => break,
+            () = tokio::time::sleep(delay) => {}
+        }
+        let mut retry_seconds = 1_u64;
+        let mut active_expiry = Some(expires_at);
+        loop {
+            let now = Utc::now();
+            state.expire_if_due(now).await;
+            if active_expiry.is_some_and(|expiry| expiry <= now) {
+                active_expiry = None;
+            }
+            let exchange = exchanger.exchange_client_once(&exchange_url, now);
+            let result = if let Some(expiry) = active_expiry {
+                let until_expiry = (expiry - Utc::now()).to_std().unwrap_or(StdDuration::ZERO);
+                tokio::select! {
+                    () = shutdown.cancelled() => return,
+                    () = tokio::time::sleep(until_expiry) => {
+                        state.expire_if_due(Utc::now()).await;
+                        active_expiry = None;
+                        continue;
+                    }
+                    result = exchange => result,
+                }
+            } else {
+                tokio::select! {
+                    () = shutdown.cancelled() => return,
+                    result = exchange => result,
+                }
+            };
+            match result {
+                Ok(identity) => {
+                    state.install(identity).await;
+                    break;
+                }
+                Err(_) => {
+                    let delay = StdDuration::from_secs(retry_seconds);
+                    retry_seconds = (retry_seconds * 2).min(MAX_RETRY_SECONDS);
+                    if let Some(expiry) = active_expiry {
+                        let until_expiry =
+                            (expiry - Utc::now()).to_std().unwrap_or(StdDuration::ZERO);
+                        tokio::select! {
+                            () = shutdown.cancelled() => return,
+                            () = tokio::time::sleep(delay.min(until_expiry)) => {}
+                        }
+                    } else {
+                        tokio::select! {
+                            () = shutdown.cancelled() => return,
+                            () = tokio::time::sleep(delay) => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    state.clear().await;
 }
 
 fn require_exchange_created(status: reqwest::StatusCode) -> Result<(), WorkloadIdentityError> {
@@ -618,6 +854,56 @@ pub(super) fn build_server_identity(
     })
 }
 
+pub(super) fn build_client_identity(
+    response: IdentityExchangeResponse,
+    key: KeyPair,
+    binding: &IdentityBinding,
+    pod_uid: Uuid,
+    now: DateTime<Utc>,
+) -> Result<IssuedClientIdentity, WorkloadIdentityError> {
+    let expires_at = DateTime::parse_from_rfc3339(&response.expires_at)
+        .map_err(|_| WorkloadIdentityError::InvalidIssuedIdentity)?
+        .with_timezone(&Utc);
+    let _service =
+        validate_identity_contract(&response.uri_san, binding, pod_uid, now, expires_at)?;
+    if response.serial_number.is_empty() || response.serial_number.len() > 128 {
+        return Err(WorkloadIdentityError::InvalidIssuedIdentity);
+    }
+    let mut certificates = CertificateDer::pem_slice_iter(response.certificate_pem.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| WorkloadIdentityError::InvalidIssuedIdentity)?;
+    if certificates.len() != 1 {
+        return Err(WorkloadIdentityError::InvalidIssuedIdentity);
+    }
+    validate_client_leaf_certificate(&certificates[0], &response.uri_san, expires_at)?;
+    let ca_certificates = CertificateDer::pem_slice_iter(response.ca_certificate_pem.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| WorkloadIdentityError::InvalidIssuedIdentity)?;
+    if ca_certificates.len() != 1 {
+        return Err(WorkloadIdentityError::InvalidIssuedIdentity);
+    }
+    validate_leaf_issuer(&certificates[0], &ca_certificates[0], now, expires_at)?;
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(ca_certificates[0].clone())
+        .map_err(|_| WorkloadIdentityError::InvalidIssuedIdentity)?;
+    certificates.extend(ca_certificates);
+    let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
+    let tls_config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|_| WorkloadIdentityError::InvalidIssuedIdentity)?
+        .with_root_certificates(roots)
+        .with_client_auth_cert(certificates, private_key)
+        .map_err(|_| WorkloadIdentityError::InvalidIssuedIdentity)?;
+    Ok(IssuedClientIdentity {
+        tls_config: Arc::new(tls_config),
+        expires_at,
+        #[cfg(test)]
+        uri_san: response.uri_san,
+    })
+}
+
 fn validate_leaf_issuer(
     leaf: &CertificateDer<'_>,
     ca: &CertificateDer<'_>,
@@ -816,6 +1102,53 @@ fn validate_leaf_certificate(
     Ok(())
 }
 
+fn validate_client_leaf_certificate(
+    certificate: &CertificateDer<'_>,
+    expected_uri_san: &str,
+    expected_expiry: DateTime<Utc>,
+) -> Result<(), WorkloadIdentityError> {
+    const EXPECTED_CN: &str = "maestro-hosted-runner-rendezvous-client";
+    let (_, certificate) = parse_x509_certificate(certificate.as_ref())
+        .map_err(|_| WorkloadIdentityError::InvalidIssuedIdentity)?;
+    let subject_alt_name = certificate
+        .subject_alternative_name()
+        .map_err(|_| WorkloadIdentityError::InvalidIssuedIdentity)?
+        .ok_or(WorkloadIdentityError::InvalidIssuedIdentity)?;
+    let uri_names = subject_alt_name
+        .value
+        .general_names
+        .iter()
+        .filter_map(|name| match name {
+            GeneralName::URI(uri) => Some(*uri),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let common_names = certificate
+        .subject()
+        .iter_common_name()
+        .map(|name| name.as_str())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| WorkloadIdentityError::InvalidIssuedIdentity)?;
+    let extended_key_usage = certificate
+        .extended_key_usage()
+        .map_err(|_| WorkloadIdentityError::InvalidIssuedIdentity)?
+        .ok_or(WorkloadIdentityError::InvalidIssuedIdentity)?;
+    let is_ca = certificate
+        .basic_constraints()
+        .map_err(|_| WorkloadIdentityError::InvalidIssuedIdentity)?
+        .is_some_and(|constraints| constraints.value.ca);
+    if uri_names != [expected_uri_san]
+        || common_names != [EXPECTED_CN]
+        || !extended_key_usage.value.client_auth
+        || extended_key_usage.value.server_auth
+        || is_ca
+        || certificate.validity().not_after.timestamp() != expected_expiry.timestamp()
+    {
+        return Err(WorkloadIdentityError::InvalidIssuedIdentity);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -832,11 +1165,11 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        build_exchange_request, build_runner_client_verifier, build_server_identity,
-        jittered_initial_exchange_delay_for_sample, projected_pod_uid, require_exchange_created,
-        validate_identity_contract, IdentityBinding, IdentityExchangeResponse,
-        ReloadableServerIdentity, WorkloadIdentityError, WorkloadIdentityExchanger,
-        INITIAL_EXCHANGE_JITTER_FACTOR, RUNNER_HOST_CLIENT_URI,
+        build_client_identity, build_exchange_request, build_runner_client_verifier,
+        build_server_identity, jittered_initial_exchange_delay_for_sample, projected_pod_uid,
+        require_exchange_created, validate_identity_contract, IdentityBinding,
+        IdentityExchangeResponse, ReloadableServerIdentity, WorkloadIdentityError,
+        WorkloadIdentityExchanger, INITIAL_EXCHANGE_JITTER_FACTOR, RUNNER_HOST_CLIENT_URI,
     };
     use crate::hosted_runner::config::HostedRunnerWorkloadIdentityConfig;
 
@@ -1044,6 +1377,89 @@ mod tests {
             expires_at: expires_at.to_rfc3339(),
             uri_san: uri_san.into(),
         }
+    }
+
+    fn signed_client_exchange_response(
+        csr_pem: &str,
+        uri_san: &str,
+        expires_at: chrono::DateTime<Utc>,
+        eku: ExtendedKeyUsagePurpose,
+    ) -> IdentityExchangeResponse {
+        let mut ca_params = CertificateParams::default();
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let ca_key = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        let ca_certificate = ca_params.self_signed(&ca_key).unwrap();
+        let ca_pem = ca_certificate.pem();
+        let issuer = Issuer::from_ca_cert_pem(&ca_pem, ca_key).unwrap();
+        let mut csr = CertificateSigningRequestParams::from_pem(csr_pem).unwrap();
+        csr.params.distinguished_name = DistinguishedName::new();
+        csr.params.distinguished_name.push(
+            DnType::CommonName,
+            "maestro-hosted-runner-rendezvous-client",
+        );
+        csr.params.subject_alt_names = vec![SanType::URI(
+            rcgen::string::Ia5String::try_from(uri_san).unwrap(),
+        )];
+        csr.params.extended_key_usages = vec![eku];
+        csr.params.not_after =
+            time::OffsetDateTime::from_unix_timestamp(expires_at.timestamp()).unwrap();
+        let certificate = csr.signed_by(&issuer).unwrap();
+        IdentityExchangeResponse {
+            certificate_pem: certificate.pem(),
+            ca_certificate_pem: ca_pem,
+            serial_number: "0123456789abcdef".into(),
+            expires_at: expires_at.to_rfc3339(),
+            uri_san: uri_san.into(),
+        }
+    }
+
+    #[test]
+    fn rendezvous_client_identity_requires_client_auth_only_and_exact_cn() {
+        let pod_uid = Uuid::parse_str("11234567-89ab-cdef-0123-456789abcdef").unwrap();
+        let now = Utc::now();
+        let key = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        let csr = CertificateParams::default()
+            .serialize_request(&key)
+            .unwrap()
+            .pem()
+            .unwrap();
+        let uri = concat!(
+            "spiffe://identity.evalops.dev/maestro/v1/",
+            "organizations/org-123/workspaces/workspace-123/",
+            "sandboxes/01234567-89ab-cdef-0123-456789abcdef/",
+            "pods/11234567-89ab-cdef-0123-456789abcdef/",
+            "generations/7/sessions/session%2Fwith%20spaces/",
+            "images/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
+            "services/sw-msvc-123/ports/8443/",
+            "resident-process-generations/4/",
+            "leases/31234567-89ab-cdef-0123-456789abcdef/",
+            "attempts/2/workers/41234567-89ab-cdef-0123-456789abcdef"
+        );
+        let expires_at = now + Duration::minutes(4);
+        let response = signed_client_exchange_response(
+            &csr,
+            uri,
+            expires_at,
+            ExtendedKeyUsagePurpose::ClientAuth,
+        );
+        let identity = build_client_identity(response, key, &binding(), pod_uid, now)
+            .expect("client identity");
+        assert_eq!(identity.expires_at, expires_at);
+        assert_eq!(identity.uri_san, uri);
+
+        let wrong_key = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        let wrong_csr = CertificateParams::default()
+            .serialize_request(&wrong_key)
+            .unwrap()
+            .pem()
+            .unwrap();
+        let server_only = signed_client_exchange_response(
+            &wrong_csr,
+            uri,
+            expires_at,
+            ExtendedKeyUsagePurpose::ServerAuth,
+        );
+        assert!(build_client_identity(server_only, wrong_key, &binding(), pod_uid, now).is_err());
     }
 
     #[test]

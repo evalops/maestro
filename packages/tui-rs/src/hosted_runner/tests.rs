@@ -10,6 +10,7 @@ use super::*;
 use crate::headless::messages::{CodexSubagentContinuityEdge, ToolRetryDecisionAction};
 use crate::headless::PendingApproval;
 use crate::headless::RemoteTransportConfig;
+use crate::hosted_runner::rendezvous_protocol::RendezvousMode;
 
 #[test]
 fn hosted_trace_fields_accept_only_valid_w3c_parent_and_safe_route_classes() {
@@ -787,6 +788,7 @@ fn test_config(workspace_root: PathBuf) -> HostedRunnerConfig {
         attach_audience: None,
         auth_token: None,
         workload_identity: None,
+        rendezvous: None,
     }
 }
 
@@ -832,6 +834,185 @@ fn add_workload_identity_env(env: &mut HashMap<String, String>, token_file: &Pat
         ),
         ("MAESTRO_PLACEMENT_GENERATION".to_string(), "7".to_string()),
     ]);
+}
+
+fn add_rendezvous_env(env: &mut HashMap<String, String>) {
+    env.extend([
+        ("MAESTRO_RENDEZVOUS_MODE".into(), "outbound_shadow".into()),
+        ("MAESTRO_RENDEZVOUS_ENDPOINT".into(), "127.0.0.1:9443".into()),
+        ("MAESTRO_RENDEZVOUS_SERVER_NAME".into(), "runner-host.evalops.svc".into()),
+        (
+            "MAESTRO_RENDEZVOUS_IDENTITY_EXCHANGE_URL".into(),
+            "https://identity.evalops.svc/internal/v1/kubernetes-workload-certificates/maestro-rendezvous-client/exchange".into(),
+        ),
+        (
+            "MAESTRO_RENDEZVOUS_ACTIVATION_ID".into(),
+            "11234567-89ab-cdef-0123-456789abcdef".into(),
+        ),
+        (
+            "MAESTRO_RENDEZVOUS_NONCE".into(),
+            "proof-0123456789abcdef0123456789abcdef".into(),
+        ),
+    ]);
+}
+
+#[test]
+fn rendezvous_config_requires_explicit_outbound_prefer_gate_and_complete_bootstrap() {
+    let workspace = tempdir().unwrap();
+    let token_file = workspace.path().join("projected-token");
+    let mut env = base_hosted_runner_env(workspace.path());
+    add_workload_identity_env(&mut env, &token_file);
+    add_rendezvous_env(&mut env);
+
+    let shadow = HostedRunnerConfig::from_env_map(&env).expect("shadow rendezvous config");
+    let rendezvous = shadow.rendezvous.expect("rendezvous config");
+    assert_eq!(rendezvous.mode, RendezvousMode::OutboundShadow);
+    assert_eq!(rendezvous.endpoint, "127.0.0.1:9443");
+    assert_eq!(
+        format!("{:?}", rendezvous.nonce),
+        "RendezvousNonce(<redacted>)"
+    );
+
+    env.insert("MAESTRO_RENDEZVOUS_MODE".into(), "outbound".into());
+    assert!(HostedRunnerConfig::from_env_map(&env).is_err());
+    env.insert("MAESTRO_RENDEZVOUS_OUTBOUND_PREFER".into(), "true".into());
+    let outbound = HostedRunnerConfig::from_env_map(&env).expect("explicit outbound prefer");
+    assert_eq!(
+        outbound.rendezvous.expect("rendezvous config").mode,
+        RendezvousMode::Outbound
+    );
+
+    env.remove("MAESTRO_RENDEZVOUS_NONCE");
+    assert!(HostedRunnerConfig::from_env_map(&env).is_err());
+}
+
+#[test]
+fn shadow_rendezvous_emits_candidate_only_and_never_admits_commands() {
+    use crate::hosted_runner::rendezvous_protocol::*;
+    use crate::hosted_runner::rendezvous_runtime::{candidate_eligible_at, process_request};
+    let activation_id = uuid::Uuid::new_v4();
+    let mut lifecycle = RendezvousLifecycle::new(
+        RendezvousMode::OutboundShadow,
+        RendezvousIdentity {
+            organization_id: "org".into(),
+            workspace_id: "workspace".into(),
+            sandbox_id: uuid::Uuid::new_v4(),
+            placement_generation: 7,
+            runner_session_id: "session".into(),
+        },
+        RendezvousNonce::parse("proof-0123456789abcdef0123456789abcdef").unwrap(),
+    );
+    lifecycle.set_runtime_ready(true);
+    lifecycle.open(activation_id).unwrap();
+    lifecycle
+        .accept(&RendezvousAccepted {
+            activation_id,
+            outbound_commands_enabled: false,
+            replay_from_sequence: 1,
+        })
+        .unwrap();
+    let accepted_at = std::time::Instant::now();
+    assert_eq!(
+        candidate_eligible_at(RendezvousMode::OutboundShadow, accepted_at),
+        Some(accepted_at)
+    );
+    let request = RendezvousRequest {
+        activation_id,
+        sequence: 1,
+        idempotency_key: "command-1".into(),
+        payload: serde_json::json!({"type":"prompt"}),
+    };
+    assert!(process_request(
+        &mut lifecycle,
+        &request,
+        accepted_at,
+        accepted_at,
+        accepted_at
+    )
+    .is_err());
+}
+
+#[test]
+fn outbound_first_request_records_exact_first_command_and_frame_latency() {
+    use crate::hosted_runner::rendezvous_protocol::*;
+    use crate::hosted_runner::rendezvous_runtime::process_request;
+    let activation_id = uuid::Uuid::new_v4();
+    let mut lifecycle = RendezvousLifecycle::new(
+        RendezvousMode::Outbound,
+        RendezvousIdentity {
+            organization_id: "org".into(),
+            workspace_id: "workspace".into(),
+            sandbox_id: uuid::Uuid::new_v4(),
+            placement_generation: 7,
+            runner_session_id: "session".into(),
+        },
+        RendezvousNonce::parse("proof-0123456789abcdef0123456789abcdef").unwrap(),
+    );
+    lifecycle.set_runtime_ready(true);
+    lifecycle.open(activation_id).unwrap();
+    lifecycle
+        .accept(&RendezvousAccepted {
+            activation_id,
+            outbound_commands_enabled: true,
+            replay_from_sequence: 1,
+        })
+        .unwrap();
+    let activation_at = std::time::Instant::now();
+    let command_at = activation_at + std::time::Duration::from_millis(13);
+    let frame_at = command_at + std::time::Duration::from_millis(8);
+    let request = RendezvousRequest {
+        activation_id,
+        sequence: 1,
+        idempotency_key: "command-1".into(),
+        payload: serde_json::json!({"type":"prompt"}),
+    };
+    let (ack, sample) = process_request(
+        &mut lifecycle,
+        &request,
+        activation_at,
+        command_at,
+        frame_at,
+    )
+    .expect("first request");
+    assert_eq!(ack.sequence, 1);
+    assert_eq!(
+        sample.activation_to_first_command,
+        std::time::Duration::from_millis(13)
+    );
+    assert_eq!(
+        sample.first_command_to_first_frame,
+        std::time::Duration::from_millis(8)
+    );
+    assert_eq!(
+        sample.activation_to_first_frame,
+        std::time::Duration::from_millis(21)
+    );
+}
+
+#[test]
+fn inbound_command_path_waits_for_runtime_authority_grant() {
+    let workspace = tempdir().unwrap();
+    let mut config = test_config(workspace.path().to_path_buf());
+    config.rendezvous = Some(config::HostedRunnerRendezvousConfig {
+        mode: RendezvousMode::OutboundShadow,
+        endpoint: "127.0.0.1:9443".into(),
+        server_name: "runner-host.evalops.svc".into(),
+        identity_exchange_url: "https://identity.evalops.svc/internal/v1/kubernetes-workload-certificates/maestro-rendezvous-client/exchange".parse().unwrap(),
+        activation_id: uuid::Uuid::new_v4(),
+        nonce: rendezvous_protocol::RendezvousNonce::parse(
+            "proof-0123456789abcdef0123456789abcdef",
+        )
+        .unwrap(),
+    });
+    config.rendezvous.as_mut().unwrap().mode = RendezvousMode::Outbound;
+    let shared = SharedRunner::new(config);
+    assert!(shared.inbound_commands_enabled());
+
+    shared.set_rendezvous_outbound_authority(true);
+    assert!(!shared.inbound_commands_enabled());
+
+    shared.set_rendezvous_outbound_authority(false);
+    assert!(shared.inbound_commands_enabled());
 }
 
 async fn attach_thread_controller(

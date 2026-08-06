@@ -106,6 +106,7 @@ impl SharedRunner {
             events,
             controller_events,
             message_executor,
+            rendezvous_outbound_authority: Arc::new(AtomicBool::new(false)),
             thread_journal: Arc::new(loaded_thread.journal),
             mutation_lifecycle: Arc::new(tokio::sync::Mutex::new(())),
             thread_persistence_retry_pending: Arc::new(AtomicBool::new(false)),
@@ -134,6 +135,15 @@ impl SharedRunner {
             shared.persist_thread(&state)?;
         }
         Ok(shared)
+    }
+
+    pub(super) fn set_rendezvous_outbound_authority(&self, enabled: bool) {
+        self.rendezvous_outbound_authority
+            .store(enabled, Ordering::Release);
+    }
+
+    pub(super) fn inbound_commands_enabled(&self) -> bool {
+        !self.rendezvous_outbound_authority.load(Ordering::Acquire)
     }
 
     pub(super) fn identity(&self) -> HostedRunnerIdentity {
