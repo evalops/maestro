@@ -1,9 +1,8 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 const files = [
 	"README.md",
-	"AGENTS.md",
 	"CONTRIBUTING.md",
 	"docs/BUILD_TESTING.md",
 	"docs/ARCHITECTURE.md",
@@ -21,6 +20,7 @@ const files = [
 	"packages/tui-rs/docs/user-guide/12-sandbox-and-safety.md",
 	"packages/tui-rs/docs/user-guide/13-headless-mode.md",
 ];
+if (existsSync("AGENTS.md")) files.push("AGENTS.md");
 const banned = [
 	/dist\/cli\.js/i,
 	/vendor\/maestro-tui/i,

@@ -576,7 +576,6 @@ Likely homes:
 
 ## References
 
-- `docs/research/LEARNINGS_CODEX_APP_SERVER.md`
 - `src/server/headless-runtime-service.ts`
 - `src/server/handlers/headless-sessions.ts`
 - `src/server/approval-store.ts`

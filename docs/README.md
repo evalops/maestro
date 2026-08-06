@@ -9,8 +9,6 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [Feature Guide](FEATURES.md) — user-facing capabilities across the TUI and CLI with power-user tips.
 - [Web UI Guide](WEB_UI.md) — browser workflow and TUI/Web parity appendix.
 - [Conductor Bridge](CONDUCTOR_BRIDGE.md) — connect the Conductor extension to a local Maestro server.
-- [Ambient Agent Design](design/AMBIENT_AGENT.md) — always-on GitHub agent daemon architecture.
-- [Any-Agent EvalOps Control Plane](design/ANY_AGENT_CONTROL_PLANE.md) - options and shim strategy for bringing any coding agent into EvalOps registration, governance, traces, evidence, and memory.
 
 ## Core Reference
 - [Tools Reference](TOOLS_REFERENCE.md) — authoritative slash command and flag definitions.
@@ -20,48 +18,25 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [Models](MODELS.md) — provider/model registry sources, overrides, defaults, and OpenAI-compat quirks.
 - [Sessions](SESSIONS.md) — session formats, storage locations, and management commands.
 - [Prompt Queue](PROMPT_QUEUE.md) — queue lifecycle, prioritization, and diagnostics hooks.
-- [Customer Value Reports](CUSTOMER_VALUE.md) — trust cards, durable handoffs, open work, workflow opportunities, memory provenance, and admin gaps.
 - [MCP Guide](MCP_GUIDE.md) — Model Context Protocol setup and usage.
 - [Skill Cookbook](cookbook/skills/README.md) — progressive skill package authoring, linting, bundled MCP, and toolbox examples.
 - [Headless Protocol Reference](protocols/headless.md) — versioned JSON-over-stdio contract for Chat, TUIs, and other embedders.
 - [Codex Parity Conformance](protocols/codex-parity-conformance.md) — compact anchors for Codex-inspired auth, patching, MCP, queue, and hosted-runtime surfaces.
 - [RPC Protocol Conformance](protocols/rpc-protocol-conformance.md) — release-gated JSON-over-stdio request, response, and client-correlation contract.
 - [Hosted Runner Contract](protocols/hosted-runner-contract.md) — provider-neutral runtime contract for account-scoped remote Maestro sessions.
-- [Platform AgentRuntime Session Bridge](design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md) — how hosted session starts are projected to Platform AgentRuntime/A2A with trace and support correlation.
-- [AgentRuntime Task Mapping](design/AGENT_RUNTIME_TASK_MAPPING.md) — how local todo, background-task, checkpoint, and swarm concepts project into Platform AgentRuntime phases.
-- [EvalOps Agent Event Stream ADR](adr/evalops-agent-event-stream-v1.md) — docs-only v1 vocabulary for agent events, streams, identity, readiness, evidence refs, and capability grants.
 - [Pending Request Contract](protocols/pending-requests.md) — unified session projection for approvals, user input, MCP elicitations, tool retries, and Platform waits.
 
 ## Architecture & Patterns
 - [Architecture](ARCHITECTURE.md) — system layout, surfaces, edit patterns.
 - [TUI Architecture](TUI_ARCHITECTURE.md) — native `maestro-tui` (`packages/tui-rs`).
 - [Native TUI parity](NATIVE_TUI_PARITY.md) — feature checklist after TS TUI removal.
-- [Grok Build parity](design/GROK_BUILD_PARITY.md) — gap map and tracks for Grok Build-class TUI/runtime UX without losing multi-surface Maestro/Platform.
 - [Architecture Diagram](ARCHITECTURE_DIAGRAM.md) — high-level system layout.
 - [VS Code Architecture](VSCODE_ARCHITECTURE.md) — extension-specific architecture and flows.
-- [Ambient Agent Design](design/AMBIENT_AGENT.md) — always-on GitHub agent daemon architecture.
 - [Patterns](patterns/INDEX.md) — implementation patterns (e.g., event suppression, tool error handling).
-
-
-
-## Feature Design Docs
-- [Design Index](design/INDEX.md) — comprehensive design documentation for all major subsystems.
-  - [Headless Control Plane](design/HEADLESS_CONTROL_PLANE.md) — session/control-plane design for headless remote attach, server requests, and subscriber backpressure.
-  - [Any-Agent EvalOps Control Plane](design/ANY_AGENT_CONTROL_PLANE.md) - agent-neutral control-plane, registry, shim, trace, evidence, and memory integration strategy.
-  - [Platform AgentRuntime Session Bridge](design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md) — hosted-session trigger projection, A2A fallback, trace context, and boundary normalization.
-  - [AgentRuntime Task Mapping](design/AGENT_RUNTIME_TASK_MAPPING.md) — next-phase todo/background/swarm projection into Platform AgentRuntime.
-  - [EvalOps Agent Core Parity](design/EVALOPS_AGENT_CORE_PARITY.md) — Hermes-class local-first distribution target and skill package spec.
-  - [Grok Build Parity](design/GROK_BUILD_PARITY.md) — sequenced plan-mode, plugins, install UX, and crate-split tracks vs public Grok Build product shape.
-  - Core Systems: Tool System, Agent State Machine, Context Management, Session Persistence
-  - User Interface: TUI Rendering, Web UI Architecture
-  - Safety & Security: Safety Firewall, Enterprise RBAC, OAuth Authentication
-  - Supporting Systems: Hooks, MCP Integration, LSP Integration, Telemetry, Database
 
 ## Deployment & Operations
 - [Enterprise](ENTERPRISE.md) — deployment, configuration, and hardening guidance for controlled environments.
 - [CI Version Pins](CI_VERSION_PINS.md) — where Node, Rust dependency, and action versions are pinned.
-- [Public Mirror CI Incident Chain](solutions/ci/public-mirror-drift-chain-2026-07-24.md) — postmortem and playbook for the 2026-07-23/24 public-mirror CI failure chain.
-
 - [Changelog](../CHANGELOG.md) — release history and notable changes.
 
 When in doubt, start with the Quickstart, skim the Feature Guide, keep the Tools Reference nearby, and use the Contributor Runbook before opening a PR.

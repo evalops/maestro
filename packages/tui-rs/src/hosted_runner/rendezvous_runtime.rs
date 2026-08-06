@@ -11,13 +11,16 @@ use super::rendezvous_carrier::{
     RendezvousCarrier, RendezvousCarrierConfig, RendezvousCarrierError, TracingRendezvousMetrics,
 };
 use super::rendezvous_protocol::{
-    HostToRunnerFrame, RendezvousAck, RendezvousIdentity, RendezvousLatencyError,
-    RendezvousLatencyMilestones, RendezvousLatencySample, RendezvousLifecycle,
-    RendezvousLifecycleError, RendezvousMode, RendezvousRequest, RendezvousRequestDisposition,
-    RunnerToHostFrame,
+    HostToRunnerFrame, RendezvousAck, RendezvousCommandError, RendezvousCommandOutcome,
+    RendezvousExecution, RendezvousIdentity, RendezvousLatencyError, RendezvousLatencyMilestones,
+    RendezvousLatencySample, RendezvousLifecycle, RendezvousLifecycleError, RendezvousMode,
+    RendezvousRequest, RendezvousRequestDisposition, RunnerToHostFrame,
 };
 use super::workload_identity::ReloadableClientIdentity;
-use super::{ConnectionRole, HostedRunnerHeadlessMessageContext, SharedRunner, ToAgentMessage};
+use super::{
+    ConnectionRole, HostedRunnerHeadlessMessageContext, HostedRunnerHeadlessMessageExecution,
+    HostedRunnerHeadlessMessageResult, SharedRunner, ToAgentMessage,
+};
 
 pub const FIRST_COMMAND_LATENCY_METRIC: &str =
     "maestro_rendezvous_activation_to_first_command_seconds";
@@ -61,6 +64,8 @@ pub fn process_request(
             activation_id: request.activation_id,
             sequence: request.sequence,
             idempotency_key: request.idempotency_key.clone(),
+            result: None,
+            error: None,
         },
         sample,
     ))
@@ -78,6 +83,46 @@ pub enum RendezvousRuntimeError {
     InvalidCommand,
     #[error("rendezvous command execution failed: {0}")]
     Execution(String),
+}
+
+impl RendezvousRuntimeError {
+    fn wire_error(&self) -> RendezvousCommandError {
+        let (code, retryable, message) = match self {
+            Self::InvalidCommand => (
+                "invalid_command",
+                false,
+                "rendezvous command payload is invalid",
+            ),
+            Self::Execution(_) => (
+                "execution_failed",
+                false,
+                "rendezvous command execution failed",
+            ),
+            Self::Lifecycle(_) => ("lifecycle_rejected", false, "rendezvous lifecycle rejected"),
+            Self::Latency(_) => ("latency_invalid", false, "rendezvous latency was invalid"),
+            Self::Carrier(_) => ("transport_error", true, "rendezvous transport failed"),
+        };
+        RendezvousCommandError {
+            code: code.to_string(),
+            message: message.to_string(),
+            retryable,
+        }
+    }
+}
+
+fn command_outcome(result: &HostedRunnerHeadlessMessageResult) -> RendezvousCommandOutcome {
+    RendezvousCommandOutcome {
+        execution: match result.execution {
+            HostedRunnerHeadlessMessageExecution::TransportOnly => {
+                RendezvousExecution::TransportOnly
+            }
+            HostedRunnerHeadlessMessageExecution::RuntimeHandled => {
+                RendezvousExecution::RuntimeHandled
+            }
+        },
+        message: result.message.clone(),
+        idempotency_finalized: result.idempotency_finalized,
+    }
 }
 
 /// Runs the identity-rotating outbound carrier. The lifecycle survives
@@ -202,15 +247,30 @@ pub(super) async fn run(
                         Err(_) => break,
                     };
                     let command_at = Instant::now();
-                    if disposition == RendezvousRequestDisposition::Execute
-                        && execute_request(&shared, &request, identity_expires_at)
-                            .await
-                            .is_err()
-                    {
-                        break;
-                    }
+                    let command_outcome = if disposition == RendezvousRequestDisposition::Execute {
+                        let outcome =
+                            match execute_request(&shared, &request, identity_expires_at).await {
+                                Ok(outcome) => outcome,
+                                Err(error) => {
+                                    let failure = RunnerToHostFrame::Ack(RendezvousAck {
+                                        activation_id: request.activation_id,
+                                        sequence: request.sequence,
+                                        idempotency_key: request.idempotency_key.clone(),
+                                        result: None,
+                                        error: Some(error.wire_error()),
+                                    });
+                                    let _ = connection.send(&failure).await;
+                                    // The failed sequence was not recorded as applied. Close so
+                                    // the host cannot advance past a failed contiguous sequence.
+                                    break;
+                                }
+                            };
+                        Some(outcome)
+                    } else {
+                        None
+                    };
                     let frame_at = Instant::now();
-                    let (ack, sample) = match process_request(
+                    let (mut ack, sample) = match process_request(
                         &mut lifecycle,
                         &request,
                         activation_at,
@@ -220,6 +280,7 @@ pub(super) async fn run(
                         Ok(result) => result,
                         Err(_) => break,
                     };
+                    ack.result = command_outcome;
                     record_latency(sample);
                     if connection.send(&RunnerToHostFrame::Ack(ack)).await.is_err() {
                         break;
@@ -245,7 +306,7 @@ async fn execute_request(
     shared: &SharedRunner,
     request: &RendezvousRequest,
     identity_expires_at: chrono::DateTime<chrono::Utc>,
-) -> Result<(), RendezvousRuntimeError> {
+) -> Result<RendezvousCommandOutcome, RendezvousRuntimeError> {
     let message: ToAgentMessage = serde_json::from_value(request.payload.clone())
         .map_err(|_| RendezvousRuntimeError::InvalidCommand)?;
     let context = HostedRunnerHeadlessMessageContext {
@@ -272,10 +333,11 @@ async fn execute_request(
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let outcome = command_outcome(&result);
     for message in result.messages {
         shared.publish_message(&mut state, message);
     }
-    Ok(())
+    Ok(outcome)
 }
 
 fn record_latency(sample: RendezvousLatencySample) {

@@ -146,12 +146,49 @@ pub struct RendezvousRequest {
     pub payload: Value,
 }
 
+/// Additive result carried by an acknowledgement when the hosted runner has
+/// executed a command. Older hosts continue to accept an Ack without this
+/// field, so wire rollout can be staged independently from command routing.
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RendezvousExecution {
+    TransportOnly,
+    RuntimeHandled,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RendezvousCommandOutcome {
+    pub execution: RendezvousExecution,
+    pub message: String,
+    pub idempotency_finalized: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RendezvousCommandError {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+}
+
 /// Acknowledgement for an applied or deduplicated logical request.
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RendezvousAck {
     pub activation_id: Uuid,
     pub sequence: u64,
     pub idempotency_key: String,
+    /// Optional for compatibility with the original Ack-only rendezvous
+    /// contract. A response never carries both result and error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<RendezvousCommandOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<RendezvousCommandError>,
+}
+
+impl RendezvousAck {
+    #[must_use]
+    pub fn has_valid_outcome(&self) -> bool {
+        !(self.result.is_some() && self.error.is_some())
+    }
 }
 
 /// Why an activation was closed and must no longer admit requests.
