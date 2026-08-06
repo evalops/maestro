@@ -1504,6 +1504,33 @@ mod tests {
     }
 
     #[test]
+    fn list_all_sessions_finds_sessions_across_workspaces() {
+        let root = TempDir::new().unwrap();
+        let first = root.path().join("workspace-one");
+        let second = root.path().join("workspace-two");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        create_test_session_file(&first, "session-one");
+        create_test_session_file(&second, "session-two");
+
+        let manager = SessionManager {
+            cwd: "/tmp/workspace-one".to_string(),
+            sessions_dir: first,
+            current_session_id: None,
+            writer: None,
+        };
+
+        let sessions = manager.list_all_sessions().unwrap();
+        let ids = sessions
+            .into_iter()
+            .map(|session| session.id)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains("session-one"));
+        assert!(ids.contains("session-two"));
+    }
+
+    #[test]
     fn load_session_by_id() {
         let dir = TempDir::new().unwrap();
         create_test_session_file(dir.path(), "abc123");

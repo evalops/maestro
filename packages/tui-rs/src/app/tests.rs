@@ -2083,6 +2083,84 @@ fn test_delete_operation() {
 
 // ─────────────────────────────────────────────────────────────────────────
 // Error and Status Message Tests
+
+#[test]
+fn session_persistence_errors_explain_disk_full_recovery() {
+    let disk_full = format_session_persistence_error(
+        "persist session data",
+        std::io::Error::other("No space left on device"),
+    );
+    assert!(disk_full.starts_with("Disk full:"));
+    assert!(disk_full.contains("Free disk space"));
+    assert!(disk_full.contains("persist session data"));
+
+    let ordinary = format_session_persistence_error(
+        "flush the session transcript",
+        std::io::Error::other("permission denied"),
+    );
+    assert_eq!(
+        ordinary,
+        "Failed to flush the session transcript: permission denied"
+    );
+}
+
+#[tokio::test]
+async fn turn_summary_waits_for_idle_sentinel_and_includes_tool_facts() {
+    let mut app = new_test_app();
+    app.state
+        .add_user_message("inspect the workspace".to_string());
+
+    app.handle_agent_message(FromAgent::ResponseStart {
+        response_id: "response-summary".to_string(),
+    })
+    .await
+    .expect("response start");
+    app.handle_agent_message(FromAgent::ToolCall {
+        call_id: "call-summary".to_string(),
+        tool: "read".to_string(),
+        args: serde_json::json!({"file_path": "README.md"}),
+        requires_approval: false,
+        approval_inline_env: None,
+    })
+    .await
+    .expect("tool call");
+    app.state
+        .complete_tool_call("call-summary", "read complete");
+
+    app.handle_agent_message(FromAgent::ResponseEnd {
+        response_id: "response-summary".to_string(),
+        usage: Some(crate::agent::TokenUsage {
+            input_tokens: 1_200,
+            output_tokens: 300,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            cost: None,
+        }),
+    })
+    .await
+    .expect("response end");
+    assert!(
+        !app.state
+            .status
+            .as_deref()
+            .is_some_and(|status| status.starts_with("Turn complete")),
+        "a model response ending is not the idle turn sentinel"
+    );
+
+    app.handle_agent_message(FromAgent::ResponseEnd {
+        response_id: "done".to_string(),
+        usage: None,
+    })
+    .await
+    .expect("terminal response end");
+    let status = app.state.status.as_deref().unwrap_or_default();
+    assert!(
+        status.starts_with("Turn complete"),
+        "unexpected status: {status:?}"
+    );
+    assert!(status.contains("1 tool (1 ok)"));
+    assert!(status.contains("1.2k in / 300 out"));
+}
 // ─────────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -3637,6 +3715,28 @@ async fn guardian_disabled_leaves_approval_flow_untouched() {
         .messages
         .iter()
         .any(|m| m.content.contains("guardian")));
+}
+
+#[tokio::test]
+async fn yolo_mode_surfaces_soft_firewall_findings_after_auto_approval() {
+    let mut app = new_test_app();
+    app.state.approval_mode = ApprovalMode::Yolo;
+
+    app.handle_agent_message(FromAgent::ToolCall {
+        call_id: "call-auto-security".to_string(),
+        tool: "read".to_string(),
+        args: serde_json::json!({"file_path": "/etc/passwd"}),
+        requires_approval: false,
+        approval_inline_env: None,
+    })
+    .await
+    .expect("auto-approved tool event");
+
+    assert!(app.state.messages.iter().any(|message| {
+        message
+            .content
+            .contains("Auto mode allowed Read passwd. Security finding: Reading system file")
+    }));
 }
 
 #[tokio::test]

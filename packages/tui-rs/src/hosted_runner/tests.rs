@@ -792,6 +792,22 @@ fn test_config(workspace_root: PathBuf) -> HostedRunnerConfig {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn resolve_workspace_path_accepts_a_symlinked_workspace_root() {
+    let workspace = tempdir().expect("workspace");
+    let aliases = tempdir().expect("workspace aliases");
+    let alias = aliases.path().join("workspace-link");
+    std::os::unix::fs::symlink(workspace.path(), &alias).expect("workspace alias");
+
+    let resolved = resolve_workspace_path(&alias, None, Some("."))
+        .expect("a symlinked workspace root remains inside the workspace");
+    assert_eq!(
+        resolved,
+        dunce::canonicalize(workspace.path()).expect("canonical workspace")
+    );
+}
+
 fn base_hosted_runner_env(workspace_root: &Path) -> HashMap<String, String> {
     HashMap::from([
         (

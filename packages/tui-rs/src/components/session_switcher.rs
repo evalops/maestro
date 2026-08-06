@@ -94,15 +94,15 @@ impl SessionSwitcher {
         }
     }
 
-    /// List sessions for the current working directory, preferring the
-    /// session index (cached previews, no per-open parsing) and falling back
-    /// to header reads when the index yields nothing.
+    /// List sessions across all working directories, preferring the session
+    /// index (cached previews, no per-open parsing) and falling back to header
+    /// reads when the index yields nothing.
     fn load_sessions(&self) -> Result<Vec<SessionInfo>, SessionReadError> {
         let indexed = self.list_from_index();
         if !indexed.is_empty() {
             return Ok(indexed);
         }
-        self.manager.list_sessions()
+        self.manager.list_all_sessions()
     }
 
     /// Read this directory's sessions from the shared session index. Returns
@@ -111,13 +111,11 @@ impl SessionSwitcher {
         let Some(index_path) = self.index_path.as_deref() else {
             return Vec::new();
         };
-        let dir = self.manager.sessions_dir();
-        let Some(root) = dir.parent() else {
+        let Some(root) = self.manager.sessions_dir().parent() else {
             return Vec::new();
         };
         crate::session::collect_sessions(root, Some(index_path))
             .iter()
-            .filter(|session| session.path.parent() == Some(dir))
             .map(indexed_session_info)
             .collect()
     }
@@ -159,6 +157,7 @@ impl SessionSwitcher {
                 .filter(|(_, s)| {
                     s.id.to_lowercase().contains(&query)
                         || s.title().to_lowercase().contains(&query)
+                        || s.cwd.to_lowercase().contains(&query)
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -373,6 +372,18 @@ impl SessionSwitcher {
             Style::default().fg(Color::Cyan),
         ));
 
+        let cwd = session
+            .cwd
+            .trim_end_matches(std::path::MAIN_SEPARATOR)
+            .rsplit(std::path::MAIN_SEPARATOR)
+            .next()
+            .filter(|name| !name.is_empty())
+            .unwrap_or("/");
+        spans.push(Span::styled(
+            format!("  [{cwd}]"),
+            Style::default().fg(Color::DarkGray),
+        ));
+
         ListItem::new(Line::from(spans))
     }
 
@@ -569,5 +580,44 @@ mod tests {
 
         assert_eq!(switcher.sessions.len(), 1);
         assert_eq!(switcher.sessions[0].model, "openai/gpt-5.2");
+    }
+
+    #[test]
+    fn refresh_lists_sessions_across_workspaces() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("sessions");
+        let first = root.join("workspace-one");
+        let second = root.join("workspace-two");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+
+        let write_session = |dir: &std::path::Path, id: &str, cwd: &str| {
+            let path = dir.join(format!("2024-01-15T10-30-00-000Z_{id}.jsonl"));
+            let mut file = std::fs::File::create(path).unwrap();
+            use std::io::Write;
+            writeln!(
+                file,
+                r#"{{"type":"session","id":"{id}","timestamp":"2024-01-15T10:30:00Z","cwd":"{cwd}","model":"openai/gpt-5.2","thinkingLevel":"medium"}}"#
+            )
+            .unwrap();
+            writeln!(
+                file,
+                r#"{{"type":"message","timestamp":"2024-01-15T10:30:01Z","message":{{"role":"user","content":"{id}","timestamp":0}}}}"#
+            )
+            .unwrap();
+        };
+        write_session(&first, "session-one", "/tmp/one");
+        write_session(&second, "session-two", "/tmp/two");
+
+        let mut switcher = SessionSwitcher::new("/tmp/one");
+        switcher.manager = SessionManager::with_sessions_dir("/tmp/one", &first);
+        switcher.index_path = None;
+
+        switcher.show();
+
+        assert_eq!(switcher.sessions.len(), 2);
+        switcher.insert_str("/tmp/two");
+        assert_eq!(switcher.filtered.len(), 1);
+        assert_eq!(switcher.selected_session().unwrap().id, "session-two");
     }
 }

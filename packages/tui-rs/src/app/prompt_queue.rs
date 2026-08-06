@@ -582,7 +582,10 @@ impl App {
         }
 
         if let Err(err) = self.ensure_session_started() {
-            self.state.error = Some(format!("Failed to start session: {err}"));
+            self.state.error = Some(super::format_session_persistence_error(
+                "start the session",
+                err,
+            ));
             return Ok(false);
         }
 
