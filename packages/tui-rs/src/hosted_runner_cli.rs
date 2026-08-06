@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -12,7 +13,7 @@ use crate::headless::{
     AgentEvent, AgentSupervisor, SessionRecorder, SupervisorConfig, SupervisorEvent,
 };
 use crate::hosted_runner::{
-    load_hosted_runner_session_replay, start_hosted_runner_with_message_executor,
+    load_hosted_runner_session_replay, prepare_hosted_runner, start_prepared_hosted_runner,
     AgentSupervisorHostedRunnerMessageExecutor, HostedRunnerConfig, HostedRunnerHandle,
 };
 
@@ -207,6 +208,49 @@ where
     })
 }
 
+async fn join_hosted_runner_startup<HF, PF, H, P, E>(
+    headless: HF,
+    preparation: PF,
+) -> std::result::Result<(H, P), E>
+where
+    HF: Future<Output = std::result::Result<H, E>>,
+    PF: Future<Output = std::result::Result<P, E>>,
+{
+    tokio::try_join!(headless, preparation)
+}
+
+async fn prepare_while_starting_headless<PF, P>(
+    supervisor: &mut AgentSupervisor,
+    expected_model: &str,
+    expected_provider: Option<&str>,
+    preparation: PF,
+) -> Result<P>
+where
+    PF: Future<Output = Result<P>>,
+{
+    let headless = async {
+        supervisor.connect().await?;
+        await_headless_ready(supervisor, expected_model, expected_provider).await
+    };
+    match join_hosted_runner_startup(headless, preparation).await {
+        Ok(((), prepared)) => Ok(prepared),
+        Err(error) => {
+            supervisor.shutdown_and_wait().await;
+            Err(error)
+        }
+    }
+}
+
+async fn shutdown_shared_supervisor(supervisor: Arc<Mutex<AgentSupervisor>>) -> Result<()> {
+    let mutex = Arc::try_unwrap(supervisor)
+        .map_err(|_| anyhow::anyhow!("headless supervisor still has active owners"))?;
+    let mut supervisor = mutex
+        .into_inner()
+        .unwrap_or_else(|error| error.into_inner());
+    supervisor.shutdown_and_wait().await;
+    Ok(())
+}
+
 pub async fn start_hosted_runner_cli_runtime<I, T>(
     args: I,
     env: &HashMap<String, String>,
@@ -257,19 +301,29 @@ where
     } else if recorded_replay.semantic_conversation.is_some() {
         supervisor.restore_session_replay(recorded_replay);
     }
-    supervisor.connect().await?;
-    await_headless_ready(
+    let preparation = async move {
+        prepare_hosted_runner(config.runner)
+            .await
+            .context("prepare Rust hosted runner")
+    };
+    let prepared = prepare_while_starting_headless(
         &mut supervisor,
         &expected_model,
         expected_provider.as_deref(),
+        preparation,
     )
     .await?;
-    let executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::new(
-        Mutex::new(supervisor),
-    )));
-    let handle = start_hosted_runner_with_message_executor(config.runner, executor)
-        .await
-        .context("start Rust hosted runner")?;
+    let supervisor = Arc::new(Mutex::new(supervisor));
+    let executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(
+        supervisor.clone(),
+    ));
+    let handle = match start_prepared_hosted_runner(prepared, executor) {
+        Ok(handle) => handle,
+        Err(error) => {
+            shutdown_shared_supervisor(supervisor).await?;
+            return Err(error).context("start Rust hosted runner");
+        }
+    };
     Ok(HostedRunnerCliRuntime { handle })
 }
 
@@ -683,6 +737,196 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[tokio::test]
+    async fn hosted_runner_startup_branches_are_polled_concurrently() {
+        let headless_started = Arc::new(tokio::sync::Notify::new());
+        let preparation_started = Arc::new(tokio::sync::Notify::new());
+        let headless = {
+            let headless_started = headless_started.clone();
+            let preparation_started = preparation_started.clone();
+            async move {
+                headless_started.notify_one();
+                preparation_started.notified().await;
+                Ok::<_, &'static str>("headless")
+            }
+        };
+        let preparation = {
+            let headless_started = headless_started.clone();
+            let preparation_started = preparation_started.clone();
+            async move {
+                preparation_started.notify_one();
+                headless_started.notified().await;
+                Ok::<_, &'static str>("prepared")
+            }
+        };
+
+        let joined = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            join_hosted_runner_startup(headless, preparation),
+        )
+        .await
+        .expect("both startup branches must be polled")
+        .expect("both startup branches succeed");
+
+        assert_eq!(joined, ("headless", "prepared"));
+    }
+
+    #[tokio::test]
+    async fn hosted_runner_startup_failure_drops_the_sibling_future() {
+        struct DropSignal(Arc<std::sync::atomic::AtomicBool>);
+
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let drop_signal = DropSignal(dropped.clone());
+        let sibling = {
+            async move {
+                let _signal = drop_signal;
+                std::future::pending::<std::result::Result<&'static str, &'static str>>().await
+            }
+        };
+        let failed = async { Err::<&'static str, _>("headless failed") };
+
+        assert_eq!(
+            join_hosted_runner_startup(failed, sibling).await,
+            Err("headless failed")
+        );
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn preparation_failure_reaps_the_started_headless_child() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = tempdir().expect("workspace");
+        let agent = workspace.path().join("stubborn-maestro-headless.sh");
+        let pid_file = workspace.path().join("headless.pid");
+        fs::write(
+            &agent,
+            format!(
+                "#!/bin/sh\nprintf '%s' \"$$\" > '{}'\nprintf '%s\\n' '{{\"type\":\"ready\",\"model\":\"gpt-5.5\",\"provider\":\"test\"}}'\nwhile IFS= read -r line; do :; done\n",
+                pid_file.display()
+            ),
+        )
+        .expect("agent script");
+        let mut permissions = fs::metadata(&agent).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&agent, permissions).expect("chmod");
+
+        let listen = format!("127.0.0.1:{}", unused_tcp_port());
+        let config = resolve_hosted_runner_launch_config(
+            [
+                "maestro hosted-runner",
+                "--runner-session-id",
+                "mrs_cleanup",
+                "--workspace-root",
+                workspace.path().to_str().expect("workspace path"),
+                "--listen",
+                listen.as_str(),
+                "--agent-cli-path",
+                agent.to_str().expect("agent path"),
+            ],
+            &unauthenticated_local_env(),
+        )
+        .expect("launch config");
+        let mut supervisor = AgentSupervisor::new(config.supervisor);
+        let preparation = async {
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while !pid_file.is_file() {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("headless child starts");
+            Err::<(), _>(anyhow::anyhow!("injected preparation failure"))
+        };
+
+        let error =
+            prepare_while_starting_headless(&mut supervisor, "gpt-5.5", Some("test"), preparation)
+                .await
+                .expect_err("preparation must fail");
+        assert!(error.to_string().contains("injected preparation failure"));
+
+        let pid = fs::read_to_string(&pid_file)
+            .expect("pid file")
+            .parse::<libc::pid_t>()
+            .expect("pid");
+        assert_ne!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "headless child must be reaped before cleanup returns"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn activation_failure_reaps_the_ready_headless_child() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = tempdir().expect("workspace");
+        let agent = workspace.path().join("ready-stubborn-maestro-headless.sh");
+        let pid_file = workspace.path().join("ready-headless.pid");
+        fs::write(
+            &agent,
+            format!(
+                "#!/bin/sh\nprintf '%s' \"$$\" > '{}'\nprintf '%s\\n' '{{\"type\":\"ready\",\"model\":\"gpt-5.5\",\"provider\":\"test\"}}'\nwhile IFS= read -r line; do :; done\n",
+                pid_file.display()
+            ),
+        )
+        .expect("agent script");
+        let mut permissions = fs::metadata(&agent).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&agent, permissions).expect("chmod");
+
+        let journal_dir = workspace.path().join(".maestro/hosted-runner/threads");
+        fs::create_dir_all(&journal_dir).expect("journal directory");
+        fs::write(
+            journal_dir.join(format!(
+                "{}.json",
+                session_recorder_id("mrs_activation_cleanup")
+            )),
+            "{",
+        )
+        .expect("invalid journal");
+        let listen = format!("127.0.0.1:{}", unused_tcp_port());
+
+        let error = match start_hosted_runner_cli_runtime(
+            [
+                "maestro hosted-runner",
+                "--runner-session-id",
+                "mrs_activation_cleanup",
+                "--workspace-root",
+                workspace.path().to_str().expect("workspace path"),
+                "--listen",
+                listen.as_str(),
+                "--agent-cli-path",
+                agent.to_str().expect("agent path"),
+            ],
+            &unauthenticated_local_env(),
+        )
+        .await
+        {
+            Ok(_) => panic!("invalid thread journal must reject activation"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("start Rust hosted runner"));
+
+        let pid = fs::read_to_string(&pid_file)
+            .expect("pid file")
+            .parse::<libc::pid_t>()
+            .expect("pid");
+        assert_ne!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "ready headless child must be reaped before cleanup returns"
+        );
+    }
 
     fn unused_tcp_port() -> u16 {
         TcpListener::bind("127.0.0.1:0")
