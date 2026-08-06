@@ -934,6 +934,7 @@ mod tests {
                     source: ExecutionSource::Native,
                     status: ExecutionStatus::Succeeded,
                     duration_ms: Some(12),
+                    policy: None,
                     details: ToolReceiptDetails::None,
                 }),
                 is_error: false,
@@ -969,6 +970,7 @@ mod tests {
                         phase: ExecutionPhase::Running,
                     },
                     duration_ms: Some(42),
+                    policy: None,
                     details: ToolReceiptDetails::Mcp {
                         server: "filesystem".to_string(),
                         tool: "read".to_string(),
@@ -1052,6 +1054,7 @@ mod tests {
                         source: ExecutionSource::RemoteClient,
                         status: ExecutionStatus::Succeeded,
                         duration_ms: None,
+                        policy: None,
                         details: ToolReceiptDetails::Mcp {
                             server: "Bearer server-secret-token-value".to_string(),
                             tool: "read".to_string(),

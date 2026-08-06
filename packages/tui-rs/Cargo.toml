@@ -51,6 +51,7 @@ pathdiff = "0.2"
 wait-timeout.workspace = true
 
 # Serialization for IPC
+ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 prost = "0.14"

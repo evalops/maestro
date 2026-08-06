@@ -66,6 +66,8 @@ pub(crate) fn is_extended_endpoint(head: &RequestHead) -> bool {
             | "/api/chat/tool-retry"
             | "/api/run/event"
             | "/api/policy/validate"
+            | "/api/admin/enterprise-policy/status"
+            | "/api/admin/enterprise-policy/refresh"
             | "/api/admin/cleanup"
             | "/api/admin/warm-caches"
             | "/api/attribution/record-outcome"
@@ -84,6 +86,17 @@ pub(crate) fn is_extended_endpoint(head: &RequestHead) -> bool {
     ]
     .iter()
     .any(|prefix| path.starts_with(prefix))
+}
+fn managed_policy_response(status: maestro_tui::safety::ManagedPolicyStatus) -> Vec<u8> {
+    let response_status = if status.configured && !status.valid {
+        409
+    } else {
+        200
+    };
+    json_response(
+        response_status,
+        &serde_json::json!({ "managedPolicy": status }),
+    )
 }
 
 pub(crate) async fn handle_extended_endpoint(
@@ -143,6 +156,12 @@ pub(crate) async fn handle_extended_endpoint(
 
     let mut api = state.extended_api.lock().await;
     match (head.method.as_str(), head.path.as_str()) {
+        ("GET", "/api/admin/enterprise-policy/status") => {
+            managed_policy_response(maestro_tui::safety::managed_policy_status())
+        }
+        ("POST", "/api/admin/enterprise-policy/refresh") => {
+            managed_policy_response(maestro_tui::safety::refresh_managed_policy())
+        }
         ("POST", "/.well-known/evalops/remote-runner/drain") => {
             json_response(200, &serde_json::json!({ "ok": true, "draining": true }))
         }

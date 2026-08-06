@@ -4,11 +4,18 @@
 //! fallback, and enforces tool, path, network, model, and session limits. Policy
 //! load failures fail closed (block) to match CLI behavior.
 
-use serde::Deserialize;
+use base64::{
+    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
+use ring::signature::{UnparsedPublicKey, ED25519};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 use url::Url;
@@ -18,13 +25,13 @@ use crate::path_utils::{env_path, legacy_composer_home_dir, maestro_home_dir};
 use super::dangerous_patterns::check_dangerous_patterns;
 use super::path_containment::{expand_tilde, is_tilde_path};
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct PolicyList {
     pub allowed: Option<Vec<String>>,
     pub blocked: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkPolicy {
     pub allowed_hosts: Option<Vec<String>>,
@@ -34,7 +41,7 @@ pub struct NetworkPolicy {
     pub block_private_ips: Option<bool>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct LimitsPolicy {
     pub max_tokens_per_session: Option<u64>,
@@ -42,7 +49,7 @@ pub struct LimitsPolicy {
     pub max_concurrent_sessions: Option<u64>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct EnterprisePolicy {
     #[allow(dead_code)]
@@ -54,6 +61,106 @@ pub struct EnterprisePolicy {
     pub network: Option<NetworkPolicy>,
     pub limits: Option<LimitsPolicy>,
 }
+
+/// A v1 organization-managed policy bundle.
+///
+/// The signature covers every field except policyHash and signature, in the
+/// exact JSON order represented by ManagedPolicyPayload. The hash is the
+/// SHA-256 digest of those signed bytes, encoded as lowercase hexadecimal.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedPolicyEnvelope {
+    pub schema_version: u32,
+    pub org_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    pub policy_version: u64,
+    pub issued_at: u64,
+    pub expires_at: u64,
+    pub key_id: String,
+    pub policy: EnterprisePolicy,
+    pub kill_switch: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kill_switch_reason: Option<String>,
+    pub policy_hash: String,
+    pub signature: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedPolicyPayload<'a> {
+    schema_version: u32,
+    org_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace_id: &'a Option<String>,
+    policy_version: u64,
+    issued_at: u64,
+    expires_at: u64,
+    key_id: &'a str,
+    policy: &'a EnterprisePolicy,
+    kill_switch: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kill_switch_reason: &'a Option<String>,
+}
+
+/// Safe metadata attached to decisions and exposed by the admin status route.
+///
+/// This intentionally excludes the policy body, public key, and signature.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedPolicyMetadata {
+    pub org_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    pub policy_version: u64,
+    pub issued_at: u64,
+    pub expires_at: u64,
+    pub key_id: String,
+    pub policy_hash: String,
+    pub kill_switch: bool,
+}
+
+/// Current managed-policy health, safe to return to an authenticated operator.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedPolicyStatus {
+    pub configured: bool,
+    pub valid: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<ManagedPolicyMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct VerifiedManagedPolicy {
+    policy: EnterprisePolicy,
+    metadata: ManagedPolicyMetadata,
+    kill_switch_reason: Option<String>,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedPolicyWatermark {
+    policy_version: u64,
+    policy_hash: String,
+}
+
+#[derive(Default)]
+struct ManagedPolicyCache {
+    path: Option<PathBuf>,
+    policy: Option<VerifiedManagedPolicy>,
+    mtime: Option<SystemTime>,
+    accepted_version: Option<u64>,
+    accepted_hash: Option<String>,
+    trust_fingerprint: Option<String>,
+    content_hash: Option<String>,
+}
+
+static MANAGED_POLICY_CACHE: std::sync::LazyLock<RwLock<ManagedPolicyCache>> =
+    std::sync::LazyLock::new(|| RwLock::new(ManagedPolicyCache::default()));
+
+const MANAGED_POLICY_SCHEMA_VERSION: u32 = 1;
+const MANAGED_POLICY_CLOCK_SKEW: Duration = Duration::from_mins(5);
 
 #[derive(Default)]
 struct PolicyCache {
@@ -109,6 +216,403 @@ static PIP_INSTALL_PATTERN: std::sync::LazyLock<Regex> = std::sync::LazyLock::ne
     Regex::new(r"(?i)\bpip\d*\s+install\s+(?:-[a-zA-Z-]+\s+)*([\w@\-/.:\s=<>]+)")
         .expect("Invalid pip install regex")
 });
+
+fn managed_policy_path() -> Option<PathBuf> {
+    env_path("MAESTRO_MANAGED_POLICY_PATH")
+}
+fn managed_policy_state_path(policy_path: &Path) -> PathBuf {
+    if let Some(path) = env_path("MAESTRO_MANAGED_POLICY_STATE_PATH") {
+        return path;
+    }
+    let mut state = policy_path.as_os_str().to_os_string();
+    state.push(".state");
+    PathBuf::from(state)
+}
+
+fn managed_policy_trust_fingerprint(policy_path: &Path) -> String {
+    let fingerprint = [
+        std::env::var("MAESTRO_MANAGED_POLICY_PUBLIC_KEY").unwrap_or_default(),
+        std::env::var("MAESTRO_MANAGED_POLICY_KEY_ID").unwrap_or_default(),
+        std::env::var("MAESTRO_ORG_ID").unwrap_or_default(),
+        std::env::var("MAESTRO_WORKSPACE_ID").unwrap_or_default(),
+        managed_policy_state_path(policy_path).display().to_string(),
+    ]
+    .join("\u{0}");
+    sha256_hex(fingerprint.as_bytes())
+}
+fn unix_now() -> Result<u64, String> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| "System clock is before the Unix epoch".to_string())
+}
+
+fn canonical_managed_policy_payload(envelope: &ManagedPolicyEnvelope) -> Vec<u8> {
+    serde_json::to_vec(&ManagedPolicyPayload {
+        schema_version: envelope.schema_version,
+        org_id: &envelope.org_id,
+        workspace_id: &envelope.workspace_id,
+        policy_version: envelope.policy_version,
+        issued_at: envelope.issued_at,
+        expires_at: envelope.expires_at,
+        key_id: &envelope.key_id,
+        policy: &envelope.policy,
+        kill_switch: envelope.kill_switch,
+        kill_switch_reason: &envelope.kill_switch_reason,
+    })
+    .expect("managed policy payload is serializable")
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(64);
+    for byte in Sha256::digest(bytes) {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
+
+fn decode_hex(value: &str) -> Option<Vec<u8>> {
+    if value.is_empty() || !value.len().is_multiple_of(2) {
+        return None;
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = (pair[0] as char).to_digit(16)?;
+            let low = (pair[1] as char).to_digit(16)?;
+            Some(((high << 4) | low) as u8)
+        })
+        .collect()
+}
+
+fn decode_encoded_bytes(value: &str, expected_len: usize, label: &str) -> Result<Vec<u8>, String> {
+    let value = value.trim();
+    if let Some(decoded) = decode_hex(value) {
+        if decoded.len() == expected_len {
+            return Ok(decoded);
+        }
+    }
+
+    let decoded = URL_SAFE_NO_PAD
+        .decode(value)
+        .or_else(|_| BASE64_STANDARD.decode(value))
+        .map_err(|_| format!("Managed policy {label} is not valid base64 or hex"))?;
+    if decoded.len() != expected_len {
+        return Err(format!(
+            "Managed policy {label} must decode to {expected_len} bytes"
+        ));
+    }
+    Ok(decoded)
+}
+
+fn configured_managed_public_key() -> Result<Vec<u8>, String> {
+    let value = std::env::var("MAESTRO_MANAGED_POLICY_PUBLIC_KEY")
+        .map_err(|_| "Managed policy public key is not configured".to_string())?;
+    decode_encoded_bytes(&value, 32, "public key")
+}
+
+fn verify_managed_policy(envelope: ManagedPolicyEnvelope) -> Result<VerifiedManagedPolicy, String> {
+    if envelope.schema_version != MANAGED_POLICY_SCHEMA_VERSION {
+        return Err(format!(
+            "Unsupported managed policy schema version {}",
+            envelope.schema_version
+        ));
+    }
+    if envelope.org_id.trim().is_empty() || envelope.key_id.trim().is_empty() {
+        return Err("Managed policy organization and key id are required".to_string());
+    }
+    if envelope.policy_version == 0 {
+        return Err("Managed policy version must be positive".to_string());
+    }
+    if envelope.expires_at <= envelope.issued_at {
+        return Err("Managed policy expiry must be after issuance".to_string());
+    }
+
+    let now = unix_now()?;
+    if envelope.expires_at <= now {
+        return Err("Managed policy has expired".to_string());
+    }
+    if envelope.issued_at > now.saturating_add(MANAGED_POLICY_CLOCK_SKEW.as_secs()) {
+        return Err("Managed policy was issued too far in the future".to_string());
+    }
+
+    if let Ok(expected_org) = std::env::var("MAESTRO_ORG_ID") {
+        let expected_org = expected_org.trim();
+        if !expected_org.is_empty() && envelope.org_id != expected_org {
+            return Err("Managed policy organization scope does not match this runner".to_string());
+        }
+    }
+    if let Ok(expected_workspace) = std::env::var("MAESTRO_WORKSPACE_ID") {
+        let expected_workspace = expected_workspace.trim();
+        if !expected_workspace.is_empty()
+            && envelope.workspace_id.as_deref() != Some(expected_workspace)
+        {
+            return Err("Managed policy workspace scope does not match this runner".to_string());
+        }
+    }
+    if let Ok(expected_key_id) = std::env::var("MAESTRO_MANAGED_POLICY_KEY_ID") {
+        let expected_key_id = expected_key_id.trim();
+        if !expected_key_id.is_empty() && envelope.key_id != expected_key_id {
+            return Err("Managed policy key id does not match the configured key".to_string());
+        }
+    }
+
+    if let Some(policy_org) = envelope.policy.org_id.as_deref() {
+        if policy_org != envelope.org_id {
+            return Err("Managed policy body organization does not match its envelope".to_string());
+        }
+    }
+
+    if envelope.kill_switch
+        && envelope
+            .kill_switch_reason
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+    {
+        return Err("Managed policy kill switch requires a reason".to_string());
+    }
+
+    let payload = canonical_managed_policy_payload(&envelope);
+    let computed_hash = sha256_hex(&payload);
+    if envelope.policy_hash.to_ascii_lowercase() != computed_hash {
+        return Err("Managed policy hash does not match its signed payload".to_string());
+    }
+
+    let public_key = configured_managed_public_key()?;
+    let signature = decode_encoded_bytes(&envelope.signature, 64, "signature")?;
+    UnparsedPublicKey::new(&ED25519, public_key)
+        .verify(&payload, &signature)
+        .map_err(|_| "Managed policy signature verification failed".to_string())?;
+
+    let metadata = ManagedPolicyMetadata {
+        org_id: envelope.org_id,
+        workspace_id: envelope.workspace_id,
+        policy_version: envelope.policy_version,
+        issued_at: envelope.issued_at,
+        expires_at: envelope.expires_at,
+        key_id: envelope.key_id,
+        policy_hash: computed_hash,
+        kill_switch: envelope.kill_switch,
+    };
+
+    Ok(VerifiedManagedPolicy {
+        policy: envelope.policy,
+        metadata,
+        kill_switch_reason: envelope.kill_switch_reason,
+    })
+}
+
+fn load_managed_policy_watermark(
+    policy_path: &Path,
+) -> Result<Option<ManagedPolicyWatermark>, String> {
+    let state_path = managed_policy_state_path(policy_path);
+    if !state_path.exists() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(&state_path)
+        .map_err(|_| "Managed policy rollback state could not be read".to_string())?;
+    let watermark = serde_json::from_str::<ManagedPolicyWatermark>(&content)
+        .map_err(|_| "Managed policy rollback state is not valid JSON".to_string())?;
+    if watermark.policy_version == 0 || watermark.policy_hash.trim().is_empty() {
+        return Err("Managed policy rollback state is invalid".to_string());
+    }
+    Ok(Some(watermark))
+}
+fn persist_managed_policy_watermark(
+    policy_path: &Path,
+    policy_version: u64,
+    policy_hash: &str,
+) -> Result<(), String> {
+    let state_path = managed_policy_state_path(policy_path);
+    let serialized = serde_json::to_vec(&ManagedPolicyWatermark {
+        policy_version,
+        policy_hash: policy_hash.to_string(),
+    })
+    .map_err(|_| "Managed policy rollback state could not be serialized".to_string())?;
+    let temp_path = state_path.with_extension(format!("tmp-{}", std::process::id()));
+    std::fs::write(&temp_path, serialized)
+        .map_err(|error| format!("Managed policy rollback state could not be written: {error}"))?;
+    if let Err(error) = std::fs::rename(&temp_path, &state_path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(format!(
+            "Managed policy rollback state could not be committed: {error}"
+        ));
+    }
+    Ok(())
+}
+fn load_managed_policy(force: bool) -> Result<Option<VerifiedManagedPolicy>, String> {
+    let Some(path) = managed_policy_path() else {
+        return Ok(None);
+    };
+    if !path.is_file() {
+        return Err("Managed policy file is missing or is not a regular file".to_string());
+    }
+
+    let mtime = std::fs::metadata(&path)
+        .map_err(|_| "Managed policy file metadata is unavailable".to_string())?
+        .modified()
+        .ok();
+    let trust_fingerprint = managed_policy_trust_fingerprint(&path);
+    let watermark = load_managed_policy_watermark(&path)?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|_| "Managed policy file could not be read".to_string())?;
+    let content_hash = sha256_hex(content.as_bytes());
+
+    if let Ok(cache) = MANAGED_POLICY_CACHE.read() {
+        let same_path = cache.path.as_ref() == Some(&path);
+        let same_trust = cache.trust_fingerprint.as_deref() == Some(&trust_fingerprint);
+        let same_content = cache.content_hash.as_deref() == Some(&content_hash);
+        let cache_not_expired = cache.policy.as_ref().is_some_and(|policy| {
+            unix_now()
+                .map(|now| policy.metadata.expires_at > now)
+                .unwrap_or(false)
+        });
+        let cache_watermark_matches = watermark.as_ref().is_some_and(|watermark| {
+            cache.policy.as_ref().is_some_and(|policy| {
+                policy.metadata.policy_version == watermark.policy_version
+                    && policy.metadata.policy_hash == watermark.policy_hash
+            })
+        });
+        if !force
+            && same_path
+            && same_trust
+            && same_content
+            && cache.mtime == mtime
+            && cache_not_expired
+            && cache_watermark_matches
+        {
+            return cache
+                .policy
+                .clone()
+                .ok_or_else(|| "Managed policy cache is empty".to_string())
+                .map(Some);
+        }
+    }
+
+    let envelope = serde_json::from_str::<ManagedPolicyEnvelope>(&content)
+        .map_err(|_| "Managed policy file is not valid JSON".to_string())?;
+    let verified = verify_managed_policy(envelope)?;
+
+    if let Ok(cache) = MANAGED_POLICY_CACHE.read() {
+        if cache.path.as_ref() == Some(&path) {
+            if let Some(previous_version) = cache.accepted_version {
+                if verified.metadata.policy_version < previous_version {
+                    return Err("Managed policy rollback was rejected".to_string());
+                }
+                if verified.metadata.policy_version == previous_version
+                    && cache.accepted_hash.as_deref() != Some(&verified.metadata.policy_hash)
+                {
+                    return Err("Managed policy changed without increasing its version".to_string());
+                }
+            }
+        }
+    }
+
+    if let Some(watermark) = &watermark {
+        if verified.metadata.policy_version < watermark.policy_version {
+            return Err("Managed policy rollback was rejected".to_string());
+        }
+        if verified.metadata.policy_version == watermark.policy_version
+            && verified.metadata.policy_hash != watermark.policy_hash
+        {
+            return Err("Managed policy changed without increasing its version".to_string());
+        }
+    }
+
+    let should_persist = watermark
+        .as_ref()
+        .map(|watermark| verified.metadata.policy_version > watermark.policy_version)
+        .unwrap_or(true);
+    if should_persist {
+        persist_managed_policy_watermark(
+            &path,
+            verified.metadata.policy_version,
+            &verified.metadata.policy_hash,
+        )?;
+    }
+
+    if verified.metadata.kill_switch {
+        return Err(format!(
+            "Managed policy kill switch is active: {}",
+            verified
+                .kill_switch_reason
+                .as_deref()
+                .unwrap_or("emergency revocation")
+        ));
+    }
+
+    if let Ok(mut cache) = MANAGED_POLICY_CACHE.write() {
+        cache.path = Some(path);
+        cache.mtime = mtime;
+        cache.accepted_version = Some(verified.metadata.policy_version);
+        cache.accepted_hash = Some(verified.metadata.policy_hash.clone());
+        cache.trust_fingerprint = Some(trust_fingerprint);
+        cache.content_hash = Some(content_hash);
+        cache.policy = Some(verified.clone());
+    }
+
+    Ok(Some(verified))
+}
+
+fn managed_policy_status_with_force(force: bool) -> ManagedPolicyStatus {
+    if managed_policy_path().is_none() {
+        return ManagedPolicyStatus {
+            configured: false,
+            valid: false,
+            metadata: None,
+            error: None,
+        };
+    }
+
+    match load_managed_policy(force) {
+        Ok(Some(policy)) => ManagedPolicyStatus {
+            configured: true,
+            valid: true,
+            metadata: Some(policy.metadata),
+            error: None,
+        },
+        Ok(None) => ManagedPolicyStatus {
+            configured: true,
+            valid: false,
+            metadata: None,
+            error: Some("Managed policy is not configured".to_string()),
+        },
+        Err(error) => ManagedPolicyStatus {
+            configured: true,
+            valid: false,
+            metadata: None,
+            error: Some(error),
+        },
+    }
+}
+
+/// Return safe status for the active managed-policy bundle.
+pub fn managed_policy_status() -> ManagedPolicyStatus {
+    managed_policy_status_with_force(false)
+}
+
+/// Re-read and verify the managed-policy bundle.
+pub fn refresh_managed_policy() -> ManagedPolicyStatus {
+    managed_policy_status_with_force(true)
+}
+
+/// Return the verified policy identity for audit receipts.
+pub fn managed_policy_metadata() -> Option<ManagedPolicyMetadata> {
+    load_managed_policy(false)
+        .ok()
+        .flatten()
+        .map(|policy| policy.metadata)
+}
+
+/// Return a fail-closed error when managed mode is configured but invalid.
+pub fn managed_policy_gate_error() -> Option<String> {
+    load_managed_policy(false)
+        .err()
+        .map(|error| format!("Managed policy error: {error}. Access blocked."))
+}
 
 fn policy_path() -> Option<PathBuf> {
     select_policy_path(policy_path_candidates())
@@ -173,7 +677,7 @@ fn policy_path_candidates() -> Vec<PolicyPathCandidate> {
     candidates
 }
 
-fn load_policy(force: bool) -> Result<Option<EnterprisePolicy>, String> {
+fn load_local_policy(force: bool) -> Result<Option<EnterprisePolicy>, String> {
     let Some(path) = policy_path() else {
         return Ok(None);
     };
@@ -208,6 +712,134 @@ fn load_policy(force: bool) -> Result<Option<EnterprisePolicy>, String> {
     }
 
     Ok(Some(policy))
+}
+
+fn narrow_allowed_values(
+    managed: Option<Vec<String>>,
+    local: Option<Vec<String>>,
+) -> Option<Vec<String>> {
+    match (managed, local) {
+        (None, None) => None,
+        (Some(values), None) | (None, Some(values)) => Some(values),
+        (Some(managed), Some(local)) => Some(
+            managed
+                .into_iter()
+                .filter(|value| local.iter().any(|candidate| candidate == value))
+                .collect(),
+        ),
+    }
+}
+
+fn union_values(managed: Option<Vec<String>>, local: Option<Vec<String>>) -> Option<Vec<String>> {
+    match (managed, local) {
+        (None, None) => None,
+        (Some(values), None) | (None, Some(values)) => Some(values),
+        (Some(mut managed), Some(local)) => {
+            for value in local {
+                if !managed.iter().any(|candidate| candidate == &value) {
+                    managed.push(value);
+                }
+            }
+            Some(managed)
+        }
+    }
+}
+
+fn narrow_policy_list(
+    managed: Option<PolicyList>,
+    local: Option<PolicyList>,
+) -> Option<PolicyList> {
+    match (managed, local) {
+        (None, None) => None,
+        (Some(policy), None) | (None, Some(policy)) => Some(policy),
+        (Some(managed), Some(local)) => Some(PolicyList {
+            allowed: narrow_allowed_values(managed.allowed, local.allowed),
+            blocked: union_values(managed.blocked, local.blocked),
+        }),
+    }
+}
+
+fn narrow_bool(managed: Option<bool>, local: Option<bool>) -> Option<bool> {
+    match (managed, local) {
+        (None, None) => None,
+        (managed, local) => Some(managed.unwrap_or(false) || local.unwrap_or(false)),
+    }
+}
+
+fn narrow_network(
+    managed: Option<NetworkPolicy>,
+    local: Option<NetworkPolicy>,
+) -> Option<NetworkPolicy> {
+    match (managed, local) {
+        (None, None) => None,
+        (Some(policy), None) | (None, Some(policy)) => Some(policy),
+        (Some(managed), Some(local)) => Some(NetworkPolicy {
+            allowed_hosts: narrow_allowed_values(managed.allowed_hosts, local.allowed_hosts),
+            blocked_hosts: union_values(managed.blocked_hosts, local.blocked_hosts),
+            block_localhost: narrow_bool(managed.block_localhost, local.block_localhost),
+            block_private_ips: narrow_bool(managed.block_private_ips, local.block_private_ips),
+        }),
+    }
+}
+
+fn narrow_limit(managed: Option<u64>, local: Option<u64>) -> Option<u64> {
+    match (managed, local) {
+        (None, None) => None,
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (Some(0), Some(value)) | (Some(value), Some(0)) => Some(value),
+        (Some(managed), Some(local)) => Some(managed.min(local)),
+    }
+}
+
+fn narrow_limits(
+    managed: Option<LimitsPolicy>,
+    local: Option<LimitsPolicy>,
+) -> Option<LimitsPolicy> {
+    match (managed, local) {
+        (None, None) => None,
+        (Some(policy), None) | (None, Some(policy)) => Some(policy),
+        (Some(managed), Some(local)) => Some(LimitsPolicy {
+            max_tokens_per_session: narrow_limit(
+                managed.max_tokens_per_session,
+                local.max_tokens_per_session,
+            ),
+            max_session_duration_minutes: narrow_limit(
+                managed.max_session_duration_minutes,
+                local.max_session_duration_minutes,
+            ),
+            max_concurrent_sessions: narrow_limit(
+                managed.max_concurrent_sessions,
+                local.max_concurrent_sessions,
+            ),
+        }),
+    }
+}
+
+fn narrow_policy(
+    mut managed: EnterprisePolicy,
+    local: Option<EnterprisePolicy>,
+) -> EnterprisePolicy {
+    let Some(local) = local else {
+        return managed;
+    };
+
+    managed.tools = narrow_policy_list(managed.tools, local.tools);
+    managed.dependencies = narrow_policy_list(managed.dependencies, local.dependencies);
+    managed.models = narrow_policy_list(managed.models, local.models);
+    managed.paths = narrow_policy_list(managed.paths, local.paths);
+    managed.network = narrow_network(managed.network, local.network);
+    managed.limits = narrow_limits(managed.limits, local.limits);
+    managed
+}
+
+fn load_policy(force: bool) -> Result<Option<EnterprisePolicy>, String> {
+    let managed = load_managed_policy(force)?;
+    let local = load_local_policy(force)?;
+
+    match managed {
+        Some(managed) => Ok(Some(narrow_policy(managed.policy, local))),
+        None => Ok(local),
+    }
 }
 
 fn expand_home_dir(path: &str) -> String {
@@ -938,6 +1570,7 @@ fn is_private_ip(ip: &IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ring::signature::KeyPair;
     use std::sync::{LazyLock, Mutex};
 
     static ENV_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -1178,5 +1811,297 @@ mod tests {
             }]),
             Some(directory_candidate)
         );
+    }
+    fn managed_test_policy() -> EnterprisePolicy {
+        EnterprisePolicy {
+            org_id: Some("org-1".to_string()),
+            tools: Some(PolicyList {
+                allowed: Some(vec!["bash".to_string(), "read".to_string()]),
+                blocked: None,
+            }),
+            dependencies: None,
+            models: None,
+            paths: None,
+            network: None,
+            limits: None,
+        }
+    }
+
+    fn signed_test_envelope(
+        key_pair: &ring::signature::Ed25519KeyPair,
+        version: u64,
+        kill_switch: bool,
+    ) -> ManagedPolicyEnvelope {
+        let issued_at = unix_now().expect("test clock") - 1;
+        let mut envelope = ManagedPolicyEnvelope {
+            schema_version: MANAGED_POLICY_SCHEMA_VERSION,
+            org_id: "org-1".to_string(),
+            workspace_id: Some("workspace-1".to_string()),
+            policy_version: version,
+            issued_at,
+            expires_at: issued_at + 3600,
+            key_id: "test-key".to_string(),
+            policy: managed_test_policy(),
+            kill_switch,
+            kill_switch_reason: kill_switch.then(|| "operator revoked access".to_string()),
+            policy_hash: String::new(),
+            signature: String::new(),
+        };
+        let payload = canonical_managed_policy_payload(&envelope);
+        envelope.policy_hash = sha256_hex(&payload);
+        envelope.signature = URL_SAFE_NO_PAD.encode(key_pair.sign(&payload).as_ref());
+        envelope
+    }
+
+    fn restore_managed_test_env(previous: Vec<(&str, Option<String>)>) {
+        for (name, value) in previous {
+            restore_env_var(name, value);
+        }
+    }
+
+    #[test]
+    fn managed_policy_accepts_signature_and_only_narrows_local_policy() {
+        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let previous = vec![
+            (
+                "MAESTRO_MANAGED_POLICY_PATH",
+                std::env::var("MAESTRO_MANAGED_POLICY_PATH").ok(),
+            ),
+            (
+                "MAESTRO_MANAGED_POLICY_PUBLIC_KEY",
+                std::env::var("MAESTRO_MANAGED_POLICY_PUBLIC_KEY").ok(),
+            ),
+            (
+                "MAESTRO_MANAGED_POLICY_KEY_ID",
+                std::env::var("MAESTRO_MANAGED_POLICY_KEY_ID").ok(),
+            ),
+            ("MAESTRO_ORG_ID", std::env::var("MAESTRO_ORG_ID").ok()),
+            (
+                "MAESTRO_WORKSPACE_ID",
+                std::env::var("MAESTRO_WORKSPACE_ID").ok(),
+            ),
+            (
+                "MAESTRO_POLICY_PATH",
+                std::env::var("MAESTRO_POLICY_PATH").ok(),
+            ),
+        ];
+        let temp = tempfile::tempdir().expect("create managed policy dir");
+        let pkcs8 =
+            ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+                .expect("generate test key");
+        let key_pair =
+            ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("parse test key");
+        let managed_path = temp.path().join("managed-policy.json");
+        let local_path = temp.path().join("local-policy.json");
+        std::fs::write(
+            &managed_path,
+            serde_json::to_vec(&signed_test_envelope(&key_pair, 1, false)).unwrap(),
+        )
+        .expect("write managed policy");
+        std::fs::write(&local_path, r#"{"tools":{"allowed":["read"]}}"#)
+            .expect("write local policy");
+
+        std::env::set_var("MAESTRO_MANAGED_POLICY_PATH", &managed_path);
+        std::env::set_var(
+            "MAESTRO_MANAGED_POLICY_PUBLIC_KEY",
+            URL_SAFE_NO_PAD.encode(key_pair.public_key().as_ref()),
+        );
+        std::env::set_var("MAESTRO_MANAGED_POLICY_KEY_ID", "test-key");
+        std::env::set_var("MAESTRO_ORG_ID", "org-1");
+        std::env::set_var("MAESTRO_WORKSPACE_ID", "workspace-1");
+        std::env::set_var("MAESTRO_POLICY_PATH", &local_path);
+
+        let status = refresh_managed_policy();
+        assert!(status.valid, "managed status: {status:?}");
+        assert_eq!(status.metadata.as_ref().unwrap().policy_version, 1);
+
+        let effective = load_policy(false)
+            .expect("effective policy")
+            .expect("policy present");
+        assert_eq!(
+            effective.tools.unwrap().allowed.unwrap(),
+            vec!["read".to_string()]
+        );
+        assert!(check_tool_allowed("read").is_none());
+        assert!(check_tool_allowed("bash").is_some());
+        assert_eq!(
+            managed_policy_metadata().unwrap().policy_hash,
+            status.metadata.unwrap().policy_hash
+        );
+        let denied = crate::agent::ToolExecution::denied(
+            "receipt-call",
+            "bash",
+            crate::agent::DenialReason::ActionFirewall {
+                message: "test".to_string(),
+            },
+        );
+        assert_eq!(denied.receipt.policy.unwrap().policy_version, 1);
+
+        restore_managed_test_env(previous);
+    }
+
+    #[test]
+    fn managed_policy_tamper_and_kill_switch_fail_closed() {
+        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let previous = vec![
+            (
+                "MAESTRO_MANAGED_POLICY_PATH",
+                std::env::var("MAESTRO_MANAGED_POLICY_PATH").ok(),
+            ),
+            (
+                "MAESTRO_MANAGED_POLICY_PUBLIC_KEY",
+                std::env::var("MAESTRO_MANAGED_POLICY_PUBLIC_KEY").ok(),
+            ),
+            (
+                "MAESTRO_MANAGED_POLICY_KEY_ID",
+                std::env::var("MAESTRO_MANAGED_POLICY_KEY_ID").ok(),
+            ),
+            ("MAESTRO_ORG_ID", std::env::var("MAESTRO_ORG_ID").ok()),
+            (
+                "MAESTRO_WORKSPACE_ID",
+                std::env::var("MAESTRO_WORKSPACE_ID").ok(),
+            ),
+        ];
+        let temp = tempfile::tempdir().expect("create managed policy dir");
+        let pkcs8 =
+            ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+                .expect("generate test key");
+        let key_pair =
+            ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("parse test key");
+        let managed_path = temp.path().join("managed-policy.json");
+        let mut envelope = signed_test_envelope(&key_pair, 1, false);
+        std::fs::write(&managed_path, serde_json::to_vec(&envelope).unwrap())
+            .expect("write managed policy");
+
+        std::env::set_var("MAESTRO_MANAGED_POLICY_PATH", &managed_path);
+        std::env::set_var(
+            "MAESTRO_MANAGED_POLICY_PUBLIC_KEY",
+            URL_SAFE_NO_PAD.encode(key_pair.public_key().as_ref()),
+        );
+        std::env::set_var("MAESTRO_MANAGED_POLICY_KEY_ID", "test-key");
+        std::env::set_var("MAESTRO_ORG_ID", "org-1");
+        std::env::set_var("MAESTRO_WORKSPACE_ID", "workspace-1");
+        assert!(refresh_managed_policy().valid);
+        assert!(managed_path
+            .with_file_name("managed-policy.json.state")
+            .is_file());
+
+        let mut expired = signed_test_envelope(&key_pair, 1, false);
+        let now = unix_now().unwrap();
+        expired.issued_at = now.saturating_sub(100);
+        expired.expires_at = now.saturating_sub(1);
+        std::fs::write(&managed_path, serde_json::to_vec(&expired).unwrap())
+            .expect("write expired policy");
+        let expired_status = refresh_managed_policy();
+        assert!(!expired_status.valid);
+        assert!(expired_status.error.unwrap().contains("expired"));
+
+        let mut future = signed_test_envelope(&key_pair, 1, false);
+        future.issued_at = unix_now().unwrap() + 600;
+        future.expires_at = future.issued_at + 3600;
+        std::fs::write(&managed_path, serde_json::to_vec(&future).unwrap())
+            .expect("write future policy");
+        let future_status = refresh_managed_policy();
+        assert!(!future_status.valid);
+        assert!(future_status.error.unwrap().contains("future"));
+
+        let key_id_check = signed_test_envelope(&key_pair, 1, false);
+        std::fs::write(&managed_path, serde_json::to_vec(&key_id_check).unwrap())
+            .expect("write key-id policy");
+        std::env::set_var("MAESTRO_MANAGED_POLICY_KEY_ID", "wrong-key");
+        let key_id_status = refresh_managed_policy();
+        assert!(!key_id_status.valid);
+        assert!(key_id_status.error.unwrap().contains("key id"));
+        std::env::set_var("MAESTRO_MANAGED_POLICY_KEY_ID", "test-key");
+
+        std::fs::write(&managed_path, b"not-json").expect("write malformed policy");
+        let malformed = refresh_managed_policy();
+        assert!(!malformed.valid);
+        assert!(malformed.error.unwrap().contains("valid JSON"));
+
+        std::fs::write(&managed_path, serde_json::to_vec(&envelope).unwrap())
+            .expect("restore valid policy");
+        assert!(refresh_managed_policy().valid);
+
+        envelope.policy.tools.as_mut().unwrap().allowed = Some(vec!["read".to_string()]);
+        std::fs::write(&managed_path, serde_json::to_vec(&envelope).unwrap())
+            .expect("tamper managed policy");
+        let tampered = refresh_managed_policy();
+        assert!(!tampered.valid);
+        assert!(check_tool_allowed("bash").is_some());
+
+        let revoked = signed_test_envelope(&key_pair, 2, true);
+        std::fs::write(&managed_path, serde_json::to_vec(&revoked).unwrap())
+            .expect("write revoked policy");
+        let kill_switch = refresh_managed_policy();
+        assert!(!kill_switch.valid);
+        assert!(kill_switch.error.unwrap().contains("kill switch"));
+
+        restore_managed_test_env(previous);
+    }
+
+    #[test]
+    fn managed_policy_rejects_scope_and_rollbacks() {
+        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let previous = vec![
+            (
+                "MAESTRO_MANAGED_POLICY_PATH",
+                std::env::var("MAESTRO_MANAGED_POLICY_PATH").ok(),
+            ),
+            (
+                "MAESTRO_MANAGED_POLICY_PUBLIC_KEY",
+                std::env::var("MAESTRO_MANAGED_POLICY_PUBLIC_KEY").ok(),
+            ),
+            (
+                "MAESTRO_MANAGED_POLICY_KEY_ID",
+                std::env::var("MAESTRO_MANAGED_POLICY_KEY_ID").ok(),
+            ),
+            ("MAESTRO_ORG_ID", std::env::var("MAESTRO_ORG_ID").ok()),
+            (
+                "MAESTRO_WORKSPACE_ID",
+                std::env::var("MAESTRO_WORKSPACE_ID").ok(),
+            ),
+        ];
+        let temp = tempfile::tempdir().expect("create managed policy dir");
+        let pkcs8 =
+            ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+                .expect("generate test key");
+        let key_pair =
+            ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("parse test key");
+        let managed_path = temp.path().join("managed-policy.json");
+        std::env::set_var("MAESTRO_MANAGED_POLICY_PATH", &managed_path);
+        std::env::set_var(
+            "MAESTRO_MANAGED_POLICY_PUBLIC_KEY",
+            URL_SAFE_NO_PAD.encode(key_pair.public_key().as_ref()),
+        );
+        std::env::set_var("MAESTRO_MANAGED_POLICY_KEY_ID", "test-key");
+        std::env::set_var("MAESTRO_ORG_ID", "org-1");
+        std::env::set_var("MAESTRO_WORKSPACE_ID", "workspace-1");
+
+        let mut scope = signed_test_envelope(&key_pair, 2, false);
+        scope.org_id = "other-org".to_string();
+        scope.policy.org_id = Some("other-org".to_string());
+        let payload = canonical_managed_policy_payload(&scope);
+        scope.policy_hash = sha256_hex(&payload);
+        scope.signature = URL_SAFE_NO_PAD.encode(key_pair.sign(&payload).as_ref());
+        std::fs::write(&managed_path, serde_json::to_vec(&scope).unwrap())
+            .expect("write out-of-scope policy");
+        let scope_status = refresh_managed_policy();
+        assert!(!scope_status.valid);
+        assert!(scope_status.error.unwrap().contains("organization scope"));
+
+        std::env::set_var("MAESTRO_ORG_ID", "org-1");
+        let version_two = signed_test_envelope(&key_pair, 2, false);
+        std::fs::write(&managed_path, serde_json::to_vec(&version_two).unwrap())
+            .expect("write version two");
+        assert!(refresh_managed_policy().valid);
+        let version_one = signed_test_envelope(&key_pair, 1, false);
+        std::fs::write(&managed_path, serde_json::to_vec(&version_one).unwrap())
+            .expect("write rollback");
+        let rollback = refresh_managed_policy();
+        assert!(!rollback.valid);
+        assert!(rollback.error.unwrap().contains("rollback"));
+
+        restore_managed_test_env(previous);
     }
 }

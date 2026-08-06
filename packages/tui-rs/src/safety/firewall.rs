@@ -35,6 +35,7 @@ use super::path_containment::{
 };
 use super::policy::{
     check_command_policy, check_path_allowed, check_tool_allowed, check_url_allowed,
+    managed_policy_gate_error,
 };
 use super::workflow_state::{has_tool_tags, is_human_facing_tool, WorkflowStateSnapshot};
 use crate::mcp::McpToolAnnotations;
@@ -262,6 +263,10 @@ impl ActionFirewall {
     /// Check a bash command for safety
     #[must_use]
     pub fn check_bash(&self, command: &str) -> FirewallVerdict {
+        if let Some(reason) = managed_policy_gate_error() {
+            return FirewallVerdict::Block { reason };
+        }
+
         // Check for dangerous patterns first (highest priority)
         let patterns = check_dangerous_patterns(command);
         if let Some(pattern) = patterns.first() {
