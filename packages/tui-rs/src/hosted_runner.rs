@@ -1460,6 +1460,17 @@ fn startup_workspace_id(config: &HostedRunnerConfig) -> String {
         .unwrap_or_default()
 }
 
+async fn join_initial_identity_exchanges<SF, CF, S, C, E>(
+    server: SF,
+    client: CF,
+) -> Result<(S, C), E>
+where
+    SF: Future<Output = Result<S, E>>,
+    CF: Future<Output = Result<C, E>>,
+{
+    tokio::try_join!(server, client)
+}
+
 pub async fn start_hosted_runner_with_message_executor(
     config: HostedRunnerConfig,
     message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
@@ -1520,8 +1531,21 @@ pub async fn start_hosted_runner_with_message_executor(
                 return Err(io::Error::other(error));
             }
         };
-        let identity = match exchanger.exchange_initial().await {
-            Ok(identity) => {
+        let identities = if let Some(rendezvous) = config.rendezvous.as_ref() {
+            join_initial_identity_exchanges(
+                exchanger.exchange_initial(),
+                exchanger.exchange_client_initial(&rendezvous.identity_exchange_url),
+            )
+            .await
+            .map(|(server, client)| (server, Some(client)))
+        } else {
+            exchanger
+                .exchange_initial()
+                .await
+                .map(|server| (server, None))
+        };
+        let (identity, rendezvous_identity) = match identities {
+            Ok(identities) => {
                 tracing::info!(
                     target: "maestro.hosted",
                     event = "hosted_runner_startup_stage",
@@ -1535,7 +1559,7 @@ pub async fn start_hosted_runner_with_message_executor(
                     duration_ms = exchange_started.elapsed().as_millis() as u64,
                     "Hosted runner startup stage completed"
                 );
-                identity
+                identities
             }
             Err(error) => {
                 tracing::warn!(
@@ -1555,15 +1579,8 @@ pub async fn start_hosted_runner_with_message_executor(
                 return Err(io::Error::other(error));
             }
         };
-        let rendezvous_identity = if let Some(rendezvous) = config.rendezvous.as_ref() {
-            let identity = exchanger
-                .exchange_client_initial(&rendezvous.identity_exchange_url)
-                .await
-                .map_err(io::Error::other)?;
-            Some(workload_identity::ReloadableClientIdentity::new(identity))
-        } else {
-            None
-        };
+        let rendezvous_identity =
+            rendezvous_identity.map(workload_identity::ReloadableClientIdentity::new);
         Some((
             exchanger,
             workload_identity::ReloadableServerIdentity::new(identity),
