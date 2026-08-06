@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -20,4 +21,22 @@ test("Rust PR workflows retain validation with shared caches and no duplicate ga
 	assert.equal(metrics.cache_identity_partitions, 4);
 	assert.equal(metrics.duplicate_validation_commands, 0);
 	assert.ok(metrics.projected_rust_runner_seconds <= 1800);
+
+	const setupRust = readFileSync(
+		join(repoRoot, ".github/actions/setup-rust/action.yml"),
+		"utf8",
+	);
+	assert.match(
+		setupRust,
+		/workspace_links="\$base\/workspaces\/\$safe_cache_group"/u,
+	);
+	assert.match(
+		setupRust,
+		/workspaces: \$\{\{ steps\.rust-paths\.outputs\.cache-workspaces \}\}/u,
+	);
+	assert.match(setupRust, /target-path-v2-\$\{\{ inputs\.cache-group \}\}/u);
+	assert.doesNotMatch(
+		setupRust,
+		/workspaces: \$\{\{ inputs\.workspaces \}\}/u,
+	);
 });

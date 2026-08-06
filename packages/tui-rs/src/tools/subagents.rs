@@ -2805,6 +2805,25 @@ fn child_event_to_headless(event: &FromAgent, session_id: &str) -> Option<FromAg
             fatal: *fatal,
             error_type: None,
         }),
+        FromAgent::CodexNativeDecision { method, decision } => {
+            Some(FromAgentMessage::Status {
+                message: format!(
+                    "Codex approval receipt: method={method} decision={decision}"
+                ),
+            })
+        }
+        FromAgent::CodexTransportReceipt {
+            provider,
+            transport,
+            outcome,
+            transport_restarted,
+            auth_resumed,
+            cancellation_requested,
+        } => Some(FromAgentMessage::Status {
+            message: format!(
+                "Codex transport receipt: provider={provider} transport={transport} outcome={outcome} restarted={transport_restarted} auth_resumed={auth_resumed} cancellation_requested={cancellation_requested}"
+            ),
+        }),
         FromAgent::Status { message } => Some(FromAgentMessage::Status {
             message: message.clone(),
         }),

@@ -339,6 +339,16 @@ impl CodexAppServerClient {
         args: Option<Vec<String>>,
         request_timeout_ms: Option<u64>,
     ) -> Result<Self> {
+        Self::spawn_with_env(command, args, request_timeout_ms, &HashMap::new()).await
+    }
+
+    /// Spawn Codex app-server with explicit child-only environment overrides.
+    pub async fn spawn_with_env(
+        command: Option<String>,
+        args: Option<Vec<String>>,
+        request_timeout_ms: Option<u64>,
+        child_env: &HashMap<String, String>,
+    ) -> Result<Self> {
         let _ = request_timeout_ms;
         let spawn = resolve_spawn_command(command.as_deref(), args.as_deref());
         let label = match spawn.source {
@@ -352,6 +362,7 @@ impl CodexAppServerClient {
 
         let mut child = Command::new(&spawn.command)
             .args(&spawn.args)
+            .envs(child_env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1690,6 +1701,51 @@ mod tests {
         let initialized = mock.next_request().await.expect("initialized");
         assert_eq!(initialized["method"], "initialized");
         assert!(initialized.get("id").is_none());
+    }
+
+    #[tokio::test]
+    async fn spawn_with_env_scopes_codex_home_to_the_child() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script = temp.path().join("codex-env-server.js");
+        std::fs::write(
+            &script,
+            r#"
+const readline = require("readline");
+const lines = readline.createInterface({ input: process.stdin });
+lines.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    process.stdout.write(JSON.stringify({
+      id: message.id,
+      result: { protocolVersion: process.env.CODEX_HOME || "missing" }
+    }) + "\n");
+  }
+});
+"#,
+        )
+        .expect("write script");
+        let selected_home = temp.path().join("selected-codex-home");
+        let child_env = HashMap::from([(
+            "CODEX_HOME".to_owned(),
+            selected_home.to_string_lossy().into_owned(),
+        )]);
+        let client = CodexAppServerClient::spawn_with_env(
+            Some("node".to_owned()),
+            Some(vec![script.to_string_lossy().into_owned()]),
+            None,
+            &child_env,
+        )
+        .await
+        .expect("spawn fixture");
+        let initialized = client
+            .initialize(InitializeOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            initialized["protocolVersion"],
+            selected_home.to_string_lossy().as_ref()
+        );
+        client.close();
     }
 
     #[tokio::test]

@@ -218,6 +218,7 @@ pub mod cli_commands;
 pub mod codex_app_server;
 pub mod codex_auth;
 pub mod codex_cli;
+pub mod codex_identity;
 pub mod config_cli;
 pub mod context_cli;
 pub mod device_identity;

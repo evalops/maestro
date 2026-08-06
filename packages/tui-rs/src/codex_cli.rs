@@ -25,15 +25,50 @@ use crate::codex_app_server::{
 pub async fn run_codex(args: &[String]) -> Result<i32> {
     match args.first().map(String::as_str) {
         Some("login") => handle_login(&args[1..]).await,
-        Some("logout") => handle_logout().await,
-        Some("status") => handle_status().await,
-        Some("doctor") => handle_doctor().await,
+        Some("logout") => handle_logout(&args[1..]).await,
+        Some("status") => handle_status(&args[1..]).await,
+        Some("doctor") => handle_doctor(&args[1..]).await,
         _ => {
             eprintln!(
                 "Unknown codex subcommand. Try \"maestro codex login\", \"logout\", \"status\", or \"doctor\"."
             );
             Ok(1)
         }
+    }
+}
+
+fn requested_identity(params: &[String]) -> Result<crate::codex_identity::CodexIdentitySelection> {
+    let mut profile = None;
+    let mut index = 0;
+    while index < params.len() {
+        if params[index] == "--profile" {
+            let value = params
+                .get(index + 1)
+                .filter(|value| !value.trim().is_empty() && !value.starts_with('-'))
+                .ok_or_else(|| anyhow::anyhow!("--profile requires a profile name"))?;
+            if profile.replace(value.as_str()).is_some() {
+                bail!("--profile may only be specified once");
+            }
+            index += 2;
+        } else {
+            index += 1;
+        }
+    }
+    let workspace = std::env::current_dir()?;
+    crate::codex_identity::resolve_codex_identity(profile, &workspace)
+}
+
+async fn spawn_for_identity(
+    identity: &crate::codex_identity::CodexIdentitySelection,
+) -> Result<CodexAppServerClient> {
+    CodexAppServerClient::spawn_with_env(None, None, None, &identity.child_env()).await
+}
+
+fn login_command(identity: &crate::codex_identity::CodexIdentitySelection) -> String {
+    if identity.profile_name == "default" {
+        "maestro codex login".to_owned()
+    } else {
+        format!("maestro codex login --profile {}", identity.profile_name)
     }
 }
 
@@ -46,7 +81,8 @@ async fn handle_login(params: &[String]) -> Result<i32> {
         .any(|p| matches!(p.as_str(), "--force" | "--refresh"));
 
     println!("Maestro OpenAI Codex Login");
-    let client = CodexAppServerClient::spawn(None, None, None).await?;
+    let identity = requested_identity(params)?;
+    let client = spawn_for_identity(&identity).await?;
     let result = login_with_client(&client, device_flow, force_login).await;
     client.close();
     result
@@ -149,8 +185,9 @@ async fn login_with_client(
     Ok(0)
 }
 
-async fn handle_logout() -> Result<i32> {
-    let client = CodexAppServerClient::spawn(None, None, None).await?;
+async fn handle_logout(params: &[String]) -> Result<i32> {
+    let identity = requested_identity(params)?;
+    let client = spawn_for_identity(&identity).await?;
     let result = async {
         client.initialize(InitializeOptions::default()).await?;
         client.logout().await?;
@@ -162,14 +199,18 @@ async fn handle_logout() -> Result<i32> {
     result
 }
 
-async fn handle_status() -> Result<i32> {
-    let client = CodexAppServerClient::spawn(None, None, None).await?;
+async fn handle_status(params: &[String]) -> Result<i32> {
+    let identity = requested_identity(params)?;
+    let client = spawn_for_identity(&identity).await?;
     let result = async {
         client.initialize(InitializeOptions::default()).await?;
         let account = client.read_account(true).await?;
         if account.account.is_none() {
             println!("No ChatGPT sign-in for OpenAI Codex.");
-            println!("Run \"maestro codex login\" to sign in with ChatGPT.");
+            println!(
+                "Run \"{}\" to sign in with ChatGPT.",
+                login_command(&identity)
+            );
             return Ok(0);
         }
         println!("OpenAI Codex is signed in{}.", account_label(&account));
@@ -180,21 +221,41 @@ async fn handle_status() -> Result<i32> {
     result
 }
 
-async fn handle_doctor() -> Result<i32> {
+async fn handle_doctor(params: &[String]) -> Result<i32> {
     println!("Maestro Codex Doctor");
-    let client = CodexAppServerClient::spawn(None, None, None).await?;
+    let identity = requested_identity(params)?;
+    let client = spawn_for_identity(&identity).await?;
     let mut exit_code = 0;
     let result = async {
-        client
+        let initialized = client
             .initialize(InitializeOptions {
                 experimental_api: true,
                 ..Default::default()
             })
             .await?;
+        println!("Identity profile: {}", identity.profile_name);
+        println!("Provider: openai-codex");
+        println!("Transport: codex-app-server");
+        println!("Auth file: {}", identity.auth_path().display());
+        println!(
+            "Auth health: {}",
+            crate::codex_identity::inspect_codex_auth(&identity.auth_path()).state
+        );
+        println!(
+            "Protocol: {}",
+            initialized
+                .get("protocolVersion")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        );
+        println!("Connectivity: ready");
         let account = client.read_account(true).await?;
         if account.account.is_none() {
             println!("ChatGPT sign-in: missing");
-            println!("Run \"maestro codex login\" to sign in with ChatGPT.");
+            println!(
+                "Run \"{}\" to sign in with ChatGPT.",
+                login_command(&identity)
+            );
             exit_code = 1;
         } else {
             println!("ChatGPT sign-in: {}", account_doctor_label(&account));
@@ -262,20 +323,16 @@ fn account_doctor_label(state: &AccountReadResult) -> String {
     };
     match account.get("type").and_then(Value::as_str) {
         Some("chatgpt") => {
-            let email = account
-                .get("email")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
             let plan = account
                 .get("planType")
                 .and_then(Value::as_str)
                 .filter(|value| !value.is_empty())
-                .map(|plan| format!(", {plan}"))
+                .map(|plan| format!(" ({plan})"))
                 .unwrap_or_default();
-            format!("{email}{plan}")
+            format!("ChatGPT account{plan}")
         }
         Some("apiKey") => "API key".to_owned(),
-        Some(other) => other.to_owned(),
+        Some(_) => "configured account".to_owned(),
         None => "unknown".to_owned(),
     }
 }

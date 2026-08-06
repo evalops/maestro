@@ -9,6 +9,7 @@
 //! Codex app-server read this file directly; the environment export helper is
 //! retained only for direct-provider compatibility paths.
 
+use crate::ai::{ProviderProtocol, ProviderRegistry};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -32,18 +33,62 @@ impl CodexModelRoute {
     }
 }
 
+/// Native transport selected for a model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeTransportKind {
+    DirectProvider,
+    CodexAppServer,
+}
+
+/// Capabilities every native turn transport must provide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeTransportCapabilities {
+    pub streaming: bool,
+    pub cancellation: bool,
+    pub approvals: bool,
+    pub usage: bool,
+    pub typed_errors: bool,
+}
+
+/// Canonical transport metadata used by execution, diagnostics, and receipts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeTransportContract {
+    pub kind: NativeTransportKind,
+    pub provider_id: String,
+    pub model_id: String,
+    pub capabilities: NativeTransportCapabilities,
+}
+
+impl NativeTransportContract {
+    fn full(kind: NativeTransportKind, provider_id: String, model_id: String) -> Self {
+        Self {
+            kind,
+            provider_id,
+            model_id,
+            capabilities: NativeTransportCapabilities {
+                streaming: true,
+                cancellation: true,
+                approvals: true,
+                usage: true,
+                typed_errors: true,
+            },
+        }
+    }
+}
+
 /// Resolve the transport and provider-native model id once for every caller.
 ///
-/// Explicit provider namespaces win. Bare ids containing `codex` remain
-/// supported for compatibility, while unrelated namespaces such
-/// as `openai/codex-*` stay on the direct OpenAI transport.
+/// Only explicit provider metadata selects Codex app-server. Bare model ids
+/// remain on the direct provider route regardless of their spelling.
 #[must_use]
 pub fn resolve_model_route(model: &str) -> CodexModelRoute {
     let trimmed = model.trim();
     if let Some((namespace, model_id)) = trimmed.split_once('/') {
         let namespace = namespace.trim().to_ascii_lowercase();
         let model_id = model_id.trim();
-        if matches!(namespace.as_str(), "openai-codex" | "codex") && !model_id.is_empty() {
+        let uses_codex_protocol = ProviderRegistry::descriptor(&namespace)
+            .is_some_and(|provider| provider.protocol == ProviderProtocol::Codex);
+        if uses_codex_protocol && !model_id.is_empty() {
             return CodexModelRoute::AppServer {
                 model_id: model_id.to_owned(),
             };
@@ -51,13 +96,30 @@ pub fn resolve_model_route(model: &str) -> CodexModelRoute {
         return CodexModelRoute::DirectProvider;
     }
 
-    let lower = trimmed.to_ascii_lowercase();
-    if lower.contains("codex") {
-        CodexModelRoute::AppServer {
-            model_id: trimmed.to_owned(),
+    CodexModelRoute::DirectProvider
+}
+
+/// Resolve one complete transport contract for execution and diagnostics.
+#[must_use]
+pub fn resolve_transport_contract(model: &str) -> NativeTransportContract {
+    let trimmed = model.trim();
+    match resolve_model_route(trimmed) {
+        CodexModelRoute::AppServer { model_id } => NativeTransportContract::full(
+            NativeTransportKind::CodexAppServer,
+            "openai-codex".to_owned(),
+            model_id,
+        ),
+        CodexModelRoute::DirectProvider => {
+            let provider_id = ProviderRegistry::resolve(trimmed, &HashMap::new()).map_or_else(
+                |_| "unknown".to_owned(),
+                |resolved| resolved.provider.id.to_owned(),
+            );
+            NativeTransportContract::full(
+                NativeTransportKind::DirectProvider,
+                provider_id,
+                trimmed.to_owned(),
+            )
         }
-    } else {
-        CodexModelRoute::DirectProvider
     }
 }
 /// Fallback when no Codex auth and no `MAESTRO_MODEL` (OpenAI platform default).
@@ -501,8 +563,14 @@ mod tests {
                 model_id: "gpt-5.5".to_owned(),
             },
         );
-        assert!(resolve_model_route("gpt-5.1-codex-max").uses_app_server());
-        assert!(resolve_model_route("codex-mini-latest").uses_app_server());
+        assert_eq!(
+            resolve_model_route("gpt-5.1-codex-max"),
+            CodexModelRoute::DirectProvider
+        );
+        assert_eq!(
+            resolve_model_route("codex-mini-latest"),
+            CodexModelRoute::DirectProvider
+        );
         assert_eq!(
             resolve_model_route("openai/codex-gpt"),
             CodexModelRoute::DirectProvider
@@ -511,6 +579,26 @@ mod tests {
             resolve_model_route("anthropic/codex"),
             CodexModelRoute::DirectProvider
         );
+    }
+
+    #[test]
+    fn native_transport_contract_requires_parity_capabilities() {
+        let contracts = [
+            resolve_transport_contract("openai-codex/gpt-5.5"),
+            resolve_transport_contract("anthropic/claude-sonnet-4-6"),
+        ];
+        assert_eq!(contracts[0].kind, NativeTransportKind::CodexAppServer);
+        assert_eq!(contracts[0].provider_id, "openai-codex");
+        assert_eq!(contracts[0].model_id, "gpt-5.5");
+        assert_eq!(contracts[1].kind, NativeTransportKind::DirectProvider);
+        assert_eq!(contracts[1].provider_id, "anthropic");
+        for contract in contracts {
+            assert!(contract.capabilities.streaming);
+            assert!(contract.capabilities.cancellation);
+            assert!(contract.capabilities.approvals);
+            assert!(contract.capabilities.usage);
+            assert!(contract.capabilities.typed_errors);
+        }
     }
 
     #[test]
@@ -541,9 +629,9 @@ mod tests {
     }
 
     #[test]
-    fn model_uses_openai_codex_detects_prefix() {
+    fn model_uses_openai_codex_requires_explicit_provider() {
         assert!(model_uses_openai_codex("openai-codex/gpt-5.5"));
-        assert!(model_uses_openai_codex("gpt-5.1-codex-max"));
+        assert!(!model_uses_openai_codex("gpt-5.1-codex-max"));
         assert!(!model_uses_openai_codex("openai/gpt-5.5"));
         assert!(!model_uses_openai_codex("claude-sonnet-4-6"));
     }

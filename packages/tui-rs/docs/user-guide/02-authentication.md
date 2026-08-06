@@ -17,6 +17,27 @@ maestro codex login
 - Headless / remote machines: `maestro codex login --device-auth`
 
 Bare `maestro` defaults to `openai-codex/gpt-5.5` when Codex auth is available. For another Codex subscription model, select under the `openai-codex` provider (for example `openai-codex/gpt-5.5`) via `/model` or CLI flags.
+Named Codex identities can be bound to a workspace so Maestro never falls back
+to another account. Configure `~/.maestro/codex-auth-profiles.json`:
+
+```json
+{
+  "version": 1,
+  "profiles": {
+    "work": {
+      "codex_home": "/absolute/path/to/work-codex-home",
+      "workspace": "/absolute/path/to/workspace"
+    }
+  }
+}
+```
+
+Use `--profile work` with `login`, `logout`, `status`, or `doctor`, and
+set `MAESTRO_CODEX_PROFILE=work` for native runs. A missing profile or workspace
+mismatch fails closed. `maestro codex doctor --profile work` reports the selected
+identity, auth health, app-server protocol/connectivity, and dynamic-tool
+compatibility without printing tokens or the account email.
+
 
 ---
 
