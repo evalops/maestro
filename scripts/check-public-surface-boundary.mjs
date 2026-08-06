@@ -3,9 +3,10 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { isPublicDocumentationPath } from "./public-documentation-boundary.mjs";
 
 const requiredMirrorExcludes = [
-	"docs/internal/**",
+	"docs/**",
 	"evals/internal/**",
 	"scripts/internal/**",
 	"test/internal/**",
@@ -24,7 +25,14 @@ const forbiddenPublicPaths = [
 const forbiddenMirrorOrchestrationPaths = [
 	"scripts/check-public-mirror-drift.mjs",
 	"scripts/prepare-public-release-mirror.mjs",
+	".github/BUGBOT.md",
+	".github/PUBLIC_TREE_MIRROR_BOUNDARY.md",
+	".github/RELEASE_MIRROR_CONTRACT.md",
+	"AGENTS.md",
+	"CLAUDE.md",
 ];
+
+const forbiddenPublicPathPrefixes = [".agents/", ".context/"];
 
 const openAiProof = ["OpenAI", "Proof"];
 const forbiddenProofArtifactLabels = [
@@ -176,6 +184,20 @@ const enforcedForbiddenPaths = existsSync(resolve(mirrorExcludePath))
 for (const path of enforcedForbiddenPaths) {
 	if (existsSync(resolve(path))) {
 		errors.push(`${path} must not exist in the mirrored public source tree.`);
+	}
+}
+
+if (!existsSync(resolve(mirrorExcludePath))) {
+	for (const path of filesystemFiles()) {
+		if (forbiddenPublicPathPrefixes.some((prefix) => path.startsWith(prefix))) {
+			errors.push(`${path} must not exist in the mirrored public source tree.`);
+		}
+		if (!path.startsWith("docs/")) {
+			continue;
+		}
+		if (!isPublicDocumentationPath(path)) {
+			errors.push(`${path} is not approved public documentation.`);
+		}
 	}
 }
 

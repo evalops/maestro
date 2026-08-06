@@ -9,6 +9,7 @@
 //! Codex app-server read this file directly; the environment export helper is
 //! retained only for direct-provider compatibility paths.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -17,6 +18,48 @@ use serde::Deserialize;
 /// Default model when Codex ChatGPT auth is available and `MAESTRO_MODEL` is unset.
 pub const DEFAULT_CODEX_MODEL: &str = "openai-codex/gpt-5.5";
 
+/// Canonical route selected for a model id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodexModelRoute {
+    AppServer { model_id: String },
+    DirectProvider,
+}
+
+impl CodexModelRoute {
+    #[must_use]
+    pub fn uses_app_server(&self) -> bool {
+        matches!(self, Self::AppServer { .. })
+    }
+}
+
+/// Resolve the transport and provider-native model id once for every caller.
+///
+/// Explicit provider namespaces win. Bare ids containing `codex` remain
+/// supported for compatibility, while unrelated namespaces such
+/// as `openai/codex-*` stay on the direct OpenAI transport.
+#[must_use]
+pub fn resolve_model_route(model: &str) -> CodexModelRoute {
+    let trimmed = model.trim();
+    if let Some((namespace, model_id)) = trimmed.split_once('/') {
+        let namespace = namespace.trim().to_ascii_lowercase();
+        let model_id = model_id.trim();
+        if matches!(namespace.as_str(), "openai-codex" | "codex") && !model_id.is_empty() {
+            return CodexModelRoute::AppServer {
+                model_id: model_id.to_owned(),
+            };
+        }
+        return CodexModelRoute::DirectProvider;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("codex") {
+        CodexModelRoute::AppServer {
+            model_id: trimmed.to_owned(),
+        }
+    } else {
+        CodexModelRoute::DirectProvider
+    }
+}
 /// Fallback when no Codex auth and no `MAESTRO_MODEL` (OpenAI platform default).
 pub const DEFAULT_PLATFORM_MODEL: &str = "gpt-5.5";
 
@@ -228,13 +271,67 @@ pub fn apply_codex_auth_snapshot(
     result
 }
 
+/// Merge Codex credentials into a caller-owned environment map.
+///
+/// This is the direct-provider counterpart to the process-env compatibility
+/// helper above. It never reads or writes the process environment.
+#[must_use]
+pub fn merge_codex_auth_snapshot_into_env(
+    env: &mut HashMap<String, String>,
+    snapshot: Option<CodexAuthSnapshot>,
+    force: bool,
+) -> CodexAuthApplyResult {
+    let Some(snapshot) = snapshot else {
+        return CodexAuthApplyResult::default();
+    };
+    if !snapshot.has_usable_credential() {
+        return CodexAuthApplyResult::default();
+    }
+
+    let mut result = CodexAuthApplyResult {
+        auth_present: true,
+        preferred_default_model: snapshot.preferred_default_model(),
+        ..Default::default()
+    };
+
+    if let Some(api_key) = snapshot.api_key.as_deref() {
+        let present = env
+            .get("OPENAI_API_KEY")
+            .is_some_and(|value| !value.trim().is_empty());
+        if force || !present {
+            env.insert("OPENAI_API_KEY".to_owned(), api_key.to_owned());
+            result.injected_api_key = true;
+        }
+    }
+
+    if let Some(token) = snapshot.access_token.as_deref() {
+        let token_present = [
+            "OPENAI_CODEX_TOKEN",
+            "OPENAI_CODEX_ACCESS_TOKEN",
+            "CODEX_API_KEY",
+        ]
+        .iter()
+        .any(|name| env.get(*name).is_some_and(|value| !value.trim().is_empty()));
+        if force || !token_present {
+            env.insert("OPENAI_CODEX_TOKEN".to_owned(), token.to_owned());
+            result.injected_codex_token = true;
+        }
+        if let Some(account_id) = snapshot.account_id.as_deref() {
+            let account_present = env
+                .get("OPENAI_CODEX_ACCOUNT_ID")
+                .is_some_and(|value| !value.trim().is_empty());
+            if force || !account_present {
+                env.insert("OPENAI_CODEX_ACCOUNT_ID".to_owned(), account_id.to_owned());
+            }
+        }
+    }
+
+    result
+}
 /// True when the model id routes through the openai-codex provider.
 #[must_use]
 pub fn model_uses_openai_codex(model: &str) -> bool {
-    let m = model.trim().to_ascii_lowercase();
-    m.starts_with("openai-codex/")
-        || m.starts_with("codex/")
-        || m.contains("codex") && !m.starts_with("openai/")
+    resolve_model_route(model).uses_app_server()
 }
 
 /// Resolve the interactive/default model without exporting Codex credentials.
@@ -388,6 +485,59 @@ mod tests {
         unsafe {
             std::env::remove_var("OPENAI_CODEX_TOKEN");
         }
+    }
+
+    #[test]
+    fn model_route_normalizes_only_codex_namespaces() {
+        assert_eq!(
+            resolve_model_route(" OPENAI-CODEX/gpt-5.5 "),
+            CodexModelRoute::AppServer {
+                model_id: "gpt-5.5".to_owned(),
+            },
+        );
+        assert_eq!(
+            resolve_model_route("codex/gpt-5.5"),
+            CodexModelRoute::AppServer {
+                model_id: "gpt-5.5".to_owned(),
+            },
+        );
+        assert!(resolve_model_route("gpt-5.1-codex-max").uses_app_server());
+        assert!(resolve_model_route("codex-mini-latest").uses_app_server());
+        assert_eq!(
+            resolve_model_route("openai/codex-gpt"),
+            CodexModelRoute::DirectProvider
+        );
+        assert_eq!(
+            resolve_model_route("anthropic/codex"),
+            CodexModelRoute::DirectProvider
+        );
+    }
+
+    #[test]
+    fn merge_codex_auth_into_env_is_local_and_respects_existing_values() {
+        let mut env = HashMap::from([("OPENAI_API_KEY".to_owned(), "user-key".to_owned())]);
+        let snapshot = CodexAuthSnapshot {
+            auth_mode: Some("chatgpt".to_owned()),
+            access_token: Some("file-token".to_owned()),
+            account_id: Some("acct-1".to_owned()),
+            api_key: Some("file-key".to_owned()),
+        };
+        let result = merge_codex_auth_snapshot_into_env(&mut env, Some(snapshot), false);
+        assert!(result.auth_present);
+        assert!(result.injected_codex_token);
+        assert!(!result.injected_api_key);
+        assert_eq!(
+            env.get("OPENAI_API_KEY").map(String::as_str),
+            Some("user-key")
+        );
+        assert_eq!(
+            env.get("OPENAI_CODEX_TOKEN").map(String::as_str),
+            Some("file-token")
+        );
+        assert_eq!(
+            env.get("OPENAI_CODEX_ACCOUNT_ID").map(String::as_str),
+            Some("acct-1")
+        );
     }
 
     #[test]

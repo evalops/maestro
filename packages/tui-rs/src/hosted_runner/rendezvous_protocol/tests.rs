@@ -4,10 +4,11 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::{
-    CommandAuthority, HostToRunnerFrame, RendezvousAccepted, RendezvousIdentity,
-    RendezvousLatencyMilestones, RendezvousLifecycle, RendezvousLifecycleError, RendezvousMode,
-    RendezvousNonce, RendezvousRequest, RendezvousRequestDisposition, RevocationReason,
-    RunnerToHostFrame, MAX_IN_FLIGHT_REQUESTS, RENDEZVOUS_PROTOCOL_VERSION,
+    CommandAuthority, HostToRunnerFrame, RendezvousAccepted, RendezvousAck, RendezvousCommandError,
+    RendezvousCommandOutcome, RendezvousExecution, RendezvousIdentity, RendezvousLatencyMilestones,
+    RendezvousLifecycle, RendezvousLifecycleError, RendezvousMode, RendezvousNonce,
+    RendezvousRequest, RendezvousRequestDisposition, RevocationReason, RunnerToHostFrame,
+    MAX_IN_FLIGHT_REQUESTS, RENDEZVOUS_PROTOCOL_VERSION,
 };
 
 fn nonce() -> RendezvousNonce {
@@ -293,4 +294,56 @@ fn latency_sample_pairs_activation_first_command_and_first_frame() {
             .unwrap(),
         sample
     );
+}
+
+#[test]
+fn acknowledgement_outcome_is_additive_and_old_ack_remains_valid() {
+    let activation_id = Uuid::new_v4();
+    let old_ack: RunnerToHostFrame = serde_json::from_value(json!({
+        "type": "ack",
+        "activation_id": activation_id,
+        "sequence": 4,
+        "idempotency_key": "command-4"
+    }))
+    .unwrap();
+    let RunnerToHostFrame::Ack(old_ack) = old_ack else {
+        panic!("expected Ack");
+    };
+    assert!(old_ack.result.is_none());
+    assert!(old_ack.error.is_none());
+    assert!(old_ack.has_valid_outcome());
+
+    let ack = RendezvousAck {
+        activation_id,
+        sequence: 4,
+        idempotency_key: "command-4".to_string(),
+        result: Some(RendezvousCommandOutcome {
+            execution: RendezvousExecution::RuntimeHandled,
+            message: "accepted".to_string(),
+            idempotency_finalized: true,
+        }),
+        error: None,
+    };
+    assert!(ack.has_valid_outcome());
+    assert_eq!(
+        serde_json::to_value(RunnerToHostFrame::Ack(ack)).unwrap()["result"],
+        json!({
+            "execution": "runtime_handled",
+            "message": "accepted",
+            "idempotency_finalized": true
+        })
+    );
+
+    let invalid = RendezvousAck {
+        activation_id,
+        sequence: 4,
+        idempotency_key: "command-4".to_string(),
+        result: None,
+        error: Some(RendezvousCommandError {
+            code: "execution_failed".to_string(),
+            message: "failed".to_string(),
+            retryable: false,
+        }),
+    };
+    assert!(invalid.has_valid_outcome());
 }

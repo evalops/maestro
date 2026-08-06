@@ -92,7 +92,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -239,20 +239,38 @@ fn policy_model_id(model: &str) -> String {
 fn resolve_native_client(
     model: &str,
     client_override: Option<UnifiedClient>,
-) -> Result<(Option<UnifiedClient>, String)> {
+) -> Result<(
+    Option<UnifiedClient>,
+    String,
+    crate::codex_auth::CodexModelRoute,
+)> {
+    let route = crate::codex_auth::resolve_model_route(model);
     if let Some(client) = client_override {
         let provider_name = client.provider_name().to_string();
-        return Ok((Some(client), provider_name));
+        return Ok((
+            Some(client),
+            provider_name,
+            crate::codex_auth::CodexModelRoute::DirectProvider,
+        ));
     }
 
-    if super::codex_app_server_turns::model_should_use_app_server_turns(model) {
-        return Ok((None, "openai-codex".to_owned()));
+    if route.uses_app_server() {
+        return Ok((None, "openai-codex".to_owned(), route));
     }
 
-    let _ = crate::codex_auth::apply_codex_auth_to_process_env();
-    let client = UnifiedClient::from_model(model)?;
+    let mut env = std::env::vars().collect::<HashMap<String, String>>();
+    let _ = crate::codex_auth::merge_codex_auth_snapshot_into_env(
+        &mut env,
+        crate::codex_auth::read_codex_auth(),
+        false,
+    );
+    let client = UnifiedClient::from_model_with_env(model, &env)?;
     let provider_name = client.provider_name().to_string();
-    Ok((Some(client), provider_name))
+    Ok((
+        Some(client),
+        provider_name,
+        crate::codex_auth::CodexModelRoute::DirectProvider,
+    ))
 }
 
 fn is_tool_result_only_user_message(message: &Message) -> bool {
@@ -1127,7 +1145,8 @@ impl NativeAgent {
             return Err(anyhow::anyhow!(reason));
         }
 
-        let (client, provider_name) = resolve_native_client(&config.model, client_override)?;
+        let (client, provider_name, model_route) =
+            resolve_native_client(&config.model, client_override)?;
 
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (tool_response_tx, tool_response_rx) = mpsc::unbounded_channel();
@@ -1192,8 +1211,10 @@ impl NativeAgent {
         // Create the background runner
         let runner = NativeAgentRunner {
             client,
+            model_route,
             codex_session: None,
             codex_history_restore_prefix_len: None,
+            codex_active_turn_id: None,
             codex_current_prompt_started: false,
             config: config.clone(),
             messages: Arc::new(Vec::new()),
@@ -1620,6 +1641,8 @@ where
 }
 
 const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const CODEX_SIDE_QUESTION_TIMEOUT: Duration = Duration::from_mins(2);
+const CODEX_SIDE_QUESTION_MAX_CONTEXT_TOKENS: u64 = 20_000;
 
 async fn run_request_with_cancellation<F>(
     request: F,
@@ -1789,6 +1812,7 @@ struct NativeAgentRunner {
     /// `turn/start` boundary. Pre-turn failures may be retried, but a terminal
     /// GiveUp must not persist an undelivered prompt as provider history.
     codex_current_prompt_started: bool,
+    model_route: crate::codex_auth::CodexModelRoute,
 
     /// Configuration
     ///
@@ -1807,6 +1831,7 @@ struct NativeAgentRunner {
     /// Map of tool name to tool definition. Loaded from the tool registry
     /// at startup and remains constant.
     tools: HashMap<String, ToolDefinition>,
+    codex_active_turn_id: Option<String>,
 
     /// Cached model-facing tool schemas. The registry is immutable for the
     /// lifetime of a runner; only goal visibility and the IDE-tools flag can
@@ -2025,6 +2050,97 @@ fn codex_native_operation_chars(params: Option<&Value>) -> u64 {
         .map_or(0, |json| json.chars().count() as u64)
 }
 
+fn codex_completion_usage_value(value: &Value) -> Option<&Value> {
+    match value {
+        Value::Object(map) => {
+            if let Some(usage) = map.get("usage").filter(|value| value.is_object()) {
+                return Some(usage);
+            }
+            map.values().find_map(codex_completion_usage_value)
+        }
+        Value::Array(values) => values.iter().find_map(codex_completion_usage_value),
+        _ => None,
+    }
+}
+
+fn usage_u64(value: &Value, keys: &[&str]) -> Option<u64> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_u64))
+}
+
+fn codex_token_usage_from_completion(value: &Value) -> Option<TokenUsage> {
+    let usage = codex_completion_usage_value(value)?;
+    let input_tokens = usage_u64(
+        usage,
+        &[
+            "input_tokens",
+            "inputTokens",
+            "prompt_tokens",
+            "promptTokens",
+            "input",
+        ],
+    );
+    let output_tokens = usage_u64(
+        usage,
+        &[
+            "output_tokens",
+            "outputTokens",
+            "completion_tokens",
+            "completionTokens",
+            "output",
+        ],
+    );
+    let cache_read_tokens = usage_u64(
+        usage,
+        &[
+            "cache_read_tokens",
+            "cacheReadTokens",
+            "cached_tokens",
+            "cachedTokens",
+            "cache_read",
+        ],
+    )
+    .or_else(|| {
+        [
+            "input_tokens_details",
+            "inputTokensDetails",
+            "prompt_tokens_details",
+        ]
+        .iter()
+        .find_map(|key| {
+            usage
+                .get(*key)
+                .and_then(|details| usage_u64(details, &["cached_tokens", "cachedTokens"]))
+        })
+    });
+    let cache_write_tokens = usage_u64(
+        usage,
+        &[
+            "cache_write_tokens",
+            "cacheWriteTokens",
+            "cache_creation_input_tokens",
+            "cacheCreationInputTokens",
+            "cache_write",
+        ],
+    );
+    if input_tokens.is_none()
+        && output_tokens.is_none()
+        && cache_read_tokens.is_none()
+        && cache_write_tokens.is_none()
+    {
+        return None;
+    }
+    Some(TokenUsage {
+        input_tokens: input_tokens.unwrap_or(0),
+        output_tokens: output_tokens.unwrap_or(0),
+        cache_read_tokens: cache_read_tokens.unwrap_or(0),
+        cache_write_tokens: cache_write_tokens.unwrap_or(0),
+        cost: usage_u64(usage, &["cost_micros"])
+            .map(|micros| micros as f64 / 1_000_000.0)
+            .or_else(|| usage.get("cost").and_then(Value::as_f64))
+            .or_else(|| usage.get("total_cost_usd").and_then(Value::as_f64)),
+    })
+}
 /// The Codex `sandbox` value matching a Maestro sandbox policy.
 ///
 /// Codex accepts `read-only`, `workspace-write`, and `danger-full-access` on
@@ -2466,6 +2582,56 @@ fn codex_native_firewall_arg_sets(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CodexNativeFirewallDecision {
+    Allow,
+    RequireApproval { reason: String },
+    Block { reason: String },
+}
+
+fn codex_native_firewall_decision(
+    cwd: &str,
+    method: &str,
+    params: Option<&Value>,
+    workflow_state: Option<&crate::safety::WorkflowStateSnapshot>,
+    known_item_paths: Option<&CodexFileChangeItemCache>,
+) -> CodexNativeFirewallDecision {
+    let arg_sets = codex_native_firewall_arg_sets(method, params, known_item_paths);
+    if arg_sets.is_empty() {
+        return CodexNativeFirewallDecision::Block {
+            reason: match codex_native_policy_tool(method) {
+                "codex_file_change" => "Codex file-change approval carried no recoverable paths for the action firewall".to_owned(),
+                _ => "Codex command approval carried no recoverable command for the action firewall".to_owned(),
+            },
+        };
+    }
+    let firewall = ActionFirewall::new(cwd);
+    let mut approval_reason = None;
+    for (tool_name, args) in arg_sets {
+        match firewall.check_tool_with_context(FirewallContext {
+            tool_name,
+            args: &args,
+            workflow_state,
+            annotations: None,
+        }) {
+            FirewallVerdict::Block { reason } => {
+                return CodexNativeFirewallDecision::Block { reason };
+            }
+            FirewallVerdict::RequireApproval { reason } => {
+                approval_reason.get_or_insert(reason);
+            }
+            FirewallVerdict::Allow => {}
+        }
+    }
+    approval_reason.map_or(CodexNativeFirewallDecision::Allow, |reason| {
+        CodexNativeFirewallDecision::RequireApproval { reason }
+    })
+}
+#[must_use]
+fn codex_native_approval_requires_user(mode: ApprovalMode) -> bool {
+    mode != ApprovalMode::Yolo
+}
+
 /// Run the action firewall on a Codex-native mutation.
 ///
 /// Returns `Some(reason)` when any equivalent Maestro tool call would be
@@ -2473,6 +2639,7 @@ fn codex_native_firewall_arg_sets(
 /// path, so a RequireApproval verdict is also a denial. Every mutated path
 /// is checked so a safe first path cannot launder a later out-of-workspace
 /// path through a multi-file request.
+#[cfg(test)]
 fn codex_native_firewall_denial(
     cwd: &str,
     method: &str,
@@ -2639,8 +2806,31 @@ impl NativeAgentRunner {
         self.model_tool_cache = None;
     }
 
+    /// Interrupt the active Codex turn after the outer cancellation future is dropped.
+    ///
+    /// The app-server owns the provider request, so dropping Maestro's wait future
+    /// is not sufficient to stop the remote turn or release its thread.
+    async fn interrupt_active_codex_turn(&mut self) {
+        let Some(turn_id) = self.codex_active_turn_id.take() else {
+            return;
+        };
+        let Some(session) = self.codex_session.as_ref() else {
+            return;
+        };
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            session.interrupt_turn(&turn_id, Some(1_500)),
+        )
+        .await;
+        let message = match result {
+            Ok(Ok(())) => format!("Codex turn interrupted ({turn_id})"),
+            Ok(Err(error)) => format!("Codex turn interrupt failed: {error:#}"),
+            Err(_) => "Codex turn interrupt timed out".to_owned(),
+        };
+        let _ = self.event_tx.send(FromAgent::Status { message });
+    }
     fn compact_codex_history_for_boundary(&mut self) {
-        if !super::codex_app_server_turns::model_should_use_app_server_turns(&self.config.model) {
+        if !self.model_route.uses_app_server() {
             return;
         }
 
@@ -3606,10 +3796,7 @@ impl NativeAgentRunner {
                         role: Role::User,
                         content,
                     });
-                    let current_prompt_uses_codex =
-                        super::codex_app_server_turns::model_should_use_app_server_turns(
-                            &self.config.model,
-                        );
+                    let current_prompt_uses_codex = self.model_route.uses_app_server();
                     if current_prompt_uses_codex {
                         self.codex_current_prompt_started = false;
                     }
@@ -3681,7 +3868,11 @@ impl NativeAgentRunner {
                                             error_kind,
                                             super::retry::ErrorKind::AuthFailure
                                         ) {
-                                            " — run `maestro codex login --force` or set OPENAI_API_KEY"
+                                            if current_prompt_uses_codex {
+                                                " — run `maestro codex status`; if needed, run `maestro codex login --force`"
+                                            } else {
+                                                " — run `maestro codex login --force` or set OPENAI_API_KEY"
+                                            }
                                         } else {
                                             ""
                                         };
@@ -3714,8 +3905,11 @@ impl NativeAgentRunner {
                     }
 
                     if request_cancelled {
-                        // The cancellation token is tripped synchronously, before the
-                        // queued Cancel command is observed. Drain the command channel
+                        // The cancellation token is tripped before the queued Cancel
+                        // command is observed. Interrupt the provider turn before
+                        // draining commands so the server cannot keep generating.
+                        self.interrupt_active_codex_turn().await;
+                        // Drain the command channel
                         // while this request still owns it so any prompts that preceded
                         // Cancel are stashed instead of being started as a new request
                         // ahead of that cancellation.
@@ -3800,10 +3994,12 @@ impl NativeAgentRunner {
                     // Drop any live Codex thread when the model changes so the
                     // next openai-codex prompt opens a fresh app-server session.
                     self.codex_session = None;
+                    self.codex_active_turn_id = None;
 
                     match resolve_native_client(&model, None) {
-                        Ok((client, provider)) => {
+                        Ok((client, provider, model_route)) => {
                             self.client = client;
+                            self.model_route = model_route;
                             self.config.model = model.clone();
                             self.hooks.set_model(&model);
                             let _ = self
@@ -4138,10 +4334,15 @@ impl NativeAgentRunner {
         let shutdown_token = self.shutdown_token.clone();
         let credential_vault = self.credential_vault.clone();
         let result = await_side_question_or_shutdown(&shutdown_token, async {
-            if super::codex_app_server_turns::model_should_use_app_server_turns(&self.config.model)
-            {
+            if self.model_route.uses_app_server() {
                 return self
-                    .run_codex_side_question(&question, &side_id, &mut answer)
+                    .run_codex_side_question(
+                        &question,
+                        &side_id,
+                        &mut answer,
+                        &mut usage,
+                        &mut saw_usage,
+                    )
                     .await;
             }
 
@@ -4215,10 +4416,21 @@ impl NativeAgentRunner {
         question: &str,
         side_id: &str,
         answer: &mut String,
+        usage: &mut TokenUsage,
+        saw_usage: &mut bool,
     ) -> Result<()> {
         use super::codex_app_server_turns::TurnWaitEvent;
 
-        let restored_messages = resolve_provider_history(&self.messages, &self.credential_vault)?;
+        let resolved_messages = resolve_provider_history(&self.messages, &self.credential_vault)?;
+        let side_question_compactor =
+            super::compaction::ContextCompactor::new(super::compaction::CompactionConfig {
+                max_context_tokens: CODEX_SIDE_QUESTION_MAX_CONTEXT_TOKENS,
+                keep_recent_tokens: CODEX_SIDE_QUESTION_MAX_CONTEXT_TOKENS / 2,
+                ..Default::default()
+            });
+        let restored_messages = side_question_compactor
+            .compact_with_tokens(&resolved_messages)
+            .messages;
         let instructions = {
             let system = match (&self.config.system_prompt, &self.prompt_context) {
                 (Some(base), Some(extra)) if !extra.trim().is_empty() => {
@@ -4243,25 +4455,44 @@ impl NativeAgentRunner {
         .context("start Codex app-server side-question session")?;
         let turn_id = session.start_text_turn(question.to_owned(), None).await?;
 
-        loop {
-            match session
-                .wait_server_request_or_turn_complete(&turn_id, Some(250))
-                .await?
-            {
-                TurnWaitEvent::Pending => {}
-                TurnWaitEvent::ServerRequest(request) => {
-                    request.reject("Codex side questions do not execute tools");
-                }
-                TurnWaitEvent::Completed(result) => {
-                    if !result.assistant_text.is_empty() {
-                        answer.push_str(&result.assistant_text);
-                        let _ = self.event_tx.send(FromAgent::SideQuestionChunk {
-                            side_id: side_id.to_owned(),
-                            content: result.assistant_text,
-                        });
+        let turn_result = tokio::time::timeout(CODEX_SIDE_QUESTION_TIMEOUT, async {
+            loop {
+                match session
+                    .wait_server_request_or_turn_complete(&turn_id, Some(250))
+                    .await?
+                {
+                    TurnWaitEvent::Pending => {}
+                    TurnWaitEvent::ServerRequest(request) => {
+                        request.reject("Codex side questions do not execute tools");
                     }
-                    return Ok(());
+                    TurnWaitEvent::Completed(result) => {
+                        if !result.assistant_text.is_empty() {
+                            answer.push_str(&result.assistant_text);
+                            let _ = self.event_tx.send(FromAgent::SideQuestionChunk {
+                                side_id: side_id.to_owned(),
+                                content: result.assistant_text,
+                            });
+                        }
+                        if let Some(completion_usage) =
+                            codex_token_usage_from_completion(&result.raw_completion)
+                        {
+                            *usage = completion_usage;
+                            *saw_usage = true;
+                        }
+                        return Ok(());
+                    }
                 }
+            }
+        })
+        .await;
+        match turn_result {
+            Ok(result) => result,
+            Err(_) => {
+                let _ = session.interrupt_turn(&turn_id, Some(1_500)).await;
+                Err(anyhow::anyhow!(
+                    "Codex side question timed out after {} seconds",
+                    CODEX_SIDE_QUESTION_TIMEOUT.as_secs(),
+                ))
             }
         }
     }
@@ -4350,11 +4581,11 @@ impl NativeAgentRunner {
     /// Drive one user turn (and any tool calls) entirely through Codex
     /// app-server so ChatGPT OAuth refresh is never handled as a Platform API key.
     ///
-    /// **Partial surface (tracked):**
+    /// **Native parity:**
     /// - Dynamic tools run via Maestro `ToolExecutor` + firewall (same as HTTP).
-    /// - Codex-native `commandExecution` / `fileChange` approvals auto-accept
-    ///   only in Yolo; Selective/Safe decline them (status line only). Codex
-    ///   shell via those RPCs is effectively off unless Yolo.
+    /// - Codex-native `commandExecution` / `fileChange` approvals pass through
+    ///   the same hooks, firewall, and keyed approval channel. Yolo auto-accepts
+    ///   after hard checks; Selective/Safe wait for the user's ToolResponse.
     async fn run_loop_via_codex_app_server(&mut self) -> Result<()> {
         use super::codex_app_server_turns::TurnWaitEvent;
 
@@ -4397,6 +4628,7 @@ impl NativeAgentRunner {
             session.start_text_turn(user_text, None).await?
         };
         self.codex_current_prompt_started = true;
+        self.codex_active_turn_id = Some(turn_id.clone());
 
         // Accumulate the current provider-history segment. Tool boundaries
         // consume that segment's authoritative item before flushing it, so
@@ -4426,6 +4658,7 @@ impl NativeAgentRunner {
             match event {
                 TurnWaitEvent::Pending => continue,
                 TurnWaitEvent::Completed(result) => {
+                    self.codex_active_turn_id = None;
                     let (completion_delta, full_text) = Self::reconcile_codex_completion_text(
                         &streamed_assistant,
                         &result.assistant_text,
@@ -4450,10 +4683,14 @@ impl NativeAgentRunner {
                             content: MessageContent::Text(final_text),
                         });
                     }
-                    let _ = self.event_tx.send(FromAgent::ResponseEnd {
-                        response_id,
-                        usage: None,
-                    });
+                    let usage = codex_token_usage_from_completion(&result.raw_completion);
+                    if let Some(usage) = usage.as_ref() {
+                        self.output_tokens_spent =
+                            self.output_tokens_spent.saturating_add(usage.output_tokens);
+                    }
+                    let _ = self
+                        .event_tx
+                        .send(FromAgent::ResponseEnd { response_id, usage });
                     return Ok(());
                 }
                 TurnWaitEvent::ServerRequest(request) => {
@@ -4891,9 +5128,9 @@ impl NativeAgentRunner {
             | "item/fileChange/requestApproval"
             | "applyPatchApproval"
             | "execCommandApproval" => {
-                // Partial: only Yolo auto-accepts Codex-native exec approvals.
-                // Selective/Safe decline; Maestro dynamic tools still use the
-                // normal ToolCall approval path above.
+                // Native Codex command/file approvals use the same keyed ToolCall
+                // approval channel as dynamic tools. Yolo accepts after hard policy
+                // checks; Selective and Safe wait for the caller's decision.
                 //
                 // A read-only sandbox policy overrides the approval mode. Every
                 // subagent runs in Yolo, because a delegated child cannot
@@ -4973,35 +5210,81 @@ impl NativeAgentRunner {
                 let denies_mutation = config_denies_mutation(self.config.sandbox_policy.as_ref());
                 let profile_denial =
                     codex_native_denied_by_active_tools(&request.method, &self.active_tool_names);
-                let firewall_denial = codex_native_firewall_denial(
+                let firewall_decision = codex_native_firewall_decision(
                     &self.config.cwd,
                     &request.method,
                     request.params.as_ref(),
                     Some(&self.workflow_state.snapshot()),
                     Some(&self.codex_file_change_paths_by_item),
                 );
-                let accept = matches!(self.config.approval_mode, ApprovalMode::Yolo)
-                    && !denies_mutation
-                    && profile_denial.is_none()
-                    && hook_denial.is_none()
-                    && firewall_denial.is_none();
-                if !accept {
-                    let reason = if let Some(reason) = &hook_denial {
-                        format!("blocked by a policy hook: {reason}")
-                    } else if let Some(reason) = &firewall_denial {
-                        format!("blocked by the action firewall: {reason}")
-                    } else if let Some(reason) = profile_denial {
-                        reason.to_string()
-                    } else if denies_mutation {
-                        "the sandbox policy is read-only".to_string()
-                    } else {
-                        "approval mode is not Yolo; use Maestro tools or switch to Yolo".to_string()
-                    };
+                let firewall_denial = match &firewall_decision {
+                    CodexNativeFirewallDecision::Block { reason } => Some(reason.clone()),
+                    _ => None,
+                };
+                let denial_reason = if let Some(reason) = hook_denial.as_deref() {
+                    Some(format!("blocked by a policy hook: {reason}"))
+                } else if let Some(reason) = firewall_denial.as_deref() {
+                    Some(format!("blocked by the action firewall: {reason}"))
+                } else if let Some(reason) = profile_denial {
+                    Some(reason.to_string())
+                } else if denies_mutation {
+                    Some("the sandbox policy is read-only".to_string())
+                } else {
+                    None
+                };
+                if let Some(reason) = denial_reason {
                     let _ = self.event_tx.send(FromAgent::Status {
                         message: format!("Declined Codex-native {} ({reason})", request.method),
                     });
+                    request.respond(approval_decision(false));
+                    return Ok(());
                 }
-                request.respond(approval_decision(accept));
+                if !codex_native_approval_requires_user(self.config.approval_mode) {
+                    request.respond(approval_decision(true));
+                    return Ok(());
+                }
+                let _ = self.event_tx.send(FromAgent::ToolCall {
+                    call_id: policy_call_id.clone(),
+                    tool: policy_tool.to_owned(),
+                    args: policy_args,
+                    requires_approval: true,
+                    approval_inline_env: None,
+                });
+                let approval_cancel = self.shutdown_token.child_token();
+                self.set_active_approval_cancel_token(Some(approval_cancel.clone()));
+                let response = wait_for_codex_tool_response(
+                    &policy_call_id,
+                    &mut self.tool_response_rx,
+                    &mut self.pending_tool_approvals,
+                    &self.cancelled_tool_responses,
+                    &approval_cancel,
+                )
+                .await;
+                self.set_active_approval_cancel_token(None);
+                let (approved, _, _) = match response {
+                    ToolResponseWait::Response(response) => response,
+                    ToolResponseWait::Cancelled => {
+                        let cancelled_ids = HashSet::from([policy_call_id.clone()]);
+                        discard_cancelled_tool_responses(
+                            &cancelled_ids,
+                            &mut self.tool_response_rx,
+                            &mut self.pending_tool_approvals,
+                            &mut self.cancelled_tool_responses,
+                        );
+                        request.respond(approval_decision(false));
+                        return Ok(());
+                    }
+                    ToolResponseWait::Closed => {
+                        request.respond(approval_decision(false));
+                        return Ok(());
+                    }
+                };
+                if !approved {
+                    let _ = self.event_tx.send(FromAgent::Status {
+                        message: format!("Declined Codex-native {} (user denied)", request.method),
+                    });
+                }
+                request.respond(approval_decision(approved));
                 Ok(())
             }
             "item/permissions/requestApproval" => {
@@ -5017,7 +5300,7 @@ impl NativeAgentRunner {
 
     /// Run the agent loop until complete or interrupted
     async fn run_loop(&mut self) -> Result<()> {
-        if super::codex_app_server_turns::model_should_use_app_server_turns(&self.config.model) {
+        if self.model_route.uses_app_server() {
             return self.run_loop_via_codex_app_server().await;
         }
 
@@ -7651,10 +7934,36 @@ mod tests {
 
     #[test]
     fn codex_models_resolve_to_app_server_without_http_credentials() {
-        let (client, provider) =
+        let (client, provider, route) =
             resolve_native_client("openai-codex/gpt-5.5", None).expect("Codex transport");
         assert!(client.is_none());
+
         assert_eq!(provider, "openai-codex");
+        assert!(route.uses_app_server());
+    }
+
+    #[test]
+    fn codex_completion_usage_maps_nested_app_server_payload() {
+        let usage = codex_token_usage_from_completion(&json!({
+            "event": {
+                "turn": {
+                    "usage": {
+                        "inputTokens": 123,
+                        "outputTokens": 45,
+                        "inputTokensDetails": {"cachedTokens": 7},
+                        "cacheWriteTokens": 2,
+                        "cost": 0.125
+                    }
+                }
+            }
+        }))
+        .expect("nested Codex usage");
+
+        assert_eq!(usage.input_tokens, 123);
+        assert_eq!(usage.output_tokens, 45);
+        assert_eq!(usage.cache_read_tokens, 7);
+        assert_eq!(usage.cache_write_tokens, 2);
+        assert_eq!(usage.cost, Some(0.125));
     }
 
     #[test]
@@ -10835,6 +11144,13 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             "bash",
             &args,
         ));
+    }
+
+    #[test]
+    fn codex_native_approval_modes_match_the_interactive_policy() {
+        assert!(!codex_native_approval_requires_user(ApprovalMode::Yolo));
+        assert!(codex_native_approval_requires_user(ApprovalMode::Selective));
+        assert!(codex_native_approval_requires_user(ApprovalMode::Safe));
     }
 
     #[test]

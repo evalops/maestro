@@ -463,19 +463,15 @@ pub enum TurnWaitEvent {
 
 /// True when the configured model should use Codex app-server turns.
 pub fn model_should_use_app_server_turns(model: &str) -> bool {
-    crate::codex_auth::model_uses_openai_codex(model)
+    crate::codex_auth::resolve_model_route(model).uses_app_server()
 }
 
-/// Strip a possible `openai-codex/` prefix for thread/start model ids.
+/// Return the canonical model id sent to `thread/start`.
 pub fn codex_thread_model_id(model: &str) -> String {
-    let trimmed = model.trim();
-    if let Some(rest) = trimmed.strip_prefix("openai-codex/") {
-        return rest.trim().to_owned();
+    match crate::codex_auth::resolve_model_route(model) {
+        crate::codex_auth::CodexModelRoute::AppServer { model_id } => model_id,
+        crate::codex_auth::CodexModelRoute::DirectProvider => model.trim().to_owned(),
     }
-    if let Some(rest) = trimmed.strip_prefix("codex/") {
-        return rest.trim().to_owned();
-    }
-    trimmed.to_owned()
 }
 
 /// Map native tool definitions into app-server dynamic tool specs.
@@ -584,7 +580,10 @@ mod tests {
     #[test]
     fn openai_codex_models_select_app_server_turns() {
         assert!(model_should_use_app_server_turns("openai-codex/gpt-5.5"));
+        assert!(model_should_use_app_server_turns("OPENAI-CODEX/gpt-5.5"));
+        assert!(model_should_use_app_server_turns("gpt-5.1-codex-max"));
         assert!(!model_should_use_app_server_turns("openai/gpt-5.5"));
+        assert!(!model_should_use_app_server_turns("openai/codex-gpt"));
         assert!(!model_should_use_app_server_turns(
             "anthropic/claude-sonnet-4"
         ));
@@ -593,7 +592,33 @@ mod tests {
     #[test]
     fn strips_provider_prefix_for_thread_model() {
         assert_eq!(codex_thread_model_id("openai-codex/gpt-5.5"), "gpt-5.5");
+        assert_eq!(codex_thread_model_id("OPENAI-CODEX/gpt-5.5"), "gpt-5.5");
+        assert_eq!(codex_thread_model_id("codex/gpt-5.5"), "gpt-5.5");
         assert_eq!(codex_thread_model_id("gpt-5.5"), "gpt-5.5");
+        assert_eq!(
+            codex_thread_model_id("openai/codex-gpt"),
+            "openai/codex-gpt"
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupt_forwards_the_active_turn_identity() {
+        let (client, mock) = CodexAppServerClient::mock();
+        let session = CodexAppServerTurnSession::from_started_thread(
+            client,
+            "thr-1".to_owned(),
+            "gpt-5.5".to_owned(),
+            &[],
+        )
+        .await
+        .expect("session");
+        let task = tokio::spawn(async move { session.interrupt_turn("turn-9", Some(1_000)).await });
+        let request = mock.next_request().await.expect("turn/interrupt");
+        assert_eq!(request["method"], "turn/interrupt");
+        assert_eq!(request["params"]["threadId"], "thr-1");
+        assert_eq!(request["params"]["turnId"], "turn-9");
+        mock.respond(request["id"].as_u64().unwrap(), json!({}));
+        task.await.unwrap().expect("interrupt response");
     }
 
     #[test]

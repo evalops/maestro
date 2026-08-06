@@ -373,11 +373,17 @@ impl UnifiedClient {
     /// Create client based on model name
     pub fn from_model(model: &str) -> Result<Self> {
         let env = std::env::vars().collect();
+        Self::from_model_with_env(model, &env)
+    }
+
+    /// Create a client from an explicit environment map without mutating
+    /// process-global state.
+    pub fn from_model_with_env(model: &str, env: &HashMap<String, String>) -> Result<Self> {
         // Bedrock credentials are resolved by the AWS SDK's default chain at
         // request time. Unlike API-key providers, that chain may be backed by
         // a profile file without any credential environment variable. Keep
         // the registry's strict `require` contract for every other provider.
-        let resolved = ProviderRegistry::resolve(model, &env)?;
+        let resolved = ProviderRegistry::resolve(model, env)?;
         if resolved.provider.protocol != ProviderProtocol::Bedrock && resolved.credential.is_none()
         {
             anyhow::bail!(
@@ -386,7 +392,7 @@ impl UnifiedClient {
                 resolved.provider.auth_env.join(", ")
             );
         }
-        Self::from_resolved_provider(&resolved, &env)
+        Self::from_resolved_provider(&resolved, env)
     }
 
     fn from_resolved_provider(
@@ -1408,6 +1414,14 @@ mod tests {
         assert!(matches!(client, UnifiedClient::VertexAi(_)));
         assert_eq!(client.provider(), AiProvider::VertexAi);
         assert_eq!(client.provider_name(), "vertex-ai");
+    }
+
+    #[test]
+    fn from_model_with_explicit_env_constructs_without_process_injection() {
+        let env = HashMap::from([("OPENAI_API_KEY".to_string(), "test-key".to_string())]);
+        let client = UnifiedClient::from_model_with_env("openai/gpt-4o", &env)
+            .expect("explicit environment should resolve OpenAI");
+        assert_eq!(client.provider(), AiProvider::OpenAI);
     }
 
     #[test]
