@@ -69,18 +69,29 @@ zip = { version = "8", default-features = false, features = ["aes-crypto", "defl
 tree-sitter = "0.25"
 tree-sitter-bash = "0.25.1"
 
-# Keep local release builds quick enough for iteration while still enabling
-# cross-crate optimization for the distributed binary.
+# Keep the canonical release profile deliberately optimized for shipped
+# artifacts. PR validation uses fast-validation below so its compile path does
+# not pay the distribution optimizer's serial codegen cost.
 [profile.release]
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
 panic = "abort"
 
-# Distribution profile for shipped binaries (adopted from grok-build).
-# Deliberately separate from `release`: local `--release` builds stay stripped
-# and quick, while CI ships `release-dist` artifacts. Thin LTO and
-# codegen-units = 1 match `release`'s whole-program optimization; debug = 1
+# Fast native validation profile. This retains release-mode code generation,
+# stripping, and panic behavior for a representative smoke binary while
+# disabling the expensive whole-program optimization pass and allowing Cargo
+# to parallelize code generation across units.
+[profile.fast-validation]
+inherits = "release"
+lto = false
+codegen-units = 16
+
+# Optional distribution profile for workflows that need debug sidecars
+# (adopted from grok-build). Active release and container paths intentionally
+# use `release`, which remains the optimized stripped shipping profile.
+# Thin LTO and codegen-units = 1 match `release`'s whole-program optimization;
+# debug = 1
 # emits line-table DWARF and strip = false keeps symbols so CI can extract
 # debug sidecars (.debug on Linux, .dSYM on macOS) before stripping
 # post-build. Alpha/beta and stable promotion can reuse the same

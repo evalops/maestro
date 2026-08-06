@@ -23,9 +23,14 @@ function currentPlatform() {
 
 const inputIndex = process.argv.indexOf("--input-dir");
 const inputDir = inputIndex >= 0 ? resolve(process.argv[inputIndex + 1]) : null;
+const profileIndex = process.argv.indexOf("--profile");
+const profile = profileIndex >= 0 ? process.argv[profileIndex + 1] : "release";
+if (!profile || !/^[A-Za-z0-9_-]+$/.test(profile)) {
+	throw new Error(`Invalid Cargo profile: ${profile ?? "(missing)"}`);
+}
 const localBinary = resolve(
 	"target",
-	"release",
+	profile,
 	process.platform === "win32" ? "maestro.exe" : "maestro",
 );
 const binaries = [];
@@ -43,7 +48,7 @@ if (binaries.length === 0) {
 	throw new Error(
 		inputDir
 			? `No maestro-<platform>-<arch> binaries found in ${inputDir}`
-			: `Native Maestro binary is missing: ${localBinary}`,
+			: `Native Maestro binary for profile ${profile} is missing: ${localBinary}`,
 	);
 }
 
