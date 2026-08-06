@@ -205,6 +205,7 @@ impl HeadlessState {
                 // marked `requires_approval`; preserve the prior (mode-unaware)
                 // per-tool heuristic here exactly so that decision is unchanged.
                 approval_mode: crate::state::ApprovalMode::Selective,
+                context_window: None,
                 // The headless server has no sandbox-policy resolution of
                 // its own today (unlike the interactive TUI's
                 // `config::resolve_interactive_sandbox_policy` or print
@@ -1550,6 +1551,7 @@ async fn handle_agent_event(
             tokens_before,
             auto,
             custom_instructions,
+            continuation,
             timestamp,
         } => {
             emit_transcript(
@@ -1561,6 +1563,7 @@ async fn handle_agent_event(
                     tokens_before,
                     auto,
                     custom_instructions,
+                    continuation,
                     timestamp,
                 },
             )?;

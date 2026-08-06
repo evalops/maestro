@@ -506,12 +506,121 @@ pub(crate) async fn handle_extended_endpoint(
             200,
             &serde_json::json!({ "success": true, "request": body }),
         ),
+        ("GET", "/api/workflow") => workflow_dashboard_response(&state.config.cwd),
+        ("POST", "/api/workflow") => workflow_mutation_response(&state.config.cwd, &body),
         ("GET", path) if is_generic_get(path) => generic_get(path, &head, &api),
         ("POST", path) if is_generic_post(path) => {
             api.values.insert(path.to_string(), body.clone());
             json_response(200, &serde_json::json!({ "success": true, "result": body }))
         }
         _ => json_response(404, &serde_json::json!({ "error": "Not found" })),
+    }
+}
+
+fn workflow_dashboard_response(cwd: &Path) -> Vec<u8> {
+    let store = maestro_tui::workflow_runtime::WorkflowStore::for_workspace(cwd);
+    match (store.list(), store.dashboard()) {
+        (Ok(items), Ok(groups)) => json_response(
+            200,
+            &serde_json::json!({
+                "runtime": "rust-workflow-ledger",
+                "items": items,
+                "groups": groups,
+            }),
+        ),
+        (Err(error), _) | (_, Err(error)) => {
+            json_response(500, &serde_json::json!({ "error": error }))
+        }
+    }
+}
+
+fn workflow_mutation_response(cwd: &Path, body: &Value) -> Vec<u8> {
+    use maestro_tui::workflow_runtime::{WorkflowRun, WorkflowSpec, WorkflowStore};
+
+    let action = body
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("start");
+    let store = WorkflowStore::for_workspace(cwd);
+    let result = match action {
+        "start" => body
+            .get("spec")
+            .cloned()
+            .ok_or_else(|| "workflow start requires spec".to_string())
+            .and_then(|value| {
+                serde_json::from_value::<WorkflowSpec>(value)
+                    .map_err(|error| format!("invalid workflow spec: {error}"))
+            })
+            .and_then(|spec| {
+                WorkflowRun::start(
+                    spec,
+                    body.get("args")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({})),
+                )
+            }),
+        "pause" | "resume" | "stop" | "record_usage" => {
+            let id = body
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("workflow {action} requires id"));
+            id.and_then(|id| store.get(id)).and_then(|mut run| {
+                let mutation = match action {
+                    "pause" => run.pause(),
+                    "resume" => {
+                        let expected_spec_sha = body
+                            .get("expectedSpecSha")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                "workflow resume requires expectedSpecSha".to_string()
+                            })?;
+                        let args = body.get("args").ok_or_else(|| {
+                            "workflow resume requires the original args".to_string()
+                        })?;
+                        run.resume(expected_spec_sha, args)
+                    }
+                    "stop" => run.stop(
+                        body.get("reason")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    ),
+                    "record_usage" => {
+                        let new_agents = body
+                            .get("newAgents")
+                            .and_then(Value::as_u64)
+                            .and_then(|value| u32::try_from(value).ok())
+                            .unwrap_or(0);
+                        let active_agents = body
+                            .get("activeAgents")
+                            .and_then(Value::as_u64)
+                            .and_then(|value| u32::try_from(value).ok())
+                            .unwrap_or(run.active_agents);
+                        let tokens = body.get("tokens").and_then(Value::as_u64).unwrap_or(0);
+                        run.record_usage(new_agents, active_agents, tokens)
+                    }
+                    _ => unreachable!(),
+                };
+                if let Err(error) = mutation {
+                    if run.status == maestro_tui::workflow_runtime::WorkflowRunStatus::Failed {
+                        store.append(&run)?;
+                    }
+                    return Err(error);
+                }
+                Ok(run)
+            })
+        }
+        other => Err(format!("unknown workflow action: {other}")),
+    };
+
+    match result {
+        Ok(run) => match store.append(&run) {
+            Ok(()) => json_response(200, &serde_json::json!({ "success": true, "run": run })),
+            Err(error) => json_response(500, &serde_json::json!({ "error": error })),
+        },
+        Err(error) => json_response(
+            409,
+            &serde_json::json!({ "success": false, "error": error }),
+        ),
     }
 }
 
@@ -789,7 +898,6 @@ fn is_generic_get(path: &str) -> bool {
             | "/api/queue"
             | "/api/quota"
             | "/api/ui"
-            | "/api/workflow"
             | "/api/zen"
     )
 }
@@ -814,7 +922,6 @@ fn is_generic_post(path: &str) -> bool {
             | "/api/queue"
             | "/api/quota"
             | "/api/ui"
-            | "/api/workflow"
             | "/api/zen"
             | "/api/admin/cleanup"
             | "/api/admin/warm-caches"

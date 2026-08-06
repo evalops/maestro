@@ -981,6 +981,47 @@ fn token_usage_total() {
 }
 
 #[test]
+fn compaction_continuation_round_trips_in_session_jsonl_shape() {
+    use crate::agent::compaction::{ContinuationCommand, ContinuationRecord};
+
+    let entry = CompactionEntry {
+        id: Some("compact-1".to_string()),
+        parent_id: None,
+        timestamp: "2026-08-05T00:00:00Z".to_string(),
+        summary: "summary".to_string(),
+        first_kept_entry_id: None,
+        first_kept_entry_index: Some(2),
+        tokens_before: 42,
+        auto: true,
+        custom_instructions: None,
+        continuation: Some(ContinuationRecord {
+            objective: Some("Ship the workflow".to_string()),
+            constraints: vec!["Do not deploy".to_string()],
+            decisions: vec![],
+            open_questions: vec!["Which region?".to_string()],
+            evidence: vec![],
+            commands: vec![ContinuationCommand {
+                tool_call_id: "call-1".to_string(),
+                command: "cargo test".to_string(),
+                outcome: Some("ok".to_string()),
+                failed: false,
+            }],
+            next_actions: vec!["Open a draft PR".to_string()],
+            verification: vec![],
+            source_hash: "abc123".to_string(),
+        }),
+    };
+
+    let value = serde_json::to_value(&entry).unwrap();
+    assert_eq!(value["continuation"]["source_hash"], "abc123");
+    let decoded: CompactionEntry = serde_json::from_value(value).unwrap();
+    assert_eq!(
+        decoded.continuation.unwrap().commands[0].command,
+        "cargo test"
+    );
+}
+
+#[test]
 fn all_entry_variants_roundtrip_against_golden_jsonl() {
     // Golden-file contract: every SessionEntry variant, in its canonical
     // on-disk JSONL form, must parse and re-serialize to the identical value.

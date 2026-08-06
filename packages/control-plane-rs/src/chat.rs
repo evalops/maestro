@@ -890,6 +890,7 @@ pub(crate) async fn handle_chat_endpoint(
                 tokens_before,
                 auto,
                 custom_instructions,
+                continuation,
                 timestamp,
             } => {
                 send_sse(
@@ -901,6 +902,7 @@ pub(crate) async fn handle_chat_endpoint(
                         "tokensBefore": tokens_before,
                         "auto": auto,
                         "customInstructions": custom_instructions,
+                        "continuation": continuation,
                         "timestamp": timestamp
                     }),
                 )
@@ -1541,6 +1543,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                 tokens_before,
                 auto,
                 custom_instructions,
+                continuation,
                 timestamp,
             } => {
                 send_ws_json(
@@ -1552,6 +1555,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                         "tokensBefore": tokens_before,
                         "auto": auto,
                         "customInstructions": custom_instructions,
+                        "continuation": continuation,
                         "timestamp": timestamp
                     }),
                 )

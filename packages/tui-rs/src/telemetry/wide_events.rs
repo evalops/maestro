@@ -232,6 +232,74 @@ pub struct CanonicalTurnEvent {
     pub sample_reason: SampleReason,
 }
 
+/// Closed, content-free projection allowed to cross the external telemetry
+/// boundary. The richer canonical event remains local; tool names, call IDs,
+/// MCP server names, error text, prompts, paths, and arguments are excluded.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalTurnEvent {
+    pub schema_version: u16,
+    pub event_type: String,
+    pub timestamp: String,
+    pub turn_number: u32,
+    pub model_provider: String,
+    pub total_duration_ms: u64,
+    pub llm_duration_ms: u64,
+    pub tool_duration_ms: u64,
+    pub queue_wait_ms: Option<u64>,
+    pub tool_count: u32,
+    pub tool_success_count: u32,
+    pub tool_failure_count: u32,
+    pub tokens: TokenUsage,
+    pub cost_usd: f64,
+    pub sandbox_mode: SandboxMode,
+    pub approval_mode: ApprovalMode,
+    pub mcp_server_count: u32,
+    pub context_source_count: u32,
+    pub message_count: u32,
+    pub input_size_bytes: u64,
+    pub output_size_bytes: u64,
+    pub status: TurnStatus,
+    pub error_category: Option<String>,
+    pub abort_reason: Option<AbortReason>,
+    pub sampled: bool,
+    pub sample_reason: SampleReason,
+}
+
+impl CanonicalTurnEvent {
+    /// Produce the only event shape approved for an external exporter.
+    #[must_use]
+    pub fn external_projection(&self) -> ExternalTurnEvent {
+        ExternalTurnEvent {
+            schema_version: 1,
+            event_type: self.event_type.clone(),
+            timestamp: self.timestamp.clone(),
+            turn_number: self.turn_number,
+            model_provider: self.model.provider.clone(),
+            total_duration_ms: self.total_duration_ms,
+            llm_duration_ms: self.llm_duration_ms,
+            tool_duration_ms: self.tool_duration_ms,
+            queue_wait_ms: self.queue_wait_ms,
+            tool_count: self.tool_count,
+            tool_success_count: self.tool_success_count,
+            tool_failure_count: self.tool_failure_count,
+            tokens: self.tokens.clone(),
+            cost_usd: self.cost_usd,
+            sandbox_mode: self.sandbox_mode,
+            approval_mode: self.approval_mode,
+            mcp_server_count: self.mcp_server_count,
+            context_source_count: self.context_source_count,
+            message_count: self.message_count,
+            input_size_bytes: self.input_size_bytes,
+            output_size_bytes: self.output_size_bytes,
+            status: self.status,
+            error_category: self.error_category.clone(),
+            abort_reason: self.abort_reason,
+            sampled: self.sampled,
+            sample_reason: self.sample_reason,
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tail Sampling Configuration
 // ─────────────────────────────────────────────────────────────────────────────
@@ -699,5 +767,48 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"type\":\"canonical-turn\""));
         assert!(json.contains("\"session_id\":\"session-1\""));
+    }
+
+    #[test]
+    fn external_projection_excludes_content_and_identifiers() {
+        let mut collector = TurnCollector::new("secret-session", 1, TailSamplingConfig::default());
+        collector
+            .set_model(ModelInfo {
+                id: "private-model-deployment".to_string(),
+                provider: "openai".to_string(),
+                thinking_level: ThinkingLevel::Medium,
+            })
+            .set_mcp_servers(vec!["customer-filesystem".to_string()]);
+        collector.record_tool_start("bash /Users/alice/private", "secret-call-id", Some(12));
+        collector.record_tool_end(
+            "secret-call-id",
+            false,
+            Some(5),
+            Some("api_key=sk-secret".to_string()),
+        );
+        let event = collector.complete(
+            TurnStatus::Error,
+            TokenUsage::default(),
+            0.0,
+            Some(ErrorDetails {
+                category: Some("provider".to_string()),
+                message: Some("failed reading /Users/alice/private sk-secret".to_string()),
+            }),
+            None,
+        );
+
+        let json = serde_json::to_string(&event.external_projection()).unwrap();
+        for secret in [
+            "secret-session",
+            "private-model-deployment",
+            "customer-filesystem",
+            "secret-call-id",
+            "/Users/alice/private",
+            "sk-secret",
+        ] {
+            assert!(!json.contains(secret), "external event leaked {secret}");
+        }
+        assert!(json.contains("\"schema_version\":1"));
+        assert!(json.contains("\"tool_failure_count\":1"));
     }
 }

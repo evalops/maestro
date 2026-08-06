@@ -627,6 +627,21 @@ fn export_command_exists() {
 }
 
 #[test]
+fn workflow_dashboard_command_lists_durable_runs() {
+    let registry = build_command_registry();
+    let workspace = tempfile::tempdir().unwrap();
+    let result = registry
+        .execute(
+            "/workflows",
+            &workspace.path().to_string_lossy(),
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(matches!(result, CommandOutput::Message(message) if message == "No workflow runs."));
+}
+
+#[test]
 fn export_command_formats() {
     let registry = build_command_registry();
 

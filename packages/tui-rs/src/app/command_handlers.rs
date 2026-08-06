@@ -478,6 +478,7 @@ impl App {
                     tokens_before,
                     false,
                     instructions.clone(),
+                    None,
                 );
 
                 self.state.status = Some(format!("Compacted {to_summarize} messages into summary"));
@@ -651,9 +652,15 @@ impl App {
     /// category, measured with the same estimator the compactor uses.
     pub(super) fn show_context_breakdown(&mut self) {
         let system_prompt = self.build_system_prompt();
-        let breakdown = super::context_breakdown::ContextBreakdown::compute(
+        let model = if self.current_model.is_empty() {
+            None
+        } else {
+            Some(self.current_model.as_str())
+        };
+        let breakdown = super::context_breakdown::ContextBreakdown::compute_for_model(
             &system_prompt,
             &self.state.messages,
+            model,
         );
         // Prefer the configured window (matches the footer), falling back to
         // the model catalog's `ModelCapabilities.context_tokens`.
@@ -661,11 +668,6 @@ impl App {
             crate::model_catalog::find_model(&self.current_model)
                 .map(|info| u64::from(info.capabilities.context_tokens))
         });
-        let model = if self.current_model.is_empty() {
-            None
-        } else {
-            Some(self.current_model.as_str())
-        };
         let report = breakdown.render(model, context_window);
         self.state.add_system_message(report);
     }
@@ -1171,12 +1173,6 @@ impl App {
     }
 
     pub(super) fn fork_session(&mut self) {
-        if self.state.busy {
-            self.state.status = Some(
-                "Wait for the active response to finish before forking the session.".to_string(),
-            );
-            return;
-        }
         use crate::session::BranchPoint;
 
         let fork_index = self.state.messages.len().saturating_sub(1);
@@ -1187,52 +1183,34 @@ impl App {
             .map(|m| m.id.clone())
             .unwrap_or_else(|| "start".to_string());
         let branch = BranchPoint::new(fork_id, fork_index).with_description("Forked via /fork");
-
-        // Detach writer so the next message starts a new session file, keeping transcript.
-        // A fork must not retain credentials introduced by its parent session.
-        self.credential_vault.clear();
-        self.plan_review_comments.clear();
-        let parent_session = self.state.session_id.clone();
-        self.session_manager.reset_session();
-        self.state.session_id = None;
-        // A fork becomes its own session on the next message. Children the
-        // parent session started belong to the parent, not to the fork.
-        self.adopt_session_context(None, "fork");
-        crate::plan_mode::set_active_session_id(None);
-        self.session_started_at = SystemTime::now();
-        self.session_resume_failed = false;
-
-        let msg = if let Some(parent) = parent_session {
-            format!(
-                "Forked from session {parent} at message {} (branch {}). Transcript kept; new session starts on next message.",
-                branch.fork_index + 1,
-                &branch.id[..8.min(branch.id.len())]
-            )
-        } else {
-            format!(
-                "Forked conversation at message {} (branch {}). Transcript kept; new session starts on next message.",
-                branch.fork_index + 1,
-                &branch.id[..8.min(branch.id.len())]
-            )
-        };
-        // Kimi-style: forked sessions do not inherit the prior goal.
-        match self.clear_goal_for_fork() {
-            Ok(Some(goal_id)) => {
-                self.goal_auto_continue_armed = false;
+        if let Err(error) = self.ensure_session_started() {
+            self.state.error = Some(format!("Failed to start session before fork: {error}"));
+            return;
+        }
+        match self.session_manager.fork_session_snapshot() {
+            Ok((fork_session_id, path)) => {
+                let activity = if self.state.busy {
+                    " The parent remains active and its current response continues."
+                } else {
+                    " The parent remains selected."
+                };
+                self.state.status = Some(format!(
+                    "Fork {} created without switching sessions.",
+                    &fork_session_id[..8.min(fork_session_id.len())]
+                ));
                 self.state.add_system_message(format!(
-                    "Goal {goal_id} was cleared for this fork. Create a new goal with `/goal create` if needed; do not continue the parent session's goal."
+                    "Forked at message {} (branch {}) into session {} at {}.{}",
+                    branch.fork_index + 1,
+                    &branch.id[..8.min(branch.id.len())],
+                    fork_session_id,
+                    path.display(),
+                    activity,
                 ));
             }
-            Ok(None) => {}
-            Err(e) => {
-                self.state
-                    .error
-                    .replace(format!("Failed to clear goal on fork: {e}"));
+            Err(error) => {
+                self.state.error = Some(format!("Failed to fork session: {error}"));
             }
         }
-
-        self.state.status = Some("Session forked.".to_string());
-        self.state.add_system_message(msg);
     }
 
     pub(super) fn rewind_turns(&mut self, turns: usize, dry_run: bool) {

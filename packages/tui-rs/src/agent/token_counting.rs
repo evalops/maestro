@@ -22,6 +22,64 @@ pub enum TokenEncoding {
     Cl100k,
 }
 
+/// Provenance attached to a token count shown to users or used for budgeting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CountConfidence {
+    /// Counted by a tokenizer bundled for the selected model family.
+    Measured,
+    /// Estimated with the shared bytes-per-token heuristic.
+    Estimated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TokenCount {
+    pub tokens: u64,
+    pub confidence: CountConfidence,
+}
+
+/// Inputs whose stability determines whether a provider prompt cache can be reused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheIdentity<'a> {
+    pub model: &'a str,
+    pub system_prompt_sha256: &'a str,
+    pub thinking: &'a str,
+    pub skills_sha256: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheReuse {
+    Reusable,
+    ModelChanged,
+    SystemPromptChanged,
+    ThinkingChanged,
+    SkillsChanged,
+    LikelyExpired,
+}
+
+/// Explain cache reuse before resuming a session. Content is compared only by
+/// caller-provided hashes, so prompts and skill text never enter telemetry.
+#[must_use]
+pub fn cache_reuse(
+    previous: &CacheIdentity<'_>,
+    current: &CacheIdentity<'_>,
+    idle_seconds: u64,
+    expiry_hint_seconds: u64,
+) -> CacheReuse {
+    if previous.model != current.model {
+        CacheReuse::ModelChanged
+    } else if previous.system_prompt_sha256 != current.system_prompt_sha256 {
+        CacheReuse::SystemPromptChanged
+    } else if previous.thinking != current.thinking {
+        CacheReuse::ThinkingChanged
+    } else if previous.skills_sha256 != current.skills_sha256 {
+        CacheReuse::SkillsChanged
+    } else if idle_seconds >= expiry_hint_seconds {
+        CacheReuse::LikelyExpired
+    } else {
+        CacheReuse::Reusable
+    }
+}
+
 fn o200k() -> Option<&'static CoreBPE> {
     static BPE: OnceLock<Option<CoreBPE>> = OnceLock::new();
     BPE.get_or_init(|| tiktoken_rs::o200k_base().ok()).as_ref()
@@ -58,16 +116,31 @@ pub fn encoding_for_model(model: &str) -> Option<TokenEncoding> {
 /// BPE data could not be loaded).
 #[must_use]
 pub fn count_tokens(text: &str, model: Option<&str>) -> u64 {
+    count_tokens_with_metadata(text, model).tokens
+}
+
+/// Count tokens and retain whether the value was measured or estimated.
+#[must_use]
+pub fn count_tokens_with_metadata(text: &str, model: Option<&str>) -> TokenCount {
     let Some(encoding) = model.and_then(encoding_for_model) else {
-        return token_estimation::estimate_tokens(text);
+        return TokenCount {
+            tokens: token_estimation::estimate_tokens(text),
+            confidence: CountConfidence::Estimated,
+        };
     };
     let bpe = match encoding {
         TokenEncoding::O200k => o200k(),
         TokenEncoding::Cl100k => cl100k(),
     };
     match bpe {
-        Some(bpe) => bpe.encode_ordinary(text).len() as u64,
-        None => token_estimation::estimate_tokens(text),
+        Some(bpe) => TokenCount {
+            tokens: bpe.encode_ordinary(text).len() as u64,
+            confidence: CountConfidence::Measured,
+        },
+        None => TokenCount {
+            tokens: token_estimation::estimate_tokens(text),
+            confidence: CountConfidence::Estimated,
+        },
     }
 }
 
@@ -112,6 +185,40 @@ mod tests {
         assert_eq!(
             count_tokens(text, None),
             token_estimation::estimate_tokens(text)
+        );
+    }
+
+    #[test]
+    fn count_reports_measurement_provenance() {
+        assert_eq!(
+            count_tokens_with_metadata("hello", Some("gpt-5")).confidence,
+            CountConfidence::Measured
+        );
+        assert_eq!(
+            count_tokens_with_metadata("hello", Some("claude-sonnet-4-5")).confidence,
+            CountConfidence::Estimated
+        );
+    }
+
+    #[test]
+    fn cache_reuse_explains_invalidation_and_expiry() {
+        let original = CacheIdentity {
+            model: "gpt-5",
+            system_prompt_sha256: "prompt-a",
+            thinking: "medium",
+            skills_sha256: "skills-a",
+        };
+        let changed_model = CacheIdentity {
+            model: "gpt-5.1",
+            ..original.clone()
+        };
+        assert_eq!(
+            cache_reuse(&original, &changed_model, 1, 300),
+            CacheReuse::ModelChanged
+        );
+        assert_eq!(
+            cache_reuse(&original, &original, 301, 300),
+            CacheReuse::LikelyExpired
         );
     }
 }

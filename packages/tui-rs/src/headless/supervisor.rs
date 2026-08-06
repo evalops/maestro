@@ -1779,6 +1779,7 @@ pub fn agent_event_to_message(event: &AgentEvent) -> FromAgentMessage {
             tokens_before,
             auto,
             custom_instructions,
+            continuation,
             timestamp,
         } => FromAgentMessage::Compaction {
             summary: summary.clone(),
@@ -1786,6 +1787,7 @@ pub fn agent_event_to_message(event: &AgentEvent) -> FromAgentMessage {
             tokens_before: *tokens_before,
             auto: *auto,
             custom_instructions: custom_instructions.clone(),
+            continuation: continuation.clone(),
             timestamp: timestamp.clone(),
         },
     }

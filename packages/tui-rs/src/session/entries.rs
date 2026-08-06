@@ -182,7 +182,7 @@
 //! ```
 
 use super::wire_format_generated::canonical_stop_reason;
-use crate::agent::ExecutionReceipt;
+use crate::agent::{compaction::ContinuationRecord, ExecutionReceipt};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
@@ -984,6 +984,9 @@ pub struct CompactionEntry {
         skip_serializing_if = "Option::is_none"
     )]
     pub custom_instructions: Option<String>,
+    /// Typed continuation state generated from the compacted message slice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<ContinuationRecord>,
 }
 
 /// Summary of a previously explored branch.

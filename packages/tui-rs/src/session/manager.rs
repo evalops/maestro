@@ -708,6 +708,24 @@ impl SessionManager {
             .map(|writer| writer.path().to_path_buf())
     }
 
+    /// Snapshot the active session into a new fork without switching writers.
+    ///
+    /// The parent remains active and may continue receiving agent events. The
+    /// returned fork is a durable, independently resumable session at the exact
+    /// flushed JSONL boundary observed by this call.
+    pub fn fork_session_snapshot(
+        &mut self,
+    ) -> Result<(String, PathBuf), super::writer::SessionWriteError> {
+        let writer = self.writer.as_mut().ok_or_else(|| {
+            super::writer::SessionWriteError::SerializeError(
+                "cannot fork before the session has started".to_string(),
+            )
+        })?;
+        writer.flush()?;
+        let forked = super::fork_session_file(writer.path())?;
+        Ok((forked.id, forked.path))
+    }
+
     /// Save an attachment extraction entry for the active session.
     pub fn save_attachment_extract(
         &mut self,
@@ -1598,6 +1616,54 @@ mod tests {
             manager.current_session_path().as_deref(),
             Some(path.as_path())
         );
+    }
+
+    #[test]
+    fn fork_snapshot_keeps_parent_selected_and_creates_new_session() {
+        let dir = TempDir::new().unwrap();
+        let mut manager = SessionManager::with_sessions_dir("/tmp", dir.path());
+        manager
+            .start_session(SessionHeader {
+                version: Some(2),
+                id: "parent-session".to_string(),
+                timestamp: "2024-01-15T10:30:00Z".to_string(),
+                cwd: "/tmp".to_string(),
+                model: "test-model".to_string(),
+                subject: None,
+                model_metadata: None,
+                thinking_level: Default::default(),
+                system_prompt: None,
+                prompt_metadata: None,
+                prompt_context_manifest: None,
+                unified_context_manifest: None,
+                tools: vec![],
+                branched_from: None,
+                parent_session: None,
+            })
+            .expect("start parent session");
+        let parent_path = manager.current_session_path().expect("parent path");
+
+        let (fork_id, fork_path) = manager.fork_session_snapshot().expect("fork snapshot");
+
+        assert_eq!(manager.current_session_id(), Some("parent-session"));
+        assert_eq!(
+            manager.current_session_path().as_deref(),
+            Some(parent_path.as_path())
+        );
+        assert_ne!(fork_id, "parent-session");
+        let (fork_header, _, _) = SessionReader::read_header(&fork_path).expect("fork header");
+        assert_eq!(fork_header.id, fork_id);
+        assert_eq!(
+            fork_header.parent_session.as_deref(),
+            Some("parent-session")
+        );
+        assert_eq!(
+            fork_header.branched_from.as_deref(),
+            Some(parent_path.to_string_lossy().as_ref())
+        );
+        let (parent_header, _, _) =
+            SessionReader::read_header(&parent_path).expect("parent header");
+        assert_eq!(parent_header.id, "parent-session");
     }
 
     #[test]

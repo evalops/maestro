@@ -34,6 +34,12 @@ pub struct Question {
 #[derive(Debug, Deserialize)]
 pub struct AskUserArgs {
     pub questions: Vec<Question>,
+    #[serde(default)]
+    pub background: bool,
+    #[serde(default, alias = "deadlineSeconds")]
+    pub deadline_seconds: Option<u64>,
+    #[serde(default, alias = "nonBlockingReason")]
+    pub non_blocking_reason: Option<String>,
 }
 
 fn format_questions(questions: &[Question]) -> String {
@@ -71,6 +77,30 @@ pub fn ask_user(args: serde_json::Value) -> ToolResult {
 
     if parsed.questions.is_empty() {
         return ToolResult::failure("ask_user requires at least one question".to_string());
+    }
+
+    if parsed.background {
+        let decision = crate::pending_decisions::PendingDecision::new(
+            serde_json::to_value(&parsed.questions).unwrap_or_default(),
+            parsed.non_blocking_reason,
+            parsed.deadline_seconds,
+        );
+        let store = crate::pending_decisions::PendingDecisionStore::default_store();
+        if let Err(error) = store.append(&decision) {
+            return ToolResult::failure(format!("persist background question: {error}"));
+        }
+        return ToolResult::success(format!(
+            "Background decision {} is pending. Continue only work that does not depend on its answer; the answer will arrive as a steering message.",
+            decision.id
+        ))
+        .with_details(serde_json::json!({
+            "task_id": decision.id,
+            "status": "pending",
+            "background": true,
+            "blocks_run": false,
+            "deadline_at": decision.deadline_at,
+            "questions": decision.questions,
+        }));
     }
 
     let formatted = format_questions(&parsed.questions);
@@ -178,6 +208,31 @@ mod tests {
         let args: AskUserArgs = serde_json::from_value(json).unwrap();
         assert_eq!(args.questions.len(), 1);
         assert_eq!(args.questions[0].question, "Q1?");
+        assert!(!args.background);
+    }
+
+    #[test]
+    fn background_question_returns_durable_task_id_without_blocking() {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("MAESTRO_HOME", home.path());
+        let result = ask_user(serde_json::json!({
+            "questions": [{
+                "question": "Ship now?",
+                "header": "Ship",
+                "options": [{"label": "Yes", "description": "Proceed"}]
+            }],
+            "background": true,
+            "nonBlockingReason": "Independent tests can continue"
+        }));
+        std::env::remove_var("MAESTRO_HOME");
+
+        assert!(result.success);
+        let details = result.details.expect("background decision details");
+        assert_eq!(details["background"], true);
+        assert_eq!(details["blocks_run"], false);
+        assert!(details["task_id"].as_str().is_some_and(|id| !id.is_empty()));
     }
 
     // ========================================================================

@@ -274,6 +274,7 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
         // Defer every call to this event loop so native cannot auto-execute a
         // selective-safe call before this mode sees the ToolCall event.
         approval_mode: print_mode_approval_mode(),
+        context_window: None,
         // The native agent runner's own tool executor -- which runs every
         // call the per-tool heuristic above doesn't flag for approval --
         // is a separate executor from the sandboxed one constructed below

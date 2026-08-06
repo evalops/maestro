@@ -738,6 +738,8 @@ pub enum FromAgentMessage {
         auto: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         custom_instructions: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continuation: Option<crate::agent::compaction::ContinuationRecord>,
         timestamp: String,
     },
     /// Session information

@@ -10,6 +10,8 @@ use fd_lock::RwLock as FileLock;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::agent::session_scope::MaestroThreadId;
+
 use super::{
     response_ack_request_id, FromAgentMessage, IdentityBindingFailure, ServerRequestType,
     StreamEnvelope, ToAgentMessage,
@@ -104,13 +106,13 @@ impl ThreadTurnRecord {
 
 #[derive(Debug, Clone)]
 pub(super) struct ThreadProtocolState {
-    thread_id: String,
+    thread_id: MaestroThreadId,
     turns: Vec<ThreadTurnRecord>,
     active_turn_ids: VecDeque<String>,
 }
 
 impl ThreadProtocolState {
-    pub(super) fn new(thread_id: String) -> Self {
+    pub(super) fn new(thread_id: MaestroThreadId) -> Self {
         Self {
             thread_id,
             turns: Vec::new(),
@@ -118,7 +120,7 @@ impl ThreadProtocolState {
         }
     }
 
-    fn restore(thread_id: String, mut turns: Vec<ThreadTurnRecord>) -> Self {
+    fn restore(thread_id: MaestroThreadId, mut turns: Vec<ThreadTurnRecord>) -> Self {
         for turn in &mut turns {
             if !turn.phase.is_terminal() {
                 turn.phase = ThreadPhase::Interrupted;
@@ -282,7 +284,7 @@ impl ThreadProtocolState {
 #[derive(Serialize)]
 pub(super) struct ThreadStateView<'a> {
     pub(super) protocol_version: &'static str,
-    pub(super) thread_id: &'a str,
+    pub(super) thread_id: &'a MaestroThreadId,
     pub(super) runtime_generation: u64,
     pub(super) phase: ThreadPhase,
     pub(super) active_turn_id: Option<&'a str>,
@@ -372,7 +374,7 @@ impl ThreadJournal {
         let Some(document) = read_document(&journal.path)? else {
             return Ok(LoadedThreadJournal {
                 journal,
-                state: ThreadProtocolState::new(thread_id.to_string()),
+                state: ThreadProtocolState::new(thread_id.to_string().into()),
                 cursor: 0,
                 events: VecDeque::new(),
                 identity_binding_failures: VecDeque::new(),
@@ -406,7 +408,7 @@ impl ThreadJournal {
         }
         Ok(LoadedThreadJournal {
             journal,
-            state: ThreadProtocolState::restore(thread_id.to_string(), document.turns),
+            state: ThreadProtocolState::restore(thread_id.to_string().into(), document.turns),
             cursor: document.cursor,
             events: document.events.into(),
             identity_binding_failures: document.identity_binding_failures.into(),
@@ -436,7 +438,7 @@ impl ThreadJournal {
         response_idempotency_keys.sort();
         let document = DurableThreadDocument {
             protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
-            thread_id: state.thread_id.clone(),
+            thread_id: state.thread_id.as_str().to_string(),
             runtime_generation,
             cursor,
             turns: state.turns.clone(),

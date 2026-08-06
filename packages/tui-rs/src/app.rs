@@ -1986,6 +1986,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             thinking_budget,
             cwd: cwd.clone(),
             approval_mode: self.state.approval_mode,
+            context_window: self.state.context_window,
             // See the `sandbox_policy` field doc on `App`: without this,
             // only calls that reach the human approval modal (via
             // `self.tool_executor`, a separate executor) were ever
@@ -2902,6 +2903,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 tokens_before,
                 auto,
                 custom_instructions,
+                continuation,
                 timestamp,
             } => {
                 self.state.apply_compaction(
@@ -2915,6 +2917,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     *tokens_before,
                     *auto,
                     custom_instructions.clone(),
+                    continuation.clone(),
                 );
                 return Ok(());
             }

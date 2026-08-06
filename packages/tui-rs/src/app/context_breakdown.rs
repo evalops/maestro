@@ -2,15 +2,15 @@
 //! spent, split by category (system prompt, tool results, conversation,
 //! other/overhead).
 //!
-//! Token counts come from [`crate::agent::token_estimation`], the same bytes/4
-//! heuristic the compactor and every other context-window surface use, so the
-//! numbers shown here agree with compaction decisions. The input is the live
+//! Token counts use the selected model's bundled tokenizer when available and
+//! clearly identify heuristic estimates otherwise. The input is the live
 //! TUI transcript (`crate::state::Message`), which mirrors the agent history:
 //! regular user/assistant text, thinking blocks, and tool calls with their
 //! outputs. UI-only messages (system notices, side questions) never reach the
 //! model and are excluded.
 
-use crate::agent::token_estimation::{self, estimate_tokens};
+use crate::agent::token_counting::{self, CountConfidence};
+use crate::agent::token_estimation;
 use crate::state::Message;
 
 /// Token breakdown of the current session context, by category.
@@ -28,10 +28,22 @@ pub struct ContextBreakdown {
 
 impl ContextBreakdown {
     /// Estimate the breakdown from the system prompt and the live transcript.
+    #[cfg(test)]
     #[must_use]
     pub fn compute(system_prompt: &str, messages: &[Message]) -> Self {
+        Self::compute_for_model(system_prompt, messages, None)
+    }
+
+    /// Count with the selected model tokenizer when Maestro bundles one.
+    #[must_use]
+    pub fn compute_for_model(
+        system_prompt: &str,
+        messages: &[Message],
+        model: Option<&str>,
+    ) -> Self {
+        let count = |text: &str| token_counting::count_tokens(text, model);
         let mut breakdown = Self {
-            system_prompt: estimate_tokens(system_prompt),
+            system_prompt: count(system_prompt),
             ..Self::default()
         };
 
@@ -45,16 +57,14 @@ impl ContextBreakdown {
                 continue;
             }
 
-            breakdown.conversation += estimate_tokens(&message.content);
-            breakdown.other += estimate_tokens(&message.thinking);
+            breakdown.conversation += count(&message.content);
+            breakdown.other += count(&message.thinking);
 
             for call in &message.tool_calls {
                 // Mirrors the compactor's ToolUse/ToolResult estimation: tool
                 // name + serialized input for the call, content for the result.
                 let args = serde_json::to_string(&call.args).unwrap_or_default();
-                breakdown.tool_results += estimate_tokens(&call.tool)
-                    + estimate_tokens(&args)
-                    + estimate_tokens(&call.output);
+                breakdown.tool_results += count(&call.tool) + count(&args) + count(&call.output);
             }
         }
 
@@ -92,6 +102,18 @@ impl ContextBreakdown {
         if let Some(model) = model {
             lines.push(format!("**Model:** {model}"));
         }
+        let confidence = token_counting::count_tokens_with_metadata("", model).confidence;
+        lines.push(format!(
+            "**Token count:** {}",
+            match confidence {
+                CountConfidence::Measured => "measured with the model tokenizer",
+                CountConfidence::Estimated => "estimated (model tokenizer unavailable)",
+            }
+        ));
+        lines.push(
+            "**Prompt cache:** reuse requires the same model, system prompt, thinking level, and skills; provider caches may expire after long idle periods."
+                .to_string(),
+        );
         match context_window {
             Some(window) => lines.push(format!("**Context window:** {}", format_tokens(window))),
             None => lines.push("**Context window:** unknown".to_string()),
@@ -160,6 +182,7 @@ fn format_tokens(tokens: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::token_estimation::estimate_tokens;
     use crate::state::{MessageKind, MessageRole, ToolCallState, ToolCallStatus};
     use std::time::SystemTime;
 

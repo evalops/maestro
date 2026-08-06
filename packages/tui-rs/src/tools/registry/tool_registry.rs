@@ -922,6 +922,19 @@ impl ToolRegistry {
                                     "required": ["question", "header", "options"],
                                     "additionalProperties": false
                                 }
+                            },
+                            "background": {
+                                "type": "boolean",
+                                "description": "Return a durable decision task immediately so independent work can continue."
+                            },
+                            "deadlineSeconds": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": "Optional deadline for a background decision."
+                            },
+                            "nonBlockingReason": {
+                                "type": "string",
+                                "description": "Why continuing without this answer is safe."
                             }
                         },
                         "required": ["questions"],

@@ -1098,6 +1098,175 @@ pub fn build_command_registry() -> CommandRegistry {
         .usage("/btw <question>"),
     );
 
+    registry.register(
+        Command::new(
+            "workflow",
+            "Run and control durable budgeted workflows",
+            CommandCategory::Diagnostics,
+            Box::new(|ctx| {
+                use crate::workflow_runtime::{WorkflowRun, WorkflowSpec, WorkflowStore};
+
+                let store = WorkflowStore::for_workspace(std::path::Path::new(&ctx.cwd));
+                let mut parts = ctx.raw_args.split_whitespace();
+                let action = parts.next().unwrap_or("list");
+                let render = |runs: Vec<WorkflowRun>| {
+                    if runs.is_empty() {
+                        return "No workflow runs.".to_string();
+                    }
+                    runs.into_iter()
+                        .map(|run| {
+                            format!(
+                                "{}  {:?}  {}@{}  agents {}/{}  tokens {}/{}",
+                                &run.id[..8.min(run.id.len())],
+                                run.status,
+                                run.spec.name,
+                                run.spec.version,
+                                run.agents_started,
+                                run.spec.max_agents,
+                                run.tokens_used,
+                                run.spec.token_budget,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                match action {
+                    "list" | "status" => store
+                        .list()
+                        .map(render)
+                        .map(CommandOutput::Message)
+                        .map_err(CommandError::new),
+                    "run" | "start" => {
+                        let path = parts
+                            .next()
+                            .ok_or_else(|| CommandError::new("Usage: /workflow run <spec.json>"))?;
+                        let bytes = std::fs::read(path).map_err(|error| {
+                            CommandError::new(format!("Failed to read workflow spec: {error}"))
+                        })?;
+                        let spec: WorkflowSpec =
+                            serde_json::from_slice(&bytes).map_err(|error| {
+                                CommandError::new(format!("Invalid workflow spec: {error}"))
+                            })?;
+                        let run = WorkflowRun::start(spec, serde_json::json!({}))
+                            .map_err(CommandError::new)?;
+                        store.append(&run).map_err(CommandError::new)?;
+                        Ok(CommandOutput::Message(format!(
+                            "Started workflow {} ({})",
+                            run.spec.name, run.id
+                        )))
+                    }
+                    "pause" | "resume" | "stop" => {
+                        let id = parts.next().ok_or_else(|| {
+                            CommandError::new(format!("Usage: /workflow {action} <run-id>"))
+                        })?;
+                        let mut run = store.get(id).map_err(CommandError::new)?;
+                        match action {
+                            "pause" => run.pause(),
+                            "resume" => {
+                                let sha = run.spec_sha.clone();
+                                let args = run.args.clone();
+                                run.resume(&sha, &args)
+                            }
+                            "stop" => run.stop(Some("stopped from TUI".to_string())),
+                            _ => unreachable!(),
+                        }
+                        .map_err(CommandError::new)?;
+                        store.append(&run).map_err(CommandError::new)?;
+                        Ok(CommandOutput::Message(format!(
+                            "Workflow {} is {:?}",
+                            run.id, run.status
+                        )))
+                    }
+                    _ => Err(CommandError::new(
+                        "Usage: /workflow [list|run <spec.json>|pause <id>|resume <id>|stop <id>]",
+                    )),
+                }
+            }),
+        )
+        .alias("workflows")
+        .usage("/workflow [list|run <spec.json>|pause <id>|resume <id>|stop <id>]"),
+    );
+
+    registry.register(
+        Command::new(
+            "decision",
+            "List, answer, or cancel background decisions",
+            CommandCategory::Context,
+            Box::new(|ctx| {
+                use crate::pending_decisions::PendingDecisionStore;
+
+                let store = PendingDecisionStore::default_store();
+                let mut fields = ctx.raw_args.trim().splitn(3, char::is_whitespace);
+                let action = fields
+                    .next()
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("list");
+                match action {
+                    "list" | "status" => {
+                        let decisions = store.list().map_err(CommandError::new)?;
+                        if decisions.is_empty() {
+                            return Ok(CommandOutput::Message(
+                                "No background decisions.".to_string(),
+                            ));
+                        }
+                        Ok(CommandOutput::Message(
+                            decisions
+                                .into_iter()
+                                .map(|decision| {
+                                    format!(
+                                        "{}  {:?}{}",
+                                        &decision.id[..8.min(decision.id.len())],
+                                        decision.effective_status(),
+                                        decision
+                                            .answer
+                                            .as_deref()
+                                            .map(|answer| format!("  {answer}"))
+                                            .unwrap_or_default(),
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        ))
+                    }
+                    "answer" => {
+                        let id = fields.next().ok_or_else(|| {
+                            CommandError::new("Usage: /decision answer <id> <answer>")
+                        })?;
+                        let answer = fields.next().ok_or_else(|| {
+                            CommandError::new("Usage: /decision answer <id> <answer>")
+                        })?;
+                        let mut decision = store.get(id).map_err(CommandError::new)?;
+                        decision
+                            .answer(answer.to_string())
+                            .map_err(CommandError::new)?;
+                        store.append(&decision).map_err(CommandError::new)?;
+                        Ok(CommandOutput::Action(CommandAction::Steer(format!(
+                            "Background decision {} was answered: {}",
+                            decision.id, answer
+                        ))))
+                    }
+                    "cancel" => {
+                        let id = fields
+                            .next()
+                            .ok_or_else(|| CommandError::new("Usage: /decision cancel <id>"))?;
+                        let mut decision = store.get(id).map_err(CommandError::new)?;
+                        decision.cancel().map_err(CommandError::new)?;
+                        store.append(&decision).map_err(CommandError::new)?;
+                        Ok(CommandOutput::Message(format!(
+                            "Cancelled background decision {}",
+                            decision.id
+                        )))
+                    }
+                    _ => Err(CommandError::new(
+                        "Usage: /decision [list|answer <id> <answer>|cancel <id>]",
+                    )),
+                }
+            }),
+        )
+        .alias("decisions")
+        .usage("/decision [list|answer <id> <answer>|cancel <id>]"),
+    );
+
     // Quit command
     registry.register(
         Command::new(

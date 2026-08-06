@@ -2806,6 +2806,7 @@ mod tests {
                 tokens_before: 300,
                 auto: true,
                 custom_instructions: None,
+                continuation: None,
             }],
             side_questions: vec![],
             plan_review_events: vec![],

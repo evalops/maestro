@@ -1319,6 +1319,7 @@ impl AgentState {
                 tokens_before,
                 auto,
                 custom_instructions,
+                continuation,
                 timestamp,
             } => Some(AgentEvent::Compaction {
                 summary,
@@ -1326,6 +1327,7 @@ impl AgentState {
                 tokens_before,
                 auto,
                 custom_instructions,
+                continuation,
                 timestamp,
             }),
         }
@@ -1419,6 +1421,7 @@ pub enum AgentEvent {
         tokens_before: u64,
         auto: bool,
         custom_instructions: Option<String>,
+        continuation: Option<crate::agent::compaction::ContinuationRecord>,
         timestamp: String,
     },
 }

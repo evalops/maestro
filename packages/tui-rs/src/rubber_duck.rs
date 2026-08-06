@@ -382,6 +382,7 @@ async fn drive_review(model: &str, cwd: &str, prompt: &str) -> Result<String> {
         thinking_budget: 0,
         cwd: cwd.to_string(),
         approval_mode: crate::state::ApprovalMode::Selective,
+        context_window: None,
         // Read-only review: no workspace writes needed; leave sandboxed off so
         // the second-opinion agent matches print-mode / headless default until
         // a caller chooses an explicit policy.
