@@ -1,0 +1,12 @@
+# Maestro public repository guidance
+
+This repository is a generated public mirror. Public-facing source changes
+originate in `evalops/maestro-internal` and arrive through the protected mirror
+workflow; do not edit mirrored source directly here.
+
+For contribution setup and checks, use `CONTRIBUTING.md` and
+`docs/CONTRIBUTOR_RUNBOOK.md`. Public CI and release workflows remain owned by
+this repository.
+
+Do not add private repository documentation, credentials, internal agent
+instructions, operational plans, or unpublished research to the public tree.
