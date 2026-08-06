@@ -1471,20 +1471,35 @@ where
     tokio::try_join!(server, client)
 }
 
+type HostedRunnerInitialIdentityRuntime = (
+    Arc<workload_identity::WorkloadIdentityExchanger>,
+    workload_identity::ReloadableServerIdentity,
+    Option<workload_identity::ReloadableClientIdentity>,
+    config::HostedRunnerWorkloadIdentityConfig,
+);
+
+pub(crate) struct PreparedHostedRunner {
+    startup_started: Instant,
+    config: HostedRunnerConfig,
+    restore_manifest: Option<SnapshotManifest>,
+    identity_runtime: Option<HostedRunnerInitialIdentityRuntime>,
+    listener: TcpListener,
+    local_addr: SocketAddr,
+}
+
 pub async fn start_hosted_runner_with_message_executor(
     config: HostedRunnerConfig,
     message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
 ) -> io::Result<HostedRunnerHandle> {
+    let prepared = prepare_hosted_runner(config).await?;
+    start_prepared_hosted_runner(prepared, message_executor)
+}
+
+pub(crate) async fn prepare_hosted_runner(
+    config: HostedRunnerConfig,
+) -> io::Result<PreparedHostedRunner> {
     let startup_started = Instant::now();
     let runner_session_id = config.runner_session_id.clone();
-    let workspace_id = startup_workspace_id(&config);
-    let identity_context = config.workload_identity.as_ref().map(|identity| {
-        (
-            identity.organization_id.clone(),
-            identity.sandbox_id,
-            identity.placement_generation,
-        )
-    });
     let workspace_root = tokio::fs::canonicalize(&config.workspace_root).await?;
     if !tokio::fs::metadata(&workspace_root).await?.is_dir() {
         return Err(io::Error::new(
@@ -1592,6 +1607,38 @@ pub async fn start_hosted_runner_with_message_executor(
     };
     let listener = TcpListener::bind(config.bind_addr).await?;
     let local_addr = listener.local_addr()?;
+
+    Ok(PreparedHostedRunner {
+        startup_started,
+        config,
+        restore_manifest,
+        identity_runtime,
+        listener,
+        local_addr,
+    })
+}
+
+pub(crate) fn start_prepared_hosted_runner(
+    prepared: PreparedHostedRunner,
+    message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
+) -> io::Result<HostedRunnerHandle> {
+    let PreparedHostedRunner {
+        startup_started,
+        config,
+        restore_manifest,
+        identity_runtime,
+        listener,
+        local_addr,
+    } = prepared;
+    let runner_session_id = config.runner_session_id.clone();
+    let workspace_id = startup_workspace_id(&config);
+    let identity_context = config.workload_identity.as_ref().map(|identity| {
+        (
+            identity.organization_id.clone(),
+            identity.sandbox_id,
+            identity.placement_generation,
+        )
+    });
     let shutdown = CancellationToken::new();
     let shared = SharedRunner::try_new_with_message_executor_and_restore(
         config,

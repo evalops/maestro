@@ -47,6 +47,23 @@ async fn initial_identity_exchanges_are_polled_concurrently() {
     assert_eq!(identities, ("server", "client"));
 }
 
+#[tokio::test]
+async fn hosted_runner_preparation_is_reversible_before_activation() {
+    let workspace = tempdir().expect("workspace");
+    let prepared = prepare_hosted_runner(test_config(workspace.path().to_path_buf()))
+        .await
+        .expect("prepare hosted runner");
+    let local_addr = prepared.local_addr;
+
+    assert!(prepared.identity_runtime.is_none());
+    drop(prepared);
+
+    let rebound = TcpListener::bind(local_addr)
+        .await
+        .expect("dropping preparation releases listener");
+    drop(rebound);
+}
+
 #[test]
 fn hosted_trace_fields_accept_only_valid_w3c_parent_and_safe_route_classes() {
     let parent = "00-0af7656daaaaaaaaaaaaaaaaaaaaaaaa-b7ad6b7169203331-01";

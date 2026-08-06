@@ -342,7 +342,10 @@ impl AsyncAgentTransport {
 
         loop {
             tokio::select! {
-                () = cancel.cancelled() => break,
+                () = cancel.cancelled() => {
+                    should_kill = true;
+                    break;
+                },
                 line_result = async {
                     if let Some(timeout_duration) = read_timeout {
                         match timeout(timeout_duration, lines.next_line()).await {
@@ -513,6 +516,24 @@ impl AsyncAgentTransport {
             .clear();
         self.cancel_token.cancel();
         result
+    }
+
+    /// Shut down the agent and wait for both transport tasks and the child.
+    pub async fn shutdown_and_wait(self) -> Result<(), AsyncTransportError> {
+        let shutdown_result = self.shutdown();
+        let Self {
+            _reader_handle: reader_handle,
+            _writer_handle: writer_handle,
+            ..
+        } = self;
+        let (reader_result, writer_result) = tokio::join!(reader_handle, writer_handle);
+        reader_result.map_err(|error| {
+            AsyncTransportError::SendFailed(format!("agent reader task failed to join: {error}"))
+        })?;
+        writer_result.map_err(|error| {
+            AsyncTransportError::SendFailed(format!("agent writer task failed to join: {error}"))
+        })?;
+        shutdown_result
     }
 
     /// Try to receive an event without blocking

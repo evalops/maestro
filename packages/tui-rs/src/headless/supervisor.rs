@@ -280,7 +280,7 @@ impl ManagedTransport {
 
     async fn shutdown_and_wait(self) -> Result<(), AsyncTransportError> {
         match self {
-            Self::Local(transport) => transport.shutdown(),
+            Self::Local(transport) => transport.shutdown_and_wait().await,
             Self::Remote(transport) => transport.shutdown_and_wait().await,
         }
     }
@@ -1439,6 +1439,12 @@ impl AgentSupervisor {
         self.cancel_token.cancel();
         self.disconnect();
         let _ = self.event_tx.send(SupervisorEvent::ShuttingDown);
+    }
+
+    /// Shutdown the supervisor and wait for its active transport to be reaped.
+    pub(crate) async fn shutdown_and_wait(&mut self) {
+        self.shutdown();
+        self.wait_for_pending_transport_shutdown().await;
     }
 
     /// Flush session recorder
