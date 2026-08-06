@@ -571,7 +571,7 @@ impl App {
             )
             .description(file.name.clone())
         }));
-        if let Ok(sessions) = self.session_manager.list_sessions() {
+        if let Ok(sessions) = self.session_manager.list_all_sessions() {
             resources.extend(sessions.into_iter().map(|session| {
                 let mut resource = PaletteResource::new(
                     PaletteResourceKind::Session,

@@ -953,7 +953,10 @@ impl App {
                     self.session_manager.reset_session();
                     crate::plan_mode::set_active_session_id(None);
                     self.session_resume_failed = true;
-                    self.state.error = Some(format!("Failed to resume session writer: {err}"));
+                    self.state.error = Some(super::format_session_persistence_error(
+                        "resume the session writer",
+                        err,
+                    ));
                     return;
                 }
                 self.adopt_session_context(Some(&session_id), "resume");
@@ -1076,7 +1079,10 @@ impl App {
             self.session_manager.reset_session();
             crate::plan_mode::set_active_session_id(None);
             self.session_resume_failed = true;
-            self.state.error = Some(format!("Failed to resume session writer: {err}"));
+            self.state.error = Some(super::format_session_persistence_error(
+                "resume the session writer",
+                err,
+            ));
             self.state.status = Some(format!(
                 "Session resume failed ({session_id}); use /new to continue"
             ));

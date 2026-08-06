@@ -73,9 +73,13 @@ impl App {
             parent_session: None,
         };
 
-        self.session_manager
-            .start_session(header)
-            .context("Failed to start session")?;
+        if let Err(error) = self.session_manager.start_session(header) {
+            self.state.error = Some(super::format_session_persistence_error(
+                "start the session",
+                &error,
+            ));
+            return Err(anyhow::Error::new(error).context("Failed to start session"));
+        }
         self.flush_session();
 
         self.state.session_id = Some(session_id.clone());
@@ -147,13 +151,19 @@ impl App {
             writer.write_entry(entry).err()
         };
         if let Some(err) = error {
-            self.state.error = Some(format!("Failed to write session entry: {err}"));
+            self.state.error = Some(super::format_session_persistence_error(
+                "persist session data",
+                err,
+            ));
         }
     }
 
     pub(super) fn flush_session(&mut self) {
         if let Err(err) = self.session_manager.flush() {
-            self.state.error = Some(format!("Failed to flush session: {err}"));
+            self.state.error = Some(super::format_session_persistence_error(
+                "flush the session transcript",
+                err,
+            ));
         }
     }
 

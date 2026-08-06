@@ -4665,8 +4665,12 @@ fn resolve_workspace_path(
     } else {
         base.join(requested)
     };
+    // Compare canonical paths on both sides. Config-built roots are already
+    // canonical, but tests and embedders can construct the public config with
+    // a symlinked path (for example macOS's /var -> /private/var alias).
+    let normalized_workspace_root = canonicalize_existing_prefix(workspace_root)?;
     let normalized = canonicalize_existing_prefix(&candidate)?;
-    if !normalized.starts_with(workspace_root) {
+    if !normalized.starts_with(&normalized_workspace_root) {
         return Err(HostedError::new(
             HostedRunnerErrorCode::WorkspaceViolation,
             "Path is outside hosted workspace root",

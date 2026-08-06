@@ -240,6 +240,29 @@ fn format_mcp_error_label(error: Option<&str>) -> Option<String> {
     })
 }
 
+/// Turn persistence failures into an actionable live-session error. Disk-full
+/// errors otherwise look like generic I/O failures, even though the recovery
+/// is different: the user must free space before Maestro can safely continue
+/// recording the transcript.
+pub(super) fn format_session_persistence_error(
+    action: &str,
+    error: impl std::fmt::Display,
+) -> String {
+    let error = error.to_string();
+    let normalized = error.to_ascii_lowercase();
+    if normalized.contains("enospc")
+        || normalized.contains("disk full")
+        || normalized.contains("storage full")
+        || normalized.contains("no space")
+    {
+        format!(
+            "Disk full: Maestro could not {action}. Free disk space, then retry; the transcript may be missing the latest event. ({error})"
+        )
+    } else {
+        format!("Failed to {action}: {error}")
+    }
+}
+
 fn trim_optional_message(message: Option<&str>) -> Option<&str> {
     message.and_then(|value| {
         let trimmed = value.trim();
@@ -628,6 +651,12 @@ pub struct App {
 
     /// Token usage and cost tracker.
     usage_tracker: crate::usage::UsageTracker,
+
+    /// Aggregated facts for the currently running turn. The recap is only
+    /// published after the terminal response sentinel makes the app idle.
+    active_turn_summary: Option<crate::turn_summary::TurnSummary>,
+    active_turn_start_message_index: Option<usize>,
+    active_turn_started_at: Option<Instant>,
 
     /// Prompt history for recall and search.
     prompt_history: crate::history::PromptHistory,
@@ -1204,6 +1233,9 @@ impl App {
             shortcuts_help: ShortcutsHelp::new_with_binding_labels(keybinding_labels),
             rewind_picker: RewindPicker::new(),
             usage_tracker: crate::usage::UsageTracker::new(),
+            active_turn_summary: None,
+            active_turn_start_message_index: None,
+            active_turn_started_at: None,
             prompt_history,
             tool_history: crate::tools::ToolHistory::default(),
             loaded_skills,
@@ -2699,6 +2731,46 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         }
     }
 
+    fn finish_active_turn_summary(&mut self) {
+        let Some(mut summary) = self.active_turn_summary.take() else {
+            self.active_turn_start_message_index = None;
+            self.active_turn_started_at = None;
+            return;
+        };
+
+        let start = self
+            .active_turn_start_message_index
+            .take()
+            .unwrap_or(self.state.messages.len());
+        let mut tool_calls = 0usize;
+        let mut successful_tools = 0usize;
+        let mut failed_tools = 0usize;
+        for message in self.state.messages.iter().skip(start) {
+            for call in &message.tool_calls {
+                tool_calls += 1;
+                match call.status {
+                    crate::state::ToolCallStatus::Completed => successful_tools += 1,
+                    crate::state::ToolCallStatus::Failed
+                    | crate::state::ToolCallStatus::Cancelled
+                    | crate::state::ToolCallStatus::Blocked => failed_tools += 1,
+                    crate::state::ToolCallStatus::Pending
+                    | crate::state::ToolCallStatus::Running => {}
+                }
+            }
+        }
+        summary.set_tool_counts(tool_calls, successful_tools, failed_tools);
+        if let Some(started_at) = self.active_turn_started_at.take() {
+            summary.set_duration(started_at.elapsed());
+        }
+
+        // A queued prompt means the runner is about to start another turn. Do
+        // not overwrite its queue status with a recap that would be painted
+        // only during the handoff gap; summaries belong to an actually idle UI.
+        if !self.state.busy && self.queued_prompts.is_empty() {
+            self.state.status = Some(summary.status_line());
+        }
+    }
+
     async fn handle_agent_message(&mut self, msg: FromAgent) -> Result<()> {
         self.handle_agent_message_with_options(msg, true, true)
             .await
@@ -2780,6 +2852,11 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 } else {
                     self.queued_prompt_active = None;
                 }
+            }
+            if self.active_turn_summary.is_none() {
+                self.active_turn_summary = Some(crate::turn_summary::TurnSummary::default());
+                self.active_turn_start_message_index = Some(self.state.messages.len());
+                self.active_turn_started_at = Some(Instant::now());
             }
         }
         match &msg {
@@ -3077,6 +3154,26 @@ was missing; retry to review the exact execution context."
                         self.active_modal = ActiveModal::Approval;
                     }
                 } else {
+                    // Yolo/auto mode intentionally skips soft firewall holds,
+                    // but the user still needs to know what policy finding was
+                    // bypassed. Keep this contextual note in the transcript so
+                    // an auto-approved action is explainable after the tool
+                    // output scrolls away; hard blocks and sandbox bypasses
+                    // still take their existing denial/approval paths.
+                    if matches!(
+                        (&self.state.approval_mode, &firewall_verdict),
+                        (
+                            crate::state::ApprovalMode::Yolo,
+                            FirewallVerdict::RequireApproval { .. }
+                        )
+                    ) {
+                        let action = crate::tool_summary::summarize_tool_use(tool, args);
+                        if let FirewallVerdict::RequireApproval { reason } = &firewall_verdict {
+                            self.state.add_system_message(format!(
+                                "Auto mode allowed {action}. Security finding: {reason}"
+                            ));
+                        }
+                    }
                     // Already auto-executed inline by the native agent above;
                     // do not execute it again. Just record the approval flag
                     // for the tool-history UI.
@@ -3096,6 +3193,9 @@ was missing; retry to review the exact execution context."
             let account_goal = response_id != "done" && response_id != "continue";
             if let Some(ref usage) = usage {
                 let headless_usage = to_headless_usage(usage);
+                if let Some(summary) = self.active_turn_summary.as_mut() {
+                    summary.add_usage(&headless_usage);
+                }
                 // Goal budget tracks billable (non-cached) tokens only so
                 // multi-step tool loops do not exhaust on repeated cache hits.
                 let turn_tokens = crate::goal::GoalStore::billable_tokens(
@@ -3125,6 +3225,9 @@ was missing; retry to review the exact execution context."
                 }
             }
             self.record_assistant_message(&response_id, usage);
+            if response_id == "done" {
+                self.finish_active_turn_summary();
+            }
         }
 
         if needs_post_interrupt_queue && allow_post_interrupt_queue {
