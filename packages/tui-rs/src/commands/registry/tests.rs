@@ -192,6 +192,74 @@ fn harness_command_parses_scoped_records_and_rollback() {
             .expect("/harness rollback"),
         CommandOutput::Action(CommandAction::Harness(HarnessAction::Rollback(7)))
     ));
+
+    match registry
+        .execute(
+            "/refine propose user memory release-proof native smoke --evidence runbook.md",
+            "/tmp",
+            None,
+            None,
+        )
+        .expect("/refine propose")
+    {
+        CommandOutput::Action(CommandAction::Harness(HarnessAction::Propose {
+            scope,
+            kind,
+            name,
+            content,
+            evidence,
+        })) => {
+            assert_eq!(scope, "user");
+            assert_eq!(kind, "memory");
+            assert_eq!(name, "release-proof");
+            assert_eq!(content, "native smoke");
+            assert_eq!(evidence, "runbook.md");
+        }
+        other => panic!("expected Harness::Propose, got {other:?}"),
+    }
+
+    assert!(matches!(
+        registry
+            .execute("/refine apply p-1234", "/tmp", None, None)
+            .expect("/refine apply"),
+        CommandOutput::Action(CommandAction::Harness(HarnessAction::Apply(id))) if id == "p-1234"
+    ));
+}
+
+#[test]
+fn rlm_and_mailbox_commands_parse_context_actions() {
+    use crate::commands::{MailboxAction, RlmAction};
+
+    let registry = build_command_registry();
+    assert!(matches!(
+        registry
+            .execute(
+                "/rlm set plan Ship release --description current objective",
+                "/tmp",
+                None,
+                None,
+            )
+            .expect("/rlm set"),
+        CommandOutput::Action(CommandAction::Rlm(RlmAction::Set {
+            name,
+            value,
+            description: Some(description),
+        })) if name == "plan" && value == "Ship release" && description == "current objective"
+    ));
+    assert!(matches!(
+        registry
+            .execute("/rlm render Objective: {{plan}}", "/tmp", None, None)
+            .expect("/rlm render"),
+        CommandOutput::Action(CommandAction::Rlm(RlmAction::Render(template)))
+            if template == "Objective: {{plan}}"
+    ));
+    assert!(matches!(
+        registry
+            .execute("/mailbox send child-1 report ready", "/tmp", None, None)
+            .expect("/mailbox send"),
+        CommandOutput::Action(CommandAction::Mailbox(MailboxAction::Send { recipient, body }))
+            if recipient == "child-1" && body == "report ready"
+    ));
 }
 
 #[test]
@@ -1125,6 +1193,22 @@ fn goal_footer_attach_commands_parse() {
             assert_eq!(text, "Ship release");
         }
         other => panic!("expected Goal::Create with max_turns 3 and budget, got {other:?}"),
+    }
+
+    match registry
+        .execute(
+            "/goal create --max-duration-secs 120 Ship release",
+            "/tmp",
+            None,
+            None,
+        )
+        .expect("/goal create duration")
+    {
+        CommandOutput::Action(CommandAction::Goal(GoalAction::Create {
+            max_duration_secs: Some(120),
+            ..
+        })) => {}
+        other => panic!("expected Goal::Create with duration, got {other:?}"),
     }
 
     match registry

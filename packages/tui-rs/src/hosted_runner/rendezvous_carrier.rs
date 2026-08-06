@@ -22,6 +22,10 @@ use super::rendezvous_protocol::{
 /// Histogram emitted once for each outbound connection phase.
 pub const CONNECT_DURATION_METRIC: &str = "maestro_rendezvous_connect_duration_seconds";
 
+/// Open-to-Accepted duration, including runner-host validation and durable CAS.
+pub const ACTIVATION_CAS_DURATION_METRIC: &str =
+    "maestro_rendezvous_activation_cas_duration_seconds";
+
 /// Counter emitted for reconnect attempts and terminal outcomes.
 pub const RECONNECT_COUNTER_METRIC: &str = "maestro_rendezvous_reconnect_total";
 
@@ -36,6 +40,8 @@ pub trait RendezvousMetricSink: Send + Sync {
         outcome: &'static str,
         duration: Duration,
     );
+
+    fn observe_activation_cas_duration(&self, outcome: &'static str, duration: Duration);
 
     fn increment_counter(&self, metric: &'static str, outcome: &'static str);
 }
@@ -57,6 +63,15 @@ impl RendezvousMetricSink for TracingRendezvousMetrics {
             outcome,
             value = duration.as_secs_f64(),
             "hosted runner rendezvous connect phase"
+        );
+    }
+
+    fn observe_activation_cas_duration(&self, outcome: &'static str, duration: Duration) {
+        tracing::info!(
+            metric = ACTIVATION_CAS_DURATION_METRIC,
+            outcome,
+            value = duration.as_secs_f64(),
+            "hosted runner rendezvous activation CAS"
         );
     }
 
@@ -252,25 +267,32 @@ impl RendezvousCarrier {
         let (read, write) = tokio::io::split(tls);
         let mut reader = AsyncFrameReader::new(read);
         let mut writer = AsyncFrameWriter::new(write);
-        let open_started = Instant::now();
+        let activation_started = Instant::now();
+        let open_started = activation_started;
         if let Err(error) = self
             .phase_timeout("open", writer.write_message(&RunnerToHostFrame::Open(open)))
             .await
         {
             self.record_phase("open", error.outcome(), open_started);
+            self.metrics
+                .observe_activation_cas_duration(error.outcome(), activation_started.elapsed());
             return Err(error);
         }
         self.record_phase("open", "success", open_started);
 
         let accepted_started = Instant::now();
-        let mut frame: serde_json::Value =
-            match self.phase_timeout("accepted", reader.read_message()).await {
-                Ok(frame) => frame,
-                Err(error) => {
-                    self.record_phase("accepted", error.outcome(), accepted_started);
-                    return Err(error);
-                }
-            };
+        let mut frame: serde_json::Value = match self
+            .phase_timeout("accepted", reader.read_message())
+            .await
+        {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.record_phase("accepted", error.outcome(), accepted_started);
+                self.metrics
+                    .observe_activation_cas_duration(error.outcome(), activation_started.elapsed());
+                return Err(error);
+            }
+        };
         // N-1 shadow hosts did not send an authority bit. Treat omission as
         // false: shadow remains inbound-authoritative and outbound fails closed.
         if frame.get("type").and_then(serde_json::Value::as_str) == Some("accepted")
@@ -282,18 +304,26 @@ impl RendezvousCarrier {
             Ok(frame) => frame,
             Err(error) => {
                 self.record_phase("accepted", "error", accepted_started);
+                self.metrics
+                    .observe_activation_cas_duration("error", activation_started.elapsed());
                 return Err(RendezvousCarrierError::Framing(FramingError::Json(error)));
             }
         };
         let HostToRunnerFrame::Accepted(accepted) = frame else {
             self.record_phase("accepted", "error", accepted_started);
+            self.metrics
+                .observe_activation_cas_duration("error", activation_started.elapsed());
             return Err(RendezvousCarrierError::UnexpectedFirstFrame);
         };
         if let Err(error) = lifecycle.accept(&accepted) {
             self.record_phase("accepted", "error", accepted_started);
+            self.metrics
+                .observe_activation_cas_duration("error", activation_started.elapsed());
             return Err(error.into());
         }
         self.record_phase("accepted", "success", accepted_started);
+        self.metrics
+            .observe_activation_cas_duration("success", activation_started.elapsed());
 
         Ok(RendezvousConnection {
             reader,

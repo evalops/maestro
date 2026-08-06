@@ -378,6 +378,55 @@ fn test_registry_exposes_subagent_lifecycle_tools() {
 }
 
 #[test]
+fn test_registry_exposes_prime_agent_context_tools() {
+    let registry = ToolRegistry::new();
+
+    for tool in [
+        "get_harness_context",
+        "propose_harness_refinement",
+        "apply_harness_refinement",
+        "reject_harness_refinement",
+        "get_rlm_context",
+        "set_rlm_context",
+        "append_rlm_context",
+        "render_rlm_context",
+        "clear_rlm_context",
+        "get_mailbox",
+        "send_mailbox",
+        "read_mailbox",
+        "ack_mailbox",
+        "compact_mailbox",
+    ] {
+        assert!(registry.get(tool).is_some(), "missing tool {tool}");
+    }
+
+    assert!(!registry.requires_approval("get_harness_context", &serde_json::json!({})));
+    assert!(!registry.requires_approval(
+        "propose_harness_refinement",
+        &serde_json::json!({
+            "kind": "prompt",
+            "scope": "workspace",
+            "name": "review",
+            "content": "keep evidence",
+            "evidence": "test"
+        })
+    ));
+    assert!(registry.requires_approval(
+        "apply_harness_refinement",
+        &serde_json::json!({"id": "proposal-1"})
+    ));
+    assert!(registry.requires_approval(
+        "set_rlm_context",
+        &serde_json::json!({"name": "plan", "value": "ship"})
+    ));
+    assert!(!registry.requires_approval("read_mailbox", &serde_json::json!({"id": "message-1"})));
+    assert_eq!(
+        registry.missing_required("send_mailbox", &serde_json::json!({"recipient": "worker"})),
+        vec!["body".to_string()]
+    );
+}
+
+#[test]
 fn test_append_mcp_prompt_summary_includes_metadata_and_arguments() {
     let mut lines = Vec::new();
     append_mcp_prompt_summary(
@@ -725,7 +774,7 @@ async fn test_mcp_status_clears_removed_server_state() {
 fn test_registry_tool_count() {
     let registry = ToolRegistry::new();
     let count = registry.tools().count();
-    assert_eq!(count, 50); // includes parity tools + IDE stubs + goals + subagent lifecycle + perf tools
+    assert_eq!(count, 64); // includes Prime Agent context tools alongside parity, goals, subagents, and perf tools
 }
 
 #[test]

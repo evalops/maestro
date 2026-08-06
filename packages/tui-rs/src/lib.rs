@@ -161,6 +161,12 @@ pub mod goal;
 /// Durable supplemental prompt, memory, skill, and subagent context.
 pub mod harness;
 
+/// Persistent RLM-style context variables for prompt composition.
+pub mod rlm;
+
+/// Durable local messages for parent and delegated agent sessions.
+pub mod mailbox;
+
 /// Lightweight UI prefs (`~/.maestro/ui.json`), e.g. footer density.
 pub mod ui_prefs;
 

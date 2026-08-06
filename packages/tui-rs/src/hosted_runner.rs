@@ -46,6 +46,7 @@ mod handle;
 mod manifests;
 pub mod rendezvous_carrier;
 pub mod rendezvous_protocol;
+pub mod rendezvous_runtime;
 mod shared;
 mod snapshots;
 mod thread_protocol;
@@ -191,6 +192,7 @@ struct SharedRunner {
     events: broadcast::Sender<StreamEnvelope>,
     controller_events: broadcast::Sender<StreamEnvelope>,
     message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
+    rendezvous_outbound_authority: Arc<AtomicBool>,
     thread_journal: Arc<ThreadJournal>,
     mutation_lifecycle: Arc<tokio::sync::Mutex<()>>,
     thread_persistence_retry_pending: Arc<AtomicBool>,
@@ -1553,9 +1555,20 @@ pub async fn start_hosted_runner_with_message_executor(
                 return Err(io::Error::other(error));
             }
         };
+        let rendezvous_identity = if let Some(rendezvous) = config.rendezvous.as_ref() {
+            let identity = exchanger
+                .exchange_client_initial(&rendezvous.identity_exchange_url)
+                .await
+                .map_err(io::Error::other)?;
+            Some(workload_identity::ReloadableClientIdentity::new(identity))
+        } else {
+            None
+        };
         Some((
             exchanger,
             workload_identity::ReloadableServerIdentity::new(identity),
+            rendezvous_identity,
+            identity_config,
         ))
     } else {
         None
@@ -1570,24 +1583,51 @@ pub async fn start_hosted_runner_with_message_executor(
     )?;
     shared.start_event_pump();
     let server_shared = shared.clone();
-    let (task, identity_task, tls) = if let Some((exchanger, identity)) = identity_runtime {
-        let server_shutdown = shutdown.clone();
-        let server_identity = identity.clone();
-        let task = tokio::spawn(async move {
-            serve_mtls(listener, server_shared, server_identity, server_shutdown).await;
-        });
-        let rotation_shutdown = shutdown.clone();
-        let identity_task = tokio::spawn(async move {
-            workload_identity::rotate_server_identity(exchanger, identity, rotation_shutdown).await;
-        });
-        (task, Some(identity_task), true)
-    } else {
-        let server_shutdown = shutdown.clone();
-        let task = tokio::spawn(async move {
-            serve(listener, server_shared, server_shutdown).await;
-        });
-        (task, None, false)
-    };
+    let (task, identity_task, tls) =
+        if let Some((exchanger, identity, client_identity, workload)) = identity_runtime {
+            let server_shutdown = shutdown.clone();
+            let server_identity = identity.clone();
+            let task = tokio::spawn(async move {
+                serve_mtls(listener, server_shared, server_identity, server_shutdown).await;
+            });
+            let rotation_shutdown = shutdown.clone();
+            let rendezvous_config = shared.config.rendezvous.clone();
+            let rendezvous_shared = shared.clone();
+            let identity_task = tokio::spawn(async move {
+                let server_rotation = workload_identity::rotate_server_identity(
+                    exchanger.clone(),
+                    identity,
+                    rotation_shutdown.clone(),
+                );
+                if let (Some(client_identity), Some(rendezvous_config)) =
+                    (client_identity, rendezvous_config)
+                {
+                    let client_rotation = workload_identity::rotate_client_identity(
+                        exchanger,
+                        rendezvous_config.identity_exchange_url.clone(),
+                        client_identity.clone(),
+                        rotation_shutdown.clone(),
+                    );
+                    let rendezvous = rendezvous_runtime::run(
+                        rendezvous_config,
+                        workload,
+                        client_identity,
+                        rendezvous_shared,
+                        rotation_shutdown,
+                    );
+                    tokio::join!(server_rotation, client_rotation, rendezvous);
+                } else {
+                    server_rotation.await;
+                }
+            });
+            (task, Some(identity_task), true)
+        } else {
+            let server_shutdown = shutdown.clone();
+            let task = tokio::spawn(async move {
+                serve(listener, server_shared, server_shutdown).await;
+            });
+            (task, None, false)
+        };
 
     let (organization_id, sandbox_id, placement_generation) = identity_context
         .map(|(organization_id, sandbox_id, generation)| {
@@ -3194,6 +3234,12 @@ async fn handle_message(
     // for the original attempt to finish instead of entering
     // `reconcile_pending` concurrently with it.
     let _lifecycle = shared.mutation_lifecycle.lock().await;
+    if !shared.inbound_commands_enabled() {
+        return Err(HostedError::new(
+            HostedRunnerErrorCode::AccessDenied,
+            "inbound command path is disabled by the active rendezvous authority",
+        ));
+    }
     handle_message_inner(shared.clone(), session_id, headers, message).await
 }
 

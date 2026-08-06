@@ -7,6 +7,7 @@
 
 use serde::Deserialize;
 use serde_json::json;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::agent::ToolResult;
 use crate::goal::{GoalStatus, GoalStore};
@@ -21,6 +22,7 @@ struct UpdateGoalArgs {
 /// `get_goal` — read the current persisted goal.
 pub fn get_goal() -> ToolResult {
     let store = GoalStore::load_default();
+    let now = now_unix();
     match &store.current {
         None => ToolResult::success(
             json!({
@@ -43,11 +45,26 @@ pub fn get_goal() -> ToolResult {
                     "tokenBudget": g.token_budget,
                     "tokensUsed": g.tokens_used,
                     "remainingTokens": g.token_budget.map(|b| b.saturating_sub(g.tokens_used)),
+                    "maxDurationSecs": g.max_duration_secs,
+                    "startedAtUnix": g.started_at_unix,
+                    "elapsedSecs": g.started_at_unix.map(|started| now.saturating_sub(started)),
+                    "remainingDurationSecs": g.max_duration_secs.map(|budget| {
+                        budget.saturating_sub(
+                            g.started_at_unix.map(|started| now.saturating_sub(started)).unwrap_or(0),
+                        )
+                    }),
                 }
             })
             .to_string(),
         ),
     }
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 /// `update_goal` — mark complete or blocked only (Codex `update_goal` semantics).

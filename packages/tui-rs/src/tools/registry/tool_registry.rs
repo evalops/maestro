@@ -824,6 +824,13 @@ impl ToolRegistry {
             },
         );
 
+        // Prime Agent context primitives: the slash-command surfaces remain
+        // operator-friendly, while native agents get typed access to the same
+        // durable harness, RLM, and mailbox stores.
+        for (name, definition) in crate::tools::context_tools::definitions() {
+            tools.insert(name, definition);
+        }
+
         // Todo tool
         tools.insert(
             "todo".to_string(),
@@ -1407,7 +1414,7 @@ impl ToolRegistry {
     ///
     /// // Count tools
     /// let count = registry.tools().count();
-    /// assert_eq!(count, 50);  // includes search/parity tools + IDE stubs + goals + subagents + perf tools
+    /// assert_eq!(count, 64);  // includes Prime Agent context tools alongside parity, goals, subagents, and perf tools
     ///
     /// // List tool names
     /// for tool_def in registry.tools() {

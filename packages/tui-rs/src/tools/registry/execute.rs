@@ -3171,6 +3171,26 @@ impl ToolExecutor {
             "cancel_subagent" => self.subagents.cancel(args),
             "get_goal" => crate::tools::goal_tools::get_goal(),
             "update_goal" => crate::tools::goal_tools::update_goal(args.clone()),
+            "get_harness_context" => crate::tools::context_tools::get_harness_context(),
+            "propose_harness_refinement" => {
+                crate::tools::context_tools::propose_harness_refinement(args.clone())
+            }
+            "apply_harness_refinement" => {
+                crate::tools::context_tools::apply_harness_refinement(args.clone())
+            }
+            "reject_harness_refinement" => {
+                crate::tools::context_tools::reject_harness_refinement(args.clone())
+            }
+            "get_rlm_context" => crate::tools::context_tools::get_rlm_context(),
+            "set_rlm_context" => crate::tools::context_tools::set_rlm_context(args.clone()),
+            "append_rlm_context" => crate::tools::context_tools::append_rlm_context(args.clone()),
+            "render_rlm_context" => crate::tools::context_tools::render_rlm_context(args.clone()),
+            "clear_rlm_context" => crate::tools::context_tools::clear_rlm_context(args.clone()),
+            "get_mailbox" => crate::tools::context_tools::get_mailbox(args.clone()),
+            "send_mailbox" => crate::tools::context_tools::send_mailbox(args.clone()),
+            "read_mailbox" => crate::tools::context_tools::read_mailbox(args.clone()),
+            "ack_mailbox" => crate::tools::context_tools::acknowledge_mailbox(args.clone()),
+            "compact_mailbox" => crate::tools::context_tools::compact_mailbox(),
             "todo" => todo::todo_with_cancellation(args.clone(), cancel.as_ref()).await,
             "ask_user" => ask_user::ask_user(args.clone()),
             "extract_document" => {

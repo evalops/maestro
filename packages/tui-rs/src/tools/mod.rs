@@ -80,6 +80,7 @@ pub(crate) mod background_tasks;
 mod bash;
 mod batch;
 mod cache;
+pub(crate) mod context_tools;
 pub mod details;
 mod exa;
 mod extract_document;

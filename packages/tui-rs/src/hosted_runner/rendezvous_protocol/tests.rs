@@ -6,9 +6,13 @@ use uuid::Uuid;
 use super::{
     CommandAuthority, HostToRunnerFrame, RendezvousAccepted, RendezvousIdentity,
     RendezvousLatencyMilestones, RendezvousLifecycle, RendezvousLifecycleError, RendezvousMode,
-    RendezvousRequest, RevocationReason, RunnerToHostFrame, MAX_IN_FLIGHT_REQUESTS,
-    RENDEZVOUS_PROTOCOL_VERSION,
+    RendezvousNonce, RendezvousRequest, RendezvousRequestDisposition, RevocationReason,
+    RunnerToHostFrame, MAX_IN_FLIGHT_REQUESTS, RENDEZVOUS_PROTOCOL_VERSION,
 };
+
+fn nonce() -> RendezvousNonce {
+    RendezvousNonce::parse("proof-0123456789abcdef0123456789abcdef").unwrap()
+}
 
 fn identity() -> RendezvousIdentity {
     RendezvousIdentity {
@@ -35,13 +39,17 @@ fn accepted(
 #[test]
 fn wire_contract_carries_first_request_on_the_accepted_stream() {
     let activation_id = Uuid::parse_str("f16b80ac-81af-46fc-8b9d-8ae04e81c5cb").unwrap();
-    let mut lifecycle = RendezvousLifecycle::new(RendezvousMode::Outbound, identity());
+    let mut lifecycle = RendezvousLifecycle::new(RendezvousMode::Outbound, identity(), nonce());
     lifecycle.set_runtime_ready(true);
 
     let open = lifecycle.open(activation_id).unwrap();
     assert_eq!(open.protocol_version, RENDEZVOUS_PROTOCOL_VERSION);
     assert_eq!(open.max_in_flight_requests, MAX_IN_FLIGHT_REQUESTS);
     assert_eq!(open.resume_after_sequence, None);
+    assert_eq!(
+        serde_json::to_value(&open).unwrap()["rendezvous_nonce"],
+        "proof-0123456789abcdef0123456789abcdef"
+    );
     lifecycle.accept(&accepted(activation_id, true, 1)).unwrap();
 
     let request = HostToRunnerFrame::Request(RendezvousRequest {
@@ -63,6 +71,56 @@ fn wire_contract_carries_first_request_on_the_accepted_stream() {
 }
 
 #[test]
+fn rendezvous_nonce_is_bounded_and_redacted() {
+    assert!(RendezvousNonce::parse("").is_err());
+    assert!(RendezvousNonce::parse("x".repeat(257)).is_err());
+    let nonce = nonce();
+    assert_eq!(format!("{nonce:?}"), "RendezvousNonce(<redacted>)");
+    assert!(!format!("{nonce:?}").contains("0123456789abcdef"));
+}
+
+#[test]
+fn exact_replay_is_classified_before_command_execution() {
+    let activation_id = Uuid::new_v4();
+    let mut lifecycle = RendezvousLifecycle::new(RendezvousMode::Outbound, identity(), nonce());
+    lifecycle.set_runtime_ready(true);
+    lifecycle.open(activation_id).unwrap();
+    lifecycle.accept(&accepted(activation_id, true, 1)).unwrap();
+    assert_eq!(
+        lifecycle.request_disposition(1, "command-1").unwrap(),
+        RendezvousRequestDisposition::Execute
+    );
+    lifecycle.record_applied_request(1, "command-1").unwrap();
+    assert_eq!(
+        lifecycle.request_disposition(1, "command-1").unwrap(),
+        RendezvousRequestDisposition::Replay
+    );
+    assert!(lifecycle
+        .request_disposition(1, "different-command")
+        .is_err());
+}
+
+#[test]
+fn reconnecting_same_activation_revokes_authority_until_reaccepted() {
+    let activation_id = Uuid::new_v4();
+    let mut lifecycle = RendezvousLifecycle::new(RendezvousMode::Outbound, identity(), nonce());
+    lifecycle.set_runtime_ready(true);
+    lifecycle.open(activation_id).unwrap();
+    lifecycle.accept(&accepted(activation_id, true, 1)).unwrap();
+    assert_eq!(
+        lifecycle.command_authority(),
+        Some(CommandAuthority::Outbound)
+    );
+    lifecycle.open(activation_id).unwrap();
+    assert_eq!(lifecycle.command_authority(), None);
+    lifecycle.accept(&accepted(activation_id, true, 1)).unwrap();
+    assert_eq!(
+        lifecycle.command_authority(),
+        Some(CommandAuthority::Outbound)
+    );
+}
+
+#[test]
 fn rollout_modes_never_enable_two_command_authorities() {
     assert_eq!(
         RendezvousMode::Inbound.command_authority(),
@@ -80,7 +138,7 @@ fn rollout_modes_never_enable_two_command_authorities() {
     assert!(RendezvousMode::Outbound.outbound_commands_enabled());
 
     let shadow_activation = Uuid::new_v4();
-    let mut shadow = RendezvousLifecycle::new(RendezvousMode::OutboundShadow, identity());
+    let mut shadow = RendezvousLifecycle::new(RendezvousMode::OutboundShadow, identity(), nonce());
     shadow.set_runtime_ready(true);
     shadow.open(shadow_activation).unwrap();
     assert_eq!(
@@ -100,7 +158,7 @@ fn rollout_modes_never_enable_two_command_authorities() {
     );
 
     let outbound_activation = Uuid::new_v4();
-    let mut outbound = RendezvousLifecycle::new(RendezvousMode::Outbound, identity());
+    let mut outbound = RendezvousLifecycle::new(RendezvousMode::Outbound, identity(), nonce());
     outbound.set_runtime_ready(true);
     outbound.open(outbound_activation).unwrap();
     assert_eq!(outbound.command_authority(), None);
@@ -123,7 +181,7 @@ fn rollout_modes_never_enable_two_command_authorities() {
 #[test]
 fn readiness_loss_revokes_active_outbound_before_future_admission() {
     let activation_id = Uuid::parse_str("ae5484e8-602d-4d64-b7ad-8c12feb7f4af").unwrap();
-    let mut lifecycle = RendezvousLifecycle::new(RendezvousMode::Outbound, identity());
+    let mut lifecycle = RendezvousLifecycle::new(RendezvousMode::Outbound, identity(), nonce());
     lifecycle.set_runtime_ready(true);
     lifecycle.open(activation_id).unwrap();
     lifecycle.accept(&accepted(activation_id, true, 1)).unwrap();
@@ -153,7 +211,7 @@ fn readiness_loss_revokes_active_outbound_before_future_admission() {
 fn rotation_and_late_close_are_idempotent() {
     let first = Uuid::parse_str("2b31e11c-f574-4163-a834-713054ecfc50").unwrap();
     let replacement = Uuid::parse_str("4c3993cb-f4de-4cd7-b8c4-bf7393e1ad6f").unwrap();
-    let mut lifecycle = RendezvousLifecycle::new(RendezvousMode::Outbound, identity());
+    let mut lifecycle = RendezvousLifecycle::new(RendezvousMode::Outbound, identity(), nonce());
     lifecycle.set_runtime_ready(true);
     lifecycle.open(first).unwrap();
     lifecycle.accept(&accepted(first, true, 1)).unwrap();
@@ -184,7 +242,7 @@ fn rotation_and_late_close_are_idempotent() {
 
 #[test]
 fn replay_requires_contiguous_sequences_and_stable_idempotency_keys() {
-    let mut lifecycle = RendezvousLifecycle::new(RendezvousMode::Outbound, identity());
+    let mut lifecycle = RendezvousLifecycle::new(RendezvousMode::Outbound, identity(), nonce());
     lifecycle.set_runtime_ready(true);
     let activation_id = Uuid::new_v4();
     lifecycle.open(activation_id).unwrap();
