@@ -12,6 +12,41 @@ use crate::headless::PendingApproval;
 use crate::headless::RemoteTransportConfig;
 use crate::hosted_runner::rendezvous_protocol::RendezvousMode;
 
+#[tokio::test]
+async fn initial_identity_exchanges_are_polled_concurrently() {
+    let server_started = Arc::new(tokio::sync::Notify::new());
+    let client_started = Arc::new(tokio::sync::Notify::new());
+
+    let server = {
+        let server_started = server_started.clone();
+        let client_started = client_started.clone();
+        async move {
+            server_started.notify_one();
+            client_started.notified().await;
+            Ok::<_, &'static str>("server")
+        }
+    };
+    let client = {
+        let server_started = server_started.clone();
+        let client_started = client_started.clone();
+        async move {
+            client_started.notify_one();
+            server_started.notified().await;
+            Ok::<_, &'static str>("client")
+        }
+    };
+
+    let identities = tokio::time::timeout(
+        Duration::from_millis(100),
+        join_initial_identity_exchanges(server, client),
+    )
+    .await
+    .expect("both exchange futures must be polled")
+    .expect("both exchanges succeed");
+
+    assert_eq!(identities, ("server", "client"));
+}
+
 #[test]
 fn hosted_trace_fields_accept_only_valid_w3c_parent_and_safe_route_classes() {
     let parent = "00-0af7656daaaaaaaaaaaaaaaaaaaaaaaa-b7ad6b7169203331-01";
