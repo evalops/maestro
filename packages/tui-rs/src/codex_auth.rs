@@ -5,9 +5,9 @@
 //! `openai-codex/gpt-5.5` once `maestro codex login` has succeeded.
 //!
 //! Env vars already set by the user (or CLI flags) always win. We never write
-//! Codex tokens into `~/.maestro/keys.json`; we only export process env for the
-//! current run so `UnifiedClient` / `ProviderRegistry` can resolve
-//! `openai-codex/*` models.
+//! Codex tokens into `~/.maestro/keys.json`. Native `openai-codex/*` turns let
+//! Codex app-server read this file directly; the environment export helper is
+//! retained only for direct-provider compatibility paths.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -237,8 +237,9 @@ pub fn model_uses_openai_codex(model: &str) -> bool {
         || m.contains("codex") && !m.starts_with("openai/")
 }
 
-/// Resolve the interactive/default model: explicit `MAESTRO_MODEL`, else Codex
-/// default when auth is present, else platform default.
+/// Resolve the interactive/default model without exporting Codex credentials.
+/// Explicit `MAESTRO_MODEL` wins, followed by the Codex default when auth is
+/// present, and finally the platform default.
 #[must_use]
 pub fn resolve_default_model() -> String {
     if let Ok(model) = std::env::var("MAESTRO_MODEL") {
@@ -247,8 +248,8 @@ pub fn resolve_default_model() -> String {
             return trimmed.to_string();
         }
     }
-    apply_codex_auth_to_process_env()
-        .preferred_default_model
+    read_codex_auth()
+        .and_then(|snapshot| snapshot.preferred_default_model())
         .unwrap_or(DEFAULT_PLATFORM_MODEL)
         .to_string()
 }
@@ -406,6 +407,33 @@ mod tests {
         assert_eq!(resolve_default_model(), "anthropic/claude-sonnet-4-6");
         unsafe {
             std::env::remove_var("MAESTRO_MODEL");
+        }
+    }
+
+    #[test]
+    fn resolve_default_model_does_not_export_chatgpt_token() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        write_auth(
+            dir.path(),
+            r#"{
+              "auth_mode": "chatgpt",
+              "tokens": {"access_token": "access-secret"}
+            }"#,
+        );
+        unsafe {
+            std::env::set_var("CODEX_HOME", dir.path());
+            std::env::remove_var("MAESTRO_MODEL");
+            std::env::remove_var("OPENAI_CODEX_TOKEN");
+            std::env::remove_var("OPENAI_CODEX_ACCOUNT_ID");
+        }
+
+        assert_eq!(resolve_default_model(), DEFAULT_CODEX_MODEL);
+        assert!(std::env::var_os("OPENAI_CODEX_TOKEN").is_none());
+        assert!(std::env::var_os("OPENAI_CODEX_ACCOUNT_ID").is_none());
+
+        unsafe {
+            std::env::remove_var("CODEX_HOME");
         }
     }
 }

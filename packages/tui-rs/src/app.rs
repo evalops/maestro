@@ -1974,7 +1974,6 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
         // Codex ChatGPT login (CODEX_HOME/auth.json) wins when present and no
         // explicit MAESTRO_MODEL is set — see codex_auth::resolve_default_model.
-        let _codex_auth = crate::codex_auth::apply_codex_auth_to_process_env();
         let model = crate::codex_auth::resolve_default_model();
 
         let (history, session_id, thinking_level) = self.agent_context_for_spawn();
