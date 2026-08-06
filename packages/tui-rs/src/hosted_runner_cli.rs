@@ -17,7 +17,7 @@ use crate::hosted_runner::{
     AgentSupervisorHostedRunnerMessageExecutor, HostedRunnerConfig, HostedRunnerHandle,
 };
 
-const RESIDENT_MODEL_READY_CONTRACT_REVISION: &str = "maestro-resident-model-ready-v2";
+const RESIDENT_MODEL_READY_CONTRACT_REVISION: &str = "maestro-resident-model-ready-v3";
 const HEADLESS_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Debug, Parser)]
