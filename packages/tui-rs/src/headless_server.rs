@@ -274,6 +274,7 @@ impl HeadlessState {
                             request_id: None,
                             message: format!("headless event bridge failed: {err:#}"),
                             fatal: false,
+                            terminal: true,
                             error_type: Some(HeadlessErrorType::Protocol),
                         });
                     }
@@ -305,6 +306,7 @@ async fn submit_prompt_with_kind(
                     request_id: None,
                     message: format!("Failed to send prompt: {err:#}"),
                     fatal: false,
+                    terminal: true,
                     error_type: Some(HeadlessErrorType::Protocol),
                 })?;
             }
@@ -314,6 +316,7 @@ async fn submit_prompt_with_kind(
                 request_id: None,
                 message: format!("Failed to start agent: {err:#}"),
                 fatal: true,
+                terminal: true,
                 error_type: Some(HeadlessErrorType::Fatal),
             })?;
         }
@@ -366,6 +369,7 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                     request_id: None,
                     message: format!("Invalid headless message: {err}"),
                     fatal: false,
+                    terminal: false,
                     error_type: Some(HeadlessErrorType::Protocol),
                 })?;
                 continue;
@@ -393,6 +397,7 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                                 protocol_version.as_deref().unwrap_or_default(),
                             ),
                         fatal: true,
+                        terminal: true,
                         error_type: Some(HeadlessErrorType::Protocol),
                     })?;
                     break;
@@ -512,6 +517,7 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                     request_id: None,
                     message: "operation cancelled".to_string(),
                     fatal: false,
+                    terminal: true,
                     error_type: Some(HeadlessErrorType::Cancelled),
                 })?;
             }
@@ -861,6 +867,7 @@ fn protocol_error(request_id: Option<String>, message: impl Into<String>) -> Res
         request_id,
         message: message.into(),
         fatal: false,
+        terminal: false,
         error_type: Some(HeadlessErrorType::Protocol),
     })
 }
@@ -1494,7 +1501,11 @@ async fn handle_agent_event(
                 emit_transcript(meta, crate::transcript::TranscriptLevel::Block, &terminal)?;
             }
         }
-        FromAgent::Error { message, fatal } => {
+        FromAgent::Error {
+            message,
+            fatal,
+            terminal,
+        } => {
             let session_id = meta
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1505,7 +1516,14 @@ async fn handle_agent_event(
                 event = "maestro_response_failed",
                 session_id = ?session_id,
                 fatal,
-                error_kind = if fatal { "fatal" } else { "transient" },
+                terminal,
+                error_kind = if fatal {
+                    "fatal"
+                } else if terminal {
+                    "terminal"
+                } else {
+                    "transient"
+                },
                 configured_model = %configured_model,
                 routed_provider = routed_provider.unwrap_or(""),
             );
@@ -1513,8 +1531,11 @@ async fn handle_agent_event(
                 request_id: None,
                 message,
                 fatal,
+                terminal,
                 error_type: Some(if fatal {
                     HeadlessErrorType::Fatal
+                } else if terminal {
+                    HeadlessErrorType::Protocol
                 } else {
                     HeadlessErrorType::Transient
                 }),
@@ -1917,6 +1938,7 @@ fn response_consumption_message(
             request_id: Some(request_id),
             message: reason,
             fatal: false,
+            terminal: false,
             error_type: Some(HeadlessErrorType::Protocol),
         },
     }
@@ -2322,6 +2344,7 @@ function send(x){process.stdout.write(JSON.stringify(x)+'\n')}
 rl.on('line',line=>{const x=JSON.parse(line);fs.appendFileSync(log,JSON.stringify(x)+'\n');
 if(x.method==='initialize'){send({id:x.id,result:{protocolVersion:'2025-01-01',capabilities:{}}})}
 else if(x.method==='thread/start'){send({id:x.id,result:{thread:{id:'thread-headless'}}})}
+else if(x.method==='thread/resume'){send({id:x.id,result:{thread:{id:x.params.threadId}}})}
 else if(x.method==='turn/start'){send({id:x.id,result:{turn:{id:'turn-active'}}})}
 else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}});setTimeout(()=>send({method:'turn/completed',params:{turnId:'turn-active'}}),10)}
 });",
@@ -2990,6 +3013,7 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
                 request_id: Some(request_id),
                 message,
                 fatal: false,
+                terminal: false,
                 error_type: Some(HeadlessErrorType::Protocol),
             } if request_id == "cancelled-call"
                 && message.contains("cancelled before native consumption")

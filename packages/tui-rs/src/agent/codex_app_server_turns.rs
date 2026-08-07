@@ -8,13 +8,17 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::env;
+use std::path::Path;
 use std::time::Duration;
 
 use crate::codex_app_server::{
     agent_message_completed_text, agent_message_text_from_notifications,
     is_agent_message_notification, CodexAppServerClient, IncomingServerRequest, InitializeOptions,
-    Notification, ServerRequestWaitError, ThreadInjectItemsParams, ThreadStartParams,
+    JsonRpcError, Notification, ServerRequestWaitError, ThreadInjectItemsParams, ThreadStartParams,
     TurnStartParams,
+};
+use crate::codex_session::{
+    CodexCapabilities, CodexSessionKey, CodexSessionManifest, CodexSessionOpen, CodexThreadBinding,
 };
 use maestro_ai::{ContentBlock, Message, MessageContent, Role};
 
@@ -47,6 +51,44 @@ pub struct CodexAppServerTurnSession {
     client: CodexAppServerClient,
     thread_id: String,
     model: String,
+    open_kind: CodexSessionOpen,
+    profile: String,
+    compatibility: CodexCompatibilityReport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexPersistentThreadOpen {
+    pub thread_id: String,
+    pub open_kind: CodexSessionOpen,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexCompatibilityReport {
+    pub protocol_version: String,
+    pub resume: bool,
+    pub steering: bool,
+    pub missing_required: Vec<String>,
+}
+
+pub struct CodexThreadPayload<'a> {
+    pub dynamic_tools: &'a [DynamicToolSpec],
+    pub instructions: Option<String>,
+    pub restored_messages: &'a [Message],
+}
+
+impl CodexCompatibilityReport {
+    pub fn is_ready(&self) -> bool {
+        self.missing_required.is_empty()
+    }
+
+    fn legacy_unknown() -> Self {
+        Self {
+            protocol_version: "unknown".to_owned(),
+            resume: false,
+            steering: false,
+            missing_required: Vec::new(),
+        }
+    }
 }
 
 impl CodexAppServerTurnSession {
@@ -79,64 +121,169 @@ impl CodexAppServerTurnSession {
             CodexAppServerClient::spawn_with_env(command, args, None, &identity.child_env())
                 .await
                 .context("spawn Codex app-server")?;
-        client
-            .initialize(InitializeOptions {
-                experimental_api: true,
-                ..Default::default()
-            })
-            .await
-            .context("initialize Codex app-server")?;
-
-        // Native agent will answer item/tool/call and approval RPCs.
-        client.set_external_server_requests(true);
-
-        let mut extra = Map::new();
-        if !dynamic_tools.is_empty() {
-            let tools: Vec<Value> = dynamic_tools
-                .iter()
-                .map(|tool| {
-                    json!({
-                        "name": tool.name,
-                        "description": tool.description,
-                        "inputSchema": tool.input_schema,
-                    })
-                })
-                .collect();
-            extra.insert("dynamicTools".to_owned(), Value::Array(tools));
-        }
-        if let Some(instructions) = instructions.filter(|s| !s.trim().is_empty()) {
-            // `ThreadStartParams` (app-server-protocol v2) field for standing
-            // instructions. There is no `instructions` key, and setting
-            // `baseInstructions` would replace Codex's own base prompt.
-            extra.insert("developerInstructions".to_owned(), json!(instructions));
-        }
-
-        let thread = client
-            .start_thread(
-                ThreadStartParams {
-                    model: model.clone(),
-                    cwd,
-                    approval_policy,
-                    sandbox,
-                    extra: if extra.is_empty() {
-                        None
-                    } else {
-                        Some(Value::Object(extra))
-                    },
-                },
-                None,
-            )
-            .await
-            .context("thread/start")?;
-
-        Self::from_started_thread(client, thread.thread_id, model, restored_messages).await
+        let initialized = initialize_client(&client).await?;
+        let compatibility = codex_compatibility_from_initialize(&initialized);
+        ensure_codex_compatibility_ready(&compatibility)?;
+        Self::start_fresh_thread(
+            client,
+            ThreadStartParams {
+                model,
+                cwd,
+                approval_policy,
+                sandbox,
+                extra: thread_start_extra(dynamic_tools, instructions.clone()),
+            },
+            CodexThreadPayload {
+                dynamic_tools,
+                instructions,
+                restored_messages,
+            },
+            None,
+            identity.profile_name,
+            compatibility,
+        )
+        .await
     }
 
+    pub async fn connect_persistent(
+        model: impl Into<String>,
+        cwd: Option<String>,
+        approval_policy: Option<String>,
+        sandbox: Option<String>,
+        payload: CodexThreadPayload<'_>,
+        state_root: &Path,
+    ) -> Result<Self> {
+        let model = model.into();
+        let (command, args) = codex_app_server_spawn_override_from_env()?;
+        let requested_profile = env::var("MAESTRO_CODEX_PROFILE")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        let workspace = cwd
+            .as_deref()
+            .map(std::path::Path::new)
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let identity =
+            crate::codex_identity::resolve_codex_identity(requested_profile.as_deref(), workspace)?;
+        let key = CodexSessionKey::new(&identity.profile_name, workspace, &model)?;
+        let manifest = CodexSessionManifest {
+            key,
+            approval_policy: approval_policy.clone().unwrap_or_default(),
+            sandbox: sandbox.clone().unwrap_or_default(),
+            capabilities: CodexCapabilities::default(),
+        };
+        let client =
+            CodexAppServerClient::spawn_with_env(command, args, None, &identity.child_env())
+                .await
+                .context("spawn Codex app-server")?;
+        Self::connect_with_client_and_manifest(
+            client,
+            manifest,
+            state_root,
+            payload.dynamic_tools,
+            payload.instructions,
+            payload.restored_messages,
+        )
+        .await
+    }
+
+    pub async fn connect_with_client_and_manifest(
+        client: CodexAppServerClient,
+        manifest: CodexSessionManifest,
+        state_root: &Path,
+        dynamic_tools: &[DynamicToolSpec],
+        instructions: Option<String>,
+        restored_messages: &[Message],
+    ) -> Result<Self> {
+        let initialized = initialize_client(&client).await?;
+        let compatibility = codex_compatibility_from_initialize(&initialized);
+        ensure_codex_compatibility_ready(&compatibility)?;
+        let open = open_persistent_thread(
+            &client,
+            &manifest,
+            state_root,
+            CodexThreadPayload {
+                dynamic_tools,
+                instructions,
+                restored_messages,
+            },
+            &initialized,
+            &compatibility,
+        )
+        .await?;
+        let thread_id = open.thread_id;
+        let open_kind = open.open_kind;
+        let profile = manifest.key.profile.clone();
+        Ok(Self {
+            client,
+            thread_id,
+            model: manifest.key.model,
+            open_kind,
+            profile,
+            compatibility,
+        })
+    }
+
+    async fn start_fresh_thread(
+        client: CodexAppServerClient,
+        params: ThreadStartParams,
+        payload: CodexThreadPayload<'_>,
+        binding_store: Option<(&Path, CodexSessionManifest, Value)>,
+        profile: String,
+        compatibility: CodexCompatibilityReport,
+    ) -> Result<Self> {
+        let model = params.model.clone();
+        let thread = client
+            .start_thread(params, None)
+            .await
+            .context("thread/start")?;
+        let session = Self::from_started_thread_with_metadata(
+            client,
+            thread.thread_id,
+            model,
+            payload.restored_messages,
+            profile,
+            compatibility,
+        )
+        .await?;
+        if let Some((state_root, manifest, initialized)) = binding_store {
+            CodexThreadBinding::fresh(
+                manifest.key,
+                session.thread_id.clone(),
+                initialized
+                    .get("protocolVersion")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            )
+            .store_at(state_root)?;
+        }
+        Ok(session)
+    }
+
+    #[cfg(test)]
     async fn from_started_thread(
         client: CodexAppServerClient,
         thread_id: String,
         model: String,
         restored_messages: &[Message],
+    ) -> Result<Self> {
+        Self::from_started_thread_with_metadata(
+            client,
+            thread_id,
+            model,
+            restored_messages,
+            String::new(),
+            CodexCompatibilityReport::legacy_unknown(),
+        )
+        .await
+    }
+
+    async fn from_started_thread_with_metadata(
+        client: CodexAppServerClient,
+        thread_id: String,
+        model: String,
+        restored_messages: &[Message],
+        profile: String,
+        compatibility: CodexCompatibilityReport,
     ) -> Result<Self> {
         let restored_items = semantic_messages_to_codex_items(restored_messages);
         if !restored_items.is_empty() {
@@ -156,6 +303,9 @@ impl CodexAppServerTurnSession {
             client,
             thread_id,
             model,
+            open_kind: CodexSessionOpen::Created,
+            profile,
+            compatibility,
         })
     }
 
@@ -165,6 +315,18 @@ impl CodexAppServerTurnSession {
 
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    pub fn open_kind(&self) -> CodexSessionOpen {
+        self.open_kind
+    }
+
+    pub fn profile(&self) -> &str {
+        &self.profile
+    }
+
+    pub fn compatibility(&self) -> &CodexCompatibilityReport {
+        &self.compatibility
     }
 
     pub fn client(&self) -> &CodexAppServerClient {
@@ -351,6 +513,126 @@ impl CodexAppServerTurnSession {
             .take_notifications_where(is_file_change_item_notification)
             .await
     }
+
+    /// Drain `turn/usage` notifications for a specific turn.
+    pub async fn take_usage_notifications_for_turn(&self, turn_id: &str) -> Vec<Value> {
+        self.client
+            .take_notifications_where(|n| {
+                n.method == "turn/usage" && notification_matches_turn_id(n, turn_id)
+            })
+            .await
+            .into_iter()
+            .filter_map(|notification| notification.params)
+            .collect()
+    }
+}
+
+pub async fn open_persistent_thread(
+    client: &CodexAppServerClient,
+    manifest: &CodexSessionManifest,
+    state_root: &Path,
+    payload: CodexThreadPayload<'_>,
+    initialized: &Value,
+    compatibility: &CodexCompatibilityReport,
+) -> Result<CodexPersistentThreadOpen> {
+    let binding = CodexThreadBinding::load_at(state_root, &manifest.key)?;
+    if compatibility.resume {
+        if let Some(binding) = binding.as_ref() {
+            match client
+                .resume_thread(thread_resume_params(manifest, &binding.thread_id), None)
+                .await
+            {
+                Ok(resumed) => {
+                    return Ok(CodexPersistentThreadOpen {
+                        thread_id: resumed.thread_id,
+                        open_kind: CodexSessionOpen::Resumed,
+                    });
+                }
+                Err(error) if is_thread_not_found_error(&error) => {
+                    CodexThreadBinding::quarantine_at(state_root, &manifest.key)?;
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    return Err(error).context(format!("thread/resume: {message}"));
+                }
+            }
+        }
+    }
+
+    let thread_id = start_and_store_persistent_thread(
+        client,
+        manifest,
+        state_root,
+        payload.dynamic_tools,
+        payload.instructions,
+        payload.restored_messages,
+        initialized,
+    )
+    .await?;
+    Ok(CodexPersistentThreadOpen {
+        thread_id,
+        open_kind: CodexSessionOpen::Created,
+    })
+}
+
+async fn start_and_store_persistent_thread(
+    client: &CodexAppServerClient,
+    manifest: &CodexSessionManifest,
+    state_root: &Path,
+    dynamic_tools: &[DynamicToolSpec],
+    instructions: Option<String>,
+    restored_messages: &[Message],
+    initialized: &Value,
+) -> Result<String> {
+    let thread = client
+        .start_thread(
+            ThreadStartParams {
+                model: manifest.key.model.clone(),
+                cwd: Some(manifest.key.workspace.to_string_lossy().to_string()),
+                approval_policy: Some(manifest.approval_policy.clone()),
+                sandbox: Some(manifest.sandbox.clone()),
+                extra: thread_start_extra(dynamic_tools, instructions),
+            },
+            None,
+        )
+        .await
+        .context("thread/start")?;
+    let restored_items = semantic_messages_to_codex_items(restored_messages);
+    if !restored_items.is_empty() {
+        client
+            .inject_thread_items(
+                ThreadInjectItemsParams {
+                    thread_id: thread.thread_id.clone(),
+                    items: Value::Array(restored_items),
+                },
+                None,
+            )
+            .await
+            .context("thread/inject_items")?;
+    }
+    CodexThreadBinding::fresh(
+        manifest.key.clone(),
+        thread.thread_id.clone(),
+        initialized
+            .get("protocolVersion")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    )
+    .store_at(state_root)?;
+    Ok(thread.thread_id)
+}
+
+fn thread_resume_params(
+    manifest: &CodexSessionManifest,
+    thread_id: &str,
+) -> crate::codex_app_server::ThreadResumeParams {
+    crate::codex_app_server::ThreadResumeParams {
+        thread_id: thread_id.to_owned(),
+        model: Some(manifest.key.model.clone()),
+        cwd: Some(manifest.key.workspace.to_string_lossy().to_string()),
+        path: None,
+        extra: None,
+    }
 }
 
 /// True for buffered item notifications that may carry file-change paths.
@@ -368,6 +650,23 @@ fn is_file_change_item_notification(n: &Notification) -> bool {
         || method.starts_with("item/")
 }
 
+fn notification_matches_turn_id(n: &Notification, turn_id: &str) -> bool {
+    n.params
+        .as_ref()
+        .and_then(notification_turn_id)
+        .map(|id| id == turn_id)
+        .unwrap_or(false)
+}
+
+fn notification_turn_id(params: &Value) -> Option<&str> {
+    params
+        .get("turnId")
+        .or_else(|| params.get("turn_id"))
+        .or_else(|| params.get("turn").and_then(|turn| turn.get("id")))
+        .or_else(|| params.get("id"))
+        .and_then(Value::as_str)
+}
+
 fn assistant_text_from_notifications(notes: &[Notification]) -> (String, bool) {
     let completed_text = completed_assistant_text_from_notifications(notes);
     if completed_text.is_empty() {
@@ -382,6 +681,219 @@ fn completed_assistant_text_from_notifications(notes: &[Notification]) -> String
         .iter()
         .filter_map(agent_message_completed_text)
         .collect::<String>()
+}
+
+async fn initialize_client(client: &CodexAppServerClient) -> Result<Value> {
+    let initialized = client
+        .initialize(InitializeOptions {
+            experimental_api: true,
+            ..Default::default()
+        })
+        .await
+        .context("initialize Codex app-server")?;
+
+    // Native agent will answer item/tool/call and approval RPCs.
+    client.set_external_server_requests(true);
+    Ok(initialized)
+}
+
+fn ensure_codex_compatibility_ready(compatibility: &CodexCompatibilityReport) -> Result<()> {
+    if compatibility.is_ready() {
+        return Ok(());
+    }
+    bail!(
+        "Codex app-server is missing required capabilities: {}",
+        compatibility.missing_required.join(", ")
+    )
+}
+
+pub fn codex_compatibility_from_initialize(result: &Value) -> CodexCompatibilityReport {
+    let protocol_version = result
+        .get("protocolVersion")
+        .or_else(|| result.get("protocol_version"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_owned();
+    let Some(capabilities) = result.get("capabilities").filter(|value| value.is_object()) else {
+        return CodexCompatibilityReport {
+            protocol_version,
+            ..CodexCompatibilityReport::legacy_unknown()
+        };
+    };
+
+    let declared = collect_capability_maps(capabilities);
+    if declared.is_empty() {
+        return CodexCompatibilityReport {
+            protocol_version,
+            ..CodexCompatibilityReport::legacy_unknown()
+        };
+    }
+    let has_method = |capability: &str| {
+        declared
+            .methods
+            .iter()
+            .any(|declared| capability_alias_matches(declared, capability))
+    };
+    let has_notification = |capability: &str| {
+        declared
+            .notifications
+            .iter()
+            .any(|declared| capability_alias_matches(declared, capability))
+    };
+    let has_terminal_notification = || {
+        [
+            "turn/completed",
+            "turn/complete",
+            "turn/completed/v2",
+            "codex/event",
+        ]
+        .into_iter()
+        .any(has_notification)
+    };
+    let mut missing_required = Vec::new();
+    for required in ["thread/start", "turn/start", "turn/interrupt"] {
+        if !has_method(required) {
+            missing_required.push(required.to_owned());
+        }
+    }
+    for required in ["item/tool/call", "item/agentMessage/delta"] {
+        if !has_notification(required) {
+            missing_required.push(required.to_owned());
+        }
+    }
+    if !has_terminal_notification() {
+        missing_required.push("turn/completed".to_owned());
+    }
+
+    CodexCompatibilityReport {
+        protocol_version,
+        resume: has_method("thread/resume"),
+        steering: has_method("turn/steer"),
+        missing_required,
+    }
+}
+
+#[derive(Debug, Default)]
+struct CapabilityMaps {
+    methods: Vec<String>,
+    notifications: Vec<String>,
+}
+
+impl CapabilityMaps {
+    fn is_empty(&self) -> bool {
+        self.methods.is_empty() && self.notifications.is_empty()
+    }
+}
+
+fn collect_capability_maps(capabilities: &Value) -> CapabilityMaps {
+    let mut maps = CapabilityMaps::default();
+    let explicit_methods = capabilities.get("methods");
+    let explicit_notifications = capabilities.get("notifications");
+    if explicit_methods.is_some() || explicit_notifications.is_some() {
+        if let Some(methods) = explicit_methods {
+            collect_capability_strings(methods, &mut maps.methods);
+        }
+        if let Some(notifications) = explicit_notifications {
+            collect_capability_strings(notifications, &mut maps.notifications);
+        }
+        return maps;
+    }
+
+    let mut legacy = Vec::new();
+    collect_capability_strings(capabilities, &mut legacy);
+    maps.methods = legacy.clone();
+    maps.notifications = legacy;
+    maps
+}
+
+fn collect_capability_strings(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(text) => out.push(text.clone()),
+        Value::Array(values) => {
+            for value in values {
+                collect_capability_strings(value, out);
+            }
+        }
+        Value::Object(map) => {
+            for (key, value) in map {
+                if value.as_bool() == Some(true) && key.contains('/') {
+                    out.push(key.clone());
+                }
+                collect_capability_strings(value, out);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn capability_alias_matches(declared: &str, expected: &str) -> bool {
+    let declared = declared.trim();
+    declared == expected
+        || declared.eq_ignore_ascii_case(expected)
+        || declared.replace('_', "/").eq_ignore_ascii_case(expected)
+}
+
+pub fn is_supported_codex_notification(method: &str) -> bool {
+    matches!(
+        method,
+        "turn/completed"
+            | "turn/complete"
+            | "turn/completed/v2"
+            | "turn/usage"
+            | "item/agentMessage/delta"
+            | "item/agentMessage/completed"
+            | "item/tool/call"
+            | "item/completed"
+            | "codex/event"
+    )
+}
+
+fn thread_start_extra(
+    dynamic_tools: &[DynamicToolSpec],
+    instructions: Option<String>,
+) -> Option<Value> {
+    let mut extra = Map::new();
+    if !dynamic_tools.is_empty() {
+        let tools: Vec<Value> = dynamic_tools
+            .iter()
+            .map(|tool| {
+                json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "inputSchema": tool.input_schema,
+                })
+            })
+            .collect();
+        extra.insert("dynamicTools".to_owned(), Value::Array(tools));
+    }
+    if let Some(instructions) = instructions.filter(|s| !s.trim().is_empty()) {
+        // `ThreadStartParams` (app-server-protocol v2) field for standing
+        // instructions. There is no `instructions` key, and setting
+        // `baseInstructions` would replace Codex's own base prompt.
+        extra.insert("developerInstructions".to_owned(), json!(instructions));
+    }
+    (!extra.is_empty()).then_some(Value::Object(extra))
+}
+
+pub(crate) fn is_thread_not_found_error(error: &anyhow::Error) -> bool {
+    if let Some(rpc_error) = error.downcast_ref::<JsonRpcError>() {
+        // No vendored protocol fixture in this checkout exposes a stable
+        // app-server-specific code/data shape for `thread/resume` missing
+        // threads. The narrow fallback is the exact legacy JSON-RPC error
+        // observed by the existing transport tests.
+        return rpc_error.code == Some(-32000)
+            && rpc_error.data.is_none()
+            && normalize_resume_error_message(&rpc_error.message) == "thread not found";
+    }
+    normalize_resume_error_message(&error.to_string()) == "thread not found"
+}
+
+fn normalize_resume_error_message(message: &str) -> String {
+    message
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
 }
 
 /// Optional process-local override for the app-server executable. Hosted
@@ -729,6 +1241,37 @@ mod tests {
     }
 
     #[test]
+    fn thread_not_found_classifier_requires_exact_legacy_shape() {
+        let exact = anyhow::anyhow!(JsonRpcError {
+            code: Some(-32000),
+            message: " Thread\nnot   found ".to_owned(),
+            data: None,
+        });
+        assert!(is_thread_not_found_error(&exact));
+
+        let wrong_data = anyhow::anyhow!(JsonRpcError {
+            code: Some(-32000),
+            message: "thread not found".to_owned(),
+            data: Some(json!({ "reason": "storage_unavailable" })),
+        });
+        assert!(!is_thread_not_found_error(&wrong_data));
+
+        let wrong_code = anyhow::anyhow!(JsonRpcError {
+            code: Some(-32603),
+            message: "thread not found".to_owned(),
+            data: None,
+        });
+        assert!(!is_thread_not_found_error(&wrong_code));
+
+        let broad_message = anyhow::anyhow!(JsonRpcError {
+            code: Some(-32000),
+            message: "thread backend not found during outage".to_owned(),
+            data: None,
+        });
+        assert!(!is_thread_not_found_error(&broad_message));
+    }
+
+    #[test]
     fn semantic_history_becomes_provider_visible_message_and_tool_pair_items() {
         let items = semantic_messages_to_codex_items(&[
             Message {
@@ -789,6 +1332,76 @@ mod tests {
         assert_eq!(items[2]["content"][0]["text"], "Then I'll explain.");
     }
 
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AppServerConformanceFixture {
+        version: u32,
+        initialize: Vec<AppServerConformanceInitializeCase>,
+        notifications: Vec<AppServerConformanceNotificationCase>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AppServerConformanceInitializeCase {
+        name: String,
+        result: Value,
+        expect_ready: bool,
+        expect_resume: bool,
+        expect_steering: bool,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AppServerConformanceNotificationCase {
+        method: String,
+        required: bool,
+        expect_known: bool,
+    }
+
+    #[test]
+    fn codex_compatibility_fixture_covers_required_optional_and_unknown_notifications() {
+        let fixture: AppServerConformanceFixture = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test/fixtures/codex/app-server-conformance-v1.json"
+        )))
+        .expect("app-server conformance fixture parses");
+        assert_eq!(fixture.version, 1);
+
+        for case in fixture.initialize {
+            let compatibility = codex_compatibility_from_initialize(&case.result);
+            assert_eq!(
+                compatibility.is_ready(),
+                case.expect_ready,
+                "case {} readiness mismatch: {:?}",
+                case.name,
+                compatibility
+            );
+            assert_eq!(compatibility.resume, case.expect_resume, "{}", case.name);
+            assert_eq!(
+                compatibility.steering, case.expect_steering,
+                "{}",
+                case.name
+            );
+            if !case.expect_ready {
+                assert!(
+                    !compatibility.missing_required.is_empty(),
+                    "{} should fail visibly with missing required capabilities",
+                    case.name
+                );
+            }
+        }
+
+        for case in fixture.notifications {
+            let known = is_supported_codex_notification(&case.method);
+            assert_eq!(known, case.expect_known, "{}", case.method);
+            assert!(
+                known || !case.required,
+                "unknown required notification {} must not be silently accepted",
+                case.method
+            );
+        }
+    }
+
     #[tokio::test]
     async fn restored_items_are_injected_before_the_next_turn_starts() {
         let (client, mock) = CodexAppServerClient::mock();
@@ -826,5 +1439,460 @@ mod tests {
             json!({ "turn": { "id": "turn-2" } }),
         );
         assert_eq!(turn_task.await.unwrap().unwrap(), "turn-2");
+    }
+
+    #[tokio::test]
+    async fn persisted_exact_binding_resumes_without_history_injection() {
+        let state_root = tempfile::tempdir().expect("state root");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let key = crate::codex_session::CodexSessionKey::new("work", workspace.path(), "gpt-5.5")
+            .expect("session key");
+        crate::codex_session::CodexThreadBinding::new(
+            key.clone(),
+            "thread-persisted",
+            Some("2025-01-01".to_owned()),
+            1_725_000_000,
+        )
+        .store_at(state_root.path())
+        .expect("store binding");
+        let manifest = crate::codex_session::CodexSessionManifest {
+            key,
+            approval_policy: "on-request".to_owned(),
+            sandbox: "read-only".to_owned(),
+            capabilities: crate::codex_session::CodexCapabilities::default(),
+        };
+        let history = vec![Message {
+            role: Role::User,
+            content: MessageContent::text("restored prompt must not replay"),
+        }];
+        let (client, mock) = CodexAppServerClient::mock();
+        let state_root_path = state_root.path().to_path_buf();
+
+        let task = tokio::spawn(async move {
+            CodexAppServerTurnSession::connect_with_client_and_manifest(
+                client,
+                manifest,
+                &state_root_path,
+                &[],
+                None,
+                &history,
+            )
+            .await
+        });
+
+        let initialize = mock.next_request().await.expect("initialize");
+        assert_eq!(initialize["method"], "initialize");
+        mock.respond(
+            initialize["id"].as_u64().unwrap(),
+            json!({
+                "protocolVersion": "2025-01-01",
+                "capabilities": {
+                    "methods": ["thread/start", "turn/start", "turn/interrupt", "thread/resume"],
+                    "notifications": ["item/tool/call", "item/agentMessage/delta", "turn/completed"]
+                }
+            }),
+        );
+        let initialized = mock.next_request().await.expect("initialized notification");
+        assert_eq!(initialized["method"], "initialized");
+        let resume = mock.next_request().await.expect("resume");
+        assert_eq!(resume["method"], "thread/resume");
+        assert_eq!(resume["params"]["threadId"], "thread-persisted");
+        assert_eq!(resume["params"]["model"], "gpt-5.5");
+        mock.respond(
+            resume["id"].as_u64().unwrap(),
+            json!({ "thread": { "id": "thread-persisted" } }),
+        );
+
+        let session = task.await.unwrap().expect("resumed session");
+        assert_eq!(session.thread_id(), "thread-persisted");
+        assert_eq!(
+            session.open_kind(),
+            crate::codex_session::CodexSessionOpen::Resumed
+        );
+        let extra =
+            tokio::time::timeout(std::time::Duration::from_millis(100), mock.next_request()).await;
+        assert!(
+            extra.is_err(),
+            "successful resume must not send thread/inject_items or thread/start"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_thread_not_found_quarantines_and_replaces_binding() {
+        let state_root = tempfile::tempdir().expect("state root");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let key = crate::codex_session::CodexSessionKey::new("work", workspace.path(), "gpt-5.5")
+            .expect("session key");
+        let binding =
+            crate::codex_session::CodexThreadBinding::new(key.clone(), "missing-thread", None, 1);
+        binding.store_at(state_root.path()).expect("store binding");
+        let old_path = binding.path_at(state_root.path());
+        let manifest = crate::codex_session::CodexSessionManifest {
+            key: key.clone(),
+            approval_policy: "on-request".to_owned(),
+            sandbox: "read-only".to_owned(),
+            capabilities: crate::codex_session::CodexCapabilities::default(),
+        };
+        let history = vec![Message {
+            role: Role::User,
+            content: MessageContent::text("restored context"),
+        }];
+        let (client, mock) = CodexAppServerClient::mock();
+        let state_root_path = state_root.path().to_path_buf();
+
+        let task = tokio::spawn(async move {
+            CodexAppServerTurnSession::connect_with_client_and_manifest(
+                client,
+                manifest,
+                &state_root_path,
+                &[],
+                None,
+                &history,
+            )
+            .await
+        });
+
+        let initialize = mock.next_request().await.expect("initialize");
+        mock.respond(
+            initialize["id"].as_u64().unwrap(),
+            json!({
+                "protocolVersion": "2025-01-01",
+                "capabilities": {
+                    "methods": ["thread/start", "turn/start", "turn/interrupt", "thread/resume"],
+                    "notifications": ["item/tool/call", "item/agentMessage/delta", "turn/completed"]
+                }
+            }),
+        );
+        let initialized = mock.next_request().await.expect("initialized");
+        assert_eq!(initialized["method"], "initialized");
+        let resume = mock.next_request().await.expect("resume");
+        assert_eq!(resume["method"], "thread/resume");
+        mock.reject(resume["id"].as_u64().unwrap(), "thread not found");
+        let start = mock.next_request().await.expect("replacement start");
+        assert_eq!(start["method"], "thread/start");
+        mock.respond(
+            start["id"].as_u64().unwrap(),
+            json!({ "thread": { "id": "replacement-thread" } }),
+        );
+        let inject = mock.next_request().await.expect("replacement inject");
+        assert_eq!(inject["method"], "thread/inject_items");
+        mock.respond(inject["id"].as_u64().unwrap(), json!({}));
+
+        let session = task.await.unwrap().expect("replacement session");
+        assert_eq!(session.thread_id(), "replacement-thread");
+        assert_eq!(
+            session.open_kind(),
+            crate::codex_session::CodexSessionOpen::Created
+        );
+        assert!(
+            old_path.exists(),
+            "replacement binding should occupy the exact-key path"
+        );
+        let loaded = crate::codex_session::CodexThreadBinding::load_at(state_root.path(), &key)
+            .expect("load replacement")
+            .expect("replacement binding");
+        assert_eq!(loaded.thread_id, "replacement-thread");
+    }
+
+    #[tokio::test]
+    async fn cleared_binding_runtime_connect_starts_fresh_with_live_manifest() {
+        let state_root = tempfile::tempdir().expect("state root");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let key = crate::codex_session::CodexSessionKey::new("work", workspace.path(), "gpt-5.5")
+            .expect("session key");
+        let binding =
+            crate::codex_session::CodexThreadBinding::new(key.clone(), "missing-thread", None, 1);
+        binding.store_at(state_root.path()).expect("store binding");
+        crate::codex_session::CodexThreadBinding::quarantine_at(state_root.path(), &key)
+            .expect("clear binding");
+        let manifest = crate::codex_session::CodexSessionManifest {
+            key: key.clone(),
+            approval_policy: "never".to_owned(),
+            sandbox: "workspace-write".to_owned(),
+            capabilities: crate::codex_session::CodexCapabilities::default(),
+        };
+        let dynamic_tools = vec![DynamicToolSpec {
+            name: "project_search".to_owned(),
+            description: "Search indexed project files".to_owned(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+        }];
+        let (client, mock) = CodexAppServerClient::mock();
+        let state_root_path = state_root.path().to_path_buf();
+
+        let task = tokio::spawn(async move {
+            CodexAppServerTurnSession::connect_with_client_and_manifest(
+                client,
+                manifest,
+                &state_root_path,
+                &dynamic_tools,
+                Some("Use the workspace-specific developer instructions.".to_owned()),
+                &[],
+            )
+            .await
+        });
+
+        let initialize = mock.next_request().await.expect("initialize");
+        mock.respond(
+            initialize["id"].as_u64().unwrap(),
+            json!({
+                "protocolVersion": "2025-01-01",
+                "capabilities": {
+                    "methods": ["thread/start", "turn/start", "turn/interrupt", "thread/resume"],
+                    "notifications": ["item/tool/call", "item/agentMessage/delta", "turn/completed"]
+                }
+            }),
+        );
+        let initialized = mock.next_request().await.expect("initialized");
+        assert_eq!(initialized["method"], "initialized");
+        let start = mock.next_request().await.expect("fresh start");
+        assert_eq!(start["method"], "thread/start");
+        assert_eq!(start["params"]["model"], "gpt-5.5");
+        assert_eq!(
+            start["params"]["cwd"],
+            workspace.path().to_string_lossy().as_ref()
+        );
+        assert_eq!(start["params"]["approvalPolicy"], "never");
+        assert_eq!(start["params"]["sandbox"], "workspace-write");
+        assert_eq!(start["params"]["dynamicTools"][0]["name"], "project_search");
+        assert_eq!(
+            start["params"]["dynamicTools"][0]["inputSchema"]["properties"]["query"]["type"],
+            "string"
+        );
+        assert_eq!(
+            start["params"]["developerInstructions"],
+            "Use the workspace-specific developer instructions."
+        );
+        assert!(start["params"].get("input").is_none());
+        mock.respond(
+            start["id"].as_u64().unwrap(),
+            json!({ "thread": { "id": "runtime-thread" } }),
+        );
+
+        let session = task.await.unwrap().expect("fresh runtime session");
+        assert_eq!(session.thread_id(), "runtime-thread");
+        assert_eq!(
+            session.open_kind(),
+            crate::codex_session::CodexSessionOpen::Created
+        );
+        let loaded = crate::codex_session::CodexThreadBinding::load_at(state_root.path(), &key)
+            .expect("load binding")
+            .expect("binding");
+        assert_eq!(loaded.thread_id, "runtime-thread");
+    }
+
+    #[tokio::test]
+    async fn resume_unavailable_skips_persisted_binding_and_replaces_it() {
+        let state_root = tempfile::tempdir().expect("state root");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let key = crate::codex_session::CodexSessionKey::new("work", workspace.path(), "gpt-5.5")
+            .expect("session key");
+        crate::codex_session::CodexThreadBinding::new(key.clone(), "thread-old", None, 1)
+            .store_at(state_root.path())
+            .expect("store binding");
+        let manifest = crate::codex_session::CodexSessionManifest {
+            key: key.clone(),
+            approval_policy: "on-request".to_owned(),
+            sandbox: "read-only".to_owned(),
+            capabilities: crate::codex_session::CodexCapabilities::default(),
+        };
+        let (client, mock) = CodexAppServerClient::mock();
+        let state_root_path = state_root.path().to_path_buf();
+
+        let task = tokio::spawn(async move {
+            CodexAppServerTurnSession::connect_with_client_and_manifest(
+                client,
+                manifest,
+                &state_root_path,
+                &[],
+                None,
+                &[],
+            )
+            .await
+        });
+
+        let initialize = mock.next_request().await.expect("initialize");
+        assert_eq!(initialize["method"], "initialize");
+        mock.respond(
+            initialize["id"].as_u64().unwrap(),
+            json!({
+                "protocolVersion": "2025-01-01",
+                "capabilities": {
+                    "methods": ["thread/start", "turn/start", "turn/interrupt"],
+                    "notifications": ["item/tool/call", "item/agentMessage/delta", "turn/completed"]
+                }
+            }),
+        );
+        let initialized = mock.next_request().await.expect("initialized");
+        assert_eq!(initialized["method"], "initialized");
+        let start = mock.next_request().await.expect("fresh start");
+        assert_eq!(start["method"], "thread/start");
+        assert_ne!(
+            start["method"], "thread/resume",
+            "resume=false must skip thread/resume"
+        );
+        mock.respond(
+            start["id"].as_u64().unwrap(),
+            json!({ "thread": { "id": "thread-new" } }),
+        );
+
+        let session = task.await.unwrap().expect("fresh session");
+        assert_eq!(session.thread_id(), "thread-new");
+        assert_eq!(
+            session.open_kind(),
+            crate::codex_session::CodexSessionOpen::Created
+        );
+        let loaded = crate::codex_session::CodexThreadBinding::load_at(state_root.path(), &key)
+            .expect("load binding")
+            .expect("binding");
+        assert_eq!(loaded.thread_id, "thread-new");
+    }
+
+    #[tokio::test]
+    async fn non_not_found_resume_failure_does_not_start_replacement() {
+        let state_root = tempfile::tempdir().expect("state root");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let key = crate::codex_session::CodexSessionKey::new("work", workspace.path(), "gpt-5.5")
+            .expect("session key");
+        crate::codex_session::CodexThreadBinding::new(key.clone(), "thread-persisted", None, 1)
+            .store_at(state_root.path())
+            .expect("store binding");
+        let manifest = crate::codex_session::CodexSessionManifest {
+            key,
+            approval_policy: "on-request".to_owned(),
+            sandbox: "read-only".to_owned(),
+            capabilities: crate::codex_session::CodexCapabilities::default(),
+        };
+        let (client, mock) = CodexAppServerClient::mock();
+        let state_root_path = state_root.path().to_path_buf();
+
+        let task = tokio::spawn(async move {
+            CodexAppServerTurnSession::connect_with_client_and_manifest(
+                client,
+                manifest,
+                &state_root_path,
+                &[],
+                None,
+                &[],
+            )
+            .await
+        });
+
+        let initialize = mock.next_request().await.expect("initialize");
+        mock.respond(
+            initialize["id"].as_u64().unwrap(),
+            json!({
+                "protocolVersion": "2025-01-01",
+                "capabilities": {
+                    "methods": ["thread/start", "turn/start", "turn/interrupt", "thread/resume"],
+                    "notifications": ["item/tool/call", "item/agentMessage/delta", "turn/completed"]
+                }
+            }),
+        );
+        let initialized = mock.next_request().await.expect("initialized");
+        assert_eq!(initialized["method"], "initialized");
+        let resume = mock.next_request().await.expect("resume");
+        assert_eq!(resume["method"], "thread/resume");
+        mock.reject(resume["id"].as_u64().unwrap(), "rate limit");
+
+        let error = match task.await.unwrap() {
+            Ok(_) => panic!("resume failure should stay visible"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("thread/resume"));
+        if let Ok(Ok(extra)) =
+            tokio::time::timeout(std::time::Duration::from_millis(100), mock.next_request()).await
+        {
+            assert_ne!(
+                extra["method"], "thread/start",
+                "non-not-found resume errors must not start replacement threads"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_error_with_thread_not_found_words_but_wrong_structure_does_not_replace() {
+        let state_root = tempfile::tempdir().expect("state root");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let key = crate::codex_session::CodexSessionKey::new("work", workspace.path(), "gpt-5.5")
+            .expect("session key");
+        crate::codex_session::CodexThreadBinding::new(key.clone(), "thread-persisted", None, 1)
+            .store_at(state_root.path())
+            .expect("store binding");
+        let manifest = crate::codex_session::CodexSessionManifest {
+            key: key.clone(),
+            approval_policy: "on-request".to_owned(),
+            sandbox: "read-only".to_owned(),
+            capabilities: crate::codex_session::CodexCapabilities::default(),
+        };
+        let old_path =
+            crate::codex_session::CodexThreadBinding::new(key, "thread-persisted", None, 1)
+                .path_at(state_root.path());
+        let (client, mock) = CodexAppServerClient::mock();
+        let state_root_path = state_root.path().to_path_buf();
+
+        let task = tokio::spawn(async move {
+            CodexAppServerTurnSession::connect_with_client_and_manifest(
+                client,
+                manifest,
+                &state_root_path,
+                &[],
+                None,
+                &[],
+            )
+            .await
+        });
+
+        let initialize = mock.next_request().await.expect("initialize");
+        mock.respond(
+            initialize["id"].as_u64().unwrap(),
+            json!({
+                "protocolVersion": "2025-01-01",
+                "capabilities": {
+                    "methods": ["thread/start", "turn/start", "turn/interrupt", "thread/resume"],
+                    "notifications": ["item/tool/call", "item/agentMessage/delta", "turn/completed"]
+                }
+            }),
+        );
+        let initialized = mock.next_request().await.expect("initialized");
+        assert_eq!(initialized["method"], "initialized");
+        let resume = mock.next_request().await.expect("resume");
+        assert_eq!(resume["method"], "thread/resume");
+        mock.reject_with_error(
+            resume["id"].as_u64().unwrap(),
+            -32603,
+            "thread backend not found during outage",
+            Some(json!({ "reason": "storage_unavailable" })),
+        );
+
+        let error = match task.await.unwrap() {
+            Ok(_) => panic!("resume error should stay visible"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("thread/resume"));
+        assert!(
+            error
+                .to_string()
+                .contains("thread backend not found during outage"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            old_path.exists(),
+            "wrong structured error must not quarantine the binding"
+        );
+        if let Ok(Ok(extra)) =
+            tokio::time::timeout(std::time::Duration::from_millis(100), mock.next_request()).await
+        {
+            assert_ne!(
+                extra["method"], "thread/start",
+                "wrong structured error must not start a replacement"
+            );
+        }
     }
 }

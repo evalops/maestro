@@ -978,6 +978,11 @@ impl ToolExecutor {
         self.inline_tools.len()
     }
 
+    /// Runtime tool definitions sent to model transports.
+    pub fn tool_definitions(&self) -> impl Iterator<Item = &crate::agent::ToolDefinition> {
+        self.registry.tools()
+    }
+
     /// Look up the inline tool that this exact spelling will execute.
     ///
     /// Used to resolve the real command string (and its source config path)

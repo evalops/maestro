@@ -920,20 +920,28 @@ fn test_handle_tool_failure() {
 }
 
 #[test]
-fn test_handle_error() {
+fn test_handle_error_respects_terminal_flag() {
     let mut state = AppState::new();
     state.busy = true;
 
     state.handle_agent_message(FromAgent::Error {
         message: "Connection failed".to_string(),
         fatal: false,
+        terminal: false,
     });
 
     assert_eq!(state.error, Some("Connection failed".to_string()));
-    assert!(!state.busy);
+    assert!(state.busy);
     assert_eq!(state.alerts.len(), 1);
     assert_eq!(state.alerts[0], "Connection failed");
     assert_eq!(state.unseen_alerts, 1);
+
+    state.handle_agent_message(FromAgent::Error {
+        message: "Turn failed".to_string(),
+        fatal: false,
+        terminal: true,
+    });
+    assert!(!state.busy);
 }
 
 #[test]

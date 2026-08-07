@@ -37,6 +37,44 @@ const forbiddenPublicPathPrefixes = [
 	".github/public-repo/",
 ];
 
+const forbiddenInternalContentRules = [
+	{
+		label: "internal work item reference",
+		pattern:
+			/(?:evalops\/)?maestro-internal(?:\/(?:pull|issues)\/|#)\d+/iu,
+	},
+	{
+		label: "internal Actions run reference",
+		pattern: /(?:evalops\/)?maestro-internal(?:\s+run\s+|\/actions\/runs\/)\d+/iu,
+	},
+	{
+		label: "internal cross-repository work item",
+		pattern: /evalops\/(?:platform|deploy)#\d+/iu,
+	},
+	{
+		label: "private dependency reference",
+		pattern: /github\.com\/evalops\/test-world/iu,
+	},
+	{
+		label: "internal checkout path",
+		pattern: /_work\/maestro-internal\//iu,
+	},
+	{
+		label: "private fleet endpoint",
+		pattern: /\b192\.168\.4\.(?:53|113)\b/u,
+	},
+	{
+		label: "private runner identity",
+		pattern:
+			/\bevalops-(?:internal|maestro-internal-rbe|private[-a-z0-9_]*)\b/iu,
+	},
+	{
+		label: "production artifact infrastructure",
+		pattern:
+			/(?:gs:\/\/evalops-prod-github-actions-evidence|github-actions@evalops-prod\.iam\.gserviceaccount\.com)/iu,
+	},
+];
+
 const openAiProof = ["OpenAI", "Proof"];
 const forbiddenProofArtifactLabels = [
 	["Maestro", ...openAiProof].join(" "),
@@ -57,6 +95,14 @@ const fallbackScanExcludedDirectories = new Set([
 	"target",
 	"tmp",
 ]);
+
+// The mirror projection never writes .github/workflows/ — the public
+// repository owns its CI and release workflows outright and the exclude list
+// keeps internal workflows out of the copy plan. Anything under this prefix
+// in a public or prepared tree was authored in the public repo, so it is out
+// of scope for the internal-content scan (public CI may legitimately
+// reference self-hosted runner labels that name the internal fleet).
+const internalContentScanExcludedPrefixes = [".github/workflows/"];
 
 function read(path) {
 	return readFileSync(resolve(path), "utf8");
@@ -150,6 +196,57 @@ function filesystemProofArtifactErrors() {
 	return matches;
 }
 
+function internalContentErrors() {
+	const matches = [];
+	for (const path of filesystemFiles()) {
+		if (
+			internalContentScanExcludedPrefixes.some((prefix) =>
+				path.startsWith(prefix),
+			)
+		) {
+			continue;
+		}
+		const bytes = readFileSync(resolve(path));
+		if (bytes.includes(0)) {
+			continue;
+		}
+		const source = bytes.toString("utf8");
+		for (const { label, pattern } of forbiddenInternalContentRules) {
+			if (pattern.test(source)) {
+				matches.push(`${path} contains ${label}`);
+			}
+		}
+	}
+	return matches;
+}
+
+function docPathAllowlistErrors() {
+	const path = "docs/doc-path-allowlist.json";
+	if (!existsSync(resolve(path))) {
+		return [];
+	}
+	let entries;
+	try {
+		entries = JSON.parse(read(path));
+	} catch (error) {
+		return [`${path} is invalid JSON: ${error.message}`];
+	}
+	if (!Array.isArray(entries)) {
+		return [`${path} must contain a JSON array`];
+	}
+	return entries
+		.filter(
+			(entry) =>
+				!entry ||
+				typeof entry.source !== "string" ||
+				!existsSync(resolve(entry.source)),
+		)
+		.map(
+			(entry) =>
+				`${path} references non-public source ${JSON.stringify(entry?.source ?? null)}`,
+		);
+}
+
 function fail(errors) {
 	console.error("Public surface boundary check failed:");
 	for (const error of errors) {
@@ -202,6 +299,8 @@ if (!existsSync(resolve(mirrorExcludePath))) {
 			errors.push(`${path} is not approved public documentation.`);
 		}
 	}
+	errors.push(...internalContentErrors());
+	errors.push(...docPathAllowlistErrors());
 }
 
 errors.push(...(gitProofArtifactErrors() ?? filesystemProofArtifactErrors()));

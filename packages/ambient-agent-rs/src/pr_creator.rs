@@ -668,10 +668,10 @@ mod tests {
         let repo = Repository {
             owner: "evalops".to_string(),
             name: "platform".to_string(),
-            full_name: "evalops/platform".to_string(),
+            full_name: "example/platform".to_string(),
             default_branch: "main".to_string(),
             path: "/tmp/platform".to_string(),
-            url: "https://github.com/evalops/platform".to_string(),
+            url: "https://github.com/example/platform".to_string(),
             config: None,
             agent_md: None,
             test_coverage: None,

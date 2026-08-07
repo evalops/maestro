@@ -1749,12 +1749,18 @@ impl SubagentManager {
                         break;
                     }
                 }
-                FromAgent::Error { message, fatal } => {
+                FromAgent::Error {
+                    message,
+                    fatal,
+                    terminal,
+                } if fatal || terminal => {
                     run_error = Some(message);
-                    if fatal {
-                        break;
-                    }
+                    break;
                 }
+                FromAgent::CodexSessionState { .. }
+                | FromAgent::CodexTurnState { .. }
+                | FromAgent::CodexUsageState { .. }
+                | FromAgent::CodexCompatibility { .. } => {}
                 _ => {}
             }
         }
@@ -2767,6 +2773,37 @@ fn child_event_to_headless(event: &FromAgent, session_id: &str) -> Option<FromAg
             duration_ms: None,
             ttft_ms: None,
         }),
+        FromAgent::CodexSessionState {
+            state,
+            thread_id,
+            profile,
+        } => Some(FromAgentMessage::CodexSessionState {
+            state: state.clone(),
+            thread_id: thread_id.clone(),
+            profile: profile.clone(),
+        }),
+        FromAgent::CodexTurnState {
+            state,
+            thread_id,
+            turn_id,
+        } => Some(FromAgentMessage::CodexTurnState {
+            state: state.clone(),
+            thread_id: thread_id.clone(),
+            turn_id: turn_id.clone(),
+        }),
+        FromAgent::CodexUsageState { source, usage } => Some(FromAgentMessage::CodexUsageState {
+            source: source.clone(),
+            usage: usage.as_ref().map(convert_usage),
+        }),
+        FromAgent::CodexCompatibility {
+            protocol_version,
+            resume,
+            steering,
+        } => Some(FromAgentMessage::CodexCompatibility {
+            protocol_version: protocol_version.clone(),
+            resume: *resume,
+            steering: *steering,
+        }),
         FromAgent::ToolCall {
             call_id,
             tool,
@@ -2800,10 +2837,15 @@ fn child_event_to_headless(event: &FromAgent, session_id: &str) -> Option<FromAg
             details: result.as_ref().and_then(|result| result.details.clone()),
             receipt: receipt.clone(),
         }),
-        FromAgent::Error { message, fatal } => Some(FromAgentMessage::Error {
+        FromAgent::Error {
+            message,
+            fatal,
+            terminal,
+        } => Some(FromAgentMessage::Error {
             request_id: None,
             message: message.clone(),
             fatal: *fatal,
+            terminal: *terminal,
             error_type: None,
         }),
         FromAgent::CodexNativeDecision { method, decision } => {

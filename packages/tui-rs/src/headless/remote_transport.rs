@@ -16,7 +16,7 @@ use reqwest::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -498,6 +498,7 @@ enum RemoteEnvelope {
 pub struct RemoteAgentTransport {
     message_tx: mpsc::UnboundedSender<ToAgentMessage>,
     event_rx: mpsc::UnboundedReceiver<Result<RemoteIncoming, AsyncTransportError>>,
+    event_notification: Arc<Notify>,
     cancel_token: CancellationToken,
     shutdown_context: Arc<RemoteShutdownContext>,
     connection_role: Option<ConnectionRole>,
@@ -551,7 +552,13 @@ struct WriterLoopContext {
     connection_capability: Option<String>,
     subscription_id: String,
     event_tx: mpsc::UnboundedSender<Result<RemoteIncoming, AsyncTransportError>>,
+    event_notification: Arc<Notify>,
     cancel: CancellationToken,
+}
+
+struct ReaderEventContext {
+    event_tx: mpsc::UnboundedSender<Result<RemoteIncoming, AsyncTransportError>>,
+    event_notification: Arc<Notify>,
 }
 
 #[derive(Clone, Copy)]
@@ -569,6 +576,7 @@ struct HeartbeatLoopContext {
     connection_capability: Option<String>,
     subscription_id: String,
     event_tx: mpsc::UnboundedSender<Result<RemoteIncoming, AsyncTransportError>>,
+    event_notification: Arc<Notify>,
     emit_success_heartbeat: bool,
     interval: Duration,
     cancel: CancellationToken,
@@ -655,13 +663,18 @@ impl RemoteAgentTransport {
 
         let (message_tx, message_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let event_notification = Arc::new(Notify::new());
         let cancel_token = CancellationToken::new();
         let reader_cancel = cancel_token.clone();
         let writer_cancel = cancel_token.clone();
         let heartbeat_cancel = cancel_token.clone();
 
         for message in controller_pending_events {
-            let _ = event_tx.send(Ok(RemoteIncoming::Message(message)));
+            let _ = super::send_transport_event(
+                &event_tx,
+                &event_notification,
+                Ok(RemoteIncoming::Message(message)),
+            );
         }
 
         let reader_handle = tokio::spawn(reader_loop(
@@ -670,7 +683,10 @@ impl RemoteAgentTransport {
             session_id.clone(),
             subscription_id.clone(),
             cursor,
-            event_tx.clone(),
+            ReaderEventContext {
+                event_tx: event_tx.clone(),
+                event_notification: Arc::clone(&event_notification),
+            },
             reader_cancel,
         ));
         let writer_handle = tokio::spawn(writer_loop(
@@ -682,6 +698,7 @@ impl RemoteAgentTransport {
                 connection_capability: connection_capability.clone(),
                 subscription_id: subscription_id.clone(),
                 event_tx: event_tx.clone(),
+                event_notification: Arc::clone(&event_notification),
                 cancel: writer_cancel,
             },
             message_rx,
@@ -699,6 +716,7 @@ impl RemoteAgentTransport {
             connection_capability: connection_capability.clone(),
             subscription_id: subscription_id.clone(),
             event_tx,
+            event_notification: Arc::clone(&event_notification),
             emit_success_heartbeat: config
                 .opt_out_notifications
                 .iter()
@@ -710,6 +728,7 @@ impl RemoteAgentTransport {
         let transport = Self {
             message_tx,
             event_rx,
+            event_notification,
             cancel_token,
             shutdown_context,
             connection_role: build_remote_connection_role(&config),
@@ -890,6 +909,7 @@ impl RemoteAgentTransport {
         let Self {
             message_tx: _message_tx,
             event_rx: _event_rx,
+            event_notification: _event_notification,
             cancel_token,
             shutdown_context,
             connection_role: _connection_role,
@@ -942,6 +962,10 @@ impl RemoteAgentTransport {
             .await
             .ok_or(AsyncTransportError::ChannelClosed)?;
         self.apply_incoming_result(result)
+    }
+
+    pub(crate) fn event_notification(&self) -> Arc<Notify> {
+        Arc::clone(&self.event_notification)
     }
 
     pub fn state(&self) -> &AgentState {
@@ -1381,6 +1405,7 @@ async fn writer_loop(context: WriterLoopContext, mut rx: mpsc::UnboundedReceiver
         connection_capability,
         subscription_id,
         event_tx,
+        event_notification,
         cancel,
     } = context;
     let url = format!(
@@ -1412,7 +1437,11 @@ async fn writer_loop(context: WriterLoopContext, mut rx: mpsc::UnboundedReceiver
                     Ok(()) => {}
                     Err(AsyncTransportError::Cancelled) => break,
                     Err(error) => {
-                        let _ = event_tx.send(Err(error));
+                        let _ = super::send_transport_event(
+                            &event_tx,
+                            &event_notification,
+                            Err(error),
+                        );
                         break;
                     }
                 }
@@ -1538,6 +1567,7 @@ async fn heartbeat_loop(context: HeartbeatLoopContext) {
         connection_capability,
         subscription_id,
         event_tx,
+        event_notification,
         emit_success_heartbeat,
         interval,
         cancel,
@@ -1560,7 +1590,11 @@ async fn heartbeat_loop(context: HeartbeatLoopContext) {
                 .await {
                     Ok(()) => {
                         if emit_success_heartbeat
-                            && event_tx.send(Ok(RemoteIncoming::Heartbeat)).is_err()
+                            && !super::send_transport_event(
+                                &event_tx,
+                                &event_notification,
+                                Ok(RemoteIncoming::Heartbeat),
+                            )
                         {
                             cancel.cancel();
                             break;
@@ -1570,7 +1604,11 @@ async fn heartbeat_loop(context: HeartbeatLoopContext) {
                         if !should_surface_heartbeat_error(&error) {
                             continue;
                         }
-                        let _ = event_tx.send(Err(error));
+                        let _ = super::send_transport_event(
+                            &event_tx,
+                            &event_notification,
+                            Err(error),
+                        );
                         cancel.cancel();
                         break;
                     }
@@ -1586,9 +1624,13 @@ async fn reader_loop(
     session_id: String,
     subscription_id: String,
     initial_cursor: u64,
-    event_tx: mpsc::UnboundedSender<Result<RemoteIncoming, AsyncTransportError>>,
+    reader_events: ReaderEventContext,
     cancel: CancellationToken,
 ) {
+    let ReaderEventContext {
+        event_tx,
+        event_notification,
+    } = reader_events;
     let mut cursor = initial_cursor;
     if cancel.is_cancelled() {
         return;
@@ -1601,17 +1643,21 @@ async fn reader_loop(
     let response = match with_headers(client.get(url), &config, false).send().await {
         Ok(response) => response,
         Err(error) => {
-            let _ = event_tx.send(Err(AsyncTransportError::Remote(error.to_string())));
+            let _ = super::send_transport_event(
+                &event_tx,
+                &event_notification,
+                Err(AsyncTransportError::Remote(error.to_string())),
+            );
             return;
         }
     };
 
     if response.status() != StatusCode::OK {
-        let _ = event_tx.send(Err(response_status_error(
-            response,
-            RemoteRequestKind::Stream,
-        )
-        .await));
+        let _ = super::send_transport_event(
+            &event_tx,
+            &event_notification,
+            Err(response_status_error(response, RemoteRequestKind::Stream).await),
+        );
         return;
     }
 
@@ -1637,10 +1683,11 @@ async fn reader_loop(
                                     continue;
                                 }
                                 cursor = cursor.max(next_cursor);
-                                if event_tx
-                                    .send(Ok(RemoteIncoming::Message(*message)))
-                                    .is_err()
-                                {
+                                if !super::send_transport_event(
+                                    &event_tx,
+                                    &event_notification,
+                                    Ok(RemoteIncoming::Message(*message)),
+                                ) {
                                     return;
                                 }
                             }
@@ -1651,13 +1698,14 @@ async fn reader_loop(
                                 let (_snapshot_session_id, next_cursor, last_init, state) =
                                     snapshot.into_state();
                                 cursor = next_cursor;
-                                if event_tx
-                                    .send(Ok(RemoteIncoming::Snapshot {
+                                if !super::send_transport_event(
+                                    &event_tx,
+                                    &event_notification,
+                                    Ok(RemoteIncoming::Snapshot {
                                         state: Box::new(state),
                                         last_init,
-                                    }))
-                                    .is_err()
-                                {
+                                    }),
+                                ) {
                                     return;
                                 }
                             }
@@ -1668,14 +1716,15 @@ async fn reader_loop(
                                 let (_snapshot_session_id, next_cursor, last_init, state) =
                                     snapshot.into_state();
                                 cursor = next_cursor;
-                                if event_tx
-                                    .send(Ok(RemoteIncoming::Reset {
+                                if !super::send_transport_event(
+                                    &event_tx,
+                                    &event_notification,
+                                    Ok(RemoteIncoming::Reset {
                                         reason,
                                         state: Box::new(state),
                                         last_init,
-                                    }))
-                                    .is_err()
-                                {
+                                    }),
+                                ) {
                                     return;
                                 }
                             }
@@ -1684,7 +1733,11 @@ async fn reader_loop(
                                     continue;
                                 }
                                 cursor = cursor.max(next_cursor);
-                                if event_tx.send(Ok(RemoteIncoming::Heartbeat)).is_err() {
+                                if !super::send_transport_event(
+                                    &event_tx,
+                                    &event_notification,
+                                    Ok(RemoteIncoming::Heartbeat),
+                                ) {
                                     return;
                                 }
                             }
@@ -1697,7 +1750,11 @@ async fn reader_loop(
                         }
                     }
                     Some(Err(error)) => {
-                        let _ = event_tx.send(Err(AsyncTransportError::Remote(error.to_string())));
+                        let _ = super::send_transport_event(
+                            &event_tx,
+                            &event_notification,
+                            Err(AsyncTransportError::Remote(error.to_string())),
+                        );
                         return;
                     }
                     None => break,
@@ -1715,7 +1772,7 @@ async fn reader_loop(
     } else {
         AsyncTransportError::Remote("remote event stream closed before emitting data".to_string())
     };
-    let _ = event_tx.send(Err(error));
+    let _ = super::send_transport_event(&event_tx, &event_notification, Err(error));
 }
 
 fn advances_remote_cursor(current_cursor: u64, next_cursor: u64) -> bool {

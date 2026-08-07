@@ -982,6 +982,40 @@ impl AgentState {
                 })
             }
 
+            FromAgentMessage::CodexSessionState {
+                state,
+                thread_id,
+                profile,
+            } => Some(AgentEvent::CodexSessionState {
+                state,
+                thread_id,
+                profile,
+            }),
+
+            FromAgentMessage::CodexTurnState {
+                state,
+                thread_id,
+                turn_id,
+            } => Some(AgentEvent::CodexTurnState {
+                state,
+                thread_id,
+                turn_id,
+            }),
+
+            FromAgentMessage::CodexUsageState { source, usage } => {
+                Some(AgentEvent::CodexUsageState { source, usage })
+            }
+
+            FromAgentMessage::CodexCompatibility {
+                protocol_version,
+                resume,
+                steering,
+            } => Some(AgentEvent::CodexCompatibility {
+                protocol_version,
+                resume,
+                steering,
+            }),
+
             FromAgentMessage::ToolCall {
                 call_id,
                 tool_execution_id,
@@ -1297,14 +1331,20 @@ impl AgentState {
                 request_id,
                 message,
                 fatal,
+                terminal,
                 error_type,
             } => {
                 self.last_error = Some(message.clone());
                 self.last_error_type = error_type;
+                if fatal || terminal {
+                    self.is_responding = false;
+                    self.current_response = None;
+                }
                 Some(AgentEvent::Error {
                     request_id,
                     message,
                     fatal,
+                    terminal,
                     error_type,
                 })
             }
@@ -1381,6 +1421,25 @@ pub enum AgentEvent {
         ttft_ms: Option<u64>,
         full_text: Option<String>,
     },
+    CodexSessionState {
+        state: String,
+        thread_id: String,
+        profile: String,
+    },
+    CodexTurnState {
+        state: String,
+        thread_id: String,
+        turn_id: Option<String>,
+    },
+    CodexUsageState {
+        source: String,
+        usage: Option<TokenUsage>,
+    },
+    CodexCompatibility {
+        protocol_version: String,
+        resume: bool,
+        steering: bool,
+    },
     ToolCall {
         call_id: String,
         tool: String,
@@ -1410,6 +1469,7 @@ pub enum AgentEvent {
         request_id: Option<String>,
         message: String,
         fatal: bool,
+        terminal: bool,
         error_type: Option<HeadlessErrorType>,
     },
     Status {

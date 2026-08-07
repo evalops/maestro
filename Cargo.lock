@@ -3307,6 +3307,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "maestro-scenario"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dunce",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "maestro-tui"
 version = "0.1.0"
 dependencies = [

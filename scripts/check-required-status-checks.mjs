@@ -37,7 +37,7 @@ const pullRequestEvents = new Set(["pull_request", "pull_request_target"]);
 function parseArgs(argv) {
 	const args = {
 		branch: "main",
-		repo: process.env.GITHUB_REPOSITORY || "evalops/maestro-internal",
+		repo: process.env.GITHUB_REPOSITORY || "evalops/maestro",
 		root: process.cwd(),
 		strict: false,
 	};

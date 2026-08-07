@@ -54,9 +54,9 @@ diagnostic metadata on the tool result, not the approval authority. New governed
 MCP calls should flow through Platform ToolExecution so wait, resume, deny,
 cancel, and output recording all use the same state machine as shell tools.
 
-This contract is the Maestro-side client/read-model slice for
-`evalops/maestro-internal#1417`. Platform still owns the canonical `AgentRunWait`
-and `ApprovalRequest` APIs; Maestro uses this session projection so clients can
+This contract is the Maestro-side client/read-model slice. Platform still owns
+the canonical `AgentRunWait` and `ApprovalRequest` APIs; Maestro uses this
+session projection so clients can
 rehydrate pending decisions after reload or hosted-runner attach while preserving
 the older split queues.
 

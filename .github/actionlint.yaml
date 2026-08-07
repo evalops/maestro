@@ -1,5 +1,3 @@
 self-hosted-runner:
   labels:
-    - evalops-internal
-    - evalops-maestro-internal-rbe
     - evalops-maestro-rbe

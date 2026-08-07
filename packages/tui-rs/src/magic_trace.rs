@@ -12,7 +12,7 @@
 //! - Unstripped binary with symbols (use Cargo profile `magic-trace`)
 //!
 //! This macOS/ARM host cannot run magic-trace natively. Capture on a Linux
-//! Intel box (or Hetzner `evalops-internal` style host) with:
+//! Intel bare-metal host with:
 //!
 //! ```bash
 //! scripts/magic-trace-tui.sh run

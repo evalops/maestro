@@ -9,9 +9,8 @@ works in the current interactive surface.
 
 > **Historical note:** The TypeScript implementations
 > (`src/cli-tui/prompt-queue.ts`, `loader-stage-manager.ts`, `run-controller.ts`)
-> were removed with the TS TUI in PR
-> [#2891](https://github.com/evalops/maestro-internal/pull/2891). Interactive
-> queuing lives in `packages/tui-rs`.
+> were removed with the TS TUI. Interactive queuing lives in
+> `packages/tui-rs`.
 
 ## Queue mechanics (native maestro-tui)
 

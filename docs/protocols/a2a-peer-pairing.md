@@ -132,12 +132,6 @@ deploy-verifier identifiers must resolve to live systems. Deterministic replay
 fixtures can prove the schema and message contract, but they must not be
 presented as proof of a production run.
 
-The full Platform-backed swarm goal is tracked as executable stage gates in
-[A2A swarm stage gates](./a2a-swarm-stage-gates.md). The JSON manifest behind
-that document is validated by `npm run check:evidence-integrity`, so each stage
-must retain concrete entry and exit evidence rather than drifting back into a
-checklist of claims.
-
 ## Live Platform Proof Smoke
 
 Use the live smoke when the question is whether two remote Maestro instances can

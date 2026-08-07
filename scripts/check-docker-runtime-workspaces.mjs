@@ -11,8 +11,11 @@ if (!existsSync(dockerfilePath)) {
 }
 
 const dockerfile = readFileSync(dockerfilePath, "utf8");
+const nativeStageHasRustToolchain =
+	/FROM\s+rust:[^\s]+\s+AS\s+native/.test(dockerfile) ||
+	(/FROM\s+\S*cargo-chef:[^\s]+\s+AS\s+chef/.test(dockerfile) &&
+		/FROM\s+chef\s+AS\s+native/.test(dockerfile));
 const required = [
-	[/FROM\s+rust:[^\s]+\s+AS\s+native/, "Rust native build stage"],
 	[/https:\/\/deb\.debian\.org/, "HTTPS Debian package mirror"],
 	[/COPY\s+packages\/web\/dist\s+\.\/packages\/web\/dist/, "versioned browser assets"],
 	[
@@ -28,6 +31,9 @@ const required = [
 const missing = required
 	.filter(([pattern]) => !pattern.test(dockerfile))
 	.map(([, label]) => label);
+if (!nativeStageHasRustToolchain) {
+	missing.unshift("Rust native build stage");
+}
 if (missing.length > 0) {
 	console.error(`Dockerfile is missing native runtime contracts: ${missing.join(", ")}`);
 	process.exit(1);

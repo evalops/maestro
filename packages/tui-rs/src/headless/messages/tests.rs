@@ -777,20 +777,42 @@ fn state_tracks_structured_errors() {
         request_id: Some("read_missing".to_string()),
         message: "Cancelled by user".to_string(),
         fatal: false,
+        terminal: true,
         error_type: Some(HeadlessErrorType::Cancelled),
     });
 
     assert_eq!(state.last_error.as_deref(), Some("Cancelled by user"));
     assert_eq!(state.last_error_type, Some(HeadlessErrorType::Cancelled));
-    assert!(state.is_responding);
+    assert!(!state.is_responding);
+    assert!(state.current_response.is_none());
     assert!(matches!(
         event,
         Some(AgentEvent::Error {
             request_id: Some(ref request_id),
+            terminal: true,
             error_type: Some(HeadlessErrorType::Cancelled),
             ..
         }) if request_id == "read_missing"
     ));
+
+    state.handle_message(FromAgentMessage::ResponseStart {
+        response_id: "resp2".to_string(),
+    });
+    state.handle_message(FromAgentMessage::Error {
+        request_id: None,
+        message: "Recoverable warning".to_string(),
+        fatal: false,
+        terminal: false,
+        error_type: Some(HeadlessErrorType::Transient),
+    });
+    assert!(state.is_responding);
+    assert_eq!(
+        state
+            .current_response
+            .as_ref()
+            .map(|response| response.response_id.as_str()),
+        Some("resp2")
+    );
 }
 
 #[test]

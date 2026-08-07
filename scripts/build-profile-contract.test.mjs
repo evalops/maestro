@@ -33,9 +33,12 @@ test("release and container entrypoints select optimized release", () => {
 	assert.match(releaseBuilder, /profile: "release"/);
 	assert.match(releaseBuilder, /"--profile"[\s\S]*?options\.profile/);
 	assert.match(releaseBuilder, /target\/\$\{target\}\/\$\{options\.profile\}/);
+	assert.match(dockerfile, /cargo chef prepare --recipe-path recipe\.json/);
+	assert.match(dockerfile, /cargo chef cook --release --locked -p maestro/);
 	assert.match(dockerfile, /cargo build --release --locked -p maestro/);
 	assert.match(dockerfile, /target\/release\/maestro/);
-	assert.match(ghcr, /cargo build --release --locked -p maestro/);
+	assert.match(ghcr, /cancel-in-progress: true/);
+	assert.match(ghcr, /docker\/build-push-action/);
 	assert.match(mirror, /npm run build:release/);
 	assert.match(release, /build-release-binary\.mjs --platform/);
 });

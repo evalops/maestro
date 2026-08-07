@@ -5,8 +5,6 @@
 //! hooks without going through config files. This module writes a minimal
 //! `.composer/hooks.toml` into a temporary workspace so session and
 //! recovery-path dispatch becomes assertable.
-//!
-//! See evalops/maestro-internal#3298.
 
 #![cfg(test)]
 
@@ -229,13 +227,22 @@ async fn scripted_stream_error_dispatches_stop_failure() {
 
     let saw_error = harness
         .wait_for_event(Duration::from_secs(5), |event| {
-            matches!(event, FromAgent::Error { fatal: true, .. })
+            matches!(event, FromAgent::Error { terminal: true, .. })
         })
         .await;
     assert!(
         saw_error.is_some(),
-        "expected a fatal stream Error event; log={:?}",
+        "expected a terminal stream Error event; log={:?}",
         harness.hook_log_lines()
+    );
+    assert!(
+        harness
+            .wait_for_event(Duration::from_millis(200), |event| {
+                matches!(event, FromAgent::ResponseEnd { .. })
+            })
+            .await
+            .is_none(),
+        "terminal stream errors must not be followed by ResponseEnd"
     );
 
     // Poll specifically for StopFailure — PostMessage may also log on the same

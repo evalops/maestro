@@ -4727,7 +4727,7 @@ async fn platform_a2a_push_callback_accepts_status_updates() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn platform_a2a_push_callback_accepts_workspace_derived_token() {
-    // Mirrors PushNotificationTokenForWorkspace in evalops/platform
+    // Mirrors PushNotificationTokenForWorkspace in the Platform service
     // internal/agentruntime/a2a/push.go. The smoke and any other client whose
     // callback host/path matches the agent-runtime allowlist will send this
     // HMAC variant instead of the raw shared secret.

@@ -129,66 +129,110 @@ pub fn resolve_codex_identity_from(
     workspace: &Path,
     default_codex_home: &Path,
 ) -> Result<CodexIdentitySelection> {
-    let Some(requested_profile) = requested_profile else {
-        return Ok(CodexIdentitySelection {
-            profile_name: "default".to_owned(),
-            codex_home: default_codex_home.to_path_buf(),
-            workspace_boundary: None,
-        });
-    };
-    let requested_profile = requested_profile.trim();
-    if requested_profile.is_empty() {
+    let requested_profile = requested_profile.map(str::trim);
+    if matches!(requested_profile, Some("")) {
         bail!("Codex auth profile name cannot be empty");
     }
 
-    let raw = fs::read_to_string(profile_file).with_context(|| {
-        format!(
-            "Codex auth profile {requested_profile:?} is not configured (missing {})",
-            profile_file.display()
-        )
-    })?;
+    let raw = match fs::read_to_string(profile_file) {
+        Ok(raw) => raw,
+        Err(error)
+            if requested_profile.is_none() && error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            return Ok(CodexIdentitySelection {
+                profile_name: "default".to_owned(),
+                codex_home: default_codex_home.to_path_buf(),
+                workspace_boundary: None,
+            });
+        }
+        Err(error) => {
+            let profile_name = requested_profile.unwrap_or("default");
+            return Err(error).with_context(|| {
+                format!(
+                    "Codex auth profile {profile_name:?} is not configured (missing {})",
+                    profile_file.display()
+                )
+            });
+        }
+    };
     let profiles: CodexIdentityProfilesFile = serde_json::from_str(&raw)
         .with_context(|| format!("invalid Codex auth profile file {}", profile_file.display()))?;
-    let profile = profiles
-        .profiles
-        .get(requested_profile)
-        .with_context(|| format!("Codex auth profile {requested_profile:?} is not configured"))?;
-    if !profile.codex_home.is_absolute() {
-        bail!("Codex auth profile {requested_profile:?} codex_home must be an absolute path");
+    let canonical_workspace = dunce::canonicalize(workspace)
+        .with_context(|| format!("workspace {} is unavailable", workspace.display()))?;
+
+    let select_profile =
+        |profile_name: &str, profile: &CodexIdentityProfile| -> Result<CodexIdentitySelection> {
+            if !profile.codex_home.is_absolute() {
+                bail!("Codex auth profile {profile_name:?} codex_home must be an absolute path");
+            }
+
+            let workspace_boundary = profile
+            .workspace
+            .as_ref()
+            .map(|boundary| {
+                if !boundary.is_absolute() {
+                    bail!("Codex auth profile {profile_name:?} workspace must be an absolute path");
+                }
+                let canonical_boundary = dunce::canonicalize(boundary).with_context(|| {
+                    format!(
+                        "Codex auth profile {profile_name:?} workspace {} is unavailable",
+                        boundary.display()
+                    )
+                })?;
+                if !canonical_workspace.starts_with(&canonical_boundary) {
+                    bail!(
+                        "Codex auth profile {profile_name:?} is bound to workspace {}",
+                        canonical_boundary.display()
+                    );
+                }
+                Ok(canonical_boundary)
+            })
+            .transpose()?;
+
+            Ok(CodexIdentitySelection {
+                profile_name: profile_name.to_owned(),
+                codex_home: profile.codex_home.clone(),
+                workspace_boundary,
+            })
+        };
+
+    if let Some(requested_profile) = requested_profile {
+        let profile = profiles.profiles.get(requested_profile).with_context(|| {
+            format!("Codex auth profile {requested_profile:?} is not configured")
+        })?;
+        return select_profile(requested_profile, profile);
     }
 
-    let workspace_boundary = profile
-        .workspace
-        .as_ref()
-        .map(|boundary| {
-            if !boundary.is_absolute() {
-                bail!(
-                    "Codex auth profile {requested_profile:?} workspace must be an absolute path"
-                );
-            }
-            let canonical_boundary = dunce::canonicalize(boundary).with_context(|| {
-                format!(
-                    "Codex auth profile {requested_profile:?} workspace {} is unavailable",
-                    boundary.display()
-                )
-            })?;
-            let canonical_workspace = dunce::canonicalize(workspace)
-                .with_context(|| format!("workspace {} is unavailable", workspace.display()))?;
-            if !canonical_workspace.starts_with(&canonical_boundary) {
-                bail!(
-                    "Codex auth profile {requested_profile:?} is bound to workspace {}",
-                    canonical_boundary.display()
-                );
-            }
-            Ok(canonical_boundary)
-        })
-        .transpose()?;
+    let mut matches = Vec::new();
+    for (profile_name, profile) in &profiles.profiles {
+        let Some(boundary) = profile.workspace.as_ref() else {
+            continue;
+        };
+        if !boundary.is_absolute() {
+            bail!(
+                "Codex auth profile {profile_name:?} has invalid workspace; use an absolute existing path"
+            );
+        }
+        let canonical_boundary = dunce::canonicalize(boundary).with_context(|| {
+            format!("Codex auth profile {profile_name:?} workspace is unavailable")
+        })?;
+        if canonical_workspace.starts_with(&canonical_boundary) {
+            matches.push((profile_name.as_str(), profile));
+        }
+    }
 
-    Ok(CodexIdentitySelection {
-        profile_name: requested_profile.to_owned(),
-        codex_home: profile.codex_home.clone(),
-        workspace_boundary,
-    })
+    match matches.as_slice() {
+        [] => Ok(CodexIdentitySelection {
+            profile_name: "default".to_owned(),
+            codex_home: default_codex_home.to_path_buf(),
+            workspace_boundary: None,
+        }),
+        [(profile_name, profile)] => select_profile(profile_name, profile),
+        _ => bail!(
+            "multiple Codex auth profiles own workspace {}",
+            canonical_workspace.display()
+        ),
+    }
 }
 
 #[must_use]
@@ -384,6 +428,178 @@ mod tests {
         )
         .expect_err("missing profile");
         assert!(error.to_string().contains("other-user"));
+    }
+
+    #[test]
+    fn workspace_owner_is_selected_without_an_explicit_profile() {
+        let root = tempfile::tempdir().expect("root");
+        let workspace = root.path().join("workspace");
+        let child = workspace.join("repo");
+        let codex_home = root.path().join("codex-work");
+        fs::create_dir_all(&child).expect("workspace");
+        let profile_file = write_profile_file(root.path(), &workspace, &codex_home);
+
+        let selected =
+            resolve_codex_identity_from(&profile_file, None, &child, &root.path().join("default"))
+                .expect("select workspace owner");
+        assert_eq!(selected.profile_name, "work");
+        assert_eq!(selected.codex_home, codex_home);
+        assert_eq!(
+            selected.workspace_boundary.as_deref(),
+            Some(workspace.as_path())
+        );
+    }
+
+    #[test]
+    fn no_matching_workspace_owner_falls_back_to_default() {
+        let root = tempfile::tempdir().expect("root");
+        let workspace = root.path().join("workspace");
+        let child = workspace.join("repo");
+        let other_workspace = root.path().join("other-workspace");
+        let codex_home = root.path().join("codex-work");
+        let default_codex_home = root.path().join("default");
+        fs::create_dir_all(&child).expect("workspace");
+        fs::create_dir_all(&other_workspace).expect("other workspace");
+        let profile_file = write_profile_file(root.path(), &other_workspace, &codex_home);
+
+        let selected =
+            resolve_codex_identity_from(&profile_file, None, &child, &default_codex_home)
+                .expect("fall back to default");
+        assert_eq!(selected.profile_name, "default");
+        assert_eq!(selected.codex_home, default_codex_home);
+        assert_eq!(selected.workspace_boundary, None);
+    }
+
+    #[test]
+    fn implicit_selection_fails_closed_on_relative_workspace_profile() {
+        let root = tempfile::tempdir().expect("root");
+        let workspace = root.path().join("workspace");
+        let default_codex_home = root.path().join("default");
+        let profile_file = root.path().join("codex-auth-profiles.json");
+        fs::create_dir_all(&workspace).expect("workspace");
+        fs::write(
+            &profile_file,
+            serde_json::json!({
+                "profiles": {
+                    "work": {
+                        "codex_home": root.path().join("codex-work"),
+                        "workspace": "relative/workspace"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("profile file");
+
+        let error =
+            resolve_codex_identity_from(&profile_file, None, &workspace, &default_codex_home)
+                .expect_err("relative workspace must fail closed");
+        let message = error.to_string();
+        assert!(message.contains("Codex auth profile \"work\" has invalid workspace"));
+        assert!(!message.contains("relative/workspace"));
+        assert!(!message.contains(default_codex_home.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn implicit_selection_fails_closed_on_uncanonicalizable_workspace_profile() {
+        let root = tempfile::tempdir().expect("root");
+        let workspace = root.path().join("workspace");
+        let default_codex_home = root.path().join("default");
+        let missing_workspace = root.path().join("missing-workspace");
+        let profile_file = root.path().join("codex-auth-profiles.json");
+        fs::create_dir_all(&workspace).expect("workspace");
+        fs::write(
+            &profile_file,
+            serde_json::json!({
+                "profiles": {
+                    "work": {
+                        "codex_home": root.path().join("codex-work"),
+                        "workspace": missing_workspace
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("profile file");
+
+        let error =
+            resolve_codex_identity_from(&profile_file, None, &workspace, &default_codex_home)
+                .expect_err("missing workspace must fail closed");
+        let message = error.to_string();
+        assert!(message.contains("Codex auth profile \"work\" workspace is unavailable"));
+        assert!(!message.contains(missing_workspace.to_string_lossy().as_ref()));
+        assert!(!message.contains(default_codex_home.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn ambiguous_workspace_owner_fails_closed() {
+        let root = tempfile::tempdir().expect("root");
+        let workspace = root.path().join("workspace");
+        let child = workspace.join("repo");
+        let codex_home = root.path().join("codex-work");
+        let other_codex_home = root.path().join("codex-personal");
+        let profile_file = root.path().join("codex-auth-profiles.json");
+        fs::create_dir_all(&child).expect("workspace");
+        fs::write(
+            &profile_file,
+            serde_json::json!({
+                "profiles": {
+                    "work": {
+                        "codex_home": codex_home,
+                        "workspace": workspace,
+                    },
+                    "personal": {
+                        "codex_home": other_codex_home,
+                        "workspace": workspace,
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("profile file");
+
+        let error =
+            resolve_codex_identity_from(&profile_file, None, &child, &root.path().join("default"))
+                .expect_err("ambiguous owner must fail closed");
+        assert!(error
+            .to_string()
+            .contains("multiple Codex auth profiles own workspace"));
+    }
+
+    #[test]
+    fn stale_workspace_profile_fails_closed_during_implicit_selection() {
+        let root = tempfile::tempdir().expect("root");
+        let workspace = root.path().join("workspace");
+        let child = workspace.join("repo");
+        let codex_home = root.path().join("codex-work");
+        let default_codex_home = root.path().join("default");
+        let stale_workspace = root.path().join("stale-workspace");
+        let profile_file = root.path().join("codex-auth-profiles.json");
+        fs::create_dir_all(&child).expect("workspace");
+        fs::write(
+            &profile_file,
+            serde_json::json!({
+                "profiles": {
+                    "stale": {
+                        "codex_home": root.path().join("codex-stale"),
+                        "workspace": stale_workspace,
+                    },
+                    "work": {
+                        "codex_home": codex_home,
+                        "workspace": workspace,
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("profile file");
+
+        let error = resolve_codex_identity_from(&profile_file, None, &child, &default_codex_home)
+            .expect_err("stale workspace profile must fail closed");
+        assert!(error
+            .to_string()
+            .contains("Codex auth profile \"stale\" workspace is unavailable"));
+        assert!(!error.to_string().contains("stale-workspace"));
     }
 
     #[test]

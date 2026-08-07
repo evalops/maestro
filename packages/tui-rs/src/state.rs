@@ -123,6 +123,67 @@ impl Message {
     }
 }
 
+#[cfg(test)]
+mod codex_status_tests {
+    use super::*;
+
+    #[test]
+    fn compact_codex_status_keeps_active_turn_over_metadata() {
+        let mut state = AppState::new();
+
+        state.handle_agent_message(FromAgent::CodexSessionState {
+            state: "resumed".to_owned(),
+            thread_id: "thread-abcdef1234567890".to_owned(),
+            profile: "work".to_owned(),
+        });
+        assert_eq!(
+            state.status.as_deref(),
+            Some("Codex resumed work thread-abcd")
+        );
+
+        state.handle_agent_message(FromAgent::CodexTurnState {
+            state: "streaming".to_owned(),
+            thread_id: "thread-abcdef1234567890".to_owned(),
+            turn_id: Some("turn-1234567890".to_owned()),
+        });
+        assert_eq!(
+            state.status.as_deref(),
+            Some("Codex streaming thread-abcd turn-123456")
+        );
+
+        state.handle_agent_message(FromAgent::CodexCompatibility {
+            protocol_version: "2025-01-01".to_owned(),
+            resume: false,
+            steering: false,
+        });
+        assert_eq!(
+            state.status.as_deref(),
+            Some("Codex streaming thread-abcd turn-123456")
+        );
+    }
+
+    #[test]
+    fn interrupted_codex_status_does_not_lock_out_later_session_state() {
+        let mut state = AppState::new();
+
+        state.handle_agent_message(FromAgent::CodexTurnState {
+            state: "interrupted".to_owned(),
+            thread_id: "thread-abcdef1234567890".to_owned(),
+            turn_id: Some("turn-1234567890".to_owned()),
+        });
+        state.handle_agent_message(FromAgent::CodexSessionState {
+            state: "reconnecting".to_owned(),
+            thread_id: "thread-fedcba0987654321".to_owned(),
+            profile: "work".to_owned(),
+        });
+
+        assert_eq!(
+            state.status.as_deref(),
+            Some("Codex reconnecting work thread-fedc")
+        );
+    }
+}
+
 /// Who sent the message.
 ///
 /// # Rust Concepts Used
@@ -782,6 +843,44 @@ impl AppState {
             FromAgent::CodexNativeOperation { .. }
             | FromAgent::CodexNativeDecision { .. }
             | FromAgent::CodexTransportReceipt { .. } => {}
+            FromAgent::CodexSessionState {
+                state,
+                thread_id,
+                profile,
+            } => {
+                self.set_codex_status_if_useful(compact_codex_session_status(
+                    &state, &thread_id, &profile,
+                ));
+            }
+            FromAgent::CodexTurnState {
+                state,
+                thread_id,
+                turn_id,
+            } => {
+                self.status = Some(compact_codex_turn_status(
+                    &state,
+                    &thread_id,
+                    turn_id.as_deref(),
+                ));
+            }
+            FromAgent::CodexUsageState { usage, .. } => {
+                if let Some(usage) = usage {
+                    if let Some(msg) = self.messages.iter_mut().rev().find(|m| m.streaming) {
+                        msg.usage = Some(usage);
+                    }
+                }
+            }
+            FromAgent::CodexCompatibility {
+                protocol_version,
+                resume,
+                steering,
+            } => {
+                self.set_codex_status_if_useful(compact_codex_compatibility_status(
+                    &protocol_version,
+                    resume,
+                    steering,
+                ));
+            }
             // Agent is ready with its model info
             FromAgent::Ready { model, provider } => {
                 self.model = Some(model);
@@ -954,11 +1053,17 @@ impl AppState {
             }
 
             // Error occurred
-            FromAgent::Error { message, fatal: _ } => {
+            FromAgent::Error {
+                message,
+                fatal,
+                terminal,
+            } => {
                 self.record_alert(message.clone());
                 self.error = Some(message);
-                self.busy = false;
-                self.busy_since = None;
+                if fatal || terminal {
+                    self.busy = false;
+                    self.busy_since = None;
+                }
             }
 
             // Status update (informational)
@@ -1756,6 +1861,17 @@ impl AppState {
             !toggled
         }
     }
+
+    fn set_codex_status_if_useful(&mut self, status: String) {
+        if self
+            .status
+            .as_deref()
+            .is_some_and(is_active_codex_turn_status)
+        {
+            return;
+        }
+        self.status = Some(status);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1789,6 +1905,45 @@ fn extract_thinking_header(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn compact_codex_session_status(state: &str, thread_id: &str, profile: &str) -> String {
+    format!("Codex {state} {profile} {}", short_codex_id(thread_id))
+}
+
+fn compact_codex_turn_status(state: &str, thread_id: &str, turn_id: Option<&str>) -> String {
+    match turn_id {
+        Some(turn_id) => format!(
+            "Codex {state} {} {}",
+            short_codex_id(thread_id),
+            short_codex_id(turn_id)
+        ),
+        None => format!("Codex {state} {}", short_codex_id(thread_id)),
+    }
+}
+
+fn compact_codex_compatibility_status(
+    protocol_version: &str,
+    resume: bool,
+    steering: bool,
+) -> String {
+    let optional = match (resume, steering) {
+        (true, true) => "full",
+        (false, true) => "no-resume",
+        (true, false) => "no-steer",
+        (false, false) => "no-resume/no-steer",
+    };
+    format!("Codex protocol {protocol_version} {optional}")
+}
+
+fn is_active_codex_turn_status(status: &str) -> bool {
+    status.starts_with("Codex accepted ")
+        || status.starts_with("Codex streaming ")
+        || status.starts_with("Codex steering ")
+}
+
+fn short_codex_id(value: &str) -> String {
+    value.chars().take(11).collect()
 }
 
 #[cfg(test)]

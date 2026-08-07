@@ -137,7 +137,7 @@ function evaluatePublicMirrorWorkflowBoundary(root) {
 }
 
 /**
- * PR CI must not steal a trusted self-hosted lane (e.g. `evalops-internal`)
+ * PR CI must not steal a trusted self-hosted lane (e.g. `trusted-linux-x64`)
  * by hard-coding it straight into a job's runs-on:, bypassing the vars.*
  * indirection that lets ops repoint the fleet without editing every
  * workflow.
@@ -145,7 +145,7 @@ function evaluatePublicMirrorWorkflowBoundary(root) {
  * Policy: every job in a workflow whose trigger set includes `pull_request`
  * must have at least one `vars.` reference somewhere in its runs-on: value.
  * A literal fallback *inside* a vars expression is fine — e.g.
- * `${{ vars.PR_CHECKS_RUNNER || 'evalops-internal' }}` is compliant, because
+ * `${{ vars.PR_CHECKS_RUNNER || 'trusted-linux-x64' }}` is compliant, because
  * the indirection is what matters, not what it falls back to. A runs-on:
  * value with no vars.* reference at all that names a self-hosted-looking
  * label (matches /evalops-|self-hosted/i) is the footgun this rejects.

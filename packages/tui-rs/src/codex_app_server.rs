@@ -286,6 +286,22 @@ pub struct Notification {
     pub params: Option<Value>,
 }
 
+/// JSON-RPC error object returned by Codex app-server.
+#[derive(Debug, Clone)]
+pub struct JsonRpcError {
+    pub code: Option<i64>,
+    pub message: String,
+    pub data: Option<Value>,
+}
+
+impl std::fmt::Display for JsonRpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for JsonRpcError {}
+
 /// Outbound line sink + kill handle used by the RPC client.
 struct TransportIo {
     write_tx: mpsc::UnboundedSender<String>,
@@ -1170,12 +1186,16 @@ impl MockCodexTransport {
     }
 
     pub fn reject(&self, id: u64, message: &str) {
+        self.reject_with_error(id, -32000, message, None);
+    }
+
+    pub fn reject_with_error(&self, id: u64, code: i64, message: &str, data: Option<Value>) {
+        let mut error = json!({ "code": code, "message": message });
+        if let Some(data) = data {
+            error["data"] = data;
+        }
         let _ = self.event_tx.send(IoEvent::Line(
-            json!({
-                "id": id,
-                "error": { "code": -32000, "message": message }
-            })
-            .to_string(),
+            json!({ "id": id, "error": error }).to_string(),
         ));
     }
 
@@ -1242,11 +1262,8 @@ async fn handle_line(
         let mut map = pending.lock().await;
         if let Some(tx) = map.remove(&id) {
             if let Some(error) = obj.get("error") {
-                let message = error
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Codex app-server request failed");
-                let _ = tx.send(Err(anyhow!(message.to_owned())));
+                let rpc_error = json_rpc_error_from_value(error);
+                let _ = tx.send(Err(anyhow!(rpc_error)));
             } else {
                 let result = obj.get("result").cloned().unwrap_or(Value::Null);
                 let _ = tx.send(Ok(result));
@@ -1357,6 +1374,18 @@ async fn handle_line(
             history.pop_front();
         }
         notify.notify_waiters();
+    }
+}
+
+fn json_rpc_error_from_value(error: &Value) -> JsonRpcError {
+    JsonRpcError {
+        code: error.get("code").and_then(Value::as_i64),
+        message: error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("Codex app-server request failed")
+            .to_owned(),
+        data: error.get("data").cloned(),
     }
 }
 
@@ -1831,9 +1860,22 @@ lines.on("line", (line) => {
         let request = mock.next_request().await.expect("account/read");
         assert_eq!(request["method"], "account/read");
         let id = request["id"].as_u64().unwrap();
-        mock.reject(id, "Not initialized");
+        mock.reject_with_error(
+            id,
+            -32603,
+            "Not initialized",
+            Some(json!({ "reason": "missing_initialize" })),
+        );
         let err = task.await.unwrap().expect_err("rpc error");
         assert!(err.to_string().contains("Not initialized"));
+        let rpc_error = err
+            .downcast_ref::<JsonRpcError>()
+            .expect("structured JSON-RPC error");
+        assert_eq!(rpc_error.code, Some(-32603));
+        assert_eq!(
+            rpc_error.data.as_ref().and_then(|data| data.get("reason")),
+            Some(&json!("missing_initialize"))
+        );
     }
 
     #[tokio::test]

@@ -1096,8 +1096,7 @@ mod tests {
 
     #[test]
     fn test_owned_runner_workspace_under_opt_is_trusted() {
-        let workspace =
-            PathBuf::from("/opt/actions-runner/_work/maestro-internal/maestro-internal");
+        let workspace = PathBuf::from("/opt/actions-runner/_work/sample-project/sample-project");
         let fw = ActionFirewall::new(&workspace);
         let readme = workspace.join("packages/tui-rs/README.md");
         let source = workspace.join("packages/tui-rs/src/main.rs");
@@ -1139,10 +1138,8 @@ mod tests {
     #[test]
     fn test_runner_workspaces_under_system_roots_are_trusted() {
         for workspace in [
-            PathBuf::from("/usr/local/actions-runner/_work/maestro-internal/maestro-internal"),
-            PathBuf::from(
-                "/opt/actions-runner/listener-03/_work/maestro-internal/maestro-internal",
-            ),
+            PathBuf::from("/usr/local/actions-runner/_work/sample-project/sample-project"),
+            PathBuf::from("/opt/actions-runner/listener-03/_work/sample-project/sample-project"),
         ] {
             let fw = ActionFirewall::new(&workspace);
             let source = workspace.join("packages/tui-rs/src/main.rs");
@@ -1160,9 +1157,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn test_spoofed_runner_workspace_under_opt_is_not_trusted() {
-        let workspace = PathBuf::from(
-            "/opt/not-really-runner-malicious/_work/maestro-internal/maestro-internal",
-        );
+        let workspace =
+            PathBuf::from("/opt/not-really-runner-malicious/_work/sample-project/sample-project");
         let fw = ActionFirewall::new(&workspace);
         let source = workspace.join("packages/tui-rs/src/main.rs");
         let source_arg = source.to_string_lossy();

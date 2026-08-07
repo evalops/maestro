@@ -2,7 +2,7 @@
 //! process signal: SIGINT, SIGTERM, SIGHUP on Unix; the Ctrl+C, console
 //! close, and system-shutdown console events on Windows.
 //!
-//! # Why this exists (see maestro-internal#3155)
+//! # Why this exists
 //!
 //! Nothing on the interactive path (`entrypoint::run_agent` ->
 //! `App::run()`) previously registered any of these. A supervisor stop, a
@@ -868,7 +868,7 @@ mod tests {
     /// registered in the *actual* global `process_registry`. A real
     /// `SIGTERM` is self-sent; this asserts the buffered entry lands on
     /// disk (via the cancellation drop cascade) and the child is reaped
-    /// -- the two failure modes from maestro-internal#3155.
+    /// -- the two failure modes this regression protects.
     ///
     /// The registry is process-global and tests run in parallel, so the
     /// reaping step uses `process_registry::cleanup_one(child_pid)`

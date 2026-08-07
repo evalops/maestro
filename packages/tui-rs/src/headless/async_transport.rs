@@ -5,12 +5,12 @@
 
 use std::collections::HashSet;
 use std::process::Stdio;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tokio::time::{timeout, Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
@@ -188,6 +188,8 @@ pub struct AsyncAgentTransport {
     message_tx: mpsc::UnboundedSender<ToAgentMessage>,
     /// Receiver for incoming raw protocol messages
     event_rx: mpsc::UnboundedReceiver<Result<FromAgentMessage, AsyncTransportError>>,
+    /// Wake listeners when the incoming queue receives a transport event.
+    event_notification: Arc<Notify>,
     /// Current agent state
     state: AgentState,
     /// Governed approval calls which already received a controller decision.
@@ -237,23 +239,34 @@ impl AsyncAgentTransport {
         let (message_tx, message_rx) = mpsc::unbounded_channel::<ToAgentMessage>();
         let (event_tx, event_rx) =
             mpsc::unbounded_channel::<Result<FromAgentMessage, AsyncTransportError>>();
+        let event_notification = Arc::new(Notify::new());
 
         let cancel_token = CancellationToken::new();
 
         // Spawn writer task
         let writer_cancel = cancel_token.clone();
         let writer_event_tx = event_tx.clone();
+        let writer_event_notification = Arc::clone(&event_notification);
         let writer_handle = tokio::spawn(async move {
-            Self::writer_loop(stdin, message_rx, writer_event_tx, writer_cancel).await;
+            Self::writer_loop(
+                stdin,
+                message_rx,
+                writer_event_tx,
+                writer_event_notification,
+                writer_cancel,
+            )
+            .await;
         });
 
         // Spawn reader task
         let reader_cancel = cancel_token.clone();
+        let reader_event_notification = Arc::clone(&event_notification);
         let reader_handle = tokio::spawn(async move {
             Self::reader_loop(
                 stdout,
                 child,
                 event_tx,
+                reader_event_notification,
                 reader_cancel,
                 config.buffer_size,
                 config.read_timeout,
@@ -264,6 +277,7 @@ impl AsyncAgentTransport {
         let transport = Self {
             message_tx,
             event_rx,
+            event_notification,
             state: AgentState::default(),
             decided_tool_executions: Mutex::new(HashSet::new()),
             cancel_token,
@@ -288,6 +302,7 @@ impl AsyncAgentTransport {
         mut stdin: tokio::process::ChildStdin,
         mut rx: mpsc::UnboundedReceiver<ToAgentMessage>,
         error_tx: mpsc::UnboundedSender<Result<FromAgentMessage, AsyncTransportError>>,
+        event_notification: Arc<Notify>,
         cancel: CancellationToken,
     ) {
         loop {
@@ -299,23 +314,39 @@ impl AsyncAgentTransport {
                             let json = match serde_json::to_string(&msg) {
                                 Ok(j) => j,
                                 Err(e) => {
-                                    let _ = error_tx.send(Err(AsyncTransportError::ParseFailed(e.to_string())));
+                                    let _ = super::send_transport_event(
+                                        &error_tx,
+                                        &event_notification,
+                                        Err(AsyncTransportError::ParseFailed(e.to_string())),
+                                    );
                                     continue;
                                 }
                             };
 
                             if let Err(e) = stdin.write_all(json.as_bytes()).await {
-                                let _ = error_tx.send(Err(AsyncTransportError::SendFailed(e.to_string())));
+                                let _ = super::send_transport_event(
+                                    &error_tx,
+                                    &event_notification,
+                                    Err(AsyncTransportError::SendFailed(e.to_string())),
+                                );
                                 break;
                             }
 
                             if let Err(e) = stdin.write_all(b"\n").await {
-                                let _ = error_tx.send(Err(AsyncTransportError::SendFailed(e.to_string())));
+                                let _ = super::send_transport_event(
+                                    &error_tx,
+                                    &event_notification,
+                                    Err(AsyncTransportError::SendFailed(e.to_string())),
+                                );
                                 break;
                             }
 
                             if let Err(e) = stdin.flush().await {
-                                let _ = error_tx.send(Err(AsyncTransportError::SendFailed(e.to_string())));
+                                let _ = super::send_transport_event(
+                                    &error_tx,
+                                    &event_notification,
+                                    Err(AsyncTransportError::SendFailed(e.to_string())),
+                                );
                                 break;
                             }
                         }
@@ -331,6 +362,7 @@ impl AsyncAgentTransport {
         stdout: tokio::process::ChildStdout,
         mut child: Child,
         tx: mpsc::UnboundedSender<Result<FromAgentMessage, AsyncTransportError>>,
+        event_notification: Arc<Notify>,
         cancel: CancellationToken,
         buffer_size: usize,
         read_timeout: Option<Duration>,
@@ -365,7 +397,11 @@ impl AsyncAgentTransport {
                             match serde_json::from_str::<FromAgentMessage>(&line) {
                                 Ok(msg) => {
                                     parse_error_streak = 0;
-                                    if tx.send(Ok(msg)).is_err() {
+                                    if !super::send_transport_event(
+                                        &tx,
+                                        &event_notification,
+                                        Ok(msg),
+                                    ) {
                                         break;
                                     }
                                 }
@@ -374,9 +410,11 @@ impl AsyncAgentTransport {
                                     eprintln!("Parse error: {} - {}", e, &line[..line.len().min(100)]);
                                     parse_error_streak += 1;
                                     if parse_error_streak >= MAX_CONSECUTIVE_PARSE_ERRORS {
-                                        let _ = tx.send(Err(AsyncTransportError::ParseFailed(
-                                            e.to_string(),
-                                        )));
+                                        let _ = super::send_transport_event(
+                                            &tx,
+                                            &event_notification,
+                                            Err(AsyncTransportError::ParseFailed(e.to_string())),
+                                        );
                                         break;
                                     }
                                 }
@@ -388,7 +426,7 @@ impl AsyncAgentTransport {
                         }
                         Err(e) => {
                             let is_timeout = matches!(e, AsyncTransportError::Timeout);
-                            let _ = tx.send(Err(e));
+                            let _ = super::send_transport_event(&tx, &event_notification, Err(e));
                             if is_timeout {
                                 should_kill = true;
                             }
@@ -408,7 +446,15 @@ impl AsyncAgentTransport {
             Ok(Ok(status)) => status.code(),
             _ => None,
         };
-        let _ = tx.send(Err(AsyncTransportError::ProcessExited(code)));
+        let _ = super::send_transport_event(
+            &tx,
+            &event_notification,
+            Err(AsyncTransportError::ProcessExited(code)),
+        );
+    }
+
+    pub(crate) fn event_notification(&self) -> Arc<Notify> {
+        Arc::clone(&self.event_notification)
     }
 
     /// Send a message to the agent
@@ -830,6 +876,7 @@ mod tests {
         let mut transport = AsyncAgentTransport {
             message_tx,
             event_rx,
+            event_notification: Arc::new(Notify::new()),
             state,
             decided_tool_executions: Mutex::new(HashSet::new()),
             cancel_token: CancellationToken::new(),
@@ -910,6 +957,7 @@ mod tests {
         let mut transport = AsyncAgentTransport {
             message_tx,
             event_rx,
+            event_notification: Arc::new(Notify::new()),
             state,
             decided_tool_executions: Mutex::new(HashSet::new()),
             cancel_token: CancellationToken::new(),
@@ -987,6 +1035,7 @@ mod tests {
         let transport = AsyncAgentTransport {
             message_tx,
             event_rx,
+            event_notification: Arc::new(Notify::new()),
             state,
             decided_tool_executions: Mutex::new(HashSet::new()),
             cancel_token: CancellationToken::new(),
@@ -1028,6 +1077,44 @@ mod tests {
         release.await.expect("release task");
     }
 
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn spawned_transport_notifies_on_ready_event() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script = temp.path().join("ready.sh");
+        fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"ready\",\"model\":\"test\",\"provider\":\"test\"}'\nsleep 1\n",
+        )
+        .expect("write script");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod script");
+
+        let mut transport = AsyncAgentTransport::spawn(AsyncTransportConfig {
+            cli_path: script.to_string_lossy().into_owned(),
+            ..AsyncTransportConfig::default()
+        })
+        .await
+        .expect("spawn scripted transport");
+        let notification = transport.event_notification();
+
+        tokio::time::timeout(Duration::from_secs(1), notification.notified())
+            .await
+            .expect("ready event should notify transport listeners");
+        assert!(matches!(
+            transport.try_recv(),
+            Some(Ok(AgentEvent::Ready { model, provider, .. }))
+                if model == "test" && provider == "test"
+        ));
+
+        transport
+            .shutdown_and_wait()
+            .await
+            .expect("shutdown scripted transport");
+    }
+
     #[tokio::test]
     async fn try_recv_skips_messages_without_events() {
         let (_message_tx, message_rx) = mpsc::unbounded_channel();
@@ -1052,6 +1139,7 @@ mod tests {
         let mut transport = AsyncAgentTransport {
             message_tx: _message_tx,
             event_rx,
+            event_notification: Arc::new(Notify::new()),
             state: AgentState::default(),
             decided_tool_executions: Mutex::new(HashSet::new()),
             cancel_token,
