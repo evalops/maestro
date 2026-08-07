@@ -45,7 +45,7 @@
 //!     FromAgent::ToolCall { call_id, tool, args, .. } => {
 //!         // Handle tool approval UI
 //!     }
-//!     FromAgent::Error { message, fatal } => {
+//!     FromAgent::Error { message, fatal, .. } => {
 //!         // Display error
 //!     }
 //!     _ => {}
@@ -1186,6 +1186,35 @@ pub enum FromAgent {
         usage: Option<TokenUsage>,
     },
 
+    /// Privacy-safe Codex app-server session lifecycle metadata.
+    CodexSessionState {
+        state: String,
+        thread_id: String,
+        profile: String,
+    },
+
+    /// Privacy-safe Codex app-server turn lifecycle metadata.
+    CodexTurnState {
+        state: String,
+        thread_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+    },
+
+    /// Provider usage state observed at a parsing or fallback boundary.
+    CodexUsageState {
+        source: String,
+        #[serde(default)]
+        usage: Option<TokenUsage>,
+    },
+
+    /// Codex app-server compatibility negotiated at initialize time.
+    CodexCompatibility {
+        protocol_version: String,
+        resume: bool,
+        steering: bool,
+    },
+
     /// A Codex-native operation the model produced, reported for accounting.
     ///
     /// Codex runs `commandExecution` and `fileChange` itself rather than
@@ -1339,6 +1368,13 @@ pub enum FromAgent {
         /// If false, it's a transient error and the agent can continue.
         #[serde(default)]
         fatal: bool,
+
+        /// Whether this error terminates the active response.
+        ///
+        /// Recoverable tool and validation errors leave this false. Stream
+        /// adapters close only when the producer has ended the request.
+        #[serde(default)]
+        terminal: bool,
     },
 
     /// Agent status update
@@ -1544,6 +1580,63 @@ mod tests {
         assert_eq!(transport["transport_restarted"], true);
         assert!(transport.get("prompt").is_none());
         assert!(transport.get("token").is_none());
+    }
+
+    #[test]
+    fn codex_lifecycle_events_are_structured_and_privacy_safe() {
+        let usage = TokenUsage {
+            input_tokens: 12,
+            output_tokens: 34,
+            cache_read_tokens: 5,
+            cache_write_tokens: 0,
+            cost: Some(0.001),
+        };
+        let events = [
+            serde_json::to_value(FromAgent::CodexSessionState {
+                state: "resumed".to_owned(),
+                thread_id: "thr-123".to_owned(),
+                profile: "work".to_owned(),
+            })
+            .unwrap(),
+            serde_json::to_value(FromAgent::CodexTurnState {
+                state: "accepted".to_owned(),
+                thread_id: "thr-123".to_owned(),
+                turn_id: Some("turn-456".to_owned()),
+            })
+            .unwrap(),
+            serde_json::to_value(FromAgent::CodexUsageState {
+                source: "exact".to_owned(),
+                usage: Some(usage),
+            })
+            .unwrap(),
+            serde_json::to_value(FromAgent::CodexCompatibility {
+                protocol_version: "2025-01-01".to_owned(),
+                resume: true,
+                steering: true,
+            })
+            .unwrap(),
+        ];
+
+        assert_eq!(events[0]["type"], "codex_session_state");
+        assert_eq!(events[1]["type"], "codex_turn_state");
+        assert_eq!(events[2]["type"], "codex_usage_state");
+        assert_eq!(events[3]["type"], "codex_compatibility");
+        let serialized = serde_json::to_string(&events).unwrap();
+        for forbidden in [
+            "prompt",
+            "message_content",
+            "tool_args",
+            "tool_result",
+            "sk-secret-token-value",
+            "auth",
+            "credential",
+            "/home/person/.codex",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "lifecycle event leaked forbidden field or value `{forbidden}`: {serialized}"
+            );
+        }
     }
 
     #[test]
@@ -1874,11 +1967,11 @@ mod tests {
             "gh_issue",
             ExecutionSource::Native,
             ToolResult::success("{\"body\": \"see attached\"}")
-                .with_details(serde_json::json!({ "origin": "github:evalops/maestro-internal" })),
+                .with_details(serde_json::json!({ "origin": "github:example/source-repo" })),
         );
         let content = execution.model_content();
         assert!(content.starts_with(
-            "<untrusted_content source=\"gh_issue\" origin=\"github:evalops/maestro-internal\">"
+            "<untrusted_content source=\"gh_issue\" origin=\"github:example/source-repo\">"
         ));
     }
 

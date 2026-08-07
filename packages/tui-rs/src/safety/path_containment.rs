@@ -581,8 +581,7 @@ mod tests {
 
     #[test]
     fn test_owned_runner_workspace_under_opt_is_contained() {
-        let workspace =
-            PathBuf::from("/opt/actions-runner/_work/maestro-internal/maestro-internal");
+        let workspace = PathBuf::from("/opt/actions-runner/_work/sample-project/sample-project");
         let target = workspace.join("src/file.rs");
 
         let result = is_path_contained(&target, &workspace, &[]);
@@ -592,22 +591,22 @@ mod tests {
     #[test]
     fn test_github_actions_runner_workspace_shape_is_verified() {
         assert!(has_trusted_linux_runner_workspace_shape(Path::new(
-            "/usr/local/actions-runner/_work/maestro-internal/maestro-internal",
+            "/usr/local/actions-runner/_work/sample-project/sample-project",
         )));
         assert!(has_trusted_linux_runner_workspace_shape(Path::new(
-            "/opt/actions-runner/listener-03/_work/maestro-internal/maestro-internal",
+            "/opt/actions-runner/listener-03/_work/sample-project/sample-project",
         )));
         assert!(!has_trusted_linux_runner_workspace_shape(Path::new(
-            "/opt/not-really-runner-malicious/_work/maestro-internal/maestro-internal",
+            "/opt/not-really-runner-malicious/_work/sample-project/sample-project",
         )));
         assert!(!has_trusted_linux_runner_workspace_shape(Path::new(
-            "/opt/evalops-private-heavy-runner-01/_work/maestro-internal/maestro-internal",
+            "/opt/private-heavy-runner-01/_work/sample-project/sample-project",
         )));
         assert!(has_trusted_linux_runner_workspace_shape(Path::new(
-            "/opt/actions-runner/_work/maestro-internal/other-repo",
+            "/opt/actions-runner/_work/sample-project/other-repo",
         )));
         assert!(!has_trusted_linux_runner_workspace_shape(Path::new(
-            "/etc/actions-runner/_work/maestro-internal/maestro-internal",
+            "/etc/actions-runner/_work/sample-project/sample-project",
         )));
     }
 
@@ -615,7 +614,7 @@ mod tests {
     #[test]
     fn test_actions_runner_workspace_under_usr_local_is_contained() {
         let workspace =
-            PathBuf::from("/usr/local/actions-runner/_work/maestro-internal/maestro-internal");
+            PathBuf::from("/usr/local/actions-runner/_work/sample-project/sample-project");
         let target = workspace.join("src/file.rs");
 
         let result = is_path_contained(&target, &workspace, &[]);
@@ -625,9 +624,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn test_actions_runner_listener_workspace_under_opt_is_contained() {
-        let workspace = PathBuf::from(
-            "/opt/actions-runner/listener-03/_work/maestro-internal/maestro-internal",
-        );
+        let workspace =
+            PathBuf::from("/opt/actions-runner/listener-03/_work/sample-project/sample-project");
         let target = workspace.join("src/file.rs");
 
         let result = is_path_contained(&target, &workspace, &[]);
@@ -636,8 +634,8 @@ mod tests {
 
     #[test]
     fn test_configured_runner_workspace_root_is_trusted() {
-        let workspace = PathBuf::from("/opt/evalops-ci/_work/maestro-internal/maestro-internal");
-        let configured_roots = [PathBuf::from("/opt/evalops-ci/_work")];
+        let workspace = PathBuf::from("/opt/example-ci/_work/sample-project/sample-project");
+        let configured_roots = [PathBuf::from("/opt/example-ci/_work")];
 
         assert!(is_trusted_system_workspace_with_roots(
             &workspace,
@@ -647,7 +645,7 @@ mod tests {
 
     #[test]
     fn test_configured_runner_workspace_root_rejects_relative_and_root_values() {
-        let workspace = PathBuf::from("/etc/maestro-internal/maestro-internal");
+        let workspace = PathBuf::from("/etc/sample-project/sample-project");
 
         for configured_roots in [
             vec![PathBuf::from(".")],
@@ -668,15 +666,11 @@ mod tests {
     #[test]
     fn test_non_runner_opt_work_directory_requires_configuration() {
         for workspace in [
-            PathBuf::from("/opt/evalops-ci/_work/maestro-internal/maestro-internal"),
-            PathBuf::from("/opt/notreallyrunner/_work/maestro-internal/maestro-internal"),
-            PathBuf::from(
-                "/opt/evalops-private-heavy-runner-01/_work/maestro-internal/maestro-internal",
-            ),
-            PathBuf::from(
-                "/opt/not-really-runner-malicious/_work/maestro-internal/maestro-internal",
-            ),
-            PathBuf::from("/etc/actions-runner/_work/maestro-internal/maestro-internal"),
+            PathBuf::from("/opt/example-ci/_work/sample-project/sample-project"),
+            PathBuf::from("/opt/notreallyrunner/_work/sample-project/sample-project"),
+            PathBuf::from("/opt/private-heavy-runner-01/_work/sample-project/sample-project"),
+            PathBuf::from("/opt/not-really-runner-malicious/_work/sample-project/sample-project"),
+            PathBuf::from("/etc/actions-runner/_work/sample-project/sample-project"),
         ] {
             let target = workspace.join("src/file.rs");
 

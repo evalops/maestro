@@ -14,7 +14,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use rand::Rng as _;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
 // Note: interval/timeout available for future health checking
 use tokio_util::sync::CancellationToken;
@@ -335,6 +335,13 @@ impl ManagedTransport {
                     RemoteIncoming::Heartbeat => ManagedIncoming::Heartbeat,
                 })
             }),
+        }
+    }
+
+    fn event_notification(&self) -> Arc<Notify> {
+        match self {
+            Self::Local(transport) => transport.event_notification(),
+            Self::Remote(transport) => transport.event_notification(),
         }
     }
 
@@ -1413,6 +1420,12 @@ impl AgentSupervisor {
         self.transport.is_some()
     }
 
+    pub(crate) fn event_notification(&self) -> Option<Arc<Notify>> {
+        self.transport
+            .as_ref()
+            .map(ManagedTransport::event_notification)
+    }
+
     /// Get a reference to the current supervisor-owned agent state.
     #[must_use]
     pub fn state(&self) -> &AgentState {
@@ -1716,6 +1729,37 @@ pub fn agent_event_to_message(event: &AgentEvent) -> FromAgentMessage {
             duration_ms: *duration_ms,
             ttft_ms: *ttft_ms,
         },
+        AgentEvent::CodexSessionState {
+            state,
+            thread_id,
+            profile,
+        } => FromAgentMessage::CodexSessionState {
+            state: state.clone(),
+            thread_id: thread_id.clone(),
+            profile: profile.clone(),
+        },
+        AgentEvent::CodexTurnState {
+            state,
+            thread_id,
+            turn_id,
+        } => FromAgentMessage::CodexTurnState {
+            state: state.clone(),
+            thread_id: thread_id.clone(),
+            turn_id: turn_id.clone(),
+        },
+        AgentEvent::CodexUsageState { source, usage } => FromAgentMessage::CodexUsageState {
+            source: source.clone(),
+            usage: usage.clone(),
+        },
+        AgentEvent::CodexCompatibility {
+            protocol_version,
+            resume,
+            steering,
+        } => FromAgentMessage::CodexCompatibility {
+            protocol_version: protocol_version.clone(),
+            resume: *resume,
+            steering: *steering,
+        },
         AgentEvent::ToolCall {
             call_id,
             tool,
@@ -1763,11 +1807,13 @@ pub fn agent_event_to_message(event: &AgentEvent) -> FromAgentMessage {
             request_id,
             message,
             fatal,
+            terminal,
             error_type,
         } => FromAgentMessage::Error {
             request_id: request_id.clone(),
             message: message.clone(),
             fatal: *fatal,
+            terminal: *terminal,
             error_type: *error_type,
         },
         AgentEvent::Status { message } => FromAgentMessage::Status {

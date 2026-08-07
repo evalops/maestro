@@ -220,15 +220,6 @@ score goldens.
 - Keep the runner offline and deterministic so CI can validate scenarios without
   a live model provider.
 
-The initial scenario harness is implemented by
-`src/server/agent-trajectory-scenarios.ts` and exposed through
-`maestro scenario validate <path>` and `maestro scenario run <path>`. The
-contract lives in `packages/contracts/src/scenario.ts`, fixtures live in
-`test/fixtures/agent-trajectory-scenarios`, and
-`scripts/check-agent-trajectory-scenario-fixtures.ts` keeps scenario result and
-JUnit artifacts stable. See `docs/protocols/agent-trajectory-scenarios.md` for
-the scenario contract and Platform promotion path.
-
 Executable replay is exposed separately through `maestro --replay <path>` and
 `MAESTRO_SCENARIO_PATH`. That path selects the synthetic
 `scripted-replay/maestro-replay-v1` model, bypasses external credentials, emits

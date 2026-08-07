@@ -2,6 +2,7 @@ use reqwest::StatusCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Condvar;
 use tempfile::tempdir;
+use tokio::sync::Notify;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -133,6 +134,7 @@ fn fatal_agent_event_transitions_the_hosted_runtime_to_terminal_state() {
             request_id: None,
             message: "managed model credential rejected".to_string(),
             fatal: true,
+            terminal: true,
             error_type: Some(crate::headless::messages::HeadlessErrorType::Fatal),
         },
     );
@@ -790,6 +792,61 @@ impl HostedRunnerHeadlessMessageExecutor for PumpOnlyRuntimeExecutor {
             consumed_response_keys: Vec::new(),
             rejected_response_keys: Vec::new(),
         })
+    }
+}
+
+#[derive(Debug)]
+struct NotifyingPumpRuntimeExecutor {
+    queued: Arc<Mutex<Vec<FromAgentMessage>>>,
+    notification: Arc<Notify>,
+}
+
+impl Default for NotifyingPumpRuntimeExecutor {
+    fn default() -> Self {
+        Self {
+            queued: Arc::new(Mutex::new(Vec::new())),
+            notification: Arc::new(Notify::new()),
+        }
+    }
+}
+
+impl NotifyingPumpRuntimeExecutor {
+    fn queue_ready_event(&self) {
+        self.queued
+            .lock()
+            .expect("queued ready event")
+            .push(FromAgentMessage::Ready {
+                protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
+                model: "test-model".to_string(),
+                provider: "test-provider".to_string(),
+                session_id: Some("sess_test".to_string()),
+            });
+        self.notification.notify_one();
+    }
+}
+
+impl HostedRunnerHeadlessMessageExecutor for NotifyingPumpRuntimeExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        _message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+            Vec::new(),
+            "notification fixture accepted message",
+        ))
+    }
+
+    fn drain(&self) -> Result<HostedRunnerDrainResult, HostedRunnerError> {
+        Ok(HostedRunnerDrainResult {
+            messages: std::mem::take(&mut *self.queued.lock().expect("queued ready event")),
+            consumed_response_keys: Vec::new(),
+            rejected_response_keys: Vec::new(),
+        })
+    }
+
+    fn event_notification(&self) -> Result<Option<Arc<Notify>>, HostedRunnerError> {
+        Ok(Some(Arc::clone(&self.notification)))
     }
 }
 
@@ -4751,6 +4808,86 @@ async fn wait_for_condition(mut condition: impl FnMut() -> bool) {
     })
     .await
     .expect("condition should become true");
+}
+
+#[tokio::test]
+async fn transport_notification_publishes_ready_before_maintenance_tick() {
+    let workspace = tempdir().expect("workspace");
+    let executor = Arc::new(NotifyingPumpRuntimeExecutor::default());
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+    )
+    .await
+    .expect("start hosted runner");
+    let client = reqwest::Client::new();
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    let connection: serde_json::Value = client
+        .post(format!("{}/api/headless/connections", handle.base_url()))
+        .json(&json!({
+            "sessionId": "sess_test",
+            "connectionId": "conn_event_notification",
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("connection response")
+        .json()
+        .await
+        .expect("connection json");
+    let connection_capability = connection["connection_capability"]
+        .as_str()
+        .expect("connection capability")
+        .to_string();
+    let subscription: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/subscribe",
+            handle.base_url()
+        ))
+        .json(&json!({
+            "connectionId": "conn_event_notification",
+            "connectionCapability": connection_capability,
+            "connectionCapabilityRequired": true,
+            "subscriptionId": "sub_event_notification",
+            "role": "controller"
+        }))
+        .send()
+        .await
+        .expect("subscription response")
+        .json()
+        .await
+        .expect("subscription json");
+    let subscription_id = subscription["subscription_id"]
+        .as_str()
+        .expect("subscription id");
+
+    let mut events = client
+        .get(format!(
+            "{}/api/headless/sessions/sess_test/events?cursor=0&subscriptionId={subscription_id}",
+            handle.base_url()
+        ))
+        .send()
+        .await
+        .expect("events response");
+    assert_eq!(events.status(), StatusCode::OK);
+    let mut buffered = String::new();
+    assert_eq!(
+        next_sse_message_type(&mut events, &mut buffered).await,
+        "connection_info"
+    );
+
+    executor.queue_ready_event();
+    let ready = tokio::time::timeout(
+        Duration::from_millis(75),
+        next_sse_message_type(&mut events, &mut buffered),
+    )
+    .await
+    .expect("ready event should not wait for the 100ms maintenance tick");
+    assert_eq!(ready, "ready");
+
+    handle.shutdown().await;
 }
 
 #[tokio::test]

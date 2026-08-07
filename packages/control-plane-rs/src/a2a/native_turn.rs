@@ -833,12 +833,20 @@ pub(crate) async fn run_a2a_native_turn(
                 finish_tool_metadata(&mut output.tools, &call_id, false);
                 last_error = Some(reason);
             }
-            FromAgent::Error { message, fatal } => {
+            FromAgent::Error {
+                message,
+                fatal,
+                terminal,
+            } => {
                 last_error = Some(message);
-                if fatal {
+                if fatal || terminal {
                     break;
                 }
             }
+            FromAgent::CodexSessionState { .. }
+            | FromAgent::CodexTurnState { .. }
+            | FromAgent::CodexUsageState { .. }
+            | FromAgent::CodexCompatibility { .. } => {}
             _ => {}
         }
     }

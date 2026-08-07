@@ -63,4 +63,4 @@ The manifest policy block is the schema-level contract. Cleanup lifecycle
 signals such as deletion succeeded, expiry applied, or cleanup failed should be
 tracked separately in runtime/control-plane events rather than inferred from the
 manifest file alone. Platform follow-through is tracked in
-`evalops/platform#853`.
+the corresponding Platform retention contract.

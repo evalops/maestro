@@ -517,7 +517,11 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
                     break;
                 }
             }
-            FromAgent::Error { message, fatal } => {
+            FromAgent::Error {
+                message,
+                fatal,
+                terminal,
+            } => {
                 if options.json {
                     let line = serde_json::json!({
                         "type": "error",
@@ -528,7 +532,7 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
                 } else {
                     eprintln!("Error: {message}");
                 }
-                if fatal {
+                if fatal || terminal {
                     exit_code = 1;
                     break;
                 }

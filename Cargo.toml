@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "packages/maestro-rs",
+    "packages/scenario-rs",
     "packages/ai-rs",
     "packages/control-plane-rs",
     "packages/execpolicy-rs",

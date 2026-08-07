@@ -13,7 +13,7 @@ const configuredEnv = {
 	MAESTRO_TOOL_EXECUTION_ORGANIZATION_ID: "org_1",
 	MAESTRO_TOOL_EXECUTION_WORKSPACE_ID: "workspace_1",
 	GITHUB_SERVER_URL: "https://github.com",
-	GITHUB_REPOSITORY: "evalops/maestro-internal",
+	GITHUB_REPOSITORY: "example/source-repo",
 	GITHUB_RUN_ID: "123",
 	GITHUB_RUN_ATTEMPT: "2",
 	GITHUB_WORKFLOW: "scenario replay",
@@ -57,13 +57,13 @@ test("buildScenarioReplayGovernanceRequest creates governed failure evidence", (
 	assert.equal(request.linkage.workspaceId, "workspace_1");
 	assert.equal(request.linkage.organizationId, "org_1");
 	assert.equal(request.linkage.surface, "SURFACE_MAESTRO");
-	assert.equal(request.linkage.correlationId, "https://github.com/evalops/maestro-internal/actions/runs/123");
+	assert.equal(request.linkage.correlationId, "https://github.com/example/source-repo/actions/runs/123");
 	assert.equal(request.tool.namespace, "evalops.maestro");
 	assert.equal(request.tool.capability, "scenario.replay.gate");
 	assert.equal(request.riskLevel, "RISK_LEVEL_LOW");
 	assert.equal(
 		request.idempotencyKey,
-		"maestro:scenario-replay-gate:evalops/maestro-internal:123:2:abc123",
+		"maestro:scenario-replay-gate:example/source-repo:123:2:abc123",
 	);
 	assert.equal(request.arguments.failureCount, 1);
 	assert.equal(request.metadata.failure_count, "1");

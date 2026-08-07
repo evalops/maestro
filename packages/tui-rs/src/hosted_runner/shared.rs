@@ -654,7 +654,9 @@ impl SharedRunner {
             FromAgentMessage::ResponseEnd { response_id, .. } => {
                 state.active_response_ids.remove(response_id);
             }
-            FromAgentMessage::Error { .. } => state.active_response_ids.clear(),
+            FromAgentMessage::Error {
+                fatal, terminal, ..
+            } if *fatal || *terminal => state.active_response_ids.clear(),
             _ => {}
         }
         // Reserve the cursor immediately before a response completion for the

@@ -209,8 +209,14 @@ impl ThreadProtocolState {
                 }
             }
             FromAgentMessage::Error {
-                fatal, error_type, ..
+                fatal,
+                terminal,
+                error_type,
+                ..
             } => {
+                if !fatal && !terminal {
+                    return;
+                }
                 let phase = if *fatal
                     || matches!(
                         error_type,

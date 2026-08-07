@@ -15,11 +15,11 @@ Create a local registry at `~/.codex/fleet/peers.json`:
   "timeoutMs": 600000,
   "peers": {
     "dev-desktop": {
-      "url": "http://192.168.4.113:18787",
+      "url": "https://peer-a.example",
       "tokenFile": "~/.codex/fleet/dev-desktop.token"
     },
     "mac-mini": {
-      "url": "http://192.168.4.53:18787",
+      "url": "https://peer-b.example",
       "tokenFile": "~/.codex/fleet/mac-mini.token"
     }
   }

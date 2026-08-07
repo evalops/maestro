@@ -195,6 +195,8 @@
 //! For multi-threaded scenarios, wrap transports in `Arc<Mutex<_>>` or use the
 //! async transport from a single task.
 
+use tokio::sync::{mpsc, Notify};
+
 mod async_transport;
 mod framing;
 mod generated_protocol;
@@ -251,6 +253,19 @@ pub use supervisor::{
     agent_event_to_message, AgentSupervisor, HealthStatus, SupervisorBuilder, SupervisorConfig,
     SupervisorEvent,
 };
+
+pub(crate) fn send_transport_event<T>(
+    sender: &mpsc::UnboundedSender<T>,
+    notification: &Notify,
+    event: T,
+) -> bool {
+    if sender.send(event).is_ok() {
+        notification.notify_one();
+        true
+    } else {
+        false
+    }
+}
 // Internal-only: a best-effort, off-the-hot-path stderr diagnostic helper
 // shared with `tools::registry::execute` and `agent::native`, not part of
 // this crate's public surface.

@@ -32,12 +32,45 @@ to another account. Configure `~/.maestro/codex-auth-profiles.json`:
 }
 ```
 
-Use `--profile work` with `login`, `logout`, `status`, or `doctor`, and
+Use `--profile work` with `login`, `logout`, `status`, `ready`, or `doctor`, and
 set `MAESTRO_CODEX_PROFILE=work` for native runs. A missing profile or workspace
 mismatch fails closed. `maestro codex doctor --profile work` reports the selected
 identity, auth health, app-server protocol/connectivity, and dynamic-tool
 compatibility without printing tokens or the account email.
 
+Check whether the selected Codex profile can accept a prompt:
+
+```bash
+maestro codex ready
+maestro codex ready --profile work --model openai-codex/gpt-5.5 --json
+```
+
+`ready` exits 0 when auth, required app-server methods, required notifications,
+dynamic-tool schemas, and the local thread binding are usable. It exits 1 when a
+required check fails. Missing `thread/resume` or `turn/steer` support is reported
+as optional degraded support and does not fail readiness.
+
+Use `--model MODEL` when checking a non-default Codex model. The binding check
+uses the same canonical model id that runtime sends to `thread/start`, so
+`maestro codex ready --model openai-codex/gpt-5.4` checks the `gpt-5.4` binding
+instead of the default model binding.
+
+Common Codex auth commands:
+
+| Command | Exit / status behavior |
+|---------|------------------------|
+| `maestro codex login` | Starts browser sign-in. Use `--device-auth` on remote or headless machines. |
+| `maestro codex status` | Reports whether the selected profile is signed in. It does not print the account email. |
+| `maestro codex ready [--model MODEL]` | Reports auth, app-server compatibility, tool-schema, binding, and optional resume/steering state. |
+
+Common failure modes:
+
+| Failure | Next step |
+|---------|-----------|
+| `signed_out`, `expired`, or `invalid` auth | Run `maestro codex login` for the selected profile. |
+| Missing required app-server capability | Upgrade the installed Codex CLI or packaged Maestro release. |
+| Dynamic-tool schema error | Run `maestro codex doctor` and fix the reported tool schema. |
+| Binding integrity failure | Re-run `maestro codex ready`; Maestro quarantines the invalid binding record. |
 
 ---
 

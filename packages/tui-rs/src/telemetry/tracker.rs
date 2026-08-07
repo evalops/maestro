@@ -124,10 +124,20 @@ impl TurnTracker {
                 self.accumulated_usage = usage.clone();
                 self.end_turn(TurnStatus::Success, None)
             }
-            FromAgent::Error { message, fatal } => {
+            FromAgent::CodexUsageState {
+                usage: Some(usage), ..
+            } => {
+                self.accumulated_usage = Some(usage.clone());
+                None
+            }
+            FromAgent::Error {
+                message,
+                fatal,
+                terminal,
+            } => {
                 // Only end turn on fatal errors. Non-fatal errors are informational
                 // (e.g., "Attachment blocked", "Attachment too large") and the turn continues.
-                if *fatal {
+                if *fatal || *terminal {
                     self.end_turn(
                         TurnStatus::Error,
                         Some(ErrorDetails {

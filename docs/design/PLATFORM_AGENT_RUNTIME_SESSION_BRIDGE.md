@@ -200,7 +200,7 @@ When changing the bridge, verify the behavior at all three layers:
    `npm run test -- test/server/hosted-runner-drain.test.ts`
 4. Headless-session tests for hosted-runner correlation:
    `npm run test -- test/web/headless-sessions.test.ts`
-5. Managed deployment smoke tests for live A2A trace projection in `evalops/deploy`.
+5. Managed deployment smoke tests for live A2A trace projection in the deployment repository.
 
 Keep new code behind this adapter boundary. Server handlers should pass
 session facts into the bridge and store returned correlation handles; they

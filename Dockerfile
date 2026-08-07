@@ -1,8 +1,24 @@
-FROM rust:bookworm AS native
+FROM docker.io/lukemathwalker/cargo-chef:0.1.77-rust-bookworm@sha256:1689f62cfaa6603480356923cb5966544b2dd6ea523e30486bee4f149965d5bc AS chef
 WORKDIR /app
+
+FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
 COPY packages/execpolicy-rs ./packages/execpolicy-rs
 COPY packages/tui-rs ./packages/tui-rs
+COPY packages/scenario-rs ./packages/scenario-rs
+COPY packages/control-plane-rs ./packages/control-plane-rs
+COPY packages/maestro-rs ./packages/maestro-rs
+COPY packages/ambient-agent-rs ./packages/ambient-agent-rs
+COPY packages/ai-rs ./packages/ai-rs
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS native
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --locked -p maestro --recipe-path recipe.json
+COPY Cargo.toml Cargo.lock ./
+COPY packages/execpolicy-rs ./packages/execpolicy-rs
+COPY packages/tui-rs ./packages/tui-rs
+COPY packages/scenario-rs ./packages/scenario-rs
 COPY packages/control-plane-rs ./packages/control-plane-rs
 COPY packages/maestro-rs ./packages/maestro-rs
 COPY packages/ambient-agent-rs ./packages/ambient-agent-rs

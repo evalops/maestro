@@ -1877,6 +1877,7 @@ async fn test_queue_counts_clear_on_error() {
     app.handle_agent_message(FromAgent::Error {
         message: "oops".to_string(),
         fatal: false,
+        terminal: true,
     })
     .await
     .expect("handle error");
@@ -1894,12 +1895,14 @@ async fn test_alerts_command_lists_recorded_alerts() {
     app.handle_agent_message(FromAgent::Error {
         message: "API error 400 Bad Request: invalid_request_error: messages.0: empty".to_string(),
         fatal: false,
+        terminal: false,
     })
     .await
     .expect("handle error");
     app.handle_agent_message(FromAgent::Error {
         message: "API error 429 Too Many Requests: rate_limit_error: slow down".to_string(),
         fatal: false,
+        terminal: false,
     })
     .await
     .expect("handle error");

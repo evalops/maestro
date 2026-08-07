@@ -15,6 +15,8 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+#[cfg(not(feature = "thin-scenario"))]
+#[path = "scenario_cli/execute.rs"]
 pub(crate) mod execute;
 
 const SCRIPTED_SCHEMA: &str = "evalops.maestro.scripted-scenario.v1";
@@ -284,6 +286,7 @@ struct ScriptedRunResult {
     release_gate: Option<ReleaseGateSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     workspace: Option<WorkspaceSummary>,
+    #[cfg(not(feature = "thin-scenario"))]
     #[serde(skip_serializing_if = "Option::is_none")]
     execution: Option<execute::ExecutionSummary>,
     assertions: Vec<AssertionResult>,
@@ -677,6 +680,9 @@ pub async fn run_scenario(args: &[String]) -> Result<i32> {
                     .map(Path::to_path_buf)
                     .unwrap_or_else(|| PathBuf::from("."));
                 if execute {
+                    #[cfg(feature = "thin-scenario")]
+                    bail!("--execute requires the full maestro binary");
+                    #[cfg(not(feature = "thin-scenario"))]
                     return run_scripted_scenario_execute(&scenario, &base_dir, json, junit_path)
                         .await;
                 }
@@ -1746,6 +1752,7 @@ fn evaluate_scripted_scenario(
         },
         release_gate,
         workspace,
+        #[cfg(not(feature = "thin-scenario"))]
         execution: None,
         assertions,
     })
@@ -1755,6 +1762,7 @@ fn evaluate_scripted_scenario(
 /// check what the runtime actually executed, file assertions check the
 /// (possibly hydrated) execution workspace, and the audit event assertion
 /// checks the events the run surfaced.
+#[cfg(not(feature = "thin-scenario"))]
 fn evaluate_execution_assertion(
     assertion: &ScriptedAssertion,
     scenario: &ScriptedScenario,
@@ -1952,6 +1960,7 @@ fn evaluate_execution_assertion(
 /// `scenario run --execute`: replay the scenario through the real agent loop
 /// (scripted-replay provider), then evaluate assertions against the real
 /// execution evidence.
+#[cfg(not(feature = "thin-scenario"))]
 async fn run_scripted_scenario_execute(
     scenario: &ScriptedScenario,
     base_dir: &Path,
@@ -3637,5 +3646,6 @@ fn evaluate_trajectory_scenario_file(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "thin-scenario")))]
+#[path = "scenario_cli/tests.rs"]
 mod tests;

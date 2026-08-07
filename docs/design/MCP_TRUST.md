@@ -32,7 +32,7 @@ Specific server/workspace entries are configured with `trustedWorkspaces`:
   "trustedWorkspaces": {
     "linear": [
       {
-        "workspaceUri": "git:git@github.com:evalops/platform.git",
+        "workspaceUri": "git:git@github.com:example/acme.git",
         "mode": "trusted",
         "grantedBy": "admin",
         "grantedAt": "2026-05-07T00:00:00.000Z",

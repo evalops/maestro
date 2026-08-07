@@ -1391,11 +1391,13 @@ fn agent_event_to_message_preserves_headless_metadata() {
         request_id: None,
         message: "cancelled".to_string(),
         fatal: false,
+        terminal: true,
         error_type: Some(HeadlessErrorType::Cancelled),
     });
     assert!(matches!(
         error,
         super::super::messages::FromAgentMessage::Error {
+            terminal: true,
             error_type: Some(HeadlessErrorType::Cancelled),
             ..
         }

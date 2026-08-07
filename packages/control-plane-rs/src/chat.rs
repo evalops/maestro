@@ -597,6 +597,80 @@ pub(crate) async fn handle_chat_endpoint(
             | FromAgent::CodexNativeDecision { .. }
             | FromAgent::CodexTransportReceipt { .. }
             | FromAgent::SessionInfo { .. } => {}
+            FromAgent::CodexSessionState {
+                state,
+                thread_id,
+                profile,
+            } => {
+                send_sse(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "status",
+                        "status": "codex_session_state",
+                        "details": {
+                            "state": state,
+                            "threadId": thread_id,
+                            "profile": profile
+                        }
+                    }),
+                )
+                .await?;
+            }
+            FromAgent::CodexTurnState {
+                state,
+                thread_id,
+                turn_id,
+            } => {
+                send_sse(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "status",
+                        "status": "codex_turn_state",
+                        "details": {
+                            "state": state,
+                            "threadId": thread_id,
+                            "turnId": turn_id
+                        }
+                    }),
+                )
+                .await?;
+            }
+            FromAgent::CodexUsageState { source, usage } => {
+                if usage.is_some() {
+                    last_usage = usage.clone();
+                }
+                send_sse(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "status",
+                        "status": "codex_usage_state",
+                        "details": {
+                            "source": source,
+                            "usage": usage
+                        }
+                    }),
+                )
+                .await?;
+            }
+            FromAgent::CodexCompatibility {
+                protocol_version,
+                resume,
+                steering,
+            } => {
+                send_sse(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "status",
+                        "status": "codex_compatibility",
+                        "details": {
+                            "protocolVersion": protocol_version,
+                            "resume": resume,
+                            "steering": steering
+                        }
+                    }),
+                )
+                .await?;
+            }
             FromAgent::ResponseStart { .. } => {
                 response_started = true;
                 let message = composer_assistant_message(&assistant_text, &thinking_text, None);
@@ -866,12 +940,35 @@ pub(crate) async fn handle_chat_endpoint(
                 )
                 .await?;
             }
-            FromAgent::Error { message, .. } => {
+            FromAgent::Error {
+                message,
+                fatal,
+                terminal,
+            } => {
+                let request_ended = fatal || terminal;
+                if request_ended {
+                    let usage = last_usage.take();
+                    if usage.is_some() {
+                        record_usage_entry(
+                            &state,
+                            session_id.as_deref(),
+                            &usage_provider,
+                            &usage_model,
+                            usage.as_ref(),
+                        )
+                        .await;
+                    }
+                }
                 send_sse(
                     &mut stream,
                     &serde_json::json!({ "type": "error", "message": message }),
                 )
                 .await?;
+                if request_ended {
+                    send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+                    terminal_sent = true;
+                    break;
+                }
             }
             FromAgent::Status { message } => {
                 send_sse(
@@ -1261,6 +1358,80 @@ pub(crate) async fn handle_chat_websocket_endpoint(
             | FromAgent::CodexNativeDecision { .. }
             | FromAgent::CodexTransportReceipt { .. }
             | FromAgent::SessionInfo { .. } => {}
+            FromAgent::CodexSessionState {
+                state,
+                thread_id,
+                profile,
+            } => {
+                send_ws_json(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "status",
+                        "status": "codex_session_state",
+                        "details": {
+                            "state": state,
+                            "threadId": thread_id,
+                            "profile": profile
+                        }
+                    }),
+                )
+                .await?;
+            }
+            FromAgent::CodexTurnState {
+                state,
+                thread_id,
+                turn_id,
+            } => {
+                send_ws_json(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "status",
+                        "status": "codex_turn_state",
+                        "details": {
+                            "state": state,
+                            "threadId": thread_id,
+                            "turnId": turn_id
+                        }
+                    }),
+                )
+                .await?;
+            }
+            FromAgent::CodexUsageState { source, usage } => {
+                if usage.is_some() {
+                    last_usage = usage.clone();
+                }
+                send_ws_json(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "status",
+                        "status": "codex_usage_state",
+                        "details": {
+                            "source": source,
+                            "usage": usage
+                        }
+                    }),
+                )
+                .await?;
+            }
+            FromAgent::CodexCompatibility {
+                protocol_version,
+                resume,
+                steering,
+            } => {
+                send_ws_json(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "status",
+                        "status": "codex_compatibility",
+                        "details": {
+                            "protocolVersion": protocol_version,
+                            "resume": resume,
+                            "steering": steering
+                        }
+                    }),
+                )
+                .await?;
+            }
             FromAgent::ResponseStart { .. } => {
                 response_started = true;
                 let message = composer_assistant_message(&assistant_text, &thinking_text, None);
@@ -1519,12 +1690,35 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                 )
                 .await?;
             }
-            FromAgent::Error { message, .. } => {
+            FromAgent::Error {
+                message,
+                fatal,
+                terminal,
+            } => {
+                let request_ended = fatal || terminal;
+                if request_ended {
+                    let usage = last_usage.take();
+                    if usage.is_some() {
+                        record_usage_entry(
+                            &state,
+                            session_id.as_deref(),
+                            &usage_provider,
+                            &usage_model,
+                            usage.as_ref(),
+                        )
+                        .await;
+                    }
+                }
                 send_ws_json(
                     &mut stream,
                     &serde_json::json!({ "type": "error", "message": message }),
                 )
                 .await?;
+                if request_ended {
+                    send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+                    terminal_sent = true;
+                    break;
+                }
             }
             FromAgent::Status { message } => {
                 send_ws_json(

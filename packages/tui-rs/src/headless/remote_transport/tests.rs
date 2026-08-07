@@ -3007,7 +3007,10 @@ async fn remote_transport_reader_exits_after_malformed_event_when_receiver_is_dr
             "sess_remote".to_string(),
             "sub_remote".to_string(),
             0,
-            event_tx,
+            ReaderEventContext {
+                event_tx,
+                event_notification: Arc::new(Notify::new()),
+            },
             cancel.clone(),
         ),
     )

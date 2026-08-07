@@ -2731,6 +2731,18 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         }
     }
 
+    fn set_codex_status_if_useful(&mut self, status: String) {
+        if self
+            .state
+            .status
+            .as_deref()
+            .is_some_and(is_active_codex_turn_status)
+        {
+            return;
+        }
+        self.state.status = Some(status);
+    }
+
     fn finish_active_turn_summary(&mut self) {
         let Some(mut summary) = self.active_turn_summary.take() else {
             self.active_turn_start_message_index = None;
@@ -2971,6 +2983,46 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     error.clone(),
                 );
             }
+            FromAgent::CodexSessionState {
+                state,
+                thread_id,
+                profile,
+            } => {
+                self.set_codex_status_if_useful(format!(
+                    "Codex {state} {profile} {}",
+                    short_codex_status_id(thread_id)
+                ));
+            }
+            FromAgent::CodexTurnState {
+                state,
+                thread_id,
+                turn_id,
+            } => {
+                self.state.status = Some(match turn_id {
+                    Some(turn_id) => {
+                        format!(
+                            "Codex {state} {} {}",
+                            short_codex_status_id(thread_id),
+                            short_codex_status_id(turn_id)
+                        )
+                    }
+                    None => format!("Codex {state} {}", short_codex_status_id(thread_id)),
+                });
+            }
+            FromAgent::CodexUsageState { source, .. } => {
+                self.set_codex_status_if_useful(format!("Codex usage {source}"));
+            }
+            FromAgent::CodexCompatibility {
+                protocol_version,
+                resume,
+                steering,
+            } => {
+                self.set_codex_status_if_useful(compact_codex_compatibility_status(
+                    protocol_version,
+                    *resume,
+                    *steering,
+                ));
+            }
             FromAgent::ResponseEnd { response_id, .. } if response_id == "done" => {
                 // Model responses can end before their tool calls and follow-up
                 // responses complete. Only the runner's terminal sentinel ends
@@ -2996,7 +3048,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 self.flush_pending_agent_tool_notes();
             }
             FromAgent::ResponseEnd { .. } => {}
-            FromAgent::Error { .. } => {
+            FromAgent::Error {
+                fatal, terminal, ..
+            } if *fatal || *terminal => {
                 // Clear busy state on error
                 self.state.busy = false;
                 if allow_terminal_notifications {
@@ -3011,6 +3065,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 // Do not auto-continue after an error; user must re-arm via
                 // /goal resume or a successful create.
             }
+            FromAgent::Error { .. } => {}
             FromAgent::ToolCall {
                 call_id,
                 tool,
@@ -4060,6 +4115,30 @@ fn terminal_theme_query_due(
 
 fn terminal_reporting_shutdown_needed(had_terminal_events: bool, has_theme_follower: bool) -> bool {
     had_terminal_events && has_theme_follower
+}
+
+fn compact_codex_compatibility_status(
+    protocol_version: &str,
+    resume: bool,
+    steering: bool,
+) -> String {
+    let optional = match (resume, steering) {
+        (true, true) => "full",
+        (false, true) => "no-resume",
+        (true, false) => "no-steer",
+        (false, false) => "no-resume/no-steer",
+    };
+    format!("Codex protocol {protocol_version} {optional}")
+}
+
+fn is_active_codex_turn_status(status: &str) -> bool {
+    status.starts_with("Codex accepted ")
+        || status.starts_with("Codex streaming ")
+        || status.starts_with("Codex steering ")
+}
+
+fn short_codex_status_id(value: &str) -> String {
+    value.chars().take(11).collect()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

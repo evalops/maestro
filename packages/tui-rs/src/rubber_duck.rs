@@ -564,8 +564,15 @@ async fn drain_events(
             FromAgent::ResponseEnd { response_id, .. } if drain.on_response_end(&response_id) => {
                 break;
             }
-            FromAgent::Error { message, fatal } => {
+            FromAgent::Error {
+                message,
+                fatal,
+                terminal,
+            } => {
                 drain.on_error(&message, fatal)?;
+                if terminal {
+                    break;
+                }
             }
             _ => {}
         }

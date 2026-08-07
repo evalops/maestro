@@ -25,7 +25,7 @@ use tokio::net::TcpListener;
 #[cfg(test)]
 use tokio::net::TcpStream;
 use tokio::process::Command;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Notify};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use uuid::Uuid;
@@ -74,7 +74,7 @@ pub const HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION: &str =
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 15_000;
 const CONNECTION_IDLE_MS: i64 = (DEFAULT_HEARTBEAT_INTERVAL_MS as i64) * 3;
-const EVENT_PUMP_INTERVAL: Duration = Duration::from_millis(100);
+const MAINTENANCE_PUMP_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_EVENTS: usize = 1024;
 // Response retries are short-lived transport retries; retain enough completed
 // keys to cover a burst without allowing a long-lived hosted session's journal
@@ -512,6 +512,13 @@ pub trait HostedRunnerHeadlessMessageExecutor: Send + Sync {
 
     fn drain(&self) -> Result<HostedRunnerDrainResult, HostedRunnerError> {
         Ok(HostedRunnerDrainResult::default())
+    }
+
+    /// Return the transport wake used to prompt a drain before the next
+    /// maintenance tick. The default keeps fixtures and transport-only
+    /// executors maintenance-driven.
+    fn event_notification(&self) -> Result<Option<Arc<Notify>>, HostedRunnerError> {
+        Ok(None)
     }
 
     /// Report whether a runtime that was previously connected has lost its
@@ -989,6 +996,14 @@ impl HostedRunnerHeadlessMessageExecutor for AgentSupervisorHostedRunnerMessageE
             consumed_response_keys,
             rejected_response_keys,
         })
+    }
+
+    fn event_notification(&self) -> Result<Option<Arc<Notify>>, HostedRunnerError> {
+        let supervisor = self
+            .supervisor
+            .lock()
+            .map_err(|_| HostedRunnerError::internal("agent supervisor mutex poisoned"))?;
+        Ok(supervisor.event_notification())
     }
 
     fn disconnected_after_ready(&self) -> Result<bool, HostedRunnerError> {
@@ -1725,21 +1740,37 @@ pub(crate) fn start_prepared_hosted_runner(
 }
 
 async fn pump_agent_events(shared: SharedRunner, cancelled: CancellationToken) {
-    let mut interval = tokio::time::interval(EVENT_PUMP_INTERVAL);
+    let mut interval = tokio::time::interval(MAINTENANCE_PUMP_INTERVAL);
     loop {
-        tokio::select! {
+        let should_pump = tokio::select! {
             () = cancelled.cancelled() => break,
-            _ = interval.tick() => {
-                let lifecycle = shared.mutation_lifecycle.clone();
-                let _lifecycle = tokio::select! {
-                    () = cancelled.cancelled() => break,
-                    lifecycle = lifecycle.lock() => lifecycle,
-                };
-                if matches!(pump_tick(&shared), PumpTick::Stop) {
+            _ = interval.tick() => true,
+            result = wait_for_event_notification(&shared) => {
+                if let Err(error) = result {
+                    shared.publish_runtime_error("event_pump_failed", error);
                     break;
                 }
+                true
             }
+        };
+        let lifecycle = shared.mutation_lifecycle.clone();
+        let _lifecycle = tokio::select! {
+            () = cancelled.cancelled() => break,
+            lifecycle = lifecycle.lock() => lifecycle,
+        };
+        if should_pump && matches!(pump_tick(&shared), PumpTick::Stop) {
+            break;
         }
+    }
+}
+
+async fn wait_for_event_notification(shared: &SharedRunner) -> Result<(), HostedRunnerError> {
+    let notification = shared.message_executor.event_notification()?;
+    if let Some(notification) = notification {
+        notification.notified().await;
+        Ok(())
+    } else {
+        std::future::pending().await
     }
 }
 
@@ -1958,6 +1989,7 @@ impl SharedRunner {
                 request_id: None,
                 message: error.message,
                 fatal: true,
+                terminal: true,
                 error_type: Some(crate::headless::messages::HeadlessErrorType::Fatal),
             },
         );
@@ -2421,7 +2453,11 @@ impl TranscriptStreamFilter {
                 envelopes
             }
             message => {
-                let terminal_error = matches!(&message, FromAgentMessage::Error { .. });
+                let terminal_error = matches!(
+                    &message,
+                    FromAgentMessage::Error { fatal: true, .. }
+                        | FromAgentMessage::Error { terminal: true, .. }
+                );
                 let level = transcript_level(&message);
                 if level.is_none_or(|level| self.grade.includes(level)) {
                     let envelope = StreamEnvelope::Message {

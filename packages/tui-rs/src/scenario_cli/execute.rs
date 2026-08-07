@@ -546,10 +546,9 @@ pub async fn execute_scripted_scenario_with_options(
                 }
                 FromAgent::Error {
                     message,
-                    fatal: true,
-                } => {
-                    bail!("scripted scenario execution failed: {message}");
-                }
+                    fatal,
+                    terminal,
+                } if fatal || terminal => bail!("scripted scenario execution failed: {message}"),
                 _ => {}
             }
         }

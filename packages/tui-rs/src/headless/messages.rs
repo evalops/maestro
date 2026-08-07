@@ -657,6 +657,31 @@ pub enum FromAgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ttft_ms: Option<u64>,
     },
+    /// Privacy-safe Codex app-server session lifecycle metadata.
+    CodexSessionState {
+        state: String,
+        thread_id: String,
+        profile: String,
+    },
+    /// Privacy-safe Codex app-server turn lifecycle metadata.
+    CodexTurnState {
+        state: String,
+        thread_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+    },
+    /// Provider usage state observed at a parsing or fallback boundary.
+    CodexUsageState {
+        source: String,
+        #[serde(default)]
+        usage: Option<TokenUsage>,
+    },
+    /// Codex app-server compatibility negotiated at initialize time.
+    CodexCompatibility {
+        protocol_version: String,
+        resume: bool,
+        steering: bool,
+    },
     /// Tool call (may require approval)
     ToolCall {
         call_id: String,
@@ -724,6 +749,8 @@ pub enum FromAgentMessage {
         request_id: Option<String>,
         message: String,
         fatal: bool,
+        #[serde(default)]
+        terminal: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error_type: Option<HeadlessErrorType>,
     },

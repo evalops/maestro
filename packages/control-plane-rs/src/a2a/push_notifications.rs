@@ -16,7 +16,7 @@ use crate::{env_u64, now_rfc3339, trimmed_env, truthy_env, AppState};
 
 // Agent-runtime derives a per-workspace HMAC token from the shared secret and
 // sends that in X-A2a-Notification-Token instead of the raw secret. See
-// PushNotificationTokenForWorkspace in evalops/platform
+// PushNotificationTokenForWorkspace in the Platform service
 // internal/agentruntime/a2a/push.go — prefix kept in sync.
 const A2A_WORKSPACE_NOTIFICATION_TOKEN_PREFIX: &str = "workspace-v1.";
 

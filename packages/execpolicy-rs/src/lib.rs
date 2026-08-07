@@ -96,11 +96,11 @@
 //! broader than intended: [`parse_policy`] silently degrades nested
 //! alternative patterns (e.g. `pattern=["git", ["push", "fetch"]]`) to a
 //! bare prefix (`["git"]`), so a rule meant to scope `allow`/`prompt` to one
-//! subcommand actually matches the whole command family. See
-//! <https://github.com/evalops/maestro-internal/issues/3091>.
+//! subcommand actually matches the whole command family.
 //!
-//! Before wiring this module into any live decision path: (1) fix #3091,
-//! and (2) gate `load_policy`'s project-level file read on
+//! Before wiring this module into any live decision path: (1) fix the nested
+//! alternative-pattern parsing bug, and (2) gate `load_policy`'s project-level
+//! file read on
 //! `config::workspace_trusted_in_global_config`, the same way every other
 //! repo-controlled loader in this crate is gated.
 
