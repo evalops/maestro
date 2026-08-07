@@ -72,6 +72,12 @@ function mapModel(providerId, modelId, model) {
 			reasoning: model.reasoning === true,
 			streaming: true,
 			context_tokens: model.limit.context,
+			// Per-response output ceiling (reasoning included) from
+			// models.dev `limit.output`; omitted when the source lacks it.
+			output_tokens:
+				Number.isInteger(model.limit?.output) && model.limit.output > 0
+					? model.limit.output
+					: undefined,
 		},
 		verification: {
 			state: "catalog",

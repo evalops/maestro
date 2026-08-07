@@ -212,6 +212,7 @@ struct RunnerState {
     last_status: Option<String>,
     last_error: Option<String>,
     last_error_type: Option<String>,
+    provider_error_kind: Option<maestro_ai::ProviderStreamErrorKind>,
     identity_binding_failures: VecDeque<IdentityBindingFailure>,
     restored_snapshot: Option<RuntimeSnapshot>,
     controller_connection_id: Option<String>,
@@ -2453,10 +2454,13 @@ impl TranscriptStreamFilter {
                 envelopes
             }
             message => {
-                let terminal_error = matches!(
+                let terminal_boundary = matches!(
                     &message,
                     FromAgentMessage::Error { fatal: true, .. }
                         | FromAgentMessage::Error { terminal: true, .. }
+                        | FromAgentMessage::ProviderError { .. }
+                        | FromAgentMessage::TurnCompleted { .. }
+                        | FromAgentMessage::TurnInterrupted { .. }
                 );
                 let level = transcript_level(&message);
                 if level.is_none_or(|level| self.grade.includes(level)) {
@@ -2464,7 +2468,7 @@ impl TranscriptStreamFilter {
                         cursor,
                         message: Box::new(message),
                     };
-                    if terminal_error {
+                    if terminal_boundary {
                         self.response_chunks.clear();
                         self.active_responses.clear();
                         let mut envelopes = std::mem::take(&mut self.deferred_blocks);

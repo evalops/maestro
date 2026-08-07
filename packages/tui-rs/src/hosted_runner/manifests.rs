@@ -115,6 +115,8 @@ pub(super) struct RuntimeStateSnapshot {
     pub(super) last_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) last_error_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) provider_error_kind: Option<maestro_ai::ProviderStreamErrorKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) last_status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -244,6 +246,7 @@ impl SnapshotManifest {
                     ))
                     .ok()
                 }),
+                provider_error_kind: state.provider_error_kind,
                 last_status: state.last_status.clone(),
                 last_response_duration_ms: state.last_response_duration_ms,
                 last_ttft_ms: state.last_ttft_ms,

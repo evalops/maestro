@@ -11,6 +11,7 @@ use std::fs;
 use std::io::{self, IsTerminal};
 use std::time::{Duration, Instant};
 
+use crate::headless::HEADLESS_PROTOCOL_VERSION;
 use crate::remote_attach::{
     attach_to_remote_runner_session, should_use_interactive_remote_attach, AttachRole,
     RemoteAttachInput,
@@ -29,7 +30,6 @@ const VERIFY_ERROR_BODY_MAX_CHARS: usize = 512;
 const DEFAULT_WAIT_TIMEOUT_MS: u64 = 5 * 60 * 1000;
 const DEFAULT_POLL_MS: u64 = 5_000;
 const CONNECT_VERSION: &str = "1";
-const HEADLESS_PROTOCOL_VERSION: &str = "2026-08-01";
 const SERVICE: &str = "remote runner service";
 const SERVICE_PATH: &str = "/remoterunner.v1.RemoteRunnerService";
 

@@ -761,10 +761,15 @@ fn state_handles_response_stream() {
         duration_ms: Some(2300),
         ttft_ms: Some(150),
     });
-    assert!(!state.is_responding);
+    assert!(state.is_responding);
     assert!(state.current_response.is_none());
     assert_eq!(state.last_response_duration_ms, Some(2300));
     assert_eq!(state.last_ttft_ms, Some(150));
+
+    state.handle_message(FromAgentMessage::TurnCompleted {
+        response_id: "done".to_string(),
+    });
+    assert!(!state.is_responding);
 }
 
 #[test]
@@ -957,6 +962,34 @@ fn state_handles_compaction_event() {
             ..
         }) if first_kept_entry_index == 2 && tokens_before == 7000 && !auto
     ));
+}
+
+#[test]
+fn explicit_turn_terminals_close_an_unfinished_headless_response() {
+    for terminal in [
+        FromAgentMessage::TurnCompleted {
+            response_id: "done".to_string(),
+        },
+        FromAgentMessage::TurnInterrupted {
+            response_id: "done".to_string(),
+            reason: "cancelled".to_string(),
+        },
+        FromAgentMessage::ProviderError {
+            kind: maestro_ai::ProviderStreamErrorKind::TransientProtocol,
+            message: "unexpected eof".to_string(),
+        },
+    ] {
+        let mut state = AgentState::default();
+        state.handle_message(FromAgentMessage::ResponseStart {
+            response_id: "resp-1".to_string(),
+        });
+        assert!(state.is_responding);
+        assert!(state.current_response.is_some());
+
+        assert!(state.handle_message(terminal).is_some());
+        assert!(!state.is_responding);
+        assert!(state.current_response.is_none());
+    }
 }
 
 #[test]
@@ -1728,7 +1761,15 @@ fn hello_accepts_every_client_version_this_build_serves() {
 
 #[test]
 fn hello_rejects_protocol_versions_this_build_does_not_speak() {
-    for version in ["", "2025-01-01", "2027-01-01", "latest", " 2026-08-01"] {
+    for version in [
+        "",
+        "2025-01-01",
+        "2026-04-02",
+        "2026-08-01",
+        "2027-01-01",
+        "latest",
+        " 2026-08-07",
+    ] {
         assert!(
             !client_protocol_version_is_supported(Some(version)),
             "{version:?} is not a version this build serves"

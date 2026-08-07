@@ -114,7 +114,7 @@ use super::{
 };
 use crate::ai::{
     provider_model_name, AiProvider, ContentBlock, ImageSource, Message, MessageContent,
-    RequestConfig, Role, StreamEvent, ThinkingConfig, Tool, UnifiedClient,
+    ProviderStreamErrorKind, RequestConfig, Role, StreamEvent, ThinkingConfig, Tool, UnifiedClient,
 };
 use crate::headless::report_diagnostic_nonblocking;
 use crate::hooks::{HookResult, IntegratedHookSystem};
@@ -137,6 +137,27 @@ impl std::fmt::Display for EmptyAssistantResponse {
 }
 
 impl std::error::Error for EmptyAssistantResponse {}
+
+#[derive(Debug)]
+struct ProviderStreamFailure {
+    kind: ProviderStreamErrorKind,
+    message: String,
+}
+
+impl std::fmt::Display for ProviderStreamFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "provider_stream_error: {}", self.message)
+    }
+}
+
+impl std::error::Error for ProviderStreamFailure {}
+
+fn closed_tool_response_failure(call_id: &str) -> anyhow::Error {
+    anyhow::Error::new(ProviderStreamFailure {
+        kind: ProviderStreamErrorKind::TransientProtocol,
+        message: format!("tool approval response channel closed before `{call_id}` completed"),
+    })
+}
 
 mod read_only_tools;
 
@@ -451,9 +472,13 @@ pub struct NativeAgentConfig {
 
 impl Default for NativeAgentConfig {
     fn default() -> Self {
+        let model = "gpt-5.1-codex-max".to_string();
+        // Catalog-known models get their full output ceiling; uncataloged
+        // models (including this placeholder default) keep the fallback.
+        let max_tokens = crate::model_catalog::default_max_output_tokens(&model);
         Self {
-            model: "gpt-5.1-codex-max".to_string(),
-            max_tokens: 16384,
+            model,
+            max_tokens,
             system_prompt: None,
             thinking_enabled: false,
             thinking_budget: 10000,
@@ -3758,7 +3783,7 @@ impl NativeAgentRunner {
 
                     if kind == PromptKind::SideQuestion {
                         self.busy = true;
-                        self.run_side_question(content).await;
+                        self.run_side_question(content, true).await;
                         self.busy = false;
                         let _ = self.event_tx.send(FromAgent::ResponseEnd {
                             response_id: "done".to_string(),
@@ -3912,6 +3937,11 @@ impl NativeAgentRunner {
                         match result {
                             Ok(()) => break,
                             Err(e) => {
+                                let provider_stream_failure = e
+                                    .downcast_ref::<ProviderStreamFailure>()
+                                    .map(|error| (error.kind, error.message.clone()));
+                                let empty_assistant_response =
+                                    e.downcast_ref::<EmptyAssistantResponse>().is_some();
                                 // Preserve the complete anyhow cause chain so
                                 // connect/inject/start errors retain provider
                                 // retry metadata hidden below their RPC context.
@@ -4026,6 +4056,15 @@ impl NativeAgentRunner {
                                     }
                                     super::retry::RetryDecision::GiveUp { reason } => {
                                         // Not retryable or exhausted retries
+                                        if empty_assistant_response {
+                                            let _ = self.hooks.execute_stop_failure(
+                                                "empty_assistant_response",
+                                                Some(
+                                                    "provider returned no assistant text or tool calls",
+                                                ),
+                                                None,
+                                            );
+                                        }
                                         let hint = if matches!(
                                             error_kind,
                                             super::retry::ErrorKind::AuthFailure
@@ -4038,11 +4077,19 @@ impl NativeAgentRunner {
                                         } else {
                                             ""
                                         };
-                                        let _ = self.event_tx.send(FromAgent::Error {
-                                            message: format!("Agent error: {msg} ({reason}){hint}"),
-                                            fatal: false,
-                                            terminal: true,
-                                        });
+                                        if let Some((kind, message)) = provider_stream_failure {
+                                            let _ = self
+                                                .event_tx
+                                                .send(FromAgent::ProviderError { kind, message });
+                                        } else {
+                                            let _ = self.event_tx.send(FromAgent::Error {
+                                                message: format!(
+                                                    "Agent error: {msg} ({reason}){hint}"
+                                                ),
+                                                fatal: false,
+                                                terminal: true,
+                                            });
+                                        }
                                         terminal_request_failure = true;
                                         terminal_error_event = true;
                                         break;
@@ -4132,6 +4179,16 @@ impl NativeAgentRunner {
                         let _ = self.event_tx.send(FromAgent::ResponseEnd {
                             response_id: "done".to_string(),
                             usage: None,
+                        });
+                    }
+                    if !terminal_request_failure && !request_cancelled {
+                        let _ = self.event_tx.send(FromAgent::TurnCompleted {
+                            response_id: "done".to_string(),
+                        });
+                    } else if request_cancelled {
+                        let _ = self.event_tx.send(FromAgent::TurnInterrupted {
+                            response_id: "done".to_string(),
+                            reason: "cancelled".to_string(),
                         });
                     }
                     self.emit_conversation_snapshot();
@@ -4347,10 +4404,22 @@ impl NativeAgentRunner {
                     )
                     .await;
 
+                    let request_succeeded = result.is_ok();
+                    let mut request_cancelled = false;
                     let mut request_failed = false;
                     if let Err(e) = result {
+                        let provider_stream_failure = e
+                            .downcast_ref::<ProviderStreamFailure>()
+                            .map(|error| (error.kind, error.message.clone()));
                         let msg = e.to_string();
-                        if msg != "Request cancelled" {
+                        if msg == "Request cancelled" {
+                            request_cancelled = true;
+                        } else if let Some((kind, message)) = provider_stream_failure {
+                            let _ = self
+                                .event_tx
+                                .send(FromAgent::ProviderError { kind, message });
+                            request_failed = true;
+                        } else {
                             let _ = self.event_tx.send(FromAgent::Error {
                                 message: format!("Agent error: {e}"),
                                 fatal: false,
@@ -4370,6 +4439,16 @@ impl NativeAgentRunner {
                         let _ = self.event_tx.send(FromAgent::ResponseEnd {
                             response_id: "continue".to_string(),
                             usage: None,
+                        });
+                    }
+                    if request_succeeded {
+                        let _ = self.event_tx.send(FromAgent::TurnCompleted {
+                            response_id: "continue".to_string(),
+                        });
+                    } else if request_cancelled {
+                        let _ = self.event_tx.send(FromAgent::TurnInterrupted {
+                            response_id: "continue".to_string(),
+                            reason: "cancelled".to_string(),
                         });
                     }
                     self.emit_conversation_snapshot();
@@ -4531,11 +4610,12 @@ impl NativeAgentRunner {
         }
     }
 
-    async fn run_side_question(&mut self, question: String) {
+    async fn run_side_question(&mut self, question: String, standalone: bool) {
         let side_id = Uuid::new_v4().to_string();
         let _ = self.event_tx.send(FromAgent::SideQuestionStart {
             side_id: side_id.clone(),
             question: question.clone(),
+            standalone,
         });
 
         let mut answer = String::new();
@@ -4600,20 +4680,35 @@ impl NativeAgentRunner {
                         usage.cache_write_tokens = cache_creation_tokens.unwrap_or(0);
                         saw_usage = true;
                     }
+                    StreamEvent::MessageStop { .. } => return Ok(()),
                     StreamEvent::Error { message } => return Err(anyhow::anyhow!(message)),
+                    StreamEvent::ProviderError { kind, message } => {
+                        return Err(anyhow::Error::new(ProviderStreamFailure { kind, message }));
+                    }
                     _ => {}
                 }
             }
-            Ok(())
+            Err(anyhow::Error::new(ProviderStreamFailure {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message: "side-question provider stream ended before a terminal event".to_string(),
+            }))
         })
         .await
         .unwrap_or_else(|| Err(anyhow::anyhow!("Side question cancelled during shutdown")));
+
+        let provider_error_kind = result
+            .as_ref()
+            .err()
+            .and_then(|error| error.downcast_ref::<ProviderStreamFailure>())
+            .map(|error| error.kind);
 
         let _ = self.event_tx.send(FromAgent::SideQuestionEnd {
             side_id,
             question,
             answer,
+            standalone,
             error: result.err().map(|err| err.to_string()),
+            provider_error_kind,
             usage: saw_usage.then_some(usage),
         });
     }
@@ -4722,7 +4817,7 @@ impl NativeAgentRunner {
                 return;
             };
             self.announce_next_turn_messages(std::slice::from_ref(&pending));
-            self.run_side_question(pending.content).await;
+            self.run_side_question(pending.content, false).await;
         }
     }
 
@@ -5671,6 +5766,8 @@ impl NativeAgentRunner {
                 Vec::new();
             let mut stream_failed = false;
             let mut stream_error_message: Option<String> = None;
+            let mut stream_error_kind: Option<ProviderStreamErrorKind> = None;
+            let mut saw_stream_terminal = false;
 
             // Process stream events
             while let Some(event) = rx.recv().await {
@@ -5777,6 +5874,7 @@ impl NativeAgentRunner {
                     StreamEvent::MessageStop {
                         stop_reason: reason,
                     } => {
+                        saw_stream_terminal = true;
                         stop_reason = reason;
                         // Check for context overflow
                         if matches!(stop_reason, Some(crate::ai::StopReason::MaxTokens)) {
@@ -5831,6 +5929,7 @@ impl NativeAgentRunner {
                         break;
                     }
                     StreamEvent::Error { message } => {
+                        saw_stream_terminal = true;
                         stream_failed = true;
                         stream_error_message = Some(message.clone());
                         abort_pending_tools_after_stream_error(
@@ -5839,7 +5938,30 @@ impl NativeAgentRunner {
                         );
                         break;
                     }
+                    StreamEvent::ProviderError { kind, message } => {
+                        saw_stream_terminal = true;
+                        stream_failed = true;
+                        stream_error_kind = Some(kind);
+                        stream_error_message = Some(message.clone());
+                        abort_pending_tools_after_stream_error(
+                            &mut assistant_content,
+                            &mut pending_tool_calls,
+                        );
+                        break;
+                    }
                 }
+            }
+
+            if !saw_stream_terminal {
+                stream_failed = true;
+                stream_error_kind = Some(ProviderStreamErrorKind::TransientProtocol);
+                stream_error_message = Some(
+                    "native provider stream ended before an explicit terminal event".to_string(),
+                );
+                abort_pending_tools_after_stream_error(
+                    &mut assistant_content,
+                    &mut pending_tool_calls,
+                );
             }
 
             // Some provider streams repeat a terminal function-call item after
@@ -5868,7 +5990,27 @@ impl NativeAgentRunner {
                 .collect::<Vec<_>>()
                 .join("");
 
-            if !stream_failed && response_text.trim().is_empty() && pending_tool_calls.is_empty() {
+            if stream_failed {
+                self.set_tool_batch_active(false);
+                // The request still consumed provider output, but a partial
+                // response is not authoritative assistant history and must
+                // not run success-oriented post-message hooks.
+                self.output_tokens_spent =
+                    self.output_tokens_spent.saturating_add(usage.output_tokens);
+                let last_assistant = (!response_text.is_empty()).then_some(response_text.as_str());
+                let _ = self.hooks.execute_stop_failure(
+                    "api_error",
+                    stream_error_message.as_deref(),
+                    last_assistant,
+                );
+                let message = stream_error_message.unwrap_or_else(|| "stream failed".to_string());
+                return match stream_error_kind {
+                    Some(kind) => Err(anyhow::Error::new(ProviderStreamFailure { kind, message })),
+                    None => Err(anyhow::anyhow!("provider_stream_error: {message}")),
+                };
+            }
+
+            if response_text.trim().is_empty() && pending_tool_calls.is_empty() {
                 let provider = self
                     .client
                     .as_ref()
@@ -5888,11 +6030,6 @@ impl NativeAgentRunner {
                     assistant_content.len(),
                 ));
                 self.set_tool_batch_active(false);
-                let _ = self.hooks.execute_stop_failure(
-                    "empty_assistant_response",
-                    Some("provider returned no assistant text or tool calls"),
-                    None,
-                );
                 return Err(anyhow::Error::new(EmptyAssistantResponse));
             }
 
@@ -5917,22 +6054,6 @@ impl NativeAgentRunner {
             // Charge this response against any cumulative output budget before
             // the next request is built; `build_config` reads the running total.
             self.output_tokens_spent = self.output_tokens_spent.saturating_add(usage.output_tokens);
-
-            if stream_failed {
-                self.set_tool_batch_active(false);
-                // Terminal recovery boundary: the provider stream failed and no
-                // further attempt will produce a valid completion for this turn.
-                let last_assistant = (!response_text.is_empty()).then_some(response_text.as_str());
-                let _ = self.hooks.execute_stop_failure(
-                    "api_error",
-                    stream_error_message.as_deref(),
-                    last_assistant,
-                );
-                return Err(anyhow::anyhow!(
-                    "provider_stream_error: {}",
-                    stream_error_message.as_deref().unwrap_or("stream failed")
-                ));
-            }
 
             // Signal response end. `None` means the provider reported nothing
             // for this turn, which is not the same as reporting zero.
@@ -6431,7 +6552,9 @@ impl NativeAgentRunner {
                                     );
                                     break;
                                 }
-                                ToolResponseWait::Closed => return Ok(()),
+                                ToolResponseWait::Closed => {
+                                    return Err(closed_tool_response_failure(&call.call_id));
+                                }
                             };
                             if approved && result.is_none() {
                                 let (args, extra_context) =
@@ -8282,6 +8405,23 @@ mod tests {
     use tokio::net::TcpListener;
 
     #[test]
+    fn closed_tool_response_is_typed_and_not_retried_as_a_deterministic_failure() {
+        let error = closed_tool_response_failure("call_closed");
+        let failure = error
+            .downcast_ref::<ProviderStreamFailure>()
+            .expect("closed approval channel must preserve its typed failure");
+        assert_eq!(failure.kind, ProviderStreamErrorKind::TransientProtocol);
+        assert!(failure.message.contains("call_closed"));
+
+        let mut retry_policy = super::super::retry::RetryPolicy::default();
+        let error_kind = super::super::retry::ErrorKind::classify(&format!("{error:#}"));
+        assert!(matches!(
+            retry_policy.should_retry(error_kind),
+            super::super::retry::RetryDecision::GiveUp { .. }
+        ));
+    }
+
+    #[test]
     fn codex_models_resolve_to_app_server_without_http_credentials() {
         let (client, provider, route) =
             resolve_native_client("openai-codex/gpt-5.5", None).expect("Codex transport");
@@ -8972,7 +9112,10 @@ mod tests {
             .expect("fixture prompt");
 
         let mut captured = Vec::new();
-        tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        // Empty terminal responses enter bounded retry (1s + 2s + 4s backoff
+        // plus jitter and per-attempt overhead) before failing closed, so the
+        // capture window must cover the full retry budget.
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
             loop {
                 let event = events.recv().await.expect("fixture event");
                 let done = matches!(event, FromAgent::ConversationSnapshot { .. });
@@ -9055,6 +9198,8 @@ else if(x.method==='turn/start'){send({id:x.id,result:{turn:{id:'turn-terminal'}
             .enumerate()
             .filter(|(_, event)| event["type"] == "error")
             .collect();
+        // Retry exhaustion must still fail closed with exactly one terminal
+        // error naming the empty assistant response.
         assert_eq!(empty_errors.len(), 1, "{empty_events:?}");
         assert_eq!(empty_errors[0].1["terminal"], true);
         assert!(empty_errors[0].1["message"]
@@ -9065,7 +9210,24 @@ else if(x.method==='turn/start'){send({id:x.id,result:{turn:{id:'turn-terminal'}
             .enumerate()
             .filter(|(_, event)| event["type"] == "codex_turn_state" && event["state"] == "failed")
             .collect();
-        assert_eq!(failed_states.len(), 1, "{empty_events:?}");
+        // Empty terminal responses are transient (#3367): the driver retries
+        // the turn up to the default attempt cap (1 initial + 3 retries)
+        // before giving up.
+        assert_eq!(failed_states.len(), 4, "{empty_events:?}");
+        let retry_statuses: Vec<_> = empty_events
+            .iter()
+            .filter(|event| {
+                event["type"] == "status"
+                    && event["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains("Retrying"))
+            })
+            .collect();
+        assert_eq!(
+            retry_statuses.len(),
+            3,
+            "each retry must be announced exactly once: {empty_events:?}"
+        );
         assert_eq!(
             empty_events
                 .iter()
@@ -9087,10 +9249,12 @@ else if(x.method==='turn/start'){send({id:x.id,result:{turn:{id:'turn-terminal'}
             .enumerate()
             .filter(|(_, event)| event["type"] == "codex_usage_state")
             .collect();
-        assert_eq!(empty_usage.len(), 1, "{empty_events:?}");
-        assert_eq!(empty_usage[0].1["source"], "exact");
-        assert_eq!(empty_usage[0].1["usage"]["input_tokens"], 13);
-        assert_eq!(empty_usage[0].1["usage"]["output_tokens"], 5);
+        assert_eq!(empty_usage.len(), 4, "{empty_events:?}");
+        for (_, usage) in &empty_usage {
+            assert_eq!(usage["source"], "exact");
+            assert_eq!(usage["usage"]["input_tokens"], 13);
+            assert_eq!(usage["usage"]["output_tokens"], 5);
+        }
         let failed_receipts: Vec<_> = empty_events
             .iter()
             .enumerate()
@@ -9098,9 +9262,15 @@ else if(x.method==='turn/start'){send({id:x.id,result:{turn:{id:'turn-terminal'}
                 event["type"] == "codex_transport_receipt" && event["outcome"] == "failed"
             })
             .collect();
+        // The transport receipt is emitted once, when the turn fails closed
+        // after retry exhaustion.
         assert_eq!(failed_receipts.len(), 1, "{empty_events:?}");
-        assert!(empty_usage[0].0 < failed_states[0].0);
-        assert!(failed_states[0].0 < empty_errors[0].0);
+        // Every attempt reports usage before its turn fails, and the terminal
+        // error lands only after the final failed attempt.
+        for (usage, failed) in empty_usage.iter().zip(failed_states.iter()) {
+            assert!(usage.0 < failed.0, "{empty_events:?}");
+        }
+        assert!(failed_states.last().expect("failed states").0 < empty_errors[0].0);
         assert!(empty_errors[0].0 < failed_receipts[0].0);
 
         let text_events = run_child("text");
@@ -10561,9 +10731,32 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
     fn test_config_default() {
         let config = NativeAgentConfig::default();
         assert_eq!(config.model, "gpt-5.1-codex-max");
-        assert_eq!(config.max_tokens, 16384);
+        // The placeholder default model is not in the bundled catalog, so the
+        // output budget falls back to the uncataloged-model default.
+        assert_eq!(
+            config.max_tokens,
+            crate::model_catalog::default_max_output_tokens(&config.model)
+        );
+        assert_eq!(
+            config.max_tokens,
+            crate::model_catalog::DEFAULT_MAX_OUTPUT_TOKENS
+        );
         assert!(!config.thinking_enabled);
         assert_eq!(config.approval_mode, ApprovalMode::Selective);
+    }
+
+    #[test]
+    fn test_config_default_output_budget_follows_catalog() {
+        // Catalog-known models get their full output ceiling by default...
+        assert_eq!(
+            crate::model_catalog::default_max_output_tokens("gpt-5.6"),
+            128_000
+        );
+        // ...while uncataloged models keep the fallback.
+        assert_eq!(
+            crate::model_catalog::default_max_output_tokens("gpt-99-turbo"),
+            16_384
+        );
     }
 
     #[tokio::test]

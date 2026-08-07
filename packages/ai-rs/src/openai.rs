@@ -113,7 +113,8 @@ use tokio::sync::mpsc;
 use super::client::{provider_model_name, AiClient, AiProvider};
 use super::op_secret;
 use super::types::{
-    ContentBlock, ImageSource, Message, MessageContent, RequestConfig, Role, StreamEvent, Tool,
+    ContentBlock, ImageSource, Message, MessageContent, ProviderStreamErrorKind, RequestConfig,
+    Role, StreamEvent, Tool,
 };
 
 /// SSE event structure for Responses API (matches `OpenAI`'s format)
@@ -168,16 +169,19 @@ struct ResponsesSseEvent {
 
 #[derive(Debug, PartialEq, Eq)]
 struct IncompleteResponseError {
+    kind: ProviderStreamErrorKind,
     reason: String,
 }
 
 impl std::fmt::Display for IncompleteResponseError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "openai_response_incomplete: reason={}",
-            self.reason
-        )
+        let code = match self.kind {
+            ProviderStreamErrorKind::OutputTokenExhaustion => "openai_response_exhausted",
+            ProviderStreamErrorKind::TransientProtocol
+            | ProviderStreamErrorKind::IncompleteResponse => "openai_response_incomplete",
+            ProviderStreamErrorKind::ProviderDeclaredFailure => "openai_response_failed",
+        };
+        write!(formatter, "{code}: reason={}", self.reason)
     }
 }
 
@@ -190,8 +194,16 @@ fn incomplete_response_error(response: Option<&serde_json::Value>) -> Incomplete
         .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown")
         .to_string();
-    IncompleteResponseError { reason }
+    let kind = if reason == "max_output_tokens" {
+        ProviderStreamErrorKind::OutputTokenExhaustion
+    } else {
+        ProviderStreamErrorKind::IncompleteResponse
+    };
+    IncompleteResponseError { kind, reason }
 }
+
+const RESPONSES_MISSING_TERMINAL_EVENT_ERROR: &str =
+    "openai_response_protocol_error: kind=transient reason=missing_terminal_event";
 
 fn missing_text_suffix(emitted: &str, aggregate: &str) -> Option<String> {
     if aggregate.is_empty() || emitted.starts_with(aggregate) {
@@ -1781,7 +1793,8 @@ impl AiClient for OpenAiClient {
                                 }
                                 "response.incomplete" => {
                                     let error = incomplete_response_error(event.response.as_ref());
-                                    let _ = tx.send(StreamEvent::Error {
+                                    let _ = tx.send(StreamEvent::ProviderError {
+                                        kind: error.kind,
                                         message: error.to_string(),
                                     });
                                     return;
@@ -1823,7 +1836,10 @@ impl AiClient for OpenAiClient {
                                         ("Unknown error".to_string(), None)
                                     };
 
-                                    let _ = tx.send(StreamEvent::Error { message: error_msg });
+                                    let _ = tx.send(StreamEvent::ProviderError {
+                                        kind: ProviderStreamErrorKind::ProviderDeclaredFailure,
+                                        message: format!("openai_response_failed: {error_msg}"),
+                                    });
                                     return;
                                 }
                                 _ => {
@@ -1840,8 +1856,10 @@ impl AiClient for OpenAiClient {
                     }
                 }
 
-                // Stream ended without response.completed
-                let _ = tx.send(StreamEvent::MessageStop { stop_reason: None });
+                let _ = tx.send(StreamEvent::ProviderError {
+                    kind: ProviderStreamErrorKind::TransientProtocol,
+                    message: RESPONSES_MISSING_TERMINAL_EVENT_ERROR.to_string(),
+                });
             });
         } else {
             // Chat Completions API - uses simpler line-based SSE
@@ -3432,12 +3450,83 @@ data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"
 
         assert!(matches!(
             events.last(),
-            Some(StreamEvent::Error { message })
-                if message == "openai_response_incomplete: reason=max_output_tokens"
+            Some(StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::OutputTokenExhaustion,
+                message,
+            })
+                if message == "openai_response_exhausted: reason=max_output_tokens"
         ));
         assert!(!events
             .iter()
             .any(|event| matches!(event, StreamEvent::MessageStop { .. })));
+    }
+
+    #[tokio::test]
+    async fn responses_failed_is_typed_provider_declared_failure() {
+        let events = collect_responses_sse(
+            r#"data: {"type":"response.failed","response":{"id":"resp_failed","error":{"code":"provider_error","message":"provider rejected the response"}}}
+
+"#,
+        )
+        .await;
+
+        assert!(matches!(
+            events.last(),
+            Some(StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::ProviderDeclaredFailure,
+                message,
+            }) if message.contains("provider rejected the response")
+        ));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            StreamEvent::Error { .. } | StreamEvent::MessageStop { .. }
+        )));
+    }
+
+    #[tokio::test]
+    async fn responses_eof_before_terminal_frame_is_transient_error() {
+        let events = collect_responses_sse(
+            r#"data: {"type":"response.created","response":{"id":"resp_cut"}}
+
+"#,
+        )
+        .await;
+
+        assert!(matches!(
+            events.last(),
+            Some(StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message,
+            })
+                if message
+                    == "openai_response_protocol_error: kind=transient reason=missing_terminal_event"
+        ));
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::MessageStop { .. })));
+    }
+
+    #[tokio::test]
+    async fn responses_completed_with_assistant_text_is_success() {
+        let events = collect_responses_sse(
+            r#"data: {"type":"response.completed","response":{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],"usage":{"input_tokens":1,"output_tokens":1}}}
+
+"#,
+        )
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::TextDelta { text, .. } if text == "hello"
+        )));
+        assert!(matches!(
+            events.last(),
+            Some(StreamEvent::MessageStop { .. })
+        ));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            StreamEvent::Error { .. } | StreamEvent::ProviderError { .. }
+        )));
     }
 
     #[test]
@@ -3476,10 +3565,11 @@ data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"
         });
         let error = incomplete_response_error(Some(&response));
 
+        assert_eq!(error.kind, ProviderStreamErrorKind::OutputTokenExhaustion);
         assert_eq!(error.reason, "max_output_tokens");
         assert_eq!(
             error.to_string(),
-            "openai_response_incomplete: reason=max_output_tokens"
+            "openai_response_exhausted: reason=max_output_tokens"
         );
         assert!(!error.to_string().contains("private response content"));
     }

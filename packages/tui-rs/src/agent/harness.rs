@@ -10,7 +10,10 @@
 
 use super::protocol::FromAgent;
 use super::{NativeAgent, NativeAgentConfig};
-use crate::ai::{ScriptedBlock, ScriptedClient, ScriptedResponse, StopReason, UnifiedClient};
+use crate::ai::{
+    ProviderStreamErrorKind, ScriptedBlock, ScriptedClient, ScriptedResponse, StopReason,
+    UnifiedClient,
+};
 use crate::hooks::HookEventType;
 use crate::state::ApprovalMode;
 use serde_json::json;
@@ -264,13 +267,315 @@ async fn scripted_stream_error_dispatches_stop_failure() {
 }
 
 #[tokio::test]
-async fn scripted_empty_response_is_terminal_error_without_response_end() {
+async fn scripted_provider_error_preserves_kind_and_never_completes_turn() {
     let mut harness = AgentHarness::with_scripted(vec![ScriptedResponse {
-        blocks: Vec::new(),
+        blocks: vec![ScriptedBlock::ProviderError {
+            kind: ProviderStreamErrorKind::OutputTokenExhaustion,
+            message: "output budget exhausted".to_string(),
+        }],
         stop_reason: StopReason::EndTurn,
         error: None,
     }])
     .expect("harness should construct");
+
+    harness
+        .agent
+        .prompt("exhaust the output budget".to_owned(), vec![])
+        .await
+        .expect("prompt");
+
+    assert!(matches!(
+        harness
+            .wait_for_event(Duration::from_secs(5), |event| matches!(
+                event,
+                FromAgent::ProviderError { .. }
+            ))
+            .await,
+        Some(FromAgent::ProviderError {
+            kind: ProviderStreamErrorKind::OutputTokenExhaustion,
+            message,
+        }) if message.contains("output budget exhausted")
+    ));
+    assert!(harness
+        .wait_for_event(Duration::from_millis(200), |event| matches!(
+            event,
+            FromAgent::TurnCompleted { .. }
+        ))
+        .await
+        .is_none());
+
+    harness.agent.shutdown().await;
+}
+
+#[tokio::test]
+async fn scripted_partial_text_eof_is_transient_protocol_error() {
+    let mut harness = AgentHarness::with_scripted(vec![ScriptedResponse {
+        blocks: vec![
+            ScriptedBlock::Text("partial answer".to_string()),
+            ScriptedBlock::Eof,
+        ],
+        stop_reason: StopReason::EndTurn,
+        error: None,
+    }])
+    .expect("harness should construct");
+
+    harness
+        .agent
+        .prompt("cut the stream".to_owned(), vec![])
+        .await
+        .expect("prompt");
+
+    assert!(matches!(
+        harness
+            .wait_for_event(Duration::from_secs(5), |event| matches!(
+                event,
+                FromAgent::ProviderError { .. }
+            ))
+            .await,
+        Some(FromAgent::ProviderError {
+            kind: ProviderStreamErrorKind::TransientProtocol,
+            ..
+        })
+    ));
+    let snapshot = harness
+        .wait_for_event(Duration::from_secs(2), |event| {
+            matches!(event, FromAgent::ConversationSnapshot { .. })
+        })
+        .await
+        .expect("terminal provider failure should publish a snapshot");
+    let FromAgent::ConversationSnapshot { messages, .. } = snapshot else {
+        unreachable!();
+    };
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.role != crate::ai::Role::Assistant),
+        "partial provider text must not become authoritative assistant history: {messages:?}"
+    );
+    assert!(harness
+        .wait_for_event(Duration::from_millis(200), |event| matches!(
+            event,
+            FromAgent::TurnCompleted { .. }
+        ))
+        .await
+        .is_none());
+
+    harness.agent.shutdown().await;
+}
+
+#[tokio::test]
+async fn scripted_completed_tool_block_eof_is_transient_protocol_error() {
+    let mut harness = AgentHarness::with_scripted(vec![ScriptedResponse {
+        blocks: vec![
+            ScriptedBlock::ToolUse {
+                id: "call-cut".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({ "path": "Cargo.toml" }),
+            },
+            ScriptedBlock::Eof,
+        ],
+        stop_reason: StopReason::ToolUse,
+        error: None,
+    }])
+    .expect("harness should construct");
+
+    harness
+        .agent
+        .prompt("cut after a tool block".to_owned(), vec![])
+        .await
+        .expect("prompt");
+
+    assert!(matches!(
+        harness
+            .wait_for_event(Duration::from_secs(5), |event| matches!(
+                event,
+                FromAgent::ProviderError { .. }
+            ))
+            .await,
+        Some(FromAgent::ProviderError {
+            kind: ProviderStreamErrorKind::TransientProtocol,
+            ..
+        })
+    ));
+    assert!(harness
+        .wait_for_event(Duration::from_millis(200), |event| matches!(
+            event,
+            FromAgent::TurnCompleted { .. }
+        ))
+        .await
+        .is_none());
+
+    harness.agent.shutdown().await;
+}
+
+#[tokio::test]
+async fn successful_native_loop_emits_explicit_turn_completed() {
+    let mut harness = AgentHarness::with_scripted(vec![ScriptedResponse::text("complete")])
+        .expect("harness should construct");
+
+    harness
+        .agent
+        .prompt("complete the turn".to_owned(), vec![])
+        .await
+        .expect("prompt");
+
+    assert!(harness
+        .wait_for_event(Duration::from_secs(5), |event| matches!(
+            event,
+            FromAgent::TurnCompleted { .. }
+        ))
+        .await
+        .is_some());
+
+    harness.agent.shutdown().await;
+}
+
+#[tokio::test]
+async fn continue_preserves_provider_error_kind_and_does_not_complete() {
+    let mut harness = AgentHarness::with_scripted(vec![
+        ScriptedResponse::text("first turn"),
+        ScriptedResponse {
+            blocks: vec![ScriptedBlock::ProviderError {
+                kind: ProviderStreamErrorKind::ProviderDeclaredFailure,
+                message: "declared continue failure".to_string(),
+            }],
+            stop_reason: StopReason::EndTurn,
+            error: None,
+        },
+    ])
+    .expect("harness should construct");
+
+    harness
+        .agent
+        .prompt("first prompt".to_owned(), vec![])
+        .await
+        .expect("prompt");
+    assert!(harness
+        .wait_for_event(Duration::from_secs(5), |event| matches!(
+            event,
+            FromAgent::TurnCompleted { .. }
+        ))
+        .await
+        .is_some());
+
+    harness.agent.continue_execution().expect("continue");
+    assert!(matches!(
+        harness
+            .wait_for_event(Duration::from_secs(5), |event| matches!(
+                event,
+                FromAgent::ProviderError { .. }
+            ))
+            .await,
+        Some(FromAgent::ProviderError {
+            kind: ProviderStreamErrorKind::ProviderDeclaredFailure,
+            message,
+        }) if message == "declared continue failure"
+    ));
+    assert!(harness
+        .wait_for_event(Duration::from_millis(200), |event| matches!(
+            event,
+            FromAgent::TurnCompleted { .. }
+        ))
+        .await
+        .is_none());
+
+    harness.agent.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancelled_native_loop_emits_explicit_turn_interrupted() {
+    let mut harness = AgentHarness::with_scripted(vec![ScriptedResponse {
+        blocks: vec![ScriptedBlock::Pending],
+        stop_reason: StopReason::EndTurn,
+        error: None,
+    }])
+    .expect("harness should construct");
+
+    harness
+        .agent
+        .prompt("wait for cancellation".to_owned(), vec![])
+        .await
+        .expect("prompt");
+    assert!(harness
+        .wait_for_event(Duration::from_secs(5), |event| matches!(
+            event,
+            FromAgent::ResponseStart { .. }
+        ))
+        .await
+        .is_some());
+    harness.agent.cancel();
+
+    assert!(matches!(
+        harness
+            .wait_for_event(Duration::from_secs(5), |event| matches!(
+                event,
+                FromAgent::TurnInterrupted { .. }
+            ))
+            .await,
+        Some(FromAgent::TurnInterrupted { reason, .. }) if reason == "cancelled"
+    ));
+    assert!(harness
+        .wait_for_event(Duration::from_millis(200), |event| matches!(
+            event,
+            FromAgent::TurnCompleted { .. }
+        ))
+        .await
+        .is_none());
+
+    harness.agent.shutdown().await;
+}
+
+#[tokio::test]
+async fn side_question_eof_reports_structured_transient_protocol_error() {
+    use super::message_queue::PromptKind;
+
+    let mut harness = AgentHarness::with_scripted(vec![ScriptedResponse {
+        blocks: vec![
+            ScriptedBlock::Text("partial side answer".to_string()),
+            ScriptedBlock::Eof,
+        ],
+        stop_reason: StopReason::EndTurn,
+        error: None,
+    }])
+    .expect("harness should construct");
+
+    harness
+        .agent
+        .prompt_with_kind(
+            "side question".to_owned(),
+            vec![],
+            PromptKind::SideQuestion,
+            None,
+        )
+        .await
+        .expect("side question");
+
+    assert!(matches!(
+        harness
+            .wait_for_event(Duration::from_secs(5), |event| matches!(
+                event,
+                FromAgent::SideQuestionEnd { .. }
+            ))
+            .await,
+        Some(FromAgent::SideQuestionEnd {
+            provider_error_kind: Some(ProviderStreamErrorKind::TransientProtocol),
+            ..
+        })
+    ));
+
+    harness.agent.shutdown().await;
+}
+
+#[tokio::test]
+async fn scripted_empty_response_is_terminal_error_without_response_end() {
+    let empty = ScriptedResponse {
+        blocks: Vec::new(),
+        stop_reason: StopReason::EndTurn,
+        error: None,
+    };
+    let mut harness =
+        AgentHarness::with_scripted(vec![empty.clone(), empty.clone(), empty.clone(), empty])
+            .expect("harness should construct");
 
     harness
         .agent
@@ -279,7 +584,7 @@ async fn scripted_empty_response_is_terminal_error_without_response_end() {
         .expect("prompt");
 
     let error = harness
-        .wait_for_event(Duration::from_secs(5), |event| {
+        .wait_for_event(Duration::from_secs(12), |event| {
             matches!(event, FromAgent::Error { terminal: true, .. })
         })
         .await
@@ -296,6 +601,104 @@ async fn scripted_empty_response_is_terminal_error_without_response_end() {
             .await
             .is_none(),
         "empty response must not be followed by ResponseEnd"
+    );
+    assert_eq!(
+        harness
+            .hook_log_lines()
+            .iter()
+            .filter(|line| line.contains("StopFailure"))
+            .count(),
+        1,
+        "retry exhaustion should dispatch StopFailure exactly once"
+    );
+
+    harness.agent.shutdown().await;
+}
+
+#[tokio::test]
+async fn scripted_empty_response_retries_before_terminal_success() {
+    let mut harness = AgentHarness::with_scripted(vec![
+        ScriptedResponse {
+            blocks: Vec::new(),
+            stop_reason: StopReason::EndTurn,
+            error: None,
+        },
+        ScriptedResponse::text("recovered"),
+    ])
+    .expect("harness should construct");
+
+    harness
+        .agent
+        .prompt("recover from an empty provider stream".to_owned(), vec![])
+        .await
+        .expect("prompt");
+
+    assert!(
+        harness
+            .wait_for_event(Duration::from_secs(5), |event| {
+                matches!(event, FromAgent::Status { message } if message.contains("Retrying"))
+            })
+            .await
+            .is_some(),
+        "empty response should enter bounded retry"
+    );
+    assert!(
+        harness
+            .wait_for_event(Duration::from_secs(5), |event| {
+                matches!(event, FromAgent::ResponseEnd { response_id, .. } if response_id == "done")
+            })
+            .await
+            .is_some(),
+        "a later provider response should complete the original turn"
+    );
+    assert!(
+        !harness.hook_log_contains("StopFailure"),
+        "recovered empty response must not dispatch StopFailure"
+    );
+
+    harness.agent.shutdown().await;
+}
+
+#[tokio::test]
+async fn scripted_tool_side_effect_is_not_repeated_by_later_empty_retry() {
+    let mut harness = AgentHarness::with_scripted(vec![
+        ScriptedResponse {
+            blocks: vec![ScriptedBlock::ToolUse {
+                id: "call-side-effect".to_owned(),
+                name: "bash".to_owned(),
+                input: json!({"command": "printf x >> side-effect.log"}),
+            }],
+            stop_reason: StopReason::ToolUse,
+            error: None,
+        },
+        ScriptedResponse {
+            blocks: Vec::new(),
+            stop_reason: StopReason::EndTurn,
+            error: None,
+        },
+        ScriptedResponse::text("recovered after tool"),
+    ])
+    .expect("harness should construct");
+
+    harness
+        .agent
+        .prompt("perform one side effect".to_owned(), vec![])
+        .await
+        .expect("prompt");
+    assert!(
+        harness
+            .wait_for_event(Duration::from_secs(8), |event| {
+                matches!(event, FromAgent::ResponseEnd { response_id, .. } if response_id == "done")
+            })
+            .await
+            .is_some(),
+        "turn should recover after the empty provider attempt"
+    );
+    assert_eq!(
+        fs::read_to_string(harness.workspace.path().join("side-effect.log"))
+            .expect("side effect file"),
+        "x",
+        "retry must not execute a completed tool call twice"
     );
 
     harness.agent.shutdown().await;

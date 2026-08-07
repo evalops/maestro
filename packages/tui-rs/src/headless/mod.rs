@@ -156,7 +156,10 @@
 //! while let Ok(event) = transport.recv().await {
 //!     match event {
 //!         AgentEvent::ResponseChunk { content, .. } => print!("{}", content),
-//!         AgentEvent::ResponseEnd { .. } => break,
+//!         AgentEvent::ResponseEnd { .. } => { /* model-call boundary */ }
+//!         AgentEvent::TurnCompleted { .. } => break,
+//!         AgentEvent::TurnInterrupted { reason, .. } => return Err(reason.into()),
+//!         AgentEvent::ProviderError { message, .. } => return Err(message.into()),
 //!         _ => {}
 //!     }
 //! }

@@ -150,6 +150,73 @@ fn fatal_agent_event_transitions_the_hosted_runtime_to_terminal_state() {
 }
 
 #[test]
+fn failed_terminal_journal_write_does_not_publish_or_replay_the_terminal() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    let mut events = shared.events.subscribe();
+    shared.fail_next_thread_persistences(1);
+
+    let mut state = shared.state.lock().expect("state");
+    shared.publish_message(
+        &mut state,
+        FromAgentMessage::TurnCompleted {
+            response_id: "response_uncommitted".to_string(),
+        },
+    );
+
+    assert_eq!(state.cursor, 0, "failed boundary must restore its cursor");
+    assert!(
+        state.envelopes.is_empty(),
+        "failed boundary must not enter replay"
+    );
+    assert!(state.runtime_failed);
+    assert!(!state.ready);
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+}
+
+#[test]
+fn published_turn_terminals_survive_journal_reload_with_their_replay_envelopes() {
+    for terminal in [
+        FromAgentMessage::TurnCompleted {
+            response_id: "response_completed".to_string(),
+        },
+        FromAgentMessage::ProviderError {
+            kind: maestro_ai::ProviderStreamErrorKind::ProviderDeclaredFailure,
+            message: "provider rejected the response".to_string(),
+        },
+    ] {
+        let workspace = tempdir().expect("workspace");
+        let config = test_config(workspace.path().to_path_buf());
+        let shared = SharedRunner::new(config.clone());
+        let expected_completed = matches!(terminal, FromAgentMessage::TurnCompleted { .. });
+        {
+            let mut state = shared.state.lock().expect("state");
+            shared.publish_message(&mut state, terminal);
+        }
+        drop(shared);
+
+        let reloaded = SharedRunner::new(config);
+        let state = reloaded.state.lock().expect("reloaded state");
+        assert!(state.envelopes.iter().any(|envelope| match envelope {
+            StreamEnvelope::Message { message, .. } if expected_completed => {
+                matches!(message.as_ref(), FromAgentMessage::TurnCompleted { .. })
+            }
+            StreamEnvelope::Message { message, .. } => matches!(
+                message.as_ref(),
+                FromAgentMessage::ProviderError {
+                    kind: maestro_ai::ProviderStreamErrorKind::ProviderDeclaredFailure,
+                    ..
+                }
+            ),
+            _ => false,
+        }));
+    }
+}
+
+#[test]
 fn ordinary_not_ready_runtime_remains_retryable() {
     let workspace = tempdir().expect("workspace");
     let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
@@ -555,7 +622,7 @@ struct SteeringLifecycleExecutor {
 }
 
 impl SteeringLifecycleExecutor {
-    fn complete_active_run(&self) {
+    fn end_model_response(&self) {
         self.queued.lock().expect("steering lifecycle events").push(
             FromAgentMessage::ResponseEnd {
                 response_id: "response-steered".to_string(),
@@ -563,6 +630,14 @@ impl SteeringLifecycleExecutor {
                 tools_summary: None,
                 duration_ms: Some(1),
                 ttft_ms: Some(1),
+            },
+        );
+    }
+
+    fn complete_active_run(&self) {
+        self.queued.lock().expect("steering lifecycle events").push(
+            FromAgentMessage::TurnCompleted {
+                response_id: "turn-steered".to_string(),
             },
         );
     }
@@ -651,6 +726,9 @@ impl HostedRunnerHeadlessMessageExecutor for RecordingThreadExecutor {
                     tools_summary: None,
                     duration_ms: Some(1),
                     ttft_ms: Some(1),
+                },
+                FromAgentMessage::TurnCompleted {
+                    response_id: format!("turn-{content}"),
                 },
             ]
         };
@@ -3055,8 +3133,9 @@ fn sse_lag_reset_envelope_includes_current_snapshot() {
         let mut state = shared.state.lock().expect("state");
         shared.publish_message(
             &mut state,
-            FromAgentMessage::Status {
-                message: "ready".to_string(),
+            FromAgentMessage::ProviderError {
+                kind: maestro_ai::ProviderStreamErrorKind::ProviderDeclaredFailure,
+                message: "provider rejected the response".to_string(),
             },
         );
     }
@@ -3067,6 +3146,10 @@ fn sse_lag_reset_envelope_includes_current_snapshot() {
     };
     assert_eq!(reason, "broadcast_lag:3");
     assert_eq!(snapshot.cursor, 1);
+    assert_eq!(
+        snapshot.state.provider_error_kind,
+        Some(maestro_ai::ProviderStreamErrorKind::ProviderDeclaredFailure)
+    );
 }
 
 #[tokio::test]
@@ -3942,6 +4025,7 @@ fn runtime_state_snapshot_serializes_empty_codex_subagent_edges() {
             active_utility_commands: Vec::new(),
             active_file_watches: Vec::new(),
             last_error: None,
+            provider_error_kind: None,
             last_error_type: None,
             last_status: Some("Ready".to_string()),
             last_response_duration_ms: None,
@@ -6586,7 +6670,7 @@ async fn duplicate_subscribe_preserves_disconnect_cleanup() {
             "sessionId": "sess_test",
             "connectionId": "conn_multi",
             "role": "controller",
-            "protocolVersion": "2026-04-02",
+            "protocolVersion": HEADLESS_PROTOCOL_VERSION,
             "clientInfo": {"name": "lease-test", "version": "1.0.0"},
             "capabilities": {
                 "serverRequests": ["approval"],
@@ -6705,7 +6789,10 @@ async fn duplicate_subscribe_preserves_disconnect_cleanup() {
         .find(|connection| connection["connection_id"] == "conn_multi")
         .expect("conn_multi state");
     assert_eq!(connection_state["subscription_count"], 2);
-    assert_eq!(connection_state["client_protocol_version"], "2026-04-02");
+    assert_eq!(
+        connection_state["client_protocol_version"],
+        HEADLESS_PROTOCOL_VERSION
+    );
     assert_eq!(connection_state["client_info"]["name"], "lease-test");
     assert_eq!(connection_state["capabilities"]["raw_agent_events"], true);
     assert!(connection_state["lease_expires_at"].as_str().is_some());
@@ -9072,7 +9159,7 @@ async fn durable_thread_only_accepts_steering_while_a_turn_is_active() {
 }
 
 #[tokio::test]
-async fn durable_thread_single_response_end_completes_active_run_and_its_steers() {
+async fn durable_thread_requires_turn_completed_after_response_end_for_active_run_and_steers() {
     let workspace = tempdir().expect("workspace");
     let executor = Arc::new(SteeringLifecycleExecutor::default());
     let handle = start_hosted_runner_with_message_executor(
@@ -9113,6 +9200,23 @@ async fn durable_thread_single_response_end_completes_active_run_and_its_steers(
         .expect("steer response")
         .error_for_status()
         .expect("steer status");
+
+    executor.end_model_response();
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    let running: serde_json::Value = client
+        .get(format!(
+            "{}/api/headless/threads/sess_test",
+            handle.base_url()
+        ))
+        .send()
+        .await
+        .expect("running thread response")
+        .error_for_status()
+        .expect("running thread status")
+        .json()
+        .await
+        .expect("running thread json");
+    assert_eq!(running["phase"], "running");
 
     executor.complete_active_run();
     let thread = tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -9360,7 +9464,9 @@ async fn hosted_hello_rejects_a_client_protocol_version_this_build_does_not_serv
             .send()
     };
 
-    let rejected = hello("2019-01-01").await.expect("rejected hello response");
+    let rejected = hello("2026-08-01")
+        .await
+        .expect("previous-version hello response");
     assert_eq!(rejected.status(), StatusCode::NOT_IMPLEMENTED);
     let rejected: serde_json::Value = rejected.json().await.expect("rejected hello json");
     assert_eq!(rejected["code"], "unsupported_capability");

@@ -44,8 +44,15 @@ fn client_tool_definitions(chat: &ChatRequest) -> (Vec<ToolDefinition>, HashSet<
     (definitions, names)
 }
 
-fn is_terminal_agent_response(response_id: &str) -> bool {
-    response_id == "done"
+fn native_chat_terminal_status(event: &FromAgent) -> Option<Result<(), String>> {
+    match event {
+        FromAgent::TurnCompleted { .. } => Some(Ok(())),
+        FromAgent::TurnInterrupted { reason, .. } => Some(Err(reason.clone())),
+        FromAgent::ProviderError { kind, message } => {
+            Some(Err(format!("provider failure ({kind:?}): {message}")))
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -586,6 +593,7 @@ pub(crate) async fn handle_chat_endpoint(
     let mut client_tool_call_ids: HashSet<String> = HashSet::new();
 
     while let Some(event) = events.recv().await {
+        let terminal_status = native_chat_terminal_status(&event);
         match event {
             FromAgent::Ready { .. }
             | FromAgent::ConversationSnapshot { .. }
@@ -1032,7 +1040,7 @@ pub(crate) async fn handle_chat_endpoint(
             FromAgent::SideQuestionStart { .. }
             | FromAgent::SideQuestionChunk { .. }
             | FromAgent::SideQuestionEnd { .. } => {}
-            FromAgent::ResponseEnd { response_id, usage } => {
+            FromAgent::ResponseEnd { usage, .. } => {
                 if usage.is_some() {
                     record_usage_entry(
                         &state,
@@ -1044,11 +1052,11 @@ pub(crate) async fn handle_chat_endpoint(
                     .await;
                     last_usage = usage;
                 }
-                if !is_terminal_agent_response(&response_id) {
-                    response_started = false;
-                    thinking_started = false;
-                    continue;
-                }
+                response_started = false;
+                thinking_started = false;
+            }
+            FromAgent::TurnCompleted { .. } => {
+                debug_assert!(matches!(terminal_status, Some(Ok(()))));
                 let client_tool_results =
                     take_client_tool_results(&state, &client_tool_call_ids).await;
                 finish_client_tool_metadata(&mut assistant_tools, &client_tool_results);
@@ -1080,6 +1088,30 @@ pub(crate) async fn handle_chat_endpoint(
                         "type": "agent_end",
                         "messages": [message],
                         "stopReason": "stop"
+                    }),
+                )
+                .await?;
+                send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+                terminal_sent = true;
+                break;
+            }
+            FromAgent::TurnInterrupted { reason, .. } => {
+                send_sse(
+                    &mut stream,
+                    &serde_json::json!({ "type": "error", "message": reason }),
+                )
+                .await?;
+                send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+                terminal_sent = true;
+                break;
+            }
+            FromAgent::ProviderError { kind, message } => {
+                send_sse(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "error",
+                        "message": message,
+                        "providerErrorKind": kind,
                     }),
                 )
                 .await?;
@@ -1347,6 +1379,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
     let mut client_tool_call_ids: HashSet<String> = HashSet::new();
 
     while let Some(event) = events.recv().await {
+        let terminal_status = native_chat_terminal_status(&event);
         match event {
             FromAgent::Ready { .. }
             | FromAgent::ConversationSnapshot { .. }
@@ -1782,7 +1815,7 @@ pub(crate) async fn handle_chat_websocket_endpoint(
             FromAgent::SideQuestionStart { .. }
             | FromAgent::SideQuestionChunk { .. }
             | FromAgent::SideQuestionEnd { .. } => {}
-            FromAgent::ResponseEnd { response_id, usage } => {
+            FromAgent::ResponseEnd { usage, .. } => {
                 if usage.is_some() {
                     record_usage_entry(
                         &state,
@@ -1794,11 +1827,11 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                     .await;
                     last_usage = usage;
                 }
-                if !is_terminal_agent_response(&response_id) {
-                    response_started = false;
-                    thinking_started = false;
-                    continue;
-                }
+                response_started = false;
+                thinking_started = false;
+            }
+            FromAgent::TurnCompleted { .. } => {
+                debug_assert!(matches!(terminal_status, Some(Ok(()))));
                 let client_tool_results =
                     take_client_tool_results(&state, &client_tool_call_ids).await;
                 finish_client_tool_metadata(&mut assistant_tools, &client_tool_results);
@@ -1821,6 +1854,30 @@ pub(crate) async fn handle_chat_websocket_endpoint(
                         "type": "agent_end",
                         "messages": [message],
                         "stopReason": "stop"
+                    }),
+                )
+                .await?;
+                send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+                terminal_sent = true;
+                break;
+            }
+            FromAgent::TurnInterrupted { reason, .. } => {
+                send_ws_json(
+                    &mut stream,
+                    &serde_json::json!({ "type": "error", "message": reason }),
+                )
+                .await?;
+                send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+                terminal_sent = true;
+                break;
+            }
+            FromAgent::ProviderError { kind, message } => {
+                send_ws_json(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "error",
+                        "message": message,
+                        "providerErrorKind": kind,
                     }),
                 )
                 .await?;
@@ -2394,12 +2451,28 @@ pub(crate) fn sse_headers() -> String {
 
 #[cfg(test)]
 mod chat_stream_tests {
-    use super::is_terminal_agent_response;
+    use super::native_chat_terminal_status;
+    use maestro_tui::agent::FromAgent;
 
     #[test]
-    fn only_synthetic_done_event_closes_native_chat_stream() {
-        assert!(!is_terminal_agent_response("model-response"));
-        assert!(!is_terminal_agent_response("blocked"));
-        assert!(is_terminal_agent_response("done"));
+    fn native_chat_requires_explicit_turn_terminal() {
+        assert!(native_chat_terminal_status(&FromAgent::ResponseEnd {
+            response_id: "done".to_string(),
+            usage: None,
+        })
+        .is_none());
+        assert!(matches!(
+            native_chat_terminal_status(&FromAgent::TurnCompleted {
+                response_id: "done".to_string(),
+            }),
+            Some(Ok(()))
+        ));
+        assert!(matches!(
+            native_chat_terminal_status(&FromAgent::ProviderError {
+                kind: maestro_tui::ai::ProviderStreamErrorKind::TransientProtocol,
+                message: "unexpected eof".to_string(),
+            }),
+            Some(Err(message)) if message.contains("unexpected eof")
+        ));
     }
 }

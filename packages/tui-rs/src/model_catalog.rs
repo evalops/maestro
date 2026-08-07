@@ -22,7 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::ai::{ProviderProtocol, ProviderRegistry};
+use crate::ai::{provider_model_name, ProviderProtocol, ProviderRegistry};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -72,6 +72,12 @@ pub struct ModelCapabilities {
     pub reasoning: bool,
     pub streaming: bool,
     pub context_tokens: u32,
+    /// Per-response output ceiling (reasoning tokens included) from the
+    /// upstream catalog's `limit.output`. `None` when the source has no
+    /// output-limit data for the model. Deserializes from older catalog
+    /// snapshots that predate the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -482,6 +488,14 @@ fn map_models_dev_model(
         .and_then(|modalities| modalities.get("input"))
         .and_then(serde_json::Value::as_array)
         .is_some_and(|inputs| inputs.iter().any(|input| input.as_str() == Some("image")));
+    // Mirror of the fetcher script: keep `limit.output` only when it is a
+    // positive integer.
+    let output_tokens = model
+        .get("limit")
+        .and_then(|limit| limit.get("output"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|output| u32::try_from(output).ok())
+        .filter(|output| *output > 0);
     ModelInfo {
         id: id.to_owned(),
         name,
@@ -494,6 +508,7 @@ fn map_models_dev_model(
             reasoning: model.get("reasoning").and_then(serde_json::Value::as_bool) == Some(true),
             streaming: true,
             context_tokens,
+            output_tokens,
         },
         verification: ModelVerification {
             state: VerificationState::Catalog,
@@ -543,6 +558,34 @@ pub fn find_model(id: &str) -> Option<ModelInfo> {
         return None;
     }
     models.into_iter().find(|model| model.id == bare_id)
+}
+
+/// Fallback per-request output token budget used when the catalog has no
+/// output limit for the active model. Explicit configuration
+/// (`set_max_tokens`, env overrides such as `MAESTRO_PRINT_MAX_TOKENS`)
+/// always wins over this default.
+pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 16_384;
+
+/// Catalog-declared output token limit (models.dev `limit.output`) for a
+/// model id, when known.
+///
+/// Managed gateway ids (`evalops/…`, `maestro-managed/…`) and provider
+/// qualifiers are reduced to the bare catalog id via [`provider_model_name`]
+/// before lookup, so `evalops/gpt-5.6` resolves to the `gpt-5.6` catalog row.
+/// The returned value is the model's full output ceiling: it is a cap, not a
+/// reservation, and unused headroom costs nothing under per-token billing, so
+/// it is passed through untruncated. `None` when the model is not cataloged
+/// or the catalog has no output limit for it.
+#[must_use]
+pub fn catalog_output_token_limit(model_id: &str) -> Option<u32> {
+    find_model(&provider_model_name(model_id)).and_then(|model| model.capabilities.output_tokens)
+}
+
+/// Default per-request output token budget for a model id: the full catalog
+/// output limit when known, [`DEFAULT_MAX_OUTPUT_TOKENS`] otherwise.
+#[must_use]
+pub fn default_max_output_tokens(model_id: &str) -> u32 {
+    catalog_output_token_limit(model_id).unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS)
 }
 
 #[must_use]
@@ -759,7 +802,9 @@ mod tests {
         let payload = serde_json::json!({
             "anthropic": {"models": {
                 "claude-good": {"name": "Good", "tool_call": true, "reasoning": true,
-                    "limit": {"context": 200_000}, "modalities": {"input": ["text", "image"]}},
+                    "limit": {"context": 200_000, "output": 64_000}, "modalities": {"input": ["text", "image"]}},
+                "claude-no-output": {"name": "NoOutput", "tool_call": true,
+                    "limit": {"context": 200_000}},
                 "claude-old": {"name": "Old", "tool_call": true, "status": "deprecated",
                     "limit": {"context": 200_000}},
                 "claude-no-tools": {"name": "NoTools", "tool_call": false,
@@ -772,11 +817,14 @@ mod tests {
             "xai": {"models": {}}
         });
         let models = map_models_dev_catalog(&payload).expect("mapping");
-        assert_eq!(models.len(), 1);
+        assert_eq!(models.len(), 2);
         assert_eq!(models[0].id, "claude-good");
         assert!(models[0].capabilities.vision);
         assert!(models[0].capabilities.reasoning);
         assert_eq!(models[0].capabilities.protocol, ModelProtocol::Anthropic);
+        assert_eq!(models[0].capabilities.output_tokens, Some(64_000));
+        assert_eq!(models[1].id, "claude-no-output");
+        assert_eq!(models[1].capabilities.output_tokens, None);
     }
 
     #[test]
@@ -876,6 +924,34 @@ mod tests {
     }
 
     #[test]
+    fn catalog_output_token_limit_resolves_managed_and_qualified_ids() {
+        assert_eq!(catalog_output_token_limit("gpt-5.6"), Some(128_000));
+        assert_eq!(catalog_output_token_limit("openai/gpt-5.6"), Some(128_000));
+        // Managed gateway prefixes strip to the underlying OpenAI catalog id.
+        assert_eq!(catalog_output_token_limit("evalops/gpt-5.6"), Some(128_000));
+        assert_eq!(
+            catalog_output_token_limit("maestro-managed/gpt-5.6"),
+            Some(128_000)
+        );
+        assert_eq!(catalog_output_token_limit("gpt-99-turbo"), None);
+        assert_eq!(catalog_output_token_limit("openai/gpt-99-turbo"), None);
+        assert_eq!(catalog_output_token_limit("evalops/gpt-99-turbo"), None);
+    }
+
+    #[test]
+    fn default_max_output_tokens_prefers_the_full_catalog_limit() {
+        // The catalog limit is a cap, not a reservation: pass it through
+        // untruncated for known models, fall back for unknown ones.
+        assert_eq!(default_max_output_tokens("gpt-5.6"), 128_000);
+        assert_eq!(default_max_output_tokens("evalops/gpt-5.6"), 128_000);
+        assert_eq!(
+            default_max_output_tokens("gpt-99-turbo"),
+            DEFAULT_MAX_OUTPUT_TOKENS
+        );
+        assert_eq!(DEFAULT_MAX_OUTPUT_TOKENS, 16_384);
+    }
+
+    #[test]
     fn catalog_exposes_capabilities_separately_from_verification() {
         let model = find_model("openai/gpt-5.5").expect("catalog model");
         assert!(model.capabilities.tools);
@@ -883,6 +959,7 @@ mod tests {
         assert_eq!(model.capabilities.protocol, ModelProtocol::OpenAiResponses);
         assert_eq!(model.verification.state, VerificationState::Catalog);
         assert_eq!(model.capabilities.context_tokens, 1_050_000);
+        assert_eq!(model.capabilities.output_tokens, Some(128_000));
     }
 
     #[test]

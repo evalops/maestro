@@ -487,13 +487,7 @@ pub async fn execute_scripted_scenario_with_options(
                         "output": normalize_for_transcript(&output, &workspace),
                     }));
                 }
-                FromAgent::ResponseEnd { response_id, .. } => {
-                    if response_id == "done" {
-                        if !current_text.is_empty() {
-                            final_text = current_text.clone();
-                        }
-                        break;
-                    }
+                FromAgent::ResponseEnd { .. } => {
                     if !current_text.is_empty() || !current_tool_calls.is_empty() {
                         let mut blocks = Vec::new();
                         if !current_text.is_empty() {
@@ -543,6 +537,18 @@ pub async fn execute_scripted_scenario_with_options(
                         current_text = String::new();
                         current_tool_calls = Vec::new();
                     }
+                }
+                FromAgent::TurnCompleted { .. } => {
+                    if !current_text.is_empty() {
+                        final_text = current_text.clone();
+                    }
+                    break;
+                }
+                FromAgent::TurnInterrupted { reason, .. } => {
+                    bail!("scripted scenario execution interrupted: {reason}")
+                }
+                FromAgent::ProviderError { kind, message } => {
+                    bail!("scripted scenario provider failure ({kind:?}): {message}")
                 }
                 FromAgent::Error {
                     message,

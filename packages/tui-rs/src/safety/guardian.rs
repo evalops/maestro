@@ -258,6 +258,11 @@ pub enum GuardianError {
     Timeout(Duration),
     #[error("guardian LLM call failed: {0}")]
     Llm(String),
+    #[error("guardian provider stream failed ({kind:?}): {message}")]
+    Provider {
+        kind: crate::ai::ProviderStreamErrorKind,
+        message: String,
+    },
     #[error("guardian verdict rejected: {0}")]
     Parse(#[from] GuardianParseError),
 }
@@ -405,21 +410,33 @@ fn llm_evaluator(model: String) -> EvaluatorFn {
                 system: Some(GUARDIAN_SYSTEM_PROMPT.to_string()),
                 ..RequestConfig::default()
             };
-            let mut rx = client
+            let rx = client
                 .stream(&messages, &config)
                 .await
                 .map_err(|error| GuardianError::Llm(error.to_string()))?;
-            let mut text = String::new();
-            while let Some(event) = rx.recv().await {
-                match event {
-                    StreamEvent::TextDelta { text: delta, .. } => text.push_str(&delta),
-                    StreamEvent::Error { message } => return Err(GuardianError::Llm(message)),
-                    StreamEvent::MessageStop { .. } => break,
-                    _ => {}
-                }
-            }
-            Ok(text)
+            collect_guardian_stream(rx).await
         })
+    })
+}
+
+async fn collect_guardian_stream(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
+) -> Result<String, GuardianError> {
+    let mut text = String::new();
+    while let Some(event) = rx.recv().await {
+        match event {
+            StreamEvent::TextDelta { text: delta, .. } => text.push_str(&delta),
+            StreamEvent::Error { message } => return Err(GuardianError::Llm(message)),
+            StreamEvent::ProviderError { kind, message } => {
+                return Err(GuardianError::Provider { kind, message });
+            }
+            StreamEvent::MessageStop { .. } => return Ok(text),
+            _ => {}
+        }
+    }
+    Err(GuardianError::Provider {
+        kind: crate::ai::ProviderStreamErrorKind::TransientProtocol,
+        message: "guardian provider stream ended before a terminal event".to_string(),
     })
 }
 
@@ -686,5 +703,49 @@ mod tests {
         let guardian = Guardian::new(evaluator, GUARDIAN_TIMEOUT);
         let error = guardian.evaluate(test_context()).await.unwrap_err();
         assert!(matches!(error, GuardianError::Llm(_)));
+    }
+
+    #[tokio::test]
+    async fn provider_error_is_terminal_for_guardian_stream() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(StreamEvent::ProviderError {
+            kind: crate::ai::ProviderStreamErrorKind::TransientProtocol,
+            message: "missing terminal event".to_string(),
+        })
+        .unwrap();
+        tx.send(StreamEvent::MessageStop { stop_reason: None })
+            .unwrap();
+        drop(tx);
+
+        let error = collect_guardian_stream(rx).await.unwrap_err();
+
+        assert!(matches!(
+            error,
+            GuardianError::Provider {
+                kind: crate::ai::ProviderStreamErrorKind::TransientProtocol,
+                message,
+            } if message == "missing terminal event"
+        ));
+    }
+
+    #[tokio::test]
+    async fn guardian_stream_eof_before_message_stop_is_transient_protocol_error() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(StreamEvent::TextDelta {
+            index: 0,
+            text: "partial verdict".to_string(),
+        })
+        .unwrap();
+        drop(tx);
+
+        let error = collect_guardian_stream(rx).await.unwrap_err();
+
+        assert!(matches!(
+            error,
+            GuardianError::Provider {
+                kind: crate::ai::ProviderStreamErrorKind::TransientProtocol,
+                ..
+            }
+        ));
     }
 }

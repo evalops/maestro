@@ -82,7 +82,11 @@ impl TurnTracker {
     pub fn handle_event(&mut self, event: &FromAgent) -> Option<CanonicalTurnEvent> {
         match event {
             FromAgent::ResponseStart { response_id } => {
-                self.start_turn(response_id.clone());
+                if self.current_turn.is_none() {
+                    self.start_turn(response_id.clone());
+                } else {
+                    self.current_response_id = Some(response_id.clone());
+                }
                 // Record LLM start time
                 if let Some(ref mut turn) = self.current_turn {
                     turn.record_llm_start();
@@ -117,13 +121,41 @@ impl TurnTracker {
                 None
             }
             FromAgent::ResponseEnd { usage, .. } => {
-                // Record LLM end time before completing the turn
+                // A provider response can be followed by tools and another
+                // model call. Record its timing/usage without declaring the
+                // enclosing native turn successful.
                 if let Some(ref mut turn) = self.current_turn {
                     turn.record_llm_end();
                 }
-                self.accumulated_usage = usage.clone();
-                self.end_turn(TurnStatus::Success, None)
+                if let Some(usage) = usage {
+                    if let Some(total) = self.accumulated_usage.as_mut() {
+                        total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
+                        total.output_tokens =
+                            total.output_tokens.saturating_add(usage.output_tokens);
+                        total.cache_read_tokens = total
+                            .cache_read_tokens
+                            .saturating_add(usage.cache_read_tokens);
+                        total.cache_write_tokens = total
+                            .cache_write_tokens
+                            .saturating_add(usage.cache_write_tokens);
+                        total.cost = match (total.cost, usage.cost) {
+                            (Some(previous), Some(current)) => Some(previous + current),
+                            (previous, current) => previous.or(current),
+                        };
+                    } else {
+                        self.accumulated_usage = Some(usage.clone());
+                    }
+                }
+                None
             }
+            FromAgent::TurnCompleted { .. } => self.end_turn(TurnStatus::Success, None),
+            FromAgent::TurnInterrupted { reason, .. } => self.end_turn(
+                TurnStatus::Error,
+                Some(ErrorDetails {
+                    category: Some("interrupted".to_string()),
+                    message: Some(reason.clone()),
+                }),
+            ),
             FromAgent::CodexUsageState {
                 usage: Some(usage), ..
             } => {
@@ -149,6 +181,13 @@ impl TurnTracker {
                     None
                 }
             }
+            FromAgent::ProviderError { kind, message } => self.end_turn(
+                TurnStatus::Error,
+                Some(ErrorDetails {
+                    category: Some(format!("provider_{kind:?}").to_ascii_lowercase()),
+                    message: Some(message.clone()),
+                }),
+            ),
             FromAgent::Status { .. } => {
                 // Status messages are informational (e.g., "Rate limit. Retrying in 1.5s...")
                 // and shouldn't end the turn. Rate limiting is handled by ResponseEnd or Error.
@@ -264,10 +303,89 @@ mod tests {
                 cost: Some(0.01),
             }),
         });
+        assert!(event.is_none(), "model response end is not a turn terminal");
+        let event = tracker.handle_event(&FromAgent::TurnCompleted {
+            response_id: "done".to_string(),
+        });
         assert!(event.is_some());
         let event = event.unwrap();
         assert_eq!(event.turn_number, 1);
         assert_eq!(event.status, TurnStatus::Success);
         assert_eq!(event.tool_count, 1);
+    }
+
+    #[test]
+    fn response_end_then_provider_error_records_error_not_success() {
+        let mut tracker = TurnTracker::new(TurnTrackerConfig {
+            session_id: "provider-error-session".to_string(),
+            sampling_config: TailSamplingConfig::default(),
+        });
+        assert!(tracker
+            .handle_event(&FromAgent::ResponseStart {
+                response_id: "resp-1".to_string(),
+            })
+            .is_none());
+        assert!(tracker
+            .handle_event(&FromAgent::ResponseEnd {
+                response_id: "resp-1".to_string(),
+                usage: None,
+            })
+            .is_none());
+
+        let event = tracker
+            .handle_event(&FromAgent::ProviderError {
+                kind: maestro_ai::ProviderStreamErrorKind::TransientProtocol,
+                message: "missing terminal event".to_string(),
+            })
+            .expect("provider terminal should end telemetry turn");
+        assert_eq!(event.status, TurnStatus::Error);
+        assert_eq!(
+            event.error_message.as_deref(),
+            Some("missing terminal event")
+        );
+    }
+
+    #[test]
+    fn successful_multi_response_turn_accumulates_usage_until_turn_terminal() {
+        let mut tracker = TurnTracker::new(TurnTrackerConfig {
+            session_id: "multi-response-session".to_string(),
+            sampling_config: TailSamplingConfig::default(),
+        });
+        tracker.handle_event(&FromAgent::ResponseStart {
+            response_id: "resp-1".to_string(),
+        });
+        for (response_id, input_tokens, output_tokens, cost) in
+            [("resp-1", 10, 4, 0.01), ("resp-2", 20, 6, 0.02)]
+        {
+            if response_id == "resp-2" {
+                assert!(tracker
+                    .handle_event(&FromAgent::ResponseStart {
+                        response_id: response_id.to_string(),
+                    })
+                    .is_none());
+                assert_eq!(tracker.turn_number(), 1);
+            }
+            assert!(tracker
+                .handle_event(&FromAgent::ResponseEnd {
+                    response_id: response_id.to_string(),
+                    usage: Some(TokenUsage {
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens: 0,
+                        cache_write_tokens: 0,
+                        cost: Some(cost),
+                    }),
+                })
+                .is_none());
+        }
+
+        let event = tracker
+            .handle_event(&FromAgent::TurnCompleted {
+                response_id: "done".to_string(),
+            })
+            .expect("explicit terminal should complete telemetry turn");
+        assert_eq!(event.tokens.input, 30);
+        assert_eq!(event.tokens.output, 10);
+        assert!((event.cost_usd - 0.03).abs() < f64::EPSILON);
     }
 }

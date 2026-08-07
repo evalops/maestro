@@ -488,6 +488,7 @@ fn remote_runtime_state_snapshot_maps_into_agent_state() {
         }],
         last_error: Some("boom".to_string()),
         last_error_type: Some(HeadlessErrorType::Tool),
+        provider_error_kind: Some(maestro_ai::ProviderStreamErrorKind::ProviderDeclaredFailure),
         last_status: Some("Working".to_string()),
         last_response_duration_ms: Some(42),
         last_ttft_ms: Some(7),
@@ -543,9 +544,39 @@ fn remote_runtime_state_snapshot_maps_into_agent_state() {
         Some("conn-1")
     );
     assert_eq!(state.last_error.as_deref(), Some("boom"));
+    assert_eq!(
+        state.provider_error_kind,
+        Some(maestro_ai::ProviderStreamErrorKind::ProviderDeclaredFailure)
+    );
     assert_eq!(state.last_status.as_deref(), Some("Working"));
     assert!(state.is_ready);
     assert!(state.is_responding);
+}
+
+#[test]
+fn remote_reset_snapshot_preserves_each_provider_error_kind() {
+    for (encoded, expected) in [
+        (
+            "transient_protocol",
+            maestro_ai::ProviderStreamErrorKind::TransientProtocol,
+        ),
+        (
+            "output_token_exhaustion",
+            maestro_ai::ProviderStreamErrorKind::OutputTokenExhaustion,
+        ),
+        (
+            "provider_declared_failure",
+            maestro_ai::ProviderStreamErrorKind::ProviderDeclaredFailure,
+        ),
+    ] {
+        let snapshot: RemoteRuntimeStateSnapshot = serde_json::from_value(serde_json::json!({
+            "provider_error_kind": encoded,
+            "last_error": "terminal provider failure",
+        }))
+        .expect("remote reset snapshot");
+        let state = snapshot.into_agent_state();
+        assert_eq!(state.provider_error_kind, Some(expected));
+    }
 }
 
 #[test]

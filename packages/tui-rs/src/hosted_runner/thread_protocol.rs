@@ -94,6 +94,8 @@ pub(super) struct ThreadTurnRecord {
     pub(super) phase: ThreadPhase,
     pub(super) accepted_at: String,
     pub(super) cursor: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) provider_error_kind: Option<maestro_ai::ProviderStreamErrorKind>,
 }
 
 impl ThreadTurnRecord {
@@ -158,6 +160,7 @@ impl ThreadProtocolState {
             phase: ThreadPhase::Accepted,
             accepted_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
             cursor,
+            provider_error_kind: None,
         });
     }
 
@@ -187,8 +190,11 @@ impl ThreadProtocolState {
                     turn.cursor = cursor;
                 }
             }
-            FromAgentMessage::ResponseEnd { .. } => {
-                self.mark_active_run_terminal(ThreadPhase::Completed, cursor);
+            FromAgentMessage::TurnCompleted { .. } => {
+                self.mark_active_run_terminal(ThreadPhase::Completed, cursor, None);
+            }
+            FromAgentMessage::TurnInterrupted { .. } => {
+                self.mark_active_run_terminal(ThreadPhase::Interrupted, cursor, None);
             }
             FromAgentMessage::ServerRequest { request_type, .. } => {
                 let phase = match request_type {
@@ -226,7 +232,10 @@ impl ThreadProtocolState {
                 } else {
                     ThreadPhase::Failed
                 };
-                self.mark_active_run_terminal(phase, cursor);
+                self.mark_active_run_terminal(phase, cursor, None);
+            }
+            FromAgentMessage::ProviderError { kind, .. } => {
+                self.mark_active_run_terminal(ThreadPhase::Failed, cursor, Some(*kind));
             }
             _ => {}
         }
@@ -267,7 +276,12 @@ impl ThreadProtocolState {
         self.turns.iter_mut().find(|turn| turn.turn_id == turn_id)
     }
 
-    fn mark_active_run_terminal(&mut self, phase: ThreadPhase, cursor: u64) {
+    fn mark_active_run_terminal(
+        &mut self,
+        phase: ThreadPhase,
+        cursor: u64,
+        provider_error_kind: Option<maestro_ai::ProviderStreamErrorKind>,
+    ) {
         let Some(run_id) = self
             .active_turn_ids
             .front()
@@ -280,6 +294,7 @@ impl ThreadProtocolState {
         for turn in self.turns.iter_mut().filter(|turn| turn.run_id == run_id) {
             turn.phase = phase;
             turn.cursor = cursor;
+            turn.provider_error_kind = provider_error_kind;
             terminal_turn_ids.insert(turn.turn_id.clone());
         }
         self.active_turn_ids
@@ -589,4 +604,170 @@ fn atomic_write_private_json<T: Serialize>(path: &Path, value: &T) -> io::Result
         let _ = fs::remove_file(&temporary);
     }
     write_result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maestro_ai::ProviderStreamErrorKind;
+
+    fn active_state() -> ThreadProtocolState {
+        let mut state = ThreadProtocolState::new("thread-positive-terminal".to_string().into());
+        state.append(
+            AppendTurnRequest {
+                protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                turn_id: "turn-1".to_string(),
+                kind: ThreadTurnKind::UserMessage,
+                content: "hello".to_string(),
+                attachments: None,
+            },
+            1,
+        );
+        state.mark_dispatched(2);
+        state
+    }
+
+    #[test]
+    fn response_end_does_not_complete_hosted_turn_but_turn_completed_does() {
+        let mut state = active_state();
+
+        state.apply_agent_message(
+            &FromAgentMessage::ResponseEnd {
+                response_id: "model-call".to_string(),
+                usage: None,
+                tools_summary: None,
+                duration_ms: None,
+                ttft_ms: None,
+            },
+            3,
+        );
+        assert_eq!(state.phase(), ThreadPhase::Running);
+
+        state.apply_agent_message(
+            &FromAgentMessage::TurnCompleted {
+                response_id: "turn-1".to_string(),
+            },
+            4,
+        );
+        assert_eq!(state.phase(), ThreadPhase::Completed);
+    }
+
+    #[test]
+    fn provider_terminal_error_cannot_be_followed_by_turn_completion() {
+        let mut state = active_state();
+
+        state.apply_agent_message(
+            &FromAgentMessage::ProviderError {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message: "missing terminal event".to_string(),
+            },
+            3,
+        );
+        assert_eq!(state.phase(), ThreadPhase::Failed);
+
+        state.apply_agent_message(
+            &FromAgentMessage::TurnCompleted {
+                response_id: "turn-1".to_string(),
+            },
+            4,
+        );
+        assert_eq!(state.phase(), ThreadPhase::Failed);
+    }
+
+    #[test]
+    fn interrupted_terminal_survives_restore_without_becoming_completed() {
+        let mut state = active_state();
+        state.apply_agent_message(
+            &FromAgentMessage::TurnInterrupted {
+                response_id: "turn-1".to_string(),
+                reason: "cancelled".to_string(),
+            },
+            3,
+        );
+        assert_eq!(state.phase(), ThreadPhase::Interrupted);
+
+        let restored = ThreadProtocolState::restore(state.thread_id.clone(), state.turns.clone());
+        assert_eq!(restored.phase(), ThreadPhase::Interrupted);
+        assert_eq!(restored.turn("turn-1").unwrap().cursor, 3);
+    }
+
+    fn persist_and_reload_terminal(
+        workspace_root: &Path,
+        thread_id: &str,
+        message: FromAgentMessage,
+    ) -> LoadedThreadJournal {
+        let mut loaded = ThreadJournal::load(workspace_root, thread_id, 1).unwrap();
+        loaded.state.append(
+            AppendTurnRequest {
+                protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                turn_id: "turn-1".to_string(),
+                kind: ThreadTurnKind::UserMessage,
+                content: "hello".to_string(),
+                attachments: None,
+            },
+            1,
+        );
+        loaded.state.mark_dispatched(2);
+        loaded.state.apply_agent_message(&message, 3);
+        loaded.cursor = 3;
+        loaded.events.push_back(StreamEnvelope::Message {
+            cursor: 3,
+            message: Box::new(message),
+        });
+        loaded
+            .journal
+            .persist(
+                &loaded.state,
+                1,
+                loaded.cursor,
+                &loaded.events,
+                ResponseIdempotencyView {
+                    keys: &loaded.response_idempotency_keys,
+                    digests: &loaded.response_idempotency_digests,
+                    request_owners: &loaded.response_request_owners,
+                    pending: &loaded.pending_response_idempotency,
+                    order: &loaded.response_idempotency_order,
+                    pending_order: &loaded.pending_response_idempotency_order,
+                },
+                &loaded.identity_binding_failures,
+            )
+            .unwrap();
+        drop(loaded);
+        ThreadJournal::load(workspace_root, thread_id, 2).unwrap()
+    }
+
+    #[test]
+    fn durable_journal_reloads_positive_and_provider_error_terminals() {
+        let workspace = tempfile::tempdir().unwrap();
+
+        let completed = persist_and_reload_terminal(
+            workspace.path(),
+            "completed-thread",
+            FromAgentMessage::TurnCompleted {
+                response_id: "turn-1".to_string(),
+            },
+        );
+        assert_eq!(completed.state.phase(), ThreadPhase::Completed);
+        assert!(matches!(
+            completed.events.back(),
+            Some(StreamEnvelope::Message { message, .. })
+                if matches!(message.as_ref(), FromAgentMessage::TurnCompleted { .. })
+        ));
+        drop(completed);
+
+        let failed = persist_and_reload_terminal(
+            workspace.path(),
+            "failed-thread",
+            FromAgentMessage::ProviderError {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message: "missing terminal event".to_string(),
+            },
+        );
+        assert_eq!(failed.state.phase(), ThreadPhase::Failed);
+        assert!(matches!(
+            failed.events.back(),
+            Some(StreamEnvelope::Message { message, .. })
+                if matches!(message.as_ref(), FromAgentMessage::ProviderError { .. })
+        ));
+    }
 }

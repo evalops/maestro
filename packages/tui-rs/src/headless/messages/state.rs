@@ -91,6 +91,8 @@ pub struct AgentState {
     pub last_error: Option<String>,
     /// Last structured error type
     pub last_error_type: Option<HeadlessErrorType>,
+    /// Exact provider failure classification, when the last error came from a provider terminal.
+    pub provider_error_kind: Option<maestro_ai::ProviderStreamErrorKind>,
     /// Last status message
     pub last_status: Option<String>,
     /// Last response duration
@@ -670,12 +672,14 @@ impl AgentState {
                 self.current_response = None;
                 self.last_error = None;
                 self.last_error_type = None;
+                self.provider_error_kind = None;
                 self.last_status = None;
                 self.is_responding = true;
             }
             ToAgentMessage::Steer { .. } => {
                 self.last_error = None;
                 self.last_error_type = None;
+                self.provider_error_kind = None;
                 self.last_status = None;
                 self.is_responding = true;
             }
@@ -970,7 +974,6 @@ impl AgentState {
                 }
                 self.last_response_duration_ms = duration_ms;
                 self.last_ttft_ms = ttft_ms;
-                self.is_responding = false;
                 let response = self.current_response.take();
                 Some(AgentEvent::ResponseEnd {
                     response_id,
@@ -979,6 +982,24 @@ impl AgentState {
                     duration_ms,
                     ttft_ms,
                     full_text: response.map(|r| r.text),
+                })
+            }
+
+            FromAgentMessage::TurnCompleted { response_id } => {
+                self.is_responding = false;
+                self.current_response = None;
+                Some(AgentEvent::TurnCompleted { response_id })
+            }
+
+            FromAgentMessage::TurnInterrupted {
+                response_id,
+                reason,
+            } => {
+                self.is_responding = false;
+                self.current_response = None;
+                Some(AgentEvent::TurnInterrupted {
+                    response_id,
+                    reason,
                 })
             }
 
@@ -1336,6 +1357,7 @@ impl AgentState {
             } => {
                 self.last_error = Some(message.clone());
                 self.last_error_type = error_type;
+                self.provider_error_kind = None;
                 if fatal || terminal {
                     self.is_responding = false;
                     self.current_response = None;
@@ -1347,6 +1369,15 @@ impl AgentState {
                     terminal,
                     error_type,
                 })
+            }
+
+            FromAgentMessage::ProviderError { kind, message } => {
+                self.last_error = Some(message.clone());
+                self.last_error_type = Some(HeadlessErrorType::Protocol);
+                self.provider_error_kind = Some(kind);
+                self.is_responding = false;
+                self.current_response = None;
+                Some(AgentEvent::ProviderError { kind, message })
             }
 
             FromAgentMessage::Status { message } => {
@@ -1421,6 +1452,13 @@ pub enum AgentEvent {
         ttft_ms: Option<u64>,
         full_text: Option<String>,
     },
+    TurnCompleted {
+        response_id: String,
+    },
+    TurnInterrupted {
+        response_id: String,
+        reason: String,
+    },
     CodexSessionState {
         state: String,
         thread_id: String,
@@ -1471,6 +1509,10 @@ pub enum AgentEvent {
         fatal: bool,
         terminal: bool,
         error_type: Option<HeadlessErrorType>,
+    },
+    ProviderError {
+        kind: maestro_ai::ProviderStreamErrorKind,
+        message: String,
     },
     Status {
         message: String,

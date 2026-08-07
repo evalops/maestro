@@ -32,7 +32,10 @@ import { spawnSync } from "node:child_process";
 
 const defaultRoot = fileURLToPath(new URL("..", import.meta.url));
 
-const pullRequestEvents = new Set(["pull_request", "pull_request_target"]);
+export const pullRequestEvents = new Set([
+	"pull_request",
+	"pull_request_target",
+]);
 
 function parseArgs(argv) {
 	const args = {
@@ -258,7 +261,7 @@ function parseJobs(section) {
 	return jobs;
 }
 
-function loadWorkflows(root) {
+export function loadWorkflows(root) {
 	const workflowsDir = join(root, ".github/workflows");
 	const workflows = [];
 	for (const entry of readdirSync(workflowsDir)) {

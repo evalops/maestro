@@ -1,4 +1,4 @@
-{"schemaVersion":1,"name":"hello","message":{"type":"hello","protocol_version":"2026-08-01","client_info":{"name":"cutover-fixture","version":"1"},"role":"controller"}}
+{"schemaVersion":1,"name":"hello","message":{"type":"hello","protocol_version":"2026-08-07","client_info":{"name":"cutover-fixture","version":"1"},"role":"controller"}}
 {"schemaVersion":1,"name":"init","message":{"type":"init","system_prompt":"system","append_system_prompt":"append","thinking_level":"medium","approval_mode":"prompt","history":[{"role":"user","content":"prior"}]}}
 {"schemaVersion":1,"name":"prompt","message":{"type":"prompt","content":"hello","attachments":["README.md"]}}
 {"schemaVersion":1,"name":"interrupt","message":{"type":"interrupt"}}

@@ -1554,7 +1554,6 @@ impl SubagentManager {
         let mut current_output = String::new();
         let mut last_output = String::new();
         let mut terminal_seen = false;
-        let mut blocked_seen = false;
         let mut cancelled = false;
         let mut timed_out = false;
         let mut output_tokens_used = 0_u64;
@@ -1655,7 +1654,7 @@ impl SubagentManager {
                         record.max_tokens,
                     );
                     streamed_output_chars = 0;
-                    if budget_exhausted && response_id != "done" && response_id != "blocked" {
+                    if budget_exhausted && response_id != "done" {
                         run_error = Some(format!(
                             "subagent exhausted its cumulative {} output-token budget",
                             record.max_tokens
@@ -1663,10 +1662,7 @@ impl SubagentManager {
                         agent.cancel();
                         break;
                     }
-                    if response_id == "done" || response_id == "blocked" {
-                        blocked_seen = response_id == "blocked";
-                        terminal_seen = true;
-                    } else {
+                    if response_id != "done" {
                         if !current_output.is_empty() {
                             last_output.clone_from(&current_output);
                             current_output.clear();
@@ -1680,6 +1676,17 @@ impl SubagentManager {
                         // from this loop raced the request the child had
                         // already started building.
                     }
+                }
+                FromAgent::TurnCompleted { .. } => {
+                    terminal_seen = true;
+                }
+                FromAgent::TurnInterrupted { reason, .. } => {
+                    run_error = Some(reason);
+                    terminal_seen = true;
+                }
+                FromAgent::ProviderError { kind, message } => {
+                    run_error = Some(format!("provider failure ({kind:?}): {message}"));
+                    terminal_seen = true;
                 }
                 FromAgent::ToolCall {
                     call_id,
@@ -1816,11 +1823,6 @@ impl SubagentManager {
                     "subagent exceeded its {} ms execution budget",
                     record.timeout_ms
                 )),
-            )
-        } else if blocked_seen {
-            (
-                SubagentStatus::Failed,
-                Some(run_error.unwrap_or_else(|| "child prompt was blocked by a hook".to_string())),
             )
         } else if let Some(error) = recording_error.or(run_error) {
             (SubagentStatus::Failed, Some(error))
@@ -2773,6 +2775,16 @@ fn child_event_to_headless(event: &FromAgent, session_id: &str) -> Option<FromAg
             duration_ms: None,
             ttft_ms: None,
         }),
+        FromAgent::TurnCompleted { response_id } => Some(FromAgentMessage::TurnCompleted {
+            response_id: response_id.clone(),
+        }),
+        FromAgent::TurnInterrupted {
+            response_id,
+            reason,
+        } => Some(FromAgentMessage::TurnInterrupted {
+            response_id: response_id.clone(),
+            reason: reason.clone(),
+        }),
         FromAgent::CodexSessionState {
             state,
             thread_id,
@@ -2847,6 +2859,10 @@ fn child_event_to_headless(event: &FromAgent, session_id: &str) -> Option<FromAg
             fatal: *fatal,
             terminal: *terminal,
             error_type: None,
+        }),
+        FromAgent::ProviderError { kind, message } => Some(FromAgentMessage::ProviderError {
+            kind: *kind,
+            message: message.clone(),
         }),
         FromAgent::CodexNativeDecision { method, decision } => {
             Some(FromAgentMessage::Status {

@@ -19,7 +19,7 @@ Transport rules:
 The protocol is versioned. The runtime sends the version in `ready` and
 `hello_ok`, and clients may send their version in `hello`.
 
-Current version: `2026-08-01`
+Current version: `2026-08-07`
 
 Source of truth:
 
@@ -35,6 +35,8 @@ Compatibility expectations:
 - treat unknown fields as additive
 - reject unknown message `type` values unless your client intentionally ignores them
 - compare `protocol_version` during handshake when you require exact compatibility
+- versioned clients must currently match `2026-08-07`; the runtime does not
+  downgrade emitted message types for older clients
 
 ## Hosted / HeadlessRuntimeService backend
 
@@ -144,7 +146,7 @@ snapshot manifest. The manifest directory comes from `--snapshot-root`,
       "flush_status": "completed",
       "session_id": "session_123",
       "session_file": "/workspace/.maestro/agent/sessions/session.jsonl",
-      "protocol_version": "2026-08-01",
+      "protocol_version": "2026-08-07",
       "cursor": 42
     },
     "workspace_export": {
@@ -233,7 +235,7 @@ snapshot manifest. The manifest directory comes from `--snapshot-root`,
       }
     },
     "snapshot": {
-      "protocolVersion": "2026-08-01",
+      "protocolVersion": "2026-08-07",
       "session_id": "session_123",
       "cursor": 42,
       "last_init": null,
@@ -324,7 +326,7 @@ Minimal hello:
 ```json
 {
   "type": "hello",
-      "protocol_version": "2026-08-01",
+      "protocol_version": "2026-08-07",
   "client_info": {
     "name": "evalops-chat",
     "version": "0.1.0"
@@ -338,9 +340,9 @@ Handshake acknowledgement:
 ```json
 {
   "type": "hello_ok",
-      "protocol_version": "2026-08-01",
+      "protocol_version": "2026-08-07",
   "connection_id": "conn_123",
-      "client_protocol_version": "2026-08-01",
+      "client_protocol_version": "2026-08-07",
   "role": "controller",
   "server_capabilities": {
     "server_requests": ["approval", "client_tool", "mcp_elicitation", "user_input", "tool_retry"],
@@ -356,7 +358,7 @@ Initial runtime state:
 ```json
 {
   "type": "ready",
-      "protocol_version": "2026-08-01",
+      "protocol_version": "2026-08-07",
   "model": "claude-opus-4-6",
   "provider": "anthropic",
   "executor_type": "live",
@@ -474,7 +476,16 @@ Supported `server_request_response.request_type` values:
 - `response_chunk`
   - streamed text or thinking; `is_thinking=true` marks reasoning content
 - `response_end`
-  - final usage and execution telemetry
+  - closes one provider response and carries its final usage and execution
+    telemetry; it is not a turn terminal
+- `turn_completed`
+  - positive terminal for a successful full turn
+- `turn_interrupted`
+  - terminal cancellation or interruption, with a machine-readable reason
+- `provider_error`
+  - typed terminal provider failure; `kind` is one of `transient_protocol`,
+    `output_token_exhaustion`, `incomplete_response`, or
+    `provider_declared_failure`
 - `response_accepted`
   - durable acknowledgement that a controller response was consumed by the
     native runtime, correlated by `request_id`
@@ -497,6 +508,11 @@ Supported `server_request_response.request_type` values:
   - `summary_labels`
 - `duration_ms`
 - `ttft_ms`
+
+A consumer must wait for exactly one explicit turn terminal after any
+`response_end` frames. EOF or disconnect before `turn_completed`,
+`turn_interrupted`, or `provider_error` is a protocol failure and must not be
+converted into an empty successful completion.
 
 ### Tool And Server Request Lifecycle
 
@@ -568,6 +584,9 @@ Supported `error_type` values:
 - Treat `response_chunk` as append-only.
 - Persist `response_end.usage` and `response_end.tools_summary` instead of
   reconstructing totals from streamed chunks.
+- Do not record turn success at `response_end`; record it only after
+  `turn_completed`. Treat `turn_interrupted` and `provider_error` as failed
+  terminals.
 - Use `init` instead of shell-interpolating system prompts or approval mode.
 - Viewer connections are intentionally limited; use `controller` for active
   orchestration.

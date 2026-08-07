@@ -16,8 +16,19 @@ use tokio_util::sync::CancellationToken;
 use super::ValidatedSubagentTaskCapsule;
 use crate::{
     env_u64, finish_tool_metadata, record_tool_call_metadata, trimmed_env, truthy_env,
-    A2ACancelReceiver, AppState, A2A_DEFAULT_RESPONSE_END_SETTLE_MS, A2A_DEFAULT_TURN_TIMEOUT_MS,
+    A2ACancelReceiver, AppState, A2A_DEFAULT_TURN_TIMEOUT_MS,
 };
+
+fn a2a_explicit_terminal(event: &FromAgent) -> Option<Result<(), String>> {
+    match event {
+        FromAgent::TurnCompleted { .. } => Some(Ok(())),
+        FromAgent::TurnInterrupted { reason, .. } => Some(Err(reason.clone())),
+        FromAgent::ProviderError { kind, message } => {
+            Some(Err(format!("provider failure ({kind:?}): {message}")))
+        }
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct A2ASubagentExecutionPolicy {
@@ -716,30 +727,15 @@ pub(crate) async fn run_a2a_native_turn(
     let auto_approve_tools = matches!(approval_mode.as_str(), "auto" | "approve" | "approved");
     let mut output = A2ATurnOutput::default();
     let mut last_error: Option<String> = None;
-    let mut response_ended = false;
-    let response_end_settle = Duration::from_millis(env_u64(
-        "MAESTRO_A2A_RESPONSE_END_SETTLE_MS",
-        A2A_DEFAULT_RESPONSE_END_SETTLE_MS,
-    ));
-    let mut response_end_deadline: Option<tokio::time::Instant> = None;
+    let mut turn_completed = false;
     let turn_timeout = tokio::time::sleep(timeout);
     tokio::pin!(turn_timeout);
 
     loop {
-        let response_end_wait = async {
-            if let Some(deadline) = response_end_deadline {
-                tokio::time::sleep_until(deadline).await;
-            } else {
-                std::future::pending::<()>().await;
-            }
-        };
         let event = tokio::select! {
             _ = &mut turn_timeout => {
                 agent.cancel();
                 return Err("A2A native TUI turn timed out".to_string());
-            }
-            _ = response_end_wait => {
-                break;
             }
             changed = cancel_rx.changed() => {
                 if changed.is_ok() && *cancel_rx.borrow() {
@@ -748,21 +744,24 @@ pub(crate) async fn run_a2a_native_turn(
                 }
                 continue;
             }
-            event = events.recv() => match event {
-                Some(event) => event,
-                None => break,
-            },
+            event = events.recv() => event.ok_or_else(||
+                "A2A native TUI turn stream ended before an explicit terminal".to_string()
+            )?,
         };
-        match event {
-            FromAgent::ResponseStart { .. } => {
-                response_end_deadline = None;
+        if let Some(terminal) = a2a_explicit_terminal(&event) {
+            match terminal {
+                Ok(()) => turn_completed = true,
+                Err(message) => last_error = Some(message),
             }
+            break;
+        }
+        match event {
+            FromAgent::ResponseStart { .. } => {}
             FromAgent::ResponseChunk {
                 content,
                 is_thinking,
                 ..
             } => {
-                response_end_deadline = None;
                 if is_thinking {
                     output.thinking_text.push_str(&content);
                 } else {
@@ -771,8 +770,6 @@ pub(crate) async fn run_a2a_native_turn(
             }
             FromAgent::ResponseEnd { usage, .. } => {
                 output.usage = usage;
-                response_ended = true;
-                response_end_deadline = Some(tokio::time::Instant::now() + response_end_settle);
             }
             FromAgent::ToolCall {
                 call_id,
@@ -781,7 +778,6 @@ pub(crate) async fn run_a2a_native_turn(
                 requires_approval,
                 ..
             } => {
-                response_end_deadline = None;
                 record_tool_call_metadata(&mut output.tools, &call_id, &tool, args.clone());
                 if let Some(policy) = execution_policy.as_ref() {
                     let result = policy
@@ -814,7 +810,6 @@ pub(crate) async fn run_a2a_native_turn(
             FromAgent::ToolEnd {
                 call_id, success, ..
             } => {
-                response_end_deadline = None;
                 finish_tool_metadata(&mut output.tools, &call_id, success);
             }
             FromAgent::HookBlocked {
@@ -822,7 +817,6 @@ pub(crate) async fn run_a2a_native_turn(
                 tool,
                 reason,
             } => {
-                response_end_deadline = None;
                 if !output
                     .tools
                     .iter()
@@ -851,7 +845,7 @@ pub(crate) async fn run_a2a_native_turn(
         }
     }
 
-    if response_ended {
+    if turn_completed {
         if let Some(policy) = execution_policy.as_ref() {
             output.acceptance_reports = policy.run_acceptance_checks(&mut cancel_rx).await?;
             output
@@ -861,7 +855,7 @@ pub(crate) async fn run_a2a_native_turn(
         Ok(A2ATurnResult::Completed(output))
     } else {
         Err(last_error
-            .unwrap_or_else(|| "A2A native TUI turn ended before response_end".to_string()))
+            .unwrap_or_else(|| "A2A native TUI turn ended before an explicit terminal".to_string()))
     }
 }
 
@@ -876,5 +870,32 @@ async fn a2a_wait_for_fake_response_delay(cancel_rx: &mut A2ACancelReceiver) -> 
     tokio::select! {
         _ = &mut delay => *cancel_rx.borrow(),
         changed = cancel_rx.changed() => changed.is_ok() && *cancel_rx.borrow(),
+    }
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::*;
+
+    #[test]
+    fn response_end_is_not_an_a2a_turn_terminal() {
+        assert!(a2a_explicit_terminal(&FromAgent::ResponseEnd {
+            response_id: "done".to_string(),
+            usage: None,
+        })
+        .is_none());
+        assert!(matches!(
+            a2a_explicit_terminal(&FromAgent::TurnCompleted {
+                response_id: "done".to_string(),
+            }),
+            Some(Ok(()))
+        ));
+        assert!(matches!(
+            a2a_explicit_terminal(&FromAgent::ProviderError {
+                kind: maestro_tui::ai::ProviderStreamErrorKind::TransientProtocol,
+                message: "unexpected eof".to_string(),
+            }),
+            Some(Err(message)) if message.contains("unexpected eof")
+        ));
     }
 }

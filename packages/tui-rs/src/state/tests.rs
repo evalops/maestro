@@ -798,6 +798,11 @@ fn test_handle_response_end() {
         response_id: "done".to_string(),
         usage: None,
     });
+    assert!(state.busy);
+
+    state.handle_agent_message(FromAgent::TurnCompleted {
+        response_id: "done".to_string(),
+    });
     assert!(!state.busy);
 }
 

@@ -16,14 +16,15 @@ mod tests {
 
     use super::maestro::v1::to_agent_envelope::Payload;
     use super::maestro::v1::{
-        FromAgentEnvelope, HelloMessage, ResponseAcceptedMessage, ToAgentEnvelope, ToolEndMessage,
-        ToolResponseMessage,
+        FromAgentEnvelope, HelloMessage, ProviderErrorMessage, ProviderStreamErrorKind,
+        ResponseAcceptedMessage, ToAgentEnvelope, ToolEndMessage, ToolResponseMessage,
+        TurnCompletedMessage, TurnInterruptedMessage,
     };
 
     #[test]
     fn generated_headless_proto_types_compile() {
         let hello = HelloMessage {
-            protocol_version: Some("2026-08-01".to_string()),
+            protocol_version: Some("2026-08-07".to_string()),
             ..HelloMessage::default()
         };
 
@@ -40,6 +41,47 @@ mod tests {
             ..ToolEndMessage::default()
         };
         assert!(tool_end.receipt.is_some());
+    }
+
+    #[test]
+    fn explicit_turn_terminals_are_in_the_authoritative_proto_envelope() {
+        use super::maestro::v1::from_agent_envelope::Payload;
+
+        for payload in [
+            Payload::TurnCompleted(TurnCompletedMessage {
+                response_id: "done".to_string(),
+            }),
+            Payload::TurnInterrupted(TurnInterruptedMessage {
+                response_id: "done".to_string(),
+                reason: "cancelled".to_string(),
+            }),
+            Payload::ProviderError(ProviderErrorMessage {
+                kind: ProviderStreamErrorKind::TransientProtocol.into(),
+                message: "unexpected eof".to_string(),
+            }),
+        ] {
+            let encoded = FromAgentEnvelope {
+                payload: Some(payload),
+            }
+            .encode_to_vec();
+            let decoded = FromAgentEnvelope::decode(encoded.as_slice()).expect("decode terminal");
+            assert!(matches!(
+                decoded.payload,
+                Some(
+                    Payload::TurnCompleted(_)
+                        | Payload::TurnInterrupted(_)
+                        | Payload::ProviderError(_)
+                )
+            ));
+        }
+
+        for message_type in ["turn_completed", "turn_interrupted", "provider_error"] {
+            assert!(
+                super::super::generated_protocol::HEADLESS_FROM_AGENT_MESSAGE_TYPES
+                    .contains(&message_type),
+                "generated JSON contract is missing {message_type}"
+            );
+        }
     }
 
     #[test]

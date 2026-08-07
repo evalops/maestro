@@ -374,7 +374,7 @@ pub async fn run_review(
 async fn drive_review(model: &str, cwd: &str, prompt: &str) -> Result<String> {
     let config = NativeAgentConfig {
         model: model.to_string(),
-        max_tokens: 16384,
+        max_tokens: crate::model_catalog::default_max_output_tokens(model),
         system_prompt: Some(format!(
             "You are a senior code reviewer giving a second opinion on uncommitted changes. Working directory: {cwd}. Be concise. Your tools are read-only; never modify anything."
         )),
@@ -453,24 +453,16 @@ impl ReviewDrain {
         }
     }
 
-    /// Handle a ResponseEnd; returns true on a terminal event.
-    ///
-    /// NativeAgent emits one ResponseEnd per model response, followed by a
-    /// synthetic `done` event after the tool loop.
-    fn on_response_end(&mut self, response_id: &str) -> bool {
+    /// Record a completed model response. The enclosing turn remains active
+    /// until an explicit turn terminal arrives.
+    fn on_response_end(&mut self, response_id: &str) {
         if response_id == "done" {
-            return true;
-        }
-        // A hook rejection emits a nonfatal error followed by `blocked`, then
-        // waits for another prompt. There will be no synthetic `done`.
-        if response_id == "blocked" && self.terminal_error.is_some() {
-            return true;
+            return;
         }
         if !self.assistant_buf.is_empty() {
             self.last_completed = std::mem::take(&mut self.assistant_buf);
             self.terminal_error = None;
         }
-        false
     }
 
     /// Handle a provider error. Fatal errors abort the drain; nonfatal ones
@@ -500,7 +492,7 @@ impl ReviewDrain {
     }
 }
 
-/// Consume agent events until the final `done` response, executing allowed
+/// Consume agent events until an explicit turn terminal, executing allowed
 /// read-only tool calls (workspace-contained) along the way, and return the
 /// last completed assistant text.
 async fn drain_events(
@@ -561,7 +553,16 @@ async fn drain_events(
                     None,
                 ));
             }
-            FromAgent::ResponseEnd { response_id, .. } if drain.on_response_end(&response_id) => {
+            FromAgent::ResponseEnd { response_id, .. } => {
+                drain.on_response_end(&response_id);
+            }
+            FromAgent::TurnCompleted { .. } => break,
+            FromAgent::TurnInterrupted { reason, .. } => {
+                drain.on_error(&reason, false)?;
+                break;
+            }
+            FromAgent::ProviderError { message, .. } => {
+                drain.on_error(&message, false)?;
                 break;
             }
             FromAgent::Error {
@@ -1292,7 +1293,7 @@ mod tests {
         drain
             .on_error("rate limit exceeded", false)
             .expect("nonfatal");
-        assert!(drain.on_response_end("done"));
+        drain.on_response_end("done");
 
         let err = drain
             .finish()
@@ -1305,20 +1306,20 @@ mod tests {
         let mut drain = ReviewDrain::default();
         drain.on_error("transient error", false).expect("nonfatal");
         drain.on_chunk("Full review", false);
-        assert!(!drain.on_response_end("resp-1"));
-        assert!(drain.on_response_end("done"));
+        drain.on_response_end("resp-1");
+        drain.on_response_end("done");
 
         assert_eq!(drain.finish().expect("recovered review"), "Full review");
     }
 
     #[test]
-    fn drain_hook_block_is_terminal_without_waiting_for_done() {
+    fn response_end_does_not_turn_an_error_into_success() {
         let mut drain = ReviewDrain::default();
         drain
             .on_error("UserPromptSubmit hook blocked the review", false)
             .expect("nonfatal");
 
-        assert!(drain.on_response_end("blocked"));
+        drain.on_response_end("blocked");
         let err = drain.finish().expect_err("blocked hook must fail");
         assert!(err.to_string().contains("hook blocked"));
     }

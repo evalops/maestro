@@ -195,7 +195,7 @@ impl HeadlessState {
             let started = Instant::now();
             let config = NativeAgentConfig {
                 model: self.model.clone(),
-                max_tokens: 16384,
+                max_tokens: crate::model_catalog::default_max_output_tokens(&self.model),
                 system_prompt: Some(self.system_prompt.clone()),
                 thinking_enabled: self.thinking_enabled,
                 thinking_budget: self.thinking_budget,
@@ -1417,6 +1417,18 @@ async fn handle_agent_event(
                 ttft_ms: None,
             })?;
         }
+        FromAgent::TurnCompleted { response_id } => {
+            emit(&FromAgentMessage::TurnCompleted { response_id })?;
+        }
+        FromAgent::TurnInterrupted {
+            response_id,
+            reason,
+        } => {
+            emit(&FromAgentMessage::TurnInterrupted {
+                response_id,
+                reason,
+            })?;
+        }
         FromAgent::ToolCall {
             call_id,
             tool,
@@ -1540,6 +1552,22 @@ async fn handle_agent_event(
                     HeadlessErrorType::Transient
                 }),
             })?;
+        }
+        FromAgent::ProviderError { kind, message } => {
+            let session_id = meta
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .session_id
+                .clone();
+            tracing::warn!(
+                target: "maestro.llm",
+                event = "maestro_provider_response_failed",
+                session_id = ?session_id,
+                provider_error_kind = ?kind,
+                configured_model = %configured_model,
+                routed_provider = routed_provider.unwrap_or(""),
+            );
+            emit(&FromAgentMessage::ProviderError { kind, message })?;
         }
         FromAgent::Status { message } => {
             emit_transcript(

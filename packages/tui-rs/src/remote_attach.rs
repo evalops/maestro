@@ -329,6 +329,26 @@ fn handle_incoming(
                     ensure_assistant_break(visible_response_open, response_ends_with_newline);
                     *visible_response_open = false;
                 }
+                FromAgentMessage::TurnCompleted { .. } => {
+                    ensure_assistant_break(visible_response_open, response_ends_with_newline);
+                    *visible_response_open = false;
+                }
+                FromAgentMessage::TurnInterrupted { reason, .. } => {
+                    write_line(
+                        &format!("interrupted: {reason}"),
+                        visible_response_open,
+                        response_ends_with_newline,
+                    );
+                    *visible_response_open = false;
+                }
+                FromAgentMessage::ProviderError { kind, message } => {
+                    write_line(
+                        &format!("provider error ({kind:?}): {message}"),
+                        visible_response_open,
+                        response_ends_with_newline,
+                    );
+                    *visible_response_open = false;
+                }
                 FromAgentMessage::Status { message } => {
                     write_line(&message, visible_response_open, response_ends_with_newline);
                 }
@@ -1048,6 +1068,32 @@ mod tests {
         let viewer_config = build_remote_attach_transport_config(&viewer);
         assert_eq!(viewer_config.role.as_deref(), Some("viewer"));
         assert!(!viewer_config.take_control);
+    }
+
+    #[test]
+    fn typed_remote_terminals_close_visible_partial_responses() {
+        for message in [
+            FromAgentMessage::TurnInterrupted {
+                response_id: "done".to_string(),
+                reason: "cancelled".to_string(),
+            },
+            FromAgentMessage::ProviderError {
+                kind: maestro_ai::ProviderStreamErrorKind::OutputTokenExhaustion,
+                message: "output exhausted".to_string(),
+            },
+        ] {
+            let mut state = AgentState::default();
+            let mut visible_response_open = true;
+            let mut response_ends_with_newline = false;
+            handle_incoming(
+                RemoteIncoming::Message(message),
+                &mut state,
+                &mut visible_response_open,
+                &mut response_ends_with_newline,
+            )
+            .expect("typed terminal should render");
+            assert!(!visible_response_open);
+        }
     }
 
     #[test]

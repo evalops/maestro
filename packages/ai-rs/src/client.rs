@@ -16,7 +16,7 @@ use super::google::GoogleClient;
 use super::openai::OpenAiClient;
 use super::providers::{ProviderProtocol, ProviderRegistry, ResolvedProvider};
 use super::scripted::ScriptedClient;
-use super::types::{Message, RequestConfig, StreamEvent};
+use super::types::{Message, ProviderStreamErrorKind, RequestConfig, StreamEvent};
 use super::vertex::VertexAiClient;
 
 /// AI provider enum
@@ -742,8 +742,8 @@ impl UnifiedClient {
 /// times, but only while no content event has been forwarded yet — replaying
 /// a request after partial content would duplicate it for the consumer. A
 /// stall after partial content, an attempt that closes without a terminal
-/// event, or retries that are exhausted produces a terminal
-/// `StreamEvent::Error`.
+/// event, or retries that are exhausted produces a typed transient protocol
+/// error. Retry decisions are independent from that final classification.
 ///
 /// Only the streaming phase is bounded here; request/connect semantics are
 /// unchanged. A retried attempt's receiver is dropped, which detaches the
@@ -806,7 +806,10 @@ async fn forward_stream_with_idle_policy<F, Fut>(
                              {attempt} attempt(s); giving up"
                         )
                     };
-                    let _ = tx.send(StreamEvent::Error { message });
+                    let _ = tx.send(StreamEvent::ProviderError {
+                        kind: ProviderStreamErrorKind::TransientProtocol,
+                        message,
+                    });
                     return;
                 }
                 Err(_elapsed) => {
@@ -850,7 +853,10 @@ async fn forward_stream_with_idle_policy<F, Fut>(
                             idle_timeout.as_secs()
                         )
                     };
-                    let _ = tx.send(StreamEvent::Error { message });
+                    let _ = tx.send(StreamEvent::ProviderError {
+                        kind: ProviderStreamErrorKind::TransientProtocol,
+                        message,
+                    });
                     return;
                 }
             };
@@ -863,10 +869,15 @@ async fn forward_stream_with_idle_policy<F, Fut>(
                 // normal successful path.
                 begin_attempt = None;
             }
-            let terminal_error = matches!(&event, StreamEvent::Error { .. });
+            let terminal_error = matches!(
+                &event,
+                StreamEvent::Error { .. } | StreamEvent::ProviderError { .. }
+            );
             if terminal_error {
                 let error_message_len = match &event {
-                    StreamEvent::Error { message } => message.len(),
+                    StreamEvent::Error { message } | StreamEvent::ProviderError { message, .. } => {
+                        message.len()
+                    }
                     _ => 0,
                 };
                 tracing::error!(
@@ -882,10 +893,7 @@ async fn forward_stream_with_idle_policy<F, Fut>(
                     events_forwarded,
                 );
             }
-            let terminal = matches!(
-                &event,
-                StreamEvent::MessageStop { .. } | StreamEvent::Error { .. }
-            );
+            let terminal = terminal_error || matches!(&event, StreamEvent::MessageStop { .. });
             if tx.send(event).is_err() {
                 tracing::debug!(
                     target: "maestro.llm",
@@ -1439,6 +1447,7 @@ mod tests {
 #[cfg(test)]
 mod stream_idle_policy_tests {
     use super::*;
+    use crate::types::ProviderStreamErrorKind;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -1498,7 +1507,10 @@ mod stream_idle_policy_tests {
         let events = drain(&mut rx);
         assert_eq!(events.len(), 1);
         match &events[0] {
-            StreamEvent::Error { message } => {
+            StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message,
+            } => {
                 assert!(
                     message.contains("stalled"),
                     "error should name the stall: {message}"
@@ -1668,6 +1680,43 @@ mod stream_idle_policy_tests {
     }
 
     #[tokio::test]
+    async fn deterministic_request_error_is_forwarded_once_without_retry() {
+        let retried = Attempts::new(AtomicU32::new(0));
+        let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
+        attempt_tx
+            .send(StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::OutputTokenExhaustion,
+                message: "openai_response_exhausted: reason=max_output_tokens".to_string(),
+            })
+            .unwrap();
+        drop(attempt_tx);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        forward_stream_with_idle_policy(
+            attempt_rx,
+            || {
+                retried.fetch_add(1, Ordering::SeqCst);
+                async move { unreachable!("deterministic request errors must not retry") }
+            },
+            IDLE,
+            RETRIES,
+            tx,
+        )
+        .await;
+
+        assert_eq!(retried.load(Ordering::SeqCst), 0);
+        let events = drain(&mut rx);
+        assert!(matches!(
+            events.as_slice(),
+            [StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::OutputTokenExhaustion,
+                message,
+            }]
+                if message == "openai_response_exhausted: reason=max_output_tokens"
+        ));
+    }
+
+    #[tokio::test]
     async fn closed_stream_after_partial_content_surfaces_error_without_retry() {
         let retried = Attempts::new(AtomicU32::new(0));
         let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
@@ -1699,7 +1748,10 @@ mod stream_idle_policy_tests {
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], StreamEvent::TextDelta { .. }));
         match &events[1] {
-            StreamEvent::Error { message } => assert!(
+            StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message,
+            } => assert!(
                 message.contains("closed mid-response"),
                 "error should explain why no retry happened: {message}"
             ),
@@ -1732,7 +1784,10 @@ mod stream_idle_policy_tests {
         let events = drain(&mut rx);
         assert_eq!(events.len(), 1);
         match &events[0] {
-            StreamEvent::Error { message } => {
+            StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message,
+            } => {
                 assert!(
                     message.contains("closed without a terminal event"),
                     "error should name the abnormal closure: {message}"
@@ -1781,7 +1836,10 @@ mod stream_idle_policy_tests {
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], StreamEvent::TextDelta { .. }));
         match &events[1] {
-            StreamEvent::Error { message } => {
+            StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message,
+            } => {
                 assert!(
                     message.contains("mid-response"),
                     "error should explain why no retry happened: {message}"
