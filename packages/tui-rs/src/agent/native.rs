@@ -131,7 +131,7 @@ struct EmptyAssistantResponse;
 impl std::fmt::Display for EmptyAssistantResponse {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(
-            "empty_assistant_response: Codex app-server completed the turn without assistant output",
+            "empty_assistant_response: provider completed the turn without assistant text or tool calls",
         )
     }
 }
@@ -5867,6 +5867,34 @@ impl NativeAgentRunner {
                 })
                 .collect::<Vec<_>>()
                 .join("");
+
+            if !stream_failed && response_text.trim().is_empty() && pending_tool_calls.is_empty() {
+                let provider = self
+                    .client
+                    .as_ref()
+                    .map(UnifiedClient::provider_name)
+                    .unwrap_or("unknown");
+                tracing::warn!(
+                    target: "maestro.provider",
+                    event = "provider_empty_assistant_response",
+                    provider,
+                    model = %self.config.model,
+                    normalized_blocks = assistant_content.len(),
+                    saw_usage,
+                );
+                report_diagnostic_nonblocking(format!(
+                    "[agent] provider returned no assistant text or tool calls (provider={provider}, model={}, normalized_blocks={}, saw_usage={saw_usage})",
+                    self.config.model,
+                    assistant_content.len(),
+                ));
+                self.set_tool_batch_active(false);
+                let _ = self.hooks.execute_stop_failure(
+                    "empty_assistant_response",
+                    Some("provider returned no assistant text or tool calls"),
+                    None,
+                );
+                return Err(anyhow::Error::new(EmptyAssistantResponse));
+            }
 
             // Add assistant message to history
             if !assistant_content.is_empty() {

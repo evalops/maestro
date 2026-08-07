@@ -264,6 +264,103 @@ async fn scripted_stream_error_dispatches_stop_failure() {
 }
 
 #[tokio::test]
+async fn scripted_empty_response_is_terminal_error_without_response_end() {
+    let mut harness = AgentHarness::with_scripted(vec![ScriptedResponse {
+        blocks: Vec::new(),
+        stop_reason: StopReason::EndTurn,
+        error: None,
+    }])
+    .expect("harness should construct");
+
+    harness
+        .agent
+        .prompt("return nothing".to_owned(), vec![])
+        .await
+        .expect("prompt");
+
+    let error = harness
+        .wait_for_event(Duration::from_secs(5), |event| {
+            matches!(event, FromAgent::Error { terminal: true, .. })
+        })
+        .await
+        .expect("empty response should produce terminal error");
+    let FromAgent::Error { message, .. } = error else {
+        unreachable!();
+    };
+    assert!(message.contains("empty_assistant_response"), "{message}");
+    assert!(
+        harness
+            .wait_for_event(Duration::from_millis(200), |event| {
+                matches!(event, FromAgent::ResponseEnd { .. })
+            })
+            .await
+            .is_none(),
+        "empty response must not be followed by ResponseEnd"
+    );
+
+    harness.agent.shutdown().await;
+}
+
+#[tokio::test]
+async fn scripted_text_response_still_completes() {
+    let mut harness = AgentHarness::with_scripted(vec![ScriptedResponse::text("hello")])
+        .expect("harness should construct");
+
+    harness
+        .agent
+        .prompt("say hello".to_owned(), vec![])
+        .await
+        .expect("prompt");
+
+    assert!(
+        harness
+            .wait_for_event(Duration::from_secs(5), |event| {
+                matches!(event, FromAgent::ResponseEnd { response_id, .. } if response_id == "done")
+            })
+            .await
+            .is_some(),
+        "text response should complete"
+    );
+
+    harness.agent.shutdown().await;
+}
+
+#[tokio::test]
+async fn scripted_tool_only_turn_is_not_rejected_as_empty() {
+    let mut harness = AgentHarness::with_scripted(vec![
+        ScriptedResponse {
+            blocks: vec![ScriptedBlock::ToolUse {
+                id: "call-glob".to_owned(),
+                name: "glob".to_owned(),
+                input: json!({"pattern": "*"}),
+            }],
+            stop_reason: StopReason::ToolUse,
+            error: None,
+        },
+        ScriptedResponse::text("tool completed"),
+    ])
+    .expect("harness should construct");
+
+    harness
+        .agent
+        .prompt("list files".to_owned(), vec![])
+        .await
+        .expect("prompt");
+
+    assert!(
+        harness
+            .wait_for_event(Duration::from_secs(5), |event| {
+                matches!(event, FromAgent::ResponseEnd { response_id, .. } if response_id == "done")
+            })
+            .await
+            .is_some(),
+        "tool-only turn should continue to the final response"
+    );
+
+    harness.agent.shutdown().await;
+}
+
+#[tokio::test]
 async fn failed_tool_dispatches_post_tool_use_failure() {
     // A tool call that exits non-zero must log PostToolUseFailure (not only
     // PostToolUse). The two events share execute_post_tool_use; this asserts
