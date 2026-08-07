@@ -950,19 +950,29 @@ impl AppState {
                     msg.streaming = false;
                     msg.usage = usage;
                 }
-                if response_id == "done" {
-                    self.busy = false;
-                    self.busy_since = None;
-                }
-
                 // Clear thinking state for next response
                 self.thinking_header = None;
                 self.thinking_buffer.clear();
             }
 
-            FromAgent::SideQuestionStart { .. }
-            | FromAgent::SideQuestionChunk { .. }
-            | FromAgent::SideQuestionEnd { .. } => {}
+            FromAgent::TurnCompleted { .. } | FromAgent::TurnInterrupted { .. } => {
+                self.busy = false;
+                self.busy_since = None;
+            }
+
+            FromAgent::SideQuestionStart { standalone, .. } => {
+                if standalone {
+                    self.busy = true;
+                    self.busy_since.get_or_insert_with(Instant::now);
+                }
+            }
+            FromAgent::SideQuestionChunk { .. } => {}
+            FromAgent::SideQuestionEnd { standalone, .. } => {
+                if standalone {
+                    self.busy = false;
+                    self.busy_since = None;
+                }
+            }
 
             // Agent wants to call a tool
             FromAgent::ToolCall {
@@ -1064,6 +1074,13 @@ impl AppState {
                     self.busy = false;
                     self.busy_since = None;
                 }
+            }
+
+            FromAgent::ProviderError { message, .. } => {
+                self.record_alert(message.clone());
+                self.error = Some(message);
+                self.busy = false;
+                self.busy_since = None;
             }
 
             // Status update (informational)

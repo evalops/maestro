@@ -1729,6 +1729,16 @@ pub fn agent_event_to_message(event: &AgentEvent) -> FromAgentMessage {
             duration_ms: *duration_ms,
             ttft_ms: *ttft_ms,
         },
+        AgentEvent::TurnCompleted { response_id } => FromAgentMessage::TurnCompleted {
+            response_id: response_id.clone(),
+        },
+        AgentEvent::TurnInterrupted {
+            response_id,
+            reason,
+        } => FromAgentMessage::TurnInterrupted {
+            response_id: response_id.clone(),
+            reason: reason.clone(),
+        },
         AgentEvent::CodexSessionState {
             state,
             thread_id,
@@ -1815,6 +1825,10 @@ pub fn agent_event_to_message(event: &AgentEvent) -> FromAgentMessage {
             fatal: *fatal,
             terminal: *terminal,
             error_type: *error_type,
+        },
+        AgentEvent::ProviderError { kind, message } => FromAgentMessage::ProviderError {
+            kind: *kind,
+            message: message.clone(),
         },
         AgentEvent::Status { message } => FromAgentMessage::Status {
             message: message.clone(),

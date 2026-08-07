@@ -1215,6 +1215,54 @@ async fn test_queued_side_question_does_not_activate_skills() {
     );
 }
 
+#[tokio::test]
+async fn side_question_terminal_returns_app_to_idle_on_success_or_error() {
+    for error in [None, Some("unexpected eof".to_string())] {
+        let mut app = new_test_app();
+        app.state.busy = true;
+        app.queued_prompt_inflight = Some(QueuedPromptCursor { id: 7 });
+        app.queued_prompt_active = Some(QueuedPrompt {
+            id: 7,
+            content: "side question".to_string(),
+            kind: PromptKind::SideQuestion,
+        });
+
+        app.handle_agent_message(FromAgent::SideQuestionEnd {
+            side_id: "side-1".to_string(),
+            question: "side question".to_string(),
+            answer: "answer".to_string(),
+            standalone: true,
+            error,
+            provider_error_kind: None,
+            usage: None,
+        })
+        .await
+        .expect("side-question terminal");
+
+        assert!(!app.state.busy);
+        assert!(app.queued_prompt_inflight.is_none());
+        assert!(app.queued_prompt_active.is_none());
+    }
+
+    let mut app = new_test_app();
+    app.state.busy = true;
+    app.handle_agent_message(FromAgent::SideQuestionEnd {
+        side_id: "queued-side".to_string(),
+        question: "queued side question".to_string(),
+        answer: "answer".to_string(),
+        standalone: false,
+        error: None,
+        provider_error_kind: None,
+        usage: None,
+    })
+    .await
+    .expect("queued side-question terminal");
+    assert!(
+        app.state.busy,
+        "queued side question must not end the main turn"
+    );
+}
+
 #[test]
 fn test_queue_enqueue_pending_prompt_preserves_steer_fifo() {
     let mut app = new_test_app();
@@ -2158,7 +2206,20 @@ async fn turn_summary_waits_for_idle_sentinel_and_includes_tool_facts() {
         usage: None,
     })
     .await
-    .expect("terminal response end");
+    .expect("legacy done response end");
+    assert!(
+        !app.state
+            .status
+            .as_deref()
+            .is_some_and(|status| status.starts_with("Turn complete")),
+        "the legacy done response is not a turn terminal"
+    );
+
+    app.handle_agent_message(FromAgent::TurnCompleted {
+        response_id: "done".to_string(),
+    })
+    .await
+    .expect("explicit turn completion");
     let status = app.state.status.as_deref().unwrap_or_default();
     assert!(
         status.starts_with("Turn complete"),
@@ -4090,7 +4151,13 @@ async fn signal_shutdown_drains_final_agent_events_before_session_flush() {
             response_id: "done".to_string(),
             usage: None,
         })
-        .expect("queue terminal response event");
+        .expect("queue response boundary event");
+    event_tx
+        .send(FromAgent::TurnInterrupted {
+            response_id: "done".to_string(),
+            reason: "shutdown".to_string(),
+        })
+        .expect("queue interrupted turn terminal");
     drop(event_tx);
 
     let _ = app.signal_shutdown_teardown().await;
@@ -4111,7 +4178,7 @@ async fn signal_shutdown_drains_final_agent_events_before_session_flush() {
         .find(|call| call.call_id == "call-shutdown")
         .expect("drained cancellation must update the tool row");
     assert_eq!(row.status, crate::state::ToolCallStatus::Cancelled);
-    assert!(!app.state.busy, "terminal response event must be applied");
+    assert!(!app.state.busy, "interrupted turn terminal must be applied");
 
     let session_path = find_session_jsonl(temp.path());
     let session = std::fs::read_to_string(session_path).expect("read persisted session");

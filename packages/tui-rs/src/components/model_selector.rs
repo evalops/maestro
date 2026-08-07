@@ -710,6 +710,7 @@ mod tests {
                 reasoning: false,
                 streaming: true,
                 context_tokens: 200_000,
+                output_tokens: None,
             },
             verification: ModelVerification::catalog(),
         }

@@ -55,6 +55,14 @@ fn print_mode_approval_mode() -> ApprovalMode {
     ApprovalMode::Safe
 }
 
+fn typed_terminal_exit_code(event: &FromAgent) -> Option<i32> {
+    match event {
+        FromAgent::TurnCompleted { .. } => Some(0),
+        FromAgent::TurnInterrupted { .. } | FromAgent::ProviderError { .. } => Some(1),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct PrintModeLimits {
     max_tokens: u32,
@@ -65,9 +73,14 @@ struct PrintModeLimits {
 }
 
 impl PrintModeLimits {
-    fn from_env() -> Result<Self> {
+    fn from_env(model: &str) -> Result<Self> {
         Ok(Self {
-            max_tokens: positive_env("MAESTRO_PRINT_MAX_TOKENS", 16384)?,
+            // Explicit env override wins; otherwise catalog-known models get
+            // their full output ceiling and unknown models the fallback.
+            max_tokens: positive_env(
+                "MAESTRO_PRINT_MAX_TOKENS",
+                crate::model_catalog::default_max_output_tokens(model),
+            )?,
             max_tool_calls: positive_env("MAESTRO_PRINT_MAX_TOOL_CALLS", usize::MAX)?,
             max_turns: positive_env("MAESTRO_PRINT_MAX_TURNS", usize::MAX)?,
             workspace_only_file_tools: bool_env("MAESTRO_PRINT_WORKSPACE_ONLY_FILE_TOOLS")?,
@@ -247,11 +260,11 @@ fn stream_chunk_for_stdout(content: &str, stdout_is_terminal: bool) -> String {
 
 /// Run one prompt non-interactively and print the final answer.
 pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
-    let limits = PrintModeLimits::from_env()?;
     let model = options
         .model
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(crate::codex_auth::resolve_default_model);
+    let limits = PrintModeLimits::from_env(&model)?;
 
     let workspace = dunce::canonicalize(
         &std::env::current_dir().context("resolve print-mode working directory")?,
@@ -317,6 +330,7 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
         let Some(msg) = event_rx.recv().await else {
             break;
         };
+        let typed_terminal_exit_code = typed_terminal_exit_code(&msg);
 
         match msg {
             FromAgent::ResponseChunk {
@@ -501,21 +515,34 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
                     println!();
                 }
 
-                let terminal = record_completed_response(
+                record_completed_response(
                     &response_id,
                     &mut assistant_buf,
                     &mut last_assistant_message,
                 );
-                if terminal {
-                    if options.json {
-                        let done = serde_json::json!({
-                            "type": "done",
-                            "status": "ok",
-                        });
-                        println!("{done}");
-                    }
-                    break;
+            }
+            FromAgent::TurnCompleted { .. } => {
+                exit_code = typed_terminal_exit_code.expect("typed completion exit code");
+                if options.json {
+                    let done = serde_json::json!({
+                        "type": "done",
+                        "status": "ok",
+                    });
+                    println!("{done}");
                 }
+                break;
+            }
+            FromAgent::TurnInterrupted { reason, .. } => {
+                exit_code = typed_terminal_exit_code.expect("typed interruption exit code");
+                if options.json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"type":"error","message":reason,"fatal":false})
+                    );
+                } else {
+                    eprintln!("Error: {reason}");
+                }
+                break;
             }
             FromAgent::Error {
                 message,
@@ -536,6 +563,23 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
                     exit_code = 1;
                     break;
                 }
+            }
+            FromAgent::ProviderError { kind, message } => {
+                exit_code = typed_terminal_exit_code.expect("typed provider exit code");
+                if options.json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "type": "provider_error",
+                            "kind": kind,
+                            "message": message,
+                            "fatal": false,
+                        })
+                    );
+                } else {
+                    eprintln!("Provider error ({kind:?}): {message}");
+                }
+                break;
             }
             _ => {}
         }
@@ -578,22 +622,16 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
     Ok(exit_code)
 }
 
-/// Record a completed model response and report whether the whole agent turn is done.
-/// NativeAgent emits one ResponseEnd per model response, including responses that
-/// request tools, followed by a final synthetic `done` event after the tool loop.
-fn record_completed_response(
-    response_id: &str,
-    current: &mut String,
-    last_completed: &mut String,
-) -> bool {
+/// Record a completed model response. A model-call boundary never completes
+/// the enclosing agent turn; only `FromAgent::TurnCompleted` does that.
+fn record_completed_response(response_id: &str, current: &mut String, last_completed: &mut String) {
     if response_id == "done" {
-        return true;
+        return;
     }
     if !current.is_empty() {
         last_completed.clone_from(current);
         current.clear();
     }
-    false
 }
 
 /// Process multiple prompts sequentially (exec multi-prompt).
@@ -822,22 +860,38 @@ mod tests {
     fn print_mode_waits_for_terminal_event_and_keeps_last_response() {
         let mut current = "I will inspect the file.".to_string();
         let mut last = String::new();
-        assert!(!record_completed_response(
-            "model-turn-1",
-            &mut current,
-            &mut last
-        ));
+        record_completed_response("model-turn-1", &mut current, &mut last);
         assert_eq!(last, "I will inspect the file.");
 
         current.push_str("The final answer.");
-        assert!(!record_completed_response(
-            "model-turn-2",
-            &mut current,
-            &mut last
-        ));
+        record_completed_response("model-turn-2", &mut current, &mut last);
         assert_eq!(last, "The final answer.");
-        assert!(record_completed_response("done", &mut current, &mut last));
+        record_completed_response("done", &mut current, &mut last);
         assert_eq!(last, "The final answer.");
+    }
+
+    #[test]
+    fn typed_turn_terminals_choose_process_exit_status() {
+        assert_eq!(
+            typed_terminal_exit_code(&FromAgent::TurnCompleted {
+                response_id: "done".to_string(),
+            }),
+            Some(0)
+        );
+        assert_eq!(
+            typed_terminal_exit_code(&FromAgent::TurnInterrupted {
+                response_id: "done".to_string(),
+                reason: "cancelled".to_string(),
+            }),
+            Some(1)
+        );
+        assert_eq!(
+            typed_terminal_exit_code(&FromAgent::ProviderError {
+                kind: maestro_ai::ProviderStreamErrorKind::TransientProtocol,
+                message: "unexpected eof".to_string(),
+            }),
+            Some(1)
+        );
     }
 
     #[test]

@@ -82,6 +82,9 @@ impl SharedRunner {
                 ),
                 last_error: restore_last_error,
                 last_error_type: restore_last_error_type,
+                provider_error_kind: restored_snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.state.provider_error_kind),
                 identity_binding_failures: loaded_thread.identity_binding_failures,
                 restored_snapshot,
                 controller_connection_id: None,
@@ -368,6 +371,13 @@ impl SharedRunner {
                         })
                         .or_else(|| restored_state.and_then(|state| state.last_error_type.clone()))
                 },
+                provider_error_kind: if let Some(agent_state) = agent_state {
+                    agent_state.provider_error_kind
+                } else {
+                    state
+                        .provider_error_kind
+                        .or_else(|| restored_state.and_then(|state| state.provider_error_kind))
+                },
                 last_status: if host_ready && prefer_restored_host_state {
                     state
                         .last_status
@@ -616,10 +626,29 @@ impl SharedRunner {
         let persist_lifecycle_boundary = matches!(
             &message,
             FromAgentMessage::ResponseEnd { .. }
+                | FromAgentMessage::TurnCompleted { .. }
+                | FromAgentMessage::TurnInterrupted { .. }
                 | FromAgentMessage::ServerRequest { .. }
                 | FromAgentMessage::ServerRequestResolved { .. }
                 | FromAgentMessage::Error { .. }
+                | FromAgentMessage::ProviderError { .. }
         );
+        let lifecycle_rollback = persist_lifecycle_boundary.then(|| {
+            (
+                state.cursor,
+                state.ready,
+                state.runtime_failed,
+                state.last_status.clone(),
+                state.last_error.clone(),
+                state.last_error_type.clone(),
+                state.provider_error_kind,
+                state.active_response_ids.clone(),
+                state.pending_controller_events.clone(),
+                state.thread.clone(),
+                state.envelopes.clone(),
+                state.controller_envelopes.clone(),
+            )
+        });
         let agent_state = self.prune_pending_controller_events(state);
         let matching_pending = agent_state.as_ref().and_then(|agent_state| {
             agent_state
@@ -650,6 +679,7 @@ impl SharedRunner {
         match &message {
             FromAgentMessage::ResponseStart { response_id } => {
                 state.active_response_ids.insert(response_id.clone());
+                state.provider_error_kind = None;
             }
             FromAgentMessage::ResponseEnd { response_id, .. } => {
                 state.active_response_ids.remove(response_id);
@@ -657,6 +687,9 @@ impl SharedRunner {
             FromAgentMessage::Error {
                 fatal, terminal, ..
             } if *fatal || *terminal => state.active_response_ids.clear(),
+            FromAgentMessage::TurnCompleted { .. }
+            | FromAgentMessage::TurnInterrupted { .. }
+            | FromAgentMessage::ProviderError { .. } => state.active_response_ids.clear(),
             _ => {}
         }
         // Reserve the cursor immediately before a response completion for the
@@ -680,6 +713,12 @@ impl SharedRunner {
             state.last_status = Some("Runtime failed".to_string());
             state.last_error = Some(message.clone());
             state.last_error_type = Some("fatal".to_string());
+            state.provider_error_kind = None;
+        }
+        if let FromAgentMessage::ProviderError { kind, message } = &message {
+            state.last_error = Some(message.clone());
+            state.last_error_type = Some("protocol".to_string());
+            state.provider_error_kind = Some(*kind);
         }
         state.thread.apply_agent_message(&message, state.cursor);
         let controller_envelope = StreamEnvelope::Message {
@@ -692,6 +731,9 @@ impl SharedRunner {
             cursor: state.cursor,
             message: Box::new(crate::transcript::redact_agent_message(message)),
         };
+        // The durable journal serializes the replay buffers as well as the
+        // thread phase. Stage the current envelope before persistence so a
+        // restart never observes a terminal phase without its terminal event.
         state.envelopes.push_back(envelope.clone());
         state
             .controller_envelopes
@@ -702,21 +744,49 @@ impl SharedRunner {
         while state.controller_envelopes.len() > MAX_EVENTS {
             state.controller_envelopes.pop_front();
         }
-        let _ = self.events.send(envelope);
-        let _ = self.controller_events.send(controller_envelope);
         if persist_lifecycle_boundary {
             // Publish path: a failed boundary write deliberately degrades the
             // runner to not-ready instead of deferring, so controllers stop
             // sending work against a journal that is not durable.
             #[allow(clippy::disallowed_methods)]
             if let Err(error) = self.persist_thread(state) {
+                let (
+                    cursor,
+                    ready,
+                    runtime_failed,
+                    last_status,
+                    last_error,
+                    last_error_type,
+                    provider_error_kind,
+                    active_response_ids,
+                    pending_controller_events,
+                    thread,
+                    envelopes,
+                    controller_envelopes,
+                ) = lifecycle_rollback.expect("lifecycle boundary has rollback state");
+                state.cursor = cursor;
+                state.ready = ready;
+                state.runtime_failed = runtime_failed;
+                state.last_status = last_status;
+                state.last_error = last_error;
+                state.last_error_type = last_error_type;
+                state.provider_error_kind = provider_error_kind;
+                state.active_response_ids = active_response_ids;
+                state.pending_controller_events = pending_controller_events;
+                state.thread = thread;
+                state.envelopes = envelopes;
+                state.controller_envelopes = controller_envelopes;
                 state.runtime_failed = true;
                 state.ready = false;
                 state.last_error = Some(format!("durable thread journal write failed: {error}"));
                 state.last_status = Some("Runtime failed".to_string());
                 state.last_error_type = Some("internal".to_string());
+                state.provider_error_kind = None;
+                return;
             }
         }
+        let _ = self.events.send(envelope);
+        let _ = self.controller_events.send(controller_envelope);
     }
 
     pub(super) fn publish_snapshot(&self, state: &mut RunnerState) {
@@ -939,8 +1009,8 @@ fn coarse_replay_has_complete_response_boundaries(
             FromAgentMessage::ResponseEnd { response_id, .. }
                 if response_id == "done" && !active_responses.contains(response_id.as_str()) =>
             {
-                // The native agent emits `done` as a turn-lifecycle sentinel,
-                // not as the completion of a streamed model response.
+                // The native agent still emits a legacy `done` model boundary.
+                // It is neither a streamed response nor a turn terminal.
             }
             FromAgentMessage::ResponseEnd { response_id, .. }
                 if !active_responses.remove(response_id.as_str()) =>

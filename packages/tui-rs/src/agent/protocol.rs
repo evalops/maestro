@@ -1032,7 +1032,8 @@ pub struct InlineToolApprovalContext {
 /// 2. `ResponseChunk` - Streamed text/thinking (multiple)
 /// 3. `ToolCall` - Agent wants to use a tool (optional, may repeat)
 /// 4. `ToolStart`/`ToolOutput`/`ToolEnd` - Tool execution (optional)
-/// 5. `ResponseEnd` - Agent finished, includes token usage
+/// 5. `ResponseEnd` - One provider response finished, includes token usage
+/// 6. `TurnCompleted` / `TurnInterrupted` / `ProviderError` - Full turn terminal
 ///
 /// # Streaming Pattern
 ///
@@ -1050,8 +1051,12 @@ pub struct InlineToolApprovalContext {
 ///         }
 ///         FromAgent::ResponseEnd { usage, .. } => {
 ///             display_token_usage(usage);
+///         }
+///         FromAgent::TurnCompleted { .. } => {
 ///             break;
 ///         }
+///         FromAgent::TurnInterrupted { reason, .. } => return Err(reason.into()),
+///         FromAgent::ProviderError { message, .. } => return Err(message.into()),
 ///         _ => {}
 ///     }
 /// }
@@ -1066,7 +1071,8 @@ pub struct InlineToolApprovalContext {
 ///     FromAgent::Ready { .. } => { /* handle ready */ }
 ///     FromAgent::ResponseStart { .. } => { /* handle start */ }
 ///     FromAgent::ResponseChunk { .. } => { /* handle chunk */ }
-///     FromAgent::ResponseEnd { .. } => { /* handle end */ }
+///     FromAgent::ResponseEnd { .. } => { /* handle model-call end */ }
+///     FromAgent::TurnCompleted { .. } => { /* handle successful turn end */ }
 ///     FromAgent::ToolCall { .. } => { /* handle tool call */ }
 ///     FromAgent::Error { .. } => { /* handle error */ }
 ///     // Compiler ensures all variants are covered
@@ -1169,8 +1175,22 @@ pub enum FromAgent {
         usage: Option<TokenUsage>,
     },
 
+    /// The complete native agent loop finished successfully.
+    ///
+    /// Unlike [`Self::ResponseEnd`], which terminates one provider response,
+    /// this is the positive terminal for the user-visible turn.
+    TurnCompleted { response_id: String },
+
+    /// The full native agent turn ended by cancellation or interruption.
+    TurnInterrupted { response_id: String, reason: String },
+
     /// A tool-free side question started outside the main conversation history.
-    SideQuestionStart { side_id: String, question: String },
+    SideQuestionStart {
+        side_id: String,
+        question: String,
+        #[serde(default)]
+        standalone: bool,
+    },
 
     /// Streaming answer text for a side question.
     SideQuestionChunk { side_id: String, content: String },
@@ -1181,7 +1201,11 @@ pub enum FromAgent {
         question: String,
         answer: String,
         #[serde(default)]
+        standalone: bool,
+        #[serde(default)]
         error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_error_kind: Option<maestro_ai::ProviderStreamErrorKind>,
         #[serde(default)]
         usage: Option<TokenUsage>,
     },
@@ -1375,6 +1399,13 @@ pub enum FromAgent {
         /// adapters close only when the producer has ended the request.
         #[serde(default)]
         terminal: bool,
+    },
+
+    /// A terminal provider failure whose classification must survive every
+    /// outward protocol boundary.
+    ProviderError {
+        kind: maestro_ai::ProviderStreamErrorKind,
+        message: String,
     },
 
     /// Agent status update

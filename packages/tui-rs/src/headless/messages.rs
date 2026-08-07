@@ -74,6 +74,7 @@
 //!  | <-- ResponseChunk ----------| (multiple)
 //!  | <-- ResponseChunk ----------|
 //!  | <-- ResponseEnd ------------|
+//!  | <-- TurnCompleted -----------|
 //! ```
 //!
 //! ## Tool Approval Flow
@@ -102,19 +103,12 @@ pub(crate) const SEMANTIC_CONVERSATION_PROTOCOL: &str = "evalops.maestro.semanti
 /// Current headless protocol version shared with the TypeScript runtime.
 pub use super::generated_protocol::HEADLESS_PROTOCOL_VERSION;
 
-/// Client protocol versions a `Hello` may announce, oldest first.
+/// Client protocol versions a `Hello` may announce.
 ///
-/// Clients ship on their own release cadence, so the version a controller
-/// speaks is routinely one behind this build's own. Accepting any string and
-/// echoing it back hid that skew until a semantic difference surfaced as
-/// confusing behavior mid-session, so a `Hello` outside this list is now
-/// rejected with a typed protocol error instead of handshaking successfully.
-///
-/// Accepting an older version here means "this build can serve a client that
-/// speaks that version", not that it downgrades its own emission: every
-/// message the agent sends stays at [`HEADLESS_PROTOCOL_VERSION`], which is
-/// what `Ready` and `HelloOk` report.
-pub const SUPPORTED_CLIENT_PROTOCOL_VERSIONS: &[&str] = &["2026-04-02", HEADLESS_PROTOCOL_VERSION];
+/// The runtime does not downgrade emitted messages. Accepting an older client
+/// version would therefore permit a successful handshake followed by unknown
+/// terminal message types, so versioned clients must match this wire contract.
+pub const SUPPORTED_CLIENT_PROTOCOL_VERSIONS: &[&str] = &[HEADLESS_PROTOCOL_VERSION];
 
 /// Whether a `Hello` announcing `client_version` may open a session.
 ///
@@ -561,7 +555,8 @@ pub struct UtilityFileSearchMatch {
 /// # Message Categories
 ///
 /// - **Lifecycle** - `Ready`, `SessionInfo`
-/// - **Responses** - `ResponseStart`, `ResponseChunk`, `ResponseEnd`
+/// - **Response framing** - `ResponseStart`, `ResponseChunk`, `ResponseEnd`
+/// - **Turn terminals** - `TurnCompleted`, `TurnInterrupted`, `ProviderError`
 /// - **Tool Execution** - `ToolCall`, `ToolStart`, `ToolOutput`, `ToolEnd`
 /// - **Status** - `Error`, `Status`
 ///
@@ -571,7 +566,8 @@ pub struct UtilityFileSearchMatch {
 ///
 /// 1. **Start** message - Signals the beginning of an operation
 /// 2. **Chunk/Output** messages - Stream data incrementally (0 or more)
-/// 3. **End** message - Signals completion with metadata
+/// 3. **End** message - Closes one model response with metadata
+/// 4. **Turn terminal** - Explicitly completes, interrupts, or fails the turn
 ///
 /// This pattern enables:
 /// - **Progressive rendering** - Display partial results before completion
@@ -657,6 +653,10 @@ pub enum FromAgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ttft_ms: Option<u64>,
     },
+    /// Positive terminal for the full native agent turn.
+    TurnCompleted { response_id: String },
+    /// Durable terminal for a cancelled or interrupted turn.
+    TurnInterrupted { response_id: String, reason: String },
     /// Privacy-safe Codex app-server session lifecycle metadata.
     CodexSessionState {
         state: String,
@@ -753,6 +753,11 @@ pub enum FromAgentMessage {
         terminal: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error_type: Option<HeadlessErrorType>,
+    },
+    /// Structured terminal failure declared by the provider boundary.
+    ProviderError {
+        kind: maestro_ai::ProviderStreamErrorKind,
+        message: String,
     },
     /// Status update
     Status { message: String },

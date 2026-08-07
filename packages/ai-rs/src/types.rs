@@ -115,6 +115,23 @@ impl Tool {
     }
 }
 
+/// Machine-readable classification for provider stream failures whose
+/// handling must not depend on parsing a display string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderStreamErrorKind {
+    /// A successful HTTP response ended before the provider's required
+    /// terminal protocol event.
+    TransientProtocol,
+    /// The provider terminated because the configured output budget was
+    /// exhausted.
+    OutputTokenExhaustion,
+    /// The provider reported another typed incomplete-response reason.
+    IncompleteResponse,
+    /// The provider emitted its explicit failed terminal event.
+    ProviderDeclaredFailure,
+}
+
 /// Streaming event from the AI
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
@@ -147,6 +164,11 @@ pub enum StreamEvent {
         output_tokens: u64,
         cache_read_tokens: Option<u64>,
         cache_creation_tokens: Option<u64>,
+    },
+    /// Provider protocol failure with a stable machine-readable kind.
+    ProviderError {
+        kind: ProviderStreamErrorKind,
+        message: String,
     },
     /// Error occurred
     Error { message: String },

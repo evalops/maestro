@@ -34,7 +34,6 @@ use super::{
 
 pub(crate) const A2A_PROTOCOL_VERSION: &str = "1.0";
 pub(crate) const A2A_DEFAULT_TURN_TIMEOUT_MS: u64 = 180_000;
-pub(crate) const A2A_DEFAULT_RESPONSE_END_SETTLE_MS: u64 = 250;
 pub(crate) const A2A_TERMINAL_TASK_STORE_LIMIT: usize = 128;
 pub(crate) const A2A_DEFAULT_LIST_PAGE_SIZE: usize = 50;
 pub(crate) const A2A_MAX_LIST_PAGE_SIZE: usize = 100;

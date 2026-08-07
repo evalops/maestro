@@ -351,6 +351,8 @@ struct RemoteRuntimeStateSnapshot {
     #[serde(default)]
     last_error_type: Option<HeadlessErrorType>,
     #[serde(default)]
+    provider_error_kind: Option<maestro_ai::ProviderStreamErrorKind>,
+    #[serde(default)]
     last_status: Option<String>,
     #[serde(default)]
     last_response_duration_ms: Option<u64>,
@@ -447,6 +449,7 @@ impl RemoteRuntimeStateSnapshot {
                 .collect(),
             last_error: self.last_error,
             last_error_type: self.last_error_type,
+            provider_error_kind: self.provider_error_kind,
             last_status: self.last_status,
             last_response_duration_ms: self.last_response_duration_ms,
             last_ttft_ms: self.last_ttft_ms,

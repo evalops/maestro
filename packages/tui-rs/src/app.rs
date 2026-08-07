@@ -1980,7 +1980,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         let (thinking_enabled, thinking_budget) = thinking_level.to_config();
         let config = NativeAgentConfig {
             model: model.clone(),
-            max_tokens: 16384,
+            max_tokens: crate::model_catalog::default_max_output_tokens(&model),
             system_prompt: Some(self.build_system_prompt()),
             thinking_enabled,
             thinking_budget,
@@ -2783,6 +2783,12 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         }
     }
 
+    fn abandon_active_turn_summary(&mut self) {
+        self.active_turn_summary = None;
+        self.active_turn_start_message_index = None;
+        self.active_turn_started_at = None;
+    }
+
     async fn handle_agent_message(&mut self, msg: FromAgent) -> Result<()> {
         self.handle_agent_message_with_options(msg, true, true)
             .await
@@ -2933,7 +2939,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 );
                 return Ok(());
             }
-            FromAgent::SideQuestionStart { side_id, question } => {
+            FromAgent::SideQuestionStart {
+                side_id, question, ..
+            } => {
                 if let Some(index) = self.queued_prompts.iter().position(|prompt| {
                     prompt.kind == PromptKind::SideQuestion && prompt.content == *question
                 }) {
@@ -2960,6 +2968,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 question,
                 answer,
                 error,
+                standalone,
                 ..
             } => {
                 let display_answer = match error {
@@ -2982,6 +2991,13 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     answer.clone(),
                     error.clone(),
                 );
+                if *standalone {
+                    self.state.busy = false;
+                    self.queued_prompt_inflight = None;
+                    self.queued_prompt_active = None;
+                    self.sync_queue_prompt_count();
+                    needs_post_interrupt_queue = true;
+                }
             }
             FromAgent::CodexSessionState {
                 state,
@@ -3023,11 +3039,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     *steering,
                 ));
             }
-            FromAgent::ResponseEnd { response_id, .. } if response_id == "done" => {
-                // Model responses can end before their tool calls and follow-up
-                // responses complete. Only the runner's terminal sentinel ends
-                // the full agent turn.
+            FromAgent::TurnCompleted { .. } => {
                 self.state.busy = false;
+                self.finish_active_turn_summary();
                 if allow_terminal_notifications {
                     self.notify_terminal_turn_finished();
                 }
@@ -3048,11 +3062,25 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 self.flush_pending_agent_tool_notes();
             }
             FromAgent::ResponseEnd { .. } => {}
+            FromAgent::TurnInterrupted { .. } => {
+                self.state.busy = false;
+                self.abandon_active_turn_summary();
+                if allow_terminal_notifications {
+                    self.notify_terminal_turn_finished();
+                }
+                self.finalize_file_checkpoint();
+                self.queued_prompt_inflight = None;
+                self.queued_prompt_active = None;
+                self.sync_queue_prompt_count();
+                needs_post_interrupt_queue = true;
+                self.flush_pending_agent_tool_notes();
+            }
             FromAgent::Error {
                 fatal, terminal, ..
             } if *fatal || *terminal => {
                 // Clear busy state on error
                 self.state.busy = false;
+                self.abandon_active_turn_summary();
                 if allow_terminal_notifications {
                     self.notify_terminal_turn_finished();
                 }
@@ -3066,6 +3094,19 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 // /goal resume or a successful create.
             }
             FromAgent::Error { .. } => {}
+            FromAgent::ProviderError { .. } => {
+                self.state.busy = false;
+                self.abandon_active_turn_summary();
+                if allow_terminal_notifications {
+                    self.notify_terminal_turn_finished();
+                }
+                self.finalize_file_checkpoint();
+                self.queued_prompt_inflight = None;
+                self.queued_prompt_active = None;
+                self.sync_queue_prompt_count();
+                needs_post_interrupt_queue = true;
+                self.flush_pending_agent_tool_notes();
+            }
             FromAgent::ToolCall {
                 call_id,
                 tool,
@@ -3282,9 +3323,6 @@ was missing; retry to review the exact execution context."
                 }
             }
             self.record_assistant_message(&response_id, usage);
-            if response_id == "done" {
-                self.finish_active_turn_summary();
-            }
         }
 
         if needs_post_interrupt_queue && allow_post_interrupt_queue {

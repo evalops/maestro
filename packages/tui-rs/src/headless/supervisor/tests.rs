@@ -1372,6 +1372,18 @@ fn agent_event_to_message_preserves_headless_metadata() {
         }
     ));
 
+    let provider_error = agent_event_to_message(&AgentEvent::ProviderError {
+        kind: maestro_ai::ProviderStreamErrorKind::OutputTokenExhaustion,
+        message: "output exhausted".to_string(),
+    });
+    assert!(matches!(
+        provider_error,
+        super::super::messages::FromAgentMessage::ProviderError {
+            kind: maestro_ai::ProviderStreamErrorKind::OutputTokenExhaustion,
+            ref message,
+        } if message == "output exhausted"
+    ));
+
     let tool_end = agent_event_to_message(&AgentEvent::ToolEnd {
         call_id: "call_1".to_string(),
         tool_execution_id: Some("tool-execution-1".to_string()),

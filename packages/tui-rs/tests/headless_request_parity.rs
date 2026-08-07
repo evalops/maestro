@@ -27,6 +27,15 @@ fn every_contract_request_is_handled_or_typed_unsupported() {
             request
         })
         .collect::<Vec<_>>();
+    let hello = requests
+        .iter()
+        .find(|request| request["message"]["type"] == "hello")
+        .expect("fixture hello request");
+    assert_eq!(
+        hello["message"]["protocol_version"],
+        maestro_tui::headless::HEADLESS_PROTOCOL_VERSION,
+        "rust-cutover fixture must negotiate the current wire contract"
+    );
     let input = requests
         .iter()
         .map(|request| serde_json::to_string(&request["message"]).expect("serialize request"))
@@ -82,7 +91,11 @@ fn event_correlates(event: &Value, request_type: &str, request: &Value) -> bool 
         .unwrap_or_default();
     let message = &request["message"];
     match request_type {
-        "hello" => event_type == "hello_ok",
+        "hello" => {
+            event_type == "hello_ok"
+                && event.get("protocol_version").and_then(Value::as_str)
+                    == Some(maestro_tui::headless::HEADLESS_PROTOCOL_VERSION)
+        }
         "init" => event.get("message").and_then(Value::as_str) == Some("init applied"),
         "prompt" => matches!(event_type, "ready" | "response_start" | "error"),
         "interrupt" | "cancel" => {

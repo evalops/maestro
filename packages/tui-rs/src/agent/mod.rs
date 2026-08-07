@@ -77,9 +77,12 @@
 //!         FromAgent::ResponseChunk { content, .. } => {
 //!             print!("{content}");
 //!         }
-//!         FromAgent::ResponseEnd { .. } => {
+//!         FromAgent::ResponseEnd { .. } => { /* model-call boundary */ }
+//!         FromAgent::TurnCompleted { .. } => {
 //!             break;
 //!         }
+//!         FromAgent::TurnInterrupted { reason, .. } => return Err(reason.into()),
+//!         FromAgent::ProviderError { message, .. } => return Err(message.into()),
 //!         _ => {}
 //!     }
 //! }

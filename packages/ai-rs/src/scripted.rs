@@ -23,7 +23,9 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use tokio::sync::mpsc;
 
-use super::types::{ContentBlock, Message, RequestConfig, StopReason, StreamEvent};
+use super::types::{
+    ContentBlock, Message, ProviderStreamErrorKind, RequestConfig, StopReason, StreamEvent,
+};
 
 /// One content block of a scripted assistant response.
 #[derive(Debug, Clone, PartialEq)]
@@ -35,6 +37,15 @@ pub enum ScriptedBlock {
         id: String,
         name: String,
         input: serde_json::Value,
+    },
+    /// End the channel without a protocol terminal event.
+    Eof,
+    /// Keep the channel open forever without a terminal event.
+    Pending,
+    /// End the response with a typed provider failure.
+    ProviderError {
+        kind: ProviderStreamErrorKind,
+        message: String,
     },
 }
 
@@ -153,6 +164,21 @@ impl ScriptedClient {
                         index,
                         partial_json: input.to_string(),
                     });
+                }
+                ScriptedBlock::Eof => return Ok(rx),
+                ScriptedBlock::Pending => {
+                    tokio::spawn(async move {
+                        std::future::pending::<()>().await;
+                        drop(tx);
+                    });
+                    return Ok(rx);
+                }
+                ScriptedBlock::ProviderError { kind, message } => {
+                    let _ = tx.send(StreamEvent::ProviderError {
+                        kind: *kind,
+                        message: message.clone(),
+                    });
+                    return Ok(rx);
                 }
             }
             let _ = tx.send(StreamEvent::ContentBlockStop {

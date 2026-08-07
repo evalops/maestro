@@ -9,7 +9,7 @@ import "google/protobuf/struct.proto";
 // This mirrors the current message surface closely enough for code generation and
 // cross-language drift checks, while the live runtime continues to use the
 // existing JSON transport until follow-up slices migrate the transport layer.
-// protocol-version: 2026-08-01
+// protocol-version: 2026-08-07
 
 enum ServerRequestType {
   SERVER_REQUEST_TYPE_UNSPECIFIED = 0;
@@ -346,6 +346,28 @@ message ResponseEndMessage {
   optional uint32 ttft_ms = 5;
 }
 
+message TurnCompletedMessage {
+  string response_id = 1;
+}
+
+message TurnInterruptedMessage {
+  string response_id = 1;
+  string reason = 2;
+}
+
+enum ProviderStreamErrorKind {
+  PROVIDER_STREAM_ERROR_KIND_UNSPECIFIED = 0;
+  PROVIDER_STREAM_ERROR_KIND_TRANSIENT_PROTOCOL = 1;
+  PROVIDER_STREAM_ERROR_KIND_OUTPUT_TOKEN_EXHAUSTION = 2;
+  PROVIDER_STREAM_ERROR_KIND_INCOMPLETE_RESPONSE = 3;
+  PROVIDER_STREAM_ERROR_KIND_PROVIDER_DECLARED_FAILURE = 4;
+}
+
+message ProviderErrorMessage {
+  ProviderStreamErrorKind kind = 1;
+  string message = 2;
+}
+
 message ToolCallMessage {
   string call_id = 1;
   string tool = 2;
@@ -592,5 +614,8 @@ message FromAgentEnvelope {
     SessionInfoMessage session_info = 26;
     ConnectionInfoMessage connection_info = 27;
     ResponseAcceptedMessage response_accepted = 28;
+    TurnCompletedMessage turn_completed = 29;
+    TurnInterruptedMessage turn_interrupted = 30;
+    ProviderErrorMessage provider_error = 31;
   }
 }

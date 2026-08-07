@@ -280,6 +280,8 @@ pub struct AgentStateCheckpoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error_type: Option<super::messages::HeadlessErrorType>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_error_kind: Option<maestro_ai::ProviderStreamErrorKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_response_duration_ms: Option<u64>,
@@ -358,6 +360,7 @@ impl AgentStateCheckpoint {
                 .collect(),
             last_error: state.last_error.clone(),
             last_error_type: state.last_error_type,
+            provider_error_kind: state.provider_error_kind,
             last_status: state.last_status.clone(),
             last_response_duration_ms: state.last_response_duration_ms,
             last_ttft_ms: state.last_ttft_ms,
@@ -454,6 +457,7 @@ impl AgentStateCheckpoint {
                 .collect::<HashMap<_, _>>(),
             last_error: self.last_error,
             last_error_type: self.last_error_type,
+            provider_error_kind: self.provider_error_kind,
             last_status: self.last_status,
             last_response_duration_ms: self.last_response_duration_ms,
             last_ttft_ms: self.last_ttft_ms,

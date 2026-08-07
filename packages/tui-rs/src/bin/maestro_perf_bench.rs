@@ -282,10 +282,7 @@ async fn run_scripted_session(
                 failed_tool_ids.push(call_id.clone());
             }
         }
-        if matches!(
-            &event,
-            FromAgent::ResponseEnd { response_id, .. } if response_id == "done"
-        ) {
+        if matches!(&event, FromAgent::TurnCompleted { .. }) {
             completed += 1;
             if completed == expected_completions {
                 break;

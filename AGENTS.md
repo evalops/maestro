@@ -1,5 +1,9 @@
 # Maestro public repository guidance
 
+This file is mirror-written from
+`evalops/maestro-internal:.github/public-repo/AGENTS.md`; edit it there, not in
+this repository.
+
 This repository is a generated public mirror. Public-facing source changes
 originate in `evalops/maestro-internal` and arrive through the protected mirror
 workflow; do not edit mirrored source directly here.

@@ -178,7 +178,8 @@ impl ErrorKind {
         }
 
         // Check for transient errors
-        if lower.contains("overloaded")
+        if lower.contains("empty_assistant_response")
+            || lower.contains("overloaded")
             || Self::contains_http_status_code(&lower, "500")
             || Self::contains_http_status_code(&lower, "502")
             || Self::contains_http_status_code(&lower, "503")
@@ -602,6 +603,11 @@ mod tests {
     #[test]
     fn test_error_kind_classify_transient() {
         let kind = ErrorKind::classify("503 Service Unavailable");
+        assert_eq!(kind, ErrorKind::Transient);
+
+        let kind = ErrorKind::classify(
+            "empty_assistant_response: provider completed without text or tool calls",
+        );
         assert_eq!(kind, ErrorKind::Transient);
 
         let kind = ErrorKind::classify("Internal server error");

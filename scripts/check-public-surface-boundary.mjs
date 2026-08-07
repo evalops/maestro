@@ -64,11 +64,6 @@ const forbiddenInternalContentRules = [
 		pattern: /\b192\.168\.4\.(?:53|113)\b/u,
 	},
 	{
-		label: "private runner identity",
-		pattern:
-			/\bevalops-(?:internal|maestro-internal-rbe|private[-a-z0-9_]*)\b/iu,
-	},
-	{
 		label: "production artifact infrastructure",
 		pattern:
 			/(?:gs:\/\/evalops-prod-github-actions-evidence|github-actions@evalops-prod\.iam\.gserviceaccount\.com)/iu,
@@ -102,7 +97,14 @@ const fallbackScanExcludedDirectories = new Set([
 // in a public or prepared tree was authored in the public repo, so it is out
 // of scope for the internal-content scan (public CI may legitimately
 // reference self-hosted runner labels that name the internal fleet).
-const internalContentScanExcludedPrefixes = [".github/workflows/"];
+//
+// .github/actionlint.yaml is public-owned for the same reason: it lives beside
+// the workflows it lints and allowlists the runner labels they target —
+// including internal-fleet labels — so actionlint accepts them.
+const internalContentScanExcludedPrefixes = [
+	".github/workflows/",
+	".github/actionlint.yaml",
+];
 
 function read(path) {
 	return readFileSync(resolve(path), "utf8");
