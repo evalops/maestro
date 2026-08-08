@@ -1230,7 +1230,11 @@ pub use shimmer::{
     shimmer_spans_with_config, // With custom config
     shine_opacity,
     ShimmerConfig, // Shimmer configuration
+    DEIXIC_BORDER,
+    DEIXIC_MUTED,
     DEIXIC_SOFT,
+    DEIXIC_SURFACE,
+    DEIXIC_TEXT,
     DEIXIC_VIOLET,
     SHIMMER_FPS,
 };

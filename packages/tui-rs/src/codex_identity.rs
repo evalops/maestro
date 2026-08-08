@@ -442,11 +442,12 @@ mod tests {
         let selected =
             resolve_codex_identity_from(&profile_file, None, &child, &root.path().join("default"))
                 .expect("select workspace owner");
+        let canonical_workspace = dunce::canonicalize(&workspace).expect("canonical workspace");
         assert_eq!(selected.profile_name, "work");
         assert_eq!(selected.codex_home, codex_home);
         assert_eq!(
             selected.workspace_boundary.as_deref(),
-            Some(workspace.as_path())
+            Some(canonical_workspace.as_path())
         );
     }
 

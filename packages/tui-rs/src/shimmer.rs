@@ -35,6 +35,18 @@ pub const DEIXIC_LOGO_BASE: (u8, u8, u8) = (0x4a, 0x42, 0x9a);
 /// Peak highlight on logo sheen.
 pub const DEIXIC_LOGO_HILITE: (u8, u8, u8) = (0xef, 0xeb, 0xff);
 
+/// Near-black surface used by the focused Maestro stage.
+pub const DEIXIC_SURFACE: (u8, u8, u8) = (0x0d, 0x0c, 0x15);
+
+/// Quiet violet-gray border used for structural chrome.
+pub const DEIXIC_BORDER: (u8, u8, u8) = (0x3d, 0x32, 0x72);
+
+/// Muted lavender for supporting labels and placeholder text.
+pub const DEIXIC_MUTED: (u8, u8, u8) = (0x7d, 0x75, 0xa2);
+
+/// Soft text color for primary interactive content.
+pub const DEIXIC_TEXT: (u8, u8, u8) = (0xe9, 0xe5, 0xf7);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PROCESS CLOCK
 // ─────────────────────────────────────────────────────────────────────────────

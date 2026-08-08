@@ -1656,7 +1656,7 @@ mod tests {
         assert_eq!(start["params"]["model"], "gpt-5.5");
         assert_eq!(
             start["params"]["cwd"],
-            workspace.path().to_string_lossy().as_ref()
+            key.workspace.to_string_lossy().as_ref()
         );
         assert_eq!(start["params"]["approvalPolicy"], "never");
         assert_eq!(start["params"]["sandbox"], "workspace-write");

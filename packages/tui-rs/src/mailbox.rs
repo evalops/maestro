@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
-use fd_lock::RwLock as FileLock;
+use fd_lock::{RwLock as FileLock, RwLockWriteGuard};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -805,12 +805,18 @@ impl MailboxStore {
         &mut self,
         mutation: impl FnOnce(&mut Self) -> Result<(T, bool)>,
     ) -> Result<T> {
-        let lock = self
-            .path
-            .clone()
-            .map(|path| MailboxFileLock::acquire(&path))
+        let mailbox_path = self.path.clone();
+        let mut lock = mailbox_path
+            .as_deref()
+            .map(MailboxFileLock::open)
             .transpose()?;
-        if lock.is_some() {
+        let has_lock = lock.is_some();
+        let guard = mailbox_path
+            .as_deref()
+            .zip(lock.as_mut())
+            .map(|(path, lock)| lock.try_write(path))
+            .transpose()?;
+        if has_lock {
             if let Err(error) = self.reload_from_disk() {
                 // Startup deliberately keeps the configured path when a mailbox
                 // file is malformed so the next successful mutation can repair it.
@@ -835,6 +841,7 @@ impl MailboxStore {
                 return Err(error);
             }
         }
+        drop(guard);
         drop(lock);
         Ok(result)
     }
@@ -904,7 +911,7 @@ struct MailboxFileLock {
 }
 
 impl MailboxFileLock {
-    fn acquire(mailbox_path: &Path) -> Result<Self> {
+    fn open(mailbox_path: &Path) -> Result<Self> {
         let lock_path = lock_path_for(mailbox_path);
         if let Some(parent) = lock_path.parent() {
             std::fs::create_dir_all(parent)
@@ -916,21 +923,22 @@ impl MailboxFileLock {
             .write(true)
             .open(&lock_path)
             .with_context(|| format!("open mailbox lock {}", lock_path.display()))?;
-        let mut lock = FileLock::new(file);
-        {
-            let guard = lock.try_write().map_err(|error| {
-                if error.kind() == io::ErrorKind::WouldBlock {
-                    anyhow::anyhow!(
-                        "mailbox file is locked by another Maestro process: {}",
-                        mailbox_path.display()
-                    )
-                } else {
-                    anyhow::anyhow!("lock mailbox file {}: {error}", mailbox_path.display())
-                }
-            })?;
-            std::mem::forget(guard);
-        }
-        Ok(Self { _lock: lock })
+        Ok(Self {
+            _lock: FileLock::new(file),
+        })
+    }
+
+    fn try_write(&mut self, mailbox_path: &Path) -> Result<RwLockWriteGuard<'_, File>> {
+        self._lock.try_write().map_err(|error| {
+            if error.kind() == io::ErrorKind::WouldBlock {
+                anyhow::anyhow!(
+                    "mailbox file is locked by another Maestro process: {}",
+                    mailbox_path.display()
+                )
+            } else {
+                anyhow::anyhow!("lock mailbox file {}: {error}", mailbox_path.display())
+            }
+        })
     }
 }
 
