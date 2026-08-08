@@ -18,6 +18,11 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
+use std::cell::Cell;
+#[cfg(test)]
+use std::sync::{LazyLock, Mutex, MutexGuard};
+
 use regex::Regex;
 use url::Url;
 
@@ -190,6 +195,51 @@ struct PolicyCache {
 
 static POLICY_CACHE: std::sync::LazyLock<RwLock<PolicyCache>> =
     std::sync::LazyLock::new(|| RwLock::new(PolicyCache::default()));
+
+// Policy tests temporarily configure process-wide environment variables. Keep
+// those mutations isolated from concurrent action-firewall reads while still
+// allowing the configuring test to call back into policy code.
+#[cfg(test)]
+static TEST_ENV_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+#[cfg(test)]
+thread_local! {
+    static TEST_ENV_LOCK_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+struct TestEnvGuard {
+    guard: Option<MutexGuard<'static, ()>>,
+}
+
+#[cfg(test)]
+impl Drop for TestEnvGuard {
+    fn drop(&mut self) {
+        let depth = TEST_ENV_LOCK_DEPTH.with(|depth| {
+            let next = depth.get().saturating_sub(1);
+            depth.set(next);
+            next
+        });
+        if depth == 0 {
+            self.guard.take();
+        }
+    }
+}
+
+#[cfg(test)]
+fn test_env_guard() -> TestEnvGuard {
+    let reentrant = TEST_ENV_LOCK_DEPTH.with(|depth| {
+        let current = depth.get();
+        depth.set(current + 1);
+        current > 0
+    });
+    let guard = (!reentrant).then(|| {
+        TEST_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    });
+    TestEnvGuard { guard }
+}
 
 static FILE_COMMAND_PATTERN: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
     Regex::new(r"(?i)(?:cd|cat|rm|mv|cp|mkdir|touch|nano|vim|vi|less|more|head|tail|chmod|chown|strings|hexdump|dd|tee|ln|readlink|stat|file|wc|grep|sed|awk|sort|uniq|diff|patch|tar|gzip|gunzip|zip|unzip|find|rsync|scp)\s+((?:[^\s;&|<>`$()]|\\.)+(?:\s+(?:[^\s;&|<>`$()]|\\.)+)*)")
@@ -606,6 +656,9 @@ pub fn managed_policy_audit(limit: usize) -> Result<Vec<ManagedPolicyAuditEvent>
 }
 
 fn load_managed_policy(force: bool) -> Result<Option<VerifiedManagedPolicy>, String> {
+    #[cfg(test)]
+    let _test_env = test_env_guard();
+
     let Some(path) = managed_policy_path() else {
         return Ok(None);
     };
@@ -720,6 +773,9 @@ fn load_managed_policy(force: bool) -> Result<Option<VerifiedManagedPolicy>, Str
 }
 
 fn managed_policy_status_with_force(force: bool) -> ManagedPolicyStatus {
+    #[cfg(test)]
+    let _test_env = test_env_guard();
+
     if managed_policy_path().is_none() {
         return ManagedPolicyStatus {
             configured: false,
@@ -995,6 +1051,9 @@ fn narrow_policy(
 }
 
 fn load_policy(force: bool) -> Result<Option<EnterprisePolicy>, String> {
+    #[cfg(test)]
+    let _test_env = test_env_guard();
+
     let managed = load_managed_policy(force)?;
     let local = load_local_policy(force)?;
 
@@ -1712,6 +1771,9 @@ pub fn get_policy_limits() -> Option<LimitsPolicy> {
 
 #[allow(dead_code)]
 pub fn policy_file_path() -> Option<PathBuf> {
+    #[cfg(test)]
+    let _test_env = test_env_guard();
+
     policy_path()
 }
 
@@ -1733,9 +1795,6 @@ fn is_private_ip(ip: &IpAddr) -> bool {
 mod tests {
     use super::*;
     use ring::signature::KeyPair;
-    use std::sync::{LazyLock, Mutex};
-
-    static ENV_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     fn restore_env_var(name: &str, previous: Option<String>) {
         if let Some(value) = previous {
@@ -1898,7 +1957,7 @@ mod tests {
 
     #[test]
     fn test_policy_path_candidates_use_custom_maestro_home_without_default_maestro_fallback() {
-        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let _lock = test_env_guard();
         let previous_enterprise = std::env::var("MAESTRO_ENTERPRISE_POLICY_PATH").ok();
         let previous_policy = std::env::var("MAESTRO_POLICY_PATH").ok();
         let previous_home = std::env::var("MAESTRO_HOME").ok();
@@ -2023,7 +2082,7 @@ mod tests {
 
     #[test]
     fn managed_policy_accepts_signature_and_only_narrows_local_policy() {
-        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let _lock = test_env_guard();
         let previous = vec![
             (
                 "MAESTRO_MANAGED_POLICY_PATH",
@@ -2104,7 +2163,7 @@ mod tests {
 
     #[test]
     fn managed_policy_tamper_and_kill_switch_fail_closed() {
-        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let _lock = test_env_guard();
         let previous = vec![
             (
                 "MAESTRO_MANAGED_POLICY_PATH",
@@ -2204,7 +2263,7 @@ mod tests {
 
     #[test]
     fn managed_policy_rejects_scope_and_rollbacks() {
-        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let _lock = test_env_guard();
         let previous = vec![
             (
                 "MAESTRO_MANAGED_POLICY_PATH",
@@ -2269,7 +2328,7 @@ mod tests {
 
     #[test]
     fn managed_policy_publish_persists_and_audits() {
-        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let _lock = test_env_guard();
         let previous = vec![
             (
                 "MAESTRO_MANAGED_POLICY_PATH",

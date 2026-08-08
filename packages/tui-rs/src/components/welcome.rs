@@ -101,8 +101,15 @@ impl WelcomeScreen {
     fn build_content(&self, area: Rect) -> Vec<Line<'static>> {
         // Brand block: Dex ghost + deixic wordmark + Maestro title.
         // Custom welcome_message replaces only the product title line.
+        // Reserve rows for optional onboarding metadata before selecting the
+        // logo tier. Otherwise a 17-row area picks the full logo and clips the
+        // version/model/authentication rows appended below it.
+        let reserved_rows = u16::from(self.version.is_some())
+            + u16::from(self.model.is_some())
+            + u16::from(self.is_authenticated);
+        let brand_height = area.height.saturating_sub(reserved_rows);
         let mut lines =
-            super::deixic_logo::welcome_content_lines(area.height, self.animations_enabled);
+            super::deixic_logo::welcome_content_lines(brand_height, self.animations_enabled);
 
         if let Some(ref custom) = self.welcome_message {
             for line in &mut lines {
@@ -446,6 +453,21 @@ mod tests {
         assert!(!rendered.contains("Welcome to Maestro"));
         assert!(!rendered.contains("Welcome to Composer"));
         assert!(!rendered.contains("Getting Started"));
+    }
+
+    #[test]
+    fn test_welcome_screen_reserves_rows_for_optional_metadata() {
+        let welcome = WelcomeScreen::new()
+            .with_version("1.0.0")
+            .with_model("claude-sonnet")
+            .authenticated(true);
+        let lines = welcome.build_content(Rect::new(0, 0, 80, 17));
+
+        assert!(lines.len() <= 17);
+        assert_eq!(
+            lines.last().map(Line::to_string).as_deref(),
+            Some("status authenticated")
+        );
     }
 
     #[test]

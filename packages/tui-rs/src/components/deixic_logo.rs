@@ -16,19 +16,26 @@ use ratatui::widgets::{Paragraph, Widget};
 use unicode_width::UnicodeWidthStr;
 
 use crate::shimmer::{
-    diagonal_shimmer_lines, shimmer_spans, DEIXIC_LOGO_BASE, DEIXIC_LOGO_HILITE, DEIXIC_VIOLET,
+    diagonal_shimmer_lines, shimmer_spans, DEIXIC_LOGO_BASE, DEIXIC_LOGO_HILITE, DEIXIC_MUTED,
+    DEIXIC_TEXT, DEIXIC_VIOLET,
 };
 
 /// Full Dex ghost (wide). Shown when the welcome area is tall enough.
+///
+/// The extra breathing room and trailing baseline make the empty session read
+/// as a stage rather than a small logo parked above the composer.
 pub const LOGO_FULL: &str = r"
-        ⢀⣀⣀⣀⣀⣀⡀
-      ⢀⣾⣿⣿⣿⣿⣿⣿⣷⡀
-     ⢠⣿⣿⠁  ●  ●  ⠈⣿⣿⡄
-     ⣿⣿⡇            ⢸⣿⣿
-     ⢿⣿⡇            ⢸⣿⡿
-     ⠈⣿⣿⣄   ⣀⣀   ⣠⣿⣿⠁
-       ⠙⠿⣿⣿⣿⣿⣿⣿⣿⠿⠋
-         ⠉⠉⠉  ⠉⠉⠉
+              ⢀⣀⣀⣀⣀⣀⣀⣀⡀
+           ⢀⣾⣿⣿⣿⣿⣿⣿⣿⣿⣷⡀
+         ⢀⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⡀
+        ⢠⣿⣿⣿⠁  ●  ●  ⠈⣿⣿⣿⡄
+       ⢠⣿⣿⣿⡇              ⢸⣿⣿⣿⡄
+       ⢸⣿⣿⣿⡇      ⣀       ⢸⣿⣿⣿⡇
+       ⢸⣿⣿⣿⡇    ⣀⣀⣀      ⢸⣿⣿⣿⡇
+        ⢿⣿⣿⣿⣄  ⣀⣀⣀⣀  ⣠⣿⣿⣿⡿
+         ⠙⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠋
+           ⠉⠉⠉⠉⠉⠉⠉⠉⠉
+              ·  ·  ·
 ";
 
 /// Compact ghost for mid-height viewports.
@@ -56,7 +63,7 @@ pub const TINY_MIN_HEIGHT: u16 = 8;
 /// Minimum area height for the compact ghost.
 pub const COMPACT_MIN_HEIGHT: u16 = 14;
 /// Minimum area height for the full ghost.
-pub const FULL_MIN_HEIGHT: u16 = 20;
+pub const FULL_MIN_HEIGHT: u16 = 17;
 
 /// Pick logo art for the given available height. `None` if too short.
 #[must_use]
@@ -164,7 +171,7 @@ pub fn product_title_line(animate: bool) -> Line<'static> {
         Line::from(Span::styled(
             "Maestro",
             Style::default()
-                .fg(Color::White)
+                .fg(Color::Rgb(DEIXIC_TEXT.0, DEIXIC_TEXT.1, DEIXIC_TEXT.2))
                 .add_modifier(Modifier::BOLD),
         ))
         .alignment(Alignment::Center)
@@ -177,9 +184,36 @@ pub fn hint_line() -> Line<'static> {
     Line::from(Span::styled(
         "Type a message or /help.",
         Style::default()
-            .fg(Color::DarkGray)
+            .fg(Color::Rgb(DEIXIC_MUTED.0, DEIXIC_MUTED.1, DEIXIC_MUTED.2))
             .add_modifier(Modifier::DIM),
     ))
+    .alignment(Alignment::Center)
+}
+
+/// Quiet session metadata that anchors the brand block without adding chrome.
+#[must_use]
+pub fn session_meta_line(session_id: &str, ready: bool) -> Line<'static> {
+    let status = if ready { "• ready" } else { "• working" };
+    Line::from(vec![
+        Span::styled(
+            status,
+            Style::default().fg(Color::Rgb(
+                DEIXIC_LOGO_HILITE.0,
+                DEIXIC_LOGO_HILITE.1,
+                DEIXIC_LOGO_HILITE.2,
+            )),
+        ),
+        Span::styled(
+            format!("  ·  session {session_id}"),
+            Style::default()
+                .fg(Color::Rgb(
+                    DEIXIC_LOGO_BASE.0,
+                    DEIXIC_LOGO_BASE.1,
+                    DEIXIC_LOGO_BASE.2,
+                ))
+                .add_modifier(Modifier::DIM),
+        ),
+    ])
     .alignment(Alignment::Center)
 }
 
@@ -188,6 +222,20 @@ pub fn hint_line() -> Line<'static> {
 /// `area_height` drives logo tier. `animate` enables sheen on logo/wordmark/title.
 #[must_use]
 pub fn welcome_content_lines(area_height: u16, animate: bool) -> Vec<Line<'static>> {
+    welcome_content_lines_with_metadata(area_height, animate, None, true)
+}
+
+/// Build welcome content with session metadata from the live application state.
+///
+/// A missing session id intentionally omits the metadata row rather than
+/// presenting a fabricated session label.
+#[must_use]
+pub fn welcome_content_lines_with_metadata(
+    area_height: u16,
+    animate: bool,
+    session_id: Option<&str>,
+    ready: bool,
+) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let micro_logo = pick_logo(area_height) == Some(LOGO_MICRO);
 
@@ -213,15 +261,33 @@ pub fn welcome_content_lines(area_height: u16, animate: bool) -> Vec<Line<'stati
 
     lines.push(product_title_line(animate));
     lines.push(hint_line());
+    if area_height >= COMPACT_MIN_HEIGHT {
+        let Some(session_id) = session_id else {
+            return lines;
+        };
+        lines.push(Line::from(""));
+        lines.push(session_meta_line(session_id, ready));
+    }
     lines
 }
 
 /// Render the Deixic welcome block into `area` (centered vertically).
 pub fn render_welcome(area: Rect, buf: &mut Buffer, animate: bool) {
+    render_welcome_with_metadata(area, buf, animate, None, true);
+}
+
+/// Render the Deixic welcome block with session metadata from live state.
+pub fn render_welcome_with_metadata(
+    area: Rect,
+    buf: &mut Buffer,
+    animate: bool,
+    session_id: Option<&str>,
+    ready: bool,
+) {
     if area.is_empty() {
         return;
     }
-    let content = welcome_content_lines(area.height, animate);
+    let content = welcome_content_lines_with_metadata(area.height, animate, session_id, ready);
     let content_height = content.len() as u16;
     let y_offset = if area.height > content_height {
         (area.height - content_height) / 2
@@ -271,6 +337,32 @@ mod tests {
         assert!(text.contains("Maestro"));
         assert!(text.contains("Type a message or /help."));
         assert!(text.contains("deixic"));
+    }
+
+    #[test]
+    fn full_welcome_includes_quiet_session_metadata() {
+        let lines =
+            welcome_content_lines_with_metadata(FULL_MIN_HEIGHT, false, Some("restore-42"), true);
+        let text: String = lines
+            .iter()
+            .map(Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("ready"));
+        assert!(text.contains("session restore-42"));
+        assert!(!text.contains("session 01"));
+    }
+
+    #[test]
+    fn welcome_without_session_hides_session_metadata() {
+        let lines = welcome_content_lines(FULL_MIN_HEIGHT, false);
+        let text: String = lines
+            .iter()
+            .map(Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!text.contains("ready"));
+        assert!(!text.contains("session "));
     }
 
     #[test]

@@ -120,13 +120,14 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget, Wrap},
+    widgets::{Block, BorderType, Borders, Paragraph, Widget, Wrap},
 };
 
 use crate::components::textarea::{TextArea, TextAreaWidget};
 use crate::effects::shimmer_spans;
 use crate::runtime_badges::{build_runtime_badges, RuntimeBadgeParams};
 use crate::session::ThinkingLevel;
+use crate::shimmer::{DEIXIC_BORDER, DEIXIC_MUTED, DEIXIC_SURFACE, DEIXIC_TEXT, DEIXIC_VIOLET};
 use crate::state::{
     ApprovalMode, InteractionMode, Message, MessageKind, MessageRole, QueueMode, ToolCallStatus,
 };
@@ -138,6 +139,30 @@ use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::time::SystemTime;
 use unicode_width::UnicodeWidthStr;
+
+fn brand_color(rgb: (u8, u8, u8)) -> Color {
+    Color::Rgb(rgb.0, rgb.1, rgb.2)
+}
+
+fn brand_violet() -> Color {
+    brand_color(DEIXIC_VIOLET)
+}
+
+fn brand_border() -> Color {
+    brand_color(DEIXIC_BORDER)
+}
+
+fn brand_muted() -> Color {
+    brand_color(DEIXIC_MUTED)
+}
+
+fn brand_surface() -> Color {
+    brand_color(DEIXIC_SURFACE)
+}
+
+fn brand_text() -> Color {
+    brand_color(DEIXIC_TEXT)
+}
 
 /// Parse markdown text into styled lines
 /// Supports: **bold**, `code`, ```code blocks```, [links](url)
@@ -730,9 +755,9 @@ impl Widget for MessageWidget<'_> {
             match self.message.role {
                 MessageRole::User => {
                     let (label, color) = if self.message.kind == MessageKind::SideQuestion {
-                        ("BTW", Color::Blue)
+                        ("BTW", brand_muted())
                     } else {
-                        ("You", Color::Cyan)
+                        ("You", brand_text())
                     };
                     header_spans.push(Span::styled(
                         "› ",
@@ -748,8 +773,8 @@ impl Widget for MessageWidget<'_> {
                 MessageRole::Assistant => {
                     let (prefix, label, color) = match self.message.kind {
                         MessageKind::System => ("• ", "System", Color::Yellow),
-                        MessageKind::SideAnswer => ("• ", "Maestro (side)", Color::Blue),
-                        _ => ("• ", "Maestro", Color::Magenta),
+                        MessageKind::SideAnswer => ("• ", "Maestro (side)", brand_muted()),
+                        _ => ("• ", "Maestro", brand_violet()),
                     };
                     header_spans.push(Span::styled(
                         prefix,
@@ -792,8 +817,8 @@ impl Widget for MessageWidget<'_> {
             // Thinking header with collapse/expand indicator
             let thinking_header = Line::from(vec![
                 Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
-                Span::styled("◆ ", Style::default().fg(Color::Yellow)),
-                Span::styled("Thinking", Style::default().fg(Color::Yellow)),
+                Span::styled("◆ ", Style::default().fg(brand_violet())),
+                Span::styled("Thinking", Style::default().fg(brand_violet())),
                 Span::styled(
                     format!(" ({} chars) ", self.message.thinking.len()),
                     Style::default().fg(Color::DarkGray),
@@ -953,12 +978,12 @@ impl Widget for MessageWidget<'_> {
 
             // Status bullet plus concise summary label.
             let (bullet, bullet_style) = match tool_call.status {
-                ToolCallStatus::Running => ("●", Style::default().fg(Color::Cyan)),
+                ToolCallStatus::Running => ("●", Style::default().fg(brand_violet())),
                 ToolCallStatus::Completed => ("●", Style::default().fg(Color::Green)),
                 ToolCallStatus::Failed => ("●", Style::default().fg(Color::Red)),
                 ToolCallStatus::Pending => ("○", Style::default().fg(Color::Yellow)),
                 ToolCallStatus::Cancelled => ("⊘", Style::default().fg(Color::Yellow)),
-                ToolCallStatus::Blocked => ("●", Style::default().fg(Color::Magenta)),
+                ToolCallStatus::Blocked => ("●", Style::default().fg(brand_violet())),
             };
             let summary_label = summarize_tool_use(&tool_call.tool, &tool_call.args);
             let header_label = format_tool_status_summary(tool_call.status, &summary_label);
@@ -978,7 +1003,7 @@ impl Widget for MessageWidget<'_> {
             let header_line = Line::from(vec![
                 Span::styled(bullet, bullet_style.add_modifier(Modifier::BOLD)),
                 Span::raw(" "),
-                Span::styled(tool_icon, Style::default().fg(Color::Cyan)),
+                Span::styled(tool_icon, Style::default().fg(brand_violet())),
                 Span::raw(" "),
                 Span::styled(
                     header_label,
@@ -1233,11 +1258,11 @@ impl Widget for ToolCallWidget<'_> {
 
         let (status_icon, status_color) = match self.status {
             ToolCallStatus::Pending => ("?", Color::Yellow),
-            ToolCallStatus::Running => ("*", Color::Blue),
+            ToolCallStatus::Running => ("*", brand_violet()),
             ToolCallStatus::Completed => ("+", Color::Green),
             ToolCallStatus::Failed => ("!", Color::Red),
             ToolCallStatus::Cancelled => ("x", Color::Yellow),
-            ToolCallStatus::Blocked => ("X", Color::Magenta),
+            ToolCallStatus::Blocked => ("X", brand_violet()),
         };
 
         let tool_icon = get_tool_icon(self.tool);
@@ -1245,9 +1270,9 @@ impl Widget for ToolCallWidget<'_> {
         let header = Line::from(vec![
             Span::styled(status_icon, Style::default().fg(status_color)),
             Span::raw(" "),
-            Span::styled(tool_icon, Style::default().fg(Color::Cyan)),
+            Span::styled(tool_icon, Style::default().fg(brand_violet())),
             Span::raw(" "),
-            Span::styled(self.tool, Style::default().fg(Color::White)),
+            Span::styled(self.tool, Style::default().fg(brand_text())),
         ]);
 
         let header_para = Paragraph::new(header);
@@ -1308,7 +1333,7 @@ fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
 /// ```rust,ignore
 /// let widget = ChatInputWidget::new(
 ///     &state.textarea,
-///     "Type a message...",
+///     "Describe what you want to build...",
 ///     ChatInputWidgetOptions {
 ///         busy,
 ///         pending_input_preview,
@@ -1605,21 +1630,25 @@ impl Widget for ChatInputWidget<'_> {
             return;
         }
 
-        // Border style based on busy state
+        // Keep the composer as the only high-contrast control surface. The
+        // violet-gray border gives the empty session a deliberate landing
+        // point while preserving the busy-state distinction.
         let border_style = if self.busy {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(brand_muted())
         } else {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(brand_border())
         };
 
         let mut block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(border_style)
-            .title(Line::from(" > "));
+            .style(Style::default().bg(brand_surface()))
+            .title(Line::from(" > ").style(Style::default().fg(brand_violet())));
         if let Some(runtime_footer) = self.runtime_footer {
             block = block.title_bottom(
                 Line::from(format!(" {runtime_footer} "))
-                    .style(Style::default().fg(Color::DarkGray))
+                    .style(Style::default().fg(brand_muted()))
                     .alignment(Alignment::Right),
             );
         }
@@ -1651,8 +1680,8 @@ impl Widget for ChatInputWidget<'_> {
             return;
         }
 
-        let text_style = Style::default();
-        let placeholder_style = Style::default().fg(Color::DarkGray);
+        let text_style = Style::default().fg(brand_text());
+        let placeholder_style = Style::default().fg(brand_muted());
 
         let textarea_widget = TextAreaWidget::new(self.textarea)
             .style(text_style)
@@ -1668,7 +1697,7 @@ impl Widget for ChatInputWidget<'_> {
                 let remaining = usize::from(textarea_area.right().saturating_sub(cursor_x));
                 if remaining > 0 {
                     let ghost_style = Style::default()
-                        .fg(Color::DarkGray)
+                        .fg(brand_muted())
                         .add_modifier(Modifier::DIM);
                     buf.set_stringn(cursor_x, cursor_y, ghost, remaining, ghost_style);
                 }
@@ -1854,23 +1883,33 @@ impl Widget for SessionHeaderWidget<'_> {
             return;
         }
 
-        buf.set_style(area, Style::default().bg(Color::Black));
+        buf.set_style(area, Style::default().bg(brand_surface()));
         let location = format_session_location(self.cwd, self.git_branch);
         let context = format_context_usage(self.context_used, self.context_window);
         let context_width = context.as_ref().map_or(0, |text| text.width() as u16);
+        let context_gap = u16::from(context_width > 0) * 2;
+        let brand_label = "MAESTRO";
+        let brand_width = brand_label.width() as u16;
+        let divider = "  │  ";
+        let divider_width = divider.width() as u16;
         let location_width = area
             .width
             .saturating_sub(context_width)
-            .saturating_sub(u16::from(context_width > 0));
+            .saturating_sub(context_gap)
+            .saturating_sub(brand_width)
+            .saturating_sub(u16::from(!location.is_empty()) * divider_width);
         let location = truncate_location(&location, location_width as usize);
+        let mut header_spans = vec![Span::styled(
+            brand_label,
+            Style::default()
+                .fg(brand_violet())
+                .add_modifier(Modifier::BOLD),
+        )];
         if !location.is_empty() {
-            buf.set_string(
-                area.x,
-                area.y,
-                location,
-                Style::default().fg(Color::DarkGray).bg(Color::Black),
-            );
+            header_spans.push(Span::styled(divider, Style::default().fg(brand_border())));
+            header_spans.push(Span::styled(location, Style::default().fg(brand_muted())));
         }
+        Paragraph::new(Line::from(header_spans)).render(area, buf);
 
         if let Some(context) = context {
             let color = match (self.context_used, self.context_window) {
@@ -1884,14 +1923,14 @@ impl Widget for SessionHeaderWidget<'_> {
                 {
                     Color::Yellow
                 }
-                _ => Color::Gray,
+                _ => brand_muted(),
             };
             let x = area.right().saturating_sub(context_width);
             buf.set_string(
                 x,
                 area.y,
                 context,
-                Style::default().fg(color).bg(Color::Black),
+                Style::default().fg(color).bg(brand_surface()),
             );
         }
     }
@@ -2160,20 +2199,20 @@ impl Widget for StatusBarWidget<'_> {
 
         if show_shortcuts {
             let hints = if area.width >= 72 {
-                "Shift+Tab:mode  │  Ctrl+C:cancel  │  F1:shortcuts"
+                "Enter send  ·  @ files  ·  / commands"
             } else {
-                "Shift+Tab:mode  │  F1:help"
+                "Enter send  ·  F1 help"
             };
-            spans.push(Span::styled(hints, Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(hints, Style::default().fg(brand_muted())));
         }
 
         // Model info (rich + solo)
         if !history_only {
             if let Some(model) = self.model {
                 if !spans.is_empty() {
-                    spans.push(Span::raw(" | "));
+                    spans.push(Span::styled("  ·  ", Style::default().fg(brand_border())));
                 }
-                spans.push(Span::styled(model, Style::default().fg(Color::Cyan)));
+                spans.push(Span::styled(model, Style::default().fg(brand_violet())));
                 if let Some(provider) = self.provider {
                     if show_chrome {
                         spans.push(Span::raw(" via "));
@@ -2187,7 +2226,7 @@ impl Widget for StatusBarWidget<'_> {
         if !history_only {
             if let Some(goal) = self.goal_badge {
                 if !spans.is_empty() {
-                    spans.push(Span::raw(" | "));
+                    spans.push(Span::styled("  ·  ", Style::default().fg(brand_border())));
                 }
                 spans.push(Span::styled(
                     goal.to_string(),
@@ -2199,27 +2238,26 @@ impl Widget for StatusBarWidget<'_> {
         // Pending attachments (rich + solo)
         if !history_only && self.attach_count > 0 {
             if !spans.is_empty() {
-                spans.push(Span::raw(" | "));
+                spans.push(Span::styled("  ·  ", Style::default().fg(brand_border())));
             }
             spans.push(Span::styled(
                 format!("attach:{}", self.attach_count),
-                Style::default().fg(Color::Magenta),
+                Style::default().fg(brand_violet()),
             ));
         }
 
         // Working directory + git (rich only)
         if show_location {
             if !spans.is_empty() && self.cwd.is_some() {
-                spans.push(Span::raw(" | "));
+                spans.push(Span::styled("  ·  ", Style::default().fg(brand_border())));
             }
             if let Some(cwd) = self.cwd {
                 let short_cwd = cwd.rsplit('/').next().unwrap_or(cwd);
-                spans.push(Span::styled(short_cwd, Style::default().fg(Color::Blue)));
+                spans.push(Span::styled(short_cwd, Style::default().fg(brand_muted())));
 
                 if let Some(branch) = self.git_branch {
-                    spans.push(Span::raw(" ("));
-                    spans.push(Span::styled(branch, Style::default().fg(Color::Green)));
-                    spans.push(Span::raw(")"));
+                    spans.push(Span::styled("  ", Style::default().fg(brand_border())));
+                    spans.push(Span::styled(branch, Style::default().fg(brand_violet())));
                 }
             }
         }
@@ -2228,12 +2266,12 @@ impl Widget for StatusBarWidget<'_> {
         if show_chrome {
             if let Some(count) = self.hook_count {
                 if !spans.is_empty() {
-                    spans.push(Span::raw(" | "));
+                    spans.push(Span::styled("  ·  ", Style::default().fg(brand_border())));
                 }
                 if count > 0 {
                     spans.push(Span::styled(
                         format!("hooks:{count}"),
-                        Style::default().fg(Color::Magenta),
+                        Style::default().fg(brand_muted()),
                     ));
                 } else {
                     spans.push(Span::styled(
@@ -2248,7 +2286,7 @@ impl Widget for StatusBarWidget<'_> {
         if !history_only {
             if let Some(note) = self.paste_note {
                 if !spans.is_empty() {
-                    spans.push(Span::raw(" | "));
+                    spans.push(Span::styled("  ·  ", Style::default().fg(brand_border())));
                 }
                 spans.push(Span::styled(
                     note.to_string(),
@@ -2267,7 +2305,7 @@ impl Widget for StatusBarWidget<'_> {
             }
             if self.alert_count > 0 {
                 if !spans.is_empty() {
-                    spans.push(Span::raw(" | "));
+                    spans.push(Span::styled("  ·  ", Style::default().fg(brand_border())));
                 }
                 spans.push(Span::styled(
                     format!("alerts:{}", self.alert_count),
@@ -2329,7 +2367,7 @@ impl Widget for StatusBarWidget<'_> {
             None
         };
 
-        let term_text = if show_chrome {
+        let term_text = if show_chrome && area.width >= 120 {
             crate::terminal::size()
                 .ok()
                 .map(|(cols, rows)| format!("{cols}x{rows}"))
@@ -2582,7 +2620,7 @@ impl Widget for ChatView<'_> {
         // Render input
         let input_widget = ChatInputWidget::new(
             &self.state.textarea,
-            "Type a message...",
+            "Describe what you want to build...",
             ChatInputWidgetOptions {
                 busy: self.state.busy,
                 pending_input_preview: PendingInputPreview::from_state(self.state),
@@ -2603,15 +2641,15 @@ impl Widget for ChatView<'_> {
         // Render status bar (unless zen mode)
         if !self.state.zen_mode {
             let queue_badge = {
-                let label = format!(
-                    "queue:f={} s={}",
-                    self.state.follow_up_mode.short_label(),
-                    self.state.steering_mode.short_label()
-                );
                 if self.state.queued_prompt_count > 0 {
-                    Some(format!("{label}({})", self.state.queued_prompt_count))
+                    Some(format!(
+                        "queue:{} · f={} s={}",
+                        self.state.queued_prompt_count,
+                        self.state.follow_up_mode.short_label(),
+                        self.state.steering_mode.short_label()
+                    ))
                 } else {
-                    Some(label)
+                    None
                 }
             };
 
@@ -2682,7 +2720,13 @@ impl ChatView<'_> {
             // Deixic ghost logo + wordmark with diagonal/linear sheen; product
             // title stays "Maestro". Animation uses wall-clock phase so idle
             // welcome paints (app loop keys off shimmer_frame) advance the sheen.
-            crate::components::deixic_logo::render_welcome(area, buf, true);
+            crate::components::deixic_logo::render_welcome_with_metadata(
+                area,
+                buf,
+                true,
+                self.state.session_id.as_deref(),
+                !self.state.busy,
+            );
             return;
         }
 
@@ -2931,6 +2975,30 @@ mod tests {
     }
 
     #[test]
+    fn composer_uses_rounded_deixic_surface() {
+        let textarea = TextArea::new();
+        let widget = ChatInputWidget::new(
+            &textarea,
+            "Describe what you want to build...",
+            ChatInputWidgetOptions {
+                busy: false,
+                pending_input_preview: None,
+                ghost_text: None,
+            },
+        );
+        let width = 48;
+        let height = 4;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+
+        widget.render(Rect::new(0, 0, width, height), &mut buf);
+
+        let rendered = buffer_lines(&buf, width, height).join("\n");
+        assert!(rendered.starts_with("╭"));
+        assert!(rendered.contains("╰"));
+        assert!(rendered.contains("Describe what you want to build..."));
+    }
+
+    #[test]
     fn input_renders_ghost_text_completion_after_cursor() {
         let mut textarea = TextArea::new();
         textarea.set_text("/qui");
@@ -2988,6 +3056,7 @@ mod tests {
             .render(Rect::new(0, 0, width, 1), &mut buf);
 
         let rendered = buffer_lines(&buf, width, 1).join("\n");
+        assert!(rendered.contains("MAESTRO"));
         assert!(rendered.contains("/workspace/maestro  ·  main"));
         assert!(rendered.contains("9.5K / 500K"));
     }
@@ -3183,8 +3252,24 @@ mod tests {
         let rendered = buffer_lines(&buf, width, height).join("\n");
         assert!(rendered.contains("Maestro"));
         assert!(rendered.contains("Type a message or /help."));
+        assert!(!rendered.contains("session 01"));
         assert!(!rendered.contains("Welcome to Maestro!"));
         assert!(!rendered.contains("Welcome to Composer! Type a message to get started."));
+    }
+
+    #[test]
+    fn empty_chat_view_uses_live_session_metadata() {
+        let mut state = crate::state::AppState::default();
+        state.session_id = Some("restored-42".to_string());
+        let width = 100;
+        let height = 20;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+
+        ChatView::new(&state).render(Rect::new(0, 0, width, height), &mut buf);
+
+        let rendered = buffer_lines(&buf, width, height).join("\n");
+        assert!(rendered.contains("session restored-42"));
+        assert!(!rendered.contains("session 01"));
     }
 
     fn transcript_layout_message(id: &str, content: &str) -> Message {
