@@ -323,6 +323,12 @@ impl SharedRunner {
                     agent_state.map(|state| state.pending_client_tools.as_slice()),
                     restored_pending_state.map(|state| state.pending_client_tools.as_slice()),
                 ),
+                governed_client_tool_bindings: agent_state
+                    .map(|state| state.governed_client_tool_bindings.clone())
+                    .or_else(|| {
+                        restored_state.map(|state| state.governed_client_tool_bindings.clone())
+                    })
+                    .unwrap_or_default(),
                 pending_mcp_elicitations: restored_pending_state
                     .map(|state| redacted_pending_request_values(&state.pending_mcp_elicitations))
                     .unwrap_or_default(),
@@ -1027,7 +1033,8 @@ fn coarse_replay_has_complete_response_boundaries(
 
 fn pending_controller_event_identity(message: &FromAgentMessage) -> Option<(&str, Option<&str>)> {
     match message {
-        FromAgentMessage::ClientToolRequest { call_id, .. } => Some((call_id, None)),
+        FromAgentMessage::ClientToolRequest { call_id, .. }
+        | FromAgentMessage::GovernedClientToolRequest { call_id, .. } => Some((call_id, None)),
         FromAgentMessage::ServerRequest {
             request_id,
             request_type: ServerRequestType::ClientTool,
@@ -1050,6 +1057,11 @@ fn pending_controller_event_key(
             tool_execution_id,
             ..
         } => Some((call_id, None, tool_execution_id.as_deref())),
+        FromAgentMessage::GovernedClientToolRequest {
+            call_id,
+            tool_execution_id,
+            ..
+        } => Some((call_id, None, Some(tool_execution_id.as_str()))),
         FromAgentMessage::ServerRequest {
             request_id,
             request_type: ServerRequestType::ClientTool,
@@ -1078,6 +1090,15 @@ fn pending_controller_event_matches(
             pending.request_id.is_none()
                 && pending.call_id == *call_id
                 && pending.tool_execution_id == *tool_execution_id
+        }
+        FromAgentMessage::GovernedClientToolRequest {
+            call_id,
+            tool_execution_id,
+            ..
+        } => {
+            pending.request_id.is_none()
+                && pending.call_id == *call_id
+                && pending.tool_execution_id.as_deref() == Some(tool_execution_id.as_str())
         }
         FromAgentMessage::ServerRequest {
             request_id,

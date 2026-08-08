@@ -332,16 +332,7 @@ fn test_registry_has_default_tools() {
 fn test_registry_exposes_subagent_lifecycle_tools() {
     let registry = ToolRegistry::new();
 
-    for tool in [
-        "spawn_subagent",
-        "list_subagents",
-        "get_subagent",
-        "wait_subagent",
-        "resume_subagent",
-        "cancel_subagent",
-        "inspect_subagent",
-        "cleanup_subagent",
-    ] {
+    for tool in crate::tools::subagents::SUBAGENT_TOOL_NAMES {
         assert!(registry.get(tool).is_some(), "missing tool {tool}");
     }
 
@@ -371,6 +362,7 @@ fn test_registry_exposes_subagent_lifecycle_tools() {
         "get_subagent",
         "wait_subagent",
         "cancel_subagent",
+        "control_subagent",
         "inspect_subagent",
     ] {
         assert!(!registry.requires_approval(tool, &serde_json::json!({"subagent_id": "child-1"})));
@@ -420,6 +412,12 @@ fn test_registry_exposes_prime_agent_context_tools() {
         &serde_json::json!({"name": "plan", "value": "ship"})
     ));
     assert!(!registry.requires_approval("read_mailbox", &serde_json::json!({"id": "message-1"})));
+    for name in ["get_mailbox", "read_mailbox", "ack_mailbox"] {
+        let schema = &registry.get(name).unwrap().tool.input_schema;
+        assert!(schema["properties"].get("recipient").is_none(), "{name}");
+    }
+    let send_schema = &registry.get("send_mailbox").unwrap().tool.input_schema;
+    assert!(send_schema["properties"].get("sender").is_none());
     assert_eq!(
         registry.missing_required("send_mailbox", &serde_json::json!({"recipient": "worker"})),
         vec!["body".to_string()]
@@ -774,7 +772,7 @@ async fn test_mcp_status_clears_removed_server_state() {
 fn test_registry_tool_count() {
     let registry = ToolRegistry::new();
     let count = registry.tools().count();
-    assert_eq!(count, 64); // includes Prime Agent context tools alongside parity, goals, subagents, and perf tools
+    assert_eq!(count, 65); // includes durable subagent control alongside parity, goals, context, and perf tools
 }
 
 #[test]

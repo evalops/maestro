@@ -53,11 +53,24 @@ impl App {
             self.active_modal = ActiveModal::FileSearch;
             return Ok(());
         }
-        if !self.state.busy
-            && self.matches_binding(self.toggle_tool_outputs_binding, code, modifiers)
-        {
-            self.toggle_last_tool_call();
+        if is_focus_view_binding(code, modifiers) {
+            let enabled = self.state.toggle_focus_view();
+            self.state.status = Some(if enabled {
+                "Focus view on".to_string()
+            } else {
+                "Focus view off".to_string()
+            });
             return Ok(());
+        }
+        if self.matches_binding(self.toggle_tool_outputs_binding, code, modifiers) {
+            if self.state.focus_view {
+                self.state.toggle_latest_focus_turn();
+                return Ok(());
+            }
+            if !self.state.busy {
+                self.toggle_last_tool_call();
+                return Ok(());
+            }
         }
         // Ctrl+E: open the full-output detail view for the most recent
         // expandable transcript item (Droid parity: Ctrl+O shows full
@@ -172,6 +185,8 @@ impl App {
                     self.apply_slash_completion();
                 } else if !self.state.input().is_empty() {
                     self.state.move_up();
+                } else if self.state.focus_view {
+                    self.state.select_previous_focus_turn();
                 } else {
                     self.state.scroll_up(1);
                 }
@@ -182,6 +197,8 @@ impl App {
                     self.apply_slash_completion();
                 } else if !self.state.input().is_empty() {
                     self.state.move_down();
+                } else if self.state.focus_view {
+                    self.state.select_next_focus_turn();
                 } else {
                     self.state.scroll_down(1);
                 }
@@ -297,6 +314,8 @@ impl App {
                 if shift {
                     // Shift+Enter: insert newline for multi-line input
                     self.state.insert_char('\n');
+                } else if self.state.focus_view && self.state.input().is_empty() {
+                    self.state.toggle_selected_focus_turn();
                 } else if !self.state.input().is_empty() {
                     // Trim so " /attach list" still runs as a slash command and
                     // is never queued as steering with a missing leading '/'.
@@ -356,6 +375,7 @@ impl App {
             KeyCode::Char('l') if ctrl => {
                 // Clear messages
                 self.state.messages.clear();
+                self.state.clear_focus_turn_state();
                 self.state.scroll_offset = 0;
             }
 
@@ -544,6 +564,36 @@ impl App {
             KeyCode::PageUp => self.operations.scroll_up(),
             KeyCode::PageDown => self.operations.scroll_down(),
             KeyCode::Char('r') => self.operations.refresh(),
+            KeyCode::Char('v') => self.operations.toggle_view(),
+            KeyCode::Char('a') => {
+                if let Some(message_id) = self
+                    .operations
+                    .selected_held_control_id()
+                    .map(str::to_owned)
+                {
+                    match self
+                        .tool_executor
+                        .approve_held_subagent_control(&message_id)
+                    {
+                        Ok(_) => {
+                            self.state.status = Some(format!("Approved control {message_id}"));
+                            self.operations.refresh();
+                        }
+                        Err(error) => self.state.error = Some(error),
+                    }
+                }
+            }
+            KeyCode::Char('c') => {
+                if let Some(subagent_id) = self.operations.selected_agent_id().map(str::to_owned) {
+                    match self.tool_executor.cancel_subagent_by_id(&subagent_id) {
+                        Ok(()) => {
+                            self.state.status = Some(format!("Cancelled subagent {subagent_id}"));
+                            self.operations.refresh();
+                        }
+                        Err(error) => self.state.error = Some(error),
+                    }
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -1075,6 +1125,12 @@ impl App {
     }
 }
 
+fn is_focus_view_binding(code: KeyCode, modifiers: CrosstermModifiers) -> bool {
+    modifiers.contains(CrosstermModifiers::CONTROL)
+        && modifiers.contains(CrosstermModifiers::ALT)
+        && matches!(code, KeyCode::Char('f' | 'F'))
+}
+
 /// Build the full-content body for expanding an approval request: the reason,
 /// the complete (unclipped) command, and the pretty-printed arguments.
 fn approval_detail_content(request: &ApprovalRequest) -> String {
@@ -1088,4 +1144,25 @@ fn approval_detail_content(request: &ApprovalRequest) -> String {
     }
     sections.push(format!("Args:\n{}", request.display_args_pretty()));
     sections.join("\n\n")
+}
+
+#[cfg(test)]
+mod focus_view_tests {
+    use super::*;
+
+    #[test]
+    fn focus_view_binding_requires_control_and_alt() {
+        assert!(is_focus_view_binding(
+            KeyCode::Char('f'),
+            CrosstermModifiers::CONTROL | CrosstermModifiers::ALT
+        ));
+        assert!(!is_focus_view_binding(
+            KeyCode::Char('f'),
+            CrosstermModifiers::CONTROL
+        ));
+        assert!(!is_focus_view_binding(
+            KeyCode::Char('f'),
+            CrosstermModifiers::ALT
+        ));
+    }
 }

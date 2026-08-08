@@ -135,8 +135,8 @@ pub(crate) fn definitions() -> Vec<(String, ToolDefinition)> {
             "get_mailbox".to_string(),
             definition(
                 "get_mailbox",
-                "List durable mailbox messages addressed to one inbox identity.",
-                object_schema(json!({"recipient": {"type": "string"}}), &[]),
+                "List durable mailbox messages addressed to this agent's inbox.",
+                empty_object_schema(),
                 false,
             ),
         ),
@@ -147,7 +147,6 @@ pub(crate) fn definitions() -> Vec<(String, ToolDefinition)> {
                 "Send a bounded durable message to a delegated agent or Maestro inbox.",
                 object_schema(
                     json!({
-                        "sender": {"type": "string"},
                         "recipient": {"type": "string"},
                         "body": {"type": "string"}
                     }),
@@ -160,14 +159,8 @@ pub(crate) fn definitions() -> Vec<(String, ToolDefinition)> {
             "read_mailbox".to_string(),
             definition(
                 "read_mailbox",
-                "Read one durable mailbox message addressed to the selected inbox.",
-                object_schema(
-                    json!({
-                        "id": {"type": "string"},
-                        "recipient": {"type": "string"}
-                    }),
-                    &["id"],
-                ),
+                "Read one durable mailbox message addressed to this agent's inbox.",
+                object_schema(json!({"id": {"type": "string"}}), &["id"]),
                 false,
             ),
         ),
@@ -175,14 +168,8 @@ pub(crate) fn definitions() -> Vec<(String, ToolDefinition)> {
             "ack_mailbox".to_string(),
             definition(
                 "ack_mailbox",
-                "Acknowledge one durable mailbox message addressed to the selected inbox.",
-                object_schema(
-                    json!({
-                        "id": {"type": "string"},
-                        "recipient": {"type": "string"}
-                    }),
-                    &["id"],
-                ),
+                "Acknowledge one durable mailbox message addressed to this agent's inbox.",
+                object_schema(json!({"id": {"type": "string"}}), &["id"]),
                 true,
             ),
         ),
@@ -339,26 +326,19 @@ pub fn clear_rlm_context(args: Value) -> ToolResult {
     result_to_tool(result)
 }
 
-pub fn get_mailbox(args: Value) -> ToolResult {
+pub fn get_mailbox(identity: &str) -> ToolResult {
     let result = (|| {
         let store = MailboxStore::load_default()?;
-        let recipient = args
-            .get("recipient")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .unwrap_or_else(crate::mailbox::local_identity);
-        Ok(store.report(Some(&recipient)))
+        Ok(store.report(Some(identity)))
     })();
     result_to_tool(result)
 }
 
-pub fn send_mailbox(args: Value) -> ToolResult {
+pub fn send_mailbox(args: Value, identity: &str) -> ToolResult {
     let result = (|| {
         let mut store = MailboxStore::load_default()?;
         let id = store.send(
-            args.get("sender")
-                .and_then(Value::as_str)
-                .unwrap_or("agent"),
+            identity,
             required_string(&args, "recipient")?,
             required_string(&args, "body")?,
         )?;
@@ -367,30 +347,20 @@ pub fn send_mailbox(args: Value) -> ToolResult {
     result_to_tool(result)
 }
 
-pub fn read_mailbox(args: Value) -> ToolResult {
+pub fn read_mailbox(args: Value, identity: &str) -> ToolResult {
     let result = (|| {
         let mut store = MailboxStore::load_default()?;
-        let recipient = args
-            .get("recipient")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .unwrap_or_else(crate::mailbox::local_identity);
-        let message = store.read_for(&required_string(&args, "id")?, Some(&recipient))?;
+        let message = store.read_for(&required_string(&args, "id")?, Some(identity))?;
         serde_json::to_string(&message).context("serialize mailbox message")
     })();
     result_to_tool(result)
 }
 
-pub fn acknowledge_mailbox(args: Value) -> ToolResult {
+pub fn acknowledge_mailbox(args: Value, identity: &str) -> ToolResult {
     let result = (|| {
         let mut store = MailboxStore::load_default()?;
-        let recipient = args
-            .get("recipient")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .unwrap_or_else(crate::mailbox::local_identity);
         let id = required_string(&args, "id")?;
-        store.acknowledge_for(&id, Some(&recipient))?;
+        store.acknowledge_for(&id, Some(identity))?;
         Ok(json!({"messageId": id, "message": "Mailbox message acknowledged."}).to_string())
     })();
     result_to_tool(result)

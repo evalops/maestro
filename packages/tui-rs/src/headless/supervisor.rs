@@ -245,8 +245,8 @@ pub enum SupervisorEvent {
 }
 
 enum ManagedTransport {
-    Local(AsyncAgentTransport),
-    Remote(RemoteAgentTransport),
+    Local(Box<AsyncAgentTransport>),
+    Remote(Box<RemoteAgentTransport>),
 }
 
 enum ManagedIncoming {
@@ -280,8 +280,8 @@ impl ManagedTransport {
 
     async fn shutdown_and_wait(self) -> Result<(), AsyncTransportError> {
         match self {
-            Self::Local(transport) => transport.shutdown_and_wait().await,
-            Self::Remote(transport) => transport.shutdown_and_wait().await,
+            Self::Local(transport) => (*transport).shutdown_and_wait().await,
+            Self::Remote(transport) => (*transport).shutdown_and_wait().await,
         }
     }
 
@@ -573,7 +573,7 @@ impl AgentSupervisor {
             )
             .await
             {
-                Ok(transport) => Ok(ManagedTransport::Remote(transport)),
+                Ok(transport) => Ok(ManagedTransport::Remote(Box::new(transport))),
                 Err(failure) => {
                     if let Some(resume_authority) = failure.resume_authority {
                         self.remote_resume_authority = Some(resume_authority);
@@ -584,6 +584,7 @@ impl AgentSupervisor {
         } else {
             AsyncAgentTransport::spawn(self.config.transport.clone())
                 .await
+                .map(Box::new)
                 .map(ManagedTransport::Local)
         }
     }
@@ -717,22 +718,41 @@ impl AgentSupervisor {
             self.last_init = recorder_last_init.or_else(|| self.last_init.clone());
         } else {
             self.state.handle_sent_message(&msg);
-            if let ToAgentMessage::Init {
-                system_prompt,
-                append_system_prompt,
-                thinking_level,
-                approval_mode,
-                history,
-            } = &msg
-            {
-                self.last_init = Some(InitConfig {
+            self.last_init = match &msg {
+                ToAgentMessage::Init {
+                    system_prompt,
+                    append_system_prompt,
+                    thinking_level,
+                    approval_mode,
+                    history,
+                } => Some(InitConfig {
                     system_prompt: system_prompt.clone(),
                     append_system_prompt: append_system_prompt.clone(),
                     thinking_level: *thinking_level,
                     approval_mode: *approval_mode,
                     history: history.clone(),
-                });
-            }
+                    code_mode: None,
+                    tool_grant: None,
+                }),
+                ToAgentMessage::GovernedInit {
+                    system_prompt,
+                    append_system_prompt,
+                    thinking_level,
+                    approval_mode,
+                    history,
+                    code_mode,
+                    tool_grant,
+                } => Some(InitConfig {
+                    system_prompt: system_prompt.clone(),
+                    append_system_prompt: append_system_prompt.clone(),
+                    thinking_level: *thinking_level,
+                    approval_mode: *approval_mode,
+                    history: history.clone(),
+                    code_mode: Some(*code_mode),
+                    tool_grant: Some(tool_grant.clone()),
+                }),
+                _ => self.last_init.clone(),
+            };
         }
 
         Ok(())
@@ -1031,12 +1051,23 @@ impl AgentSupervisor {
     }
 
     fn init_message(config: &InitConfig) -> ToAgentMessage {
-        ToAgentMessage::Init {
-            system_prompt: config.system_prompt.clone(),
-            append_system_prompt: config.append_system_prompt.clone(),
-            thinking_level: config.thinking_level,
-            approval_mode: config.approval_mode,
-            history: config.history.clone(),
+        match (config.code_mode, config.tool_grant.as_ref()) {
+            (Some(code_mode), Some(tool_grant)) => ToAgentMessage::GovernedInit {
+                system_prompt: config.system_prompt.clone(),
+                append_system_prompt: config.append_system_prompt.clone(),
+                thinking_level: config.thinking_level,
+                approval_mode: config.approval_mode,
+                history: config.history.clone(),
+                code_mode,
+                tool_grant: tool_grant.clone(),
+            },
+            _ => ToAgentMessage::Init {
+                system_prompt: config.system_prompt.clone(),
+                append_system_prompt: config.append_system_prompt.clone(),
+                thinking_level: config.thinking_level,
+                approval_mode: config.approval_mode,
+                history: config.history.clone(),
+            },
         }
     }
 

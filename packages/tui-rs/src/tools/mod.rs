@@ -97,6 +97,7 @@ mod registry;
 mod shell_env;
 mod status;
 mod subagents;
+pub(crate) use subagents::{coordination_snapshots, CoordinationSnapshot, SubagentLifecycleEvent};
 mod todo;
 pub mod versions;
 mod web_fetch;

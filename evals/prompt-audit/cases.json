@@ -1,0 +1,61 @@
+[
+  {
+    "name": "prompt audit omits fragment content and repeats exactly",
+    "input": {
+      "model": "unknown-model",
+      "active_skill_ids": ["zeta", "alpha", "alpha"],
+      "fragments": [
+        {
+          "name": "base",
+          "source": "maestro.base_system_prompt",
+          "content": "PROMPT_AUDIT_SECRET_ALPHA"
+        },
+        {
+          "name": "active_skill_additions",
+          "source": "skills.registry.active_prompt_additions",
+          "content": "PROMPT_AUDIT_SECRET_BETA"
+        }
+      ]
+    },
+    "expected": {
+      "schema_version": 1,
+      "fragment_order": ["base", "active_skill_additions"],
+      "active_skill_ids": ["alpha", "zeta"],
+      "finding_kinds": [],
+      "excluded_report_substrings": [
+        "PROMPT_AUDIT_SECRET_ALPHA",
+        "PROMPT_AUDIT_SECRET_BETA"
+      ],
+      "repeat_report_matches": true
+    }
+  },
+  {
+    "name": "prompt audit reports duplicate content and missing provenance",
+    "input": {
+      "model": "unknown-model",
+      "active_skill_ids": [],
+      "fragments": [
+        {
+          "name": "base",
+          "source": "maestro.base_system_prompt",
+          "content": "same"
+        },
+        {
+          "name": "loaded_skills",
+          "source": "skills.loader.available_skills",
+          "content": "same"
+        },
+        {
+          "name": "",
+          "source": "",
+          "content": "different"
+        }
+      ]
+    },
+    "expected": {
+      "finding_kinds": ["missing_provenance", "duplicate_fragment"],
+      "duplicate_fragments": ["base", "loaded_skills"],
+      "missing_fields": ["name", "source"]
+    }
+  }
+]

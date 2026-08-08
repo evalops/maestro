@@ -40,6 +40,7 @@ use crate::headless::{
     response_ack_request_id, AgentState, AgentSupervisor, AsyncTransportError,
     ResponseAcknowledgement, SessionReplay,
 };
+use crate::headless_server::{verify_governed_tool_grant, GovernedGrantVerificationContext};
 
 mod config;
 mod handle;
@@ -386,6 +387,8 @@ struct HttpClientCapabilities {
     raw_agent_events: Option<bool>,
     #[serde(rename = "transcriptGrade")]
     transcript_grade: Option<crate::transcript::TranscriptGrade>,
+    #[serde(rename = "governedCodeMode")]
+    governed_code_mode: Option<bool>,
 }
 
 impl From<HttpClientCapabilities> for ClientCapabilities {
@@ -395,6 +398,7 @@ impl From<HttpClientCapabilities> for ClientCapabilities {
             utility_operations: value.utility_operations,
             raw_agent_events: value.raw_agent_events,
             transcript_grade: value.transcript_grade,
+            governed_code_mode: value.governed_code_mode,
         }
     }
 }
@@ -1322,12 +1326,16 @@ fn hosted_message_kind(message: &ToAgentMessage) -> &'static str {
     match message {
         ToAgentMessage::Hello { .. } => "hello",
         ToAgentMessage::Init { .. } => "init",
+        ToAgentMessage::GovernedInit { .. } => "governed_init",
         ToAgentMessage::RestoreConversation { .. } => "restore_conversation",
         ToAgentMessage::Prompt { .. } => "prompt",
+        ToAgentMessage::GovernedPrompt { .. } => "governed_prompt",
         ToAgentMessage::Steer { .. } => "steer",
+        ToAgentMessage::GovernedSteer { .. } => "governed_steer",
         ToAgentMessage::Interrupt => "interrupt",
         ToAgentMessage::ToolResponse { .. } => "tool_response",
         ToAgentMessage::ClientToolResult { .. } => "client_tool_result",
+        ToAgentMessage::GovernedClientToolResult { .. } => "governed_client_tool_result",
         ToAgentMessage::ServerRequestResponse { .. } => "server_request_response",
         ToAgentMessage::UtilityCommandStart { .. } => "utility_command_start",
         ToAgentMessage::UtilityCommandTerminate { .. } => "utility_command_terminate",
@@ -3089,6 +3097,7 @@ async fn handle_append_turn(
     headers: HashMap<String, String>,
     input: AppendTurnRequest,
 ) -> HostedResult<ResponseBody> {
+    let response_protocol_version = input.protocol_version.clone();
     input
         .validate()
         .map_err(|message| HostedError::new(HostedRunnerErrorCode::BadRequest, message))?;
@@ -3108,6 +3117,19 @@ async fn handle_append_turn(
             connection_capability.as_deref(),
         )?;
         assert_controller(&state, Some(connection_id.as_str()))?;
+        if input.protocol_version == GOVERNED_THREAD_PROTOCOL_VERSION
+            && state
+                .connections
+                .get(&connection_id)
+                .and_then(|connection| connection.capabilities.as_ref())
+                .and_then(|capabilities| capabilities.governed_code_mode)
+                != Some(true)
+        {
+            return Err(HostedError::new(
+                HostedRunnerErrorCode::UnsupportedCapability,
+                "governed thread v2 requires negotiated governed_code_mode capability",
+            ));
+        }
         if !state.ready || state.draining {
             return Err(runtime_availability_error(
                 &state,
@@ -3124,7 +3146,7 @@ async fn handle_append_turn(
             return json_response(
                 200,
                 json!({
-                    "protocol_version": THREAD_PROTOCOL_VERSION,
+                    "protocol_version": response_protocol_version,
                     "thread_id": thread_id,
                     "turn_id": turn.turn_id,
                     "run_id": turn.run_id,
@@ -3140,22 +3162,72 @@ async fn handle_append_turn(
                 "a turn is already active; append an explicit steer turn instead",
             ));
         }
+        if input.protocol_version == GOVERNED_THREAD_PROTOCOL_VERSION {
+            let grant = input.tool_grant.as_ref().ok_or_else(|| {
+                HostedError::new(
+                    HostedRunnerErrorCode::BadRequest,
+                    "governed turn requires toolGrant",
+                )
+            })?;
+            let identity = shared.config.workload_identity.as_ref().ok_or_else(|| {
+                HostedError::new(
+                    HostedRunnerErrorCode::RuntimeFailed,
+                    "governed turns require workload-bound organization identity",
+                )
+            })?;
+            let run_id = state.thread.planned_run_id(&input);
+            verify_governed_tool_grant(
+                grant,
+                &GovernedGrantVerificationContext {
+                    organization_id: &identity.organization_id,
+                    workspace_id: &identity.workspace_id,
+                    thread_id,
+                    turn_id: &input.turn_id,
+                    run_id: &run_id,
+                    runtime_generation: shared.config.runtime_generation,
+                },
+                Utc::now().timestamp_millis(),
+            )
+            .map_err(|error| {
+                HostedError::new(
+                    HostedRunnerErrorCode::BadRequest,
+                    format!("governed tool grant rejected: {error:#}"),
+                )
+            })?;
+        }
         let cursor = state.cursor;
         state.thread.append(input.clone(), cursor);
-        shared.persist_thread_for_request(&state).map_err(|error| {
-            HostedError::new(
+        if let Err(error) = shared.persist_thread_for_request(&state) {
+            state.thread.rollback_unpersisted_append(&input.turn_id);
+            return Err(HostedError::new(
                 HostedRunnerErrorCode::RuntimeFailed,
                 format!("failed to persist accepted thread turn: {error}"),
-            )
-        })?;
+            ));
+        }
     }
 
-    let message = match input.kind {
-        ThreadTurnKind::UserMessage => ToAgentMessage::Prompt {
+    let message = match (input.kind, input.code_mode, input.tool_grant) {
+        (ThreadTurnKind::UserMessage, Some(code_mode), Some(tool_grant)) => {
+            ToAgentMessage::GovernedPrompt {
+                content: input.content,
+                attachments: input.attachments,
+                code_mode,
+                tool_grant,
+            }
+        }
+        (ThreadTurnKind::Steer, Some(code_mode), Some(tool_grant)) => {
+            ToAgentMessage::GovernedSteer {
+                content: input.content,
+                attachments: input.attachments,
+                code_mode,
+                tool_grant,
+            }
+        }
+        (ThreadTurnKind::UserMessage, _, _) => ToAgentMessage::Prompt {
             content: input.content,
             attachments: input.attachments,
         },
-        ThreadTurnKind::Steer => ToAgentMessage::Steer {
+        (ThreadTurnKind::Steer, _, _) => ToAgentMessage::Steer {
             content: input.content,
             attachments: input.attachments,
         },
@@ -3177,12 +3249,12 @@ async fn handle_append_turn(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let cursor = state.cursor;
     state.thread.mark_dispatched(cursor);
-    shared.persist_thread_for_request(&state).map_err(|error| {
-        HostedError::new(
-            HostedRunnerErrorCode::RuntimeFailed,
-            format!("failed to persist dispatched thread turn: {error}"),
-        )
-    })?;
+    // Dispatch already crossed the runtime boundary. Returning an error here
+    // invites a duplicate request while leaving the live turn active. Keep
+    // serving the authoritative in-memory state and let the event pump retry
+    // the full journal snapshot. If the process crashes before that retry,
+    // restore terminalizes the durable Accepted record as Interrupted.
+    shared.persist_thread_or_defer(&state, "turn_dispatch_completed");
     let turn = state
         .thread
         .turn(&input.turn_id)
@@ -3190,7 +3262,7 @@ async fn handle_append_turn(
     json_response(
         200,
         json!({
-            "protocol_version": THREAD_PROTOCOL_VERSION,
+            "protocol_version": response_protocol_version,
             "thread_id": thread_id,
             "turn_id": turn.turn_id,
             "run_id": turn.run_id,
@@ -3389,6 +3461,17 @@ async fn handle_message_inner(
             connection_capability.as_deref(),
         )?;
         assert_controller(&state, Some(resolved_connection_id.as_str()))?;
+        if let ToAgentMessage::GovernedClientToolResult {
+            client_instance_id, ..
+        } = &message
+        {
+            if client_instance_id != &resolved_connection_id {
+                return Err(HostedError::new(
+                    HostedRunnerErrorCode::AccessDenied,
+                    "governed client tool result owner does not match the authenticated connection",
+                ));
+            }
+        }
         if !state.ready || state.draining {
             return Err(runtime_availability_error(
                 &state,
@@ -3567,10 +3650,35 @@ async fn handle_message_inner(
                     thinking_level: *thinking_level,
                     approval_mode: *approval_mode,
                     history: history.clone(),
+                    code_mode: None,
+                    tool_grant: None,
                 });
                 state.last_status = Some("Initialized".to_string());
             }
-            ToAgentMessage::Prompt { content, .. } | ToAgentMessage::Steer { content, .. } => {
+            ToAgentMessage::GovernedInit {
+                system_prompt,
+                append_system_prompt,
+                thinking_level,
+                approval_mode,
+                history,
+                code_mode,
+                tool_grant,
+            } => {
+                state.last_init = Some(InitConfig {
+                    system_prompt: system_prompt.clone(),
+                    append_system_prompt: append_system_prompt.clone(),
+                    thinking_level: *thinking_level,
+                    approval_mode: *approval_mode,
+                    history: history.clone(),
+                    code_mode: Some(*code_mode),
+                    tool_grant: Some(tool_grant.clone()),
+                });
+                state.last_status = Some("Governed code initialized".to_string());
+            }
+            ToAgentMessage::Prompt { content, .. }
+            | ToAgentMessage::Steer { content, .. }
+            | ToAgentMessage::GovernedPrompt { content, .. }
+            | ToAgentMessage::GovernedSteer { content, .. } => {
                 state.last_status = Some(format!("Prompt: {content}"));
                 executor_request = Some((
                     Arc::clone(&shared.message_executor),
@@ -3601,6 +3709,7 @@ async fn handle_message_inner(
             | ToAgentMessage::RestoreConversation { .. }
             | ToAgentMessage::ToolResponse { .. }
             | ToAgentMessage::ClientToolResult { .. }
+            | ToAgentMessage::GovernedClientToolResult { .. }
             | ToAgentMessage::ServerRequestResponse { .. }
             | ToAgentMessage::Interrupt
             | ToAgentMessage::Cancel
@@ -3883,6 +3992,7 @@ fn is_control_response_message(message: &ToAgentMessage) -> bool {
         message,
         ToAgentMessage::ToolResponse { .. }
             | ToAgentMessage::ClientToolResult { .. }
+            | ToAgentMessage::GovernedClientToolResult { .. }
             | ToAgentMessage::ServerRequestResponse { .. }
     )
 }

@@ -122,8 +122,10 @@ impl SkillRegistry {
     /// Get combined system prompt additions from all active skills
     #[must_use]
     pub fn active_system_prompt_additions(&self) -> String {
-        self.active_skills()
-            .iter()
+        let mut active = self.active_skills();
+        active.sort_by(|left, right| left.definition.id.cmp(&right.definition.id));
+        active
+            .into_iter()
             .filter_map(|s| s.definition.system_prompt_additions.as_ref())
             .cloned()
             .collect::<Vec<_>>()
@@ -661,6 +663,24 @@ mod tests {
         assert!(additions.contains("Third prompt"));
         // Check they are joined with double newlines
         assert!(additions.contains("\n\n"));
+    }
+
+    #[test]
+    fn active_system_prompt_additions_are_sorted_by_skill_id() {
+        let mut registry = SkillRegistry::new();
+        for (id, prompt) in [
+            ("zeta", "Third prompt"),
+            ("alpha", "First prompt"),
+            ("middle", "Second prompt"),
+        ] {
+            registry.register(SkillDefinition::new(id, id).with_system_prompt(prompt));
+            registry.activate(id).expect("skill exists");
+        }
+
+        assert_eq!(
+            registry.active_system_prompt_additions(),
+            "First prompt\n\nSecond prompt\n\nThird prompt"
+        );
     }
 
     #[test]

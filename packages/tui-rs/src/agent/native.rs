@@ -91,7 +91,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -583,11 +583,6 @@ impl ToolProfile {
                 "propose_harness_refinement",
                 "apply_harness_refinement",
                 "reject_harness_refinement",
-                "get_rlm_context",
-                "set_rlm_context",
-                "append_rlm_context",
-                "render_rlm_context",
-                "clear_rlm_context",
                 "get_mailbox",
                 "send_mailbox",
                 "read_mailbox",
@@ -642,6 +637,83 @@ fn initial_active_tool_names(
         })
         .chain(external_tools.iter().cloned())
         .collect()
+}
+
+fn is_rlm_context_tool(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "get_rlm_context"
+            | "set_rlm_context"
+            | "append_rlm_context"
+            | "render_rlm_context"
+            | "clear_rlm_context"
+    )
+}
+
+fn tool_search_profile_allows(
+    profile: ToolProfile,
+    name: &str,
+    explicitly_allowed_tools: &HashSet<String>,
+) -> bool {
+    profile != ToolProfile::Fast
+        || !is_rlm_context_tool(name)
+        || explicitly_allowed_tools.contains(&name.to_ascii_lowercase())
+}
+
+fn effective_tool_definitions(
+    tools: &HashMap<String, ToolDefinition>,
+    active_tool_names: &HashSet<String>,
+    goal_tools_visible: bool,
+    include_ide_tools: bool,
+) -> Vec<ToolDefinition> {
+    let mut definitions = tools
+        .values()
+        .filter(|definition| {
+            let name = definition.tool.name.as_str();
+            active_tool_names.contains(&name.to_ascii_lowercase())
+                && tool_is_visible_to_model(name, goal_tools_visible, include_ide_tools)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    definitions.sort_unstable_by(|left, right| left.tool.name.cmp(&right.tool.name));
+    for definition in &mut definitions {
+        definition.tool = compact_tool_for_model(definition.tool.clone());
+    }
+    definitions
+}
+
+fn validate_governed_tools(
+    allowed_tools: &HashSet<String>,
+    external_tool_definitions: &[ToolDefinition],
+) -> Result<()> {
+    let registry = ToolRegistry::new();
+    for name in allowed_tools {
+        if registry.get(name).is_none() {
+            return Err(anyhow::anyhow!("Unknown allowed tool `{name}`"));
+        }
+    }
+    let native_names = allowed_tools
+        .iter()
+        .map(|name| name.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    let mut external_names = HashSet::new();
+    for definition in external_tool_definitions {
+        let name = definition.tool.name.trim().to_ascii_lowercase();
+        if name.is_empty() {
+            return Err(anyhow::anyhow!("External tool name must not be empty"));
+        }
+        if native_names.contains(&name) || registry.get(&name).is_some() {
+            return Err(anyhow::anyhow!(
+                "Governed client tool name `{name}` collides with a reserved native name"
+            ));
+        }
+        if !external_names.insert(name.clone()) {
+            return Err(anyhow::anyhow!(
+                "Ambiguous governed client tool name `{name}` has multiple owners"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn include_ide_tools_enabled_value(value: &str) -> bool {
@@ -774,6 +846,13 @@ enum AgentCommand {
     /// a tool needs approval before it executes.
     SetApprovalMode { mode: ApprovalMode },
 
+    /// Replace the exact governed native allowlist and caller-owned tools
+    /// without rebuilding the runner or losing its private conversation state.
+    ReplaceGovernedTools {
+        allowed_tools: HashSet<String>,
+        external_tool_definitions: Vec<ToolDefinition>,
+    },
+
     /// Update steering queue drain mode.
     SetSteeringMode { mode: QueueMode },
 
@@ -821,7 +900,11 @@ enum AgentCommand {
     /// Append a host-generated user note to conversation history without
     /// starting a model turn. Used for background-task lifecycle notices so
     /// the next completion request sees them (does not trigger a response).
-    InjectUserNote { content: String },
+    InjectUserNote {
+        content: String,
+        applied: tokio::sync::oneshot::Sender<()>,
+        consumed: tokio::sync::oneshot::Sender<()>,
+    },
 
     /// Continue from current context without a new user message
     ///
@@ -900,6 +983,8 @@ pub struct NativeAgent {
     /// Cached provider identifier (e.g., "Anthropic", "`OpenAI`"). Used for
     /// status displays and debugging.
     provider_name: String,
+
+    runtime_audit: Arc<RwLock<RuntimeAuditSnapshot>>,
     /// Priority lifecycle signal that prevents buffered prompts from starting
     /// once orderly shutdown begins.
     shutdown_token: CancellationToken,
@@ -911,6 +996,13 @@ pub struct NativeAgent {
     /// this handle so queued cancellation and tool cleanup finish before App
     /// and session state are dropped.
     runner_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct RuntimeAuditSnapshot {
+    pub(crate) prompt_revision: u64,
+    pub(crate) system_prompt: Option<String>,
+    pub(crate) tools: Vec<ToolDefinition>,
 }
 
 #[derive(Default)]
@@ -1048,6 +1140,7 @@ impl NativeAgent {
             None,
             None,
             Some(subagent_parent_scope_id),
+            None,
         )
     }
 
@@ -1075,6 +1168,7 @@ impl NativeAgent {
             Some(allowed_tools),
             None,
             None,
+            None,
         )
     }
 
@@ -1086,6 +1180,7 @@ impl NativeAgent {
         config: NativeAgentConfig,
         allowed_tools: &HashSet<String>,
         credential_vault: CredentialVault,
+        mailbox_identity: String,
     ) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
         Self::new_with_tools_and_credential_vault_filtered(
             config,
@@ -1094,6 +1189,7 @@ impl NativeAgent {
             Some(allowed_tools),
             None,
             None,
+            Some(mailbox_identity),
         )
     }
 
@@ -1123,7 +1219,49 @@ impl NativeAgent {
             None,
             None,
             None,
+            None,
         )
+    }
+
+    /// Create a governed agent with an exact native allowlist plus arbitrary
+    /// caller-owned tools. Native tools execute in this runtime; external tools
+    /// always round-trip through the caller-owned tool response channel.
+    ///
+    /// The native registry is filtered before the ambient tool profile is
+    /// evaluated, so `MAESTRO_TOOL_PROFILE=all` cannot widen `allowed_tools`.
+    pub fn new_with_governed_tools_and_credential_vault(
+        config: NativeAgentConfig,
+        allowed_tools: &HashSet<String>,
+        external_tool_definitions: Vec<ToolDefinition>,
+        credential_vault: CredentialVault,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
+        validate_governed_tools(allowed_tools, &external_tool_definitions)?;
+
+        Self::new_with_tools_and_credential_vault_filtered(
+            config,
+            external_tool_definitions,
+            credential_vault,
+            Some(allowed_tools),
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// Atomically queue a governed tool-set replacement ahead of the next
+    /// prompt while preserving the runner's unredacted provider history.
+    pub fn replace_governed_tools(
+        &self,
+        allowed_tools: HashSet<String>,
+        external_tool_definitions: Vec<ToolDefinition>,
+    ) -> Result<()> {
+        validate_governed_tools(&allowed_tools, &external_tool_definitions)?;
+        self.command_tx
+            .send(AgentCommand::ReplaceGovernedTools {
+                allowed_tools,
+                external_tool_definitions,
+            })
+            .map_err(|_| anyhow::anyhow!("Agent command channel closed"))
     }
 
     /// Create an agent with a caller-provided client (e.g. a deterministic
@@ -1139,6 +1277,7 @@ impl NativeAgent {
             CredentialVault::new(),
             None,
             Some(client),
+            None,
             None,
         )
     }
@@ -1160,6 +1299,7 @@ impl NativeAgent {
             Some(allowed_tools),
             Some(client),
             None,
+            None,
         )
     }
 
@@ -1175,6 +1315,7 @@ impl NativeAgent {
             None,
             Some(client),
             None,
+            None,
         )
     }
 
@@ -1185,6 +1326,7 @@ impl NativeAgent {
         allowed_tools: Option<&HashSet<String>>,
         client_override: Option<UnifiedClient>,
         subagent_parent_scope_id: Option<String>,
+        mailbox_identity: Option<String>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
         let policy_id = policy_model_id(&config.model);
         if let Some(reason) = check_model_allowed(&policy_id) {
@@ -1217,12 +1359,20 @@ impl NativeAgent {
         }
         let goal_tools_visible = crate::goal::GoalStore::load_default().tools_visible();
         let include_ide_tools = include_ide_tools_enabled();
-        let active_tool_names = initial_active_tool_names(
-            ToolProfile::from_env(),
-            &tools,
-            &external_tools,
-            allowed_tools,
-        );
+        let tool_profile = ToolProfile::from_env();
+        let explicitly_allowed_tools = allowed_tools.cloned().unwrap_or_default();
+        let active_tool_names =
+            initial_active_tool_names(tool_profile, &tools, &external_tools, allowed_tools);
+        let runtime_audit = Arc::new(RwLock::new(RuntimeAuditSnapshot {
+            prompt_revision: 0,
+            system_prompt: config.system_prompt.clone(),
+            tools: effective_tool_definitions(
+                &tools,
+                &active_tool_names,
+                goal_tools_visible,
+                include_ide_tools,
+            ),
+        }));
 
         // Create tool executor. This is the executor that actually runs
         // every auto-approved call (Yolo mode entirely, plus Selective
@@ -1235,6 +1385,7 @@ impl NativeAgent {
             credential_vault.clone(),
             config.sandbox_policy.clone(),
             subagent_parent_scope_id,
+            mailbox_identity,
         ));
 
         // Load hook system from config files
@@ -1270,6 +1421,8 @@ impl NativeAgent {
             model_tool_cache: None,
             goal_tools_visible,
             include_ide_tools,
+            tool_profile,
+            explicitly_allowed_tools,
             active_tool_names,
             external_tools,
             tool_executor,
@@ -1291,6 +1444,12 @@ impl NativeAgent {
             steering_mode: QueueMode::All,
             follow_up_mode: QueueMode::All,
             deferred_commands: VecDeque::new(),
+            pending_user_note_consumptions: Vec::new(),
+            active_user_note_consumptions: Vec::new(),
+            pending_user_note_texts: Vec::new(),
+            active_user_note_texts: Vec::new(),
+            current_request_user_message_index: None,
+            processed_prompt_queue_ids: HashSet::new(),
             pending_tool_approvals: HashMap::new(),
             cancelled_tool_responses: CancelledToolTombstones::default(),
             prompt_context: None,
@@ -1298,6 +1457,8 @@ impl NativeAgent {
             output_tokens_spent: 0,
             queued_system_prompts: HashMap::new(),
             system_prompt_revision: 0,
+            runtime_prompt_revision: 0,
+            runtime_audit: Arc::clone(&runtime_audit),
             codex_file_change_paths_by_item: HashMap::new(),
         };
 
@@ -1313,6 +1474,7 @@ impl NativeAgent {
             event_tx,
             model_name: config.model,
             provider_name,
+            runtime_audit,
             shutdown_token,
             runner_handle: Some(runner_handle),
         };
@@ -1478,14 +1640,27 @@ impl NativeAgent {
     ///
     /// Callers must only flush these when the agent is idle so provider
     /// message order stays valid (no user turn between tool results).
-    pub fn inject_user_note(&self, content: impl Into<String>) {
+    pub fn inject_user_note(
+        &self,
+        content: impl Into<String>,
+    ) -> Result<(
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    )> {
         let content = content.into();
         if content.trim().is_empty() {
-            return;
+            anyhow::bail!("Cannot inject an empty user note");
         }
-        let _ = self
-            .command_tx
-            .send(AgentCommand::InjectUserNote { content });
+        let (applied, applied_receiver) = tokio::sync::oneshot::channel();
+        let (consumed, consumed_receiver) = tokio::sync::oneshot::channel();
+        self.command_tx
+            .send(AgentCommand::InjectUserNote {
+                content,
+                applied,
+                consumed,
+            })
+            .map_err(|error| anyhow::anyhow!("Failed to inject user note: {error}"))?;
+        Ok((applied_receiver, consumed_receiver))
     }
 
     /// Set the model
@@ -1633,6 +1808,14 @@ impl NativeAgent {
             .send(AgentCommand::SetSystemPrompt { system_prompt })
             .map_err(|e| anyhow::anyhow!("Failed to set system prompt: {e}"))?;
         Ok(())
+    }
+
+    #[must_use]
+    pub(crate) fn runtime_audit_snapshot(&self) -> RuntimeAuditSnapshot {
+        self.runtime_audit
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// Continue from current context without a new user message
@@ -1917,6 +2100,12 @@ struct NativeAgentRunner {
     /// path expands this set on demand without rebuilding the executor.
     active_tool_names: HashSet<String>,
 
+    /// The profile constrains dynamic discovery as well as initial schemas.
+    tool_profile: ToolProfile,
+
+    /// Built-ins explicitly requested by a caller may bypass profile defaults.
+    explicitly_allowed_tools: HashSet<String>,
+
     /// Whether the current goal exposes `get_goal` and `update_goal`.
     /// Updated by explicit app synchronization and successful `update_goal`
     /// executions; it is intentionally not reloaded from disk per request.
@@ -2019,6 +2208,24 @@ struct NativeAgentRunner {
     /// Commands observed while the agent is inside a turn and deferred until idle.
     deferred_commands: VecDeque<AgentCommand>,
 
+    /// Applied notes waiting to be included in the next main model turn.
+    pending_user_note_consumptions: Vec<tokio::sync::oneshot::Sender<()>>,
+
+    /// Note acknowledgements assigned to the currently running main turn.
+    active_user_note_consumptions: Vec<tokio::sync::oneshot::Sender<()>>,
+
+    /// Exact note text paired with pending consumption acknowledgements.
+    pending_user_note_texts: Vec<String>,
+
+    /// Exact note text assigned to the currently running main turn.
+    active_user_note_texts: Vec<String>,
+
+    /// User message created for the current prompt, if this is a prompt turn.
+    current_request_user_message_index: Option<usize>,
+
+    /// Explicit queue ids represented by the next semantic checkpoint.
+    processed_prompt_queue_ids: HashSet<u64>,
+
     /// Buffered tool approvals that arrived out of order
     pending_tool_approvals: HashMap<String, PendingToolResponse>,
 
@@ -2053,6 +2260,11 @@ struct NativeAgentRunner {
     ///
     /// Used only to detect that a staged queued prompt has been overtaken.
     system_prompt_revision: u64,
+
+    /// Revision of the prompt actually applied to a model request.
+    runtime_prompt_revision: u64,
+
+    runtime_audit: Arc<RwLock<RuntimeAuditSnapshot>>,
 
     /// File-change correlation for Codex items, keyed by item id.
     ///
@@ -2097,6 +2309,23 @@ fn staged_system_prompt_to_apply(
         Some((staged_revision, prompt)) if staged_revision == current_revision => Some(prompt),
         _ => None,
     }
+}
+
+fn apply_staged_system_prompt(
+    staged_prompts: &mut HashMap<u64, (u64, String)>,
+    queue_id: u64,
+    authority_revision: u64,
+    system_prompt: &mut Option<String>,
+    runtime_revision: &mut u64,
+) -> bool {
+    let Some(staged) =
+        staged_system_prompt_to_apply(staged_prompts.remove(&queue_id), authority_revision)
+    else {
+        return false;
+    };
+    *system_prompt = Some(staged);
+    *runtime_revision = runtime_revision.saturating_add(1);
+    true
 }
 
 /// The tool name a Codex-native operation is presented to policy hooks under.
@@ -2880,6 +3109,46 @@ fn resolve_codex_tool_result_for_wire(
     credential_vault.resolve_all(vaulted_content)
 }
 
+fn user_message_text(message: &Message) -> Option<String> {
+    match (&message.role, &message.content) {
+        (Role::User, MessageContent::Text(text)) => Some(text.clone()),
+        (Role::User, MessageContent::Blocks(blocks)) => {
+            let text = blocks
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.is_empty()).then_some(text)
+        }
+        _ => None,
+    }
+}
+
+fn codex_app_server_user_text(
+    messages: &[Message],
+    injected_notes: &[String],
+    current_user_message_index: Option<usize>,
+) -> String {
+    let current_prompt = current_user_message_index
+        .and_then(|index| messages.get(index))
+        .and_then(user_message_text);
+    let mut parts = injected_notes.to_vec();
+    if let Some(current_prompt) = current_prompt {
+        parts.push(current_prompt);
+    }
+    if parts.is_empty() {
+        return messages
+            .iter()
+            .rev()
+            .find_map(user_message_text)
+            .unwrap_or_default();
+    }
+    parts.join("\n\n")
+}
+
 impl NativeAgentRunner {
     fn messages_mut(&mut self) -> &mut Vec<Message> {
         Arc::make_mut(&mut self.messages)
@@ -2891,6 +3160,64 @@ impl NativeAgentRunner {
         }
         self.goal_tools_visible = visible;
         self.model_tool_cache = None;
+        self.refresh_runtime_audit();
+    }
+
+    fn refresh_runtime_audit(&self) {
+        self.refresh_runtime_audit_with_prompt(self.config.system_prompt.clone());
+    }
+
+    fn refresh_runtime_audit_with_prompt(&self, system_prompt: Option<String>) {
+        let snapshot = RuntimeAuditSnapshot {
+            prompt_revision: self.runtime_prompt_revision,
+            system_prompt,
+            tools: effective_tool_definitions(
+                &self.tools,
+                &self.active_tool_names,
+                self.goal_tools_visible,
+                self.include_ide_tools,
+            ),
+        };
+        *self
+            .runtime_audit
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = snapshot;
+    }
+
+    fn replace_governed_tools(
+        &mut self,
+        allowed_tools: &HashSet<String>,
+        external_tool_definitions: Vec<ToolDefinition>,
+    ) {
+        let registry = ToolRegistry::new();
+        let mut tools = registry
+            .tools()
+            .filter(|definition| allowed_tools.contains(&definition.tool.name.to_ascii_lowercase()))
+            .map(|definition| {
+                (
+                    definition.tool.name.to_ascii_lowercase(),
+                    definition.clone(),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let external_tools = external_tool_definitions
+            .iter()
+            .map(|definition| definition.tool.name.to_ascii_lowercase())
+            .collect::<HashSet<_>>();
+        for definition in external_tool_definitions {
+            tools.insert(definition.tool.name.to_ascii_lowercase(), definition);
+        }
+        self.active_tool_names = initial_active_tool_names(
+            self.tool_profile,
+            &tools,
+            &external_tools,
+            Some(allowed_tools),
+        );
+        self.explicitly_allowed_tools = allowed_tools.clone();
+        self.tools = tools;
+        self.external_tools = external_tools;
+        self.model_tool_cache = None;
+        self.refresh_runtime_audit();
     }
 
     /// Interrupt the active Codex turn after the outer cancellation future is dropped.
@@ -2969,8 +3296,17 @@ impl NativeAgentRunner {
 
     fn emit_conversation_snapshot(&mut self) {
         self.compact_codex_history_for_boundary();
-        if let Some(snapshot) = conversation_snapshot_event(&self.messages) {
+        let mut processed_queue_ids = self
+            .processed_prompt_queue_ids
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        processed_queue_ids.sort_unstable();
+        if let Some(snapshot) =
+            conversation_snapshot_event_with_queue_ids(&self.messages, processed_queue_ids)
+        {
             let _ = self.event_tx.send(snapshot);
+            self.processed_prompt_queue_ids.clear();
         }
     }
 
@@ -3328,6 +3664,12 @@ impl NativeAgentRunner {
                 AgentCommand::SetApprovalMode { mode } => {
                     self.config.approval_mode = mode;
                 }
+                AgentCommand::ReplaceGovernedTools {
+                    allowed_tools,
+                    external_tool_definitions,
+                } => {
+                    self.replace_governed_tools(&allowed_tools, external_tool_definitions);
+                }
                 AgentCommand::SetSteeringMode { mode } => {
                     self.steering_mode = mode;
                 }
@@ -3337,6 +3679,8 @@ impl NativeAgentRunner {
                 AgentCommand::SetSystemPrompt { system_prompt } => {
                     self.config.system_prompt = Some(system_prompt);
                     self.system_prompt_revision = self.system_prompt_revision.saturating_add(1);
+                    self.runtime_prompt_revision = self.runtime_prompt_revision.saturating_add(1);
+                    self.refresh_runtime_audit();
                 }
                 AgentCommand::SetSystemPromptForQueuedPrompt {
                     queue_id,
@@ -3345,10 +3689,18 @@ impl NativeAgentRunner {
                     self.queued_system_prompts
                         .insert(queue_id, (self.system_prompt_revision, system_prompt));
                 }
-                AgentCommand::InjectUserNote { content } => {
+                AgentCommand::InjectUserNote {
+                    content,
+                    applied,
+                    consumed,
+                } => {
                     // Defer until idle so we never insert a user message mid-tool-loop.
                     self.deferred_commands
-                        .push_back(AgentCommand::InjectUserNote { content });
+                        .push_back(AgentCommand::InjectUserNote {
+                            content,
+                            applied,
+                            consumed,
+                        });
                 }
                 other => {
                     self.deferred_commands.push_back(other);
@@ -3363,7 +3715,7 @@ impl NativeAgentRunner {
         cancelled
     }
 
-    fn apply_user_note(&mut self, content: String) {
+    fn apply_user_note(&mut self, content: String, consumed: tokio::sync::oneshot::Sender<()>) {
         let trimmed = content.trim();
         if trimmed.is_empty() {
             return;
@@ -3372,6 +3724,38 @@ impl NativeAgentRunner {
             role: Role::User,
             content: MessageContent::text(trimmed.to_string()),
         });
+        self.pending_user_note_consumptions.push(consumed);
+        self.pending_user_note_texts.push(trimmed.to_string());
+    }
+
+    fn begin_user_note_consumption(&mut self) {
+        debug_assert!(self.active_user_note_consumptions.is_empty());
+        self.active_user_note_consumptions
+            .append(&mut self.pending_user_note_consumptions);
+        self.active_user_note_texts
+            .append(&mut self.pending_user_note_texts);
+    }
+
+    fn finish_user_note_consumption(&mut self, succeeded: bool) {
+        if succeeded {
+            for consumed in self.active_user_note_consumptions.drain(..) {
+                let _ = consumed.send(());
+            }
+            self.active_user_note_texts.clear();
+        } else {
+            self.pending_user_note_consumptions
+                .append(&mut self.active_user_note_consumptions);
+            self.pending_user_note_texts
+                .append(&mut self.active_user_note_texts);
+        }
+    }
+
+    fn reset_user_note_consumption(&mut self) {
+        self.pending_user_note_consumptions.clear();
+        self.active_user_note_consumptions.clear();
+        self.pending_user_note_texts.clear();
+        self.active_user_note_texts.clear();
+        self.current_request_user_message_index = None;
     }
 
     /// Guarantee every assistant tool call in history has a matching tool result.
@@ -3486,11 +3870,14 @@ impl NativeAgentRunner {
         // authoritative
         // `SetSystemPrompt` is dropped: that update is newer and, because skill
         // activation is cumulative, already contains these skills.
-        if let Some(system_prompt) = staged_system_prompt_to_apply(
-            self.queued_system_prompts.remove(&pending.id),
+        if apply_staged_system_prompt(
+            &mut self.queued_system_prompts,
+            pending.id,
             self.system_prompt_revision,
+            &mut self.config.system_prompt,
+            &mut self.runtime_prompt_revision,
         ) {
-            self.config.system_prompt = Some(system_prompt);
+            self.refresh_runtime_audit();
         }
 
         let mut prompt = pending.content.clone();
@@ -3572,6 +3959,9 @@ impl NativeAgentRunner {
                 self.prepare_pending_message(&pending_message).await?
             {
                 self.messages_mut().push(message);
+                if pending_message.id != 0 {
+                    self.processed_prompt_queue_ids.insert(pending_message.id);
+                }
                 if let Some(context) = prompt_context {
                     Self::merge_prompt_context(&mut next_prompt_context, context);
                 }
@@ -3761,13 +4151,22 @@ impl NativeAgentRunner {
                     self.requeue_follow_up_front(content, attachments, queue_id);
                     continue;
                 }
-                AgentCommand::InjectUserNote { content } => {
+                AgentCommand::InjectUserNote {
+                    content,
+                    applied,
+                    consumed,
+                } => {
                     if self.busy {
                         self.deferred_commands
-                            .push_back(AgentCommand::InjectUserNote { content });
+                            .push_back(AgentCommand::InjectUserNote {
+                                content,
+                                applied,
+                                consumed,
+                            });
                         continue;
                     }
-                    self.apply_user_note(content);
+                    self.apply_user_note(content, consumed);
+                    let _ = applied.send(());
                     continue;
                 }
                 AgentCommand::Prompt {
@@ -3785,11 +4184,11 @@ impl NativeAgentRunner {
                         self.busy = true;
                         self.run_side_question(content, true).await;
                         self.busy = false;
+                        self.emit_conversation_snapshot();
                         let _ = self.event_tx.send(FromAgent::ResponseEnd {
                             response_id: "done".to_string(),
                             usage: None,
                         });
-                        self.emit_conversation_snapshot();
                         continue;
                     }
 
@@ -3806,12 +4205,12 @@ impl NativeAgentRunner {
                         .execute_user_prompt_submit(&prompt, attachments.len() as u32);
                     match hook_result {
                         HookResult::Block { reason } => {
+                            self.emit_conversation_snapshot();
                             let _ = self.event_tx.send(FromAgent::Error {
                                 message: format!("Prompt blocked by hook: {reason}"),
                                 fatal: false,
                                 terminal: true,
                             });
-                            self.emit_conversation_snapshot();
                             self.busy = false;
                             self.set_active_request_cancel_token(None);
                             self.prompt_context = None;
@@ -3838,12 +4237,12 @@ impl NativeAgentRunner {
                     );
                     match hook_result {
                         HookResult::Block { reason } => {
+                            self.emit_conversation_snapshot();
                             let _ = self.event_tx.send(FromAgent::Error {
                                 message: format!("Prompt blocked by hook: {reason}"),
                                 fatal: false,
                                 terminal: true,
                             });
-                            self.emit_conversation_snapshot();
                             self.busy = false;
                             self.set_active_request_cancel_token(None);
                             self.prompt_context = None;
@@ -3908,6 +4307,10 @@ impl NativeAgentRunner {
                         role: Role::User,
                         content,
                     });
+                    if let Some(queue_id) = queue_id {
+                        self.processed_prompt_queue_ids.insert(queue_id);
+                    }
+                    self.current_request_user_message_index = Some(current_prompt_index);
                     let current_prompt_uses_codex = self.model_route.uses_app_server();
                     if current_prompt_uses_codex {
                         self.codex_current_prompt_started = false;
@@ -3915,13 +4318,14 @@ impl NativeAgentRunner {
 
                     // Reset retry policy for new request
                     self.retry_policy.reset();
+                    self.begin_user_note_consumption();
 
                     // Run the agent loop with cancellation and retry support
                     let shutdown_token = self.shutdown_token.clone();
                     let active_cancellation = Arc::clone(&self.active_cancellation);
                     let mut request_cancelled = false;
                     let mut terminal_request_failure = false;
-                    let mut terminal_error_event = false;
+                    let mut terminal_failure_event = None;
                     let mut waited_for_codex_login = false;
                     let mut codex_transport_restarted = false;
                     let mut codex_auth_resumed = false;
@@ -3969,7 +4373,7 @@ impl NativeAgentRunner {
                                         ) {
                                             Ok(identity) => identity,
                                             Err(error) => {
-                                                let _ = self.event_tx.send(FromAgent::Error {
+                                                terminal_failure_event = Some(FromAgent::Error {
                                                     message: format!(
                                                         "Codex identity selection failed: {error:#}"
                                                     ),
@@ -3977,7 +4381,6 @@ impl NativeAgentRunner {
                                                     terminal: true,
                                                 });
                                                 terminal_request_failure = true;
-                                                terminal_error_event = true;
                                                 break;
                                             }
                                         };
@@ -4077,21 +4480,20 @@ impl NativeAgentRunner {
                                         } else {
                                             ""
                                         };
-                                        if let Some((kind, message)) = provider_stream_failure {
-                                            let _ = self
-                                                .event_tx
-                                                .send(FromAgent::ProviderError { kind, message });
+                                        terminal_failure_event = if let Some((kind, message)) =
+                                            provider_stream_failure
+                                        {
+                                            Some(FromAgent::ProviderError { kind, message })
                                         } else {
-                                            let _ = self.event_tx.send(FromAgent::Error {
+                                            Some(FromAgent::Error {
                                                 message: format!(
                                                     "Agent error: {msg} ({reason}){hint}"
                                                 ),
                                                 fatal: false,
                                                 terminal: true,
-                                            });
-                                        }
+                                            })
+                                        };
                                         terminal_request_failure = true;
-                                        terminal_error_event = true;
                                         break;
                                     }
                                 }
@@ -4147,10 +4549,11 @@ impl NativeAgentRunner {
                     if !terminal_request_failure && !request_cancelled {
                         self.hooks.increment_turn();
                     }
+                    self.current_request_user_message_index = None;
 
                     self.busy = false;
                     self.set_active_request_cancel_token(None);
-                    if current_prompt_uses_codex {
+                    let codex_transport_receipt = if current_prompt_uses_codex {
                         let outcome = if request_cancelled {
                             "cancelled"
                         } else if terminal_request_failure {
@@ -4158,29 +4561,46 @@ impl NativeAgentRunner {
                         } else {
                             "completed"
                         };
-                        let _ = self.event_tx.send(FromAgent::CodexTransportReceipt {
+                        Some(FromAgent::CodexTransportReceipt {
                             provider: "openai-codex".to_owned(),
                             transport: "codex-app-server".to_owned(),
                             outcome: outcome.to_owned(),
                             transport_restarted: codex_transport_restarted,
                             auth_resumed: codex_auth_resumed,
                             cancellation_requested: request_cancelled,
-                        });
-                    }
+                        })
+                    } else {
+                        None
+                    };
 
                     self.prompt_context = None;
 
                     self.repair_orphaned_tool_calls();
+                    // The semantic checkpoint is private but synchronously
+                    // persistable by hosted owners. Publish it before exposing
+                    // any terminal that permits the current owner to be killed.
+                    self.emit_conversation_snapshot();
 
                     // Errors are terminal events and clear the TUI busy state.
                     // Publishing ResponseEnd after one would let stream adapters
                     // reinterpret a failed turn as a successful empty response.
-                    if !terminal_error_event {
+                    if let Some(event) = terminal_failure_event {
+                        let _ = self.event_tx.send(event);
+                        if let Some(receipt) = codex_transport_receipt {
+                            let _ = self.event_tx.send(receipt);
+                        }
+                    } else {
+                        if let Some(receipt) = codex_transport_receipt {
+                            let _ = self.event_tx.send(receipt);
+                        }
                         let _ = self.event_tx.send(FromAgent::ResponseEnd {
                             response_id: "done".to_string(),
                             usage: None,
                         });
                     }
+                    self.finish_user_note_consumption(
+                        !terminal_request_failure && !request_cancelled,
+                    );
                     if !terminal_request_failure && !request_cancelled {
                         let _ = self.event_tx.send(FromAgent::TurnCompleted {
                             response_id: "done".to_string(),
@@ -4191,7 +4611,6 @@ impl NativeAgentRunner {
                             reason: "cancelled".to_string(),
                         });
                     }
-                    self.emit_conversation_snapshot();
                 }
                 AgentCommand::Cancel { clear_pending } => {
                     if let Some(token) = &self.cancel_token {
@@ -4307,6 +4726,12 @@ impl NativeAgentRunner {
                 AgentCommand::SetApprovalMode { mode } => {
                     self.config.approval_mode = mode;
                 }
+                AgentCommand::ReplaceGovernedTools {
+                    allowed_tools,
+                    external_tool_definitions,
+                } => {
+                    self.replace_governed_tools(&allowed_tools, external_tool_definitions);
+                }
                 AgentCommand::SetSteeringMode { mode } => {
                     self.steering_mode = mode;
                 }
@@ -4316,6 +4741,8 @@ impl NativeAgentRunner {
                 AgentCommand::SetSystemPrompt { system_prompt } => {
                     self.config.system_prompt = Some(system_prompt);
                     self.system_prompt_revision = self.system_prompt_revision.saturating_add(1);
+                    self.runtime_prompt_revision = self.runtime_prompt_revision.saturating_add(1);
+                    self.refresh_runtime_audit();
                 }
                 AgentCommand::SetSystemPromptForQueuedPrompt {
                     queue_id,
@@ -4326,6 +4753,7 @@ impl NativeAgentRunner {
                 }
                 AgentCommand::ClearHistory => {
                     self.reset_tool_response_state();
+                    self.reset_user_note_consumption();
                     self.messages_mut().clear();
                     self.codex_session = None;
                     self.codex_history_restore_prefix_len = None;
@@ -4338,6 +4766,7 @@ impl NativeAgentRunner {
                 }
                 AgentCommand::ReplaceHistory { messages } => {
                     self.reset_tool_response_state();
+                    self.reset_user_note_consumption();
                     let restored_prefix_len = messages.len();
                     self.messages = Arc::new(messages);
                     self.codex_session = None;
@@ -4353,6 +4782,7 @@ impl NativeAgentRunner {
                     self.credential_vault.clear();
                 }
                 AgentCommand::ReplaceHistoryPreservingCredentials { messages } => {
+                    self.reset_user_note_consumption();
                     let restored_prefix_len = messages.len();
                     // `main` stores runner history in an Arc; keep this
                     // assignment compatible with both the pre-merge Vec and
@@ -4390,6 +4820,8 @@ impl NativeAgentRunner {
                     }
 
                     self.busy = true;
+                    self.current_request_user_message_index = None;
+                    self.begin_user_note_consumption();
                     let cancel_token = CancellationToken::new();
                     self.set_active_request_cancel_token(Some(cancel_token.clone()));
                     let shutdown_token = self.shutdown_token.clone();
@@ -4406,7 +4838,7 @@ impl NativeAgentRunner {
 
                     let request_succeeded = result.is_ok();
                     let mut request_cancelled = false;
-                    let mut request_failed = false;
+                    let mut request_failure_event = None;
                     if let Err(e) = result {
                         let provider_stream_failure = e
                             .downcast_ref::<ProviderStreamFailure>()
@@ -4415,32 +4847,34 @@ impl NativeAgentRunner {
                         if msg == "Request cancelled" {
                             request_cancelled = true;
                         } else if let Some((kind, message)) = provider_stream_failure {
-                            let _ = self
-                                .event_tx
-                                .send(FromAgent::ProviderError { kind, message });
-                            request_failed = true;
+                            request_failure_event =
+                                Some(FromAgent::ProviderError { kind, message });
                         } else {
-                            let _ = self.event_tx.send(FromAgent::Error {
+                            request_failure_event = Some(FromAgent::Error {
                                 message: format!("Agent error: {e}"),
                                 fatal: false,
                                 terminal: true,
                             });
-                            request_failed = true;
                         }
                     }
 
                     self.busy = false;
                     self.set_active_request_cancel_token(None);
                     self.prompt_context = None;
+                    self.current_request_user_message_index = None;
 
                     self.repair_orphaned_tool_calls();
+                    self.emit_conversation_snapshot();
 
-                    if !request_failed {
+                    if let Some(event) = request_failure_event {
+                        let _ = self.event_tx.send(event);
+                    } else {
                         let _ = self.event_tx.send(FromAgent::ResponseEnd {
                             response_id: "continue".to_string(),
                             usage: None,
                         });
                     }
+                    self.finish_user_note_consumption(request_succeeded);
                     if request_succeeded {
                         let _ = self.event_tx.send(FromAgent::TurnCompleted {
                             response_id: "continue".to_string(),
@@ -4451,7 +4885,6 @@ impl NativeAgentRunner {
                             reason: "cancelled".to_string(),
                         });
                     }
-                    self.emit_conversation_snapshot();
                 }
             }
         }
@@ -4525,25 +4958,16 @@ impl NativeAgentRunner {
         let tools = if let Some(tools) = cached_tools {
             tools
         } else {
-            let mut definitions: Vec<&ToolDefinition> = self
-                .tools
-                .values()
-                .filter(|d| {
-                    let name = d.tool.name.as_str();
-                    if !self.active_tool_names.contains(&name.to_ascii_lowercase()) {
-                        return false;
-                    }
-                    if !tool_is_visible_to_model(name, goal_tools_visible, include_ide_tools) {
-                        return false;
-                    }
-                    true
-                })
-                .collect();
-            definitions.sort_unstable_by(|left, right| left.tool.name.cmp(&right.tool.name));
+            let definitions = effective_tool_definitions(
+                &self.tools,
+                &self.active_tool_names,
+                goal_tools_visible,
+                include_ide_tools,
+            );
             let tools = Arc::new(
                 definitions
                     .into_iter()
-                    .map(|d| compact_tool_for_model(d.tool.clone()))
+                    .map(|definition| definition.tool)
                     .collect(),
             );
             self.model_tool_cache = Some(ModelToolCache {
@@ -4554,7 +4978,6 @@ impl NativeAgentRunner {
             });
             tools
         };
-
         let thinking = if self.config.thinking_enabled {
             Some(ThinkingConfig::enabled(self.config.thinking_budget))
         } else {
@@ -4577,6 +5000,7 @@ impl NativeAgentRunner {
         // the control-plane chat path — get it appended here; prompts that
         // already embed it (the TUI base prompt) pass through unchanged.
         let system = ensure_untrusted_content_policy(system);
+        self.refresh_runtime_audit_with_prompt(system.clone());
 
         let configured_model = self.config.model.trim();
         let model = if ["evalops/", "maestro-managed/"].iter().any(|prefix| {
@@ -4928,26 +5352,11 @@ impl NativeAgentRunner {
 
         self.ensure_codex_session().await?;
 
-        let user_text = self
-            .messages
-            .iter()
-            .rev()
-            .find_map(|message| match (&message.role, &message.content) {
-                (Role::User, MessageContent::Text(text)) => Some(text.clone()),
-                (Role::User, MessageContent::Blocks(blocks)) => {
-                    let text = blocks
-                        .iter()
-                        .filter_map(|block| match block {
-                            ContentBlock::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    (!text.is_empty()).then_some(text)
-                }
-                _ => None,
-            })
-            .unwrap_or_default();
+        let user_text = codex_app_server_user_text(
+            &self.messages,
+            &self.active_user_note_texts,
+            self.current_request_user_message_index,
+        );
         if user_text.is_empty() {
             bail!("No user message available for Codex app-server turn");
         }
@@ -5120,6 +5529,9 @@ impl NativeAgentRunner {
                 .context("Codex app-server session missing")?
                 .steer_text(turn_id, text, None)
                 .await?;
+            if pending_message.id != 0 {
+                self.processed_prompt_queue_ids.insert(pending_message.id);
+            }
             if let Some(session) = self.codex_session.as_ref() {
                 let _ = self.event_tx.send(FromAgent::CodexTurnState {
                     state: "steering".to_owned(),
@@ -7150,6 +7562,11 @@ impl NativeAgentRunner {
             .filter_map(|(name, definition)| {
                 let name_lower = name.to_ascii_lowercase();
                 if name_lower == "tool_search"
+                    || !tool_search_profile_allows(
+                        self.tool_profile,
+                        name,
+                        &self.explicitly_allowed_tools,
+                    )
                     || !tool_is_visible_to_model(
                         name,
                         self.goal_tools_visible,
@@ -7201,6 +7618,7 @@ impl NativeAgentRunner {
         }
         if !activated.is_empty() {
             self.model_tool_cache = None;
+            self.refresh_runtime_audit();
         }
         let result = ToolResult::success(lines.join("\n")).with_details(json!({
             "activated": activated,
@@ -7499,7 +7917,15 @@ fn append_codex_tool_result(
     });
 }
 
+#[cfg(test)]
 fn conversation_snapshot_event(messages: &[Message]) -> Option<FromAgent> {
+    conversation_snapshot_event_with_queue_ids(messages, Vec::new())
+}
+
+fn conversation_snapshot_event_with_queue_ids(
+    messages: &[Message],
+    processed_queue_ids: Vec<u64>,
+) -> Option<FromAgent> {
     let serialized = serde_json::to_value(sanitize_semantic_conversation(messages)).ok()?;
     let messages = serde_json::from_value(redact_semantic_snapshot_json(
         crate::agent::credential_store::redact_credentials_in_json(&serialized),
@@ -7508,6 +7934,7 @@ fn conversation_snapshot_event(messages: &[Message]) -> Option<FromAgent> {
     Some(FromAgent::ConversationSnapshot {
         protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL.to_string(),
         messages,
+        processed_queue_ids,
     })
 }
 
@@ -7615,14 +8042,19 @@ fn build_runner_tool_executor(
     credential_vault: CredentialVault,
     sandbox_policy: Option<crate::sandbox::SandboxPolicy>,
     subagent_parent_scope_id: Option<String>,
+    mailbox_identity: Option<String>,
 ) -> ToolExecutor {
     let executor = ToolExecutor::with_credential_vault(cwd, credential_vault);
     let executor = match sandbox_policy {
         Some(policy) => executor.with_sandbox_policy(policy),
         None => executor,
     };
-    match subagent_parent_scope_id {
+    let executor = match subagent_parent_scope_id {
         Some(parent_scope_id) => executor.with_subagent_parent_scope(parent_scope_id),
+        None => executor,
+    };
+    match mailbox_identity {
+        Some(identity) => executor.with_mailbox_identity(identity),
         None => executor,
     }
 }
@@ -7696,6 +8128,7 @@ fn tool_args_for_execution(
 ) -> serde_json::Value {
     if tool_name.eq_ignore_ascii_case("spawn_subagent")
         || tool_name.eq_ignore_ascii_case("resume_subagent")
+        || tool_name.eq_ignore_ascii_case("control_subagent")
     {
         safe_args.clone()
     } else {
@@ -8404,6 +8837,14 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
+    fn empty_runtime_audit() -> Arc<RwLock<RuntimeAuditSnapshot>> {
+        Arc::new(RwLock::new(RuntimeAuditSnapshot {
+            prompt_revision: 0,
+            system_prompt: None,
+            tools: Vec::new(),
+        }))
+    }
+
     #[test]
     fn closed_tool_response_is_typed_and_not_retried_as_a_deterministic_failure() {
         let error = closed_tool_response_failure("call_closed");
@@ -8542,6 +8983,70 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn injected_user_note_acknowledges_history_application() {
+        let config = NativeAgentConfig {
+            model: "openai/gpt-4o".to_owned(),
+            cwd: tempfile::tempdir()
+                .expect("workspace")
+                .path()
+                .display()
+                .to_string(),
+            ..NativeAgentConfig::default()
+        };
+        let client = UnifiedClient::OpenAI(
+            crate::ai::OpenAiClient::with_base_url("test-key", "http://127.0.0.1:1/v1")
+                .expect("test client"),
+        );
+        let (agent, _events) =
+            NativeAgent::new_with_test_client(config, client).expect("native agent");
+
+        let (applied, mut consumed) = agent
+            .inject_user_note("Subagent child-1 completed.")
+            .expect("queue user note");
+        tokio::time::timeout(std::time::Duration::from_secs(1), applied)
+            .await
+            .expect("agent note application timeout")
+            .expect("agent note application acknowledgement");
+        assert!(matches!(
+            consumed.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+
+        agent.shutdown().await;
+    }
+
+    #[test]
+    fn codex_app_server_turn_includes_trailing_injected_notes() {
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::text("Previous response"),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::text("Cancelled instruction."),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::text("Subagent child-1 completed."),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::text("Continue the task."),
+            },
+        ];
+
+        assert_eq!(
+            codex_app_server_user_text(
+                &messages,
+                &["Subagent child-1 completed.".to_string()],
+                Some(3),
+            ),
+            "Subagent child-1 completed.\n\nContinue the task."
+        );
+    }
+
     async fn read_scripted_provider_request(
         stream: &mut tokio::net::TcpStream,
     ) -> serde_json::Value {
@@ -8605,6 +9110,22 @@ mod tests {
         body
     }
 
+    fn chat_sse_tool_response(id: &str, name: &str, arguments: &str) -> String {
+        let start = serde_json::json!({
+            "id": id, "object": "chat.completion.chunk", "created": 0,
+            "model": "gpt-4o", "choices": [{"index": 0,
+                "delta": {"role": "assistant", "content": ""}, "finish_reason": null}]
+        });
+        let tool = serde_json::json!({
+            "id": id, "object": "chat.completion.chunk", "created": 0,
+            "model": "gpt-4o", "choices": [{"index": 0,
+                "delta": {"tool_calls": [{"index": 0, "id": "call-search-1", "type": "function",
+                    "function": {"name": name, "arguments": arguments}}]},
+                "finish_reason": "tool_calls"}]
+        });
+        format!("data: {start}\n\ndata: {tool}\n\ndata: [DONE]\n\n")
+    }
+
     async fn scripted_native_provider() -> (String, Arc<Mutex<Vec<serde_json::Value>>>) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -8638,6 +9159,432 @@ mod tests {
             }
         });
         (format!("http://{address}/v1"), requests)
+    }
+
+    async fn scripted_single_turn_provider() -> (String, Arc<Mutex<Vec<serde_json::Value>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind provider");
+        let address = listener.local_addr().expect("provider address");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&requests);
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("provider accept");
+            let request = read_scripted_provider_request(&mut stream).await;
+            captured.lock().unwrap().push(request);
+            let response =
+                chat_sse_response("hosted-fast-final", "The hosted turn completed.", false);
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(), response
+            );
+            stream
+                .write_all(wire.as_bytes())
+                .await
+                .expect("provider response");
+        });
+        (format!("http://{address}/v1"), requests)
+    }
+
+    async fn scripted_rlm_search_provider() -> (String, Arc<Mutex<Vec<serde_json::Value>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind provider");
+        let address = listener.local_addr().expect("provider address");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&requests);
+        tokio::spawn(async move {
+            for response in [
+                chat_sse_tool_response(
+                    "hosted-fast-search",
+                    "tool_search",
+                    "{\"names\":[\"set_rlm_context\"]}",
+                ),
+                chat_sse_response("hosted-fast-after-search", "Search stayed bounded.", false),
+            ] {
+                let (mut stream, _) = listener.accept().await.expect("provider accept");
+                let request = read_scripted_provider_request(&mut stream).await;
+                captured.lock().unwrap().push(request);
+                let wire = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.len(), response
+                );
+                stream
+                    .write_all(wire.as_bytes())
+                    .await
+                    .expect("provider response");
+            }
+        });
+        (format!("http://{address}/v1"), requests)
+    }
+
+    #[tokio::test]
+    async fn hosted_default_fast_trivial_turn_is_one_request_without_rlm_or_approval() {
+        let (base_url, requests) = scripted_single_turn_provider().await;
+        let workspace = tempfile::tempdir().expect("workspace");
+        let config = NativeAgentConfig {
+            model: "openai/gpt-4o".to_owned(),
+            cwd: workspace.path().display().to_string(),
+            approval_mode: ApprovalMode::Selective,
+            ..NativeAgentConfig::default()
+        };
+        let client = UnifiedClient::OpenAI(
+            crate::ai::OpenAiClient::with_base_url("test-key", base_url).expect("scripted client"),
+        );
+        let (agent, mut events) =
+            NativeAgent::new_with_test_client(config, client).expect("hosted agent");
+
+        agent
+            .prompt("Reply with a short greeting.".to_owned(), vec![])
+            .await
+            .expect("hosted prompt");
+
+        let mut assistant_text = String::new();
+        let mut approval_requested = false;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match events.recv().await {
+                    Some(FromAgent::ResponseChunk {
+                        content,
+                        is_thinking: false,
+                        ..
+                    }) => assistant_text.push_str(&content),
+                    Some(FromAgent::ToolCall {
+                        requires_approval: true,
+                        ..
+                    }) => approval_requested = true,
+                    Some(FromAgent::TurnCompleted { .. }) => break,
+                    Some(FromAgent::Error { message, .. }) => {
+                        panic!("hosted turn failed: {message}")
+                    }
+                    Some(FromAgent::ProviderError { message, .. }) => {
+                        panic!("provider turn failed: {message}")
+                    }
+                    Some(_) => {}
+                    None => panic!("agent event channel closed before turn_completed"),
+                }
+            }
+        })
+        .await
+        .expect("hosted turn timeout");
+        agent.shutdown().await;
+
+        assert!(!assistant_text.trim().is_empty());
+        assert!(!approval_requested);
+        let captured = requests.lock().unwrap();
+        assert_eq!(
+            captured.len(),
+            1,
+            "trivial turn must use one provider request"
+        );
+        let advertised = captured[0]["tools"]
+            .as_array()
+            .expect("OpenAI tools array")
+            .iter()
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .collect::<HashSet<_>>();
+        for rlm_tool in [
+            "get_rlm_context",
+            "set_rlm_context",
+            "append_rlm_context",
+            "render_rlm_context",
+            "clear_rlm_context",
+        ] {
+            assert!(
+                !advertised.contains(rlm_tool),
+                "default Fast request advertised RLM tool {rlm_tool}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn semantic_snapshot_precedes_public_success_terminals() {
+        let (base_url, _requests) = scripted_single_turn_provider().await;
+        let workspace = tempfile::tempdir().expect("workspace");
+        let config = NativeAgentConfig {
+            model: "openai/gpt-4o".to_owned(),
+            cwd: workspace.path().display().to_string(),
+            approval_mode: ApprovalMode::Yolo,
+            ..NativeAgentConfig::default()
+        };
+        let client = UnifiedClient::OpenAI(
+            crate::ai::OpenAiClient::with_base_url("test-key", base_url).expect("scripted client"),
+        );
+        let (agent, mut events) =
+            NativeAgent::new_with_test_client(config, client).expect("hosted agent");
+
+        agent
+            .prompt("ordering sentinel".to_owned(), vec![])
+            .await
+            .expect("hosted prompt");
+
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut observed = Vec::new();
+            let mut saw_snapshot = false;
+            let mut saw_completed = false;
+            while !(saw_snapshot && saw_completed) {
+                match events.recv().await {
+                    Some(FromAgent::ConversationSnapshot { .. }) => {
+                        observed.push("snapshot");
+                        saw_snapshot = true;
+                    }
+                    Some(FromAgent::ResponseEnd { response_id, .. }) if response_id == "done" => {
+                        observed.push("response_end");
+                    }
+                    Some(FromAgent::TurnCompleted { .. }) => {
+                        observed.push("turn_completed");
+                        saw_completed = true;
+                    }
+                    Some(FromAgent::Error { message, .. }) => {
+                        panic!("hosted turn failed: {message}")
+                    }
+                    Some(FromAgent::ProviderError { message, .. }) => {
+                        panic!("provider turn failed: {message}")
+                    }
+                    Some(_) => {}
+                    None => panic!("agent event channel closed before terminal sequence"),
+                }
+            }
+            observed
+        })
+        .await
+        .expect("hosted turn timeout");
+        agent.shutdown().await;
+
+        assert_eq!(
+            observed,
+            vec!["snapshot", "response_end", "turn_completed"],
+            "a persistable semantic checkpoint must lead every public success terminal"
+        );
+    }
+
+    #[tokio::test]
+    async fn hosted_hard_kill_at_terminal_restores_prior_user_and_assistant_turn() {
+        let (base_url, requests) = scripted_native_provider().await;
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::write(
+            workspace.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\n",
+        )
+        .expect("fixture file");
+        let config = NativeAgentConfig {
+            model: "openai/gpt-4o".to_owned(),
+            cwd: workspace.path().display().to_string(),
+            approval_mode: ApprovalMode::Yolo,
+            ..NativeAgentConfig::default()
+        };
+        let source_client = UnifiedClient::OpenAI(
+            crate::ai::OpenAiClient::with_base_url("test-key", base_url.clone())
+                .expect("owner-1 client"),
+        );
+        let (source, mut source_events) =
+            NativeAgent::new_with_test_client(config.clone(), source_client).expect("owner-1");
+        source
+            .prompt("owner-1-user-sentinel".to_owned(), vec![])
+            .await
+            .expect("owner-1 prompt");
+
+        let sessions = tempfile::tempdir().expect("sessions");
+        let mut recorder =
+            crate::headless::SessionRecorder::new(sessions.path()).expect("session recorder");
+        // Model the hosted owner being killed as soon as the public response
+        // terminal is visible. Only semantic snapshots observed before that
+        // boundary can be durable input for owner 2.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match source_events.recv().await {
+                    Some(FromAgent::ConversationSnapshot {
+                        protocol_version,
+                        messages,
+                        ..
+                    }) => recorder
+                        .record_received(
+                            &crate::headless::messages::FromAgentMessage::ConversationSnapshot {
+                                protocol_version,
+                                messages,
+                            },
+                        )
+                        .expect("persist owner-1 snapshot"),
+                    Some(FromAgent::ResponseEnd { response_id, .. }) if response_id == "done" => {
+                        break;
+                    }
+                    Some(FromAgent::Error { message, .. }) => {
+                        panic!("owner-1 failed: {message}")
+                    }
+                    Some(FromAgent::ProviderError { message, .. }) => {
+                        panic!("owner-1 provider failed: {message}")
+                    }
+                    Some(_) => {}
+                    None => panic!("owner-1 closed before public terminal"),
+                }
+            }
+        })
+        .await
+        .expect("owner-1 terminal timeout");
+        let session_id = recorder.id().to_owned();
+        drop(recorder);
+        // Do not consume any event after the public terminal: this is the
+        // process-kill boundary the hosted lifecycle exposes to its owner.
+        drop(source_events);
+        source.shutdown().await;
+
+        let restored_history =
+            crate::headless::SessionRecorder::resume(sessions.path(), &session_id)
+                .expect("resume owner-1 checkpoint")
+                .replay()
+                .semantic_conversation
+                .expect("owner-1 semantic checkpoint must predate its terminal");
+        let restored_client = UnifiedClient::OpenAI(
+            crate::ai::OpenAiClient::with_base_url("test-key", base_url).expect("owner-2 client"),
+        );
+        let (restored, mut restored_events) =
+            NativeAgent::new_with_test_client(config, restored_client).expect("owner-2");
+        restored.replace_history(restored_history);
+        restored
+            .prompt("owner-2-user-sentinel".to_owned(), vec![])
+            .await
+            .expect("owner-2 prompt");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while let Some(event) = restored_events.recv().await {
+                if matches!(event, FromAgent::ResponseEnd { .. }) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("owner-2 terminal timeout");
+        restored.shutdown().await;
+
+        let captured = requests.lock().unwrap();
+        assert_eq!(captured.len(), 3);
+        let owner_2_request =
+            serde_json::to_string(&captured[2]).expect("owner-2 provider request json");
+        assert!(
+            owner_2_request.contains("owner-1-user-sentinel"),
+            "owner-2 provider body lost the prior user turn: {owner_2_request}"
+        );
+        assert!(
+            owner_2_request.contains("The first turn is complete."),
+            "owner-2 provider body lost the prior assistant turn: {owner_2_request}"
+        );
+    }
+
+    #[tokio::test]
+    async fn hosted_fast_tool_search_cannot_reactivate_rlm_mutations() {
+        let (base_url, requests) = scripted_rlm_search_provider().await;
+        let workspace = tempfile::tempdir().expect("workspace");
+        let config = NativeAgentConfig {
+            model: "openai/gpt-4o".to_owned(),
+            cwd: workspace.path().display().to_string(),
+            approval_mode: ApprovalMode::Yolo,
+            ..NativeAgentConfig::default()
+        };
+        let client = UnifiedClient::OpenAI(
+            crate::ai::OpenAiClient::with_base_url("test-key", base_url).expect("scripted client"),
+        );
+        let (agent, mut events) =
+            NativeAgent::new_with_test_client(config, client).expect("hosted agent");
+
+        agent
+            .prompt(
+                "Find the requested capability, then answer.".to_owned(),
+                vec![],
+            )
+            .await
+            .expect("hosted prompt");
+
+        let mut approval_requested = false;
+        let mut completed = false;
+        let mut observed = Vec::new();
+        let terminal = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while let Some(event) = events.recv().await {
+                observed.push(format!("{event:?}"));
+                match event {
+                    FromAgent::ToolCall {
+                        requires_approval: true,
+                        ..
+                    } => approval_requested = true,
+                    FromAgent::TurnCompleted { .. } => {
+                        completed = true;
+                        break;
+                    }
+                    FromAgent::Error { message, .. } => panic!("hosted turn failed: {message}"),
+                    FromAgent::ProviderError { message, .. } => {
+                        panic!("provider turn failed: {message}")
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await;
+        assert!(terminal.is_ok(), "hosted turn timeout: {observed:#?}");
+        agent.shutdown().await;
+
+        assert!(completed);
+        assert!(!approval_requested);
+        let captured = requests.lock().unwrap();
+        assert_eq!(captured.len(), 2);
+        let second_request = serde_json::to_string(&captured[1]).expect("second request JSON");
+        assert!(
+            second_request.contains("No tools matched"),
+            "{second_request}"
+        );
+        let advertised = captured[1]["tools"]
+            .as_array()
+            .expect("OpenAI tools array")
+            .iter()
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .collect::<HashSet<_>>();
+        assert!(!advertised.contains("set_rlm_context"));
+    }
+
+    #[tokio::test]
+    async fn injected_user_note_is_consumed_only_after_a_successful_turn() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind provider");
+        let address = listener.local_addr().expect("provider address");
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("provider accept");
+            let _request = read_scripted_provider_request(&mut stream).await;
+            let response = chat_sse_response("note-consumption", "Done.", false);
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(), response
+            );
+            stream
+                .write_all(wire.as_bytes())
+                .await
+                .expect("provider response");
+        });
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let config = NativeAgentConfig {
+            model: "openai/gpt-4o".to_owned(),
+            cwd: workspace.path().display().to_string(),
+            ..NativeAgentConfig::default()
+        };
+        let client = UnifiedClient::OpenAI(
+            crate::ai::OpenAiClient::with_base_url("test-key", format!("http://{address}/v1"))
+                .expect("test client"),
+        );
+        let (agent, _events) =
+            NativeAgent::new_with_test_client(config, client).expect("native agent");
+        let (applied, consumed) = agent
+            .inject_user_note("Subagent child-1 completed.")
+            .expect("queue user note");
+        applied.await.expect("agent note application");
+
+        agent
+            .prompt("Use the completion note.".to_string(), Vec::new())
+            .await
+            .expect("start turn");
+        tokio::time::timeout(std::time::Duration::from_secs(5), consumed)
+            .await
+            .expect("agent note consumption timeout")
+            .expect("agent note consumption acknowledgement");
+
+        agent.shutdown().await;
     }
 
     #[tokio::test]
@@ -9118,7 +10065,11 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(20), async {
             loop {
                 let event = events.recv().await.expect("fixture event");
-                let done = matches!(event, FromAgent::ConversationSnapshot { .. });
+                let done = match &event {
+                    FromAgent::TurnCompleted { .. } | FromAgent::TurnInterrupted { .. } => true,
+                    FromAgent::CodexTransportReceipt { outcome, .. } => outcome == "failed",
+                    _ => false,
+                };
                 captured.push(serde_json::to_value(&event).expect("event json"));
                 if done {
                     break;
@@ -9265,12 +10216,18 @@ else if(x.method==='turn/start'){send({id:x.id,result:{turn:{id:'turn-terminal'}
         // The transport receipt is emitted once, when the turn fails closed
         // after retry exhaustion.
         assert_eq!(failed_receipts.len(), 1, "{empty_events:?}");
+        let snapshot_index = empty_events
+            .iter()
+            .position(|event| event["type"] == "conversation_snapshot")
+            .expect("failed turn semantic snapshot");
         // Every attempt reports usage before its turn fails, and the terminal
-        // error lands only after the final failed attempt.
+        // error lands only after the final failed attempt and its persistable
+        // semantic checkpoint.
         for (usage, failed) in empty_usage.iter().zip(failed_states.iter()) {
             assert!(usage.0 < failed.0, "{empty_events:?}");
         }
         assert!(failed_states.last().expect("failed states").0 < empty_errors[0].0);
+        assert!(snapshot_index < empty_errors[0].0, "{empty_events:?}");
         assert!(empty_errors[0].0 < failed_receipts[0].0);
 
         let text_events = run_child("text");
@@ -9618,20 +10575,40 @@ else if(x.method==='turn/interrupt'){
         tokio::time::timeout(std::time::Duration::from_secs(12), async {
             let mut errors = Vec::new();
             let mut statuses = Vec::new();
+            let mut snapshot = None;
             loop {
                 match events.recv().await {
-                    Some(FromAgent::Error { message, .. }) => errors.push(message),
+                    Some(FromAgent::Error {
+                        message, terminal, ..
+                    }) => {
+                        errors.push(message);
+                        if terminal {
+                            break;
+                        }
+                    }
+                    Some(FromAgent::ProviderError { message, .. }) => {
+                        errors.push(message);
+                        break;
+                    }
                     Some(FromAgent::Status { message }) => statuses.push(message),
                     Some(FromAgent::ConversationSnapshot { messages, .. }) => {
-                        break (messages, errors, statuses);
+                        snapshot = Some(messages);
+                    }
+                    Some(FromAgent::TurnCompleted { .. } | FromAgent::TurnInterrupted { .. }) => {
+                        break;
                     }
                     Some(_) => {}
-                    None => panic!("fixture closed before terminal snapshot"),
+                    None => panic!("fixture closed before terminal boundary"),
                 }
             }
+            (
+                snapshot.expect("semantic snapshot must precede the terminal boundary"),
+                errors,
+                statuses,
+            )
         })
         .await
-        .expect("fixture snapshot timeout")
+        .expect("fixture terminal timeout")
     }
 
     #[tokio::test]
@@ -10618,6 +11595,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             event_tx,
             model_name: "test".to_string(),
             provider_name: "test".to_string(),
+            runtime_audit: empty_runtime_audit(),
             shutdown_token,
             runner_handle: Some(runner_task),
         };
@@ -10707,6 +11685,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             event_tx,
             model_name: "test".to_string(),
             provider_name: "test".to_string(),
+            runtime_audit: empty_runtime_audit(),
             shutdown_token,
             runner_handle: Some(runner_task),
         };
@@ -10781,6 +11760,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             event_tx,
             model_name: "test-model".to_string(),
             provider_name: "test-provider".to_string(),
+            runtime_audit: empty_runtime_audit(),
             shutdown_token: CancellationToken::new(),
             runner_handle: None,
         };
@@ -10851,6 +11831,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             event_tx,
             model_name: "test-model".to_string(),
             provider_name: "test-provider".to_string(),
+            runtime_audit: empty_runtime_audit(),
             shutdown_token,
             runner_handle: Some(runner_handle),
         };
@@ -10927,6 +11908,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             event_tx,
             model_name: "test-model".to_string(),
             provider_name: "test-provider".to_string(),
+            runtime_audit: empty_runtime_audit(),
             shutdown_token: CancellationToken::new(),
             runner_handle: None,
         };
@@ -10970,6 +11952,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             event_tx,
             model_name: "test-model".to_string(),
             provider_name: "test-provider".to_string(),
+            runtime_audit: empty_runtime_audit(),
             shutdown_token: CancellationToken::new(),
             runner_handle: None,
         };
@@ -11264,6 +12247,36 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             "an earlier prompt must not inherit a later prompt's skills"
         );
         assert!(staged.is_empty(), "each entry is consumed once");
+    }
+
+    #[test]
+    fn applying_one_staged_prompt_does_not_invalidate_its_queued_sibling() {
+        let mut staged = HashMap::from([
+            (1, (4, "base + skill-a".to_string())),
+            (2, (4, "base + skill-a + skill-b".to_string())),
+        ]);
+        let authority_revision = 4;
+        let mut runtime_revision = 9;
+        let mut system_prompt = None;
+
+        assert!(apply_staged_system_prompt(
+            &mut staged,
+            1,
+            authority_revision,
+            &mut system_prompt,
+            &mut runtime_revision,
+        ));
+        assert_eq!(system_prompt.as_deref(), Some("base + skill-a"));
+        assert_eq!(runtime_revision, 10);
+        assert!(apply_staged_system_prompt(
+            &mut staged,
+            2,
+            authority_revision,
+            &mut system_prompt,
+            &mut runtime_revision,
+        ));
+        assert_eq!(system_prompt.as_deref(), Some("base + skill-a + skill-b"));
+        assert_eq!(runtime_revision, 11);
     }
 
     #[test]
@@ -12195,13 +13208,14 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             credential_vault.clone(),
             Some(crate::sandbox::SandboxPolicy::ReadOnly),
             None,
+            None,
         );
         assert!(
             sandboxed.requires_sandbox_bypass_approval("bash", &bypass_args),
             "a configured sandbox_policy must reach the runner's own executor"
         );
 
-        let unsandboxed = build_runner_tool_executor(".", credential_vault, None, None);
+        let unsandboxed = build_runner_tool_executor(".", credential_vault, None, None, None);
         assert!(
             !unsandboxed.requires_sandbox_bypass_approval("bash", &bypass_args),
             "no sandbox_policy configured must produce no sandbox awareness"
@@ -12215,6 +13229,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             CredentialVault::new(),
             None,
             Some("app-parent-scope".to_string()),
+            None,
         );
 
         assert_eq!(
@@ -12222,6 +13237,19 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             "app-parent-scope",
             "auto-executed delegation must publish events to the caller's scope"
         );
+    }
+
+    #[test]
+    fn runner_tool_executor_binds_model_mailbox_calls_to_runtime_identity() {
+        let executor = build_runner_tool_executor(
+            ".",
+            CredentialVault::new(),
+            None,
+            None,
+            Some("subagent:child:3".to_string()),
+        );
+
+        assert_eq!(executor.mailbox_identity(), "subagent:child:3");
     }
 
     #[test]
@@ -12414,6 +13442,18 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         assert!(active.contains("bash"));
         assert!(active.contains("tool_search"));
         assert!(active.contains("explore"));
+        for rlm_tool in [
+            "get_rlm_context",
+            "set_rlm_context",
+            "append_rlm_context",
+            "render_rlm_context",
+            "clear_rlm_context",
+        ] {
+            assert!(
+                !active.contains(rlm_tool),
+                "default Fast profile must not advertise RLM tool {rlm_tool}"
+            );
+        }
         assert!(!active.contains("gh_pr"));
         assert!(!active.contains("vscode_get_definition"));
     }
@@ -12432,13 +13472,53 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
     }
 
     #[test]
+    fn fast_tool_search_blocks_rlm_unless_explicitly_allowed() {
+        assert!(!tool_search_profile_allows(
+            ToolProfile::Fast,
+            "set_rlm_context",
+            &HashSet::new()
+        ));
+        assert!(tool_search_profile_allows(
+            ToolProfile::Fast,
+            "set_rlm_context",
+            &HashSet::from([String::from("set_rlm_context")])
+        ));
+        assert!(tool_search_profile_allows(
+            ToolProfile::All,
+            "set_rlm_context",
+            &HashSet::new()
+        ));
+    }
+
+    #[test]
+    fn all_tool_profile_cannot_widen_a_governed_registry() {
+        let allowed = HashSet::from(["read".to_string()]);
+        let registry = ToolRegistry::new();
+        let definitions = registry
+            .tools()
+            .filter(|definition| allowed.contains(&definition.tool.name.to_ascii_lowercase()))
+            .map(|definition| (definition.tool.name.clone(), definition.clone()))
+            .collect::<HashMap<_, _>>();
+        let active = initial_active_tool_names(
+            ToolProfile::All,
+            &definitions,
+            &HashSet::new(),
+            Some(&allowed),
+        );
+
+        assert_eq!(active, HashSet::from(["read".to_string()]));
+        assert!(!active.contains("bash"));
+        assert!(!active.contains("write"));
+    }
+
+    #[test]
     fn explicit_allowed_tools_override_fast_profile() {
         let registry = ToolRegistry::new();
         let definitions = registry
             .tools()
             .map(|definition| (definition.tool.name.clone(), definition.clone()))
             .collect::<HashMap<_, _>>();
-        let allowed = HashSet::from([String::from("websearch")]);
+        let allowed = HashSet::from([String::from("websearch"), String::from("set_rlm_context")]);
 
         let active = initial_active_tool_names(
             ToolProfile::Fast,
@@ -12448,6 +13528,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         );
 
         assert!(active.contains("websearch"));
+        assert!(active.contains("set_rlm_context"));
     }
 
     #[test]

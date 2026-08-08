@@ -22,6 +22,7 @@ use crate::agent::{
 };
 use crate::session::{AppMessage, ContentBlock, ParsedSession, SessionManager, SessionReader};
 use crate::tools::background_tasks::MonitorEvent;
+use crate::tools::CoordinationSnapshot;
 use crate::tools::ToolDetails;
 
 const RECENT_SESSION_LIMIT: usize = 20;
@@ -294,6 +295,12 @@ enum FocusedPane {
     Receipt,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OperationsView {
+    Operations,
+    Agents,
+}
+
 impl FocusedPane {
     fn next(self) -> Self {
         match self {
@@ -315,9 +322,13 @@ impl FocusedPane {
 pub struct OperationsModal {
     manager: SessionManager,
     rows: Vec<OperationRow>,
+    agents: Vec<CoordinationSnapshot>,
     selected: usize,
+    agent_selected: usize,
     list_state: ListState,
+    agent_list_state: ListState,
     focus: FocusedPane,
+    view: OperationsView,
     visible: bool,
     loading: bool,
     load_rx: Option<Receiver<OperationsLoad>>,
@@ -329,6 +340,7 @@ pub struct OperationsModal {
 
 struct OperationsLoad {
     rows: Vec<OperationRow>,
+    agents: Vec<CoordinationSnapshot>,
     parse_failures: Vec<String>,
     error: Option<String>,
 }
@@ -339,6 +351,7 @@ fn load_operations(manager: &SessionManager) -> OperationsLoad {
         Err(error) => {
             return OperationsLoad {
                 rows: Vec::new(),
+                agents: Vec::new(),
                 parse_failures: Vec::new(),
                 error: Some(format!(
                     "Failed to load operations: {}",
@@ -373,8 +386,10 @@ fn load_operations(manager: &SessionManager) -> OperationsLoad {
             .collect(),
     );
 
+    let agents = crate::tools::coordination_snapshots(Path::new(manager.cwd())).unwrap_or_default();
     OperationsLoad {
         rows,
+        agents,
         parse_failures,
         error: None,
     }
@@ -458,9 +473,13 @@ impl OperationsModal {
         Self {
             manager,
             rows: Vec::new(),
+            agents: Vec::new(),
             selected: 0,
+            agent_selected: 0,
             list_state: ListState::default(),
+            agent_list_state: ListState::default(),
             focus: FocusedPane::Session,
+            view: OperationsView::Operations,
             visible: false,
             loading: false,
             load_rx: None,
@@ -474,6 +493,7 @@ impl OperationsModal {
     pub fn show(&mut self) {
         self.visible = true;
         self.selected = 0;
+        self.agent_selected = 0;
         self.focus = FocusedPane::Session;
         self.task_scroll = 0;
         self.receipt_scroll = 0;
@@ -500,6 +520,7 @@ impl OperationsModal {
         self.error = None;
         self.parse_failures.clear();
         self.rows.clear();
+        self.agents.clear();
         self.sync_selection();
         self.load_rx = Some(rx);
         std::thread::spawn(move || {
@@ -529,6 +550,7 @@ impl OperationsModal {
         match result {
             Ok(result) => {
                 retain_recent_rows(&mut self.rows, result.rows);
+                self.agents = result.agents;
                 self.parse_failures = result.parse_failures;
                 self.error = result.error;
                 if self.rows.is_empty() && !self.parse_failures.is_empty() {
@@ -540,6 +562,7 @@ impl OperationsModal {
             }
         }
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+        self.agent_selected = self.agent_selected.min(self.agents.len().saturating_sub(1));
         self.task_scroll = 0;
         self.receipt_scroll = 0;
         self.sync_selection();
@@ -547,27 +570,46 @@ impl OperationsModal {
     }
 
     pub fn move_up(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+        match self.view {
+            OperationsView::Operations => self.selected = self.selected.saturating_sub(1),
+            OperationsView::Agents => {
+                self.agent_selected = self.agent_selected.saturating_sub(1);
+            }
+        }
         self.reset_pane_scroll();
         self.sync_selection();
     }
 
     pub fn move_down(&mut self) {
-        if self.selected + 1 < self.rows.len() {
-            self.selected += 1;
+        match self.view {
+            OperationsView::Operations if self.selected + 1 < self.rows.len() => {
+                self.selected += 1;
+            }
+            OperationsView::Agents if self.agent_selected + 1 < self.agents.len() => {
+                self.agent_selected += 1;
+            }
+            _ => {}
         }
         self.reset_pane_scroll();
         self.sync_selection();
     }
 
     pub fn select_first(&mut self) {
-        self.selected = 0;
+        match self.view {
+            OperationsView::Operations => self.selected = 0,
+            OperationsView::Agents => self.agent_selected = 0,
+        }
         self.reset_pane_scroll();
         self.sync_selection();
     }
 
     pub fn select_last(&mut self) {
-        self.selected = self.rows.len().saturating_sub(1);
+        match self.view {
+            OperationsView::Operations => self.selected = self.rows.len().saturating_sub(1),
+            OperationsView::Agents => {
+                self.agent_selected = self.agents.len().saturating_sub(1);
+            }
+        }
         self.reset_pane_scroll();
         self.sync_selection();
     }
@@ -613,6 +655,33 @@ impl OperationsModal {
     fn sync_selection(&mut self) {
         self.list_state
             .select((!self.rows.is_empty()).then_some(self.selected));
+        self.agent_list_state
+            .select((!self.agents.is_empty()).then_some(self.agent_selected));
+    }
+
+    pub fn toggle_view(&mut self) {
+        self.view = match self.view {
+            OperationsView::Operations => OperationsView::Agents,
+            OperationsView::Agents => OperationsView::Operations,
+        };
+        self.focus = FocusedPane::Session;
+        self.reset_pane_scroll();
+    }
+
+    #[must_use]
+    pub fn selected_agent_id(&self) -> Option<&str> {
+        (self.view == OperationsView::Agents)
+            .then(|| self.agents.get(self.agent_selected))
+            .flatten()
+            .map(|agent| agent.subagent_id.as_str())
+    }
+
+    #[must_use]
+    pub fn selected_held_control_id(&self) -> Option<&str> {
+        (self.view == OperationsView::Agents)
+            .then(|| self.agents.get(self.agent_selected))
+            .flatten()
+            .and_then(|agent| agent.held_control_id.as_deref())
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -628,7 +697,9 @@ impl OperationsModal {
             height,
         );
         frame.render_widget(Clear, modal_area);
-        let title = if self.parse_failures.is_empty() {
+        let title = if self.view == OperationsView::Agents {
+            format!(" Agents ({}) ", self.agents.len())
+        } else if self.parse_failures.is_empty() {
             format!(" Operations ({}) ", self.rows.len())
         } else {
             format!(
@@ -640,7 +711,7 @@ impl OperationsModal {
         let outer = Block::default()
             .title(title)
             .title_bottom(Line::from(
-                " Up/Down select  Left/Right pane  PgUp/PgDn scroll  r refresh  Esc close ",
+                " v operations/agents  Up/Down select  Left/Right pane  a approve  c cancel  r refresh  Esc close ",
             ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Magenta))
@@ -661,6 +732,10 @@ impl OperationsModal {
                     .style(Style::default().fg(Color::Yellow)),
                 inner,
             );
+            return;
+        }
+        if self.view == OperationsView::Agents {
+            self.render_agents(frame, inner);
             return;
         }
         if self.rows.is_empty() {
@@ -689,6 +764,129 @@ impl OperationsModal {
             self.render_task(frame, panes[1], self.focus == FocusedPane::Task);
             self.render_receipt(frame, panes[2], self.focus == FocusedPane::Receipt);
         }
+    }
+
+    fn render_agents(&mut self, frame: &mut Frame, area: Rect) {
+        if self.agents.is_empty() {
+            frame.render_widget(
+                Paragraph::new("No delegated agents have been recorded.")
+                    .style(Style::default().fg(Color::DarkGray)),
+                area,
+            );
+            return;
+        }
+        if area.width < NARROW_WIDTH {
+            match self.focus {
+                FocusedPane::Session => self.render_agent_list(frame, area, true),
+                FocusedPane::Task => self.render_agent_status(frame, area, true),
+                FocusedPane::Receipt => self.render_agent_coordination(frame, area, true),
+            }
+            return;
+        }
+        let panes = Layout::horizontal([
+            Constraint::Percentage(38),
+            Constraint::Percentage(31),
+            Constraint::Percentage(31),
+        ])
+        .split(area);
+        self.render_agent_list(frame, panes[0], self.focus == FocusedPane::Session);
+        self.render_agent_status(frame, panes[1], self.focus == FocusedPane::Task);
+        self.render_agent_coordination(frame, panes[2], self.focus == FocusedPane::Receipt);
+    }
+
+    fn render_agent_list(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+        let items = self.agents.iter().map(|agent| {
+            let status_color = match agent.status.as_str() {
+                "running" | "queued" => Color::Yellow,
+                "completed" => Color::Green,
+                _ => Color::Red,
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{:<10}", bounded_text(&agent.role, 10)),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" {:<11}", agent.status),
+                    Style::default().fg(status_color),
+                ),
+                Span::styled(
+                    format!(" #{}", agent.attempt),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]))
+        });
+        let list = List::new(items)
+            .block(Self::pane_block("Agents", focused))
+            .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
+        frame.render_stateful_widget(list, area, &mut self.agent_list_state);
+    }
+
+    fn render_agent_status(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+        let agent = &self.agents[self.agent_selected];
+        let elapsed_end = agent.finished_at_ms.unwrap_or_else(current_timestamp_ms);
+        let elapsed = agent
+            .started_at_ms
+            .map(|start| elapsed_end.saturating_sub(start));
+        let mut lines = vec![
+            labelled_line("Agent", &agent.agent_ref),
+            labelled_line("Role", &agent.role),
+            labelled_line("Status", &agent.status),
+            labelled_line("Attempt", &agent.attempt.to_string()),
+            labelled_line("Created", &format_timestamp(agent.created_at_ms)),
+        ];
+        if let Some(elapsed) = elapsed {
+            lines.push(labelled_line("Elapsed", &format!("{elapsed} ms")));
+        }
+        if let Some(error) = &agent.error {
+            lines.push(Line::from(""));
+            lines.extend(raw_lines(error, Some(STRING_LIMIT)));
+        }
+        frame.render_widget(
+            Paragraph::new(Text::from(lines))
+                .block(Self::pane_block("Run", focused))
+                .scroll((self.task_scroll, 0))
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+    }
+
+    fn render_agent_coordination(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+        let agent = &self.agents[self.agent_selected];
+        let mut lines = vec![
+            labelled_line("Parent", &agent.parent_scope_id),
+            labelled_line(
+                "Lifecycle",
+                if agent.lifecycle_published {
+                    "published"
+                } else {
+                    "pending"
+                },
+            ),
+            labelled_line(
+                "Last control",
+                agent.last_control_id.as_deref().unwrap_or("none"),
+            ),
+            labelled_line("Mode", agent.last_control_mode.as_deref().unwrap_or("none")),
+            labelled_line(
+                "Delivery",
+                agent.last_control_state.as_deref().unwrap_or("none"),
+            ),
+        ];
+        if agent.held_control_id.is_some() {
+            lines.push(Line::from(""));
+            lines.push(Line::styled(
+                "Press a to approve the held control.",
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        frame.render_widget(
+            Paragraph::new(Text::from(lines))
+                .block(Self::pane_block("Coordination", focused))
+                .scroll((self.receipt_scroll, 0))
+                .wrap(Wrap { trim: false }),
+            area,
+        );
     }
 
     fn render_focused(&mut self, frame: &mut Frame, area: Rect) {
@@ -877,6 +1075,12 @@ fn format_timestamp(timestamp_ms: u64) -> String {
     )
 }
 
+fn current_timestamp_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis() as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -901,6 +1105,8 @@ mod tests {
             thinking_level_changes: Vec::new(),
             model_changes: Vec::new(),
             compactions: Vec::new(),
+            lifecycle_notifications: Vec::new(),
+            pending_lifecycle_agent_notes: Vec::new(),
             usage_entries: Vec::new(),
             side_questions: Vec::new(),
             plan_review_events: Vec::new(),
@@ -1114,6 +1320,7 @@ mod tests {
         modal.load_rx = Some(rx);
         tx.send(OperationsLoad {
             rows: Vec::new(),
+            agents: Vec::new(),
             parse_failures: Vec::new(),
             error: None,
         })
@@ -1142,6 +1349,7 @@ mod tests {
         modal.load_rx = Some(rx);
         tx.send(OperationsLoad {
             rows: vec![monitor_event_row(&event)],
+            agents: Vec::new(),
             parse_failures: Vec::new(),
             error: None,
         })
@@ -1156,6 +1364,49 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn agents_view_joins_run_control_and_lifecycle_state() {
+        let mut modal = OperationsModal::new("/workspace");
+        modal.visible = true;
+        modal.agents = vec![CoordinationSnapshot {
+            subagent_id: "child-1".to_string(),
+            agent_ref: "subagent:child-1:2".to_string(),
+            parent_scope_id: "session:parent".to_string(),
+            role: "code".to_string(),
+            status: "running".to_string(),
+            attempt: 2,
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            finished_at_ms: None,
+            lifecycle_published: false,
+            last_control_id: Some("control-1".to_string()),
+            last_control_mode: Some("steer".to_string()),
+            last_control_state: Some("held".to_string()),
+            held_control_id: Some("control-1".to_string()),
+            error: None,
+        }];
+        modal.toggle_view();
+        modal.sync_selection();
+
+        assert_eq!(modal.selected_agent_id(), Some("child-1"));
+        assert_eq!(modal.selected_held_control_id(), Some("control-1"));
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| modal.render(frame, frame.area()))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("session:parent"));
+        assert!(rendered.contains("control-1"));
+        assert!(rendered.contains("Lifecycle"));
     }
 
     #[test]

@@ -203,6 +203,21 @@ pub enum ToAgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         history: Option<Vec<HistoryMessage>>,
     },
+    /// Configure a governed code session with an authenticated tool grant.
+    GovernedInit {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        system_prompt: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        append_system_prompt: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thinking_level: Option<ThinkingLevel>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval_mode: Option<ApprovalMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        history: Option<Vec<HistoryMessage>>,
+        code_mode: CodeMode,
+        tool_grant: GovernedToolGrant,
+    },
     /// Restore a private, versioned native provider conversation after init.
     RestoreConversation {
         protocol_version: String,
@@ -214,11 +229,25 @@ pub enum ToAgentMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         attachments: Option<Vec<String>>,
     },
+    GovernedPrompt {
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        attachments: Option<Vec<String>>,
+        code_mode: CodeMode,
+        tool_grant: GovernedToolGrant,
+    },
     /// Steer the currently active agent turn.
     Steer {
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         attachments: Option<Vec<String>>,
+    },
+    GovernedSteer {
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        attachments: Option<Vec<String>>,
+        code_mode: CodeMode,
+        tool_grant: GovernedToolGrant,
     },
     /// Interrupt the current operation
     Interrupt,
@@ -237,6 +266,21 @@ pub enum ToAgentMessage {
         call_id: String,
         content: Vec<ClientToolResultContent>,
         is_error: bool,
+    },
+    GovernedClientToolResult {
+        call_id: String,
+        content: Vec<ClientToolResultContent>,
+        is_error: bool,
+        tool_execution_id: String,
+        client_instance_id: String,
+        grant_id: String,
+        grant_version: u64,
+        grant_hash: String,
+        turn_digest: String,
+        definition_digest: String,
+        args_digest: String,
+        owner_lease_epoch: u64,
+        idempotency_key: String,
     },
     /// Generic response to a pending server request
     ServerRequestResponse {
@@ -390,6 +434,74 @@ pub struct InitConfig {
     /// Prior conversation turns applied before the first prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<Vec<HistoryMessage>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_mode: Option<CodeMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_grant: Option<GovernedToolGrant>,
+}
+
+/// Runtime execution mode negotiated by a governing controller.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeMode {
+    GovernedCode,
+}
+
+/// Owner of a caller-minted tool. External tools are always executed by the
+/// client that minted them; the native runtime never promotes them to native
+/// or Platform authority.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClientToolExecutionOwner {
+    pub client_instance_id: String,
+    pub lease_epoch: u64,
+}
+
+/// Caller-provided tool schema carried inside a signed Platform grant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalToolDefinition {
+    /// Stable owner-scoped identity, distinct from the provider-visible name.
+    pub tool_id: String,
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+    pub execution_owner: ClientToolExecutionOwner,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Immutable tool authority for one governed session or hosted turn.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GovernedToolGrant {
+    pub envelope_version: u32,
+    pub grant_id: String,
+    pub grant_version: u64,
+    pub issuer: String,
+    pub audience: String,
+    pub organization_id: String,
+    pub workspace_id: String,
+    pub thread_id: String,
+    pub turn_id: String,
+    pub run_id: String,
+    pub runtime_generation: u64,
+    pub grant_epoch: u64,
+    pub issued_at_ms: i64,
+    pub not_before_ms: i64,
+    pub expires_at_ms: i64,
+    pub grant_hash: String,
+    pub signing_key_id: String,
+    pub grant_signature: String,
+    #[serde(default)]
+    pub native_tool_ids: Vec<String>,
+    #[serde(default)]
+    pub external_tools: Vec<ExternalToolDefinition>,
+}
+
+impl GovernedToolGrant {
+    /// Stable identity used for reconnect replay and duplicate-turn matching.
+    #[must_use]
+    pub fn identity(&self) -> (&str, u64, &str) {
+        (&self.grant_id, self.grant_version, &self.grant_hash)
+    }
 }
 
 /// Identifies the attached headless client.
@@ -412,6 +524,9 @@ pub struct ClientCapabilities {
     /// Desired transcript granularity for replay and live subscriptions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript_grade: Option<crate::transcript::TranscriptGrade>,
+    /// Governed code-mode initialization and per-turn grant binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub governed_code_mode: Option<bool>,
 }
 
 /// Snapshot of a live headless connection attached to a runtime.
@@ -716,6 +831,23 @@ pub enum FromAgentMessage {
         tool: String,
         args: serde_json::Value,
     },
+    GovernedClientToolRequest {
+        call_id: String,
+        tool_execution_id: String,
+        tool: String,
+        args: serde_json::Value,
+        provider_tool_name: String,
+        tool_id: String,
+        client_instance_id: String,
+        grant_id: String,
+        grant_version: u64,
+        grant_hash: String,
+        turn_digest: String,
+        definition_digest: String,
+        args_digest: String,
+        owner_lease_epoch: u64,
+        idempotency_key: String,
+    },
     /// Structured server-to-client request (currently approvals)
     ServerRequest {
         request_id: String,
@@ -1014,7 +1146,7 @@ pub(crate) use state::{
 };
 pub use state::{
     ActiveFileWatch, ActiveTool, ActiveUtilityCommand, AgentEvent, AgentState,
-    CodexSubagentContinuityEdge, PendingApproval, StreamingResponse,
+    CodexSubagentContinuityEdge, GovernedClientToolBinding, PendingApproval, StreamingResponse,
 };
 
 #[cfg(test)]

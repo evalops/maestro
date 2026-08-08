@@ -487,57 +487,58 @@ pub async fn execute_scripted_scenario_with_options(
                         "output": normalize_for_transcript(&output, &workspace),
                     }));
                 }
-                FromAgent::ResponseEnd { .. } => {
-                    if !current_text.is_empty() || !current_tool_calls.is_empty() {
-                        let mut blocks = Vec::new();
-                        if !current_text.is_empty() {
-                            blocks.push(SessionContentBlock::Text {
-                                text: current_text.clone(),
-                            });
-                        }
-                        for (call_id, tool, args) in &current_tool_calls {
-                            blocks.push(SessionContentBlock::ToolCall {
-                                id: call_id.clone(),
-                                name: tool.clone(),
-                                args: args.clone(),
-                            });
-                        }
-                        write_session_entry(
-                            &mut writer,
-                            SessionEntry::Message(MessageEntry {
-                                id: None,
-                                parent_id: None,
-                                timestamp: now_rfc3339(),
-                                message: AppMessage::Assistant {
-                                    content: blocks,
-                                    api: Some(SCRIPTED_PROVIDER.to_string()),
-                                    provider: Some(SCRIPTED_PROVIDER.to_string()),
-                                    model: Some(SCRIPTED_MODEL_ID.to_string()),
-                                    usage: None,
-                                    stop_reason: None,
-                                    timestamp: system_time_millis(),
-                                },
-                            }),
-                        )?;
-                        transcript.push(serde_json::json!({
-                            "role": "assistant",
-                            "text": current_text,
-                            "toolCalls": current_tool_calls
-                                .iter()
-                                .map(|(call_id, tool, args)| serde_json::json!({
-                                    "id": call_id,
-                                    "name": tool,
-                                    "args": normalize_json_for_transcript(args, &workspace),
-                                }))
-                                .collect::<Vec<_>>(),
-                        }));
-                        if !current_text.is_empty() {
-                            final_text = current_text.clone();
-                        }
-                        current_text = String::new();
-                        current_tool_calls = Vec::new();
+                FromAgent::ResponseEnd { .. }
+                    if !current_text.is_empty() || !current_tool_calls.is_empty() =>
+                {
+                    let mut blocks = Vec::new();
+                    if !current_text.is_empty() {
+                        blocks.push(SessionContentBlock::Text {
+                            text: current_text.clone(),
+                        });
                     }
+                    for (call_id, tool, args) in &current_tool_calls {
+                        blocks.push(SessionContentBlock::ToolCall {
+                            id: call_id.clone(),
+                            name: tool.clone(),
+                            args: args.clone(),
+                        });
+                    }
+                    write_session_entry(
+                        &mut writer,
+                        SessionEntry::Message(MessageEntry {
+                            id: None,
+                            parent_id: None,
+                            timestamp: now_rfc3339(),
+                            message: AppMessage::Assistant {
+                                content: blocks,
+                                api: Some(SCRIPTED_PROVIDER.to_string()),
+                                provider: Some(SCRIPTED_PROVIDER.to_string()),
+                                model: Some(SCRIPTED_MODEL_ID.to_string()),
+                                usage: None,
+                                stop_reason: None,
+                                timestamp: system_time_millis(),
+                            },
+                        }),
+                    )?;
+                    transcript.push(serde_json::json!({
+                        "role": "assistant",
+                        "text": current_text,
+                        "toolCalls": current_tool_calls
+                            .iter()
+                            .map(|(call_id, tool, args)| serde_json::json!({
+                                "id": call_id,
+                                "name": tool,
+                                "args": normalize_json_for_transcript(args, &workspace),
+                            }))
+                            .collect::<Vec<_>>(),
+                    }));
+                    if !current_text.is_empty() {
+                        final_text = current_text.clone();
+                    }
+                    current_text = String::new();
+                    current_tool_calls = Vec::new();
                 }
+                FromAgent::ResponseEnd { .. } => {}
                 FromAgent::TurnCompleted { .. } => {
                     if !current_text.is_empty() {
                         final_text = current_text.clone();

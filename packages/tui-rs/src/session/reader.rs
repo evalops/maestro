@@ -244,7 +244,7 @@
 //! ## Iterator Adapters
 //! `lines().enumerate()` demonstrates iterator composition for line numbers.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -344,6 +344,32 @@ struct CompactionContextEntry {
     visible_index: usize,
 }
 
+struct PendingLifecycleNotification {
+    entry: LifecycleNotificationEntry,
+    /// Number of compaction-context entries preceding this notice.
+    context_position: usize,
+}
+
+/// Host-generated subagent completion notice retained for TUI restoration.
+///
+/// The entry stays outside `messages`, so it never enters resumed model
+/// history. `visible_index` places it between conversational messages after
+/// all recorded compactions have been applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecycleNotificationEntry {
+    pub id: String,
+    pub content: String,
+    pub timestamp: String,
+    pub visible_index: usize,
+}
+
+/// A lifecycle note not yet proven consumed by a durable assistant turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecycleAgentNoteEntry {
+    pub application_id: String,
+    pub content: String,
+}
+
 /// Errors that can occur during session file reading.
 ///
 /// This error type distinguishes between different failure modes to enable
@@ -440,6 +466,12 @@ pub struct ParsedSession {
 
     /// Recorded compaction events.
     pub compactions: Vec<CompactionEntry>,
+
+    /// TUI-only subagent completion notices in final transcript positions.
+    pub lifecycle_notifications: Vec<LifecycleNotificationEntry>,
+
+    /// Lifecycle notes awaiting proof that a later model turn consumed them.
+    pub pending_lifecycle_agent_notes: Vec<LifecycleAgentNoteEntry>,
 
     /// Tool-free side questions, excluded from `messages` and model history.
     pub side_questions: Vec<SideQuestionEntry>,
@@ -551,6 +583,9 @@ impl SessionReader {
         let mut thinking_level_changes: Vec<ThinkingLevelChange> = Vec::new();
         let mut model_changes: Vec<ModelChange> = Vec::new();
         let mut compactions: Vec<CompactionEntry> = Vec::new();
+        let mut lifecycle_notifications: Vec<PendingLifecycleNotification> = Vec::new();
+        let mut lifecycle_agent_notes: Vec<LifecycleAgentNoteEntry> = Vec::new();
+        let mut consumed_lifecycle_agent_notes: HashSet<String> = HashSet::new();
         let mut side_questions: Vec<SideQuestionEntry> = Vec::new();
         let mut plan_review_events: Vec<PlanReviewEntry> = Vec::new();
         let mut usage_entries: Vec<UsageEntry> = Vec::new();
@@ -673,6 +708,16 @@ impl SessionReader {
 
                     if let Some((position, visible_index)) = resolved_cut {
                         entry.first_kept_entry_index = Some(visible_index);
+                        lifecycle_notifications
+                            .retain(|notification| notification.context_position > position);
+                        for notification in &mut lifecycle_notifications {
+                            notification.entry.visible_index = notification
+                                .entry
+                                .visible_index
+                                .saturating_sub(visible_index);
+                            notification.context_position =
+                                notification.context_position.saturating_sub(position);
+                        }
                         let keep_from = position.min(compaction_context_entries.len());
                         compaction_context_entries.drain(..keep_from);
                         for context_entry in &mut compaction_context_entries {
@@ -703,7 +748,39 @@ impl SessionReader {
                 }
                 SessionEntry::SideQuestion(entry) => side_questions.push(entry),
                 SessionEntry::PlanReview(entry) => plan_review_events.push(entry),
-                SessionEntry::Custom(_) | SessionEntry::Label(_) => {}
+                SessionEntry::Custom(entry) => {
+                    if entry.custom_type == "subagent_lifecycle_applied" {
+                        if let Some((id, data)) = entry.id.zip(entry.data) {
+                            if let Some(content) = data.get("content").and_then(|v| v.as_str()) {
+                                lifecycle_notifications.push(PendingLifecycleNotification {
+                                    entry: LifecycleNotificationEntry {
+                                        id: id.clone(),
+                                        content: content.to_string(),
+                                        timestamp: entry.timestamp,
+                                        visible_index: visible_context_len,
+                                    },
+                                    context_position: compaction_context_entries.len(),
+                                });
+                            }
+                            if let Some(content) = data.get("agentNote").and_then(|v| v.as_str()) {
+                                lifecycle_agent_notes.push(LifecycleAgentNoteEntry {
+                                    application_id: id,
+                                    content: content.to_string(),
+                                });
+                            }
+                        }
+                    } else if entry.custom_type == "subagent_lifecycle_agent_note_consumed" {
+                        if let Some(application_id) = entry
+                            .data
+                            .as_ref()
+                            .and_then(|data| data.get("applicationId"))
+                            .and_then(|value| value.as_str())
+                        {
+                            consumed_lifecycle_agent_notes.insert(application_id.to_string());
+                        }
+                    }
+                }
+                SessionEntry::Label(_) => {}
             }
         }
 
@@ -724,6 +801,9 @@ impl SessionReader {
         let header = header
             .ok_or_else(|| SessionReadError::InvalidFormat("Missing session header".to_string()))?;
 
+        lifecycle_agent_notes
+            .retain(|note| !consumed_lifecycle_agent_notes.contains(note.application_id.as_str()));
+
         Ok(ParsedSession {
             header,
             messages,
@@ -732,6 +812,11 @@ impl SessionReader {
             thinking_level_changes,
             model_changes,
             compactions,
+            lifecycle_notifications: lifecycle_notifications
+                .into_iter()
+                .map(|notification| notification.entry)
+                .collect(),
+            pending_lifecycle_agent_notes: lifecycle_agent_notes,
             side_questions,
             plan_review_events,
             usage_entries,
@@ -901,6 +986,65 @@ mod tests {
             Some("assistant-3")
         );
         assert_eq!(session.compactions[1].first_kept_entry_index, Some(2));
+    }
+
+    #[test]
+    fn lifecycle_notifications_follow_compaction_positions() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"{{"type":"session","id":"test123","timestamp":"2024-01-15T10:30:00Z","cwd":"/tmp","model":"openai/gpt-5.2","thinkingLevel":"medium"}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","id":"user-1","timestamp":"2024-01-15T10:30:00Z","message":{{"role":"user","content":"First","timestamp":0}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"custom","id":"notice-removed","timestamp":"2024-01-15T10:30:01Z","customType":"subagent_lifecycle_applied","data":{{"content":"Removed notice"}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","id":"assistant-1","timestamp":"2024-01-15T10:30:02Z","message":{{"role":"assistant","content":[{{"type":"text","text":"First reply"}}],"timestamp":1}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"custom","id":"notice-at-cut","timestamp":"2024-01-15T10:30:02Z","customType":"subagent_lifecycle_applied","data":{{"content":"Notice at cut"}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","id":"user-2","timestamp":"2024-01-15T10:30:03Z","message":{{"role":"user","content":"Second","timestamp":2}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"custom","id":"notice-a","timestamp":"2024-01-15T10:30:04Z","customType":"subagent_lifecycle_applied","data":{{"content":"Notice A"}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"custom","id":"notice-b","timestamp":"2024-01-15T10:30:05Z","customType":"subagent_lifecycle_applied","data":{{"content":"Notice B"}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"compaction","id":"compact-1","timestamp":"2024-01-15T10:30:06Z","summary":"Kept second turn","firstKeptEntryId":"user-2","tokensBefore":1234,"auto":true}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","id":"assistant-2","timestamp":"2024-01-15T10:30:07Z","message":{{"role":"assistant","content":[{{"type":"text","text":"Second reply"}}],"timestamp":3}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"custom","id":"notice-after","timestamp":"2024-01-15T10:30:08Z","customType":"subagent_lifecycle_applied","data":{{"content":"Notice after"}}}}"#).unwrap();
+
+        let session = SessionReader::read_file(file.path()).unwrap();
+
+        assert_eq!(
+            session
+                .lifecycle_notifications
+                .iter()
+                .map(|entry| (entry.id.as_str(), entry.visible_index))
+                .collect::<Vec<_>>(),
+            vec![("notice-a", 1), ("notice-b", 1), ("notice-after", 2)]
+        );
+        assert!(!session
+            .lifecycle_notifications
+            .iter()
+            .any(|entry| matches!(entry.id.as_str(), "notice-removed" | "notice-at-cut")));
+    }
+
+    #[test]
+    fn lifecycle_agent_notes_remain_replayable_until_runner_consumption_is_recorded() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"{{"type":"session","id":"test123","timestamp":"2024-01-15T10:30:00Z","cwd":"/tmp","model":"openai/gpt-5.2","thinkingLevel":"medium"}}"#).unwrap();
+        writeln!(file, r#"{{"type":"custom","id":"applied-a","timestamp":"2024-01-15T10:30:01Z","customType":"subagent_lifecycle_applied","data":{{"content":"Notice A","agentNote":"Agent note A"}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"custom","id":"applied-a:agent-note-delivered","timestamp":"2024-01-15T10:30:02Z","customType":"subagent_lifecycle_agent_note_delivered","data":{{"applicationId":"applied-a"}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"custom","id":"applied-a:agent-note-consumed","timestamp":"2024-01-15T10:30:03Z","customType":"subagent_lifecycle_agent_note_consumed","data":{{"applicationId":"applied-a"}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"custom","id":"applied-b","timestamp":"2024-01-15T10:30:04Z","customType":"subagent_lifecycle_applied","data":{{"content":"Notice B","agentNote":"Agent note B"}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"custom","id":"applied-b:agent-note-delivered","timestamp":"2024-01-15T10:30:05Z","customType":"subagent_lifecycle_agent_note_delivered","data":{{"applicationId":"applied-b"}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"custom","id":"applied-c","timestamp":"2024-01-15T10:30:06Z","customType":"subagent_lifecycle_applied","data":{{"content":"Notice C","agentNote":"Agent note C"}}}}"#).unwrap();
+
+        let session = SessionReader::read_file(file.path()).unwrap();
+
+        assert_eq!(
+            session.pending_lifecycle_agent_notes,
+            vec![
+                LifecycleAgentNoteEntry {
+                    application_id: "applied-b".to_string(),
+                    content: "Agent note B".to_string(),
+                },
+                LifecycleAgentNoteEntry {
+                    application_id: "applied-c".to_string(),
+                    content: "Agent note C".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]

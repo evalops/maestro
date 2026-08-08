@@ -118,6 +118,8 @@ use crate::terminal::{self, AppTerminalEvent, TerminalCapabilities, TerminalEven
 use crate::tools::{ToolExecutor, ToolRegistry};
 use chrono::{Datelike, Utc};
 
+use self::prompt_audit::{PromptAssembly, PromptAuditReport, PromptFragment};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -166,6 +168,24 @@ struct QueuedPrompt {
 #[derive(Debug, Clone)]
 struct PendingModelChange {
     model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingAgentToolNote {
+    application_id: Option<String>,
+    content: String,
+}
+
+struct PendingAgentNoteConsumption {
+    application_id: String,
+    content: String,
+    consumed: tokio::sync::oneshot::Receiver<()>,
+}
+
+struct PendingAgentNoteApplication {
+    note: PendingAgentToolNote,
+    applied: tokio::sync::oneshot::Receiver<()>,
+    consumed: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -803,7 +823,27 @@ pub struct App {
 
     /// Background-task lifecycle notes waiting for agent idle before injection
     /// into conversation history (provider-safe user tool notes).
-    pending_agent_tool_notes: Vec<String>,
+    pending_agent_tool_notes: Vec<PendingAgentToolNote>,
+
+    /// Notes sent to the runner but not yet confirmed in native history.
+    pending_agent_note_applications: Vec<PendingAgentNoteApplication>,
+
+    /// Applied lifecycle notes waiting for a successful native model turn.
+    pending_agent_note_consumptions: Vec<PendingAgentNoteConsumption>,
+
+    /// Consumed lifecycle-note markers waiting for durable persistence.
+    pending_consumed_agent_tool_notes: Vec<String>,
+
+    /// Consumed lifecycle notes waiting for the app to persist the terminal
+    /// assistant response that proves the model turn completed.
+    ready_consumed_agent_tool_notes: Vec<String>,
+
+    /// Whether every assistant response in the active model turn reached the
+    /// session transcript. Consumption markers cannot precede that boundary.
+    active_turn_assistant_messages_persisted: bool,
+
+    /// Process-local lifecycle dedupe for intentionally ephemeral sessions.
+    ephemeral_lifecycle_applications: HashSet<String>,
 
     /// Terminal-native turn notifications (OSC 9;4 tab progress, OSC 0 title,
     /// focus-gated desktop notifications).
@@ -947,13 +987,116 @@ impl App {
         if self.pending_agent_tool_notes.is_empty() {
             return;
         }
-        let Some(agent) = self.native_agent.as_ref() else {
+        if self.native_agent.is_none() {
             return;
-        };
-        let notes = std::mem::take(&mut self.pending_agent_tool_notes);
-        for note in notes {
-            agent.inject_user_note(note);
         }
+        let mut notes = std::mem::take(&mut self.pending_agent_tool_notes).into_iter();
+        while let Some(note) = notes.next() {
+            let (applied, consumed) = match self
+                .native_agent
+                .as_ref()
+                .expect("native agent checked above")
+                .inject_user_note(note.content.clone())
+            {
+                Ok(receivers) => receivers,
+                Err(error) => {
+                    self.pending_agent_tool_notes.push(note);
+                    self.pending_agent_tool_notes.extend(notes);
+                    self.state.error = Some(error.to_string());
+                    return;
+                }
+            };
+            self.pending_agent_note_applications
+                .push(PendingAgentNoteApplication {
+                    note,
+                    applied,
+                    consumed: Some(consumed),
+                });
+        }
+    }
+
+    fn record_agent_tool_note_progress(&mut self, commit_ready_consumptions: bool) {
+        let mut applied_notes = Vec::new();
+        let mut retry_notes = Vec::new();
+        self.pending_agent_note_applications.retain_mut(|pending| {
+            match pending.applied.try_recv() {
+                Ok(()) => {
+                    applied_notes.push((
+                        pending.note.application_id.clone(),
+                        pending.note.content.clone(),
+                        pending
+                            .consumed
+                            .take()
+                            .expect("pending note consumption receiver"),
+                    ));
+                    false
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => true,
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    retry_notes.push(pending.note.clone());
+                    false
+                }
+            }
+        });
+        self.pending_agent_tool_notes.extend(retry_notes);
+        for (application_id, content, consumed) in applied_notes {
+            if let Some(application_id) = application_id {
+                self.record_subagent_lifecycle_agent_note_delivered(&application_id);
+                self.pending_agent_note_consumptions
+                    .push(PendingAgentNoteConsumption {
+                        application_id,
+                        content,
+                        consumed,
+                    });
+            }
+        }
+
+        let mut consumed_ids = Vec::new();
+        let mut retry_consumed_notes = Vec::new();
+        self.pending_agent_note_consumptions.retain_mut(|pending| {
+            match pending.consumed.try_recv() {
+                Ok(()) => {
+                    consumed_ids.push(pending.application_id.clone());
+                    false
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => true,
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    retry_consumed_notes.push(PendingAgentToolNote {
+                        application_id: Some(pending.application_id.clone()),
+                        content: pending.content.clone(),
+                    });
+                    false
+                }
+            }
+        });
+        self.pending_agent_tool_notes.extend(retry_consumed_notes);
+        self.ready_consumed_agent_tool_notes.extend(consumed_ids);
+        if commit_ready_consumptions {
+            self.pending_consumed_agent_tool_notes
+                .append(&mut self.ready_consumed_agent_tool_notes);
+        }
+        let pending_consumed = std::mem::take(&mut self.pending_consumed_agent_tool_notes);
+        for application_id in pending_consumed {
+            if !self.record_subagent_lifecycle_agent_note_consumed(&application_id) {
+                self.pending_consumed_agent_tool_notes.push(application_id);
+            }
+        }
+    }
+
+    fn restore_pending_lifecycle_agent_notes(&mut self, session: &ParsedSession) {
+        self.pending_agent_note_applications.clear();
+        self.pending_agent_note_consumptions.clear();
+        self.pending_consumed_agent_tool_notes.clear();
+        self.ready_consumed_agent_tool_notes.clear();
+        self.ephemeral_lifecycle_applications.clear();
+        self.pending_agent_tool_notes = session
+            .pending_lifecycle_agent_notes
+            .iter()
+            .map(|note| PendingAgentToolNote {
+                application_id: Some(note.application_id.clone()),
+                content: note.content.clone(),
+            })
+            .collect();
     }
 
     fn sync_agent_goal_tools_visibility(&self) {
@@ -1284,6 +1427,12 @@ impl App {
             restore_queued_prompts_after_interrupt: false,
             pending_checkpoint: None,
             pending_agent_tool_notes: Vec::new(),
+            pending_agent_note_applications: Vec::new(),
+            pending_agent_note_consumptions: Vec::new(),
+            pending_consumed_agent_tool_notes: Vec::new(),
+            ready_consumed_agent_tool_notes: Vec::new(),
+            active_turn_assistant_messages_persisted: true,
+            ephemeral_lifecycle_applications: HashSet::new(),
             terminal_notifier,
             terminal_session_started: false,
             detail_view: None,
@@ -1326,20 +1475,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         )
     }
 
-    fn build_shared_prompt_additions(current_year: i32, active_prompt: &str) -> String {
-        let mut additions = Vec::new();
-        additions.push(format!(
-            "When using websearch/codesearch for up-to-date information, include the current year ({current_year}) in the query unless the user specifies a different year or a historical range."
-        ));
-
-        let trimmed = active_prompt.trim();
-        if !trimmed.is_empty() {
-            additions.push(trimmed.to_string());
-        }
-
-        additions.join("\n\n")
-    }
-
+    #[cfg(test)]
     fn build_system_prompt_with_context(
         cwd: &str,
         current_year: i32,
@@ -1349,38 +1485,66 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         mailbox_section: Option<String>,
         active_prompt: &str,
     ) -> String {
-        let mut sections = vec![Self::build_base_system_prompt(cwd)];
+        Self::build_system_prompt_assembly_with_context(
+            cwd,
+            current_year,
+            skills_section,
+            harness_section,
+            rlm_section,
+            mailbox_section,
+            active_prompt,
+        )
+        .render()
+    }
 
-        if let Some(skills) = skills_section {
-            if !skills.trim().is_empty() {
-                sections.push(skills);
-            }
+    fn build_system_prompt_assembly_with_context(
+        cwd: &str,
+        current_year: i32,
+        skills_section: Option<String>,
+        harness_section: Option<String>,
+        rlm_section: Option<String>,
+        mailbox_section: Option<String>,
+        active_prompt: &str,
+    ) -> PromptAssembly {
+        let mut fragments = vec![PromptFragment::new(
+            "base",
+            "maestro.base_system_prompt",
+            Self::build_base_system_prompt(cwd),
+        )];
+
+        let mut push_section =
+            |name: &'static str, source: &'static str, section: Option<String>| {
+                if let Some(content) = section.filter(|content| !content.trim().is_empty()) {
+                    fragments.push(PromptFragment::new(name, source, content));
+                }
+            };
+
+        push_section(
+            "loaded_skills",
+            "skills.loader.available_skills",
+            skills_section,
+        );
+        push_section("harness", "harness.store", harness_section);
+        push_section("rlm", "rlm.store", rlm_section);
+        push_section("mailbox", "mailbox.store", mailbox_section);
+
+        fragments.push(PromptFragment::new(
+            "current_year_hint",
+            "maestro.current_year_hint",
+            format!(
+                "When using websearch/codesearch for up-to-date information, include the current year ({current_year}) in the query unless the user specifies a different year or a historical range."
+            ),
+        ));
+        let active_prompt = active_prompt.trim();
+        if !active_prompt.is_empty() {
+            fragments.push(PromptFragment::new(
+                "active_skill_additions",
+                "skills.registry.active_prompt_additions",
+                active_prompt,
+            ));
         }
 
-        if let Some(harness) = harness_section {
-            if !harness.trim().is_empty() {
-                sections.push(harness);
-            }
-        }
-
-        if let Some(rlm) = rlm_section {
-            if !rlm.trim().is_empty() {
-                sections.push(rlm);
-            }
-        }
-
-        if let Some(mailbox) = mailbox_section {
-            if !mailbox.trim().is_empty() {
-                sections.push(mailbox);
-            }
-        }
-
-        let additions = Self::build_shared_prompt_additions(current_year, active_prompt);
-        if !additions.trim().is_empty() {
-            sections.push(additions);
-        }
-
-        sections.join("\n\n")
+        PromptAssembly::new(fragments)
     }
 
     fn initialize_terminal_events(&mut self) {
@@ -1650,6 +1814,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             if agent_activity {
                 needs_redraw = true;
             }
+            self.record_agent_tool_note_progress(false);
 
             // Apply finished guardian reviews (spawned per approval request).
             if self.poll_guardian_verdicts().await? {
@@ -1700,8 +1865,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     "Background task {} **{}**{code}: `{cmd}`",
                     event.task_id, event.status
                 ));
-                self.pending_agent_tool_notes
-                    .push(format_background_task_tool_note(&event));
+                self.pending_agent_tool_notes.push(PendingAgentToolNote {
+                    application_id: None,
+                    content: format_background_task_tool_note(&event),
+                });
                 needs_redraw = true;
             }
             for event in self.tool_executor.poll_subagent_lifecycle_events() {
@@ -1712,14 +1879,38 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     .or(event.summary.as_deref())
                     .unwrap_or("no summary");
                 let outcome = outcome.replace(['\n', '\r'], " ");
-                self.state.add_system_message(format!(
-                    "Subagent {} **{}**: {}",
-                    event.subagent_id, status, outcome
-                ));
-                self.pending_agent_tool_notes.push(format!(
-                    "Subagent {} finished with status {}. {}",
-                    event.subagent_id, status, outcome
-                ));
+                let lifecycle_message = format!(
+                    "Subagent {} attempt {} **{}**: {}",
+                    event.subagent_id, event.attempt, status, outcome
+                );
+                let agent_note = format!(
+                    "Subagent {} attempt {} finished with status {}. {}",
+                    event.subagent_id, event.attempt, status, outcome
+                );
+                let Some(already_applied) = self.subagent_lifecycle_application_exists(&event)
+                else {
+                    continue;
+                };
+                if !already_applied {
+                    if !self.record_subagent_lifecycle_application(
+                        &event,
+                        lifecycle_message.clone(),
+                        agent_note.clone(),
+                    ) {
+                        continue;
+                    }
+                    self.state.add_system_message(lifecycle_message);
+                    self.pending_agent_tool_notes.push(PendingAgentToolNote {
+                        application_id: Some(event.mailbox_message_id.clone()),
+                        content: agent_note,
+                    });
+                }
+                if let Err(error) = self
+                    .tool_executor
+                    .acknowledge_subagent_lifecycle_event(&event)
+                {
+                    self.state.error = Some(error);
+                }
                 needs_redraw = true;
             }
             if !self.state.busy {
@@ -2052,6 +2243,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 self.state.busy = false;
                 self.state.model = Some(model.clone());
                 self.state.status = Some(format!("Ready: {model}"));
+                self.flush_pending_agent_tool_notes();
             }
             Err(e) => {
                 let mut message = format!("Failed to create agent: {e}");
@@ -2096,8 +2288,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         )
     }
 
-    /// Build the system prompt for the agent
-    fn build_system_prompt(&self) -> String {
+    fn build_system_prompt_assembly(&self) -> PromptAssembly {
         let cwd = std::env::current_dir()
             .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string());
         let current_year = Utc::now().year();
@@ -2115,7 +2306,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             .prompt_section_for(&crate::mailbox::local_identity());
         let active_prompt = self.skill_registry.active_system_prompt_additions();
 
-        Self::build_system_prompt_with_context(
+        Self::build_system_prompt_assembly_with_context(
             &cwd,
             current_year,
             skills_section,
@@ -2124,6 +2315,48 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             mailbox_section,
             &active_prompt,
         )
+    }
+
+    /// Build the system prompt for the agent.
+    fn build_system_prompt(&self) -> String {
+        self.build_system_prompt_assembly().render()
+    }
+
+    fn build_prompt_audit_report(&self) -> PromptAuditReport {
+        let model = (!self.current_model.trim().is_empty()).then_some(self.current_model.as_str());
+        let active_skill_ids = self
+            .skill_registry
+            .active_skills()
+            .into_iter()
+            .map(|skill| skill.definition.id.clone());
+        let tools = self.tool_executor.tool_definitions().map(|definition| {
+            (
+                definition.tool.name.clone(),
+                definition.requires_approval,
+                definition.tool.description.clone(),
+                definition.tool.input_schema.clone(),
+            )
+        });
+        let mut report = self
+            .build_system_prompt_assembly()
+            .audit(model, active_skill_ids)
+            .with_registered_tools(tools);
+        if let Some(agent) = &self.native_agent {
+            let effective = agent.runtime_audit_snapshot();
+            report = report.with_effective_runtime(
+                effective.prompt_revision,
+                effective.system_prompt.as_deref(),
+                effective.tools.into_iter().map(|definition| {
+                    (
+                        definition.tool.name,
+                        definition.requires_approval,
+                        definition.tool.description,
+                        definition.tool.input_schema,
+                    )
+                }),
+            );
+        }
+        report
     }
 
     fn refresh_skills(&mut self, preserve_active: bool) {
@@ -2828,6 +3061,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         if matches!(msg, FromAgent::ResponseStart { .. }) {
             let was_busy = self.state.busy;
             self.state.busy = true;
+            if !was_busy {
+                self.active_turn_assistant_messages_persisted = true;
+            }
             self.queued_prompt_inflight = None;
             if !was_busy && allow_terminal_notifications {
                 self.notify_terminal_turn_started();
@@ -3040,6 +3276,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 ));
             }
             FromAgent::TurnCompleted { .. } => {
+                self.record_agent_tool_note_progress(self.active_turn_assistant_messages_persisted);
                 self.state.busy = false;
                 self.finish_active_turn_summary();
                 if allow_terminal_notifications {
@@ -3322,7 +3559,10 @@ was missing; retry to review the exact execution context."
                     self.state.add_system_message(alert);
                 }
             }
-            self.record_assistant_message(&response_id, usage);
+            if account_goal {
+                let persisted = self.record_assistant_message(&response_id, usage);
+                self.active_turn_assistant_messages_persisted &= persisted;
+            }
         }
 
         if needs_post_interrupt_queue && allow_post_interrupt_queue {
@@ -3911,6 +4151,7 @@ fn parse_rfc3339_system_time(timestamp: &str) -> Result<SystemTime> {
 
 fn restore_visible_session_messages(state: &mut AppState, session: &ParsedSession) {
     state.messages.clear();
+    state.clear_focus_turn_state();
 
     for app_msg in &session.messages {
         let role = match app_msg {
@@ -3942,6 +4183,27 @@ fn restore_visible_session_messages(state: &mut AppState, session: &ParsedSessio
                     .unwrap_or_else(|_| SystemTime::now()),
             );
         }
+    }
+
+    for notification in &session.lifecycle_notifications {
+        let insert_at =
+            lifecycle_notification_insert_position(&state.messages, notification.visible_index);
+        state.messages.insert(
+            insert_at,
+            Message {
+                id: notification.id.clone(),
+                role: MessageRole::Assistant,
+                kind: MessageKind::System,
+                content: notification.content.clone(),
+                thinking: String::new(),
+                streaming: false,
+                tool_calls: Vec::new(),
+                usage: None,
+                timestamp: parse_rfc3339_system_time(&notification.timestamp)
+                    .unwrap_or_else(|_| SystemTime::now()),
+                thinking_expanded: false,
+            },
+        );
     }
 
     let mut side_questions = session.side_questions.iter().collect::<Vec<_>>();
@@ -3989,6 +4251,20 @@ fn restore_visible_session_messages(state: &mut AppState, session: &ParsedSessio
         state.messages.insert(insert_at, question);
         state.messages.insert(insert_at + 1, response);
     }
+}
+
+fn lifecycle_notification_insert_position(messages: &[Message], visible_index: usize) -> usize {
+    let mut visible_count = 0usize;
+    for (index, message) in messages.iter().enumerate() {
+        if message.kind != MessageKind::Regular {
+            continue;
+        }
+        if visible_count == visible_index {
+            return index;
+        }
+        visible_count += 1;
+    }
+    messages.len()
 }
 
 /// Host-generated note injected into agent history for background task exits.
@@ -4188,6 +4464,7 @@ mod command_handlers;
 mod context_breakdown;
 mod exec_commands;
 mod input_handlers;
+mod prompt_audit;
 mod prompt_queue;
 mod session_recording;
 

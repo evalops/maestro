@@ -623,6 +623,53 @@ impl CredentialVault {
         translated
     }
 
+    /// Re-key every credential reference in `input` for another vault.
+    ///
+    /// This preserves the reference boundary when a parent sends a later
+    /// control message to a child whose vault was forked before the referenced
+    /// credential existed.
+    pub(crate) fn rekey_references_to(&self, target: &Self, input: &str) -> Result<String, String> {
+        if Arc::ptr_eq(&self.0, &target.0) {
+            return Ok(input.to_string());
+        }
+        let replacements = {
+            let mut source = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut replacements = Vec::new();
+            for captures in REFERENCE_PATTERN.captures_iter(input) {
+                let whole = captures
+                    .get(0)
+                    .expect("credential reference match must include the whole token");
+                let kind = captures
+                    .get(1)
+                    .map(|value| CredentialType::from_str(value.as_str()))
+                    .unwrap_or(CredentialType::Unknown);
+                let id = captures
+                    .get(2)
+                    .expect("credential reference match must include an id")
+                    .as_str();
+                let credential = source.store.credentials.get_mut(id).ok_or_else(|| {
+                    "credential reference is unavailable in the current parent session".to_string()
+                })?;
+                credential.resolve_count = credential.resolve_count.saturating_add(1);
+                replacements.push((
+                    whole.start(),
+                    whole.end(),
+                    credential.value.to_string(),
+                    kind,
+                ));
+            }
+            replacements
+        };
+        let mut translated = input.to_string();
+        for (start, end, value, kind) in replacements.into_iter().rev() {
+            translated.replace_range(start..end, &target.store(&value, kind));
+        }
+        Ok(translated)
+    }
+
     /// Store a credential and return its opaque reference.
     pub fn store(&self, value: &str, cred_type: CredentialType) -> String {
         self.0

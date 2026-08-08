@@ -498,6 +498,17 @@ impl App {
             CommandAction::ShowContext => {
                 self.show_context_breakdown();
             }
+            CommandAction::ShowPromptAudit { json } => {
+                self.show_prompt_audit(json);
+            }
+            CommandAction::SetFocus(mode) => {
+                let enabled = self.state.set_focus_view(mode.unwrap_or(!self.state.focus_view));
+                self.state.status = Some(if enabled {
+                    "Focus view enabled. Tool-heavy turns are collapsed.".to_string()
+                } else {
+                    "Focus view disabled.".to_string()
+                });
+            }
             CommandAction::ExportSession(export_action) => {
                 self.handle_export_action(export_action);
             }
@@ -670,6 +681,33 @@ impl App {
         });
         let report = breakdown.render(model, context_window);
         self.state.add_system_message(report);
+    }
+
+    /// Audit the standing prompt and registered tool surface without exposing
+    /// prompt bodies, tool descriptions, schemas, or credential material.
+    pub(super) fn show_prompt_audit(&mut self, json: bool) {
+        let report = self.build_prompt_audit_report();
+        let value = match serde_json::to_value(&report) {
+            Ok(value) => crate::agent::credential_store::redact_credentials_in_json(&value),
+            Err(error) => {
+                self.state.error = Some(format!("Prompt audit failed: {error}"));
+                return;
+            }
+        };
+        let rendered = if json {
+            serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+        } else {
+            report.render_markdown()
+        };
+        self.state.add_system_message(rendered);
+        self.write_session_entry(SessionEntry::Custom(CustomEntry {
+            id: Some(uuid::Uuid::new_v4().to_string()),
+            parent_id: None,
+            timestamp: Utc::now().to_rfc3339(),
+            custom_type: "prompt_audit".to_string(),
+            data: Some(value),
+        }));
+        self.flush_session();
     }
 
     /// Handle session export actions
@@ -961,6 +999,7 @@ impl App {
                     ));
                     return;
                 }
+                self.restore_pending_lifecycle_agent_notes(&session);
                 self.adopt_session_context(Some(&session_id), "resume");
                 self.session_resume_failed = false;
                 crate::plan_mode::set_active_session_id(Some(session_id.clone()));
@@ -1089,6 +1128,7 @@ impl App {
                 "Session resume failed ({session_id}); use /new to continue"
             ));
         } else {
+            self.restore_pending_lifecycle_agent_notes(session);
             // Re-adopt this session's own scope: completions from children it
             // started earlier are parked, not discarded, and surface from here.
             self.adopt_session_context(Some(&session_id), "resume");
@@ -1148,6 +1188,7 @@ impl App {
         // again to the id-derived scope.
         self.adopt_session_context(None, "new");
         self.state.messages.clear();
+        self.state.clear_focus_turn_state();
         self.plan_review_comments.clear();
         self.state.scroll_offset = 0;
         self.state.alerts.clear();
@@ -1157,6 +1198,13 @@ impl App {
         self.reset_rendered_viewport();
         self.session_manager.reset_session();
         self.state.session_id = None;
+        self.pending_agent_tool_notes.clear();
+        self.pending_agent_note_applications.clear();
+        self.pending_agent_note_consumptions.clear();
+        self.pending_consumed_agent_tool_notes.clear();
+        self.ready_consumed_agent_tool_notes.clear();
+        self.active_turn_assistant_messages_persisted = true;
+        self.ephemeral_lifecycle_applications.clear();
         crate::plan_mode::set_active_session_id(None);
         self.session_started_at = SystemTime::now();
         self.session_resume_failed = false;
@@ -3055,10 +3103,10 @@ Manual snapshot: `/magic-trace stop`",
     pub(super) fn handle_mailbox_action(&mut self, action: crate::commands::MailboxAction) {
         match action {
             crate::commands::MailboxAction::List => {
-                self.state.add_system_message(
-                    self.mailbox_store
-                        .report(Some(crate::mailbox::local_identity().as_str())),
-                );
+                let mut recipients = self.tool_executor.subagent_mailbox_recipients();
+                recipients.push(crate::mailbox::local_identity());
+                self.state
+                    .add_system_message(self.mailbox_store.report_for_recipients(&recipients));
             }
             crate::commands::MailboxAction::Send { recipient, body } => {
                 let sender = crate::mailbox::local_identity();
@@ -3090,6 +3138,37 @@ Manual snapshot: `/magic-trace stop`",
                     self.state.error = Some(format!("Mailbox read failed: {error:#}"));
                 }
             },
+            crate::commands::MailboxAction::Inspect(id) => {
+                match self.tool_executor.inspect_subagent_control(&id) {
+                    Ok(message) => {
+                        let crate::mailbox::MailboxPayload::SubagentControl { mode } =
+                            message.payload
+                        else {
+                            unreachable!("inspect_subagent_control validates the payload")
+                        };
+                        let next_action = if message.delivery_state
+                            == crate::mailbox::MailboxDeliveryState::Held
+                        {
+                            format!("\n\nApprove: `/mailbox approve {}`", message.id)
+                        } else {
+                            String::new()
+                        };
+                        self.state.add_system_message(format!(
+                            "## Subagent mailbox control `{}`\n\nFrom: `{}`\nTo: `{}`\nMode: `{}`\nState: `{:?}`\n\n{}{}",
+                            message.id,
+                            message.sender,
+                            message.recipient,
+                            mode.label(),
+                            message.delivery_state,
+                            message.body,
+                            next_action
+                        ));
+                    }
+                    Err(error) => {
+                        self.state.error = Some(format!("Mailbox inspection failed: {error}"));
+                    }
+                }
+            }
             crate::commands::MailboxAction::Acknowledge(id) => {
                 match self
                     .mailbox_store
@@ -3103,6 +3182,22 @@ Manual snapshot: `/magic-trace stop`",
                     }
                     Err(error) => {
                         self.state.error = Some(format!("Mailbox acknowledge failed: {error:#}"));
+                    }
+                }
+            }
+            crate::commands::MailboxAction::Approve(id) => {
+                match self.tool_executor.approve_held_subagent_control(&id) {
+                    Ok(message) => {
+                        let _ = self.mailbox_store.reload_from_disk();
+                        self.state.status = Some(format!("Mailbox message {id} approved"));
+                        self.state.add_system_message(format!(
+                            "Approved held mailbox message `{id}` for delivery to `{}`.",
+                            message.recipient
+                        ));
+                    }
+                    Err(error) => {
+                        let _ = self.mailbox_store.reload_from_disk();
+                        self.state.error = Some(format!("Mailbox approval failed: {error:#}"));
                     }
                 }
             }

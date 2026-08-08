@@ -16,15 +16,15 @@ mod tests {
 
     use super::maestro::v1::to_agent_envelope::Payload;
     use super::maestro::v1::{
-        FromAgentEnvelope, HelloMessage, ProviderErrorMessage, ProviderStreamErrorKind,
-        ResponseAcceptedMessage, ToAgentEnvelope, ToolEndMessage, ToolResponseMessage,
-        TurnCompletedMessage, TurnInterruptedMessage,
+        CodeMode, FromAgentEnvelope, GovernedInitMessage, GovernedToolGrant, HelloMessage,
+        ProviderErrorMessage, ProviderStreamErrorKind, ResponseAcceptedMessage, ToAgentEnvelope,
+        ToolEndMessage, ToolResponseMessage, TurnCompletedMessage, TurnInterruptedMessage,
     };
 
     #[test]
     fn generated_headless_proto_types_compile() {
         let hello = HelloMessage {
-            protocol_version: Some("2026-08-07".to_string()),
+            protocol_version: Some("2026-08-08".to_string()),
             ..HelloMessage::default()
         };
 
@@ -41,6 +41,19 @@ mod tests {
             ..ToolEndMessage::default()
         };
         assert!(tool_end.receipt.is_some());
+
+        let governed = ToAgentEnvelope {
+            payload: Some(Payload::GovernedInit(GovernedInitMessage {
+                code_mode: CodeMode::GovernedCode.into(),
+                tool_grant: Some(GovernedToolGrant {
+                    envelope_version: 2,
+                    grant_id: "grant-1".to_string(),
+                    ..GovernedToolGrant::default()
+                }),
+                ..GovernedInitMessage::default()
+            })),
+        };
+        assert!(matches!(governed.payload, Some(Payload::GovernedInit(_))));
     }
 
     #[test]

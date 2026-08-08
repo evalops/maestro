@@ -1836,11 +1836,64 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "context",
-            "Show token breakdown of the current session context",
+            "Show context usage or audit the effective prompt surface",
             CommandCategory::Context,
-            Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowContext))),
+            Box::new(|ctx| {
+                let raw = ctx.raw_args.trim();
+                if raw.is_empty() {
+                    return Ok(CommandOutput::Action(CommandAction::ShowContext));
+                }
+                match raw {
+                    "audit" => Ok(CommandOutput::Action(CommandAction::ShowPromptAudit {
+                        json: false,
+                    })),
+                    "audit --json" | "audit -j" => {
+                        Ok(CommandOutput::Action(CommandAction::ShowPromptAudit {
+                            json: true,
+                        }))
+                    }
+                    _ => Err(CommandError::new("Usage: /context [audit [--json]]")),
+                }
+            }),
         )
-        .usage("/context"),
+        .usage("/context [audit [--json]]"),
+    );
+
+    registry.register(
+        Command::new(
+            "focus",
+            "Collapse tool-heavy turns into one live summary",
+            CommandCategory::Ui,
+            Box::new(|ctx| {
+                let value = match ctx.raw_args.trim().to_ascii_lowercase().as_str() {
+                    "" | "toggle" => None,
+                    "on" => Some(true),
+                    "off" => Some(false),
+                    _ => return Err(CommandError::new("Usage: /focus [on|off|toggle]")),
+                };
+                Ok(CommandOutput::Action(CommandAction::SetFocus(value)))
+            }),
+        )
+        .usage("/focus [on|off|toggle]"),
+    );
+
+    registry.register(
+        Command::new(
+            "prompt-audit",
+            "Audit prompt provenance without exposing prompt content",
+            CommandCategory::Diagnostics,
+            Box::new(|ctx| {
+                let json = match ctx.raw_args.trim() {
+                    "" => false,
+                    "--json" | "-j" => true,
+                    _ => return Err(CommandError::new("Usage: /prompt-audit [--json]")),
+                };
+                Ok(CommandOutput::Action(CommandAction::ShowPromptAudit {
+                    json,
+                }))
+            }),
+        )
+        .usage("/prompt-audit [--json]"),
     );
 
     // Limits command
@@ -2343,7 +2396,9 @@ pub fn build_command_registry() -> CommandRegistry {
                 )))
             }),
         )
-        .usage("/mailbox [list|send <recipient> <message>|read <id>|ack <id>|compact]"),
+        .usage(
+            "/mailbox [list|send <recipient> <message>|read <id>|ack <id>|approve <id>|compact]",
+        ),
     );
 
     // Attach path (image/video) for multimodal next prompt
@@ -3165,15 +3220,27 @@ fn parse_mailbox_action(raw: &str) -> Result<MailboxAction, CommandError> {
             }
             Ok(MailboxAction::Read(rest.to_string()))
         }
+        "inspect" => {
+            if rest.is_empty() {
+                return Err(CommandError::new("Usage: /mailbox inspect <id>"));
+            }
+            Ok(MailboxAction::Inspect(rest.to_string()))
+        }
         "ack" | "acknowledge" => {
             if rest.is_empty() {
                 return Err(CommandError::new("Usage: /mailbox ack <id>"));
             }
             Ok(MailboxAction::Acknowledge(rest.to_string()))
         }
+        "approve" => {
+            if rest.is_empty() {
+                return Err(CommandError::new("Usage: /mailbox approve <id>"));
+            }
+            Ok(MailboxAction::Approve(rest.to_string()))
+        }
         "compact" | "clear" => Ok(MailboxAction::Compact),
         _ => Err(CommandError::new(
-            "Usage: /mailbox list|send|read|ack|compact",
+            "Usage: /mailbox list|send|read|inspect|ack|approve|compact",
         )),
     }
 }

@@ -375,13 +375,25 @@ impl AgentTransport {
 
     /// Configure the agent before sending prompts
     pub fn init(&self, config: InitConfig) -> Result<(), TransportError> {
-        self.send(ToAgentMessage::Init {
-            system_prompt: config.system_prompt,
-            append_system_prompt: config.append_system_prompt,
-            thinking_level: config.thinking_level,
-            approval_mode: config.approval_mode,
-            history: config.history,
-        })
+        let message = match (config.code_mode, config.tool_grant) {
+            (Some(code_mode), Some(tool_grant)) => ToAgentMessage::GovernedInit {
+                system_prompt: config.system_prompt,
+                append_system_prompt: config.append_system_prompt,
+                thinking_level: config.thinking_level,
+                approval_mode: config.approval_mode,
+                history: config.history,
+                code_mode,
+                tool_grant,
+            },
+            _ => ToAgentMessage::Init {
+                system_prompt: config.system_prompt,
+                append_system_prompt: config.append_system_prompt,
+                thinking_level: config.thinking_level,
+                approval_mode: config.approval_mode,
+                history: config.history,
+            },
+        };
+        self.send(message)
     }
 
     /// Send a prompt with file attachments

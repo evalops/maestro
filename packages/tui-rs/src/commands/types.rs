@@ -257,6 +257,10 @@ pub enum CommandAction {
     ShowUsage(UsageAction),
     /// Show a token breakdown of the current session's context by category
     ShowContext,
+    /// Audit the prompt and tool surface that will be sent to the model.
+    ShowPromptAudit { json: bool },
+    /// Change the transcript's turn-level Focus projection.
+    SetFocus(Option<bool>),
     /// Export current session
     ExportSession(ExportAction),
     /// Show or search prompt history
@@ -465,8 +469,12 @@ pub enum MailboxAction {
     Send { recipient: String, body: String },
     /// Mark a message read and display it.
     Read(String),
+    /// Display a control addressed to a locally owned subagent.
+    Inspect(String),
     /// Acknowledge a message.
     Acknowledge(String),
+    /// Release a held coordination message for delivery.
+    Approve(String),
     /// Remove acknowledged messages.
     Compact,
 }

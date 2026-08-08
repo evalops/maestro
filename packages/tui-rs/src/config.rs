@@ -134,6 +134,36 @@ impl ApprovalPolicy {
     }
 }
 
+/// Policy for control messages sent by a different Maestro session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum InboundControlPolicy {
+    Allow,
+    #[default]
+    Hold,
+    Deny,
+}
+
+impl InboundControlPolicy {
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "allow" => Some(Self::Allow),
+            "hold" => Some(Self::Hold),
+            "deny" => Some(Self::Deny),
+            _ => None,
+        }
+    }
+
+    fn restrictiveness(self) -> u8 {
+        match self {
+            Self::Allow => 0,
+            Self::Hold => 1,
+            Self::Deny => 2,
+        }
+    }
+}
+
 /// Sandbox execution mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -562,6 +592,7 @@ pub struct ComposerConfig {
     pub sandbox_mode: Option<SandboxMode>,
     pub sandbox_workspace_write: Option<SandboxWorkspaceWriteConfig>,
     pub shell_environment_policy: Option<ShellEnvironmentPolicy>,
+    pub subagent_inbound_control: Option<InboundControlPolicy>,
 
     // Providers
     pub model_providers: Option<HashMap<String, ModelProviderConfig>>,
@@ -673,6 +704,7 @@ pub static DEFAULT_CONFIG: std::sync::LazyLock<ComposerConfig> =
         model_provider: Some("openai".to_string()),
         approval_policy: Some(ApprovalPolicy::Untrusted),
         sandbox_mode: Some(SandboxMode::WorkspaceWrite),
+        subagent_inbound_control: Some(InboundControlPolicy::Hold),
         model_reasoning_effort: Some(ReasoningEffort::Medium),
         features: Some(FeaturesConfig {
             view_image_tool: Some(true),
@@ -845,6 +877,9 @@ fn deep_merge(target: &mut ComposerConfig, source: &ComposerConfig) {
     }
     if source.sandbox_mode.is_some() {
         target.sandbox_mode = source.sandbox_mode;
+    }
+    if source.subagent_inbound_control.is_some() {
+        target.subagent_inbound_control = source.subagent_inbound_control;
     }
     if source.profile.is_some() {
         target.profile = source.profile.clone();
@@ -1091,6 +1126,12 @@ fn apply_env_overrides_from(
         }
     }
 
+    if let Some(policy) = lookup("MAESTRO_SUBAGENT_INBOUND_CONTROL") {
+        if let Some(policy) = InboundControlPolicy::parse(&policy) {
+            config.subagent_inbound_control = Some(policy);
+        }
+    }
+
     // MAESTRO_PROFILE
     if let Some(profile) = lookup("MAESTRO_PROFILE") {
         config.profile = Some(profile);
@@ -1278,6 +1319,15 @@ pub fn load_config(workspace_dir: &Path, profile_name: Option<&str>) -> Composer
                 sanitize_project_shell_environment_policy(policy);
             }
         } else {
+            if project_config
+                .subagent_inbound_control
+                .is_some_and(|project_policy| {
+                    let inherited = config.subagent_inbound_control.unwrap_or_default();
+                    project_policy.restrictiveness() < inherited.restrictiveness()
+                })
+            {
+                project_config.subagent_inbound_control = None;
+            }
             project_config.shell_environment_policy = None;
             // Sandbox settings decide how much of the host a session can
             // touch, so they are security-sensitive in the same way: an
@@ -1694,6 +1744,41 @@ approval_policy = "on-request"
         assert_eq!(config.model.as_deref(), Some("gpt-4o"));
         assert_eq!(config.model_provider.as_deref(), Some("openai"));
         assert_eq!(config.approval_policy, Some(ApprovalPolicy::OnRequest));
+    }
+
+    #[test]
+    fn inbound_control_policy_defaults_to_hold_and_env_can_override() {
+        let mut config = DEFAULT_CONFIG.clone();
+        assert_eq!(
+            config.subagent_inbound_control,
+            Some(InboundControlPolicy::Hold)
+        );
+        apply_env_overrides_from(&mut config, |key| {
+            (key == "MAESTRO_SUBAGENT_INBOUND_CONTROL").then(|| "deny".to_string())
+        });
+        assert_eq!(
+            config.subagent_inbound_control,
+            Some(InboundControlPolicy::Deny)
+        );
+    }
+
+    #[test]
+    fn untrusted_project_cannot_weaken_inbound_control_policy() {
+        let temp_dir = TempDir::new().expect("tempdir");
+        let config_dir = temp_dir.path().join(".composer");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        fs::write(
+            config_dir.join("config.toml"),
+            "subagent_inbound_control = \"allow\"\n",
+        )
+        .expect("project config");
+
+        clear_config_cache();
+        let config = load_config(temp_dir.path(), None);
+        assert_eq!(
+            config.subagent_inbound_control,
+            Some(InboundControlPolicy::Hold)
+        );
     }
 
     #[test]

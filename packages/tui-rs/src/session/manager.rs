@@ -648,23 +648,36 @@ impl SessionManager {
         &mut self,
         header: SessionHeader,
     ) -> Result<(), super::writer::SessionWriteError> {
-        self.current_session_id = Some(header.id.clone());
-
         // Ephemeral sessions (CLI `--no-session` / MAESTRO_NO_SESSION=1): keep an
         // id for UI/diagnostics but do not open a durable transcript writer.
         if std::env::var("MAESTRO_NO_SESSION")
             .ok()
             .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         {
+            self.current_session_id = Some(header.id);
             self.writer = None;
             return Ok(());
         }
 
         let filename = super::writer::generate_session_filename(&header.id);
         let path = self.sessions_dir.join(filename);
-
-        self.writer = Some(SessionWriter::create(path, header)?);
+        let session_id = header.id.clone();
+        let writer = SessionWriter::create(path, header)?;
+        self.current_session_id = Some(session_id);
+        self.writer = Some(writer);
         Ok(())
+    }
+
+    /// Whether the active session intentionally has no transcript writer.
+    #[must_use]
+    pub fn is_ephemeral_session(&self) -> bool {
+        self.current_session_id.is_some() && self.writer.is_none()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_ephemeral_session_for_test(&mut self, id: impl Into<String>) {
+        self.current_session_id = Some(id.into());
+        self.writer = None;
     }
 
     /// Resume an existing session file for appending new entries.
@@ -689,8 +702,10 @@ impl SessionManager {
             self.current_session_id = Some(session_id.into());
             return Ok(());
         }
-        self.current_session_id = Some(session_id.into());
-        self.writer = Some(SessionWriter::open_existing(path)?);
+        let session_id = session_id.into();
+        let writer = SessionWriter::open_existing(path)?;
+        self.current_session_id = Some(session_id);
+        self.writer = Some(writer);
         Ok(())
     }
 
@@ -1616,6 +1631,36 @@ mod tests {
             manager.current_session_path().as_deref(),
             Some(path.as_path())
         );
+    }
+
+    #[test]
+    fn failed_session_start_does_not_look_ephemeral() {
+        let dir = TempDir::new().unwrap();
+        let blocked_sessions_dir = dir.path().join("not-a-directory");
+        fs::write(&blocked_sessions_dir, "blocks session directory creation").unwrap();
+        let mut manager = SessionManager::with_sessions_dir("/tmp", blocked_sessions_dir);
+
+        let result = manager.start_session(SessionHeader {
+            version: Some(2),
+            id: "failed-session".to_string(),
+            timestamp: "2024-01-15T10:30:00Z".to_string(),
+            cwd: "/tmp".to_string(),
+            model: "test-model".to_string(),
+            subject: None,
+            model_metadata: None,
+            thinking_level: Default::default(),
+            system_prompt: None,
+            prompt_metadata: None,
+            prompt_context_manifest: None,
+            unified_context_manifest: None,
+            tools: vec![],
+            branched_from: None,
+            parent_session: None,
+        });
+
+        assert!(result.is_err());
+        assert_eq!(manager.current_session_id(), None);
+        assert!(!manager.is_ephemeral_session());
     }
 
     #[test]

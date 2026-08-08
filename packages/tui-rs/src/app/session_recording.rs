@@ -1,6 +1,17 @@
 use super::*;
 use crate::agent::{ExecutionStatus, ToolExecution};
 
+fn session_contains_entry_id(path: &std::path::Path, id: &str) -> Result<bool> {
+    let raw = std::fs::read_to_string(path)?;
+    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+        let entry: SessionEntry = serde_json::from_str(line)?;
+        if matches!(entry, SessionEntry::Custom(custom) if custom.id.as_deref() == Some(id)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 impl App {
     pub(super) fn active_session_count(&self) -> Option<usize> {
         let sessions = self.session_manager.list_all_sessions().ok()?;
@@ -23,7 +34,7 @@ impl App {
             bail!("Session resume failed");
         }
 
-        if self.session_manager.writer().is_some() {
+        if self.session_manager.writer().is_some() || self.session_manager.is_ephemeral_session() {
             return Ok(());
         }
 
@@ -144,10 +155,10 @@ impl App {
         self.flush_session();
     }
 
-    pub(super) fn write_session_entry(&mut self, entry: SessionEntry) {
+    pub(super) fn write_session_entry(&mut self, entry: SessionEntry) -> bool {
         let error = {
             let Some(writer) = self.session_manager.writer() else {
-                return;
+                return self.session_manager.is_ephemeral_session();
             };
             writer.write_entry(entry).err()
         };
@@ -156,16 +167,183 @@ impl App {
                 "persist session data",
                 err,
             ));
+            return false;
         }
+        true
     }
 
-    pub(super) fn flush_session(&mut self) {
+    pub(super) fn flush_session(&mut self) -> bool {
         if let Err(err) = self.session_manager.flush() {
             self.state.error = Some(super::format_session_persistence_error(
                 "flush the session transcript",
                 err,
             ));
+            return false;
         }
+        true
+    }
+
+    /// Persist the fact that the host applied a lifecycle notification before
+    /// the mailbox delivery is acknowledged. A failed write deliberately
+    /// leaves the message delivered-but-unacknowledged so its lease can expire
+    /// and a later process can replay it.
+    pub(super) fn subagent_lifecycle_application_exists(
+        &mut self,
+        event: &crate::tools::SubagentLifecycleEvent,
+    ) -> Option<bool> {
+        if self.ensure_session_started().is_err() {
+            return None;
+        }
+        if self.session_manager.is_ephemeral_session() {
+            return Some(
+                self.ephemeral_lifecycle_applications
+                    .contains(&event.mailbox_message_id),
+            );
+        }
+        let Some(session_path) = self.session_manager.current_session_path() else {
+            self.state.error = Some(
+                "Failed to persist subagent lifecycle application: no active session path"
+                    .to_string(),
+            );
+            return None;
+        };
+        match session_contains_entry_id(&session_path, &event.mailbox_message_id) {
+            Ok(found) => Some(found),
+            Err(error) => {
+                self.state.error = Some(super::format_session_persistence_error(
+                    "check subagent lifecycle application",
+                    error,
+                ));
+                None
+            }
+        }
+    }
+
+    pub(super) fn record_subagent_lifecycle_application(
+        &mut self,
+        event: &crate::tools::SubagentLifecycleEvent,
+        content: String,
+        agent_note: String,
+    ) -> bool {
+        if self.session_manager.is_ephemeral_session() {
+            self.ephemeral_lifecycle_applications
+                .insert(event.mailbox_message_id.clone());
+            return true;
+        }
+        let entry = SessionEntry::Custom(CustomEntry {
+            id: Some(event.mailbox_message_id.clone()),
+            parent_id: None,
+            timestamp: Utc::now().to_rfc3339(),
+            custom_type: "subagent_lifecycle_applied".to_string(),
+            data: Some(serde_json::json!({
+                "content": content,
+                "agentNote": agent_note,
+                "event": event,
+            })),
+        });
+        let write_error = self
+            .session_manager
+            .writer()
+            .and_then(|writer| writer.write_entry(entry).err());
+        if let Some(error) = write_error {
+            self.state.error = Some(super::format_session_persistence_error(
+                "persist subagent lifecycle application",
+                error,
+            ));
+            return false;
+        }
+        if let Err(error) = self.session_manager.flush() {
+            self.state.error = Some(super::format_session_persistence_error(
+                "flush subagent lifecycle application",
+                error,
+            ));
+            return false;
+        }
+        true
+    }
+
+    /// Persist confirmation that the native runner appended a lifecycle note.
+    pub(super) fn record_subagent_lifecycle_agent_note_delivered(
+        &mut self,
+        application_id: &str,
+    ) -> bool {
+        if self.session_manager.is_ephemeral_session() {
+            return true;
+        }
+        let entry = SessionEntry::Custom(CustomEntry {
+            id: Some(format!("{application_id}:agent-note-delivered")),
+            parent_id: None,
+            timestamp: Utc::now().to_rfc3339(),
+            custom_type: "subagent_lifecycle_agent_note_delivered".to_string(),
+            data: Some(serde_json::json!({
+                "applicationId": application_id,
+            })),
+        });
+        let Some(writer) = self.session_manager.writer() else {
+            self.state.error = Some(
+                "Failed to persist subagent lifecycle agent-note delivery: no active session writer"
+                    .to_string(),
+            );
+            return false;
+        };
+        let write_error = writer.write_entry(entry).err();
+        if let Some(error) = write_error {
+            self.state.error = Some(super::format_session_persistence_error(
+                "persist subagent lifecycle agent-note delivery",
+                error,
+            ));
+            return false;
+        }
+        if let Err(error) = self.session_manager.flush() {
+            self.state.error = Some(super::format_session_persistence_error(
+                "flush subagent lifecycle agent-note delivery",
+                error,
+            ));
+            return false;
+        }
+        true
+    }
+
+    /// Persist proof that a successful native model turn consumed a note.
+    pub(super) fn record_subagent_lifecycle_agent_note_consumed(
+        &mut self,
+        application_id: &str,
+    ) -> bool {
+        if self.session_manager.is_ephemeral_session() {
+            return true;
+        }
+        let entry = SessionEntry::Custom(CustomEntry {
+            id: Some(format!("{application_id}:agent-note-consumed")),
+            parent_id: None,
+            timestamp: Utc::now().to_rfc3339(),
+            custom_type: "subagent_lifecycle_agent_note_consumed".to_string(),
+            data: Some(serde_json::json!({
+                "applicationId": application_id,
+            })),
+        });
+        let Some(writer) = self.session_manager.writer() else {
+            self.state.error = Some(
+                "Failed to persist subagent lifecycle agent-note consumption: no active session writer"
+                    .to_string(),
+            );
+            return false;
+        };
+        let write_error = writer.write_entry(entry).err();
+        if let Some(error) = write_error {
+            self.state.error = Some(super::format_session_persistence_error(
+                "persist subagent lifecycle agent-note consumption",
+                error,
+            ));
+            return false;
+        }
+        if let Err(error) = self.session_manager.flush() {
+            self.state.error = Some(super::format_session_persistence_error(
+                "flush subagent lifecycle agent-note consumption",
+                error,
+            ));
+            return false;
+        }
+        true
     }
 
     pub(super) fn record_user_message(&mut self, content: &str) {
@@ -191,9 +369,9 @@ impl App {
         &mut self,
         response_id: &str,
         usage: Option<crate::agent::TokenUsage>,
-    ) {
+    ) -> bool {
         if self.ensure_session_started().is_err() {
-            return;
+            return false;
         }
 
         let Some(message) = self
@@ -203,7 +381,7 @@ impl App {
             .find(|m| m.id == response_id && m.role == MessageRole::Assistant)
             .cloned()
         else {
-            return;
+            return false;
         };
 
         let mut blocks = Vec::new();
@@ -245,8 +423,9 @@ impl App {
                 timestamp: system_time_to_millis(message.timestamp),
             },
         });
-        self.write_session_entry(entry);
-        self.flush_session();
+        let wrote = self.write_session_entry(entry);
+        let flushed = self.flush_session();
+        wrote && flushed
     }
 
     pub(super) fn record_tool_result(
@@ -412,5 +591,34 @@ impl App {
             };
             let _ = self.usage_tracker.add_turn_for_model(&entry.model, &usage);
         }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_receipt_tests {
+    use super::*;
+
+    #[test]
+    fn session_entry_id_prevents_lifecycle_replay_duplication() {
+        let directory = tempfile::tempdir().expect("session directory");
+        let path = directory.path().join("session.jsonl");
+        let entry = SessionEntry::Custom(CustomEntry {
+            id: Some("m-lifecycle".to_string()),
+            parent_id: None,
+            timestamp: "2026-08-08T00:00:00Z".to_string(),
+            custom_type: "subagent_lifecycle_applied".to_string(),
+            data: Some(serde_json::json!({ "content": "finished" })),
+        });
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n",
+                serde_json::to_string(&entry).expect("serialize entry")
+            ),
+        )
+        .expect("persist lifecycle entry");
+
+        assert!(session_contains_entry_id(&path, "m-lifecycle").expect("scan session"));
+        assert!(!session_contains_entry_id(&path, "m-other").expect("scan other id"));
     }
 }

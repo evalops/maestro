@@ -12,14 +12,103 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context, Result};
 use fd_lock::RwLock as FileLock;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-const CURRENT_VERSION: u32 = 1;
+const CURRENT_VERSION: u32 = 2;
 const MAX_MESSAGES: usize = 256;
+const MAX_IDEMPOTENCY_RECEIPTS: usize = 512;
+const DELIVERY_LEASE_SECS: u64 = 60;
 const MAX_AGENT_CHARS: usize = 128;
 const MAX_BODY_CHARS: usize = 16_000;
 const MAX_PROMPT_MESSAGES: usize = 8;
 const MAX_PROMPT_CHARS: usize = 12_000;
 const DEFAULT_IDENTITY: &str = "maestro";
+
+/// Durable delivery state for typed mailbox traffic.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MailboxDeliveryState {
+    #[default]
+    Queued,
+    Held,
+    Delivered,
+    Acknowledged,
+    Denied,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MailboxControlMode {
+    Steer,
+    Followup,
+    Interrupt,
+    Cancel,
+    Collect,
+}
+
+impl MailboxControlMode {
+    pub(crate) fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value
+            .unwrap_or("collect")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "collect" => Ok(Self::Collect),
+            "steer" => Ok(Self::Steer),
+            "followup" | "follow_up" | "follow-up" => Ok(Self::Followup),
+            "interrupt" => Ok(Self::Interrupt),
+            "cancel" => Ok(Self::Cancel),
+            other => Err(format!(
+                "mode must be collect, steer, followup, interrupt, or cancel; got {other}"
+            )),
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Collect => "collect",
+            Self::Steer => "steer",
+            Self::Followup => "followup",
+            Self::Interrupt => "interrupt",
+            Self::Cancel => "cancel",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MailboxLifecycleStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    TimedOut,
+    Interrupted,
+}
+
+/// Machine-readable mailbox payload. Plain messages remain advisory and are
+/// never interpreted as coordination commands.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MailboxPayload {
+    #[default]
+    Advisory,
+    SubagentControl {
+        mode: MailboxControlMode,
+    },
+    SubagentLifecycle {
+        subagent_id: String,
+        parent_call_id: String,
+        attempt: u32,
+        status: MailboxLifecycleStatus,
+        summary: Option<String>,
+        error: Option<String>,
+        finished_at_ms: u64,
+    },
+}
 
 /// One durable message in the local agent mailbox.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,11 +118,32 @@ pub struct MailboxMessage {
     pub sender: String,
     pub recipient: String,
     pub body: String,
+    #[serde(default)]
+    pub payload: MailboxPayload,
+    #[serde(default)]
+    pub delivery_state: MailboxDeliveryState,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
     pub created_at_unix: u64,
+    #[serde(default)]
+    pub delivered_at_unix: Option<u64>,
     #[serde(default)]
     pub read_at_unix: Option<u64>,
     #[serde(default)]
     pub acknowledged_at_unix: Option<u64>,
+    #[serde(default)]
+    pub delivery_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailboxIdempotencyReceipt {
+    pub sender: String,
+    pub recipient: String,
+    pub key: String,
+    pub request_sha256: String,
+    pub message_id: String,
+    pub completed_at_unix: u64,
 }
 
 /// Durable mailbox state.
@@ -43,6 +153,8 @@ pub struct MailboxStore {
     pub version: u32,
     pub revision: u64,
     pub messages: Vec<MailboxMessage>,
+    #[serde(default)]
+    pub idempotency_receipts: Vec<MailboxIdempotencyReceipt>,
     #[serde(skip)]
     path: Option<PathBuf>,
 }
@@ -53,6 +165,7 @@ impl Default for MailboxStore {
             version: CURRENT_VERSION,
             revision: 0,
             messages: Vec::new(),
+            idempotency_receipts: Vec::new(),
             path: None,
         }
     }
@@ -107,14 +220,76 @@ impl MailboxStore {
         recipient: impl Into<String>,
         body: impl Into<String>,
     ) -> Result<String> {
+        self.send_typed(
+            sender,
+            recipient,
+            body,
+            MailboxPayload::Advisory,
+            MailboxDeliveryState::Queued,
+            None,
+        )
+    }
+
+    /// Send a typed message, returning the existing id when the idempotency
+    /// key has already been persisted.
+    pub fn send_typed(
+        &mut self,
+        sender: impl Into<String>,
+        recipient: impl Into<String>,
+        body: impl Into<String>,
+        payload: MailboxPayload,
+        delivery_state: MailboxDeliveryState,
+        idempotency_key: Option<String>,
+    ) -> Result<String> {
         let sender = validate_agent(sender.into(), "sender")?;
         let recipient = validate_agent(recipient.into(), "recipient")?;
         let body = validate_body(body.into())?;
+        let idempotency_key = idempotency_key
+            .map(|key| key.trim().to_string())
+            .filter(|key| !key.is_empty());
+        if let Some(key) = idempotency_key.as_deref() {
+            validate_idempotency_key(key)?;
+        }
+        let request_digest = request_sha256(&sender, &recipient, &body, &payload)?;
         self.mutate_persisted(move |store| {
+            if let Some(existing) = idempotency_key.as_deref().and_then(|key| {
+                store.messages.iter().find(|message| {
+                    message.sender == sender
+                        && message.recipient == recipient
+                        && message.idempotency_key.as_deref() == Some(key)
+                })
+            }) {
+                if request_sha256(
+                    &existing.sender,
+                    &existing.recipient,
+                    &existing.body,
+                    &existing.payload,
+                )? != request_digest
+                {
+                    bail!(
+                        "idempotency key collision for sender '{}' and recipient '{}'",
+                        sender,
+                        recipient
+                    )
+                }
+                return Ok((existing.id.clone(), false));
+            }
+            if let Some(existing) = idempotency_key.as_deref().and_then(|key| {
+                store.idempotency_receipts.iter().find(|receipt| {
+                    receipt.sender == sender && receipt.recipient == recipient && receipt.key == key
+                })
+            }) {
+                if existing.request_sha256 != request_digest {
+                    bail!(
+                        "idempotency key collision for sender '{}' and recipient '{}'",
+                        sender,
+                        recipient
+                    )
+                }
+                return Ok((existing.message_id.clone(), false));
+            }
             if store.messages.len() >= MAX_MESSAGES {
-                store
-                    .messages
-                    .retain(|message| message.acknowledged_at_unix.is_none());
+                Self::compact_terminal_messages(store);
                 if store.messages.len() >= MAX_MESSAGES {
                     bail!("mailbox limit reached ({MAX_MESSAGES}); acknowledge old messages first")
                 }
@@ -125,12 +300,168 @@ impl MailboxStore {
                 sender,
                 recipient,
                 body,
+                payload,
+                delivery_state,
+                idempotency_key,
                 created_at_unix: now_unix(),
+                delivered_at_unix: None,
                 read_at_unix: None,
                 acknowledged_at_unix: None,
+                delivery_error: None,
             });
             store.revision = store.revision.saturating_add(1);
             Ok((id, true))
+        })
+    }
+
+    /// Atomically claim the oldest queued typed message for `recipient`.
+    pub fn claim_typed(
+        &mut self,
+        recipient: &str,
+        predicate: impl Fn(&MailboxPayload) -> bool,
+    ) -> Result<Option<MailboxMessage>> {
+        let recipient = validate_agent(recipient.to_string(), "recipient")?;
+        self.mutate_persisted(move |store| {
+            let Some(index) = store.messages.iter().position(|message| {
+                message.recipient == recipient
+                    && (message.delivery_state == MailboxDeliveryState::Queued
+                        || Self::delivery_lease_expired(message))
+                    && predicate(&message.payload)
+            }) else {
+                return Ok((None, false));
+            };
+            if store.messages[index].delivery_state == MailboxDeliveryState::Delivered {
+                store.messages[index].delivery_state = MailboxDeliveryState::Queued;
+            }
+            Self::transition_to_delivered(&mut store.messages[index])?;
+            store.revision = store.revision.saturating_add(1);
+            Ok((Some(store.messages[index].clone()), true))
+        })
+    }
+
+    /// Mark one queued message as delivered by its intended recipient.
+    pub fn mark_delivered(&mut self, id: &str, recipient: &str) -> Result<MailboxMessage> {
+        let id = id.trim().to_string();
+        let recipient = validate_agent(recipient.to_string(), "recipient")?;
+        self.mutate_persisted(move |store| {
+            let index = store.find_index_for(&id, Some(&recipient))?;
+            Self::transition_to_delivered(&mut store.messages[index])?;
+            store.revision = store.revision.saturating_add(1);
+            Ok((store.messages[index].clone(), true))
+        })
+    }
+
+    /// Transition a delivered message to its terminal receipt state.
+    pub fn complete_delivery(
+        &mut self,
+        id: &str,
+        recipient: &str,
+        error: Option<String>,
+    ) -> Result<MailboxMessage> {
+        let id = id.trim().to_string();
+        let recipient = validate_agent(recipient.to_string(), "recipient")?;
+        self.mutate_persisted(move |store| {
+            let index = store.find_index_for(&id, Some(&recipient))?;
+            let now = now_unix();
+            let message = &mut store.messages[index];
+            message.read_at_unix.get_or_insert(now);
+            message.acknowledged_at_unix = Some(now);
+            message.delivery_state = if error.is_some() {
+                MailboxDeliveryState::Failed
+            } else {
+                MailboxDeliveryState::Acknowledged
+            };
+            message.delivery_error = error;
+            store.revision = store.revision.saturating_add(1);
+            Ok((message.clone(), true))
+        })
+    }
+
+    /// Release a held message for delivery.
+    pub fn approve_held(&mut self, id: &str) -> Result<MailboxMessage> {
+        let id = id.trim().to_string();
+        self.mutate_persisted(move |store| {
+            let index = store.find_index_for(&id, None)?;
+            if store.messages[index].delivery_state != MailboxDeliveryState::Held {
+                bail!("mailbox message '{id}' is not held")
+            }
+            store.messages[index].delivery_state = MailboxDeliveryState::Queued;
+            store.revision = store.revision.saturating_add(1);
+            Ok((store.messages[index].clone(), true))
+        })
+    }
+
+    /// Apply the receiving process's policy to held subagent controls.
+    ///
+    /// Messages explicitly approved by a user are already queued and are not
+    /// reconsidered here. `owner_sender` identifies controls from the owning
+    /// parent scope, which may always proceed.
+    pub fn resolve_held_controls(
+        &mut self,
+        recipient: &str,
+        owner_sender: &str,
+        allow_cross_scope: bool,
+        deny_cross_scope: bool,
+    ) -> Result<usize> {
+        let recipient = validate_agent(recipient.to_string(), "recipient")?;
+        let owner_sender = validate_agent(owner_sender.to_string(), "sender")?;
+        self.mutate_persisted(move |store| {
+            let mut changed = 0;
+            for message in &mut store.messages {
+                if message.recipient != recipient
+                    || message.delivery_state != MailboxDeliveryState::Held
+                    || !matches!(&message.payload, MailboxPayload::SubagentControl { .. })
+                {
+                    continue;
+                }
+                if message.sender == owner_sender || allow_cross_scope {
+                    message.delivery_state = MailboxDeliveryState::Queued;
+                    changed += 1;
+                } else if deny_cross_scope {
+                    message.delivery_state = MailboxDeliveryState::Denied;
+                    message.delivery_error = Some("receiver policy denied control".to_string());
+                    changed += 1;
+                }
+            }
+            if changed > 0 {
+                store.revision = store.revision.saturating_add(1);
+            }
+            Ok((changed, changed > 0))
+        })
+    }
+
+    /// Mark a held message denied without releasing it for delivery.
+    pub fn deny_held(&mut self, id: &str, reason: impl Into<String>) -> Result<MailboxMessage> {
+        let id = id.trim().to_string();
+        let reason = reason.into();
+        self.mutate_persisted(move |store| {
+            let index = store.find_index_for(&id, None)?;
+            if store.messages[index].delivery_state != MailboxDeliveryState::Held {
+                bail!("mailbox message '{id}' is not held")
+            }
+            store.messages[index].delivery_state = MailboxDeliveryState::Denied;
+            store.messages[index].delivery_error = Some(reason);
+            store.revision = store.revision.saturating_add(1);
+            Ok((store.messages[index].clone(), true))
+        })
+    }
+
+    /// Deny a held or queued message before a recipient claims it.
+    pub fn deny_pending(&mut self, id: &str, reason: impl Into<String>) -> Result<MailboxMessage> {
+        let id = id.trim().to_string();
+        let reason = reason.into();
+        self.mutate_persisted(move |store| {
+            let index = store.find_index_for(&id, None)?;
+            if !matches!(
+                store.messages[index].delivery_state,
+                MailboxDeliveryState::Held | MailboxDeliveryState::Queued
+            ) {
+                bail!("mailbox message '{id}' is not pending")
+            }
+            store.messages[index].delivery_state = MailboxDeliveryState::Denied;
+            store.messages[index].delivery_error = Some(reason);
+            store.revision = store.revision.saturating_add(1);
+            Ok((store.messages[index].clone(), true))
         })
     }
 
@@ -169,6 +500,7 @@ impl MailboxStore {
             let now = now_unix();
             store.messages[index].read_at_unix.get_or_insert(now);
             store.messages[index].acknowledged_at_unix = Some(now);
+            store.messages[index].delivery_state = MailboxDeliveryState::Acknowledged;
             store.revision = store.revision.saturating_add(1);
             Ok(((), true))
         })
@@ -178,15 +510,65 @@ impl MailboxStore {
     pub fn compact(&mut self) -> Result<usize> {
         self.mutate_persisted(|store| {
             let before = store.messages.len();
-            store
-                .messages
-                .retain(|message| message.acknowledged_at_unix.is_none());
+            Self::compact_terminal_messages(store);
             let removed = before.saturating_sub(store.messages.len());
             if removed > 0 {
                 store.revision = store.revision.saturating_add(1);
             }
             Ok((removed, removed > 0))
         })
+    }
+
+    fn delivery_lease_expired(message: &MailboxMessage) -> bool {
+        message.delivery_state == MailboxDeliveryState::Delivered
+            && message.delivered_at_unix.is_some_and(|delivered| {
+                now_unix().saturating_sub(delivered) >= DELIVERY_LEASE_SECS
+            })
+    }
+
+    fn compact_terminal_messages(store: &mut Self) {
+        let mut retained = Vec::with_capacity(store.messages.len());
+        for message in store.messages.drain(..) {
+            let terminal = message.acknowledged_at_unix.is_some()
+                || matches!(
+                    message.delivery_state,
+                    MailboxDeliveryState::Denied | MailboxDeliveryState::Failed
+                );
+            if terminal {
+                if let Some(key) = message.idempotency_key.clone() {
+                    if let Ok(request_sha256) = request_sha256(
+                        &message.sender,
+                        &message.recipient,
+                        &message.body,
+                        &message.payload,
+                    ) {
+                        store.idempotency_receipts.push(MailboxIdempotencyReceipt {
+                            sender: message.sender.clone(),
+                            recipient: message.recipient.clone(),
+                            key,
+                            request_sha256,
+                            message_id: message.id.clone(),
+                            completed_at_unix: message
+                                .acknowledged_at_unix
+                                .unwrap_or_else(now_unix),
+                        });
+                    }
+                }
+            } else {
+                retained.push(message);
+            }
+        }
+        store.messages = retained;
+        if store.idempotency_receipts.len() > MAX_IDEMPOTENCY_RECEIPTS {
+            store
+                .idempotency_receipts
+                .sort_by_key(|receipt| receipt.completed_at_unix);
+            let excess = store
+                .idempotency_receipts
+                .len()
+                .saturating_sub(MAX_IDEMPOTENCY_RECEIPTS);
+            store.idempotency_receipts.drain(..excess);
+        }
     }
 
     /// List messages, optionally filtered by recipient.
@@ -224,6 +606,10 @@ impl MailboxStore {
     pub fn prompt_section_for(&self, recipient: &str) -> Option<String> {
         let current = self.prompt_store();
         let messages = current.visible_messages(Some(recipient), false);
+        let messages = messages
+            .into_iter()
+            .filter(|message| matches!(message.payload, MailboxPayload::Advisory))
+            .collect::<Vec<_>>();
         if messages.is_empty() {
             return None;
         }
@@ -255,8 +641,34 @@ impl MailboxStore {
         self.prompt_store().render_report(recipient)
     }
 
+    /// Render pending messages for the current session and subagents that are
+    /// actively owned by this process.
+    #[must_use]
+    pub fn report_for_recipients(&self, recipients: &[String]) -> String {
+        let current = self.prompt_store();
+        let local_recipient = local_identity();
+        let messages = current
+            .visible_messages(None, false)
+            .into_iter()
+            .filter(|message| {
+                recipients.iter().any(|value| value == &message.recipient)
+                    && (message.recipient == local_recipient
+                        || matches!(message.payload, MailboxPayload::SubagentControl { .. }))
+            })
+            .collect();
+        current.render_messages_report(messages, true)
+    }
+
     fn render_report(&self, recipient: Option<&str>) -> String {
         let messages = self.visible_messages(recipient, false);
+        self.render_messages_report(messages, false)
+    }
+
+    fn render_messages_report(
+        &self,
+        messages: Vec<&MailboxMessage>,
+        show_owned_actions: bool,
+    ) -> String {
         let mut report = format!(
             "## Mailbox\n\nPath: `{}`\nRevision: {}\nPending: {}\n",
             self.path.as_deref().map_or_else(
@@ -283,13 +695,34 @@ impl MailboxStore {
                     "unread"
                 };
                 report.push_str(&format!(
-                    "- `{}` {read} from `{}` to `{}`: {preview}{suffix}\n",
-                    message.id, message.sender, message.recipient
+                    "- `{}` {read} ({:?}) from `{}` to `{}`: {preview}{suffix}\n",
+                    message.id, message.delivery_state, message.sender, message.recipient
                 ));
+                if show_owned_actions {
+                    if message.recipient == local_identity() {
+                        report.push_str(&format!(
+                            "  Actions: `/mailbox read {0}`, `/mailbox ack {0}`\n",
+                            message.id
+                        ));
+                    } else if matches!(message.payload, MailboxPayload::SubagentControl { .. }) {
+                        report.push_str(&format!("  Action: `/mailbox inspect {}`\n", message.id));
+                        if message.delivery_state == MailboxDeliveryState::Held {
+                            report.push_str(&format!(
+                                "  Approval: `/mailbox approve {}`\n",
+                                message.id
+                            ));
+                        }
+                    }
+                }
             }
         }
-        report
-            .push_str("\nUse `/mailbox read <id>` and `/mailbox ack <id>` to process a message.\n");
+        if show_owned_actions {
+            report.push_str("\nRun the action shown under each message.\n");
+        } else {
+            report.push_str(
+                "\nUse `/mailbox read <id>` and `/mailbox ack <id>` to process a message.\n",
+            );
+        }
         report
     }
 
@@ -309,6 +742,17 @@ impl MailboxStore {
             .with_context(|| format!("unknown mailbox message '{id}'"))
     }
 
+    fn transition_to_delivered(message: &mut MailboxMessage) -> Result<()> {
+        if message.delivery_state != MailboxDeliveryState::Queued {
+            bail!("mailbox message '{}' is not queued", message.id)
+        }
+        let now = now_unix();
+        message.delivery_state = MailboxDeliveryState::Delivered;
+        message.delivered_at_unix = Some(now);
+        message.read_at_unix.get_or_insert(now);
+        Ok(())
+    }
+
     fn normalize_loaded_state(&mut self) -> Result<()> {
         if self.version == 0 {
             self.version = CURRENT_VERSION;
@@ -323,10 +767,35 @@ impl MailboxStore {
         if self.messages.len() > MAX_MESSAGES {
             bail!("mailbox file contains more than {MAX_MESSAGES} messages")
         }
+        if self.idempotency_receipts.len() > MAX_IDEMPOTENCY_RECEIPTS {
+            bail!("mailbox file contains more than {MAX_IDEMPOTENCY_RECEIPTS} idempotency receipts")
+        }
         for message in &self.messages {
             validate_agent(message.sender.clone(), "sender")?;
             validate_agent(message.recipient.clone(), "recipient")?;
             validate_body(message.body.clone())?;
+            if let Some(key) = message.idempotency_key.as_deref() {
+                validate_idempotency_key(key)?;
+            }
+            if message.delivery_state == MailboxDeliveryState::Acknowledged
+                && message.acknowledged_at_unix.is_none()
+            {
+                bail!("acknowledged mailbox message is missing its receipt timestamp")
+            }
+        }
+        for receipt in &self.idempotency_receipts {
+            validate_agent(receipt.sender.clone(), "receipt sender")?;
+            validate_agent(receipt.recipient.clone(), "receipt recipient")?;
+            validate_idempotency_key(&receipt.key)
+                .context("mailbox idempotency receipt has an invalid key")?;
+            if receipt.request_sha256.len() != 64
+                || !receipt
+                    .request_sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+            {
+                bail!("mailbox idempotency receipt has an invalid request hash")
+            }
         }
         self.version = CURRENT_VERSION;
         Ok(())
@@ -389,6 +858,19 @@ impl MailboxStore {
             .with_context(|| format!("write mailbox file {}", path.display()))?;
         Ok(())
     }
+}
+
+fn request_sha256(
+    sender: &str,
+    recipient: &str,
+    body: &str,
+    payload: &MailboxPayload,
+) -> Result<String> {
+    let canonical = serde_json::to_vec(&(sender, recipient, body, payload))?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"maestro-mailbox-idempotency-v1\0");
+    hasher.update(canonical);
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// Resolve `MAESTRO_MAILBOX_FILE` or the default Maestro mailbox path.
@@ -495,6 +977,13 @@ fn validate_body(value: String) -> Result<String> {
     Ok(value)
 }
 
+fn validate_idempotency_key(value: &str) -> Result<()> {
+    if value.trim().is_empty() || value.chars().count() > MAX_BODY_CHARS {
+        bail!("mailbox idempotency key is invalid (max {MAX_BODY_CHARS} characters)")
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,6 +1013,48 @@ mod tests {
         assert!(store
             .send("parent", "child", "x".repeat(MAX_BODY_CHARS + 1))
             .is_err());
+        assert!(store
+            .send_typed(
+                "parent",
+                "child",
+                "message",
+                MailboxPayload::Advisory,
+                MailboxDeliveryState::Queued,
+                Some("x".repeat(MAX_BODY_CHARS + 1)),
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn multi_recipient_report_exposes_only_owned_inboxes() {
+        let mut store = MailboxStore::default();
+        let owned = store
+            .send_typed(
+                "other-session",
+                "subagent:owned:1",
+                "cancel",
+                MailboxPayload::SubagentControl {
+                    mode: MailboxControlMode::Cancel,
+                },
+                MailboxDeliveryState::Held,
+                None,
+            )
+            .expect("owned held message");
+        let unrelated = store
+            .send("other-session", "subagent:other:1", "unrelated")
+            .expect("unrelated message");
+        let child_advisory = store
+            .send("other-session", "subagent:owned:1", "child-only advisory")
+            .expect("owned child advisory");
+
+        let report =
+            store.report_for_recipients(&["maestro".to_string(), "subagent:owned:1".to_string()]);
+        assert!(report.contains(&owned));
+        assert!(!report.contains(&unrelated));
+        assert!(!report.contains(&child_advisory));
+        assert!(report.contains(&format!("/mailbox inspect {owned}")));
+        assert!(report.contains(&format!("/mailbox approve {owned}")));
+        assert!(!report.contains(&format!("/mailbox ack {owned}")));
     }
 
     #[test]
@@ -584,5 +1115,245 @@ mod tests {
             .expect("replace file");
         let loaded = MailboxStore::load_from_path(&path).expect("load recovered file");
         assert_eq!(loaded.messages[0].body, "recover");
+    }
+
+    #[test]
+    fn typed_delivery_has_durable_receipts_and_idempotency() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("mailbox.json");
+        let mut store = MailboxStore::with_path(&path);
+        let payload = MailboxPayload::SubagentControl {
+            mode: MailboxControlMode::Steer,
+        };
+        let first = store
+            .send_typed(
+                "parent",
+                "subagent:child:2",
+                "focus on tests",
+                payload.clone(),
+                MailboxDeliveryState::Queued,
+                Some("control-1".to_string()),
+            )
+            .expect("send control");
+        let duplicate = store
+            .send_typed(
+                "parent",
+                "subagent:child:2",
+                "focus on tests",
+                payload,
+                MailboxDeliveryState::Queued,
+                Some("control-1".to_string()),
+            )
+            .expect("deduplicate control");
+        assert_eq!(first, duplicate);
+        assert_eq!(store.messages.len(), 1);
+
+        let claimed = store
+            .claim_typed("subagent:child:2", |payload| {
+                matches!(payload, MailboxPayload::SubagentControl { .. })
+            })
+            .expect("claim")
+            .expect("queued message");
+        assert_eq!(claimed.delivery_state, MailboxDeliveryState::Delivered);
+        store
+            .complete_delivery(&first, "subagent:child:2", None)
+            .expect("acknowledge delivery");
+
+        let reloaded = MailboxStore::load_from_path(path).expect("reload");
+        assert_eq!(
+            reloaded.messages[0].delivery_state,
+            MailboxDeliveryState::Acknowledged
+        );
+        assert!(reloaded.messages[0].delivered_at_unix.is_some());
+        assert!(reloaded.messages[0].acknowledged_at_unix.is_some());
+    }
+
+    #[test]
+    fn held_messages_require_explicit_release() {
+        let mut store = MailboxStore::default();
+        let id = store
+            .send_typed(
+                "other-session",
+                "child",
+                "cancel",
+                MailboxPayload::SubagentControl {
+                    mode: MailboxControlMode::Cancel,
+                },
+                MailboxDeliveryState::Held,
+                None,
+            )
+            .expect("held message");
+        assert!(store
+            .claim_typed("child", |_| true)
+            .expect("claim held")
+            .is_none());
+        store.approve_held(&id).expect("release held message");
+        assert!(store
+            .claim_typed("child", |_| true)
+            .expect("claim released")
+            .is_some());
+    }
+
+    #[test]
+    fn version_one_mailboxes_load_with_v2_defaults() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("mailbox.json");
+        let fixture = serde_json::json!({
+            "version": 1,
+            "revision": 3,
+            "messages": [{
+                "id": "m-legacy",
+                "sender": "parent",
+                "recipient": "maestro",
+                "body": "legacy advisory",
+                "createdAtUnix": 1
+            }]
+        });
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&fixture).expect("serialize fixture"),
+        )
+        .expect("write fixture");
+
+        let loaded = MailboxStore::load_from_path(path).expect("load v1 mailbox");
+        assert_eq!(loaded.version, CURRENT_VERSION);
+        assert_eq!(loaded.messages.len(), 1);
+        assert_eq!(loaded.messages[0].payload, MailboxPayload::Advisory);
+        assert_eq!(
+            loaded.messages[0].delivery_state,
+            MailboxDeliveryState::Queued
+        );
+        assert!(loaded.idempotency_receipts.is_empty());
+    }
+
+    #[test]
+    fn idempotency_is_scoped_and_rejects_mismatched_reuse() {
+        let mut store = MailboxStore::default();
+        let payload = MailboxPayload::SubagentControl {
+            mode: MailboxControlMode::Steer,
+        };
+        let first = store
+            .send_typed(
+                "parent-a",
+                "child-a",
+                "focus",
+                payload.clone(),
+                MailboxDeliveryState::Queued,
+                Some("retry-1".to_string()),
+            )
+            .expect("first send");
+        let other_scope = store
+            .send_typed(
+                "parent-b",
+                "child-b",
+                "focus",
+                payload.clone(),
+                MailboxDeliveryState::Queued,
+                Some("retry-1".to_string()),
+            )
+            .expect("same key in another scope");
+        assert_ne!(first, other_scope);
+        assert!(store
+            .send_typed(
+                "parent-a",
+                "child-a",
+                "different",
+                payload,
+                MailboxDeliveryState::Queued,
+                Some("retry-1".to_string()),
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn compaction_preserves_idempotency_tombstones() {
+        let mut store = MailboxStore::default();
+        let payload = MailboxPayload::SubagentControl {
+            mode: MailboxControlMode::Followup,
+        };
+        let id = store
+            .send_typed(
+                "parent",
+                "child",
+                "continue",
+                payload.clone(),
+                MailboxDeliveryState::Queued,
+                Some("stable-retry".to_string()),
+            )
+            .expect("send");
+        store.mark_delivered(&id, "child").expect("deliver");
+        store
+            .complete_delivery(&id, "child", None)
+            .expect("complete");
+        assert_eq!(store.compact().expect("compact"), 1);
+        assert!(store.messages.is_empty());
+
+        let duplicate = store
+            .send_typed(
+                "parent",
+                "child",
+                "continue",
+                payload,
+                MailboxDeliveryState::Queued,
+                Some("stable-retry".to_string()),
+            )
+            .expect("dedupe from receipt");
+        assert_eq!(duplicate, id);
+        assert!(store.messages.is_empty());
+    }
+
+    #[test]
+    fn expired_delivery_lease_is_reclaimable() {
+        let mut store = MailboxStore::default();
+        let id = store
+            .send_typed(
+                "parent",
+                "child",
+                "continue",
+                MailboxPayload::SubagentControl {
+                    mode: MailboxControlMode::Followup,
+                },
+                MailboxDeliveryState::Queued,
+                None,
+            )
+            .expect("send");
+        store.mark_delivered(&id, "child").expect("deliver");
+        store.messages[0].delivered_at_unix = Some(now_unix().saturating_sub(DELIVERY_LEASE_SECS));
+
+        let reclaimed = store
+            .claim_typed("child", |_| true)
+            .expect("reclaim")
+            .expect("expired delivery");
+        assert_eq!(reclaimed.id, id);
+        assert_eq!(reclaimed.delivery_state, MailboxDeliveryState::Delivered);
+    }
+
+    #[test]
+    fn receiver_policy_resolves_held_controls_and_compacts_denials() {
+        let mut store = MailboxStore::default();
+        let denied = store
+            .send_typed(
+                "other-session",
+                "child",
+                "cancel",
+                MailboxPayload::SubagentControl {
+                    mode: MailboxControlMode::Cancel,
+                },
+                MailboxDeliveryState::Held,
+                None,
+            )
+            .expect("held control");
+        assert_eq!(
+            store
+                .resolve_held_controls("child", "owner-session", false, true)
+                .expect("deny by receiver"),
+            1
+        );
+        assert_eq!(
+            store.messages[0].delivery_state,
+            MailboxDeliveryState::Denied
+        );
+        assert_eq!(store.compact().expect("compact denial"), 1);
+        assert!(store.messages.iter().all(|message| message.id != denied));
     }
 }

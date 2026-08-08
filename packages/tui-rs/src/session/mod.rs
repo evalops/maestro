@@ -160,7 +160,10 @@ pub use export::{export_session_file, ExportFormat, ExportOptions, SessionExport
 pub use fork::{fork_session_file, ForkedSession};
 pub use index::{collect_sessions, default_index_path, IndexedSession, SessionIndexEntry};
 pub use manager::{SessionInfo, SessionManager};
-pub use reader::{ParsedSession, SessionReadError, SessionReader};
+pub use reader::{
+    LifecycleAgentNoteEntry, LifecycleNotificationEntry, ParsedSession, SessionReadError,
+    SessionReader,
+};
 pub(crate) use writer::SessionLock;
 pub use writer::{
     generate_session_filename, sanitize_path_for_dirname, sessions_dir, SessionWriter,

@@ -1,0 +1,203 @@
+{
+  "schemaVersion": "evalops.maestro.protocol-compatibility-manifest.v1",
+  "digestEncoding": {
+    "hash": "sha256",
+    "canonicalization": "rfc8785",
+    "encoding": "utf-8"
+  },
+  "compatibilityDigest": "sha256:dcd046a2f511a0598aa133c2a9f18d347edb4ce245796ea1e9ad3caf5041eaef",
+  "buildIdentity": {
+    "sourceSha": null,
+    "buildDigest": null,
+    "hooks": {
+      "sourceShaEnvironmentVariable": "MAESTRO_SOURCE_SHA",
+      "buildDigestEnvironmentVariable": "MAESTRO_BUILD_DIGEST"
+    },
+    "receiptDigest": null
+  },
+  "generatedFrom": [
+    "proto/maestro/v1/headless.proto",
+    "packages/tui-rs/src/headless/generated_protocol.rs",
+    "packages/tui-rs/src/headless/messages.rs",
+    "packages/tui-rs/src/transcript.rs",
+    "packages/tui-rs/src/hosted_runner/thread_protocol.rs",
+    "packages/tui-rs/src/hosted_runner_cli.rs",
+    "packages/tui-rs/src/hosted_runner.rs",
+    "packages/tui-rs/src/hosted_runner/rendezvous_protocol.rs"
+  ],
+  "compatibility": {
+    "headless": {
+      "supportedVersions": [
+        "2026-08-08"
+      ],
+      "schemaDeclaredVersion": "2026-08-08",
+      "schemaContractDigest": "sha256:50cc5c0798003dbf2dfaacab7db59f9c6bb046a86e7f947798298c3b19e23535",
+      "runtimeContractDigest": "sha256:ac059c4aed792a72c540befa3979a8e4b6d9d3de7b100f57a7ef27b322d7a81c",
+      "messages": {
+        "toRuntime": [
+          "hello",
+          "init",
+          "governed_init",
+          "restore_conversation",
+          "prompt",
+          "governed_prompt",
+          "steer",
+          "governed_steer",
+          "interrupt",
+          "tool_response",
+          "client_tool_result",
+          "governed_client_tool_result",
+          "server_request_response",
+          "utility_command_start",
+          "utility_command_terminate",
+          "utility_command_stdin",
+          "utility_command_resize",
+          "utility_file_search",
+          "utility_file_read",
+          "utility_file_watch_start",
+          "utility_file_watch_stop",
+          "cancel",
+          "shutdown"
+        ],
+        "fromRuntime": [
+          "conversation_snapshot",
+          "hello_ok",
+          "response_accepted",
+          "ready",
+          "response_start",
+          "response_chunk",
+          "response_end",
+          "turn_completed",
+          "turn_interrupted",
+          "codex_session_state",
+          "codex_turn_state",
+          "codex_usage_state",
+          "codex_compatibility",
+          "tool_call",
+          "tool_start",
+          "tool_output",
+          "tool_end",
+          "client_tool_request",
+          "governed_client_tool_request",
+          "server_request",
+          "server_request_resolved",
+          "error",
+          "provider_error",
+          "status",
+          "compaction",
+          "session_info",
+          "connection_info",
+          "raw_agent_event",
+          "utility_command_started",
+          "utility_command_resized",
+          "utility_command_output",
+          "utility_command_exited",
+          "utility_file_search_results",
+          "utility_file_read_result",
+          "utility_file_watch_started",
+          "utility_file_watch_event",
+          "utility_file_watch_stopped"
+        ],
+        "schemaOnlyToRuntime": [],
+        "schemaOnlyFromRuntime": [],
+        "runtimeOnlyToRuntime": [
+          "restore_conversation",
+          "steer"
+        ],
+        "runtimeOnlyFromRuntime": [
+          "conversation_snapshot",
+          "codex_session_state",
+          "codex_turn_state",
+          "codex_usage_state",
+          "codex_compatibility"
+        ]
+      },
+      "capabilities": {
+        "notifications": [
+          "status",
+          "heartbeat",
+          "connection_info",
+          "compaction"
+        ],
+        "serverRequests": [
+          "approval",
+          "client_tool",
+          "user_input",
+          "tool_retry"
+        ],
+        "connectionRoles": [
+          "viewer",
+          "controller"
+        ],
+        "utilityOperations": [
+          "command_exec",
+          "file_search",
+          "file_read",
+          "file_watch"
+        ],
+        "codeModes": [
+          "governed_code"
+        ],
+        "clientFields": [
+          "server_requests",
+          "utility_operations",
+          "raw_agent_events",
+          "transcript_grade",
+          "governed_code_mode"
+        ],
+        "transcriptGrades": [
+          "off",
+          "turn",
+          "block",
+          "delta"
+        ],
+        "schemaOnlyServerRequests": [
+          "mcp_elicitation"
+        ],
+        "runtimeOnlyClientFields": [
+          "transcript_grade"
+        ]
+      }
+    },
+    "thread": {
+      "contractDigest": "sha256:f298e1d2510b166ea5f28219d73663de961e3415b94e6dd972fdbdbd6d12add7",
+      "supportedVersions": [
+        {
+          "version": "evalops.maestro.thread.v1",
+          "governedCode": false
+        },
+        {
+          "version": "evalops.maestro.thread.v2",
+          "governedCode": true,
+          "requiredFields": [
+            "codeMode",
+            "toolGrant"
+          ]
+        }
+      ]
+    },
+    "resident": {
+      "contractDigest": "sha256:d8faca326f10de874bc3e55c4a6435537d4d9bbd4715ab9b7e7cc616af160af6",
+      "modelReadyContractRevision": "maestro-resident-model-ready-v3",
+      "identityProtocolVersion": "evalops.remote-runner.identity.v1",
+      "identityBindingProtocolVersion": "evalops.maestro.hosted-runner-identity-binding.v1",
+      "rendezvousProtocolVersion": "evalops.maestro.hosted-runner-rendezvous.v1"
+    },
+    "governedCode": {
+      "codeModes": [
+        "governed_code"
+      ],
+      "clientCapability": "governed_code_mode",
+      "threadProtocolVersion": "evalops.maestro.thread.v2",
+      "toRuntimeMessages": [
+        "governed_init",
+        "governed_prompt",
+        "governed_steer",
+        "governed_client_tool_result"
+      ],
+      "fromRuntimeMessages": [
+        "governed_client_tool_request"
+      ]
+    }
+  }
+}
