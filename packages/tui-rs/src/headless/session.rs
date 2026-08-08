@@ -81,7 +81,7 @@
 //! For reliability, call `flush()` after important events to ensure data is
 //! persisted to disk.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -94,8 +94,47 @@ use crate::fs_atomic::create_dir_all_synced;
 
 use super::messages::{
     ActiveFileWatch, ActiveTool, AgentState, CodexSubagentContinuityEdge, FromAgentMessage,
-    InitConfig, PendingApproval, ServerRequestType, StreamingResponse, ToAgentMessage, TokenUsage,
+    GovernedClientToolBinding, InitConfig, PendingApproval, ServerRequestType, StreamingResponse,
+    ToAgentMessage, TokenUsage,
 };
+
+fn init_config_from_message(message: &ToAgentMessage) -> Option<InitConfig> {
+    match message {
+        ToAgentMessage::Init {
+            system_prompt,
+            append_system_prompt,
+            thinking_level,
+            approval_mode,
+            history,
+        } => Some(InitConfig {
+            system_prompt: system_prompt.clone(),
+            append_system_prompt: append_system_prompt.clone(),
+            thinking_level: *thinking_level,
+            approval_mode: *approval_mode,
+            history: history.clone(),
+            code_mode: None,
+            tool_grant: None,
+        }),
+        ToAgentMessage::GovernedInit {
+            system_prompt,
+            append_system_prompt,
+            thinking_level,
+            approval_mode,
+            history,
+            code_mode,
+            tool_grant,
+        } => Some(InitConfig {
+            system_prompt: system_prompt.clone(),
+            append_system_prompt: append_system_prompt.clone(),
+            thinking_level: *thinking_level,
+            approval_mode: *approval_mode,
+            history: history.clone(),
+            code_mode: Some(*code_mode),
+            tool_grant: Some(tool_grant.clone()),
+        }),
+        _ => None,
+    }
+}
 
 /// A recorded session entry (either a sent or received message).
 ///
@@ -195,6 +234,8 @@ struct ReplaySidecar {
     semantic_conversation: Option<SemanticConversationCheckpoint>,
     #[serde(default)]
     semantic_conversation_attempt: Option<u32>,
+    #[serde(default)]
+    semantic_processed_queue_ids: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -262,6 +303,8 @@ pub struct AgentStateCheckpoint {
     #[serde(default)]
     pub pending_client_tools: Vec<PendingApproval>,
     #[serde(default)]
+    pub governed_client_tool_bindings: HashMap<String, GovernedClientToolBinding>,
+    #[serde(default)]
     pub pending_user_inputs: Vec<PendingApproval>,
     #[serde(default)]
     pub pending_tool_retries: Vec<PendingApproval>,
@@ -316,6 +359,7 @@ impl AgentStateCheckpoint {
             current_response: state.current_response.clone(),
             pending_approvals: state.pending_approvals.clone(),
             pending_client_tools: state.pending_client_tools.clone(),
+            governed_client_tool_bindings: state.governed_client_tool_bindings.clone(),
             pending_user_inputs: state.pending_user_inputs.clone(),
             pending_tool_retries: state.pending_tool_retries.clone(),
             tracked_tools: state.tracked_tools.values().cloned().collect(),
@@ -391,6 +435,7 @@ impl AgentStateCheckpoint {
             current_response: self.current_response,
             pending_approvals: self.pending_approvals,
             pending_client_tools: self.pending_client_tools,
+            governed_client_tool_bindings: self.governed_client_tool_bindings,
             pending_user_inputs: self.pending_user_inputs,
             pending_tool_retries: self.pending_tool_retries,
             tracked_tools: self
@@ -628,6 +673,8 @@ pub struct SessionRecorder {
     semantic_conversation: Option<SemanticConversationCheckpoint>,
     /// Attempt identity associated with the latest semantic checkpoint.
     semantic_conversation_attempt: Option<u32>,
+    /// Explicit prompt queue ids known to be covered by semantic checkpoints.
+    semantic_processed_queue_ids: HashSet<u64>,
     /// Number of entries written since the last checkpoint.
     entries_since_checkpoint: usize,
 }
@@ -771,6 +818,7 @@ impl SessionRecorder {
             last_init: None,
             semantic_conversation: None,
             semantic_conversation_attempt: None,
+            semantic_processed_queue_ids: HashSet::new(),
             entries_since_checkpoint: 0,
         })
     }
@@ -790,6 +838,16 @@ impl SessionRecorder {
         let semantic_conversation_attempt = loaded_sidecar
             .as_ref()
             .and_then(|sidecar| sidecar.semantic_conversation_attempt);
+        let semantic_processed_queue_ids = loaded_sidecar
+            .as_ref()
+            .map(|sidecar| {
+                sidecar
+                    .semantic_processed_queue_ids
+                    .iter()
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default();
         let sidecar_replay =
             loaded_sidecar.and_then(|sidecar| replay_from_sidecar_tail(&path, sidecar).ok());
         let reader = if sidecar_replay.is_none() || reconstructed {
@@ -830,6 +888,7 @@ impl SessionRecorder {
                     })
             }),
             semantic_conversation_attempt,
+            semantic_processed_queue_ids,
             entries_since_checkpoint: 0,
         })
     }
@@ -887,6 +946,11 @@ impl SessionRecorder {
         self.semantic_conversation_attempt
     }
 
+    #[must_use]
+    pub(crate) fn semantic_processed_queue_ids(&self) -> &HashSet<u64> {
+        &self.semantic_processed_queue_ids
+    }
+
     /// Replace the reconstructed replay state with a snapshot and persist it.
     pub fn apply_snapshot(
         &mut self,
@@ -933,21 +997,8 @@ impl SessionRecorder {
         let entry = SessionEntry::sent(message.clone());
         self.write_entry(&entry)?;
         self.replay_state.handle_sent_message(message);
-        if let ToAgentMessage::Init {
-            system_prompt,
-            append_system_prompt,
-            thinking_level,
-            approval_mode,
-            history,
-        } = message
-        {
-            self.last_init = Some(InitConfig {
-                system_prompt: system_prompt.clone(),
-                append_system_prompt: append_system_prompt.clone(),
-                thinking_level: *thinking_level,
-                approval_mode: *approval_mode,
-                history: history.clone(),
-            });
+        if let Some(config) = init_config_from_message(message) {
+            self.last_init = Some(config);
         }
         self.entries_since_checkpoint += 1;
         self.maybe_write_checkpoint(false)?;
@@ -970,7 +1021,7 @@ impl SessionRecorder {
             messages,
         } = &portable_message
         {
-            return self.record_conversation_snapshot(protocol_version, messages, None);
+            return self.record_conversation_snapshot(protocol_version, messages, None, &[]);
         }
         let entry = SessionEntry::received(portable_message);
         self.write_entry(&entry)?;
@@ -1045,11 +1096,29 @@ impl SessionRecorder {
         message: &FromAgentMessage,
         snapshot_attempt: Option<u32>,
     ) -> std::io::Result<()> {
+        self.record_received_preserving_credential_references_with_snapshot_metadata(
+            message,
+            snapshot_attempt,
+            &[],
+        )
+    }
+
+    pub(crate) fn record_received_preserving_credential_references_with_snapshot_metadata(
+        &mut self,
+        message: &FromAgentMessage,
+        snapshot_attempt: Option<u32>,
+        processed_queue_ids: &[u64],
+    ) -> std::io::Result<()> {
         match message {
             FromAgentMessage::ConversationSnapshot {
                 protocol_version,
                 messages,
-            } => self.record_conversation_snapshot(protocol_version, messages, snapshot_attempt),
+            } => self.record_conversation_snapshot(
+                protocol_version,
+                messages,
+                snapshot_attempt,
+                processed_queue_ids,
+            ),
             _ => self.record_received(message),
         }
     }
@@ -1059,14 +1128,18 @@ impl SessionRecorder {
         protocol_version: &str,
         messages: &[maestro_ai::Message],
         snapshot_attempt: Option<u32>,
+        processed_queue_ids: &[u64],
     ) -> std::io::Result<()> {
         self.semantic_conversation_attempt = snapshot_attempt;
         if protocol_version == crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL {
+            self.semantic_processed_queue_ids
+                .extend(processed_queue_ids.iter().copied());
             self.semantic_conversation = Some(SemanticConversationCheckpoint {
                 protocol_version: protocol_version.to_string(),
                 messages: messages.to_vec(),
             });
         } else {
+            self.semantic_processed_queue_ids.clear();
             // A present-but-unsupported version is not a facade-only
             // snapshot. Clear stale provider history rather than replaying
             // a transcript with unknown semantics after restart.
@@ -1107,12 +1180,19 @@ impl SessionRecorder {
     fn write_replay_sidecar(&mut self) -> std::io::Result<()> {
         self.writer.flush()?;
         self.writer.get_ref().sync_all()?;
+        let mut semantic_processed_queue_ids = self
+            .semantic_processed_queue_ids
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        semantic_processed_queue_ids.sort_unstable();
         let sidecar = ReplaySidecar {
             tail_offset: self.writer.get_ref().metadata()?.len(),
             state: portable_redacted_checkpoint(&self.replay_state),
             last_init: self.last_init.clone(),
             semantic_conversation: self.semantic_conversation.clone(),
             semantic_conversation_attempt: self.semantic_conversation_attempt,
+            semantic_processed_queue_ids,
         };
         let json = serde_json::to_string(&sidecar)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
@@ -1384,21 +1464,8 @@ fn apply_replay_entry(
     match entry {
         SessionEntry::Sent { message, .. } => {
             state.handle_sent_message(message);
-            if let ToAgentMessage::Init {
-                system_prompt,
-                append_system_prompt,
-                thinking_level,
-                approval_mode,
-                history,
-            } = message
-            {
-                *last_init = Some(InitConfig {
-                    system_prompt: system_prompt.clone(),
-                    append_system_prompt: append_system_prompt.clone(),
-                    thinking_level: *thinking_level,
-                    approval_mode: *approval_mode,
-                    history: history.clone(),
-                });
+            if let Some(config) = init_config_from_message(message) {
+                *last_init = Some(config);
             }
         }
         SessionEntry::Received { message, .. } => {
@@ -1594,21 +1661,8 @@ impl SessionReader {
             match entry {
                 SessionEntry::Sent { message, .. } => {
                     state.handle_sent_message(message);
-                    if let ToAgentMessage::Init {
-                        system_prompt,
-                        append_system_prompt,
-                        thinking_level,
-                        approval_mode,
-                        history,
-                    } = message
-                    {
-                        last_init = Some(InitConfig {
-                            system_prompt: system_prompt.clone(),
-                            append_system_prompt: append_system_prompt.clone(),
-                            thinking_level: *thinking_level,
-                            approval_mode: *approval_mode,
-                            history: history.clone(),
-                        });
+                    if let Some(config) = init_config_from_message(message) {
+                        last_init = Some(config);
                     }
                 }
                 SessionEntry::Received { message, .. } => {
@@ -1739,7 +1793,65 @@ fn current_timestamp() -> u64 {
 mod tests {
     use super::*;
     use crate::ai::{ContentBlock, Message, MessageContent, Role};
+    use crate::headless::{CodeMode, GovernedToolGrant};
     use tempfile::TempDir;
+
+    fn governed_grant_fixture() -> GovernedToolGrant {
+        serde_json::from_value(serde_json::json!({
+            "envelope_version": 2,
+            "grant_id": "grant-reconnect",
+            "grant_version": 8,
+            "issuer": "evalops.platform",
+            "audience": "evalops.maestro",
+            "organization_id": "org-1",
+            "workspace_id": "workspace-1",
+            "thread_id": "thread-1",
+            "turn_id": "turn-1",
+            "run_id": "run-1",
+            "runtime_generation": 5,
+            "grant_epoch": 3,
+            "issued_at_ms": 100,
+            "not_before_ms": 100,
+            "expires_at_ms": 10_000,
+            "grant_hash": "sha256:immutable",
+            "signing_key_id": "key-1",
+            "grant_signature": "hmac-sha256:signed",
+            "native_tool_ids": ["read"],
+            "external_tools": []
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn governed_init_grant_identity_survives_session_replay() {
+        let temp = TempDir::new().unwrap();
+        let mut recorder = SessionRecorder::new(temp.path()).unwrap();
+        let session_id = recorder.id().to_string();
+        let grant = governed_grant_fixture();
+        recorder
+            .record_sent(&ToAgentMessage::GovernedInit {
+                system_prompt: None,
+                append_system_prompt: None,
+                thinking_level: None,
+                approval_mode: None,
+                history: None,
+                code_mode: CodeMode::GovernedCode,
+                tool_grant: grant.clone(),
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let replay = SessionReader::load(temp.path(), &session_id)
+            .unwrap()
+            .replay();
+        let restored = replay
+            .last_init
+            .and_then(|init| init.tool_grant)
+            .expect("governed grant restored");
+        assert_eq!(restored.identity(), grant.identity());
+        assert_eq!(restored, grant);
+    }
 
     fn semantic_tool_pair_fixture() -> Vec<Message> {
         vec![
@@ -2241,6 +2353,8 @@ mod tests {
                 thinking_level: Some(super::super::messages::ThinkingLevel::High),
                 approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
                 history: None,
+                code_mode: None,
+                tool_grant: None,
             })
         );
         assert_eq!(replay.state.protocol_version.as_deref(), Some("2026-03-30"));
@@ -2321,6 +2435,8 @@ mod tests {
                 thinking_level: Some(super::super::messages::ThinkingLevel::Ultra),
                 approval_mode: Some(super::super::messages::ApprovalMode::Fail),
                 history: None,
+                code_mode: None,
+                tool_grant: None,
             })
         );
     }

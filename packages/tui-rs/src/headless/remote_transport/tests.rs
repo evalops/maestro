@@ -354,6 +354,7 @@ fn remote_runtime_state_snapshot_maps_into_agent_state() {
             utility_operations: Some(vec![crate::headless::UtilityOperation::CommandExec]),
             raw_agent_events: Some(true),
             transcript_grade: None,
+            governed_code_mode: None,
         }),
         opt_out_notifications: Some(vec!["status".to_string()]),
         connection_role: Some(ConnectionRole::Controller),
@@ -379,6 +380,7 @@ fn remote_runtime_state_snapshot_maps_into_agent_state() {
                 utility_operations: Some(vec![crate::headless::UtilityOperation::CommandExec]),
                 raw_agent_events: Some(true),
                 transcript_grade: None,
+                governed_code_mode: None,
             }),
             opt_out_notifications: Some(vec!["status".to_string()]),
             subscription_count: 1,
@@ -413,6 +415,7 @@ fn remote_runtime_state_snapshot_maps_into_agent_state() {
             args: serde_json::json!({"command": "create", "filename": "report.txt"}),
             started_at_ms: None,
         }],
+        governed_client_tool_bindings: HashMap::new(),
         pending_user_inputs: vec![PendingApproval {
             call_id: "call-user-input".to_string(),
             tool_execution_id: None,

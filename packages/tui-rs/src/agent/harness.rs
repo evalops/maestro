@@ -325,18 +325,6 @@ async fn scripted_partial_text_eof_is_transient_protocol_error() {
         .await
         .expect("prompt");
 
-    assert!(matches!(
-        harness
-            .wait_for_event(Duration::from_secs(5), |event| matches!(
-                event,
-                FromAgent::ProviderError { .. }
-            ))
-            .await,
-        Some(FromAgent::ProviderError {
-            kind: ProviderStreamErrorKind::TransientProtocol,
-            ..
-        })
-    ));
     let snapshot = harness
         .wait_for_event(Duration::from_secs(2), |event| {
             matches!(event, FromAgent::ConversationSnapshot { .. })
@@ -352,6 +340,18 @@ async fn scripted_partial_text_eof_is_transient_protocol_error() {
             .all(|message| message.role != crate::ai::Role::Assistant),
         "partial provider text must not become authoritative assistant history: {messages:?}"
     );
+    assert!(matches!(
+        harness
+            .wait_for_event(Duration::from_secs(5), |event| matches!(
+                event,
+                FromAgent::ProviderError { .. }
+            ))
+            .await,
+        Some(FromAgent::ProviderError {
+            kind: ProviderStreamErrorKind::TransientProtocol,
+            ..
+        })
+    ));
     assert!(harness
         .wait_for_event(Duration::from_millis(200), |event| matches!(
             event,

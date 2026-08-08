@@ -37,7 +37,10 @@ test("release and container entrypoints select optimized release", () => {
 	assert.match(dockerfile, /cargo chef cook --release --locked -p maestro/);
 	assert.match(dockerfile, /cargo build --release --locked -p maestro/);
 	assert.match(dockerfile, /target\/release\/maestro/);
-	assert.match(ghcr, /cancel-in-progress: true/);
+	assert.match(
+		ghcr,
+		/cancel-in-progress: \$\{\{ github\.event_name != 'workflow_dispatch' \}\}/,
+	);
 	assert.match(ghcr, /docker\/build-push-action/);
 	assert.match(mirror, /npm run build:release/);
 	assert.match(release, /build-release-binary\.mjs --platform/);

@@ -3,7 +3,7 @@
 // Native headless protocol contract.
 // Do not edit manually; update `proto/maestro/v1/headless.proto` instead.
 
-pub const HEADLESS_PROTOCOL_VERSION: &str = "2026-08-07";
+pub const HEADLESS_PROTOCOL_VERSION: &str = "2026-08-08";
 pub const HEADLESS_SERVER_REQUEST_TYPES: &[&str] = &[
     "approval",
     "client_tool",
@@ -40,10 +40,14 @@ pub const HEADLESS_UTILITY_FILE_WATCH_CHANGE_TYPES: &[&str] =
 pub const HEADLESS_TO_AGENT_MESSAGE_TYPES: &[&str] = &[
     "hello",
     "init",
+    "governed_init",
     "prompt",
+    "governed_prompt",
+    "governed_steer",
     "interrupt",
     "tool_response",
     "client_tool_result",
+    "governed_client_tool_result",
     "server_request_response",
     "utility_command_start",
     "utility_command_terminate",
@@ -67,6 +71,7 @@ pub const HEADLESS_FROM_AGENT_MESSAGE_TYPES: &[&str] = &[
     "tool_output",
     "tool_end",
     "client_tool_request",
+    "governed_client_tool_request",
     "server_request",
     "server_request_resolved",
     "raw_agent_event",

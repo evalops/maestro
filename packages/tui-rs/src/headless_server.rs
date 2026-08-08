@@ -20,6 +20,7 @@
 //! - `ApprovalMode::Prompt` / unset → wait for client `ToolResponse`
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -27,17 +28,20 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use base64::Engine as _;
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
 use crate::agent::{
     CredentialVault, ExecutionSource, FromAgent, NativeAgent, NativeAgentConfig, PromptKind,
-    ToolResponseConsumption, ToolResponseMessage, ToolResult,
+    ToolDefinition, ToolResponseConsumption, ToolResponseMessage, ToolResult,
 };
 use crate::git;
 use crate::headless::messages::{
-    ApprovalMode, ClientCapabilities, ClientToolResultContent, FromAgentMessage, HeadlessErrorType,
+    ApprovalMode, ClientCapabilities, ClientToolExecutionOwner, ClientToolResultContent, CodeMode,
+    ExternalToolDefinition, FromAgentMessage, GovernedToolGrant, HeadlessErrorType,
     ServerRequestResolutionStatus, ServerRequestResolvedBy, ServerRequestType, ToAgentMessage,
     TokenUsage as HeadlessTokenUsage, ToolResult as HeadlessToolResult, ToolRetryDecisionAction,
     UtilityCommandShellMode, UtilityCommandStream, UtilityCommandTerminalMode,
@@ -56,6 +60,11 @@ struct RuntimeMeta {
     decided_tool_execution_ids: HashSet<String>,
     /// Tool call ids currently awaiting a raw client decision.
     pending_tool_calls: HashSet<String>,
+    client_tool_bindings: HashMap<String, ClientToolBinding>,
+    pending_client_tools: HashMap<String, PendingClientTool>,
+    emitted_client_tool_terminals: HashSet<String>,
+    conversation_snapshot: Option<Vec<maestro_ai::Message>>,
+    turn_active: bool,
     transcript_grade: crate::transcript::TranscriptGrade,
     response_chunks: Vec<(String, bool)>,
     /// Detached consumption-receipt acknowledgement tasks. Shutdown drains
@@ -63,6 +72,29 @@ struct RuntimeMeta {
     /// before the process exits. Shared behind an `Arc` because `RuntimeMeta`
     /// is `Clone` and every clone must observe the same registry.
     receipt_tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+}
+
+#[derive(Debug, Clone)]
+struct ClientToolBinding {
+    provider_tool_name: String,
+    tool_id: String,
+    logical_name: String,
+    owner: ClientToolExecutionOwner,
+    grant_id: String,
+    grant_version: u64,
+    grant_hash: String,
+    turn_digest: String,
+    definition_digest: String,
+    expires_at_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+struct PendingClientTool {
+    binding: ClientToolBinding,
+    tool_execution_id: String,
+    args_digest: String,
+    idempotency_key: String,
+    result_digest: Option<String>,
 }
 
 impl RuntimeMeta {
@@ -100,6 +132,8 @@ struct HeadlessState {
     history: Option<Vec<crate::headless::messages::HistoryMessage>>,
     /// Semantic provider history is meaningful only after an Init boundary.
     init_applied: bool,
+    governed_grant: Option<GovernedToolGrant>,
+    ready_emitted: bool,
     meta: Arc<Mutex<RuntimeMeta>>,
     agent: Option<NativeAgent>,
     tool_tx: Option<mpsc::UnboundedSender<ToolResponseMessage>>,
@@ -144,12 +178,19 @@ impl HeadlessState {
             credential_vault: CredentialVault::new(),
             history: None,
             init_applied: false,
+            governed_grant: None,
+            ready_emitted: false,
             meta: Arc::new(Mutex::new(RuntimeMeta {
                 session_id,
                 approval_mode: None,
                 tool_execution_ids: HashMap::new(),
                 decided_tool_execution_ids: HashSet::new(),
                 pending_tool_calls: HashSet::new(),
+                client_tool_bindings: HashMap::new(),
+                pending_client_tools: HashMap::new(),
+                emitted_client_tool_terminals: HashSet::new(),
+                conversation_snapshot: None,
+                turn_active: false,
                 transcript_grade: crate::transcript::TranscriptGrade::Delta,
                 response_chunks: Vec::new(),
                 receipt_tasks: Arc::new(Mutex::new(Vec::new())),
@@ -214,11 +255,39 @@ impl HeadlessState {
                 // PR's scope to headless sandboxing.
                 sandbox_policy: None,
             };
-            let (agent, mut event_rx) =
+            let (agent, mut event_rx) = if let Some(grant) = self.governed_grant.as_ref() {
+                let (allowed_tools, external_tools, bindings) = governed_agent_inputs(grant)?;
+                let created = NativeAgent::new_with_governed_tools_and_credential_vault(
+                    config,
+                    &allowed_tools,
+                    external_tools,
+                    self.credential_vault.clone(),
+                )
+                .context("Failed to create governed native agent for headless server")?;
+                self.meta
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .client_tool_bindings = bindings;
+                created
+            } else {
+                self.meta
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .client_tool_bindings
+                    .clear();
                 NativeAgent::new_with_credential_vault(config, self.credential_vault.clone())
-                    .context("Failed to create native agent for headless server")?;
+                    .context("Failed to create native agent for headless server")?
+            };
             // Apply any seeded multi-turn history before the first prompt.
-            if let Some(history) = self.history.as_deref() {
+            let conversation_snapshot = self
+                .meta
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .conversation_snapshot
+                .clone();
+            if let Some(messages) = conversation_snapshot {
+                agent.replace_history_preserving_credentials(messages);
+            } else if let Some(history) = self.history.as_deref() {
                 let messages = crate::headless::messages::history_to_ai_messages(Some(history));
                 if !messages.is_empty() {
                     agent.replace_history(messages);
@@ -252,13 +321,16 @@ impl HeadlessState {
                 binding_mode = model_binding_mode(&self.model),
                 duration_ms = started.elapsed().as_millis() as u64,
             );
-            emit(&FromAgentMessage::Ready {
-                protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
-                model,
-                provider,
-                session_id: Some(session_id),
-            })?;
-            agent.send_session_info(&self.cwd, self.session_id(), git_branch);
+            if !self.ready_emitted {
+                emit(&FromAgentMessage::Ready {
+                    protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
+                    model,
+                    provider,
+                    session_id: Some(session_id),
+                })?;
+                agent.send_session_info(&self.cwd, self.session_id(), git_branch);
+                self.ready_emitted = true;
+            }
             let event_task = tokio::spawn(async move {
                 while let Some(msg) = event_rx.recv().await {
                     if let Err(err) = handle_agent_event(
@@ -290,6 +362,433 @@ impl HeadlessState {
     fn agent_mut(&mut self) -> Result<&NativeAgent> {
         self.ensure_agent()
     }
+
+    async fn apply_governed_grant(
+        &mut self,
+        code_mode: Option<CodeMode>,
+        grant: Option<GovernedToolGrant>,
+    ) -> Result<()> {
+        match (code_mode, grant) {
+            (None, None) => Ok(()),
+            (None, Some(_)) => anyhow::bail!("tool_grant requires code_mode=governed_code"),
+            (Some(CodeMode::GovernedCode), None) => {
+                anyhow::bail!("governed_code requires an authenticated tool_grant")
+            }
+            (Some(CodeMode::GovernedCode), Some(grant)) => {
+                let organization_id = required_governed_runtime_env("MAESTRO_ORGANIZATION_ID")?;
+                let workspace_id = required_governed_runtime_env("MAESTRO_WORKSPACE_ID")?;
+                let thread_id = required_governed_runtime_env("MAESTRO_RUNNER_SESSION_ID")?;
+                let runtime_generation =
+                    required_governed_runtime_env("MAESTRO_PLACEMENT_GENERATION")?
+                        .parse::<u64>()
+                        .context("MAESTRO_PLACEMENT_GENERATION must be an unsigned integer")?;
+                let context = GovernedGrantVerificationContext {
+                    organization_id: &organization_id,
+                    workspace_id: &workspace_id,
+                    thread_id: &thread_id,
+                    turn_id: &grant.turn_id,
+                    run_id: &grant.run_id,
+                    runtime_generation,
+                };
+                verify_governed_tool_grant(
+                    &grant,
+                    &context,
+                    chrono::Utc::now().timestamp_millis(),
+                )?;
+
+                if let Some(existing) = self.governed_grant.as_ref() {
+                    if existing == &grant {
+                        return Ok(());
+                    }
+                    if existing.identity() == grant.identity() {
+                        anyhow::bail!("governed tool grant identity reused with different content");
+                    }
+                }
+                let handled_active_turn = {
+                    let mut meta = self
+                        .meta
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if !meta.pending_tool_calls.is_empty() || !meta.pending_client_tools.is_empty()
+                    {
+                        anyhow::bail!("cannot change governed tool grant during an active turn");
+                    }
+                    if meta.turn_active {
+                        let existing = self
+                            .governed_grant
+                            .as_ref()
+                            .context("active governed turn is missing its prior grant")?;
+                        if governed_authority_material_digest(existing)?
+                            != governed_authority_material_digest(&grant)?
+                        {
+                            anyhow::bail!(
+                                "a steer grant cannot change the active run's tool capabilities"
+                            );
+                        }
+                        let (_, _, bindings) = governed_agent_inputs(&grant)?;
+                        meta.client_tool_bindings = bindings;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if handled_active_turn {
+                    self.governed_grant = Some(grant);
+                    return Ok(());
+                }
+
+                let (allowed_tools, external_tools, bindings) = governed_agent_inputs(&grant)?;
+                if let Some(agent) = self.agent.as_ref() {
+                    agent.replace_governed_tools(allowed_tools, external_tools)?;
+                    self.meta
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .client_tool_bindings = bindings;
+                }
+                self.governed_grant = Some(grant);
+                self.ensure_agent()?;
+                Ok(())
+            }
+        }
+    }
+}
+
+fn required_governed_runtime_env(name: &str) -> Result<String> {
+    std::env::var(name)
+        .with_context(|| format!("governed code requires runtime-owned {name}"))
+        .and_then(|value| {
+            let value = value.trim();
+            if value.is_empty() {
+                anyhow::bail!("governed code requires non-empty runtime-owned {name}");
+            }
+            Ok(value.to_string())
+        })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    encoded
+}
+
+fn canonical_json_digest(value: &serde_json::Value) -> Result<String> {
+    let bytes = serde_json::to_vec(value).context("serialize governed tool material")?;
+    Ok(format!("sha256:{}", sha256_hex(&bytes)))
+}
+
+fn governed_authority_material_digest(grant: &GovernedToolGrant) -> Result<String> {
+    canonical_json_digest(&serde_json::json!({
+        "native_tool_ids": grant.native_tool_ids,
+        "external_tools": grant.external_tools,
+    }))
+}
+
+fn external_definition_digest(definition: &ExternalToolDefinition) -> Result<String> {
+    canonical_json_digest(&serde_json::json!({
+        "tool_id": definition.tool_id,
+        "name": definition.name,
+        "description": definition.description,
+        "input_schema": definition.input_schema,
+        "execution_owner": definition.execution_owner,
+        "metadata": definition.metadata,
+    }))
+}
+
+fn qualified_client_tool_name(definition: &ExternalToolDefinition, digest: &str) -> String {
+    let identity = format!(
+        "{}\0{}\0{}",
+        definition.execution_owner.client_instance_id, definition.tool_id, digest
+    );
+    format!("client_{}", &sha256_hex(identity.as_bytes())[..40])
+}
+
+type GovernedAgentInputs = (
+    HashSet<String>,
+    Vec<ToolDefinition>,
+    HashMap<String, ClientToolBinding>,
+);
+
+fn governed_agent_inputs(grant: &GovernedToolGrant) -> Result<GovernedAgentInputs> {
+    validate_governed_grant_shape(grant)?;
+    let allowed_tools = grant
+        .native_tool_ids
+        .iter()
+        .map(|name| name.trim().to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    let mut provider_names = HashSet::new();
+    let turn_digest = canonical_json_digest(&serde_json::json!({
+        "organization_id": grant.organization_id,
+        "workspace_id": grant.workspace_id,
+        "thread_id": grant.thread_id,
+        "turn_id": grant.turn_id,
+        "run_id": grant.run_id,
+        "runtime_generation": grant.runtime_generation,
+    }))?;
+    let mut external_tools = Vec::with_capacity(grant.external_tools.len());
+    let mut bindings = HashMap::new();
+    for definition in &grant.external_tools {
+        let definition_digest = external_definition_digest(definition)?;
+        let provider_tool_name = qualified_client_tool_name(definition, &definition_digest);
+        if !provider_names.insert(provider_tool_name.clone()) {
+            anyhow::bail!("governed client tool identity collision");
+        }
+        external_tools.push(ToolDefinition {
+            tool: crate::ai::Tool::new(
+                &provider_tool_name,
+                format!(
+                    "Caller-owned tool `{}`. {}",
+                    definition.name, definition.description
+                ),
+            )
+            .with_schema(definition.input_schema.clone()),
+            requires_approval: true,
+        });
+        bindings.insert(
+            provider_tool_name.clone(),
+            ClientToolBinding {
+                provider_tool_name,
+                tool_id: definition.tool_id.clone(),
+                logical_name: definition.name.clone(),
+                owner: definition.execution_owner.clone(),
+                grant_id: grant.grant_id.clone(),
+                grant_version: grant.grant_version,
+                grant_hash: grant.grant_hash.clone(),
+                turn_digest: turn_digest.clone(),
+                definition_digest,
+                expires_at_ms: grant.expires_at_ms,
+            },
+        );
+    }
+    Ok((allowed_tools, external_tools, bindings))
+}
+
+fn validate_governed_grant_shape(grant: &GovernedToolGrant) -> Result<()> {
+    if grant.envelope_version != 2 {
+        anyhow::bail!("unsupported governed tool grant envelope version");
+    }
+    for (field, value) in [
+        ("grant_id", grant.grant_id.as_str()),
+        ("issuer", grant.issuer.as_str()),
+        ("audience", grant.audience.as_str()),
+        ("organization_id", grant.organization_id.as_str()),
+        ("workspace_id", grant.workspace_id.as_str()),
+        ("thread_id", grant.thread_id.as_str()),
+        ("turn_id", grant.turn_id.as_str()),
+        ("run_id", grant.run_id.as_str()),
+        ("grant_hash", grant.grant_hash.as_str()),
+        ("signing_key_id", grant.signing_key_id.as_str()),
+        ("grant_signature", grant.grant_signature.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            anyhow::bail!("governed tool grant {field} must not be empty");
+        }
+    }
+    if grant.grant_version == 0 || grant.grant_epoch == 0 || grant.runtime_generation == 0 {
+        anyhow::bail!("governed tool grant versions and epochs must be positive");
+    }
+    if grant.not_before_ms > grant.expires_at_ms || grant.issued_at_ms > grant.expires_at_ms {
+        anyhow::bail!("governed tool grant validity window is invalid");
+    }
+    if grant.native_tool_ids.is_empty() && grant.external_tools.is_empty() {
+        anyhow::bail!("governed tool grant must contain at least one capability");
+    }
+    let mut native_ids = HashSet::new();
+    let mut previous_native_id: Option<&str> = None;
+    for name in &grant.native_tool_ids {
+        let normalized = name.trim().to_ascii_lowercase();
+        if normalized.is_empty()
+            || normalized != *name
+            || previous_native_id.is_some_and(|previous| previous >= name.as_str())
+            || !native_ids.insert(normalized)
+        {
+            anyhow::bail!("governed native tool ids must be normalized, sorted, and unique");
+        }
+        previous_native_id = Some(name);
+    }
+    let mut owner_scoped_ids = HashSet::new();
+    let mut previous_external_identity: Option<(&str, &str, u64)> = None;
+    for definition in &grant.external_tools {
+        if definition.tool_id.trim().is_empty()
+            || definition.name.trim().is_empty()
+            || definition
+                .execution_owner
+                .client_instance_id
+                .trim()
+                .is_empty()
+            || definition.execution_owner.lease_epoch == 0
+        {
+            anyhow::bail!("governed client tool identity and lease must be present");
+        }
+        if definition.description.len() > 16 * 1024
+            || serde_json::to_vec(&definition.input_schema)?.len() > 256 * 1024
+        {
+            anyhow::bail!("governed client tool definition exceeds size limits");
+        }
+        let identity = (
+            definition.execution_owner.client_instance_id.clone(),
+            definition.tool_id.clone(),
+        );
+        if !owner_scoped_ids.insert(identity) {
+            anyhow::bail!("duplicate owner-scoped governed client tool id");
+        }
+        let ordered_identity = (
+            definition.execution_owner.client_instance_id.as_str(),
+            definition.tool_id.as_str(),
+            definition.execution_owner.lease_epoch,
+        );
+        if previous_external_identity.is_some_and(|previous| previous >= ordered_identity) {
+            anyhow::bail!(
+                "governed client tools must be sorted by owner, tool id, and lease epoch"
+            );
+        }
+        previous_external_identity = Some(ordered_identity);
+    }
+    Ok(())
+}
+
+pub(crate) const GOVERNED_GRANT_ISSUER: &str = "evalops.platform";
+pub(crate) const GOVERNED_GRANT_AUDIENCE: &str = "evalops.maestro";
+const GOVERNED_GRANT_KEYS_ENV: &str = "MAESTRO_PLATFORM_TOOL_GRANT_HMAC_KEYS";
+
+#[derive(Debug, Clone)]
+pub(crate) struct GovernedGrantVerificationContext<'a> {
+    pub organization_id: &'a str,
+    pub workspace_id: &'a str,
+    pub thread_id: &'a str,
+    pub turn_id: &'a str,
+    pub run_id: &'a str,
+    pub runtime_generation: u64,
+}
+
+fn governed_grant_canonical_value(grant: &GovernedToolGrant) -> serde_json::Value {
+    serde_json::json!({
+        "envelope_version": grant.envelope_version,
+        "grant_id": grant.grant_id,
+        "grant_version": grant.grant_version,
+        "issuer": grant.issuer,
+        "audience": grant.audience,
+        "organization_id": grant.organization_id,
+        "workspace_id": grant.workspace_id,
+        "thread_id": grant.thread_id,
+        "turn_id": grant.turn_id,
+        "run_id": grant.run_id,
+        "runtime_generation": grant.runtime_generation,
+        "grant_epoch": grant.grant_epoch,
+        "issued_at_ms": grant.issued_at_ms,
+        "not_before_ms": grant.not_before_ms,
+        "expires_at_ms": grant.expires_at_ms,
+        "signing_key_id": grant.signing_key_id,
+        "native_tool_ids": grant.native_tool_ids,
+        "external_tools": grant.external_tools,
+    })
+}
+
+fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    const BLOCK: usize = 64;
+    let mut normalized = [0u8; BLOCK];
+    if key.len() > BLOCK {
+        normalized[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        normalized[..key.len()].copy_from_slice(key);
+    }
+    let mut inner_pad = [0x36u8; BLOCK];
+    let mut outer_pad = [0x5cu8; BLOCK];
+    for index in 0..BLOCK {
+        inner_pad[index] ^= normalized[index];
+        outer_pad[index] ^= normalized[index];
+    }
+    let mut inner = Sha256::new();
+    inner.update(inner_pad);
+    inner.update(message);
+    let inner = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(outer_pad);
+    outer.update(inner);
+    outer.finalize().into()
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
+        == 0
+}
+
+fn governed_grant_keys_from_env() -> Result<HashMap<String, Vec<u8>>> {
+    let raw = std::env::var(GOVERNED_GRANT_KEYS_ENV)
+        .context("governed tool grant verification keys are not configured")?;
+    let encoded = serde_json::from_str::<HashMap<String, String>>(&raw)
+        .context("parse governed tool grant verification keys")?;
+    encoded
+        .into_iter()
+        .map(|(id, value)| {
+            let key = base64::engine::general_purpose::STANDARD
+                .decode(value)
+                .context("decode governed tool grant verification key")?;
+            if key.len() < 32 {
+                anyhow::bail!("governed tool grant verification key is too short");
+            }
+            Ok((id, key))
+        })
+        .collect()
+}
+
+pub(crate) fn verify_governed_tool_grant(
+    grant: &GovernedToolGrant,
+    context: &GovernedGrantVerificationContext<'_>,
+    now_ms: i64,
+) -> Result<()> {
+    let keys = governed_grant_keys_from_env()?;
+    verify_governed_tool_grant_with_keys(grant, context, now_ms, &keys)
+}
+
+fn verify_governed_tool_grant_with_keys(
+    grant: &GovernedToolGrant,
+    context: &GovernedGrantVerificationContext<'_>,
+    now_ms: i64,
+    keys: &HashMap<String, Vec<u8>>,
+) -> Result<()> {
+    validate_governed_grant_shape(grant)?;
+    if grant.issuer != GOVERNED_GRANT_ISSUER || grant.audience != GOVERNED_GRANT_AUDIENCE {
+        anyhow::bail!("governed tool grant issuer or audience mismatch");
+    }
+    if grant.organization_id != context.organization_id
+        || grant.workspace_id != context.workspace_id
+        || grant.thread_id != context.thread_id
+        || grant.turn_id != context.turn_id
+        || grant.run_id != context.run_id
+        || grant.runtime_generation != context.runtime_generation
+    {
+        anyhow::bail!("governed tool grant scope mismatch");
+    }
+    if now_ms < grant.not_before_ms || now_ms > grant.expires_at_ms {
+        anyhow::bail!("governed tool grant is not currently valid");
+    }
+    let canonical = serde_json::to_vec(&governed_grant_canonical_value(grant))?;
+    let expected_hash = format!("sha256:{}", sha256_hex(&canonical));
+    if !constant_time_eq(expected_hash.as_bytes(), grant.grant_hash.as_bytes()) {
+        anyhow::bail!("governed tool grant hash mismatch");
+    }
+    let key = keys
+        .get(&grant.signing_key_id)
+        .context("unknown governed tool grant signing key")?;
+    let expected_signature = format!("hmac-sha256:{}", hex_encode(&hmac_sha256(key, &canonical)));
+    if !constant_time_eq(
+        expected_signature.as_bytes(),
+        grant.grant_signature.as_bytes(),
+    ) {
+        anyhow::bail!("governed tool grant signature mismatch");
+    }
+    Ok(())
 }
 
 async fn submit_prompt_with_kind(
@@ -309,6 +808,12 @@ async fn submit_prompt_with_kind(
                     terminal: true,
                     error_type: Some(HeadlessErrorType::Protocol),
                 })?;
+            } else {
+                state
+                    .meta
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .turn_active = true;
             }
         }
         Err(err) => {
@@ -322,6 +827,50 @@ async fn submit_prompt_with_kind(
         }
     }
     Ok(())
+}
+
+fn apply_init_settings(
+    state: &mut HeadlessState,
+    system_prompt: Option<String>,
+    append_system_prompt: Option<String>,
+    thinking_level: Option<crate::headless::messages::ThinkingLevel>,
+    approval_mode: Option<ApprovalMode>,
+    history: Option<Vec<crate::headless::messages::HistoryMessage>>,
+) {
+    state.init_applied = true;
+    if let Some(system_prompt) = system_prompt {
+        state.system_prompt = system_prompt;
+    }
+    if let Some(append) = append_system_prompt {
+        state.system_prompt.push_str("\n\n");
+        state.system_prompt.push_str(&append);
+    }
+    if let Some(level) = thinking_level {
+        let (enabled, budget) = match level {
+            crate::headless::messages::ThinkingLevel::Off => (false, 0),
+            crate::headless::messages::ThinkingLevel::Minimal => (true, 1_000),
+            crate::headless::messages::ThinkingLevel::Low => (true, 5_000),
+            crate::headless::messages::ThinkingLevel::Medium => (true, 10_000),
+            crate::headless::messages::ThinkingLevel::High => (true, 20_000),
+            crate::headless::messages::ThinkingLevel::Ultra => (true, 50_000),
+        };
+        state.thinking_enabled = enabled;
+        state.thinking_budget = budget;
+    }
+    if approval_mode.is_some() {
+        state.set_approval_mode(approval_mode);
+    }
+    if history.is_some() {
+        state.history = history;
+    }
+    if let Some(agent) = state.agent.as_ref() {
+        let _ = agent.set_system_prompt(state.system_prompt.clone());
+        let _ = agent.set_thinking(state.thinking_enabled, state.thinking_budget);
+        if let Some(history) = state.history.as_deref() {
+            let messages = crate::headless::messages::history_to_ai_messages(Some(history));
+            agent.replace_history(messages);
+        }
+    }
 }
 
 /// Run the native headless protocol server until EOF or shutdown.
@@ -428,44 +977,44 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                 approval_mode,
                 history,
             } => {
-                state.init_applied = true;
-                if let Some(sp) = sp {
-                    state.system_prompt = sp;
-                }
-                if let Some(append) = append_system_prompt {
-                    state.system_prompt.push_str("\n\n");
-                    state.system_prompt.push_str(&append);
-                }
-                if let Some(level) = thinking_level {
-                    let (enabled, budget) = match level {
-                        crate::headless::messages::ThinkingLevel::Off => (false, 0),
-                        crate::headless::messages::ThinkingLevel::Minimal => (true, 1_000),
-                        crate::headless::messages::ThinkingLevel::Low => (true, 5_000),
-                        crate::headless::messages::ThinkingLevel::Medium => (true, 10_000),
-                        crate::headless::messages::ThinkingLevel::High => (true, 20_000),
-                        crate::headless::messages::ThinkingLevel::Ultra => (true, 50_000),
-                    };
-                    state.thinking_enabled = enabled;
-                    state.thinking_budget = budget;
-                }
-                if approval_mode.is_some() {
-                    state.set_approval_mode(approval_mode);
-                }
-                if history.is_some() {
-                    state.history = history;
-                }
-                // If agent already exists, push updates through.
-                if let Some(agent) = state.agent.as_ref() {
-                    let _ = agent.set_system_prompt(state.system_prompt.clone());
-                    let _ = agent.set_thinking(state.thinking_enabled, state.thinking_budget);
-                    if let Some(history) = state.history.as_deref() {
-                        let messages =
-                            crate::headless::messages::history_to_ai_messages(Some(history));
-                        agent.replace_history(messages);
-                    }
-                }
+                apply_init_settings(
+                    &mut state,
+                    sp,
+                    append_system_prompt,
+                    thinking_level,
+                    approval_mode,
+                    history,
+                );
                 emit(&FromAgentMessage::Status {
                     message: "init applied".to_string(),
+                })?;
+            }
+            ToAgentMessage::GovernedInit {
+                system_prompt,
+                append_system_prompt,
+                thinking_level,
+                approval_mode,
+                history,
+                code_mode,
+                tool_grant,
+            } => {
+                if let Err(error) = state
+                    .apply_governed_grant(Some(code_mode), Some(tool_grant))
+                    .await
+                {
+                    protocol_error(None, format!("governed code init rejected: {error:#}"))?;
+                    continue;
+                }
+                apply_init_settings(
+                    &mut state,
+                    system_prompt,
+                    append_system_prompt,
+                    thinking_level,
+                    approval_mode,
+                    history,
+                );
+                emit(&FromAgentMessage::Status {
+                    message: "governed init applied".to_string(),
                 })?;
             }
             ToAgentMessage::RestoreConversation {
@@ -499,6 +1048,29 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                 content,
                 attachments,
             } => {
+                if state.governed_grant.is_some() {
+                    protocol_error(
+                        None,
+                        "governed code sessions require a grant on every prompt",
+                    )?;
+                    continue;
+                }
+                submit_prompt_with_kind(&mut state, content, attachments, PromptKind::Prompt)
+                    .await?;
+            }
+            ToAgentMessage::GovernedPrompt {
+                content,
+                attachments,
+                code_mode,
+                tool_grant,
+            } => {
+                if let Err(error) = state
+                    .apply_governed_grant(Some(code_mode), Some(tool_grant))
+                    .await
+                {
+                    protocol_error(None, format!("governed code turn rejected: {error:#}"))?;
+                    continue;
+                }
                 submit_prompt_with_kind(&mut state, content, attachments, PromptKind::Prompt)
                     .await?;
             }
@@ -506,6 +1078,29 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                 content,
                 attachments,
             } => {
+                if state.governed_grant.is_some() {
+                    protocol_error(
+                        None,
+                        "governed code sessions require a grant on every steer",
+                    )?;
+                    continue;
+                }
+                submit_prompt_with_kind(&mut state, content, attachments, PromptKind::Steer)
+                    .await?;
+            }
+            ToAgentMessage::GovernedSteer {
+                content,
+                attachments,
+                code_mode,
+                tool_grant,
+            } => {
+                if let Err(error) = state
+                    .apply_governed_grant(Some(code_mode), Some(tool_grant))
+                    .await
+                {
+                    protocol_error(None, format!("governed code steer rejected: {error:#}"))?;
+                    continue;
+                }
                 submit_prompt_with_kind(&mut state, content, attachments, PromptKind::Steer)
                     .await?;
             }
@@ -561,7 +1156,13 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                     protocol_error(Some(call_id), "no pending native client-tool request")?;
                     continue;
                 };
-                match prepare_client_tool_result(&state.meta, call_id.clone(), content, is_error) {
+                match prepare_client_tool_result(
+                    &state.meta,
+                    call_id.clone(),
+                    content,
+                    is_error,
+                    ClientToolResultBinding::default(),
+                ) {
                     Ok(accepted) => {
                         match dispatch_accepted_tool_response(
                             &state.meta,
@@ -573,7 +1174,68 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                             Err(message) => protocol_error(Some(call_id), message)?,
                         }
                     }
-                    Err(message) => protocol_error(Some(call_id), message)?,
+                    Err(error) => dispatch_client_tool_preparation_error(
+                        &state.meta,
+                        tool_tx,
+                        call_id,
+                        error,
+                    )?,
+                }
+            }
+            ToAgentMessage::GovernedClientToolResult {
+                call_id,
+                content,
+                is_error,
+                tool_execution_id,
+                client_instance_id,
+                grant_id,
+                grant_version,
+                grant_hash,
+                turn_digest,
+                definition_digest,
+                args_digest,
+                owner_lease_epoch,
+                idempotency_key,
+            } => {
+                let Some(tool_tx) = state.tool_tx.as_ref() else {
+                    protocol_error(Some(call_id), "no pending native client-tool request")?;
+                    continue;
+                };
+                match prepare_client_tool_result(
+                    &state.meta,
+                    call_id.clone(),
+                    content,
+                    is_error,
+                    ClientToolResultBinding {
+                        tool_execution_id: Some(tool_execution_id),
+                        client_instance_id: Some(client_instance_id),
+                        grant_id: Some(grant_id),
+                        grant_version: Some(grant_version),
+                        grant_hash: Some(grant_hash),
+                        turn_digest: Some(turn_digest),
+                        definition_digest: Some(definition_digest),
+                        args_digest: Some(args_digest),
+                        owner_lease_epoch: Some(owner_lease_epoch),
+                        idempotency_key: Some(idempotency_key),
+                    },
+                ) {
+                    Ok(accepted) => {
+                        match dispatch_accepted_tool_response(
+                            &state.meta,
+                            tool_tx,
+                            accepted,
+                            call_id.clone(),
+                        ) {
+                            Ok(()) => {}
+                            Err(message) => protocol_error(Some(call_id), message)?,
+                        }
+                    }
+                    Err(error) => dispatch_client_tool_preparation_error(
+                        &state.meta,
+                        tool_tx,
+                        call_id,
+                        error,
+                    )?,
                 }
             }
             ToAgentMessage::ServerRequestResponse {
@@ -859,6 +1521,7 @@ fn native_capabilities() -> ClientCapabilities {
         ]),
         raw_agent_events: Some(true),
         transcript_grade: Some(crate::transcript::TranscriptGrade::Delta),
+        governed_code_mode: Some(true),
     }
 }
 
@@ -1267,14 +1930,31 @@ fn unix_timestamp_ms() -> u64 {
 fn take_interrupted_tool_terminal_messages(
     meta: &Arc<Mutex<RuntimeMeta>>,
 ) -> Vec<FromAgentMessage> {
-    let mut pending = {
+    let (pending, pending_client_tools, emitted_client_tool_terminals) = {
         let mut meta = meta
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         meta.pending_tool_calls.clear();
-        meta.tool_execution_ids.drain().collect::<Vec<_>>()
+        (
+            meta.tool_execution_ids.drain().collect::<Vec<_>>(),
+            meta.pending_client_tools.drain().collect::<Vec<_>>(),
+            meta.emitted_client_tool_terminals.clone(),
+        )
     };
+    let mut pending = pending
+        .into_iter()
+        .filter(|(_, tool_execution_id)| !emitted_client_tool_terminals.contains(tool_execution_id))
+        .collect::<Vec<_>>();
+    pending.extend(
+        pending_client_tools
+            .into_iter()
+            .filter(|(_, pending)| {
+                !emitted_client_tool_terminals.contains(&pending.tool_execution_id)
+            })
+            .map(|(call_id, pending)| (call_id, pending.tool_execution_id)),
+    );
     pending.sort_by(|(left, _), (right, _)| left.cmp(right));
+    pending.dedup();
     pending
         .into_iter()
         .map(|(call_id, tool_execution_id)| FromAgentMessage::ToolEnd {
@@ -1301,7 +1981,11 @@ async fn handle_agent_event(
         FromAgent::ConversationSnapshot {
             protocol_version,
             messages,
+            ..
         } => {
+            meta.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .conversation_snapshot = Some(messages.clone());
             emit(&FromAgentMessage::ConversationSnapshot {
                 protocol_version,
                 messages,
@@ -1418,12 +2102,18 @@ async fn handle_agent_event(
             })?;
         }
         FromAgent::TurnCompleted { response_id } => {
+            meta.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .turn_active = false;
             emit(&FromAgentMessage::TurnCompleted { response_id })?;
         }
         FromAgent::TurnInterrupted {
             response_id,
             reason,
         } => {
+            meta.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .turn_active = false;
             emit(&FromAgentMessage::TurnInterrupted {
                 response_id,
                 reason,
@@ -1436,6 +2126,51 @@ async fn handle_agent_event(
             requires_approval,
             ..
         } => {
+            let client_binding = meta
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .client_tool_bindings
+                .get(&tool.to_ascii_lowercase())
+                .cloned();
+            if let Some(binding) = client_binding {
+                let tool_execution_id = uuid::Uuid::new_v4().to_string();
+                let args_digest = canonical_json_digest(&args)?;
+                let idempotency_key = format!("client-tool:{tool_execution_id}");
+                {
+                    let mut runtime = meta
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    runtime.pending_tool_calls.insert(call_id.clone());
+                    runtime.pending_client_tools.insert(
+                        call_id.clone(),
+                        PendingClientTool {
+                            binding: binding.clone(),
+                            tool_execution_id: tool_execution_id.clone(),
+                            args_digest: args_digest.clone(),
+                            idempotency_key: idempotency_key.clone(),
+                            result_digest: None,
+                        },
+                    );
+                }
+                emit(&FromAgentMessage::GovernedClientToolRequest {
+                    call_id,
+                    tool_execution_id,
+                    tool: binding.logical_name,
+                    args,
+                    provider_tool_name: binding.provider_tool_name,
+                    tool_id: binding.tool_id,
+                    client_instance_id: binding.owner.client_instance_id,
+                    grant_id: binding.grant_id,
+                    grant_version: binding.grant_version,
+                    grant_hash: binding.grant_hash,
+                    turn_digest: binding.turn_digest,
+                    definition_digest: binding.definition_digest,
+                    args_digest,
+                    owner_lease_epoch: binding.owner.lease_epoch,
+                    idempotency_key,
+                })?;
+                return Ok(());
+            }
             // Register an unresolved client decision before exposing the call.
             // A raw client can respond immediately after observing ToolCall.
             let immediate_approval = {
@@ -1518,6 +2253,11 @@ async fn handle_agent_event(
             fatal,
             terminal,
         } => {
+            if terminal {
+                meta.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .turn_active = false;
+            }
             let session_id = meta
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1554,6 +2294,9 @@ async fn handle_agent_event(
             })?;
         }
         FromAgent::ProviderError { kind, message } => {
+            meta.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .turn_active = false;
             let session_id = meta
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1811,6 +2554,8 @@ struct AcceptedToolResponse {
 struct ToolResponseRollback {
     call_id: String,
     tool_execution_id: Option<String>,
+    pending_client_tool: Option<PendingClientTool>,
+    restore_pending: bool,
 }
 
 fn dispatch_accepted_tool_response(
@@ -1843,10 +2588,27 @@ where
     Emit: FnMut(&FromAgentMessage) -> std::result::Result<(), String>,
     Acknowledge: FnOnce(String, ToolResponseConsumption, bool) + Send + 'static,
 {
-    for message in &accepted.messages {
-        if let Err(error) = emit_lifecycle(message) {
-            rollback_accepted_tool_response(meta, accepted.rollback);
-            return Err(error);
+    let lifecycle_id = accepted.rollback.tool_execution_id.as_deref();
+    let lifecycle_already_emitted = lifecycle_id.is_some_and(|execution_id| {
+        meta.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .emitted_client_tool_terminals
+            .contains(execution_id)
+    });
+    if !lifecycle_already_emitted {
+        for message in &accepted.messages {
+            if let Err(error) = emit_lifecycle(message) {
+                rollback_accepted_tool_response(meta, accepted.rollback);
+                return Err(error);
+            }
+        }
+        if !accepted.messages.is_empty() {
+            if let Some(execution_id) = lifecycle_id {
+                meta.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .emitted_client_tool_terminals
+                    .insert(execution_id.to_string());
+            }
         }
     }
     // A queued response can still be rejected by the consumption receipt (for
@@ -1881,10 +2643,17 @@ where
 }
 
 fn rollback_accepted_tool_response(meta: &Arc<Mutex<RuntimeMeta>>, rollback: ToolResponseRollback) {
+    if !rollback.restore_pending {
+        return;
+    }
     let mut meta = meta
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     meta.pending_tool_calls.insert(rollback.call_id.clone());
+    if let Some(pending) = rollback.pending_client_tool {
+        meta.pending_client_tools
+            .insert(rollback.call_id.clone(), pending);
+    }
     meta.tool_execution_ids.remove(&rollback.call_id);
     if let Some(tool_execution_id) = rollback.tool_execution_id {
         meta.decided_tool_execution_ids.remove(&tool_execution_id);
@@ -1899,10 +2668,17 @@ fn rollback_accepted_tool_response(meta: &Arc<Mutex<RuntimeMeta>>, rollback: Too
 /// can still emit the interrupted `ToolEnd` for the lifecycle that was
 /// already exposed to clients.
 fn rollback_dropped_tool_response(meta: &Arc<Mutex<RuntimeMeta>>, rollback: ToolResponseRollback) {
+    if !rollback.restore_pending {
+        return;
+    }
     let mut meta = meta
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     meta.pending_tool_calls.insert(rollback.call_id.clone());
+    if let Some(pending) = rollback.pending_client_tool {
+        meta.pending_client_tools
+            .insert(rollback.call_id.clone(), pending);
+    }
     if let Some(tool_execution_id) = rollback.tool_execution_id {
         meta.decided_tool_execution_ids.remove(&tool_execution_id);
     }
@@ -2064,6 +2840,8 @@ fn prepare_tool_response(
     let rollback = ToolResponseRollback {
         call_id: call_id.clone(),
         tool_execution_id: tool_execution_id.clone(),
+        pending_client_tool: None,
+        restore_pending: true,
     };
     Ok(AcceptedToolResponse {
         messages,
@@ -2078,23 +2856,175 @@ fn prepare_tool_response(
     })
 }
 
+#[derive(Debug, Clone, Default)]
+struct ClientToolResultBinding {
+    tool_execution_id: Option<String>,
+    client_instance_id: Option<String>,
+    grant_id: Option<String>,
+    grant_version: Option<u64>,
+    grant_hash: Option<String>,
+    turn_digest: Option<String>,
+    definition_digest: Option<String>,
+    args_digest: Option<String>,
+    owner_lease_epoch: Option<u64>,
+    idempotency_key: Option<String>,
+}
+
+#[derive(Debug)]
+enum ClientToolResultPreparationError {
+    Protocol(String),
+    Expired {
+        message: String,
+        resolution: Box<AcceptedToolResponse>,
+    },
+}
+
+impl ClientToolResultPreparationError {
+    #[cfg(test)]
+    fn contains(&self, needle: &str) -> bool {
+        match self {
+            Self::Protocol(message) | Self::Expired { message, .. } => message.contains(needle),
+        }
+    }
+
+    fn into_parts(self) -> (String, Option<AcceptedToolResponse>) {
+        match self {
+            Self::Protocol(message) => (message, None),
+            Self::Expired {
+                message,
+                resolution,
+            } => (message, Some(*resolution)),
+        }
+    }
+}
+
+fn dispatch_client_tool_preparation_error(
+    meta: &Arc<Mutex<RuntimeMeta>>,
+    tool_tx: &mpsc::UnboundedSender<ToolResponseMessage>,
+    call_id: String,
+    error: ClientToolResultPreparationError,
+) -> Result<()> {
+    let (message, resolution) = error.into_parts();
+    if let Some(resolution) = resolution {
+        if let Err(dispatch_error) =
+            dispatch_accepted_tool_response(meta, tool_tx, resolution, call_id.clone())
+        {
+            return protocol_error(
+                Some(call_id),
+                format!("{message}; failed to terminalize expired tool: {dispatch_error}"),
+            );
+        }
+    }
+    protocol_error(Some(call_id), message)
+}
+
 fn prepare_client_tool_result(
     meta: &Arc<Mutex<RuntimeMeta>>,
     call_id: String,
     content: Vec<ClientToolResultContent>,
     is_error: bool,
-) -> std::result::Result<AcceptedToolResponse, String> {
+    supplied: ClientToolResultBinding,
+) -> std::result::Result<AcceptedToolResponse, ClientToolResultPreparationError> {
     let mut meta = meta
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if !meta.pending_tool_calls.remove(&call_id) {
-        return Err(format!("tool call {call_id} is not awaiting a decision"));
+    if !meta.pending_tool_calls.contains(&call_id) {
+        return Err(ClientToolResultPreparationError::Protocol(format!(
+            "tool call {call_id} is not awaiting a decision"
+        )));
     }
+    let mut pending = meta.pending_client_tools.get(&call_id).cloned();
+    if pending.is_none() && supplied.tool_execution_id.is_some() {
+        return Err(ClientToolResultPreparationError::Protocol(format!(
+            "governed client tool result has no governed request binding for {call_id}"
+        )));
+    }
+    if let Some(expected) = pending.as_mut() {
+        let matches = supplied.tool_execution_id.as_deref()
+            == Some(expected.tool_execution_id.as_str())
+            && supplied.client_instance_id.as_deref()
+                == Some(expected.binding.owner.client_instance_id.as_str())
+            && supplied.grant_id.as_deref() == Some(expected.binding.grant_id.as_str())
+            && supplied.grant_version == Some(expected.binding.grant_version)
+            && supplied.grant_hash.as_deref() == Some(expected.binding.grant_hash.as_str())
+            && supplied.turn_digest.as_deref() == Some(expected.binding.turn_digest.as_str())
+            && supplied.definition_digest.as_deref()
+                == Some(expected.binding.definition_digest.as_str())
+            && supplied.args_digest.as_deref() == Some(expected.args_digest.as_str())
+            && supplied.owner_lease_epoch == Some(expected.binding.owner.lease_epoch)
+            && supplied.idempotency_key.as_deref() == Some(expected.idempotency_key.as_str());
+        if !matches {
+            return Err(ClientToolResultPreparationError::Protocol(format!(
+                "governed client tool result binding mismatch for {call_id}"
+            )));
+        }
+        if chrono::Utc::now().timestamp_millis() > expected.binding.expires_at_ms {
+            let message = format!("governed client tool execution lease expired for {call_id}");
+            let pending = pending
+                .take()
+                .expect("expired governed client tool is pending");
+            meta.pending_tool_calls.remove(&call_id);
+            meta.pending_client_tools.remove(&call_id);
+            drop(meta);
+            let result = ToolResult::failure(message.clone());
+            return Err(ClientToolResultPreparationError::Expired {
+                message,
+                resolution: Box::new(AcceptedToolResponse {
+                    messages: tool_lifecycle_messages(
+                        &call_id,
+                        Some(&pending.tool_execution_id),
+                        Some(pending.binding.logical_name.clone()),
+                        &result,
+                    ),
+                    agent_response: (
+                        call_id.clone(),
+                        true,
+                        Some(result),
+                        ExecutionSource::RemoteClient,
+                        None,
+                    ),
+                    rollback: ToolResponseRollback {
+                        call_id,
+                        tool_execution_id: Some(pending.tool_execution_id),
+                        pending_client_tool: None,
+                        restore_pending: false,
+                    },
+                }),
+            });
+        }
+        let result_digest = canonical_json_digest(&serde_json::json!({
+            "content": &content,
+            "is_error": is_error,
+        }))
+        .map_err(|error| {
+            ClientToolResultPreparationError::Protocol(format!(
+                "digest governed client tool result: {error:#}"
+            ))
+        })?;
+        if expected
+            .result_digest
+            .as_ref()
+            .is_some_and(|prior| prior != &result_digest)
+        {
+            return Err(ClientToolResultPreparationError::Protocol(format!(
+                "governed client tool result changed across retry for {call_id}"
+            )));
+        }
+        expected.result_digest = Some(result_digest);
+    }
+    meta.pending_tool_calls.remove(&call_id);
+    meta.pending_client_tools.remove(&call_id);
     drop(meta);
 
     let result = client_content_to_agent_result(content, is_error);
+    let tool_execution_id = pending
+        .as_ref()
+        .map(|pending| pending.tool_execution_id.as_str());
+    let tool = pending
+        .as_ref()
+        .map(|pending| pending.binding.logical_name.clone());
     Ok(AcceptedToolResponse {
-        messages: tool_lifecycle_messages(&call_id, None, None, &result),
+        messages: tool_lifecycle_messages(&call_id, tool_execution_id, tool, &result),
         agent_response: (
             call_id.clone(),
             true,
@@ -2104,7 +3034,11 @@ fn prepare_client_tool_result(
         ),
         rollback: ToolResponseRollback {
             call_id,
-            tool_execution_id: None,
+            tool_execution_id: pending
+                .as_ref()
+                .map(|pending| pending.tool_execution_id.clone()),
+            pending_client_tool: pending,
+            restore_pending: true,
         },
     })
 }
@@ -2193,6 +3127,417 @@ fn tool_lifecycle_messages(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    const TEST_GRANT_KEY_ID: &str = "test-key";
+    const TEST_GRANT_KEY: &[u8] = b"0123456789abcdef0123456789abcdef";
+
+    fn test_grant_context() -> GovernedGrantVerificationContext<'static> {
+        GovernedGrantVerificationContext {
+            organization_id: "org-1",
+            workspace_id: "workspace-1",
+            thread_id: "thread-1",
+            turn_id: "turn-1",
+            run_id: "run-1",
+            runtime_generation: 7,
+        }
+    }
+
+    fn sign_test_grant(grant: &mut GovernedToolGrant) {
+        let canonical = serde_json::to_vec(&governed_grant_canonical_value(grant)).unwrap();
+        grant.grant_hash = format!("sha256:{}", sha256_hex(&canonical));
+        grant.grant_signature = format!(
+            "hmac-sha256:{}",
+            hex_encode(&hmac_sha256(TEST_GRANT_KEY, &canonical))
+        );
+    }
+
+    fn test_grant() -> GovernedToolGrant {
+        let mut grant = GovernedToolGrant {
+            envelope_version: 2,
+            grant_id: "grant-1".to_string(),
+            grant_version: 1,
+            issuer: GOVERNED_GRANT_ISSUER.to_string(),
+            audience: GOVERNED_GRANT_AUDIENCE.to_string(),
+            organization_id: "org-1".to_string(),
+            workspace_id: "workspace-1".to_string(),
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            run_id: "run-1".to_string(),
+            runtime_generation: 7,
+            grant_epoch: 3,
+            issued_at_ms: 900,
+            not_before_ms: 900,
+            expires_at_ms: 2_000,
+            grant_hash: String::new(),
+            signing_key_id: TEST_GRANT_KEY_ID.to_string(),
+            grant_signature: String::new(),
+            native_tool_ids: vec!["bash".to_string()],
+            external_tools: Vec::new(),
+        };
+        sign_test_grant(&mut grant);
+        grant
+    }
+
+    fn test_grant_keys() -> HashMap<String, Vec<u8>> {
+        HashMap::from([(TEST_GRANT_KEY_ID.to_string(), TEST_GRANT_KEY.to_vec())])
+    }
+
+    #[test]
+    fn governed_grant_verification_rejects_tampering_scope_expiry_and_unknown_versions() {
+        let grant = test_grant();
+        assert_eq!(
+            grant.grant_hash,
+            "sha256:8d521b079076a547f048d28439d48d7e8081c2b7bfca47abfe8d0dc05ea1f298"
+        );
+        assert_eq!(
+            grant.grant_signature,
+            "hmac-sha256:498f0e7ab5d59d18d9b5adf2e045bcf8594f7b67cc3ca96699d870743a9b14eb"
+        );
+        let context = test_grant_context();
+        let keys = test_grant_keys();
+        verify_governed_tool_grant_with_keys(&grant, &context, 1_000, &keys)
+            .expect("valid signed grant");
+
+        let mut tampered = grant.clone();
+        tampered.native_tool_ids = vec!["read".to_string()];
+        let canonical = serde_json::to_vec(&governed_grant_canonical_value(&tampered)).unwrap();
+        tampered.grant_hash = format!("sha256:{}", sha256_hex(&canonical));
+        assert!(
+            verify_governed_tool_grant_with_keys(&tampered, &context, 1_000, &keys)
+                .unwrap_err()
+                .to_string()
+                .contains("signature mismatch"),
+            "rehashing a tampered payload must not forge Platform authority"
+        );
+
+        let mut wrong_audience = grant.clone();
+        wrong_audience.audience = "another-runtime".to_string();
+        sign_test_grant(&mut wrong_audience);
+        assert!(
+            verify_governed_tool_grant_with_keys(&wrong_audience, &context, 1_000, &keys).is_err()
+        );
+
+        let wrong_scope = GovernedGrantVerificationContext {
+            workspace_id: "workspace-2",
+            ..context.clone()
+        };
+        assert!(verify_governed_tool_grant_with_keys(&grant, &wrong_scope, 1_000, &keys).is_err());
+        assert!(verify_governed_tool_grant_with_keys(&grant, &context, 2_001, &keys).is_err());
+        assert!(
+            verify_governed_tool_grant_with_keys(&grant, &context, 1_000, &HashMap::new()).is_err()
+        );
+
+        let mut unknown_version = grant;
+        unknown_version.envelope_version = 3;
+        sign_test_grant(&mut unknown_version);
+        assert!(
+            verify_governed_tool_grant_with_keys(&unknown_version, &context, 1_000, &keys).is_err()
+        );
+    }
+
+    #[test]
+    fn arbitrary_client_tool_names_are_qualified_only_at_the_provider_boundary() {
+        let mut grant = test_grant();
+        grant.external_tools = vec![ExternalToolDefinition {
+            tool_id: "tool-1".to_string(),
+            name: "bash".to_string(),
+            description: "caller-owned bash-shaped tool".to_string(),
+            input_schema: json!({"type": "object"}),
+            execution_owner: ClientToolExecutionOwner {
+                client_instance_id: "client-1".to_string(),
+                lease_epoch: 4,
+            },
+            metadata: None,
+        }];
+        sign_test_grant(&mut grant);
+
+        let (allowed, external, bindings) = governed_agent_inputs(&grant).unwrap();
+        assert_eq!(allowed, HashSet::from(["bash".to_string()]));
+        assert_eq!(external.len(), 1);
+        let provider_name = external[0].tool.name.clone();
+        assert!(provider_name.starts_with("client_"));
+        assert_ne!(provider_name, "bash");
+        let binding = bindings
+            .get(&provider_name)
+            .expect("owner-qualified binding");
+        assert_eq!(binding.logical_name, "bash");
+        assert_eq!(binding.owner.client_instance_id, "client-1");
+    }
+
+    #[test]
+    fn governed_client_tool_result_requires_the_exact_owner_and_execution_binding() {
+        let meta = Arc::new(Mutex::new(RuntimeMeta::default()));
+        let binding = ClientToolBinding {
+            provider_tool_name: "client_provider_id".to_string(),
+            tool_id: "tool-1".to_string(),
+            logical_name: "deploy".to_string(),
+            owner: ClientToolExecutionOwner {
+                client_instance_id: "client-1".to_string(),
+                lease_epoch: 9,
+            },
+            grant_id: "grant-1".to_string(),
+            grant_version: 2,
+            grant_hash: "sha256:grant".to_string(),
+            turn_digest: "sha256:turn".to_string(),
+            definition_digest: "sha256:def".to_string(),
+            expires_at_ms: i64::MAX,
+        };
+        {
+            let mut runtime = meta.lock().unwrap();
+            runtime.pending_tool_calls.insert("call-1".to_string());
+            runtime.pending_client_tools.insert(
+                "call-1".to_string(),
+                PendingClientTool {
+                    binding,
+                    tool_execution_id: "execution-1".to_string(),
+                    args_digest: "sha256:args".to_string(),
+                    idempotency_key: "client-tool:execution-1".to_string(),
+                    result_digest: None,
+                },
+            );
+        }
+        let exact = ClientToolResultBinding {
+            tool_execution_id: Some("execution-1".to_string()),
+            client_instance_id: Some("client-1".to_string()),
+            grant_id: Some("grant-1".to_string()),
+            grant_version: Some(2),
+            grant_hash: Some("sha256:grant".to_string()),
+            turn_digest: Some("sha256:turn".to_string()),
+            definition_digest: Some("sha256:def".to_string()),
+            args_digest: Some("sha256:args".to_string()),
+            owner_lease_epoch: Some(9),
+            idempotency_key: Some("client-tool:execution-1".to_string()),
+        };
+        let mut wrong_owner = ClientToolResultBinding {
+            client_instance_id: Some("client-2".to_string()),
+            ..exact
+        };
+        assert!(prepare_client_tool_result(
+            &meta,
+            "call-1".to_string(),
+            vec![],
+            false,
+            wrong_owner.clone()
+        )
+        .is_err());
+        wrong_owner.client_instance_id = Some("client-1".to_string());
+        prepare_client_tool_result(&meta, "call-1".to_string(), vec![], false, wrong_owner)
+            .expect("exact owner/execution binding accepted once");
+        assert!(prepare_client_tool_result(
+            &meta,
+            "call-1".to_string(),
+            vec![],
+            false,
+            ClientToolResultBinding::default(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn governed_client_tool_result_cannot_target_a_legacy_pending_call() {
+        let meta = Arc::new(Mutex::new(RuntimeMeta::default()));
+        meta.lock()
+            .expect("runtime metadata")
+            .pending_tool_calls
+            .insert("legacy-call".to_string());
+
+        let error = prepare_client_tool_result(
+            &meta,
+            "legacy-call".to_string(),
+            vec![],
+            false,
+            ClientToolResultBinding {
+                tool_execution_id: Some("governed-execution".to_string()),
+                ..ClientToolResultBinding::default()
+            },
+        )
+        .expect_err("governed result fields require a governed request binding");
+
+        assert!(error.contains("no governed request binding"));
+        assert!(meta
+            .lock()
+            .expect("runtime metadata")
+            .pending_tool_calls
+            .contains("legacy-call"));
+    }
+
+    #[test]
+    fn expired_governed_client_tool_is_terminalized_without_becoming_pending_again() {
+        let meta = Arc::new(Mutex::new(RuntimeMeta::default()));
+        let pending = PendingClientTool {
+            binding: ClientToolBinding {
+                provider_tool_name: "client_provider_id".to_string(),
+                tool_id: "tool-1".to_string(),
+                logical_name: "deploy".to_string(),
+                owner: ClientToolExecutionOwner {
+                    client_instance_id: "client-1".to_string(),
+                    lease_epoch: 9,
+                },
+                grant_id: "grant-1".to_string(),
+                grant_version: 2,
+                grant_hash: "sha256:grant".to_string(),
+                turn_digest: "sha256:turn".to_string(),
+                definition_digest: "sha256:def".to_string(),
+                expires_at_ms: 0,
+            },
+            tool_execution_id: "expired-execution".to_string(),
+            args_digest: "sha256:args".to_string(),
+            idempotency_key: "client-tool:expired-execution".to_string(),
+            result_digest: None,
+        };
+        {
+            let mut runtime = meta.lock().expect("runtime metadata");
+            runtime
+                .pending_tool_calls
+                .insert("expired-call".to_string());
+            runtime
+                .pending_client_tools
+                .insert("expired-call".to_string(), pending);
+        }
+        let supplied = ClientToolResultBinding {
+            tool_execution_id: Some("expired-execution".to_string()),
+            client_instance_id: Some("client-1".to_string()),
+            grant_id: Some("grant-1".to_string()),
+            grant_version: Some(2),
+            grant_hash: Some("sha256:grant".to_string()),
+            turn_digest: Some("sha256:turn".to_string()),
+            definition_digest: Some("sha256:def".to_string()),
+            args_digest: Some("sha256:args".to_string()),
+            owner_lease_epoch: Some(9),
+            idempotency_key: Some("client-tool:expired-execution".to_string()),
+        };
+
+        let error =
+            prepare_client_tool_result(&meta, "expired-call".to_string(), vec![], false, supplied)
+                .expect_err("an expired execution must fail closed");
+        let (message, resolution) = error.into_parts();
+        assert!(message.contains("execution lease expired"));
+        let resolution = resolution.expect("expiry includes terminal failure resolution");
+        assert!(resolution.messages.iter().any(|message| matches!(
+            message,
+            FromAgentMessage::ToolEnd {
+                call_id,
+                tool_execution_id: Some(tool_execution_id),
+                success: false,
+                ..
+            } if call_id == "expired-call" && tool_execution_id == "expired-execution"
+        )));
+        assert!(!resolution.rollback.restore_pending);
+        rollback_accepted_tool_response(&meta, resolution.rollback.clone());
+        rollback_dropped_tool_response(&meta, resolution.rollback);
+
+        let runtime = meta.lock().expect("runtime metadata");
+        assert!(!runtime.pending_tool_calls.contains("expired-call"));
+        assert!(!runtime.pending_client_tools.contains_key("expired-call"));
+    }
+
+    #[tokio::test]
+    async fn governed_client_tool_retry_cannot_change_result_or_emit_a_second_terminal() {
+        let meta = Arc::new(Mutex::new(RuntimeMeta::default()));
+        {
+            let mut runtime = meta.lock().unwrap();
+            runtime.pending_tool_calls.insert("call-retry".to_string());
+            runtime.pending_client_tools.insert(
+                "call-retry".to_string(),
+                PendingClientTool {
+                    binding: ClientToolBinding {
+                        provider_tool_name: "client_provider_id".to_string(),
+                        tool_id: "tool-1".to_string(),
+                        logical_name: "deploy".to_string(),
+                        owner: ClientToolExecutionOwner {
+                            client_instance_id: "client-1".to_string(),
+                            lease_epoch: 9,
+                        },
+                        grant_id: "grant-1".to_string(),
+                        grant_version: 2,
+                        grant_hash: "sha256:grant".to_string(),
+                        turn_digest: "sha256:turn".to_string(),
+                        definition_digest: "sha256:def".to_string(),
+                        expires_at_ms: i64::MAX,
+                    },
+                    tool_execution_id: "execution-retry".to_string(),
+                    args_digest: "sha256:args".to_string(),
+                    idempotency_key: "client-tool:execution-retry".to_string(),
+                    result_digest: None,
+                },
+            );
+        }
+        let supplied = ClientToolResultBinding {
+            tool_execution_id: Some("execution-retry".to_string()),
+            client_instance_id: Some("client-1".to_string()),
+            grant_id: Some("grant-1".to_string()),
+            grant_version: Some(2),
+            grant_hash: Some("sha256:grant".to_string()),
+            turn_digest: Some("sha256:turn".to_string()),
+            definition_digest: Some("sha256:def".to_string()),
+            args_digest: Some("sha256:args".to_string()),
+            owner_lease_epoch: Some(9),
+            idempotency_key: Some("client-tool:execution-retry".to_string()),
+        };
+        let content = vec![ClientToolResultContent::Text {
+            text: "stable result".to_string(),
+        }];
+        let accepted = prepare_client_tool_result(
+            &meta,
+            "call-retry".to_string(),
+            content.clone(),
+            false,
+            supplied.clone(),
+        )
+        .unwrap();
+        let (closed_tx, closed_rx) = mpsc::unbounded_channel();
+        drop(closed_rx);
+        let mut first_terminal_count = 0;
+        dispatch_accepted_tool_response_with(
+            &meta,
+            &closed_tx,
+            accepted,
+            "call-retry".to_string(),
+            |message| {
+                if matches!(message, FromAgentMessage::ToolEnd { .. }) {
+                    first_terminal_count += 1;
+                }
+                Ok(())
+            },
+            |_, _, _| {},
+        )
+        .expect_err("closed native channel restores the exact result for retry");
+        assert_eq!(first_terminal_count, 1);
+
+        assert!(prepare_client_tool_result(
+            &meta,
+            "call-retry".to_string(),
+            vec![ClientToolResultContent::Text {
+                text: "changed result".to_string(),
+            }],
+            false,
+            supplied.clone(),
+        )
+        .unwrap_err()
+        .contains("changed across retry"));
+
+        let accepted =
+            prepare_client_tool_result(&meta, "call-retry".to_string(), content, false, supplied)
+                .unwrap();
+        let (retry_tx, mut retry_rx) = mpsc::unbounded_channel();
+        let mut retry_terminal_count = 0;
+        dispatch_accepted_tool_response_with(
+            &meta,
+            &retry_tx,
+            accepted,
+            "call-retry".to_string(),
+            |message| {
+                if matches!(message, FromAgentMessage::ToolEnd { .. }) {
+                    retry_terminal_count += 1;
+                }
+                Ok(())
+            },
+            |_, _, _| {},
+        )
+        .unwrap();
+        assert_eq!(retry_terminal_count, 0);
+        assert!(retry_rx.try_recv().is_ok());
+    }
 
     #[test]
     fn headless_model_resolution_uses_canonical_precedence_without_rewriting_managed_ids() {
@@ -3157,6 +4502,7 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
                 text: "ok".to_string(),
             }],
             false,
+            ClientToolResultBinding::default(),
         )
         .expect_err("an unmatched client result must be rejected");
         assert!(error.contains("not awaiting a decision"));
@@ -3172,6 +4518,7 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
                 text: "ok".to_string(),
             }],
             false,
+            ClientToolResultBinding::default(),
         )
         .expect("a registered client result must be accepted");
         assert!(matches!(
@@ -3190,6 +4537,7 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
                     text: "ok".to_string(),
                 }],
                 false,
+                ClientToolResultBinding::default(),
             )
             .is_err(),
             "the pending call must be consumed exactly once"
@@ -3232,6 +4580,47 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
         let meta = meta.lock().expect("runtime metadata");
         assert!(meta.tool_execution_ids.is_empty());
         assert!(meta.pending_tool_calls.is_empty());
+    }
+
+    #[test]
+    fn interrupted_cleanup_does_not_repeat_an_emitted_governed_terminal() {
+        let meta = Arc::new(Mutex::new(RuntimeMeta::default()));
+        {
+            let mut runtime = meta.lock().expect("runtime metadata");
+            runtime
+                .tool_execution_ids
+                .insert("closed-call".to_string(), "closed-execution".to_string());
+            runtime
+                .emitted_client_tool_terminals
+                .insert("closed-execution".to_string());
+            runtime.pending_tool_calls.insert("closed-call".to_string());
+            runtime.pending_client_tools.insert(
+                "closed-call".to_string(),
+                PendingClientTool {
+                    binding: ClientToolBinding {
+                        provider_tool_name: "client_provider_id".to_string(),
+                        tool_id: "tool-1".to_string(),
+                        logical_name: "deploy".to_string(),
+                        owner: ClientToolExecutionOwner {
+                            client_instance_id: "client-1".to_string(),
+                            lease_epoch: 1,
+                        },
+                        grant_id: "grant-1".to_string(),
+                        grant_version: 1,
+                        grant_hash: "sha256:grant".to_string(),
+                        turn_digest: "sha256:turn".to_string(),
+                        definition_digest: "sha256:def".to_string(),
+                        expires_at_ms: i64::MAX,
+                    },
+                    tool_execution_id: "closed-execution".to_string(),
+                    args_digest: "sha256:args".to_string(),
+                    idempotency_key: "client-tool:closed-execution".to_string(),
+                    result_digest: None,
+                },
+            );
+        }
+
+        assert!(take_interrupted_tool_terminal_messages(&meta).is_empty());
     }
 
     #[test]

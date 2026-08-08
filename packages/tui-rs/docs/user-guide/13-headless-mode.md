@@ -38,7 +38,7 @@ Headless transport rules:
 
 Protocol is versioned (see `ready` / `hello_ok` / `hello`). Treat unknown fields as additive; reject unknown message `type` values unless your client intentionally ignores them.
 
-Current documented protocol version: `2026-08-07` (confirm against generated contracts when integrating).
+Current documented protocol version: `2026-08-08` (confirm against generated contracts when integrating).
 
 ---
 

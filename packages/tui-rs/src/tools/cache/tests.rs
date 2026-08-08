@@ -106,6 +106,7 @@ fn test_cache_config_default() {
         "wait_subagent",
         "resume_subagent",
         "cancel_subagent",
+        "control_subagent",
     ] {
         assert!(
             config.excluded_tools.contains(&tool.to_string()),

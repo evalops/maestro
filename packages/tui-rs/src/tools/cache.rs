@@ -42,6 +42,7 @@ impl Default for CacheConfig {
                 "wait_subagent".to_string(),
                 "resume_subagent".to_string(),
                 "cancel_subagent".to_string(),
+                "control_subagent".to_string(),
             ],
         }
     }

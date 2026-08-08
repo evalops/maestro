@@ -869,6 +869,8 @@ fn test_supervisor_builder_restores_session_replay() {
             thinking_level: Some(super::super::messages::ThinkingLevel::High),
             approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
             history: None,
+            code_mode: None,
+            tool_grant: None,
         }),
         semantic_conversation: None,
     };
@@ -981,6 +983,8 @@ fn replay_without_recorder_clears_history_after_unsupported_live_snapshot() {
             thinking_level: None,
             approval_mode: None,
             history: None,
+            code_mode: None,
+            tool_grant: None,
         }),
         semantic_conversation: Some(vec![maestro_ai::Message {
             role: maestro_ai::Role::User,
@@ -1249,6 +1253,8 @@ fn apply_snapshot_keeps_session_recorder_state_in_sync() {
         thinking_level: Some(super::super::messages::ThinkingLevel::High),
         approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
         history: None,
+        code_mode: None,
+        tool_grant: None,
     };
 
     supervisor.apply_snapshot(snapshot_state.clone(), Some(snapshot_init.clone()));
@@ -1848,6 +1854,8 @@ async fn connect_replays_saved_init_from_restored_session_snapshot() {
         thinking_level: Some(super::super::messages::ThinkingLevel::High),
         approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
         history: None,
+        code_mode: None,
+        tool_grant: None,
     };
     let replay = SessionReplay {
         state: AgentState {
@@ -1951,6 +1959,8 @@ async fn reconnect_replays_last_init_config() {
         thinking_level: Some(super::super::messages::ThinkingLevel::High),
         approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
         history: None,
+        code_mode: None,
+        tool_grant: None,
     };
 
     let mut supervisor = AgentSupervisor::new(config).with_session_recorder(recorder);
@@ -2311,7 +2321,7 @@ async fn non_retryable_remote_disconnect_shuts_down_transport() {
     let cancel_token = transport.cancel_token();
 
     let mut supervisor = SupervisorBuilder::new().build();
-    supervisor.transport = Some(ManagedTransport::Remote(transport));
+    supervisor.transport = Some(ManagedTransport::Remote(Box::new(transport)));
 
     let disconnect = supervisor.handle_transport_disconnect(AsyncTransportError::RemoteStatus {
         status: 409,

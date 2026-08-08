@@ -220,13 +220,15 @@ fn local_controller_capabilities() -> messages::ClientCapabilities {
         utility_operations: Some(vec![messages::UtilityOperation::CommandExec]),
         raw_agent_events: None,
         transcript_grade: Some(crate::transcript::TranscriptGrade::Delta),
+        governed_code_mode: None,
     }
 }
 
 // Core message types
 pub use messages::{
     ActiveTool, AgentEvent, AgentState, ApprovalMode, ClientCapabilities, ClientInfo,
-    ClientToolResultContent, ConnectionRole, FromAgentMessage, HeadlessErrorType, HistoryMessage,
+    ClientToolExecutionOwner, ClientToolResultContent, CodeMode, ConnectionRole,
+    ExternalToolDefinition, FromAgentMessage, GovernedToolGrant, HeadlessErrorType, HistoryMessage,
     HistoryRole, InitConfig, PendingApproval, ServerRequestResolutionStatus,
     ServerRequestResolvedBy, ServerRequestType, StreamingResponse, ThinkingLevel, ToAgentMessage,
     TokenUsage, ToolResult, UtilityCommandShellMode, UtilityCommandStream, UtilityOperation,

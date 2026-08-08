@@ -260,6 +260,20 @@ fn rlm_and_mailbox_commands_parse_context_actions() {
         CommandOutput::Action(CommandAction::Mailbox(MailboxAction::Send { recipient, body }))
             if recipient == "child-1" && body == "report ready"
     ));
+    assert!(matches!(
+        registry
+            .execute("/mailbox inspect message-1", "/tmp", None, None)
+            .expect("/mailbox inspect"),
+        CommandOutput::Action(CommandAction::Mailbox(MailboxAction::Inspect(id)))
+            if id == "message-1"
+    ));
+    assert!(matches!(
+        registry
+            .execute("/mailbox approve message-1", "/tmp", None, None)
+            .expect("/mailbox approve"),
+        CommandOutput::Action(CommandAction::Mailbox(MailboxAction::Approve(id)))
+            if id == "message-1"
+    ));
 }
 
 #[test]
@@ -588,6 +602,46 @@ fn context_command_returns_show_context_action() {
     assert!(matches!(
         result,
         Ok(CommandOutput::Action(CommandAction::ShowContext))
+    ));
+}
+
+#[test]
+fn context_audit_commands_parse() {
+    let registry = build_command_registry();
+    assert!(matches!(
+        registry.execute("/context audit", "/tmp", None, None),
+        Ok(CommandOutput::Action(CommandAction::ShowPromptAudit {
+            json: false
+        }))
+    ));
+    assert!(matches!(
+        registry.execute("/context audit --json", "/tmp", None, None),
+        Ok(CommandOutput::Action(CommandAction::ShowPromptAudit {
+            json: true
+        }))
+    ));
+    assert!(matches!(
+        registry.execute("/prompt-audit", "/tmp", None, None),
+        Ok(CommandOutput::Action(CommandAction::ShowPromptAudit {
+            json: false
+        }))
+    ));
+}
+
+#[test]
+fn focus_command_parses() {
+    let registry = build_command_registry();
+    assert!(matches!(
+        registry.execute("/focus", "/tmp", None, None),
+        Ok(CommandOutput::Action(CommandAction::SetFocus(None)))
+    ));
+    assert!(matches!(
+        registry.execute("/focus on", "/tmp", None, None),
+        Ok(CommandOutput::Action(CommandAction::SetFocus(Some(true))))
+    ));
+    assert!(matches!(
+        registry.execute("/focus off", "/tmp", None, None),
+        Ok(CommandOutput::Action(CommandAction::SetFocus(Some(false))))
     ));
 }
 

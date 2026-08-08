@@ -1085,6 +1085,9 @@ pub enum FromAgent {
     ConversationSnapshot {
         protocol_version: String,
         messages: Vec<maestro_ai::Message>,
+        /// Explicit queue ids whose prompts are represented by this snapshot.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        processed_queue_ids: Vec<u64>,
     },
     /// Agent is ready to receive prompts
     ///

@@ -73,6 +73,8 @@ pub struct AgentState {
     pub pending_approvals: Vec<PendingApproval>,
     /// Pending client-side tool execution requests
     pub pending_client_tools: Vec<PendingApproval>,
+    /// Capability binding required to complete a governed client tool.
+    pub governed_client_tool_bindings: HashMap<String, GovernedClientToolBinding>,
     /// Pending structured user input requests
     pub pending_user_inputs: Vec<PendingApproval>,
     /// Pending tool retry requests
@@ -160,6 +162,21 @@ pub struct PendingApproval {
     pub args: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GovernedClientToolBinding {
+    pub tool_execution_id: String,
+    pub client_instance_id: String,
+    pub grant_id: String,
+    pub grant_version: u64,
+    pub grant_hash: String,
+    #[serde(default)]
+    pub turn_digest: String,
+    pub definition_digest: String,
+    pub args_digest: String,
+    pub owner_lease_epoch: u64,
+    pub idempotency_key: String,
 }
 
 /// Durable edge metadata for Codex app-server subagent tools.
@@ -666,9 +683,9 @@ impl AgentState {
                     lease_expires_at: None,
                 }];
             }
-            ToAgentMessage::Init { .. } => {}
+            ToAgentMessage::Init { .. } | ToAgentMessage::GovernedInit { .. } => {}
             ToAgentMessage::RestoreConversation { .. } => {}
-            ToAgentMessage::Prompt { .. } => {
+            ToAgentMessage::Prompt { .. } | ToAgentMessage::GovernedPrompt { .. } => {
                 self.current_response = None;
                 self.last_error = None;
                 self.last_error_type = None;
@@ -676,7 +693,7 @@ impl AgentState {
                 self.last_status = None;
                 self.is_responding = true;
             }
-            ToAgentMessage::Steer { .. } => {
+            ToAgentMessage::Steer { .. } | ToAgentMessage::GovernedSteer { .. } => {
                 self.last_error = None;
                 self.last_error_type = None;
                 self.provider_error_kind = None;
@@ -706,7 +723,8 @@ impl AgentState {
                     self.tracked_tools.remove(call_id);
                 }
             }
-            ToAgentMessage::ClientToolResult { call_id, .. } => {
+            ToAgentMessage::ClientToolResult { call_id, .. }
+            | ToAgentMessage::GovernedClientToolResult { call_id, .. } => {
                 self.pending_client_tools.retain(|p| p.call_id != *call_id);
                 self.pending_user_inputs.retain(|p| p.call_id != *call_id);
             }
@@ -1149,6 +1167,7 @@ impl AgentState {
                 }
                 self.pending_approvals.retain(|p| p.call_id != call_id);
                 self.pending_client_tools.retain(|p| p.call_id != call_id);
+                self.governed_client_tool_bindings.remove(&call_id);
                 self.pending_user_inputs.retain(|p| p.call_id != call_id);
                 self.pending_tool_retries.retain(|p| p.call_id != call_id);
                 Some(AgentEvent::ToolEnd {
@@ -1201,6 +1220,81 @@ impl AgentState {
                     self.pending_client_tools.push(PendingApproval {
                         call_id,
                         tool_execution_id,
+                        request_id: None,
+                        tool,
+                        args,
+                        started_at_ms: None,
+                    });
+                }
+                None
+            }
+
+            FromAgentMessage::GovernedClientToolRequest {
+                call_id,
+                tool_execution_id,
+                tool,
+                args,
+                client_instance_id,
+                grant_id,
+                grant_version,
+                grant_hash,
+                turn_digest,
+                definition_digest,
+                args_digest,
+                owner_lease_epoch,
+                idempotency_key,
+                ..
+            } => {
+                self.governed_client_tool_bindings.insert(
+                    call_id.clone(),
+                    GovernedClientToolBinding {
+                        tool_execution_id: tool_execution_id.clone(),
+                        client_instance_id,
+                        grant_id,
+                        grant_version,
+                        grant_hash,
+                        turn_digest,
+                        definition_digest,
+                        args_digest,
+                        owner_lease_epoch,
+                        idempotency_key,
+                    },
+                );
+                self.tracked_tools.insert(
+                    call_id.clone(),
+                    PendingApproval {
+                        call_id: call_id.clone(),
+                        tool_execution_id: Some(tool_execution_id.clone()),
+                        request_id: None,
+                        tool: tool.clone(),
+                        args: args.clone(),
+                        started_at_ms: None,
+                    },
+                );
+                if let Some(operation) = codex_subagent_operation(&tool) {
+                    self.upsert_codex_subagent_edges(
+                        &call_id,
+                        Some(tool_execution_id.as_str()),
+                        &tool,
+                        Some(&args),
+                        active_codex_subagent_status(operation),
+                    );
+                }
+                if tool == "ask_user" {
+                    self.pending_user_inputs.retain(|p| p.call_id != call_id);
+                    self.pending_user_inputs.push(PendingApproval {
+                        call_id,
+                        tool_execution_id: Some(tool_execution_id),
+                        request_id: None,
+                        tool,
+                        args,
+                        started_at_ms: None,
+                    });
+                } else {
+                    self.pending_client_tools.retain(|p| p.call_id != call_id);
+                    self.pending_client_tools.push(PendingApproval {
+                        call_id,
+                        tool_execution_id: Some(tool_execution_id),
                         request_id: None,
                         tool,
                         args,

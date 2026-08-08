@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -12,9 +12,10 @@ use super::{
 use crate::headless::messages::{
     active_codex_subagent_status, codex_subagent_child_runs, codex_subagent_edge_key,
     codex_subagent_operation, codex_subagent_status_is_terminal, ApprovalMode, ClientCapabilities,
-    ClientInfo, CodexSubagentContinuityEdge, ConnectionRole, ConnectionState, FromAgentMessage,
-    HeadlessErrorType, InitConfig, ThinkingLevel, UtilityCommandShellMode,
-    UtilityCommandTerminalMode, CODEX_SUBAGENT_TOOL_PREFIX, CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+    ClientInfo, CodeMode, CodexSubagentContinuityEdge, ConnectionRole, ConnectionState,
+    FromAgentMessage, GovernedToolGrant, HeadlessErrorType, InitConfig, ThinkingLevel,
+    UtilityCommandShellMode, UtilityCommandTerminalMode, CODEX_SUBAGENT_TOOL_PREFIX,
+    CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 };
 use crate::headless::{AgentState, SessionReplay};
 
@@ -42,6 +43,10 @@ pub(super) struct RuntimeInitSnapshot {
     pub(super) approval_mode: Option<ApprovalMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) history: Option<Vec<crate::headless::messages::HistoryMessage>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) code_mode: Option<CodeMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) tool_grant: Option<GovernedToolGrant>,
 }
 
 impl From<&InitConfig> for RuntimeInitSnapshot {
@@ -53,6 +58,8 @@ impl From<&InitConfig> for RuntimeInitSnapshot {
             thinking_level: config.thinking_level,
             approval_mode: config.approval_mode,
             history: config.history.clone(),
+            code_mode: config.code_mode,
+            tool_grant: config.tool_grant.clone(),
         }
     }
 }
@@ -65,6 +72,8 @@ impl RuntimeInitSnapshot {
             thinking_level: self.thinking_level,
             approval_mode: self.approval_mode,
             history: self.history.clone(),
+            code_mode: self.code_mode,
+            tool_grant: self.tool_grant.clone(),
         })
     }
 }
@@ -102,6 +111,9 @@ pub(super) struct RuntimeStateSnapshot {
     pub(super) current_response: Option<serde_json::Value>,
     pub(super) pending_approvals: Vec<serde_json::Value>,
     pub(super) pending_client_tools: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub(super) governed_client_tool_bindings:
+        HashMap<String, crate::headless::messages::GovernedClientToolBinding>,
     pub(super) pending_mcp_elicitations: Vec<serde_json::Value>,
     pub(super) pending_user_inputs: Vec<serde_json::Value>,
     pub(super) pending_tool_retries: Vec<serde_json::Value>,
@@ -232,6 +244,7 @@ impl SnapshotManifest {
                 current_response: None,
                 pending_approvals: Vec::new(),
                 pending_client_tools: Vec::new(),
+                governed_client_tool_bindings: state.governed_client_tool_bindings.clone(),
                 pending_user_inputs: Vec::new(),
                 pending_tool_retries: Vec::new(),
                 active_tools: Default::default(),

@@ -2808,6 +2808,8 @@ mod tests {
                 custom_instructions: None,
                 continuation: None,
             }],
+            lifecycle_notifications: vec![],
+            pending_lifecycle_agent_notes: vec![],
             side_questions: vec![],
             plan_review_events: vec![],
             usage_entries: vec![],

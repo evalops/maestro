@@ -117,10 +117,11 @@ use super::image::{ImageTool, ReadImageArgs, ScreenshotArgs};
 use super::inline::{load_inline_tools, InlineTool, InlineToolExecutor};
 use super::notebook_edit;
 use super::status;
-use super::subagents::{SubagentLifecycleEvent, SubagentManager};
+use super::subagents::SubagentManager;
 use super::todo;
 use super::versions::ToolVersionOverrides;
 use super::web_fetch::{WebFetchArgs, WebFetchTool};
+use super::SubagentLifecycleEvent;
 use crate::agent::{
     CredentialVault, DenialReason, ExecutionSource, FromAgent, ToolDefinition, ToolExecution,
     ToolResult,
@@ -520,6 +521,9 @@ pub struct ToolExecutor {
     /// Durable child-agent delegation shared by tool calls in this workspace.
     subagents: Arc<SubagentManager>,
 
+    /// Capability-bound identity for model-facing mailbox operations.
+    mailbox_identity: String,
+
     /// Current working directory for all tool operations
     ///
     /// This directory is used as the base for relative paths and as the cwd for
@@ -578,6 +582,9 @@ pub struct ToolExecutor {
 /// `McpClient::is_mcp_tool` themselves rather than relying on it being
 /// folded in here.
 fn is_reserved_execute_dispatch_name(name: &str) -> bool {
+    if super::subagents::SUBAGENT_TOOL_NAMES.contains(&name) {
+        return true;
+    }
     // These spellings intentionally mirror execute_impl exactly. Inline
     // lookup lower-cases its wildcard input, so an unmatched case variant
     // such as `BASH` remains a valid inline name even though `bash` and
@@ -613,14 +620,6 @@ fn is_reserved_execute_dispatch_name(name: &str) -> bool {
             | "status"
             | "Status"
             | "background_tasks"
-            | "spawn_subagent"
-            | "list_subagents"
-            | "get_subagent"
-            | "wait_subagent"
-            | "resume_subagent"
-            | "cancel_subagent"
-            | "inspect_subagent"
-            | "cleanup_subagent"
             | "todo"
             | "get_goal"
             | "update_goal"
@@ -770,6 +769,7 @@ impl ToolExecutor {
             inline_executor: InlineToolExecutor::new(&cwd),
             inline_tools,
             subagents: Arc::new(SubagentManager::new(cwd.clone())),
+            mailbox_identity: crate::mailbox::local_identity(),
             cwd,
             registry,
             cache: RwLock::new(ToolResultCache::default()),
@@ -812,6 +812,7 @@ impl ToolExecutor {
             inline_executor: InlineToolExecutor::new(&cwd),
             inline_tools,
             subagents: Arc::new(SubagentManager::new(cwd.clone())),
+            mailbox_identity: crate::mailbox::local_identity(),
             cwd,
             registry,
             cache: RwLock::new(ToolResultCache::default()),
@@ -858,6 +859,7 @@ impl ToolExecutor {
             inline_executor: InlineToolExecutor::new(&cwd),
             inline_tools,
             subagents: Arc::new(SubagentManager::new(cwd.clone())),
+            mailbox_identity: crate::mailbox::local_identity(),
             cwd,
             registry,
             cache: RwLock::new(ToolResultCache::new(cache_config)),
@@ -947,6 +949,16 @@ impl ToolExecutor {
         self
     }
 
+    pub(crate) fn with_mailbox_identity(mut self, identity: impl Into<String>) -> Self {
+        self.mailbox_identity = identity.into();
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mailbox_identity(&self) -> &str {
+        &self.mailbox_identity
+    }
+
     pub(crate) fn subagent_parent_scope_id(&self) -> String {
         self.subagents.parent_scope_id()
     }
@@ -964,6 +976,42 @@ impl ToolExecutor {
     /// Drain terminal child-agent notifications for this parent executor.
     pub(crate) fn poll_subagent_lifecycle_events(&self) -> Vec<SubagentLifecycleEvent> {
         self.subagents.poll_lifecycle_events()
+    }
+
+    pub(crate) fn acknowledge_subagent_lifecycle_event(
+        &self,
+        event: &SubagentLifecycleEvent,
+    ) -> Result<(), String> {
+        self.subagents.acknowledge_lifecycle_event(event)
+    }
+
+    pub(crate) fn subagent_mailbox_recipients(&self) -> Vec<String> {
+        self.subagents.active_mailbox_recipients()
+    }
+
+    pub(crate) fn inspect_subagent_control(
+        &self,
+        message_id: &str,
+    ) -> Result<crate::mailbox::MailboxMessage, String> {
+        self.subagents.inspect_control(message_id)
+    }
+
+    pub(crate) fn approve_held_subagent_control(
+        &self,
+        message_id: &str,
+    ) -> Result<crate::mailbox::MailboxMessage, String> {
+        self.subagents.approve_held_control(message_id)
+    }
+
+    pub(crate) fn cancel_subagent_by_id(&self, subagent_id: &str) -> Result<(), String> {
+        let result = self
+            .subagents
+            .cancel(&serde_json::json!({"subagent_id": subagent_id}));
+        if result.success {
+            Ok(())
+        } else {
+            Err(result.output)
+        }
     }
 
     /// Get the list of loaded inline tools
@@ -1474,6 +1522,7 @@ impl ToolExecutor {
                     | "extract_document"
                     | "spawn_subagent"
                     | "resume_subagent"
+                    | "control_subagent"
             )
     }
 

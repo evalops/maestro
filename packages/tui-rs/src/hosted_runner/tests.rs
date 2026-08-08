@@ -616,6 +616,12 @@ struct PendingThreadExecutor {
     prompts: Mutex<Vec<String>>,
 }
 
+#[derive(Default)]
+struct DispatchPersistenceFailureExecutor {
+    shared: Mutex<Option<SharedRunner>>,
+    prompts: Mutex<Vec<String>>,
+}
+
 #[derive(Debug, Default)]
 struct SteeringLifecycleExecutor {
     queued: Mutex<Vec<FromAgentMessage>>,
@@ -679,6 +685,31 @@ impl HostedRunnerHeadlessMessageExecutor for PendingThreadExecutor {
         Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
             Vec::new(),
             "thread prompt remains active",
+        ))
+    }
+}
+
+impl HostedRunnerHeadlessMessageExecutor for DispatchPersistenceFailureExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        if let ToAgentMessage::Prompt { content, .. } = message {
+            self.prompts
+                .lock()
+                .expect("dispatch persistence prompts")
+                .push(content);
+        }
+        self.shared
+            .lock()
+            .expect("dispatch persistence shared runner")
+            .as_ref()
+            .expect("shared runner installed before dispatch")
+            .fail_next_thread_persistences(1);
+        Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+            Vec::new(),
+            "runtime accepted before dispatch persistence failed",
         ))
     }
 }
@@ -4016,6 +4047,7 @@ fn runtime_state_snapshot_serializes_empty_codex_subagent_edges() {
             current_response: None,
             pending_approvals: Vec::new(),
             pending_client_tools: Vec::new(),
+            governed_client_tool_bindings: HashMap::new(),
             pending_mcp_elicitations: Vec::new(),
             pending_user_inputs: Vec::new(),
             pending_tool_retries: Vec::new(),
@@ -7270,6 +7302,135 @@ async fn controller_disconnect_rejects_replayed_public_authority() {
         .expect("state json");
     assert_eq!(state["state"]["controller_connection_id"], "conn_private");
     assert_eq!(state["state"]["subscriber_count"], 1);
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn failed_accepted_turn_persistence_rolls_back_and_allows_a_clean_retry() {
+    let workspace = tempdir().expect("workspace");
+    let executor = Arc::new(PendingThreadExecutor::default());
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+    )
+    .await
+    .expect("start hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), "conn_accept_retry").await;
+    let request = json!({
+        "protocolVersion": "evalops.maestro.thread.v1",
+        "turnId": "turn-accept-retry",
+        "kind": "user_message",
+        "content": "dispatch after durable acceptance"
+    });
+    let post_turn = || {
+        client
+            .post(format!(
+                "{}/api/headless/threads/sess_test/turns",
+                handle.base_url()
+            ))
+            .header("x-maestro-headless-connection-id", "conn_accept_retry")
+            .header("x-maestro-headless-subscriber-id", &subscription_id)
+            .header("x-maestro-headless-connection-capability", &capability)
+            .header("x-maestro-runtime-generation", "0")
+            .json(&request)
+            .send()
+    };
+
+    handle.shared.fail_next_thread_persistences(1);
+    let failed = post_turn().await.expect("failed acceptance response");
+    assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    {
+        let state = handle.shared.state.lock().expect("runner state");
+        assert!(state.thread.turn("turn-accept-retry").is_none());
+        assert!(!state.thread.has_active_turn());
+    }
+
+    let retried: serde_json::Value = post_turn()
+        .await
+        .expect("retried acceptance response")
+        .error_for_status()
+        .expect("retried acceptance status")
+        .json()
+        .await
+        .expect("retried acceptance json");
+    assert_eq!(retried["phase"], "running");
+    assert_eq!(retried["replayed"], false);
+    assert_eq!(
+        executor.prompts.lock().expect("pending prompts").as_slice(),
+        ["dispatch after durable acceptance"]
+    );
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn failed_post_dispatch_persistence_returns_success_without_duplicate_dispatch() {
+    let workspace = tempdir().expect("workspace");
+    let executor = Arc::new(DispatchPersistenceFailureExecutor::default());
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+    )
+    .await
+    .expect("start hosted runner");
+    *executor
+        .shared
+        .lock()
+        .expect("dispatch persistence shared runner") = Some(handle.shared.clone());
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), "conn_dispatch_persist").await;
+    let request = json!({
+        "protocolVersion": "evalops.maestro.thread.v1",
+        "turnId": "turn-dispatch-persist",
+        "kind": "user_message",
+        "content": "dispatch exactly once"
+    });
+    let post_turn = || {
+        client
+            .post(format!(
+                "{}/api/headless/threads/sess_test/turns",
+                handle.base_url()
+            ))
+            .header("x-maestro-headless-connection-id", "conn_dispatch_persist")
+            .header("x-maestro-headless-subscriber-id", &subscription_id)
+            .header("x-maestro-headless-connection-capability", &capability)
+            .header("x-maestro-runtime-generation", "0")
+            .json(&request)
+            .send()
+    };
+
+    let first: serde_json::Value = post_turn()
+        .await
+        .expect("post-dispatch persistence response")
+        .error_for_status()
+        .expect("dispatch success must not become a persistence error")
+        .json()
+        .await
+        .expect("post-dispatch persistence json");
+    assert_eq!(first["phase"], "running");
+    assert_eq!(first["replayed"], false);
+
+    let replayed: serde_json::Value = post_turn()
+        .await
+        .expect("post-dispatch replay response")
+        .error_for_status()
+        .expect("post-dispatch replay status")
+        .json()
+        .await
+        .expect("post-dispatch replay json");
+    assert_eq!(replayed["replayed"], true);
+    assert_eq!(
+        executor
+            .prompts
+            .lock()
+            .expect("dispatch persistence prompts")
+            .as_slice(),
+        ["dispatch exactly once"]
+    );
 
     handle.shutdown().await;
 }

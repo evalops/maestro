@@ -734,6 +734,8 @@ fn test_restore_visible_session_messages_applies_compactions() {
             custom_instructions: None,
             continuation: None,
         }],
+        lifecycle_notifications: Vec::new(),
+        pending_lifecycle_agent_notes: Vec::new(),
         side_questions: Vec::new(),
         plan_review_events: Vec::new(),
         usage_entries: Vec::new(),
@@ -870,6 +872,8 @@ fn test_restore_visible_session_messages_applies_multiple_compactions_in_order()
                 continuation: None,
             },
         ],
+        lifecycle_notifications: Vec::new(),
+        pending_lifecycle_agent_notes: Vec::new(),
         side_questions: Vec::new(),
         plan_review_events: Vec::new(),
         usage_entries: Vec::new(),
@@ -883,6 +887,126 @@ fn test_restore_visible_session_messages_applies_multiple_compactions_in_order()
     assert_eq!(state.messages[0].content, "## Second Summary");
     assert_eq!(state.messages[1].content, "User four");
     assert_eq!(state.messages[2].content, "Assistant four");
+}
+
+#[test]
+fn test_restore_lifecycle_notifications_in_compacted_transcript_order() {
+    let mut state = AppState::new();
+    let session = ParsedSession {
+        header: SessionHeader {
+            version: Some(2),
+            id: "session-lifecycle-order".to_string(),
+            timestamp: "2026-03-31T12:00:00Z".to_string(),
+            cwd: "/tmp".to_string(),
+            model: "openai/gpt-5.2".to_string(),
+            subject: None,
+            model_metadata: None,
+            thinking_level: ThinkingLevel::Medium,
+            system_prompt: None,
+            prompt_metadata: None,
+            prompt_context_manifest: None,
+            unified_context_manifest: None,
+            tools: Vec::new(),
+            branched_from: None,
+            parent_session: None,
+        },
+        messages: vec![
+            AppMessage::User {
+                content: MessageContent::Text("First".to_string()),
+                attachments: None,
+                timestamp: 1,
+            },
+            AppMessage::Assistant {
+                content: vec![SessionContentBlock::Text {
+                    text: "First reply".to_string(),
+                }],
+                api: None,
+                provider: None,
+                model: None,
+                usage: None,
+                stop_reason: None,
+                timestamp: 2,
+            },
+            AppMessage::User {
+                content: MessageContent::Text("Second".to_string()),
+                attachments: None,
+                timestamp: 3,
+            },
+            AppMessage::Assistant {
+                content: vec![SessionContentBlock::Text {
+                    text: "Second reply".to_string(),
+                }],
+                api: None,
+                provider: None,
+                model: None,
+                usage: None,
+                stop_reason: None,
+                timestamp: 4,
+            },
+        ],
+        meta: None,
+        stats: Default::default(),
+        thinking_level_changes: Vec::new(),
+        model_changes: Vec::new(),
+        compactions: vec![CompactionEntry {
+            id: None,
+            parent_id: None,
+            timestamp: "2026-03-31T12:05:00Z".to_string(),
+            summary: "## Conversation Summary".to_string(),
+            first_kept_entry_id: None,
+            first_kept_entry_index: Some(2),
+            tokens_before: 1000,
+            auto: true,
+            custom_instructions: None,
+            continuation: None,
+        }],
+        lifecycle_notifications: vec![
+            crate::session::LifecycleNotificationEntry {
+                id: "notice-a".to_string(),
+                content: "Notice A".to_string(),
+                timestamp: "2026-03-31T12:04:00Z".to_string(),
+                visible_index: 1,
+            },
+            crate::session::LifecycleNotificationEntry {
+                id: "notice-b".to_string(),
+                content: "Notice B".to_string(),
+                timestamp: "2026-03-31T12:04:01Z".to_string(),
+                visible_index: 1,
+            },
+            crate::session::LifecycleNotificationEntry {
+                id: "notice-after".to_string(),
+                content: "Notice after".to_string(),
+                timestamp: "2026-03-31T12:06:00Z".to_string(),
+                visible_index: 2,
+            },
+        ],
+        pending_lifecycle_agent_notes: Vec::new(),
+        side_questions: Vec::new(),
+        plan_review_events: Vec::new(),
+        usage_entries: Vec::new(),
+        file_path: "/tmp/session-lifecycle-order.jsonl".to_string(),
+    };
+
+    restore_visible_session_messages(&mut state, &session);
+
+    assert_eq!(
+        state
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "## Conversation Summary",
+            "Second",
+            "Notice A",
+            "Notice B",
+            "Second reply",
+            "Notice after",
+        ]
+    );
+    assert_eq!(state.messages[2].kind, MessageKind::System);
+    assert_eq!(state.messages[3].kind, MessageKind::System);
+    assert_eq!(state.messages[5].kind, MessageKind::System);
 }
 
 #[test]
@@ -2775,6 +2899,8 @@ fn restore_side_questions_by_timestamp_without_model_history_entries() {
         thinking_level_changes: Vec::new(),
         model_changes: Vec::new(),
         compactions: Vec::new(),
+        lifecycle_notifications: Vec::new(),
+        pending_lifecycle_agent_notes: Vec::new(),
         side_questions: vec![SideQuestionEntry {
             id: "side-1".into(),
             timestamp: "1970-01-01T00:00:02Z".into(),
@@ -3426,6 +3552,11 @@ fn resume_session_at_startup_restores_agent_context_for_spawn() {
         r#"{{"type":"message","timestamp":"2024-01-15T10:30:02Z","message":{{"role":"assistant","content":[{{"type":"text","text":"Fork continued."}}],"timestamp":1}}}}"#
     )
     .unwrap();
+    writeln!(
+        file,
+        r#"{{"type":"custom","id":"pending-lifecycle","timestamp":"2024-01-15T10:30:03Z","customType":"subagent_lifecycle_applied","data":{{"content":"Child completed","agentNote":"Subagent child-1 completed."}}}}"#
+    )
+    .unwrap();
     drop(file);
 
     let mut app = new_test_app();
@@ -3459,10 +3590,163 @@ fn resume_session_at_startup_restores_agent_context_for_spawn() {
     assert_eq!(history[0].content.as_text(), Some("continue the fork"));
     assert_eq!(history[1].role, crate::ai::Role::Assistant);
     assert_eq!(history[1].content.as_text(), Some("Fork continued."));
+    assert_eq!(
+        app.pending_agent_tool_notes,
+        vec![PendingAgentToolNote {
+            application_id: Some("pending-lifecycle".to_string()),
+            content: "Subagent child-1 completed.".to_string(),
+        }]
+    );
 
     // Unknown ids surface an error instead of panicking.
     app.resume_session_at_startup("missing-session");
     assert!(app.state.error.is_some());
+}
+
+#[test]
+fn locked_session_resume_does_not_restore_lifecycle_notes() {
+    let temp = tempdir().unwrap();
+    let dir = temp.path().join("sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("2024-01-15T10-30-00-000Z_locked-target.jsonl");
+    let mut file = std::fs::File::create(&path).unwrap();
+    use std::io::Write;
+    writeln!(
+        file,
+        r#"{{"type":"session","id":"locked-target","timestamp":"2024-01-15T10:30:00Z","cwd":"/tmp","model":"openai/gpt-5.2","thinkingLevel":"medium"}}"#
+    )
+    .unwrap();
+    writeln!(
+        file,
+        r#"{{"type":"custom","id":"foreign-lifecycle","timestamp":"2024-01-15T10:30:03Z","customType":"subagent_lifecycle_applied","data":{{"content":"Child completed","agentNote":"Subagent child-1 completed."}}}}"#
+    )
+    .unwrap();
+    drop(file);
+
+    let mut lock_holder = crate::session::SessionManager::with_sessions_dir("/tmp", &dir);
+    lock_holder
+        .resume_session_by_path("locked-target", &path)
+        .expect("hold session writer lock");
+    let mut app = new_test_app();
+    app.session_manager = crate::session::SessionManager::with_sessions_dir("/tmp", &dir);
+
+    app.resume_session_at_startup("locked-target");
+
+    assert!(app.session_resume_failed);
+    assert!(app.pending_agent_tool_notes.is_empty());
+}
+
+#[test]
+fn ephemeral_session_applies_and_deduplicates_lifecycle_events_in_memory() {
+    let mut app = new_test_app();
+    app.session_manager
+        .start_ephemeral_session_for_test("ephemeral-session");
+    let event: crate::tools::SubagentLifecycleEvent = serde_json::from_value(serde_json::json!({
+        "mailbox_message_id": "lifecycle-1",
+        "subagent_id": "child-1",
+        "attempt": 1,
+        "parent_scope_id": "ephemeral-session",
+        "parent_call_id": "call-1",
+        "status": "completed",
+        "summary": "done",
+        "error": null,
+        "finished_at_ms": 1
+    }))
+    .expect("lifecycle event");
+
+    assert_eq!(
+        app.subagent_lifecycle_application_exists(&event),
+        Some(false)
+    );
+    assert!(app.record_subagent_lifecycle_application(
+        &event,
+        "Child completed".to_string(),
+        "Subagent child-1 completed.".to_string(),
+    ));
+    assert_eq!(
+        app.subagent_lifecycle_application_exists(&event),
+        Some(true)
+    );
+    assert_eq!(
+        app.session_manager.current_session_id(),
+        Some("ephemeral-session")
+    );
+    assert!(app.state.error.is_none());
+}
+
+#[test]
+fn consumed_lifecycle_marker_stays_pending_until_persistence_succeeds() {
+    let mut app = new_test_app();
+    app.pending_consumed_agent_tool_notes
+        .push("lifecycle-1".to_string());
+
+    app.record_agent_tool_note_progress(false);
+
+    assert_eq!(
+        app.pending_consumed_agent_tool_notes,
+        vec!["lifecycle-1".to_string()]
+    );
+
+    app.session_manager
+        .start_ephemeral_session_for_test("ephemeral-session");
+    app.record_agent_tool_note_progress(false);
+    assert!(app.pending_consumed_agent_tool_notes.is_empty());
+}
+
+#[test]
+fn closed_consumption_receiver_requeues_note_after_history_replacement() {
+    let mut app = new_test_app();
+    let (consumed_sender, consumed) = tokio::sync::oneshot::channel();
+    drop(consumed_sender);
+    app.pending_agent_note_consumptions
+        .push(PendingAgentNoteConsumption {
+            application_id: "lifecycle-1".to_string(),
+            content: "Subagent child-1 completed.".to_string(),
+            consumed,
+        });
+
+    app.record_agent_tool_note_progress(false);
+
+    assert!(app.pending_agent_note_consumptions.is_empty());
+    assert_eq!(
+        app.pending_agent_tool_notes,
+        vec![PendingAgentToolNote {
+            application_id: Some("lifecycle-1".to_string()),
+            content: "Subagent child-1 completed.".to_string(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn lifecycle_consumption_waits_for_durable_turn_completion() {
+    let mut app = new_test_app();
+    app.session_manager
+        .start_ephemeral_session_for_test("ephemeral-session");
+    let (consumed_sender, consumed) = tokio::sync::oneshot::channel();
+    consumed_sender.send(()).expect("signal consumption");
+    app.pending_agent_note_consumptions
+        .push(PendingAgentNoteConsumption {
+            application_id: "lifecycle-1".to_string(),
+            content: "Subagent child-1 completed.".to_string(),
+            consumed,
+        });
+
+    app.record_agent_tool_note_progress(false);
+
+    assert_eq!(
+        app.ready_consumed_agent_tool_notes,
+        vec!["lifecycle-1".to_string()]
+    );
+    assert!(app.pending_consumed_agent_tool_notes.is_empty());
+
+    app.handle_agent_message(FromAgent::TurnCompleted {
+        response_id: "done".to_string(),
+    })
+    .await
+    .expect("turn completion");
+
+    assert!(app.ready_consumed_agent_tool_notes.is_empty());
+    assert!(app.pending_consumed_agent_tool_notes.is_empty());
 }
 
 #[tokio::test]

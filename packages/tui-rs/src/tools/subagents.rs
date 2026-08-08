@@ -6,7 +6,7 @@
 //! durable record and can therefore observe or resume a child from another
 //! `ToolExecutor` in the same process.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -21,12 +21,16 @@ use std::os::unix::fs::PermissionsExt;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::Semaphore;
+use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::{CredentialVault, FromAgent, NativeAgent, NativeAgentConfig, ToolResult};
+use crate::agent::{
+    CredentialVault, FromAgent, NativeAgent, NativeAgentConfig, PromptKind, ToolResult,
+};
+use crate::config::InboundControlPolicy;
 use crate::headless::{FromAgentMessage, SessionRecorder, ToAgentMessage};
 use crate::hooks::{HookResult, IntegratedHookSystem};
+use crate::mailbox::{MailboxControlMode as ControlMode, MailboxLifecycleStatus};
 use crate::sandbox::SandboxPolicy;
 use crate::session::{sanitize_path_for_dirname, SessionLock};
 use crate::state::ApprovalMode;
@@ -36,13 +40,14 @@ use crate::worktree::WorktreeSession;
 /// Built-in tools which belong to this lifecycle surface and must not be
 /// advertised to a child. Without this guard a child could recursively spawn
 /// an unbounded tree of agents.
-pub(crate) const SUBAGENT_TOOL_NAMES: [&str; 8] = [
+pub(crate) const SUBAGENT_TOOL_NAMES: [&str; 9] = [
     "spawn_subagent",
     "list_subagents",
     "get_subagent",
     "wait_subagent",
     "resume_subagent",
     "cancel_subagent",
+    "control_subagent",
     "inspect_subagent",
     "cleanup_subagent",
 ];
@@ -56,6 +61,19 @@ const DEFAULT_CHILD_TIMEOUT_MS: u64 = 7_200_000;
 const MAX_CHILD_TIMEOUT_MS: u64 = 86_400_000;
 const DEFAULT_MAX_RUNNING_SUBAGENTS: usize = 4;
 const MAX_RUNNING_SUBAGENTS: usize = 32;
+const RUNTIME_CONTROL_CAPACITY: usize = 64;
+#[cfg(not(test))]
+const LIFECYCLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
+#[cfg(test)]
+const LIFECYCLE_POLL_INTERVAL: Duration = Duration::ZERO;
+#[cfg(not(test))]
+const LIFECYCLE_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const LIFECYCLE_RECONCILIATION_INTERVAL: Duration = Duration::ZERO;
+
+fn terminal_checkpoint_ready(terminal_seen: bool, semantic_snapshot_seen: bool) -> bool {
+    terminal_seen && semantic_snapshot_seen
+}
 
 /// Characters of streamed assistant text counted as one output token when the
 /// runtime reports no usage.
@@ -202,6 +220,34 @@ impl SubagentStatus {
     }
 }
 
+impl From<MailboxLifecycleStatus> for SubagentStatus {
+    fn from(status: MailboxLifecycleStatus) -> Self {
+        match status {
+            MailboxLifecycleStatus::Queued => Self::Queued,
+            MailboxLifecycleStatus::Running => Self::Running,
+            MailboxLifecycleStatus::Completed => Self::Completed,
+            MailboxLifecycleStatus::Failed => Self::Failed,
+            MailboxLifecycleStatus::Cancelled => Self::Cancelled,
+            MailboxLifecycleStatus::TimedOut => Self::TimedOut,
+            MailboxLifecycleStatus::Interrupted => Self::Interrupted,
+        }
+    }
+}
+
+impl From<SubagentStatus> for MailboxLifecycleStatus {
+    fn from(status: SubagentStatus) -> Self {
+        match status {
+            SubagentStatus::Queued => Self::Queued,
+            SubagentStatus::Running => Self::Running,
+            SubagentStatus::Completed => Self::Completed,
+            SubagentStatus::Failed => Self::Failed,
+            SubagentStatus::Cancelled => Self::Cancelled,
+            SubagentStatus::TimedOut => Self::TimedOut,
+            SubagentStatus::Interrupted => Self::Interrupted,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SubagentRole {
@@ -275,13 +321,116 @@ pub(crate) struct SubagentResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct SubagentLifecycleEvent {
+    pub mailbox_message_id: String,
     pub subagent_id: String,
+    pub attempt: u32,
     pub parent_scope_id: String,
     pub parent_call_id: String,
     pub status: SubagentStatus,
     pub summary: Option<String>,
     pub error: Option<String>,
     pub finished_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CoordinationSnapshot {
+    pub(crate) subagent_id: String,
+    pub(crate) agent_ref: String,
+    pub(crate) parent_scope_id: String,
+    pub(crate) role: String,
+    pub(crate) status: String,
+    pub(crate) attempt: u32,
+    pub(crate) created_at_ms: u64,
+    pub(crate) started_at_ms: Option<u64>,
+    pub(crate) finished_at_ms: Option<u64>,
+    pub(crate) lifecycle_published: bool,
+    pub(crate) last_control_id: Option<String>,
+    pub(crate) last_control_mode: Option<String>,
+    pub(crate) last_control_state: Option<String>,
+    pub(crate) held_control_id: Option<String>,
+    pub(crate) error: Option<String>,
+}
+
+fn displayed_coordination_control<'a>(
+    controls: &'a [&'a crate::mailbox::MailboxMessage],
+) -> (
+    Option<&'a crate::mailbox::MailboxMessage>,
+    Option<&'a crate::mailbox::MailboxMessage>,
+) {
+    let newer = |left: &&&crate::mailbox::MailboxMessage,
+                 right: &&&crate::mailbox::MailboxMessage| {
+        left.created_at_unix
+            .cmp(&right.created_at_unix)
+            .then_with(|| left.id.cmp(&right.id))
+    };
+    let latest = controls.iter().max_by(newer).copied();
+    let held = controls
+        .iter()
+        .filter(|message| message.delivery_state == crate::mailbox::MailboxDeliveryState::Held)
+        .max_by(newer)
+        .copied();
+    (held.or(latest), held)
+}
+
+pub(crate) fn coordination_snapshots(cwd: &Path) -> Result<Vec<CoordinationSnapshot>, String> {
+    let manager = SubagentManager::new(cwd.to_path_buf());
+    let entries = std::fs::read_dir(&manager.root)
+        .map_err(|error| format!("read subagent registry: {error}"))?;
+    let mailbox = crate::mailbox::MailboxStore::load_from_path(&manager.mailbox_path)
+        .map_err(|error| format!("load coordination mailbox: {error:#}"))?;
+    let mut snapshots = Vec::new();
+    for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
+        let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Ok(record) = manager.load_record(&id) else {
+            continue;
+        };
+        let reference = agent_ref(&record);
+        let controls = mailbox
+            .messages
+            .iter()
+            .filter(|message| {
+                message.recipient == reference
+                    && matches!(
+                        message.payload,
+                        crate::mailbox::MailboxPayload::SubagentControl { .. }
+                    )
+            })
+            .collect::<Vec<_>>();
+        let (displayed_control, held_control) = displayed_coordination_control(&controls);
+        let last_control_mode = displayed_control.and_then(|message| match message.payload {
+            crate::mailbox::MailboxPayload::SubagentControl { mode } => {
+                Some(mode.label().to_string())
+            }
+            _ => None,
+        });
+        snapshots.push(CoordinationSnapshot {
+            subagent_id: record.id.clone(),
+            agent_ref: reference,
+            parent_scope_id: record.last_parent_scope_id.clone(),
+            role: record.role.label().to_string(),
+            status: status_label(record.status).to_string(),
+            attempt: record.attempt,
+            created_at_ms: record.created_at_ms,
+            started_at_ms: record.started_at_ms,
+            finished_at_ms: record.finished_at_ms,
+            lifecycle_published: record.lifecycle_notification_published,
+            last_control_id: displayed_control.map(|message| message.id.clone()),
+            last_control_mode,
+            last_control_state: displayed_control
+                .map(|message| format!("{:?}", message.delivery_state).to_ascii_lowercase()),
+            held_control_id: held_control.map(|message| message.id.clone()),
+            error: record.error.clone(),
+        });
+    }
+    snapshots.sort_by(|left, right| {
+        right
+            .created_at_ms
+            .cmp(&left.created_at_ms)
+            .then_with(|| left.subagent_id.cmp(&right.subagent_id))
+    });
+    Ok(snapshots)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -326,6 +475,8 @@ pub(crate) struct SubagentRecord {
     pub finished_at_ms: Option<u64>,
     pub result: Option<SubagentResult>,
     pub error: Option<String>,
+    #[serde(default)]
+    pub lifecycle_notification_published: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -349,6 +500,21 @@ struct ChildLaunch {
     parent_credential_vault: CredentialVault,
     parent_credential_generation: u64,
     parent_cancel: Option<CancellationToken>,
+}
+
+struct ChildRun {
+    prompt: String,
+    history: Option<Vec<crate::ai::Message>>,
+    sandbox_policy: Option<SandboxPolicy>,
+    token: CancellationToken,
+    control_rx: mpsc::Receiver<RuntimeControlRequest>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildControlOutcome {
+    Continue,
+    Interrupted,
+    Cancelled,
 }
 
 struct ParentCredentialScope<'a> {
@@ -403,9 +569,57 @@ impl Drop for WorktreeSetupGuard {
 
 struct RuntimeRegistry {
     cancellation: Mutex<HashMap<String, CancellationToken>>,
+    controls: Mutex<HashMap<String, mpsc::Sender<RuntimeControlRequest>>>,
     credential_scopes: Mutex<HashMap<String, CredentialVault>>,
     concurrency: Arc<Semaphore>,
-    lifecycle_events: Mutex<VecDeque<SubagentLifecycleEvent>>,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeControlRequest {
+    mailbox_id: String,
+    recipient: String,
+    mode: ControlMode,
+    body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct DurableControlReceipt {
+    mailbox_message_id: String,
+    #[serde(default)]
+    queue_id: u64,
+    mode: ControlMode,
+    body: String,
+    attempt: u32,
+    accepted_at_ms: u64,
+    #[serde(default)]
+    acceptance_sequence: u64,
+    #[serde(default)]
+    state: DurableControlReceiptState,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum DurableControlReceiptState {
+    #[default]
+    Accepted,
+    Applied,
+}
+
+fn control_queue_id(mailbox_message_id: &str) -> u64 {
+    let digest = Sha256::digest(mailbox_message_id.as_bytes());
+    let mut prefix = [0_u8; 8];
+    prefix.copy_from_slice(&digest[..8]);
+    (u64::from_be_bytes(prefix) & (u64::MAX >> 1)).max(1)
+}
+
+fn control_receipt_needs_replay(
+    receipt: &DurableControlReceipt,
+    snapshot_attempt: Option<u32>,
+    processed_queue_ids: &HashSet<u64>,
+) -> bool {
+    !processed_queue_ids.contains(&receipt.queue_id)
+        && snapshot_attempt.is_none_or(|attempt| receipt.attempt >= attempt)
 }
 
 impl RuntimeRegistry {
@@ -421,9 +635,9 @@ impl RuntimeRegistry {
     fn with_capacity(max_running: usize) -> Self {
         Self {
             cancellation: Mutex::new(HashMap::new()),
+            controls: Mutex::new(HashMap::new()),
             credential_scopes: Mutex::new(HashMap::new()),
             concurrency: Arc::new(Semaphore::new(max_running.max(1))),
-            lifecycle_events: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -440,15 +654,28 @@ impl RuntimeRegistry {
         self.concurrency.available_permits()
     }
 
-    fn insert(&self, id: &str, token: CancellationToken) {
+    fn insert(
+        &self,
+        id: &str,
+        token: CancellationToken,
+        control: mpsc::Sender<RuntimeControlRequest>,
+    ) {
         self.cancellation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(id.to_string(), token);
+        self.controls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(id.to_string(), control);
     }
 
     fn remove(&self, id: &str) {
         self.cancellation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(id);
+        self.controls
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(id);
@@ -460,6 +687,14 @@ impl RuntimeRegistry {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(id)
             .cloned()
+    }
+
+    fn send_control(&self, id: &str, request: RuntimeControlRequest) -> bool {
+        self.controls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(id)
+            .is_some_and(|sender| sender.try_send(request).is_ok())
     }
 
     fn set_credential_scope(&self, id: &str, vault: CredentialVault) {
@@ -477,29 +712,13 @@ impl RuntimeRegistry {
             .cloned()
     }
 
-    fn push_event(&self, event: SubagentLifecycleEvent) {
-        self.lifecycle_events
+    fn running_ids(&self) -> Vec<String> {
+        self.controls
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push_back(event);
-    }
-
-    fn poll_events(&self, parent_scope_id: &str) -> Vec<SubagentLifecycleEvent> {
-        let mut events = self
-            .lifecycle_events
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut matching = Vec::new();
-        let mut remaining = VecDeque::with_capacity(events.len());
-        while let Some(event) = events.pop_front() {
-            if event.parent_scope_id == parent_scope_id {
-                matching.push(event);
-            } else {
-                remaining.push_back(event);
-            }
-        }
-        *events = remaining;
-        matching
+            .keys()
+            .cloned()
+            .collect()
     }
 }
 
@@ -524,17 +743,57 @@ pub(crate) struct SubagentManager {
     /// started by an earlier conversation cannot report into a later one.
     parent_scope_id: Arc<Mutex<String>>,
     runtime: Arc<RuntimeRegistry>,
+    mailbox_path: PathBuf,
+    last_lifecycle_poll: Arc<Mutex<Instant>>,
+    last_lifecycle_reconciliation: Arc<Mutex<Instant>>,
+    observed_lifecycle_records: Arc<Mutex<HashMap<String, LifecycleRecordObservation>>>,
+    pending_lifecycle: Arc<Mutex<HashSet<String>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LifecycleRecordObservation {
+    modified: Option<SystemTime>,
+    len: u64,
+    file_id: Option<u64>,
+    attempt: u32,
+    published: bool,
+}
+
+#[cfg(unix)]
+fn lifecycle_file_id(metadata: &std::fs::Metadata) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Some(metadata.ino())
+}
+
+#[cfg(not(unix))]
+fn lifecycle_file_id(_metadata: &std::fs::Metadata) -> Option<u64> {
+    None
 }
 
 impl SubagentManager {
     pub(crate) fn new(cwd: impl Into<PathBuf>) -> Self {
         let cwd = cwd.into();
         let root = default_root(&cwd);
-        Self::with_root(cwd, root)
+        Self::with_root_parent_and_mailbox(
+            cwd,
+            root,
+            uuid::Uuid::new_v4().to_string(),
+            crate::mailbox::default_path(),
+        )
     }
 
+    #[cfg(test)]
     fn with_root(cwd: PathBuf, root: PathBuf) -> Self {
-        Self::with_root_and_parent_scope(cwd, root, uuid::Uuid::new_v4().to_string())
+        let mailbox_path = root
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("mailbox.json");
+        Self::with_root_parent_and_mailbox(
+            cwd,
+            root,
+            uuid::Uuid::new_v4().to_string(),
+            mailbox_path,
+        )
     }
 
     pub(crate) fn with_parent_scope(
@@ -543,15 +802,47 @@ impl SubagentManager {
     ) -> Self {
         let cwd = cwd.into();
         let root = default_root(&cwd);
-        Self::with_root_and_parent_scope(cwd, root, parent_scope_id.into())
+        Self::with_root_parent_and_mailbox(
+            cwd,
+            root,
+            parent_scope_id.into(),
+            crate::mailbox::default_path(),
+        )
     }
 
+    #[cfg(test)]
     fn with_root_and_parent_scope(cwd: PathBuf, root: PathBuf, parent_scope_id: String) -> Self {
+        let mailbox_path = root
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("mailbox.json");
+        Self::with_root_parent_and_mailbox(cwd, root, parent_scope_id, mailbox_path)
+    }
+
+    fn with_root_parent_and_mailbox(
+        cwd: PathBuf,
+        root: PathBuf,
+        parent_scope_id: String,
+        mailbox_path: PathBuf,
+    ) -> Self {
         Self {
             cwd,
             root,
             parent_scope_id: Arc::new(Mutex::new(parent_scope_id)),
             runtime: runtime_registry(),
+            mailbox_path,
+            last_lifecycle_poll: Arc::new(Mutex::new(
+                Instant::now()
+                    .checked_sub(LIFECYCLE_POLL_INTERVAL)
+                    .unwrap_or_else(Instant::now),
+            )),
+            last_lifecycle_reconciliation: Arc::new(Mutex::new(
+                Instant::now()
+                    .checked_sub(LIFECYCLE_RECONCILIATION_INTERVAL)
+                    .unwrap_or_else(Instant::now),
+            )),
+            observed_lifecycle_records: Arc::new(Mutex::new(HashMap::new())),
+            pending_lifecycle: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -577,7 +868,189 @@ impl SubagentManager {
     }
 
     pub(crate) fn poll_lifecycle_events(&self) -> Vec<SubagentLifecycleEvent> {
-        self.runtime.poll_events(&self.parent_scope_id())
+        let now = Instant::now();
+        let mut last_poll = self
+            .last_lifecycle_poll
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if now.duration_since(*last_poll) < LIFECYCLE_POLL_INTERVAL {
+            return Vec::new();
+        }
+        *last_poll = now;
+        drop(last_poll);
+
+        self.retry_terminal_lifecycle_notifications();
+
+        let parent_scope = self.parent_scope_id();
+        let mut mailbox = crate::mailbox::MailboxStore::with_path(&self.mailbox_path);
+        let mut events = Vec::new();
+        loop {
+            let message = match mailbox.claim_typed(&parent_scope, |payload| {
+                matches!(
+                    payload,
+                    crate::mailbox::MailboxPayload::SubagentLifecycle { .. }
+                )
+            }) {
+                Ok(Some(message)) => message,
+                Ok(None) | Err(_) => break,
+            };
+            let crate::mailbox::MailboxPayload::SubagentLifecycle {
+                subagent_id,
+                parent_call_id,
+                attempt,
+                status,
+                summary,
+                error,
+                finished_at_ms,
+            } = message.payload
+            else {
+                continue;
+            };
+            events.push(SubagentLifecycleEvent {
+                mailbox_message_id: message.id,
+                subagent_id,
+                attempt,
+                parent_scope_id: parent_scope.clone(),
+                parent_call_id,
+                status: status.into(),
+                summary,
+                error,
+                finished_at_ms,
+            });
+        }
+        events
+    }
+
+    pub(crate) fn acknowledge_lifecycle_event(
+        &self,
+        event: &SubagentLifecycleEvent,
+    ) -> Result<(), String> {
+        crate::mailbox::MailboxStore::with_path(&self.mailbox_path)
+            .complete_delivery(&event.mailbox_message_id, &event.parent_scope_id, None)
+            .map(|_| ())
+            .map_err(|error| format!("acknowledge subagent lifecycle event: {error:#}"))
+    }
+
+    pub(crate) fn active_mailbox_recipients(&self) -> Vec<String> {
+        let mut recipients = self
+            .runtime
+            .running_ids()
+            .into_iter()
+            .filter_map(|id| self.load_record(&id).ok())
+            .map(|record| agent_ref(&record))
+            .collect::<Vec<_>>();
+        recipients.sort();
+        recipients.dedup();
+        recipients
+    }
+
+    fn retry_terminal_lifecycle_notifications(&self) {
+        self.reconcile_lifecycle_records();
+
+        let pending: Vec<_> = self
+            .pending_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .cloned()
+            .collect();
+        for id in pending {
+            let published = self.retry_lifecycle_notification(&id);
+            if published {
+                self.pending_lifecycle
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&id);
+            }
+        }
+    }
+
+    fn reconcile_lifecycle_records(&self) {
+        let now = Instant::now();
+        let mut last_scan = self
+            .last_lifecycle_reconciliation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if now.duration_since(*last_scan) < LIFECYCLE_RECONCILIATION_INTERVAL {
+            return;
+        }
+        *last_scan = now;
+        drop(last_scan);
+
+        if let Ok(entries) = std::fs::read_dir(&self.root) {
+            let mut observed = self
+                .observed_lifecycle_records
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut pending = self
+                .pending_lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut present = HashSet::new();
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    if let Some(id) = entry.file_name().to_str() {
+                        present.insert(id.to_string());
+                        let record_path = entry.path().join("record.json");
+                        let metadata = std::fs::metadata(&record_path).ok();
+                        let modified = metadata.as_ref().and_then(|value| value.modified().ok());
+                        let len = metadata.as_ref().map_or(0, std::fs::Metadata::len);
+                        let file_id = metadata.as_ref().and_then(lifecycle_file_id);
+                        if modified.is_some()
+                            && file_id.is_some()
+                            && observed.get(id).is_some_and(|state| {
+                                state.modified == modified
+                                    && state.len == len
+                                    && state.file_id == file_id
+                            })
+                        {
+                            continue;
+                        }
+                        if let Ok(record) = self.load_record(id) {
+                            let state = LifecycleRecordObservation {
+                                modified,
+                                len,
+                                file_id,
+                                attempt: record.attempt,
+                                published: record.lifecycle_notification_published,
+                            };
+                            if observed.get(id) != Some(&state) {
+                                observed.insert(id.to_string(), state);
+                                if !record.lifecycle_notification_published {
+                                    pending.insert(id.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            observed.retain(|id, _| present.contains(id));
+        }
+    }
+
+    fn retry_lifecycle_notification(&self, id: &str) -> bool {
+        let Ok(initial) = self.load_record(id) else {
+            return false;
+        };
+        if initial.lifecycle_notification_published {
+            return true;
+        }
+        if !initial.status.is_terminal() {
+            return false;
+        }
+        // `resume` cannot acquire its execution lease when the session
+        // directory is absent, so `None` is also mutually exclusive with a
+        // running attempt. Otherwise this takes the exact same sidecar lock.
+        let Ok(_lease) = Self::acquire_cleanup_lease(&initial) else {
+            return false;
+        };
+        let Ok(mut current) = self.load_record(id) else {
+            return false;
+        };
+        if current.lifecycle_notification_published || !current.status.is_terminal() {
+            return true;
+        }
+        self.publish_lifecycle_notification(&mut current).is_ok()
     }
 
     fn record_path(&self, id: &str) -> PathBuf {
@@ -824,6 +1297,7 @@ impl SubagentManager {
             finished_at_ms: None,
             result: None,
             error: None,
+            lifecycle_notification_published: false,
         };
 
         let lease = match SessionLock::acquire(&Self::timeline_path(&record)) {
@@ -858,9 +1332,10 @@ impl SubagentManager {
         }
 
         let token = CancellationToken::new();
+        let (control_tx, control_rx) = mpsc::channel(RUNTIME_CONTROL_CAPACITY);
         self.runtime
             .set_credential_scope(&id, child_credential_vault.clone());
-        self.runtime.insert(&id, token.clone());
+        self.runtime.insert(&id, token.clone(), control_tx);
         let manager = self.clone();
         let launch_record = record.clone();
         let launch_policy = sandbox_policy;
@@ -894,10 +1369,13 @@ impl SubagentManager {
             let result = manager
                 .run_child(
                     launch_record,
-                    task,
-                    None,
-                    launch_policy,
-                    launch_token,
+                    ChildRun {
+                        prompt: task,
+                        history: None,
+                        sandbox_policy: launch_policy,
+                        token: launch_token,
+                        control_rx,
+                    },
                     launch,
                 )
                 .await;
@@ -935,23 +1413,40 @@ impl SubagentManager {
 
     pub(crate) async fn list(&self) -> ToolResult {
         let mut records = Vec::new();
+        let mut errors = Vec::new();
+        let snapshot_id = uuid::Uuid::new_v4().to_string();
         let entries = match std::fs::read_dir(&self.root) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return ToolResult::success("No subagents").with_details(serde_json::json!({
+                    "snapshotId": snapshot_id,
+                    "complete": true,
                     "count": 0,
-                    "subagents": []
+                    "subagents": [],
+                    "errors": []
                 }));
             }
             Err(error) => return ToolResult::failure(format!("list subagents: {error}")),
         };
 
-        for entry in entries.flatten() {
-            let Some(id) = entry.file_name().to_str().map(str::to_string) else {
-                continue;
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    errors.push(serde_json::json!({
+                        "entry": null,
+                        "error": error.to_string(),
+                    }));
+                    continue;
+                }
             };
-            if let Ok(record) = self.load_record(&id) {
-                records.push(record);
+            let id = entry.file_name().to_string_lossy().into_owned();
+            match self.load_record(&id) {
+                Ok(record) => records.push(record),
+                Err(error) => errors.push(serde_json::json!({
+                    "entry": id,
+                    "error": error,
+                })),
             }
         }
         records.sort_by_key(|record| std::cmp::Reverse(record.created_at_ms));
@@ -967,8 +1462,11 @@ impl SubagentManager {
             })
             .collect::<Vec<_>>();
         let details = serde_json::json!({
+            "snapshotId": snapshot_id,
+            "complete": errors.is_empty(),
             "count": records.len(),
-            "subagents": records.iter().map(record_details).collect::<Vec<_>>()
+            "subagents": records.iter().map(record_details).collect::<Vec<_>>(),
+            "errors": errors,
         });
         ToolResult::success(if lines.is_empty() {
             "No subagents".to_string()
@@ -1290,12 +1788,14 @@ impl SubagentManager {
         record.finished_at_ms = None;
         record.result = None;
         record.error = None;
+        record.lifecycle_notification_published = false;
         if let Err(error) = self.write_record(&record) {
             return ToolResult::failure(error);
         }
 
         let token = CancellationToken::new();
-        self.runtime.insert(id, token.clone());
+        let (control_tx, control_rx) = mpsc::channel(RUNTIME_CONTROL_CAPACITY);
+        self.runtime.insert(id, token.clone(), control_tx);
         let manager = self.clone();
         let launch_record = record.clone();
         let launch_id = id.to_string();
@@ -1328,10 +1828,13 @@ impl SubagentManager {
             let result = manager
                 .run_child(
                     launch_record,
-                    prompt,
-                    history,
-                    launch_policy,
-                    launch_token,
+                    ChildRun {
+                        prompt,
+                        history,
+                        sandbox_policy: launch_policy,
+                        token: launch_token,
+                        control_rx,
+                    },
                     launch,
                 )
                 .await;
@@ -1380,15 +1883,510 @@ impl SubagentManager {
             .with_details(record_details(&record))
     }
 
+    pub(crate) async fn control(
+        &self,
+        args: &serde_json::Value,
+        call_id: &str,
+        parent_credential_vault: CredentialVault,
+    ) -> ToolResult {
+        let Some(reference) = args
+            .get("agent_ref")
+            .or_else(|| args.get("agentRef"))
+            .and_then(serde_json::Value::as_str)
+        else {
+            return ToolResult::failure("agent_ref is required");
+        };
+        let (id, attempt) = match parse_agent_ref(reference) {
+            Ok(parsed) => parsed,
+            Err(error) => return ToolResult::failure(error),
+        };
+        let record = match self.load_record(&id) {
+            Ok(record) => record,
+            Err(error) => return ToolResult::failure(error),
+        };
+        if record.attempt != attempt {
+            return ToolResult::failure(format!(
+                "stale agent_ref: subagent {} is now on attempt {}",
+                record.id, record.attempt
+            ));
+        }
+        let mode = match ControlMode::parse(args.get("mode").and_then(serde_json::Value::as_str)) {
+            Ok(mode) => mode,
+            Err(error) => return ToolResult::failure(error),
+        };
+        if mode == ControlMode::Collect {
+            return tool_result_for_record(record);
+        }
+        if record.status.is_terminal() {
+            return ToolResult::failure(format!(
+                "subagent {} is {}; use resume_subagent for a new attempt",
+                record.id,
+                status_label(record.status)
+            ));
+        }
+        let body = args
+            .get("message")
+            .or_else(|| args.get("task"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| mode.label());
+        if matches!(mode, ControlMode::Steer | ControlMode::Followup) && body == mode.label() {
+            return ToolResult::failure("message is required for steer and followup controls");
+        }
+        if body.len() > MAX_TASK_BYTES {
+            return ToolResult::failure(format!(
+                "subagent control exceeds the {} byte limit",
+                MAX_TASK_BYTES
+            ));
+        }
+
+        let body = match prepare_control_body(
+            &parent_credential_vault,
+            self.runtime.credential_scope(&record.id).as_ref(),
+            body,
+        ) {
+            Ok(body) => body,
+            Err(error) => return ToolResult::failure(error),
+        };
+
+        let sender = self.parent_scope_id();
+        let same_scope = sender == record.last_parent_scope_id;
+        let delivery_state = if same_scope {
+            crate::mailbox::MailboxDeliveryState::Queued
+        } else {
+            // The sender cannot decide the receiver's policy. Cross-session
+            // controls stay held until the receiving process evaluates its
+            // own configuration or a user explicitly approves the message.
+            crate::mailbox::MailboxDeliveryState::Held
+        };
+        let recipient = agent_ref(&record);
+        let idempotency_key = args
+            .get("idempotency_key")
+            .or_else(|| args.get("idempotencyKey"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("control:{call_id}:{recipient}:{}", mode.label()));
+        let mut mailbox = crate::mailbox::MailboxStore::with_path(&self.mailbox_path);
+        let mailbox_id = match mailbox.send_typed(
+            sender,
+            recipient.clone(),
+            body.clone(),
+            crate::mailbox::MailboxPayload::SubagentControl { mode },
+            delivery_state,
+            Some(idempotency_key),
+        ) {
+            Ok(id) => id,
+            Err(error) => return ToolResult::failure(format!("queue subagent control: {error}")),
+        };
+
+        if delivery_state == crate::mailbox::MailboxDeliveryState::Queued {
+            self.runtime.send_control(
+                &record.id,
+                RuntimeControlRequest {
+                    mailbox_id: mailbox_id.clone(),
+                    recipient: recipient.clone(),
+                    mode,
+                    body,
+                },
+            );
+        }
+        let details = serde_json::json!({
+            "messageId": mailbox_id,
+            "agentRef": recipient,
+            "mode": mode.label(),
+            "deliveryState": delivery_state,
+            "sameScope": same_scope,
+        });
+        match delivery_state {
+            crate::mailbox::MailboxDeliveryState::Held => ToolResult::success(format!(
+                "Control queued for recipient policy evaluation for subagent {}",
+                record.id
+            ))
+            .with_details(details),
+            _ => ToolResult::success(format!(
+                "{} control queued for subagent {}",
+                mode.label(),
+                record.id
+            ))
+            .with_details(details),
+        }
+    }
+
+    pub(crate) fn inspect_control(
+        &self,
+        message_id: &str,
+    ) -> Result<crate::mailbox::MailboxMessage, String> {
+        let loaded = crate::mailbox::MailboxStore::load_from_path(&self.mailbox_path)
+            .map_err(|error| format!("load mailbox for inspection: {error:#}"))?;
+        let message = loaded
+            .messages
+            .iter()
+            .find(|message| message.id == message_id)
+            .cloned()
+            .ok_or_else(|| format!("mailbox message '{message_id}' was not found"))?;
+        if !matches!(
+            &message.payload,
+            crate::mailbox::MailboxPayload::SubagentControl { .. }
+        ) {
+            return Err(format!(
+                "mailbox message '{message_id}' is not a subagent control"
+            ));
+        }
+        let (id, attempt) = parse_agent_ref(&message.recipient)?;
+        let record = self.load_record(&id)?;
+        if record.attempt != attempt || record.status.is_terminal() {
+            return Err(if record.attempt != attempt {
+                format!(
+                    "control expired: subagent {id} is now on attempt {}",
+                    record.attempt
+                )
+            } else {
+                format!(
+                    "control expired: subagent {id} is {}",
+                    status_label(record.status)
+                )
+            });
+        }
+        Ok(message)
+    }
+
+    pub(crate) fn approve_held_control(
+        &self,
+        message_id: &str,
+    ) -> Result<crate::mailbox::MailboxMessage, String> {
+        let loaded = crate::mailbox::MailboxStore::load_from_path(&self.mailbox_path)
+            .map_err(|error| format!("load mailbox for approval: {error:#}"))?;
+        let message = loaded
+            .messages
+            .iter()
+            .find(|message| message.id == message_id)
+            .cloned()
+            .ok_or_else(|| format!("mailbox message '{message_id}' was not found"))?;
+        if message.delivery_state != crate::mailbox::MailboxDeliveryState::Held {
+            return Err(format!("mailbox message '{message_id}' is not held"));
+        }
+        if !matches!(
+            &message.payload,
+            crate::mailbox::MailboxPayload::SubagentControl { .. }
+        ) {
+            return Err(format!(
+                "mailbox message '{message_id}' is not a subagent control"
+            ));
+        }
+        let (id, attempt) = parse_agent_ref(&message.recipient)?;
+        let record = self.load_record(&id)?;
+        if record.attempt != attempt || record.status.is_terminal() {
+            let reason = if record.attempt != attempt {
+                format!(
+                    "control expired: subagent {id} is now on attempt {}",
+                    record.attempt
+                )
+            } else {
+                format!(
+                    "control expired: subagent {id} is {}",
+                    status_label(record.status)
+                )
+            };
+            let mut mailbox = crate::mailbox::MailboxStore::with_path(&self.mailbox_path);
+            let _ = mailbox.deny_held(message_id, reason.clone());
+            return Err(reason);
+        }
+
+        let mut mailbox = crate::mailbox::MailboxStore::with_path(&self.mailbox_path);
+        let approved = mailbox
+            .approve_held(message_id)
+            .map_err(|error| format!("approve mailbox control: {error:#}"))?;
+        let latest = self.load_record(&id)?;
+        if latest.attempt != attempt || latest.status.is_terminal() {
+            let reason = if latest.attempt != attempt {
+                format!(
+                    "control expired during approval: subagent {id} is now on attempt {}",
+                    latest.attempt
+                )
+            } else {
+                format!(
+                    "control expired during approval: subagent {id} is {}",
+                    status_label(latest.status)
+                )
+            };
+            let _ = mailbox.deny_pending(message_id, reason.clone());
+            return Err(reason);
+        }
+        Ok(approved)
+    }
+
+    async fn claim_durable_control(
+        &self,
+        record: &SubagentRecord,
+    ) -> Option<RuntimeControlRequest> {
+        let manager = self.clone();
+        let record = record.clone();
+        tokio::task::spawn_blocking(move || manager.claim_durable_control_blocking(&record))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    fn claim_durable_control_blocking(
+        &self,
+        record: &SubagentRecord,
+    ) -> Option<RuntimeControlRequest> {
+        let recipient = agent_ref(record);
+        let mut mailbox = crate::mailbox::MailboxStore::with_path(&self.mailbox_path);
+        let policy = crate::config::load_config(&self.cwd, None)
+            .subagent_inbound_control
+            .unwrap_or_default();
+        let _ = mailbox.resolve_held_controls(
+            &recipient,
+            &record.last_parent_scope_id,
+            policy == InboundControlPolicy::Allow,
+            policy == InboundControlPolicy::Deny,
+        );
+        let message = mailbox
+            .claim_typed(&recipient, |payload| {
+                matches!(
+                    payload,
+                    crate::mailbox::MailboxPayload::SubagentControl { .. }
+                )
+            })
+            .ok()??;
+        let crate::mailbox::MailboxPayload::SubagentControl { mode, .. } = &message.payload else {
+            return None;
+        };
+        Some(RuntimeControlRequest {
+            mailbox_id: message.id,
+            recipient,
+            mode: *mode,
+            body: message.body,
+        })
+    }
+
+    async fn apply_child_control(
+        &self,
+        agent: &NativeAgent,
+        recorder: &mut SessionRecorder,
+        record: &SubagentRecord,
+        credential_vault: &CredentialVault,
+        request: RuntimeControlRequest,
+        already_delivered: bool,
+    ) -> ChildControlOutcome {
+        if !already_delivered {
+            let mailbox_path = self.mailbox_path.clone();
+            let mailbox_id = request.mailbox_id.clone();
+            let recipient = request.recipient.clone();
+            let delivered = tokio::task::spawn_blocking(move || {
+                crate::mailbox::MailboxStore::with_path(mailbox_path)
+                    .mark_delivered(&mailbox_id, &recipient)
+            })
+            .await
+            .is_ok_and(|result| result.is_ok());
+            if !delivered {
+                return ChildControlOutcome::Continue;
+            }
+        }
+        let existing_receipt = self.control_receipt(record, &request.mailbox_id);
+        if existing_receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.state == DurableControlReceiptState::Applied)
+        {
+            let mailbox_path = self.mailbox_path.clone();
+            let mailbox_id = request.mailbox_id;
+            let recipient = request.recipient;
+            let _ = tokio::task::spawn_blocking(move || {
+                crate::mailbox::MailboxStore::with_path(mailbox_path).complete_delivery(
+                    &mailbox_id,
+                    &recipient,
+                    None,
+                )
+            })
+            .await;
+            return ChildControlOutcome::Continue;
+        }
+
+        let is_new_receipt = existing_receipt.is_none();
+        let acceptance_sequence = if is_new_receipt {
+            self.next_control_receipt_sequence(record)
+        } else {
+            0
+        };
+        let mut receipt = existing_receipt.unwrap_or_else(|| DurableControlReceipt {
+            mailbox_message_id: request.mailbox_id.clone(),
+            queue_id: control_queue_id(&request.mailbox_id),
+            mode: request.mode,
+            body: request.body.clone(),
+            attempt: record.attempt,
+            accepted_at_ms: now_millis(),
+            acceptance_sequence,
+            state: DurableControlReceiptState::Accepted,
+        });
+        if receipt.queue_id == 0 {
+            receipt.queue_id = control_queue_id(&receipt.mailbox_message_id);
+        }
+        if receipt.state == DurableControlReceiptState::Accepted
+            && self.write_control_receipt(record, &receipt).is_err()
+        {
+            return ChildControlOutcome::Continue;
+        }
+        if is_new_receipt {
+            let timeline_message = match request.mode {
+                ControlMode::Steer => Some(ToAgentMessage::Steer {
+                    content: request.body.clone(),
+                    attachments: None,
+                }),
+                ControlMode::Followup => Some(ToAgentMessage::Prompt {
+                    content: request.body.clone(),
+                    attachments: None,
+                }),
+                ControlMode::Interrupt | ControlMode::Cancel => Some(ToAgentMessage::Interrupt),
+                ControlMode::Collect => None,
+            };
+            if let Some(message) = timeline_message {
+                let _ = recorder.record_sent(&message);
+                let _ = recorder.flush_checkpoint();
+            }
+        }
+
+        let mailbox_path = self.mailbox_path.clone();
+        let mailbox_id = request.mailbox_id.clone();
+        let recipient = request.recipient.clone();
+        let completed = tokio::task::spawn_blocking(move || {
+            crate::mailbox::MailboxStore::with_path(mailbox_path).complete_delivery(
+                &mailbox_id,
+                &recipient,
+                None,
+            )
+        })
+        .await
+        .is_ok_and(|result| result.is_ok());
+        if !completed {
+            return ChildControlOutcome::Continue;
+        }
+
+        let body = credential_vault.resolve_all(&request.body);
+        let outcome = match request.mode {
+            ControlMode::Steer => agent
+                .prompt_with_kind(body, Vec::new(), PromptKind::Steer, Some(receipt.queue_id))
+                .await
+                .map(|()| ChildControlOutcome::Continue),
+            ControlMode::Followup => agent
+                .prompt_with_kind(
+                    body,
+                    Vec::new(),
+                    PromptKind::FollowUp,
+                    Some(receipt.queue_id),
+                )
+                .await
+                .map(|()| ChildControlOutcome::Continue),
+            ControlMode::Interrupt => {
+                agent.cancel_keep_queue();
+                Ok(ChildControlOutcome::Interrupted)
+            }
+            ControlMode::Cancel => {
+                agent.cancel();
+                Ok(ChildControlOutcome::Cancelled)
+            }
+            ControlMode::Collect => Ok(ChildControlOutcome::Continue),
+        };
+        let Ok(outcome) = outcome else {
+            return ChildControlOutcome::Continue;
+        };
+        receipt.state = DurableControlReceiptState::Applied;
+        if self.write_control_receipt(record, &receipt).is_err() {
+            return ChildControlOutcome::Continue;
+        }
+        outcome
+    }
+
+    fn control_receipts_dir(record: &SubagentRecord) -> PathBuf {
+        Self::session_dir(record).join("control-receipts")
+    }
+
+    fn control_receipt_path(record: &SubagentRecord, mailbox_message_id: &str) -> PathBuf {
+        let mut hasher = Sha256::new();
+        hasher.update(mailbox_message_id.as_bytes());
+        Self::control_receipts_dir(record).join(format!("{:x}.json", hasher.finalize()))
+    }
+
+    fn control_receipt(
+        &self,
+        record: &SubagentRecord,
+        mailbox_message_id: &str,
+    ) -> Option<DurableControlReceipt> {
+        let path = Self::control_receipt_path(record, mailbox_message_id);
+        let bytes = std::fs::read(path).ok()?;
+        let mut receipt: DurableControlReceipt = serde_json::from_slice(&bytes).ok()?;
+        if receipt.queue_id == 0 {
+            receipt.queue_id = control_queue_id(&receipt.mailbox_message_id);
+        }
+        (receipt.mailbox_message_id == mailbox_message_id).then_some(receipt)
+    }
+
+    fn write_control_receipt(
+        &self,
+        record: &SubagentRecord,
+        receipt: &DurableControlReceipt,
+    ) -> Result<(), String> {
+        let directory = Self::control_receipts_dir(record);
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| format!("create control receipt directory: {error}"))?;
+        let body = serde_json::to_vec(receipt)
+            .map_err(|error| format!("serialize control receipt: {error}"))?;
+        crate::fs_atomic::write_atomic(
+            Self::control_receipt_path(record, &receipt.mailbox_message_id),
+            body,
+        )
+        .map_err(|error| format!("persist control receipt: {error}"))
+    }
+
+    fn control_receipts(&self, record: &SubagentRecord) -> Vec<DurableControlReceipt> {
+        let Ok(entries) = std::fs::read_dir(Self::control_receipts_dir(record)) else {
+            return Vec::new();
+        };
+        let mut receipts = entries
+            .flatten()
+            .filter_map(|entry| std::fs::read(entry.path()).ok())
+            .filter_map(|body| serde_json::from_slice(&body).ok())
+            .map(|mut receipt: DurableControlReceipt| {
+                if receipt.queue_id == 0 {
+                    receipt.queue_id = control_queue_id(&receipt.mailbox_message_id);
+                }
+                receipt
+            })
+            .collect::<Vec<DurableControlReceipt>>();
+        receipts.sort_by(|left, right| {
+            left.acceptance_sequence
+                .cmp(&right.acceptance_sequence)
+                .then_with(|| left.accepted_at_ms.cmp(&right.accepted_at_ms))
+                .then_with(|| left.mailbox_message_id.cmp(&right.mailbox_message_id))
+        });
+        receipts
+    }
+
+    fn next_control_receipt_sequence(&self, record: &SubagentRecord) -> u64 {
+        self.control_receipts(record)
+            .into_iter()
+            .map(|receipt| receipt.acceptance_sequence)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    }
+
     async fn run_child(
         &self,
         mut record: SubagentRecord,
-        prompt: String,
-        history: Option<Vec<crate::ai::Message>>,
-        sandbox_policy: Option<SandboxPolicy>,
-        token: CancellationToken,
+        run: ChildRun,
         launch: ChildLaunch,
     ) -> Result<SubagentRecord, String> {
+        let ChildRun {
+            prompt,
+            mut history,
+            sandbox_policy,
+            token,
+            mut control_rx,
+        } = run;
         let ChildLaunch {
             lease,
             credential_vault,
@@ -1449,6 +2447,24 @@ impl SubagentManager {
                 );
             }
         };
+        let snapshot_attempt = recorder
+            .semantic_conversation_attempt()
+            .or(record.snapshot_attempt);
+        let processed_queue_ids = recorder.semantic_processed_queue_ids().clone();
+        let replay_receipts = self
+            .control_receipts(&record)
+            .into_iter()
+            .filter(|receipt| {
+                control_receipt_needs_replay(receipt, snapshot_attempt, &processed_queue_ids)
+            })
+            .filter(|receipt| matches!(receipt.mode, ControlMode::Steer | ControlMode::Followup));
+        for receipt in replay_receipts {
+            let message = crate::ai::Message {
+                role: crate::ai::Role::User,
+                content: crate::ai::MessageContent::text(receipt.body),
+            };
+            history.get_or_insert_with(Vec::new).push(message);
+        }
 
         let child_policy = child_sandbox_policy(record.role, sandbox_policy);
         let model = record
@@ -1489,6 +2505,7 @@ impl SubagentManager {
                 config,
                 &allowed_tools,
                 credential_vault.clone(),
+                agent_ref(&record),
             ) {
                 Ok(agent) => agent,
                 Err(error) => {
@@ -1554,7 +2571,9 @@ impl SubagentManager {
         let mut current_output = String::new();
         let mut last_output = String::new();
         let mut terminal_seen = false;
+        let mut semantic_snapshot_seen = false;
         let mut cancelled = false;
+        let mut interrupted = false;
         let mut timed_out = false;
         let mut output_tokens_used = 0_u64;
         // Assistant characters streamed since the last response boundary, used
@@ -1564,6 +2583,8 @@ impl SubagentManager {
         let mut recording_error = None;
         let deadline = tokio::time::sleep(Duration::from_millis(record.timeout_ms));
         tokio::pin!(deadline);
+        let mut control_poll = tokio::time::interval(Duration::from_millis(250));
+        control_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             let event = if terminal_seen {
@@ -1582,6 +2603,52 @@ impl SubagentManager {
                         timed_out = true;
                         agent.cancel();
                         break;
+                    }
+                    request = control_rx.recv() => {
+                        if let Some(request) = request {
+                            match self.apply_child_control(
+                                &agent,
+                                &mut recorder,
+                                &record,
+                                &credential_vault,
+                                request,
+                                false,
+                            ).await {
+                                ChildControlOutcome::Continue => {}
+                                ChildControlOutcome::Interrupted => {
+                                    interrupted = true;
+                                    break;
+                                }
+                                ChildControlOutcome::Cancelled => {
+                                    cancelled = true;
+                                    break;
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    _ = control_poll.tick() => {
+                        if let Some(request) = self.claim_durable_control(&record).await {
+                            match self.apply_child_control(
+                                &agent,
+                                &mut recorder,
+                                &record,
+                                &credential_vault,
+                                request,
+                                true,
+                            ).await {
+                                ChildControlOutcome::Continue => {}
+                                ChildControlOutcome::Interrupted => {
+                                    interrupted = true;
+                                    break;
+                                }
+                                ChildControlOutcome::Cancelled => {
+                                    cancelled = true;
+                                    break;
+                                }
+                            }
+                        }
+                        continue;
                     }
                     event = events.recv() => event,
                 }
@@ -1608,11 +2675,11 @@ impl SubagentManager {
             }
 
             match event {
-                // The post-terminal snapshot is the last event this loop waits
-                // for; an earlier snapshot carries nothing it needs, so it
-                // falls through to the catch-all arm.
-                FromAgent::ConversationSnapshot { .. } if terminal_seen => {
-                    break;
+                // Current runtimes checkpoint before publishing a terminal.
+                // Retain the legacy terminal-first wait so older runtimes can
+                // still deliver their checkpoint after the terminal.
+                FromAgent::ConversationSnapshot { .. } => {
+                    semantic_snapshot_seen = true;
                 }
                 FromAgent::ResponseChunk {
                     content,
@@ -1770,6 +2837,10 @@ impl SubagentManager {
                 | FromAgent::CodexCompatibility { .. } => {}
                 _ => {}
             }
+
+            if terminal_checkpoint_ready(terminal_seen, semantic_snapshot_seen) {
+                break;
+            }
         }
 
         if token.is_cancelled() {
@@ -1811,24 +2882,13 @@ impl SubagentManager {
             &record.initial_files,
             &record.initial_file_fingerprints,
         );
-        let (status, error) = if cancelled {
-            (
-                SubagentStatus::Cancelled,
-                Some("subagent cancelled".to_string()),
-            )
-        } else if timed_out {
-            (
-                SubagentStatus::TimedOut,
-                Some(format!(
-                    "subagent exceeded its {} ms execution budget",
-                    record.timeout_ms
-                )),
-            )
-        } else if let Some(error) = recording_error.or(run_error) {
-            (SubagentStatus::Failed, Some(error))
-        } else {
-            (SubagentStatus::Completed, None)
-        };
+        let (status, error) = child_terminal_status(
+            cancelled,
+            interrupted,
+            timed_out,
+            recording_error.or(run_error),
+            record.timeout_ms,
+        );
         self.finish_record(
             record,
             status,
@@ -1897,21 +2957,18 @@ impl SubagentManager {
         // different app or executor — the restart case — the spawning scope no
         // longer has a consumer, so an event queued under it is never polled
         // and the current parent never learns the child finished.
-        let event = SubagentLifecycleEvent {
-            subagent_id: record.id.clone(),
-            parent_scope_id: record.last_parent_scope_id.clone(),
-            parent_call_id: record.last_call_id.clone(),
-            status,
-            summary: record
-                .result
-                .as_ref()
-                .map(|result| result.output.trim().chars().take(500).collect::<String>()),
-            error: record.error.clone(),
-            finished_at_ms,
-        };
         match self.write_record(&record) {
             Ok(()) => {
-                self.runtime.push_event(event);
+                if let Err(error) = self.publish_lifecycle_notification(&mut record) {
+                    self.pending_lifecycle
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .insert(record.id.clone());
+                    eprintln!(
+                        "subagent {} completed, but its lifecycle notification is pending retry: {error}",
+                        record.id
+                    );
+                }
                 Ok(record)
             }
             Err(error) => Err(format!(
@@ -1919,6 +2976,56 @@ impl SubagentManager {
                 record.id
             )),
         }
+    }
+
+    fn publish_lifecycle_notification(&self, record: &mut SubagentRecord) -> Result<(), String> {
+        if !record.status.is_terminal() {
+            return Err(format!(
+                "subagent {} is not terminal and cannot publish a lifecycle notification",
+                record.id
+            ));
+        }
+        let finished_at_ms = record.finished_at_ms.unwrap_or_else(now_millis);
+        let summary = record
+            .result
+            .as_ref()
+            .map(|result| result.output.trim().chars().take(500).collect::<String>());
+        let mut mailbox = crate::mailbox::MailboxStore::with_path(&self.mailbox_path);
+        mailbox
+            .send_typed(
+                agent_ref(record),
+                record.last_parent_scope_id.clone(),
+                format!(
+                    "Subagent {} attempt {} finished with status {}",
+                    record.id,
+                    record.attempt,
+                    status_label(record.status)
+                ),
+                crate::mailbox::MailboxPayload::SubagentLifecycle {
+                    subagent_id: record.id.clone(),
+                    parent_call_id: record.last_call_id.clone(),
+                    attempt: record.attempt,
+                    status: record.status.into(),
+                    summary,
+                    error: record.error.clone(),
+                    finished_at_ms,
+                },
+                crate::mailbox::MailboxDeliveryState::Queued,
+                Some(format!(
+                    "lifecycle:{}:{}:{}",
+                    record.id,
+                    record.attempt,
+                    status_label(record.status)
+                )),
+            )
+            .map_err(|error| {
+                format!(
+                    "persist terminal notification for subagent {}: {error}",
+                    record.id
+                )
+            })?;
+        record.lifecycle_notification_published = true;
+        self.write_record(record)
     }
 }
 
@@ -2098,6 +3205,27 @@ fn subagent_id(args: &serde_json::Value) -> Option<&str> {
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|id| !id.is_empty())
+}
+
+fn agent_ref(record: &SubagentRecord) -> String {
+    format!("subagent:{}:{}", record.id, record.attempt)
+}
+
+fn parse_agent_ref(value: &str) -> Result<(String, u32), String> {
+    let mut parts = value.trim().split(':');
+    let prefix = parts.next();
+    let id = parts.next();
+    let attempt = parts.next();
+    if prefix != Some("subagent") || parts.next().is_some() {
+        return Err("agent_ref must have the form subagent:<uuid>:<attempt>".to_string());
+    }
+    let id = id.ok_or_else(|| "agent_ref is missing its subagent id".to_string())?;
+    let id = SubagentManager::validate_id(id)?;
+    let attempt = attempt
+        .ok_or_else(|| "agent_ref is missing its attempt".to_string())?
+        .parse::<u32>()
+        .map_err(|_| "agent_ref attempt must be a non-negative integer".to_string())?;
+    Ok((id, attempt))
 }
 
 fn parse_wait_timeout(args: &serde_json::Value) -> Result<u64, String> {
@@ -2659,6 +3787,56 @@ fn status_label(status: SubagentStatus) -> &'static str {
     }
 }
 
+fn child_terminal_status(
+    cancelled: bool,
+    interrupted: bool,
+    timed_out: bool,
+    run_error: Option<String>,
+    timeout_ms: u64,
+) -> (SubagentStatus, Option<String>) {
+    if cancelled {
+        return (
+            SubagentStatus::Cancelled,
+            Some("subagent cancelled".to_string()),
+        );
+    }
+    if interrupted {
+        return (
+            SubagentStatus::Interrupted,
+            Some("subagent interrupted".to_string()),
+        );
+    }
+    if timed_out {
+        return (
+            SubagentStatus::TimedOut,
+            Some(format!(
+                "subagent exceeded its {timeout_ms} ms execution budget"
+            )),
+        );
+    }
+    if let Some(error) = run_error {
+        return (SubagentStatus::Failed, Some(error));
+    }
+    (SubagentStatus::Completed, None)
+}
+
+fn prepare_control_body(
+    parent_vault: &CredentialVault,
+    child_vault: Option<&CredentialVault>,
+    body: &str,
+) -> Result<String, String> {
+    if let Some(child_vault) = child_vault {
+        return parent_vault.rekey_references_to(child_vault, body);
+    }
+    if CredentialVault::has_references(body) {
+        return Err(
+            "control message contains credential references that cannot be re-keyed for a child running in another Maestro process"
+                .to_string(),
+        );
+    }
+    Ok(body.to_string())
+}
+
 fn record_details(record: &SubagentRecord) -> serde_json::Value {
     let cwd = deserialize_repository_path(&record.cwd);
     let worktree_path = record
@@ -2670,6 +3848,7 @@ fn record_details(record: &SubagentRecord) -> serde_json::Value {
     let timeline_path = SubagentManager::timeline_path(record);
     serde_json::json!({
         "subagentId": record.id,
+        "agentRef": agent_ref(record),
         "childSessionId": record.id,
         "parentScopeId": record.parent_scope_id,
         "parentCallId": record.parent_call_id,
@@ -2746,6 +3925,7 @@ fn child_event_to_headless(event: &FromAgent, session_id: &str) -> Option<FromAg
         FromAgent::ConversationSnapshot {
             protocol_version,
             messages,
+            ..
         } => Some(FromAgentMessage::ConversationSnapshot {
             protocol_version: protocol_version.clone(),
             messages: messages.clone(),
@@ -2925,15 +4105,23 @@ fn persist_child_event(
     credential_vault: &CredentialVault,
     snapshot_attempt: u32,
 ) -> Result<(), String> {
+    let processed_queue_ids = match event {
+        FromAgent::ConversationSnapshot {
+            processed_queue_ids,
+            ..
+        } => processed_queue_ids.as_slice(),
+        _ => &[],
+    };
     let Some(message) = child_event_to_headless(event, session_id) else {
         return Ok(());
     };
     let message = vault_headless_message(&message, credential_vault)
         .map_err(|error| format!("vault child event: {error}"))?;
     recorder
-        .record_received_preserving_credential_references_with_snapshot_attempt(
+        .record_received_preserving_credential_references_with_snapshot_metadata(
             &message,
             Some(snapshot_attempt),
+            processed_queue_ids,
         )
         .map_err(|error| format!("persist child event: {error}"))
 }
@@ -2982,6 +4170,241 @@ fn convert_usage(usage: &crate::agent::TokenUsage) -> crate::headless::TokenUsag
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn control_receipt_record(root: &Path) -> SubagentRecord {
+        SubagentRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_scope_id: "parent".to_string(),
+            parent_call_id: "call-1".to_string(),
+            last_parent_scope_id: "parent".to_string(),
+            last_call_id: "call-1".to_string(),
+            task: "inspect".to_string(),
+            current_prompt: "inspect".to_string(),
+            role: SubagentRole::Explore,
+            profile: None,
+            profile_prompt: None,
+            profile_tools: None,
+            model: None,
+            timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
+            max_tokens: DEFAULT_CHILD_MAX_TOKENS,
+            isolation: SubagentIsolation::Shared,
+            cwd: serialize_repository_path(root),
+            worktree_path: None,
+            worktree_cleaned: false,
+            initial_files: Vec::new(),
+            initial_file_fingerprints: HashMap::new(),
+            initial_head: None,
+            session_dir: serialize_repository_path(&root.join("session")),
+            status: SubagentStatus::Running,
+            attempt: 1,
+            snapshot_attempt: None,
+            created_at_ms: 1,
+            started_at_ms: Some(1),
+            finished_at_ms: None,
+            result: None,
+            error: None,
+            lifecycle_notification_published: false,
+        }
+    }
+
+    fn coordination_control_message(
+        id: &str,
+        delivery_state: crate::mailbox::MailboxDeliveryState,
+        created_at_unix: u64,
+        mode: crate::mailbox::MailboxControlMode,
+    ) -> crate::mailbox::MailboxMessage {
+        crate::mailbox::MailboxMessage {
+            id: id.to_string(),
+            sender: "parent".to_string(),
+            recipient: "subagent:child:1".to_string(),
+            body: "control".to_string(),
+            payload: crate::mailbox::MailboxPayload::SubagentControl { mode },
+            delivery_state,
+            idempotency_key: None,
+            created_at_unix,
+            delivered_at_unix: None,
+            read_at_unix: None,
+            acknowledged_at_unix: None,
+            delivery_error: None,
+        }
+    }
+
+    #[test]
+    fn agents_pane_displays_the_same_held_control_that_approval_targets() {
+        let held = coordination_control_message(
+            "held-control",
+            crate::mailbox::MailboxDeliveryState::Held,
+            10,
+            crate::mailbox::MailboxControlMode::Cancel,
+        );
+        let newer = coordination_control_message(
+            "newer-control",
+            crate::mailbox::MailboxDeliveryState::Queued,
+            20,
+            crate::mailbox::MailboxControlMode::Steer,
+        );
+
+        let controls = [&held, &newer];
+        let (displayed, approval) = displayed_coordination_control(&controls);
+        assert_eq!(
+            displayed.map(|message| message.id.as_str()),
+            Some("held-control")
+        );
+        assert_eq!(
+            approval.map(|message| message.id.as_str()),
+            Some("held-control")
+        );
+    }
+
+    #[test]
+    fn durable_control_receipt_closes_claim_apply_crash_window() {
+        let root = tempfile::tempdir().expect("receipt root");
+        let records = root.path().join("records");
+        let manager = SubagentManager::with_root_and_parent_scope(
+            root.path().to_path_buf(),
+            records.clone(),
+            "parent".to_string(),
+        );
+        let record = control_receipt_record(root.path());
+        let receipt = DurableControlReceipt {
+            mailbox_message_id: "message-1".to_string(),
+            queue_id: control_queue_id("message-1"),
+            mode: ControlMode::Followup,
+            body: "continue safely".to_string(),
+            attempt: record.attempt,
+            accepted_at_ms: 10,
+            acceptance_sequence: 1,
+            state: DurableControlReceiptState::Applied,
+        };
+
+        assert!(manager.control_receipt(&record, "message-1").is_none());
+        manager
+            .write_control_receipt(&record, &receipt)
+            .expect("persist acceptance before applying control");
+
+        let restarted = SubagentManager::with_root_and_parent_scope(
+            root.path().to_path_buf(),
+            records,
+            "parent".to_string(),
+        );
+        assert_eq!(
+            restarted.control_receipt(&record, "message-1"),
+            Some(receipt.clone())
+        );
+        restarted
+            .write_control_receipt(&record, &receipt)
+            .expect("idempotent rewrite");
+        assert_eq!(restarted.control_receipts(&record), vec![receipt]);
+    }
+
+    #[test]
+    fn same_attempt_control_replays_until_a_snapshot_covers_its_queue_id() {
+        let receipt = DurableControlReceipt {
+            mailbox_message_id: "message-2".to_string(),
+            queue_id: control_queue_id("message-2"),
+            mode: ControlMode::Steer,
+            body: "inspect the failing test".to_string(),
+            attempt: 3,
+            accepted_at_ms: 20,
+            acceptance_sequence: 1,
+            state: DurableControlReceiptState::Applied,
+        };
+        let mut covered = HashSet::new();
+
+        assert!(control_receipt_needs_replay(&receipt, Some(3), &covered));
+        covered.insert(receipt.queue_id);
+        assert!(!control_receipt_needs_replay(&receipt, Some(3), &covered));
+    }
+
+    #[test]
+    fn control_receipt_sequence_orders_tied_acceptance_timestamps() {
+        let root = tempfile::tempdir().expect("receipt root");
+        let manager = SubagentManager::with_root_and_parent_scope(
+            root.path().to_path_buf(),
+            root.path().join("records"),
+            "parent".to_string(),
+        );
+        let record = control_receipt_record(root.path());
+        let receipt = |id: &str, body: &str, acceptance_sequence| DurableControlReceipt {
+            mailbox_message_id: id.to_string(),
+            queue_id: control_queue_id(id),
+            mode: ControlMode::Followup,
+            body: body.to_string(),
+            attempt: record.attempt,
+            accepted_at_ms: 50,
+            acceptance_sequence,
+            state: DurableControlReceiptState::Applied,
+        };
+        let first = receipt("message-first", "first", 1);
+        let second = receipt("message-second", "second", 2);
+        manager
+            .write_control_receipt(&record, &second)
+            .expect("persist second receipt first");
+        manager
+            .write_control_receipt(&record, &first)
+            .expect("persist first receipt second");
+
+        assert_eq!(manager.control_receipts(&record), vec![first, second]);
+    }
+
+    #[test]
+    fn lifecycle_reconciliation_detects_atomic_replacement_with_mtime_collision() {
+        let root = tempfile::tempdir().expect("record root");
+        let manager = SubagentManager::with_root_and_parent_scope(
+            root.path().to_path_buf(),
+            root.path().join("records"),
+            "parent".to_string(),
+        );
+        let mut record = control_receipt_record(root.path());
+        record.status = SubagentStatus::Completed;
+        record.finished_at_ms = Some(2);
+        record.lifecycle_notification_published = true;
+        manager.write_record(&record).expect("persist record");
+        manager.reconcile_lifecycle_records();
+
+        let path = manager.record_path(&record.id);
+        let original_modified = std::fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .expect("record mtime");
+        record.attempt = 2;
+        manager.write_record(&record).expect("rewrite record");
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|file| {
+                file.set_times(std::fs::FileTimes::new().set_modified(original_modified))
+            })
+            .expect("restore record mtime");
+        manager.reconcile_lifecycle_records();
+        assert_eq!(
+            manager
+                .observed_lifecycle_records
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&record.id)
+                .map(|state| state.attempt),
+            Some(2),
+            "atomic replacement changes file identity even when mtime and length collide"
+        );
+
+        let observation = manager
+            .observed_lifecycle_records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&record.id)
+            .cloned()
+            .expect("observed record");
+        manager.reconcile_lifecycle_records();
+        assert_eq!(
+            manager
+                .observed_lifecycle_records
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&record.id),
+            Some(&observation),
+            "unchanged metadata should retain the cached observation"
+        );
+    }
 
     #[test]
     fn spawn_request_defaults_to_isolated_background_code_agent() {
@@ -3305,6 +4728,7 @@ mod tests {
             finished_at_ms: None,
             result: None,
             error: None,
+            lifecycle_notification_published: false,
         };
 
         let child_vault = CredentialVault::new();
@@ -3327,14 +4751,414 @@ mod tests {
             )
             .expect("terminal record should persist");
 
+        manager.set_parent_scope_id(spawn_scope);
         assert!(
-            manager.runtime.poll_events(&spawn_scope).is_empty(),
+            manager.poll_lifecycle_events().is_empty(),
             "the original spawn scope no longer has a consumer"
         );
-        let events = manager.runtime.poll_events(&resume_scope);
+        manager.set_parent_scope_id(resume_scope);
+        let events = manager.poll_lifecycle_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].parent_call_id, "resume-call");
+        assert_eq!(events[0].attempt, 2);
         assert_eq!(events[0].status, SubagentStatus::Completed);
+    }
+
+    #[test]
+    fn lifecycle_notification_failure_preserves_result_and_retries() {
+        let root = tempfile::tempdir().expect("records root should exist");
+        let records = root.path().join("records");
+        let manager = SubagentManager::with_root_and_parent_scope(
+            root.path().to_path_buf(),
+            records,
+            "parent-scope".to_string(),
+        );
+        std::fs::create_dir_all(&manager.mailbox_path).expect("block mailbox with directory");
+        let record = SubagentRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_scope_id: "parent-scope".to_string(),
+            parent_call_id: "call-1".to_string(),
+            last_parent_scope_id: "parent-scope".to_string(),
+            last_call_id: "call-1".to_string(),
+            task: "inspect".to_string(),
+            current_prompt: "inspect".to_string(),
+            role: SubagentRole::Explore,
+            profile: None,
+            profile_prompt: None,
+            profile_tools: None,
+            model: None,
+            timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
+            max_tokens: DEFAULT_CHILD_MAX_TOKENS,
+            isolation: SubagentIsolation::Shared,
+            cwd: serialize_repository_path(root.path()),
+            worktree_path: None,
+            worktree_cleaned: false,
+            initial_files: Vec::new(),
+            initial_file_fingerprints: HashMap::new(),
+            initial_head: None,
+            session_dir: serialize_repository_path(&root.path().join("session")),
+            status: SubagentStatus::Running,
+            attempt: 1,
+            snapshot_attempt: None,
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            finished_at_ms: None,
+            result: None,
+            error: None,
+            lifecycle_notification_published: false,
+        };
+        let child_vault = CredentialVault::new();
+        let parent_vault = CredentialVault::new();
+        let parent_scope = ParentCredentialScope {
+            vault: &parent_vault,
+            generation: parent_vault.generation(),
+        };
+        let finished = manager
+            .finish_record(
+                record,
+                SubagentStatus::Completed,
+                Some(SubagentResult {
+                    output: "durable result".to_string(),
+                    files_modified: Vec::new(),
+                }),
+                None,
+                &child_vault,
+                &parent_scope,
+            )
+            .expect("mailbox failure must not discard the terminal result");
+        assert_eq!(
+            finished
+                .result
+                .as_ref()
+                .map(|result| result.output.as_str()),
+            Some("durable result")
+        );
+
+        std::fs::remove_dir(&manager.mailbox_path).expect("unblock mailbox");
+        let events = manager.poll_lifecycle_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].attempt, 1);
+        assert_eq!(events[0].summary.as_deref(), Some("durable result"));
+        let persisted = manager
+            .load_record(&finished.id)
+            .expect("reload terminal record");
+        assert!(persisted.lifecycle_notification_published);
+
+        manager
+            .acknowledge_lifecycle_event(&events[0])
+            .expect("acknowledge applied lifecycle");
+        let mut mailbox = crate::mailbox::MailboxStore::load_from_path(&manager.mailbox_path)
+            .expect("reload mailbox");
+        mailbox.compact().expect("compact acknowledged lifecycle");
+        let mut compacted = crate::mailbox::MailboxStore::load_from_path(&manager.mailbox_path)
+            .expect("reload compacted mailbox");
+        compacted.idempotency_receipts.clear();
+        std::fs::write(
+            &manager.mailbox_path,
+            serde_json::to_vec_pretty(&compacted).expect("serialize compacted mailbox"),
+        )
+        .expect("drop bounded receipt to simulate long-lived record");
+        manager
+            .pending_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(finished.id.clone());
+        manager.retry_terminal_lifecycle_notifications();
+        let reconciled = crate::mailbox::MailboxStore::load_from_path(&manager.mailbox_path)
+            .expect("reload reconciled mailbox");
+        assert!(
+            reconciled.messages.is_empty(),
+            "a durable record marker must prevent stale lifecycle replay"
+        );
+    }
+
+    #[test]
+    fn lifecycle_reconciliation_discovers_late_records_and_resumed_attempts() {
+        let root = tempfile::tempdir().expect("records root");
+        let manager = SubagentManager::with_root_and_parent_scope(
+            root.path().to_path_buf(),
+            root.path().join("records"),
+            "parent-scope".to_string(),
+        );
+        manager.retry_terminal_lifecycle_notifications();
+
+        let mut record = SubagentRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_scope_id: "parent-scope".to_string(),
+            parent_call_id: "call-late".to_string(),
+            last_parent_scope_id: "parent-scope".to_string(),
+            last_call_id: "call-late".to_string(),
+            task: "inspect".to_string(),
+            current_prompt: "inspect".to_string(),
+            role: SubagentRole::Explore,
+            profile: None,
+            profile_prompt: None,
+            profile_tools: None,
+            model: None,
+            timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
+            max_tokens: DEFAULT_CHILD_MAX_TOKENS,
+            isolation: SubagentIsolation::Shared,
+            cwd: serialize_repository_path(root.path()),
+            worktree_path: None,
+            worktree_cleaned: false,
+            initial_files: Vec::new(),
+            initial_file_fingerprints: HashMap::new(),
+            initial_head: None,
+            session_dir: serialize_repository_path(&root.path().join("session")),
+            status: SubagentStatus::Completed,
+            attempt: 1,
+            snapshot_attempt: None,
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            finished_at_ms: Some(3),
+            result: Some(SubagentResult {
+                output: "late completion".to_string(),
+                files_modified: Vec::new(),
+            }),
+            error: None,
+            lifecycle_notification_published: false,
+        };
+        manager.write_record(&record).expect("persist late record");
+
+        manager.retry_terminal_lifecycle_notifications();
+        let events = manager.poll_lifecycle_events();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].subagent_id, record.id);
+        assert_eq!(events[0].summary.as_deref(), Some("late completion"));
+        manager
+            .acknowledge_lifecycle_event(&events[0])
+            .expect("acknowledge first attempt");
+
+        record.attempt = 2;
+        record.last_call_id = "call-resumed".to_string();
+        record.finished_at_ms = Some(4);
+        record.result = Some(SubagentResult {
+            output: "resumed completion".to_string(),
+            files_modified: Vec::new(),
+        });
+        record.lifecycle_notification_published = false;
+        manager
+            .write_record(&record)
+            .expect("persist resumed attempt completion");
+
+        manager.retry_terminal_lifecycle_notifications();
+        let resumed_events = manager.poll_lifecycle_events();
+
+        assert_eq!(resumed_events.len(), 1);
+        assert_eq!(resumed_events[0].subagent_id, record.id);
+        assert_eq!(resumed_events[0].attempt, 2);
+        assert_eq!(
+            resumed_events[0].summary.as_deref(),
+            Some("resumed completion")
+        );
+    }
+
+    #[test]
+    fn lifecycle_marker_retry_does_not_overwrite_a_resumed_attempt() {
+        let root = tempfile::tempdir().expect("records root");
+        let manager = SubagentManager::with_root_and_parent_scope(
+            root.path().to_path_buf(),
+            root.path().join("records"),
+            "parent-scope".to_string(),
+        );
+        let mut record = SubagentRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_scope_id: "parent-scope".to_string(),
+            parent_call_id: "call-1".to_string(),
+            last_parent_scope_id: "parent-scope".to_string(),
+            last_call_id: "call-1".to_string(),
+            task: "inspect".to_string(),
+            current_prompt: "inspect".to_string(),
+            role: SubagentRole::Explore,
+            profile: None,
+            profile_prompt: None,
+            profile_tools: None,
+            model: None,
+            timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
+            max_tokens: DEFAULT_CHILD_MAX_TOKENS,
+            isolation: SubagentIsolation::Shared,
+            cwd: serialize_repository_path(root.path()),
+            worktree_path: None,
+            worktree_cleaned: false,
+            initial_files: Vec::new(),
+            initial_file_fingerprints: HashMap::new(),
+            initial_head: None,
+            session_dir: serialize_repository_path(&root.path().join("session")),
+            status: SubagentStatus::Completed,
+            attempt: 1,
+            snapshot_attempt: None,
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            finished_at_ms: Some(3),
+            result: None,
+            error: None,
+            lifecycle_notification_published: false,
+        };
+        std::fs::create_dir_all(SubagentManager::session_dir(&record)).expect("session dir");
+        manager
+            .write_record(&record)
+            .expect("persist terminal record");
+        let _lease = SessionLock::acquire(&SubagentManager::timeline_path(&record))
+            .expect("simulate resumed child lease");
+        // The first reconciliation discovers this record from disk.
+        manager.retry_terminal_lifecycle_notifications();
+        assert!(manager
+            .pending_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(&record.id));
+
+        record.attempt = 2;
+        record.status = SubagentStatus::Running;
+        record.current_prompt = "resume safely".to_string();
+        record.finished_at_ms = None;
+        manager
+            .write_record(&record)
+            .expect("persist resumed attempt");
+        manager.retry_terminal_lifecycle_notifications();
+
+        let loaded = manager
+            .load_record(&record.id)
+            .expect("reload resumed attempt");
+        assert_eq!(loaded.attempt, 2);
+        assert_eq!(loaded.status, SubagentStatus::Running);
+        assert_eq!(loaded.current_prompt, "resume safely");
+        assert!(manager
+            .pending_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(&record.id));
+
+        drop(_lease);
+        record.status = SubagentStatus::Completed;
+        record.finished_at_ms = Some(4);
+        manager
+            .write_record(&record)
+            .expect("persist resumed attempt completion");
+        manager.retry_terminal_lifecycle_notifications();
+
+        let published = manager
+            .load_record(&record.id)
+            .expect("reload published completion");
+        assert!(published.lifecycle_notification_published);
+        assert!(!manager
+            .pending_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(&record.id));
+    }
+
+    #[test]
+    fn stale_held_control_is_denied_instead_of_approved() {
+        let root = tempfile::tempdir().expect("records root should exist");
+        let manager = SubagentManager::with_root_and_parent_scope(
+            root.path().to_path_buf(),
+            root.path().join("records"),
+            "current-parent".to_string(),
+        );
+        let record = SubagentRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_scope_id: "original-parent".to_string(),
+            parent_call_id: "call-1".to_string(),
+            last_parent_scope_id: "current-parent".to_string(),
+            last_call_id: "call-2".to_string(),
+            task: "inspect".to_string(),
+            current_prompt: "inspect again".to_string(),
+            role: SubagentRole::Explore,
+            profile: None,
+            profile_prompt: None,
+            profile_tools: None,
+            model: None,
+            timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
+            max_tokens: DEFAULT_CHILD_MAX_TOKENS,
+            isolation: SubagentIsolation::Shared,
+            cwd: serialize_repository_path(root.path()),
+            worktree_path: None,
+            worktree_cleaned: false,
+            initial_files: Vec::new(),
+            initial_file_fingerprints: HashMap::new(),
+            initial_head: None,
+            session_dir: serialize_repository_path(&root.path().join("session")),
+            status: SubagentStatus::Running,
+            attempt: 2,
+            snapshot_attempt: None,
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            finished_at_ms: None,
+            result: None,
+            error: None,
+            lifecycle_notification_published: false,
+        };
+        manager.write_record(&record).expect("persist record");
+        let (control_tx, _control_rx) = mpsc::channel(RUNTIME_CONTROL_CAPACITY);
+        manager
+            .runtime
+            .insert(&record.id, CancellationToken::new(), control_tx);
+        assert_eq!(
+            manager.active_mailbox_recipients(),
+            vec![agent_ref(&record)]
+        );
+        let mut mailbox = crate::mailbox::MailboxStore::with_path(&manager.mailbox_path);
+        let owned_message_id = mailbox
+            .send_typed(
+                "other-parent",
+                agent_ref(&record),
+                "inspect before approval",
+                crate::mailbox::MailboxPayload::SubagentControl {
+                    mode: ControlMode::Steer,
+                },
+                crate::mailbox::MailboxDeliveryState::Held,
+                None,
+            )
+            .expect("owned held control");
+        let inspected = manager
+            .inspect_control(&owned_message_id)
+            .expect("inspect active child control");
+        assert_eq!(
+            inspected.delivery_state,
+            crate::mailbox::MailboxDeliveryState::Held
+        );
+        assert_eq!(inspected.body, "inspect before approval");
+
+        let message_id = mailbox
+            .send_typed(
+                "other-parent",
+                format!("subagent:{}:1", record.id),
+                "cancel",
+                crate::mailbox::MailboxPayload::SubagentControl {
+                    mode: ControlMode::Cancel,
+                },
+                crate::mailbox::MailboxDeliveryState::Held,
+                None,
+            )
+            .expect("held control");
+
+        let error = manager
+            .approve_held_control(&message_id)
+            .expect_err("stale attempt must not be approved");
+        assert!(error.contains("now on attempt 2"), "{error}");
+        let loaded = crate::mailbox::MailboxStore::load_from_path(&manager.mailbox_path)
+            .expect("reload mailbox");
+        assert_eq!(
+            loaded
+                .messages
+                .iter()
+                .find(|message| message.id == message_id)
+                .expect("stale control")
+                .delivery_state,
+            crate::mailbox::MailboxDeliveryState::Denied
+        );
+        assert_eq!(
+            loaded
+                .messages
+                .iter()
+                .find(|message| message.id == owned_message_id)
+                .expect("owned control")
+                .delivery_state,
+            crate::mailbox::MailboxDeliveryState::Held
+        );
+        manager.runtime.remove(&record.id);
     }
 
     #[tokio::test]
@@ -3353,33 +5177,128 @@ mod tests {
             .expect("permit should be reusable");
     }
 
+    #[tokio::test]
+    async fn runtime_registry_delivers_attempt_scoped_controls() {
+        let runtime = RuntimeRegistry::with_capacity(1);
+        let token = CancellationToken::new();
+        let (sender, mut receiver) = mpsc::channel(RUNTIME_CONTROL_CAPACITY);
+        let id = uuid::Uuid::new_v4().to_string();
+        runtime.insert(&id, token, sender);
+        assert!(runtime.send_control(
+            &id,
+            RuntimeControlRequest {
+                mailbox_id: "m-control".to_string(),
+                recipient: format!("subagent:{id}:3"),
+                mode: ControlMode::Steer,
+                body: "focus on the regression".to_string(),
+            }
+        ));
+        let delivered = receiver.recv().await.expect("control request");
+        assert_eq!(delivered.mode, ControlMode::Steer);
+        assert_eq!(delivered.recipient, format!("subagent:{id}:3"));
+        runtime.remove(&id);
+    }
+
+    #[tokio::test]
+    async fn runtime_control_channel_is_bounded() {
+        let runtime = RuntimeRegistry::with_capacity(1);
+        let token = CancellationToken::new();
+        let (sender, _receiver) = mpsc::channel(RUNTIME_CONTROL_CAPACITY);
+        let id = uuid::Uuid::new_v4().to_string();
+        runtime.insert(&id, token, sender);
+
+        for index in 0..RUNTIME_CONTROL_CAPACITY {
+            assert!(runtime.send_control(
+                &id,
+                RuntimeControlRequest {
+                    mailbox_id: format!("m-{index}"),
+                    recipient: format!("subagent:{id}:0"),
+                    mode: ControlMode::Steer,
+                    body: "queued durably".to_string(),
+                }
+            ));
+        }
+        assert!(!runtime.send_control(
+            &id,
+            RuntimeControlRequest {
+                mailbox_id: "m-overflow".to_string(),
+                recipient: format!("subagent:{id}:0"),
+                mode: ControlMode::Steer,
+                body: "falls back to mailbox polling".to_string(),
+            }
+        ));
+    }
+
+    #[test]
+    fn agent_refs_are_attempt_scoped_and_strictly_parsed() {
+        let id = uuid::Uuid::new_v4().to_string();
+        assert_eq!(parse_agent_ref(&format!("subagent:{id}:7")), Ok((id, 7)));
+        assert!(parse_agent_ref("subagent:not-a-uuid:7").is_err());
+        assert!(parse_agent_ref("subagent:missing-attempt").is_err());
+    }
+
     #[test]
     fn lifecycle_events_are_parent_scoped_and_consumed_once() {
-        let runtime = RuntimeRegistry::with_capacity(1);
-        runtime.push_event(SubagentLifecycleEvent {
-            subagent_id: "child-1".to_string(),
-            parent_scope_id: "parent-a".to_string(),
-            parent_call_id: "call-1".to_string(),
-            status: SubagentStatus::Completed,
-            summary: Some("done".to_string()),
-            error: None,
-            finished_at_ms: 10,
-        });
-        runtime.push_event(SubagentLifecycleEvent {
-            subagent_id: "child-2".to_string(),
-            parent_scope_id: "parent-b".to_string(),
-            parent_call_id: "call-2".to_string(),
-            status: SubagentStatus::Failed,
-            summary: None,
-            error: Some("failed".to_string()),
-            finished_at_ms: 11,
-        });
+        let root = tempfile::tempdir().expect("records root");
+        let manager = SubagentManager::with_root_and_parent_scope(
+            root.path().to_path_buf(),
+            root.path().join("records"),
+            "parent-a".to_string(),
+        );
+        let mut mailbox = crate::mailbox::MailboxStore::with_path(&manager.mailbox_path);
+        for (recipient, id, status) in [
+            ("parent-a", "child-1", MailboxLifecycleStatus::Completed),
+            ("parent-b", "child-2", MailboxLifecycleStatus::Failed),
+        ] {
+            mailbox
+                .send_typed(
+                    "child",
+                    recipient,
+                    "finished",
+                    crate::mailbox::MailboxPayload::SubagentLifecycle {
+                        subagent_id: id.to_string(),
+                        parent_call_id: "call-1".to_string(),
+                        attempt: 0,
+                        status,
+                        summary: Some("done".to_string()),
+                        error: None,
+                        finished_at_ms: 10,
+                    },
+                    crate::mailbox::MailboxDeliveryState::Queued,
+                    Some(format!("lifecycle:{id}")),
+                )
+                .expect("lifecycle message");
+        }
 
-        let events = runtime.poll_events("parent-a");
+        let events = manager.poll_lifecycle_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].subagent_id, "child-1");
-        assert!(runtime.poll_events("parent-a").is_empty());
-        assert_eq!(runtime.poll_events("parent-b").len(), 1);
+        let delivered = crate::mailbox::MailboxStore::load_from_path(&manager.mailbox_path)
+            .expect("reload delivered lifecycle");
+        assert_eq!(
+            delivered
+                .messages
+                .iter()
+                .find(|message| message.id == events[0].mailbox_message_id)
+                .map(|message| message.delivery_state),
+            Some(crate::mailbox::MailboxDeliveryState::Delivered)
+        );
+        manager
+            .acknowledge_lifecycle_event(&events[0])
+            .expect("acknowledge after host application");
+        let acknowledged = crate::mailbox::MailboxStore::load_from_path(&manager.mailbox_path)
+            .expect("reload acknowledged lifecycle");
+        assert_eq!(
+            acknowledged
+                .messages
+                .iter()
+                .find(|message| message.id == events[0].mailbox_message_id)
+                .map(|message| message.delivery_state),
+            Some(crate::mailbox::MailboxDeliveryState::Acknowledged)
+        );
+        assert!(manager.poll_lifecycle_events().is_empty());
+        manager.set_parent_scope_id("parent-b".to_string());
+        assert_eq!(manager.poll_lifecycle_events().len(), 1);
     }
 
     #[test]
@@ -3406,23 +5325,39 @@ mod tests {
         // A child that finishes after its conversation ended must not be
         // drained by the next one, and must still be there when its own
         // session is resumed.
-        let runtime = RuntimeRegistry::with_capacity(1);
-        runtime.push_event(SubagentLifecycleEvent {
-            subagent_id: "child-1".to_string(),
-            parent_scope_id: "session:alpha".to_string(),
-            parent_call_id: "call-1".to_string(),
-            status: SubagentStatus::Completed,
-            summary: Some("done".to_string()),
-            error: None,
-            finished_at_ms: 10,
-        });
+        let root = tempfile::tempdir().expect("records root");
+        let manager = SubagentManager::with_root_and_parent_scope(
+            root.path().to_path_buf(),
+            root.path().join("records"),
+            "session:beta".to_string(),
+        );
+        let mut mailbox = crate::mailbox::MailboxStore::with_path(&manager.mailbox_path);
+        mailbox
+            .send_typed(
+                "child",
+                "session:alpha",
+                "finished",
+                crate::mailbox::MailboxPayload::SubagentLifecycle {
+                    subagent_id: "child-1".to_string(),
+                    parent_call_id: "call-1".to_string(),
+                    attempt: 0,
+                    status: MailboxLifecycleStatus::Completed,
+                    summary: Some("done".to_string()),
+                    error: None,
+                    finished_at_ms: 10,
+                },
+                crate::mailbox::MailboxDeliveryState::Queued,
+                Some("lifecycle:child-1".to_string()),
+            )
+            .expect("lifecycle message");
 
         assert!(
-            runtime.poll_events("session:beta").is_empty(),
+            manager.poll_lifecycle_events().is_empty(),
             "the new conversation must not see the previous one's child"
         );
 
-        let resumed = runtime.poll_events("session:alpha");
+        manager.set_parent_scope_id("session:alpha".to_string());
+        let resumed = manager.poll_lifecycle_events();
         assert_eq!(resumed.len(), 1);
         assert_eq!(resumed[0].subagent_id, "child-1");
     }
@@ -3712,6 +5647,7 @@ mod tests {
             finished_at_ms: None,
             result: None,
             error: None,
+            lifecycle_notification_published: false,
         };
 
         manager.write_record(&record).expect("write record");
@@ -3805,8 +5741,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn subagent_record_is_atomic_and_reloadable() {
+    #[tokio::test]
+    async fn subagent_record_is_atomic_reloadable_and_listed_with_safe_handles() {
         let root = tempfile::tempdir().expect("temp root");
         let manager =
             SubagentManager::with_root(PathBuf::from("/workspace"), root.path().join("records"));
@@ -3841,12 +5777,27 @@ mod tests {
             finished_at_ms: None,
             result: None,
             error: None,
+            lifecycle_notification_published: false,
         };
 
         manager.write_record(&record).expect("write record");
         let loaded = manager.load_record(&record.id).expect("reload record");
         assert_eq!(loaded.id, record.id);
         assert_eq!(loaded.parent_call_id, "call-1");
+
+        let malformed_dir = manager.root.join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&malformed_dir).expect("malformed record dir");
+        std::fs::write(malformed_dir.join("record.json"), "not json").expect("malformed record");
+        let listed = manager.list().await;
+        let details = listed.details.expect("list details");
+        assert_eq!(details["complete"], false);
+        assert_eq!(details["count"], 1);
+        assert_eq!(details["errors"].as_array().map(Vec::len), Some(1));
+        assert!(details["snapshotId"].as_str().is_some());
+        assert_eq!(
+            details["subagents"][0]["agentRef"],
+            format!("subagent:{}:1", record.id)
+        );
 
         let mut cancelled = loaded;
         cancelled.status = SubagentStatus::Cancelled;
@@ -3891,6 +5842,7 @@ mod tests {
             finished_at_ms: Some(2),
             result: None,
             error: None,
+            lifecycle_notification_published: false,
         };
         manager
             .write_record(&record)
@@ -3949,6 +5901,7 @@ mod tests {
             finished_at_ms: Some(2),
             result: None,
             error: None,
+            lifecycle_notification_published: false,
         };
         manager
             .write_record(&record)
@@ -4001,6 +5954,7 @@ mod tests {
             finished_at_ms: None,
             result: None,
             error: None,
+            lifecycle_notification_published: false,
         };
         manager
             .write_record(&record)
@@ -4077,6 +6031,7 @@ mod tests {
             finished_at_ms: Some(2),
             result: None,
             error: None,
+            lifecycle_notification_published: false,
         };
         manager
             .write_record(&record)
@@ -4163,6 +6118,7 @@ mod tests {
             finished_at_ms: Some(2),
             result: None,
             error: None,
+            lifecycle_notification_published: false,
         };
         manager
             .write_record(&record)
@@ -4223,6 +6179,7 @@ mod tests {
             finished_at_ms: Some(2),
             result: None,
             error: None,
+            lifecycle_notification_published: false,
         };
         manager
             .write_record(&record)
@@ -4274,6 +6231,7 @@ mod tests {
             finished_at_ms: Some(2),
             result: None,
             error: None,
+            lifecycle_notification_published: false,
         };
         manager
             .write_record(&record)
@@ -4416,6 +6374,34 @@ mod tests {
     }
 
     #[test]
+    fn controls_rekey_new_parent_credentials_into_child_scope() {
+        let parent = CredentialVault::new();
+        let child = parent.fork();
+        let parent_reference =
+            parent.store("new-parent-secret", crate::agent::CredentialType::Secret);
+        let incoming = format!("use {parent_reference}");
+
+        let prepared = prepare_control_body(&parent, Some(&child), &incoming)
+            .expect("same-process control should re-key credentials");
+        assert!(!prepared.contains("new-parent-secret"));
+        assert_eq!(child.resolve_all(&prepared), "use new-parent-secret");
+        assert!(prepare_control_body(&parent, None, &incoming).is_err());
+    }
+
+    #[test]
+    fn interrupt_has_a_distinct_terminal_status() {
+        let (status, error) = child_terminal_status(
+            false,
+            true,
+            false,
+            Some("turn interrupted".to_string()),
+            DEFAULT_CHILD_TIMEOUT_MS,
+        );
+        assert_eq!(status, SubagentStatus::Interrupted);
+        assert_eq!(error.as_deref(), Some("subagent interrupted"));
+    }
+
+    #[test]
     fn fallback_history_restores_prompt_when_snapshot_is_missing() {
         let history = fallback_history_from_prompt("original delegated task")
             .expect("prompt should become fallback history");
@@ -4490,6 +6476,7 @@ mod tests {
         let event = FromAgent::ConversationSnapshot {
             protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL.to_string(),
             messages: messages.clone(),
+            processed_queue_ids: Vec::new(),
         };
         let received =
             child_event_to_headless(&event, &session_id).expect("snapshot should be recordable");
@@ -4523,23 +6510,25 @@ mod tests {
                 role: crate::ai::Role::User,
                 content: crate::ai::MessageContent::text("inspect the parser"),
             }],
+            processed_queue_ids: vec![42],
         };
-        let received =
-            child_event_to_headless(&event, &session_id).expect("snapshot should be recordable");
 
         let mut recorder =
             SessionRecorder::with_id(root.path(), &session_id).expect("create transcript");
-        recorder
-            .record_received_preserving_credential_references_with_snapshot_attempt(
-                &received,
-                Some(7),
-            )
-            .expect("record snapshot attempt");
+        persist_child_event(
+            &mut recorder,
+            &event,
+            &session_id,
+            &CredentialVault::new(),
+            7,
+        )
+        .expect("record snapshot attempt and queue watermark");
         recorder.flush_checkpoint().expect("flush transcript");
         drop(recorder);
 
         let resumed = SessionRecorder::resume(root.path(), &session_id).expect("resume transcript");
         assert_eq!(resumed.semantic_conversation_attempt(), Some(7));
+        assert!(resumed.semantic_processed_queue_ids().contains(&42));
         assert!(resumed.replay().semantic_conversation.is_some());
     }
 
@@ -4563,6 +6552,7 @@ mod tests {
                 protocol_version: crate::headless::messages::SEMANTIC_CONVERSATION_PROTOCOL
                     .to_string(),
                 messages: messages.clone(),
+                processed_queue_ids: Vec::new(),
             })
             .expect("queue shutdown snapshot");
         drop(sender);
@@ -4602,6 +6592,7 @@ mod tests {
                 role: crate::ai::Role::User,
                 content: crate::ai::MessageContent::text("Use arbitrary-secret now"),
             }],
+            processed_queue_ids: Vec::new(),
         };
         let message = child_event_to_headless(&event, "child").expect("snapshot should map");
         let vaulted = vault_headless_message(&message, &vault).expect("snapshot should re-vault");
@@ -4623,5 +6614,12 @@ mod tests {
         let restored_text = restored[0].content.as_text().expect("restored prompt text");
         assert_eq!(restored_text, format!("Use {reference} now"));
         assert_eq!(vault.resolve_all(restored_text), "Use arbitrary-secret now");
+    }
+
+    #[test]
+    fn preterminal_child_snapshot_avoids_legacy_terminal_wait() {
+        assert!(!terminal_checkpoint_ready(false, true));
+        assert!(terminal_checkpoint_ready(true, true));
+        assert!(!terminal_checkpoint_ready(true, false));
     }
 }

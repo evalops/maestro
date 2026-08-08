@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::agent::session_scope::MaestroThreadId;
+use crate::headless::{CodeMode, GovernedToolGrant};
 
 use super::{
     response_ack_request_id, FromAgentMessage, IdentityBindingFailure, ServerRequestType,
@@ -18,6 +19,8 @@ use super::{
 };
 
 pub(super) const THREAD_PROTOCOL_VERSION: &str = "evalops.maestro.thread.v1";
+pub(super) const GOVERNED_THREAD_PROTOCOL_VERSION: &str = "evalops.maestro.thread.v2";
+pub(super) const GOVERNED_THREAD_REQUIRED_FIELDS: &[&str] = &["codeMode", "toolGrant"];
 const MAX_TURN_ID_BYTES: usize = 128;
 const MAX_CONTENT_BYTES: usize = 1024 * 1024;
 const MAX_ATTACHMENTS: usize = 64;
@@ -59,12 +62,39 @@ pub(super) struct AppendTurnRequest {
     pub(super) content: String,
     #[serde(default)]
     pub(super) attachments: Option<Vec<String>>,
+    #[serde(default)]
+    pub(super) code_mode: Option<CodeMode>,
+    #[serde(default)]
+    pub(super) tool_grant: Option<GovernedToolGrant>,
 }
 
 impl AppendTurnRequest {
+    fn governed_fields_are_valid(&self) -> bool {
+        GOVERNED_THREAD_REQUIRED_FIELDS
+            .iter()
+            .all(|field| match *field {
+                "codeMode" => self.code_mode == Some(CodeMode::GovernedCode),
+                "toolGrant" => self.tool_grant.is_some(),
+                _ => false,
+            })
+    }
+
     pub(super) fn validate(&self) -> Result<(), &'static str> {
-        if self.protocol_version != THREAD_PROTOCOL_VERSION {
+        if self.protocol_version != THREAD_PROTOCOL_VERSION
+            && self.protocol_version != GOVERNED_THREAD_PROTOCOL_VERSION
+        {
             return Err("unsupported thread protocol version");
+        }
+        match self.protocol_version.as_str() {
+            THREAD_PROTOCOL_VERSION if self.code_mode.is_none() && self.tool_grant.is_none() => {}
+            GOVERNED_THREAD_PROTOCOL_VERSION if self.governed_fields_are_valid() => {}
+            GOVERNED_THREAD_PROTOCOL_VERSION => {
+                return Err("governed thread protocol requires codeMode and toolGrant")
+            }
+            THREAD_PROTOCOL_VERSION => {
+                return Err("thread v1 does not accept governed code fields")
+            }
+            _ => return Err("unsupported thread protocol version"),
         }
         if self.turn_id.is_empty() || self.turn_id.len() > MAX_TURN_ID_BYTES {
             return Err("turnId must contain between 1 and 128 bytes");
@@ -91,6 +121,10 @@ pub(super) struct ThreadTurnRecord {
     pub(super) content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) attachments: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) code_mode: Option<CodeMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) tool_grant: Option<GovernedToolGrant>,
     pub(super) phase: ThreadPhase,
     pub(super) accepted_at: String,
     pub(super) cursor: u64,
@@ -103,6 +137,8 @@ impl ThreadTurnRecord {
         self.kind == request.kind
             && self.content == request.content
             && self.attachments == request.attachments
+            && self.code_mode == request.code_mode
+            && self.tool_grant == request.tool_grant
     }
 }
 
@@ -139,17 +175,21 @@ impl ThreadProtocolState {
         self.turns.iter().find(|turn| turn.turn_id == turn_id)
     }
 
-    pub(super) fn append(&mut self, request: AppendTurnRequest, cursor: u64) {
-        let turn_id = request.turn_id;
-        let run_id = if request.kind == ThreadTurnKind::Steer {
+    pub(super) fn planned_run_id(&self, request: &AppendTurnRequest) -> String {
+        if request.kind == ThreadTurnKind::Steer {
             self.active_turn_ids
                 .front()
                 .and_then(|active_turn_id| self.turn(active_turn_id))
                 .map(|turn| turn.run_id.clone())
-                .unwrap_or_else(|| format!("run_{turn_id}"))
+                .unwrap_or_else(|| format!("run_{}", request.turn_id))
         } else {
-            format!("run_{turn_id}")
-        };
+            format!("run_{}", request.turn_id)
+        }
+    }
+
+    pub(super) fn append(&mut self, request: AppendTurnRequest, cursor: u64) {
+        let run_id = self.planned_run_id(&request);
+        let turn_id = request.turn_id;
         self.active_turn_ids.push_back(turn_id.clone());
         self.turns.push(ThreadTurnRecord {
             run_id,
@@ -157,11 +197,33 @@ impl ThreadProtocolState {
             kind: request.kind,
             content: request.content,
             attachments: request.attachments,
+            code_mode: request.code_mode,
+            tool_grant: request.tool_grant,
             phase: ThreadPhase::Accepted,
             accepted_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
             cursor,
             provider_error_kind: None,
         });
+    }
+
+    /// Roll back the latest append when its initial journal write failed.
+    ///
+    /// No dispatch has happened at this point, so retaining an in-memory
+    /// `Accepted` record would make an identical retry look replayed even
+    /// though the prompt was never delivered to the runtime.
+    pub(super) fn rollback_unpersisted_append(&mut self, turn_id: &str) {
+        let is_latest_accepted = self
+            .turns
+            .last()
+            .is_some_and(|turn| turn.turn_id == turn_id && turn.phase == ThreadPhase::Accepted);
+        let is_latest_active = self
+            .active_turn_ids
+            .back()
+            .is_some_and(|active_turn_id| active_turn_id == turn_id);
+        if is_latest_accepted && is_latest_active {
+            self.turns.pop();
+            self.active_turn_ids.pop_back();
+        }
     }
 
     pub(super) fn mark_dispatched(&mut self, cursor: u64) {
@@ -611,6 +673,128 @@ mod tests {
     use super::*;
     use maestro_ai::ProviderStreamErrorKind;
 
+    fn test_governed_grant() -> GovernedToolGrant {
+        GovernedToolGrant {
+            envelope_version: 2,
+            grant_id: "grant-1".to_string(),
+            grant_version: 1,
+            issuer: "evalops.platform".to_string(),
+            audience: "evalops.maestro".to_string(),
+            organization_id: "org-1".to_string(),
+            workspace_id: "workspace-1".to_string(),
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            run_id: "run-1".to_string(),
+            runtime_generation: 1,
+            grant_epoch: 1,
+            issued_at_ms: 1,
+            not_before_ms: 1,
+            expires_at_ms: i64::MAX,
+            grant_hash: "sha256:grant-1".to_string(),
+            signing_key_id: "key-1".to_string(),
+            grant_signature: "hmac-sha256:signature".to_string(),
+            native_tool_ids: vec!["read".to_string()],
+            external_tools: Vec::new(),
+        }
+    }
+
+    fn governed_request() -> AppendTurnRequest {
+        AppendTurnRequest {
+            protocol_version: GOVERNED_THREAD_PROTOCOL_VERSION.to_string(),
+            turn_id: "turn-1".to_string(),
+            kind: ThreadTurnKind::UserMessage,
+            content: "hello".to_string(),
+            attachments: None,
+            code_mode: Some(CodeMode::GovernedCode),
+            tool_grant: Some(test_governed_grant()),
+        }
+    }
+
+    #[test]
+    fn thread_v2_requires_a_grant_and_v1_remains_backward_compatible() {
+        governed_request().validate().expect("complete v2 request");
+
+        let mut missing = governed_request();
+        missing.tool_grant = None;
+        assert!(missing.validate().is_err());
+
+        let mut missing = governed_request();
+        missing.code_mode = None;
+        assert!(missing.validate().is_err());
+
+        let mut unknown = governed_request();
+        unknown.protocol_version = "evalops.maestro.thread.v3".to_string();
+        assert!(unknown.validate().is_err());
+
+        let legacy = AppendTurnRequest {
+            protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+            turn_id: "turn-legacy".to_string(),
+            kind: ThreadTurnKind::UserMessage,
+            content: "hello".to_string(),
+            attachments: None,
+            code_mode: None,
+            tool_grant: None,
+        };
+        legacy.validate().expect("legacy v1 remains valid");
+    }
+
+    #[test]
+    fn governed_grant_identity_is_persisted_and_part_of_duplicate_turn_equality() {
+        let request = governed_request();
+        let mut state = ThreadProtocolState::new("thread-1".to_string().into());
+        state.append(request.clone(), 1);
+        let record = state.turn("turn-1").unwrap();
+        assert!(record.matches(&request));
+
+        let serialized = serde_json::to_vec(record).unwrap();
+        let restored: ThreadTurnRecord = serde_json::from_slice(&serialized).unwrap();
+        assert_eq!(
+            restored
+                .tool_grant
+                .as_ref()
+                .map(GovernedToolGrant::identity),
+            request.tool_grant.as_ref().map(GovernedToolGrant::identity)
+        );
+
+        let mut changed_grant = governed_request();
+        let grant = changed_grant.tool_grant.as_mut().unwrap();
+        grant.grant_id = "grant-2".to_string();
+        grant.grant_hash = "sha256:grant-2".to_string();
+        assert!(
+            !record.matches(&changed_grant),
+            "same turn id with different authority must conflict, not replay"
+        );
+    }
+
+    #[test]
+    fn failed_initial_persistence_can_roll_back_an_undispatched_append() {
+        let request = governed_request();
+        let mut state = ThreadProtocolState::new("thread-1".to_string().into());
+        state.append(request, 1);
+
+        state.rollback_unpersisted_append("turn-1");
+
+        assert!(state.turn("turn-1").is_none());
+        assert!(!state.has_active_turn());
+        assert_eq!(state.phase(), ThreadPhase::Idle);
+    }
+
+    #[test]
+    fn accepted_turn_is_terminally_interrupted_after_a_dispatch_persistence_crash() {
+        let request = governed_request();
+        let mut before_crash = ThreadProtocolState::new("thread-1".to_string().into());
+        before_crash.append(request, 1);
+        assert_eq!(before_crash.phase(), ThreadPhase::Accepted);
+
+        // The accepted snapshot is the last durable state if dispatch
+        // succeeded but persisting Running failed before process death.
+        let restored =
+            ThreadProtocolState::restore(before_crash.thread_id.clone(), before_crash.turns);
+
+        assert_eq!(restored.phase(), ThreadPhase::Interrupted);
+        assert!(!restored.has_active_turn());
+    }
+
     fn active_state() -> ThreadProtocolState {
         let mut state = ThreadProtocolState::new("thread-positive-terminal".to_string().into());
         state.append(
@@ -620,6 +804,8 @@ mod tests {
                 kind: ThreadTurnKind::UserMessage,
                 content: "hello".to_string(),
                 attachments: None,
+                code_mode: None,
+                tool_grant: None,
             },
             1,
         );
@@ -704,6 +890,8 @@ mod tests {
                 kind: ThreadTurnKind::UserMessage,
                 content: "hello".to_string(),
                 attachments: None,
+                code_mode: None,
+                tool_grant: None,
             },
             1,
         );

@@ -753,6 +753,26 @@ impl ToolRegistry {
                 requires_approval: false,
             },
         );
+        tools.insert(
+            "control_subagent".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "control_subagent",
+                    "Collect a child snapshot or send an attempt-scoped steer, follow-up, interrupt, or cancellation with a durable delivery receipt.",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "agent_ref": {"type": "string", "description": "Attempt-scoped handle returned by list_subagents or get_subagent."},
+                        "mode": {"type": "string", "enum": ["collect", "steer", "followup", "interrupt", "cancel"]},
+                        "message": {"type": "string", "description": "Required for steer and followup."},
+                        "idempotency_key": {"type": "string", "description": "Optional caller-stable retry key."}
+                    },
+                    "required": ["agent_ref", "mode"]
+                })),
+                requires_approval: false,
+            },
+        );
 
         // Status tool
         tools.insert(
@@ -1427,7 +1447,7 @@ impl ToolRegistry {
     ///
     /// // Count tools
     /// let count = registry.tools().count();
-    /// assert_eq!(count, 64);  // includes Prime Agent context tools alongside parity, goals, subagents, and perf tools
+    /// assert_eq!(count, 65);  // includes durable subagent control alongside parity, goals, context, and perf tools
     ///
     /// // List tool names
     /// for tool_def in registry.tools() {

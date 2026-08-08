@@ -3169,6 +3169,11 @@ impl ToolExecutor {
                     .await
             }
             "cancel_subagent" => self.subagents.cancel(args),
+            "control_subagent" => {
+                self.subagents
+                    .control(args, call_id, self.credential_vault.clone())
+                    .await
+            }
             "get_goal" => crate::tools::goal_tools::get_goal(),
             "update_goal" => crate::tools::goal_tools::update_goal(args.clone()),
             "get_harness_context" => crate::tools::context_tools::get_harness_context(),
@@ -3186,10 +3191,17 @@ impl ToolExecutor {
             "append_rlm_context" => crate::tools::context_tools::append_rlm_context(args.clone()),
             "render_rlm_context" => crate::tools::context_tools::render_rlm_context(args.clone()),
             "clear_rlm_context" => crate::tools::context_tools::clear_rlm_context(args.clone()),
-            "get_mailbox" => crate::tools::context_tools::get_mailbox(args.clone()),
-            "send_mailbox" => crate::tools::context_tools::send_mailbox(args.clone()),
-            "read_mailbox" => crate::tools::context_tools::read_mailbox(args.clone()),
-            "ack_mailbox" => crate::tools::context_tools::acknowledge_mailbox(args.clone()),
+            "get_mailbox" => crate::tools::context_tools::get_mailbox(&self.mailbox_identity),
+            "send_mailbox" => {
+                crate::tools::context_tools::send_mailbox(args.clone(), &self.mailbox_identity)
+            }
+            "read_mailbox" => {
+                crate::tools::context_tools::read_mailbox(args.clone(), &self.mailbox_identity)
+            }
+            "ack_mailbox" => crate::tools::context_tools::acknowledge_mailbox(
+                args.clone(),
+                &self.mailbox_identity,
+            ),
             "compact_mailbox" => crate::tools::context_tools::compact_mailbox(),
             "todo" => todo::todo_with_cancellation(args.clone(), cancel.as_ref()).await,
             "ask_user" => ask_user::ask_user(args.clone()),

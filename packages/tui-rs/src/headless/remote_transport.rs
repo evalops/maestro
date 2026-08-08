@@ -24,9 +24,9 @@ use super::async_transport::{AsyncTransportError, RemoteErrorKind};
 use super::messages::{
     ActiveFileWatch, ActiveUtilityCommand, AgentState, ApprovalMode, ClientCapabilities,
     ClientInfo, CodexSubagentContinuityEdge, ConnectionRole, ConnectionState, FromAgentMessage,
-    HeadlessErrorType, InitConfig, PendingApproval, ServerRequestType, StreamingResponse,
-    ThinkingLevel, ToAgentMessage, UtilityCommandShellMode, UtilityCommandTerminalMode,
-    UtilityOperation,
+    GovernedClientToolBinding, HeadlessErrorType, InitConfig, PendingApproval, ServerRequestType,
+    StreamingResponse, ThinkingLevel, ToAgentMessage, UtilityCommandShellMode,
+    UtilityCommandTerminalMode, UtilityOperation,
 };
 
 const MESSAGE_POST_MAX_RETRIES: u32 = 10;
@@ -333,6 +333,8 @@ struct RemoteRuntimeStateSnapshot {
     #[serde(default)]
     pending_client_tools: Vec<PendingApproval>,
     #[serde(default)]
+    governed_client_tool_bindings: HashMap<String, GovernedClientToolBinding>,
+    #[serde(default)]
     pending_user_inputs: Vec<PendingApproval>,
     #[serde(default)]
     pending_tool_retries: Vec<PendingApproval>,
@@ -386,6 +388,7 @@ impl RemoteRuntimeStateSnapshot {
             current_response: self.current_response,
             pending_approvals: self.pending_approvals,
             pending_client_tools: self.pending_client_tools,
+            governed_client_tool_bindings: self.governed_client_tool_bindings,
             pending_user_inputs: self.pending_user_inputs,
             pending_tool_retries: self.pending_tool_retries,
             tracked_tools: self
@@ -1125,6 +1128,7 @@ fn build_remote_hello_message(config: &RemoteTransportConfig) -> ToAgentMessage 
             utility_operations: Some(build_remote_utility_operation_types(config)),
             raw_agent_events: Some(config.enable_raw_agent_events),
             transcript_grade: Some(build_remote_transcript_grade(config)),
+            governed_code_mode: Some(true),
         }),
         role: build_remote_connection_role(config),
         opt_out_notifications: (!config.opt_out_notifications.is_empty())

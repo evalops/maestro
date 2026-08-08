@@ -582,6 +582,15 @@ pub struct AppState {
     /// Using `HashSet` for O(1) contains/insert/remove operations.
     pub expanded_tool_calls: std::collections::HashSet<String>,
 
+    /// Whether tool-bearing assistant turns render as a single summary row.
+    pub focus_view: bool,
+
+    /// Message IDs whose tool calls remain fully visible while Focus view is on.
+    pub expanded_focus_turns: std::collections::HashSet<String>,
+
+    /// Tool-bearing turn selected for keyboard inspection in Focus view.
+    pub focus_selected_turn: Option<String>,
+
     /// Error message to display.
     /// Shown prominently in the UI when set.
     pub error: Option<String>,
@@ -725,6 +734,9 @@ impl AppState {
             theme_reporting_available: false,
             scroll_offset: 0, // At bottom of messages
             expanded_tool_calls: std::collections::HashSet::new(),
+            focus_view: false,
+            expanded_focus_turns: std::collections::HashSet::new(),
+            focus_selected_turn: None,
             error: None, // No error
             alerts: VecDeque::new(),
             unseen_alerts: 0,
@@ -1823,6 +1835,7 @@ impl AppState {
                 thinking_expanded: false,
             },
         );
+        self.prune_focus_turn_state();
     }
 
     /// Toggle whether thinking is expanded for a message.
@@ -1877,6 +1890,111 @@ impl AppState {
         } else {
             !toggled
         }
+    }
+
+    /// Set Focus view explicitly and return the resulting state.
+    pub fn set_focus_view(&mut self, enabled: bool) -> bool {
+        self.focus_view = enabled;
+        self.prune_focus_turn_state();
+        if enabled && self.focus_selected_turn.is_none() {
+            self.focus_selected_turn = self
+                .messages
+                .iter()
+                .rev()
+                .find(|message| !message.tool_calls.is_empty())
+                .map(|message| message.id.clone());
+        }
+        self.focus_view
+    }
+
+    pub fn clear_focus_turn_state(&mut self) {
+        self.expanded_focus_turns.clear();
+        self.focus_selected_turn = None;
+    }
+
+    pub fn prune_focus_turn_state(&mut self) {
+        let available = self
+            .messages
+            .iter()
+            .filter(|message| !message.tool_calls.is_empty())
+            .map(|message| message.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        self.expanded_focus_turns
+            .retain(|message_id| available.contains(message_id.as_str()));
+        if self
+            .focus_selected_turn
+            .as_deref()
+            .is_some_and(|message_id| !available.contains(message_id))
+        {
+            self.focus_selected_turn = None;
+        }
+    }
+
+    pub fn select_previous_focus_turn(&mut self) -> bool {
+        self.move_focus_selection(-1)
+    }
+
+    pub fn select_next_focus_turn(&mut self) -> bool {
+        self.move_focus_selection(1)
+    }
+
+    fn move_focus_selection(&mut self, direction: isize) -> bool {
+        let ids = self
+            .messages
+            .iter()
+            .filter(|message| !message.tool_calls.is_empty())
+            .map(|message| message.id.clone())
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            self.focus_selected_turn = None;
+            return false;
+        }
+        let current = self
+            .focus_selected_turn
+            .as_ref()
+            .and_then(|selected| ids.iter().position(|id| id == selected))
+            .unwrap_or(ids.len() - 1);
+        let next = current
+            .saturating_add_signed(direction)
+            .min(ids.len().saturating_sub(1));
+        self.focus_selected_turn = Some(ids[next].clone());
+        true
+    }
+
+    pub fn toggle_selected_focus_turn(&mut self) -> bool {
+        let Some(message_id) = self.focus_selected_turn.clone() else {
+            return self.toggle_latest_focus_turn();
+        };
+        self.toggle_focus_turn(&message_id);
+        true
+    }
+
+    /// Toggle Focus view and return the resulting state.
+    pub fn toggle_focus_view(&mut self) -> bool {
+        self.set_focus_view(!self.focus_view)
+    }
+
+    /// Toggle full tool rendering for one message while Focus view is enabled.
+    pub fn toggle_focus_turn(&mut self, message_id: &str) {
+        if !self.expanded_focus_turns.remove(message_id) {
+            self.expanded_focus_turns.insert(message_id.to_string());
+        }
+    }
+
+    /// Toggle the most recent turn containing tool calls.
+    pub fn toggle_latest_focus_turn(&mut self) -> bool {
+        let Some(message_id) = self
+            .messages
+            .iter()
+            .rev()
+            .find(|message| !message.tool_calls.is_empty())
+            .map(|message| message.id.clone())
+        else {
+            return false;
+        };
+
+        self.toggle_focus_turn(&message_id);
+        true
     }
 
     fn set_codex_status_if_useful(&mut self, status: String) {
@@ -1961,6 +2079,91 @@ fn is_active_codex_turn_status(status: &str) -> bool {
 
 fn short_codex_id(value: &str) -> String {
     value.chars().take(11).collect()
+}
+
+#[cfg(test)]
+mod focus_view_tests {
+    use super::*;
+
+    fn tool_message(id: &str) -> Message {
+        Message {
+            id: id.to_string(),
+            role: MessageRole::Assistant,
+            kind: MessageKind::Regular,
+            content: String::new(),
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: vec![ToolCallState {
+                call_id: format!("call-{id}"),
+                tool: "read".to_string(),
+                args: serde_json::json!({ "file_path": "Cargo.toml" }),
+                status: ToolCallStatus::Completed,
+                output: String::new(),
+            }],
+            usage: None,
+            timestamp: SystemTime::UNIX_EPOCH,
+            thinking_expanded: false,
+        }
+    }
+
+    #[test]
+    fn focus_view_defaults_off_and_toggles_explicitly() {
+        let mut state = AppState::new();
+
+        assert!(!state.focus_view);
+        assert!(state.toggle_focus_view());
+        assert!(state.focus_view);
+        assert!(!state.set_focus_view(false));
+    }
+
+    #[test]
+    fn latest_focus_turn_toggle_uses_the_latest_tool_bearing_message() {
+        let mut state = AppState::new();
+        state.messages.push(tool_message("first"));
+        state.messages.push(Message {
+            id: "text-only".to_string(),
+            role: MessageRole::Assistant,
+            kind: MessageKind::Regular,
+            content: "Done".to_string(),
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: Vec::new(),
+            usage: None,
+            timestamp: SystemTime::UNIX_EPOCH,
+            thinking_expanded: false,
+        });
+        state.messages.push(tool_message("latest"));
+
+        assert!(state.toggle_latest_focus_turn());
+        assert_eq!(
+            state.expanded_focus_turns,
+            std::collections::HashSet::from(["latest".to_string()])
+        );
+        assert!(state.toggle_latest_focus_turn());
+        assert!(state.expanded_focus_turns.is_empty());
+    }
+
+    #[test]
+    fn focus_selection_moves_across_older_turns_and_prunes_removed_messages() {
+        let mut state = AppState::new();
+        state.messages = vec![
+            tool_message("first"),
+            tool_message("second"),
+            tool_message("third"),
+        ];
+
+        state.set_focus_view(true);
+        assert_eq!(state.focus_selected_turn.as_deref(), Some("third"));
+        assert!(state.select_previous_focus_turn());
+        assert_eq!(state.focus_selected_turn.as_deref(), Some("second"));
+        assert!(state.toggle_selected_focus_turn());
+        assert!(state.expanded_focus_turns.contains("second"));
+
+        state.messages.retain(|message| message.id != "second");
+        state.prune_focus_turn_state();
+        assert!(state.focus_selected_turn.is_none());
+        assert!(!state.expanded_focus_turns.contains("second"));
+    }
 }
 
 #[cfg(test)]

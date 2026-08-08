@@ -332,6 +332,110 @@ fn should_show_tool_args_preview(summary: &str, args_preview: &str) -> bool {
     !args_preview.is_empty() && !summary.contains(args_preview)
 }
 
+fn focus_turn_is_collapsed(
+    message: &Message,
+    focus_view: bool,
+    expanded_focus_turns: &HashSet<String>,
+) -> bool {
+    focus_view
+        && !message.tool_calls.is_empty()
+        && !expanded_focus_turns.contains(message.id.as_str())
+}
+
+fn focus_turn_summary(message: &Message, selected: bool) -> Line<'static> {
+    let mut completed = 0usize;
+    let mut failed = 0usize;
+    let mut running = 0usize;
+    let mut pending = 0usize;
+    let mut cancelled = 0usize;
+    let mut blocked = 0usize;
+
+    for tool_call in &message.tool_calls {
+        match tool_call.status {
+            ToolCallStatus::Completed => completed += 1,
+            ToolCallStatus::Failed => failed += 1,
+            ToolCallStatus::Running => running += 1,
+            ToolCallStatus::Pending => pending += 1,
+            ToolCallStatus::Cancelled => cancelled += 1,
+            ToolCallStatus::Blocked => blocked += 1,
+        }
+    }
+
+    let (bullet, color) = if failed > 0 {
+        ("●", Color::Red)
+    } else if blocked > 0 {
+        ("●", Color::Magenta)
+    } else if running > 0 {
+        ("●", Color::Cyan)
+    } else if pending > 0 || cancelled > 0 {
+        ("○", Color::Yellow)
+    } else {
+        ("●", Color::Green)
+    };
+
+    let mut parts = vec![format!(
+        "{} tool{}",
+        message.tool_calls.len(),
+        if message.tool_calls.len() == 1 {
+            ""
+        } else {
+            "s"
+        }
+    )];
+    for (count, label) in [
+        (completed, "completed"),
+        (failed, "failed"),
+        (running, "running"),
+        (pending, "pending"),
+        (cancelled, "cancelled"),
+        (blocked, "blocked"),
+    ] {
+        if count > 0 {
+            parts.push(format!("{count} {label}"));
+        }
+    }
+
+    let mut spans = vec![
+        Span::styled(
+            if selected { "› " } else { "  " },
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::styled(
+            bullet,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            parts.join(" · "),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if let Some(tool_call) = message
+        .tool_calls
+        .iter()
+        .rev()
+        .find(|tool_call| tool_call.status == ToolCallStatus::Running)
+    {
+        spans.push(Span::styled(
+            " · Live: ",
+            Style::default().fg(Color::DarkGray),
+        ));
+        spans.push(Span::styled(
+            summarize_tool_use(&tool_call.tool, &tool_call.args),
+            Style::default().fg(Color::Cyan),
+        ));
+    }
+    spans.push(Span::styled("  [+]", Style::default().fg(Color::DarkGray)));
+    let line = Line::from(spans);
+    if selected {
+        line.style(Style::default().bg(Color::DarkGray))
+    } else {
+        line
+    }
+}
+
 /// Check if a message should be rendered
 /// Skip empty assistant messages (no content AND no tool calls)
 pub fn should_render_message(message: &Message) -> bool {
@@ -357,6 +461,8 @@ pub fn calculate_message_height(
     width: u16,
     expanded_tools: &HashSet<String>,
     compact_tool_outputs: bool,
+    focus_view: bool,
+    expanded_focus_turns: &HashSet<String>,
 ) -> u16 {
     if !should_render_message(message) {
         return 0;
@@ -409,6 +515,10 @@ pub fn calculate_message_height(
             .subsequent_indent(Line::from("  "));
         let wrapped_lines = word_wrap_lines(&md_lines, wrap_opts);
         height += wrapped_lines.len() as u16;
+    }
+
+    if focus_turn_is_collapsed(message, focus_view, expanded_focus_turns) {
+        return height + 1;
     }
 
     // Tool calls
@@ -492,6 +602,9 @@ pub struct MessageWidget<'a> {
     message: &'a Message,
     expanded_tools: Option<&'a HashSet<String>>,
     compact_tool_outputs: bool,
+    focus_view: bool,
+    expanded_focus_turns: Option<&'a HashSet<String>>,
+    selected_focus_turn: Option<&'a str>,
 }
 
 impl<'a> MessageWidget<'a> {
@@ -501,6 +614,9 @@ impl<'a> MessageWidget<'a> {
             message,
             expanded_tools: None,
             compact_tool_outputs: false,
+            focus_view: false,
+            expanded_focus_turns: None,
+            selected_focus_turn: None,
         }
     }
 
@@ -513,6 +629,19 @@ impl<'a> MessageWidget<'a> {
     #[must_use]
     pub fn with_compact_tool_outputs(mut self, compact: bool) -> Self {
         self.compact_tool_outputs = compact;
+        self
+    }
+
+    #[must_use]
+    pub fn with_focus_view(mut self, enabled: bool, expanded_turns: &'a HashSet<String>) -> Self {
+        self.focus_view = enabled;
+        self.expanded_focus_turns = Some(expanded_turns);
+        self
+    }
+
+    #[must_use]
+    pub fn with_selected_focus_turn(mut self, selected: Option<&'a str>) -> Self {
+        self.selected_focus_turn = selected;
         self
     }
 }
@@ -785,6 +914,26 @@ impl Widget for MessageWidget<'_> {
                 );
                 y += 1;
             }
+        }
+
+        let empty_focus_turns = HashSet::new();
+        let expanded_focus_turns = self.expanded_focus_turns.unwrap_or(&empty_focus_turns);
+        if y < max_y && focus_turn_is_collapsed(self.message, self.focus_view, expanded_focus_turns)
+        {
+            Paragraph::new(focus_turn_summary(
+                self.message,
+                self.selected_focus_turn == Some(self.message.id.as_str()),
+            ))
+            .render(
+                Rect {
+                    x: area.x,
+                    y,
+                    width: area.width,
+                    height: 1,
+                },
+                buf,
+            );
+            return;
         }
 
         // Render tool calls in Codex style
@@ -2510,7 +2659,14 @@ impl ChatView<'_> {
             call_id.hash(&mut hasher);
             key ^= hasher.finish().rotate_left(1);
         }
-        key ^ (self.state.expanded_tool_calls.len() as u64).rotate_left(32)
+        key ^= (self.state.expanded_tool_calls.len() as u64).rotate_left(32);
+        key ^= u64::from(self.state.focus_view).rotate_left(3);
+        for message_id in &self.state.expanded_focus_turns {
+            let mut hasher = DefaultHasher::new();
+            message_id.hash(&mut hasher);
+            key ^= hasher.finish().rotate_left(7);
+        }
+        key ^ (self.state.expanded_focus_turns.len() as u64).rotate_left(40)
     }
 
     fn render_messages(&self, area: Rect, buf: &mut Buffer) {
@@ -2540,6 +2696,8 @@ impl ChatView<'_> {
                     area.width,
                     &self.state.expanded_tool_calls,
                     self.state.compact_tool_outputs,
+                    self.state.focus_view,
+                    &self.state.expanded_focus_turns,
                 ))
             },
         );
@@ -2576,7 +2734,9 @@ impl ChatView<'_> {
 
             let widget = MessageWidget::new(message)
                 .with_expanded_tools(&self.state.expanded_tool_calls)
-                .with_compact_tool_outputs(self.state.compact_tool_outputs);
+                .with_compact_tool_outputs(self.state.compact_tool_outputs)
+                .with_focus_view(self.state.focus_view, &self.state.expanded_focus_turns)
+                .with_selected_focus_turn(self.state.focus_selected_turn.as_deref());
             widget.render(msg_area, buf);
 
             y += msg_height;
@@ -2865,7 +3025,14 @@ mod tests {
         };
 
         let width = 100;
-        let height = calculate_message_height(&message, width, &HashSet::new(), true);
+        let height = calculate_message_height(
+            &message,
+            width,
+            &HashSet::new(),
+            true,
+            false,
+            &HashSet::new(),
+        );
         let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
 
         MessageWidget::new(&message)
@@ -2876,6 +3043,99 @@ mod tests {
         assert!(rendered.contains("Read package.json"));
         assert!(rendered.contains("· read"));
         assert!(rendered.contains("/Users/jonathanhaas/Documents/Projects/maestro/package.json"));
+    }
+
+    fn focus_view_message() -> Message {
+        Message {
+            id: "focus-turn".to_string(),
+            role: MessageRole::Assistant,
+            kind: MessageKind::Regular,
+            content: "Working through the checks.".to_string(),
+            thinking: String::new(),
+            streaming: true,
+            tool_calls: vec![
+                crate::state::ToolCallState {
+                    call_id: "call-complete".to_string(),
+                    tool: "bash".to_string(),
+                    args: serde_json::json!({ "command": "cargo test" }),
+                    status: ToolCallStatus::Completed,
+                    output: "finished".to_string(),
+                },
+                crate::state::ToolCallState {
+                    call_id: "call-failed".to_string(),
+                    tool: "grep".to_string(),
+                    args: serde_json::json!({ "pattern": "needle" }),
+                    status: ToolCallStatus::Failed,
+                    output: "not found".to_string(),
+                },
+                crate::state::ToolCallState {
+                    call_id: "call-running".to_string(),
+                    tool: "read".to_string(),
+                    args: serde_json::json!({ "file_path": "/tmp/live.rs" }),
+                    status: ToolCallStatus::Running,
+                    output: "partial output".to_string(),
+                },
+            ],
+            usage: None,
+            timestamp: SystemTime::UNIX_EPOCH,
+            thinking_expanded: false,
+        }
+    }
+
+    #[test]
+    fn focus_view_collapses_a_tool_bearing_turn_to_one_summary_line() {
+        let message = focus_view_message();
+        let expanded_turns = HashSet::new();
+        let width = 120;
+        let height = calculate_message_height(
+            &message,
+            width,
+            &HashSet::new(),
+            true,
+            true,
+            &expanded_turns,
+        );
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+
+        MessageWidget::new(&message)
+            .with_expanded_tools(&HashSet::new())
+            .with_compact_tool_outputs(true)
+            .with_focus_view(true, &expanded_turns)
+            .render(Rect::new(0, 0, width, height), &mut buf);
+
+        let rendered = buffer_lines(&buf, width, height).join("\n");
+        assert!(rendered.contains("3 tools · 1 completed · 1 failed · 1 running"));
+        assert!(rendered.contains("Live: Read live.rs"));
+        assert!(!rendered.contains("cargo test"));
+        assert!(!rendered.contains("finished"));
+        assert_eq!(height, 4, "separator, header, content, and one summary row");
+    }
+
+    #[test]
+    fn expanding_a_focus_turn_restores_existing_tool_rendering() {
+        let message = focus_view_message();
+        let expanded_turns = HashSet::from([message.id.clone()]);
+        let width = 120;
+        let height = calculate_message_height(
+            &message,
+            width,
+            &HashSet::new(),
+            true,
+            true,
+            &expanded_turns,
+        );
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+
+        MessageWidget::new(&message)
+            .with_expanded_tools(&HashSet::new())
+            .with_compact_tool_outputs(true)
+            .with_focus_view(true, &expanded_turns)
+            .render(Rect::new(0, 0, width, height), &mut buf);
+
+        let rendered = buffer_lines(&buf, width, height).join("\n");
+        assert!(rendered.contains("Ran cargo test"));
+        assert!(rendered.contains("finished"));
+        assert!(rendered.contains("Failed · Searched for \"needle\""));
     }
 
     #[test]
@@ -2894,7 +3154,14 @@ mod tests {
         };
 
         let width = 80;
-        let height = calculate_message_height(&message, width, &HashSet::new(), true);
+        let height = calculate_message_height(
+            &message,
+            width,
+            &HashSet::new(),
+            true,
+            false,
+            &HashSet::new(),
+        );
         let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
 
         MessageWidget::new(&message).render(Rect::new(0, 0, width, height), &mut buf);
@@ -2976,6 +3243,30 @@ mod tests {
         assert_eq!(
             state.transcript_layout_measurements(),
             cold_measurements + 2
+        );
+    }
+
+    #[test]
+    fn transcript_layout_remeasures_when_focus_projection_changes() {
+        let mut state = crate::state::AppState::default();
+        state.messages = vec![focus_view_message()];
+        let area = Rect::new(0, 0, 120, 24);
+
+        ChatView::new(&state).render(area, &mut Buffer::empty(area));
+        let initial_measurements = state.transcript_layout_measurements();
+
+        state.focus_view = true;
+        ChatView::new(&state).render(area, &mut Buffer::empty(area));
+        assert_eq!(
+            state.transcript_layout_measurements(),
+            initial_measurements + 1
+        );
+
+        state.expanded_focus_turns.insert("focus-turn".to_string());
+        ChatView::new(&state).render(area, &mut Buffer::empty(area));
+        assert_eq!(
+            state.transcript_layout_measurements(),
+            initial_measurements + 2
         );
     }
 }
