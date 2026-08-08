@@ -575,6 +575,17 @@ pub async fn open_persistent_thread(
     })
 }
 
+/// Convert the persisted sandbox field back to the optional protocol value.
+///
+/// Older manifests represent "no sandbox" as an empty string, while the
+/// app-server protocol treats `sandbox` as an enum and rejects that string.
+/// `default` and `inherit` are also local sentinel values, not valid Codex
+/// `thread/start` variants.
+fn persisted_sandbox_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty() && !matches!(value, "default" | "inherit")).then(|| value.to_owned())
+}
+
 async fn start_and_store_persistent_thread(
     client: &CodexAppServerClient,
     manifest: &CodexSessionManifest,
@@ -590,7 +601,7 @@ async fn start_and_store_persistent_thread(
                 model: manifest.key.model.clone(),
                 cwd: Some(manifest.key.workspace.to_string_lossy().to_string()),
                 approval_policy: Some(manifest.approval_policy.clone()),
-                sandbox: Some(manifest.sandbox.clone()),
+                sandbox: persisted_sandbox_value(&manifest.sandbox),
                 extra: thread_start_extra(dynamic_tools, instructions),
             },
             None,
@@ -1685,6 +1696,62 @@ mod tests {
             .expect("load binding")
             .expect("binding");
         assert_eq!(loaded.thread_id, "runtime-thread");
+    }
+
+    #[tokio::test]
+    async fn fresh_persistent_thread_omits_empty_sandbox() {
+        let state_root = tempfile::tempdir().expect("state root");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let key = crate::codex_session::CodexSessionKey::new("work", workspace.path(), "gpt-5.5")
+            .expect("session key");
+        let manifest = crate::codex_session::CodexSessionManifest {
+            key,
+            approval_policy: "on-request".to_owned(),
+            sandbox: String::new(),
+            capabilities: crate::codex_session::CodexCapabilities::default(),
+        };
+        let (client, mock) = CodexAppServerClient::mock();
+        let state_root_path = state_root.path().to_path_buf();
+
+        let task = tokio::spawn(async move {
+            CodexAppServerTurnSession::connect_with_client_and_manifest(
+                client,
+                manifest,
+                &state_root_path,
+                &[],
+                None,
+                &[],
+            )
+            .await
+        });
+
+        let initialize = mock.next_request().await.expect("initialize");
+        mock.respond(
+            initialize["id"].as_u64().unwrap(),
+            json!({
+                "protocolVersion": "2025-01-01",
+                "capabilities": {
+                    "methods": ["thread/start", "turn/start", "turn/interrupt"],
+                    "notifications": ["item/tool/call", "item/agentMessage/delta", "turn/completed"]
+                }
+            }),
+        );
+        let initialized = mock.next_request().await.expect("initialized");
+        assert_eq!(initialized["method"], "initialized");
+        let start = mock.next_request().await.expect("fresh start");
+        assert_eq!(start["method"], "thread/start");
+        assert_eq!(start["params"]["approvalPolicy"], "on-request");
+        assert!(
+            start["params"].get("sandbox").is_none(),
+            "an empty persisted sandbox must not be sent to Codex: {start}"
+        );
+        mock.respond(
+            start["id"].as_u64().unwrap(),
+            json!({ "thread": { "id": "runtime-thread" } }),
+        );
+
+        let session = task.await.unwrap().expect("fresh runtime session");
+        assert_eq!(session.thread_id(), "runtime-thread");
     }
 
     #[tokio::test]
