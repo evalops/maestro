@@ -70,10 +70,6 @@ export const COVERAGE_OPT_OUT = {
 		// validate (codex-rails-check.yml): AGENTS.md/skills template lint,
 		// paths-filtered to template files; required on the public repo only.
 		"validate",
-		// coverage-path-check / coverage (coverage.yml): advisory coverage
-		// visibility lane; the workflow header states it must never gate.
-		"coverage-path-check",
-		"coverage",
 		// integration-suite (integration.yml): conditional middle job gated by
 		// pull-request-path-check and aggregated by required `integration-tests`.
 		"integration-suite",
@@ -83,9 +79,6 @@ export const COVERAGE_OPT_OUT = {
 		// check (jetbrains-plugin.yml): paths-filtered plugin lane, independent
 		// of the native gates.
 		"check",
-		// perf-baselines (perf-baselines.yml): AGENTS.md — "the perf-baselines
-		// workflow is advisory and must not become a required status check".
-		"perf-baselines",
 		// required-checks-invariant (required-checks-invariant.yml): soft gate
 		// pending the Administration-read token grant
 		// (vars.REQUIRE_PROTECTION_INVARIANT); cannot be required until it can
