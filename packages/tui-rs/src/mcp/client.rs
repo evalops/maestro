@@ -1060,6 +1060,7 @@ impl McpClient {
         let connections = self.connections.read().await;
         let (_, tool_name, conn) =
             Self::resolve_prefixed_tool_with_connections(prefixed_name, &connections)?;
+        drop(connections);
         let mut conn = conn.lock().await;
         conn.call_tool(&tool_name, arguments).await
     }
@@ -1073,6 +1074,7 @@ impl McpClient {
         let connections = self.connections.read().await;
         let (server_name, tool_name, conn) =
             Self::resolve_prefixed_tool_with_connections(prefixed_name, &connections)?;
+        drop(connections);
         let mut conn = conn.lock().await;
         let result = conn.call_tool(&tool_name, arguments).await?;
         Ok((server_name, tool_name, result))
@@ -1950,6 +1952,47 @@ mod tests {
         let client = McpClient::new();
         let tools = client.list_all_tools().await;
         assert!(tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn tool_call_releases_connection_map_while_waiting_for_server() {
+        let client = Arc::new(McpClient::new());
+        let connection = Arc::new(Mutex::new(McpConnection::new(stub_config("busy"))));
+        connection.lock().await.initialized = true;
+        client
+            .connections
+            .write()
+            .await
+            .insert("busy".to_string(), Arc::clone(&connection));
+
+        let held_connection = connection.lock().await;
+        let queued_client = Arc::clone(&client);
+        let queued_call = tokio::spawn(async move {
+            queued_client
+                .call_tool_with_metadata(
+                    "mcp__busy__mutate",
+                    serde_json::json!({"value": "ignored"}),
+                )
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            !queued_call.is_finished(),
+            "the call must be queued behind the held connection lock"
+        );
+        let connections =
+            tokio::time::timeout(Duration::from_millis(250), client.connections.write())
+                .await
+                .expect("a queued tool call must not block connection-map writers");
+        drop(connections);
+        drop(held_connection);
+
+        queued_call.abort();
+        assert!(queued_call
+            .await
+            .expect_err("queued call must be aborted")
+            .is_cancelled());
     }
 
     #[tokio::test]

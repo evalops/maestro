@@ -1712,6 +1712,13 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 needs_redraw = true;
             }
 
+            // Drain agent output before entering the blocking terminal poll so
+            // an already-queued first token is not held for the 33ms busy tick.
+            let mut agent_activity = self.poll_agent().await?;
+            if agent_activity {
+                needs_redraw = true;
+            }
+
             // Empty chat runs the Deixic welcome sheen; advance paint only when
             // the quantized shimmer frame changes (~12 fps), not every idle tick.
             let welcome_animating = self.state.messages.is_empty() && !self.state.busy;
@@ -1725,15 +1732,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
             // Poll for terminal events. Shorter timeout while busy (animations)
             // or while the empty welcome sheen is active; longer while idle.
-            let poll_ms = if self.state.busy || welcome_animating {
-                33
-            } else {
-                100
-            };
+            let poll_timeout =
+                terminal_poll_timeout(self.state.busy, welcome_animating, agent_activity);
             self.poll_terminal_theme();
-            if let Some(event) =
-                self.poll_terminal_event(std::time::Duration::from_millis(poll_ms))?
-            {
+            if let Some(event) = self.poll_terminal_event(poll_timeout)? {
                 match event {
                     AppTerminalEvent::Key(key) if should_handle_key_event(key.kind) => {
                         self.handle_key(key.code, key.modifiers).await?;
@@ -1808,9 +1810,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 }
             }
 
-            // Poll for messages from the agent (async operation).
-            // This handles streaming responses, tool calls, etc.
-            let agent_activity = self.poll_agent().await?;
+            // Also drain messages that arrived while the terminal poll was in
+            // progress; the pre-poll drain handles messages already queued.
+            agent_activity |= self.poll_agent().await?;
             if agent_activity {
                 needs_redraw = true;
             }
@@ -4374,6 +4376,16 @@ fn policy_model_id(model: &str) -> String {
 /// Handle presses and repeats (so held keys auto-repeat); ignore releases.
 fn should_handle_key_event(kind: KeyEventKind) -> bool {
     matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat)
+}
+
+fn terminal_poll_timeout(busy: bool, welcome_animating: bool, agent_activity: bool) -> Duration {
+    if agent_activity {
+        Duration::ZERO
+    } else if busy || welcome_animating {
+        Duration::from_millis(33)
+    } else {
+        Duration::from_millis(100)
+    }
 }
 
 /// Combine an action-firewall reason and a sandbox-bypass warning into the

@@ -214,6 +214,44 @@ impl SnapshotManifest {
         Ok(())
     }
 
+    /// Reject a restore artifact that belongs to a different durable Maestro
+    /// session or tenant workspace. A replacement Runner Host session is
+    /// intentionally allowed: Platform creates a new runner session during a
+    /// drain/restore handoff, while the Maestro session remains the durable
+    /// continuity identity.
+    pub(super) fn validate_for_restore(&self, config: &HostedRunnerConfig) -> HostedResult<()> {
+        if let Some(expected_workspace_id) = config
+            .workload_identity
+            .as_ref()
+            .map(|identity| identity.workspace_id.as_str())
+            .or(config.workspace_id.as_deref())
+        {
+            if self.workspace_id.as_deref() != Some(expected_workspace_id) {
+                return Err(HostedError::new(
+                    HostedRunnerErrorCode::InvalidSnapshotManifest,
+                    "restore manifest workspace does not match the replacement runner",
+                ));
+            }
+        }
+        if let Some(expected_maestro_session_id) = config.maestro_session_id.as_deref() {
+            if self.maestro_session_id != expected_maestro_session_id {
+                return Err(HostedError::new(
+                    HostedRunnerErrorCode::InvalidSnapshotManifest,
+                    "restore manifest Maestro session does not match the replacement runner",
+                ));
+            }
+        }
+        if self.runtime.session_id != self.maestro_session_id
+            || self.snapshot.session_id != self.maestro_session_id
+        {
+            return Err(HostedError::new(
+                HostedRunnerErrorCode::InvalidSnapshotManifest,
+                "restore manifest contains inconsistent Maestro session identities",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn session_replay(&self) -> SessionReplay {
         let snapshot = &self.snapshot;
         let state = &snapshot.state;
