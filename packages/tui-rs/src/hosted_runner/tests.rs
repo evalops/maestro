@@ -4018,6 +4018,30 @@ fn snapshot_manifest_parser_accepts_typescript_hosted_shape() {
     assert_eq!(parsed.snapshot.session_id, "session_ts");
     assert_eq!(parsed.snapshot.cursor, 7);
     assert_eq!(parsed.workspace_export.paths[0].relative_path, "README.md");
+
+    let mut matching_restore = test_config(workspace.path().to_path_buf());
+    matching_restore.workspace_id = Some("ws_ts".to_string());
+    matching_restore.maestro_session_id = Some("session_ts".to_string());
+    matching_restore.runner_session_id = "mrs_replacement".to_string();
+    parsed
+        .validate_for_restore(&matching_restore)
+        .expect("a replacement Runner Host session may restore the same Maestro session");
+
+    let mut wrong_workspace = matching_restore.clone();
+    wrong_workspace.workspace_id = Some("ws_other".to_string());
+    let error = parsed
+        .validate_for_restore(&wrong_workspace)
+        .expect_err("workspace mismatch must reject restore");
+    assert_eq!(error.code, HostedRunnerErrorCode::InvalidSnapshotManifest);
+    assert!(error.message.contains("workspace"));
+
+    let mut wrong_session = matching_restore;
+    wrong_session.maestro_session_id = Some("session_other".to_string());
+    let error = parsed
+        .validate_for_restore(&wrong_session)
+        .expect_err("Maestro session mismatch must reject restore");
+    assert_eq!(error.code, HostedRunnerErrorCode::InvalidSnapshotManifest);
+    assert!(error.message.contains("Maestro session"));
 }
 
 #[test]

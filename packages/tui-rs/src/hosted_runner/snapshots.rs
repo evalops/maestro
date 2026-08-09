@@ -228,6 +228,10 @@ pub(super) async fn load_restore_manifest(
         )
     })?;
     parse_snapshot_manifest_bytes(&bytes, &config.workspace_root)
+        .and_then(|manifest| {
+            manifest.validate_for_restore(config)?;
+            Ok(manifest)
+        })
         .map(Some)
         .map_err(hosted_error_to_io)
 }
