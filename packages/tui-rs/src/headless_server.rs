@@ -40,14 +40,14 @@ use crate::agent::{
 };
 use crate::git;
 use crate::headless::messages::{
-    ApprovalMode, ClientCapabilities, ClientToolExecutionOwner, ClientToolResultContent, CodeMode,
+    ApprovalMode, ClientToolExecutionOwner, ClientToolResultContent, CodeMode,
     ExternalToolDefinition, FromAgentMessage, GovernedToolGrant, HeadlessErrorType,
     ServerRequestResolutionStatus, ServerRequestResolvedBy, ServerRequestType, ToAgentMessage,
     TokenUsage as HeadlessTokenUsage, ToolResult as HeadlessToolResult, ToolRetryDecisionAction,
     UtilityCommandShellMode, UtilityCommandStream, UtilityCommandTerminalMode,
-    UtilityFileSearchMatch, UtilityOperation,
+    UtilityFileSearchMatch,
 };
-use crate::headless::HEADLESS_PROTOCOL_VERSION;
+use crate::headless::{native_server_capabilities, HEADLESS_PROTOCOL_VERSION};
 
 /// Shared headless runtime metadata updated from Init / SessionInfo.
 #[derive(Debug, Default, Clone)]
@@ -951,6 +951,7 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                     })?;
                     break;
                 }
+                let client_capabilities = capabilities.clone();
                 if let Some(grade) = capabilities.and_then(|value| value.transcript_grade) {
                     state
                         .meta
@@ -963,7 +964,8 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                     connection_id: Some("native-local".to_string()),
                     client_protocol_version: protocol_version,
                     client_info,
-                    capabilities: Some(native_capabilities()),
+                    capabilities: client_capabilities,
+                    server_capabilities: Some(native_server_capabilities()),
                     opt_out_notifications,
                     role,
                     controller_connection_id: None,
@@ -1503,26 +1505,6 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
         emit(&message)?;
     }
     Ok(exit_code)
-}
-
-fn native_capabilities() -> ClientCapabilities {
-    ClientCapabilities {
-        server_requests: Some(vec![
-            ServerRequestType::Approval,
-            ServerRequestType::ClientTool,
-            ServerRequestType::UserInput,
-            ServerRequestType::ToolRetry,
-        ]),
-        utility_operations: Some(vec![
-            UtilityOperation::CommandExec,
-            UtilityOperation::FileSearch,
-            UtilityOperation::FileRead,
-            UtilityOperation::FileWatch,
-        ]),
-        raw_agent_events: Some(true),
-        transcript_grade: Some(crate::transcript::TranscriptGrade::Delta),
-        governed_code_mode: Some(true),
-    }
 }
 
 fn protocol_error(request_id: Option<String>, message: impl Into<String>) -> Result<()> {
@@ -3793,23 +3775,50 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
     }
 
     #[test]
-    fn native_capabilities_match_implemented_request_surface() {
-        let capabilities = native_capabilities();
+    fn native_server_capabilities_match_the_registry_and_request_surface() {
+        let capabilities = crate::headless::native_server_capabilities();
         assert_eq!(
             capabilities.utility_operations,
-            Some(vec![
-                UtilityOperation::CommandExec,
-                UtilityOperation::FileSearch,
-                UtilityOperation::FileRead,
-                UtilityOperation::FileWatch,
-            ])
+            vec![
+                crate::headless::UtilityOperation::CommandExec,
+                crate::headless::UtilityOperation::FileSearch,
+                crate::headless::UtilityOperation::FileRead,
+                crate::headless::UtilityOperation::FileWatch,
+            ]
         );
-        assert_eq!(capabilities.raw_agent_events, Some(true));
+        assert!(capabilities.raw_agent_events);
         assert_eq!(
-            capabilities.transcript_grade,
-            Some(crate::transcript::TranscriptGrade::Delta)
+            capabilities.server_requests,
+            vec![
+                crate::headless::ServerRequestType::Approval,
+                crate::headless::ServerRequestType::ClientTool,
+                crate::headless::ServerRequestType::UserInput,
+                crate::headless::ServerRequestType::ToolRetry,
+            ]
         );
-        assert_eq!(capabilities.server_requests.as_ref().map(Vec::len), Some(4));
+
+        let mut expected = crate::tools::ToolRegistry::new()
+            .tools()
+            .map(|definition| {
+                let name = definition.tool.name.clone();
+                crate::headless::NativeToolCapability {
+                    name: name.clone(),
+                    requires_approval: definition.requires_approval,
+                    version: crate::tools::versions::is_version_managed(&name)
+                        .then(|| "current".to_string()),
+                }
+            })
+            .collect::<Vec<_>>();
+        expected.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+        assert_eq!(capabilities.native_tools, expected);
+
+        let bash = capabilities
+            .native_tools
+            .iter()
+            .find(|tool| tool.name == "bash")
+            .expect("registry must advertise bash");
+        assert!(bash.requires_approval);
+        assert_eq!(bash.version.as_deref(), Some("current"));
     }
 
     #[test]

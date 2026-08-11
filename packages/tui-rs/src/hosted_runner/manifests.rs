@@ -13,8 +13,8 @@ use crate::headless::messages::{
     active_codex_subagent_status, codex_subagent_child_runs, codex_subagent_edge_key,
     codex_subagent_operation, codex_subagent_status_is_terminal, ApprovalMode, ClientCapabilities,
     ClientInfo, CodeMode, CodexSubagentContinuityEdge, ConnectionRole, ConnectionState,
-    FromAgentMessage, GovernedToolGrant, HeadlessErrorType, InitConfig, ThinkingLevel,
-    UtilityCommandShellMode, UtilityCommandTerminalMode, CODEX_SUBAGENT_TOOL_PREFIX,
+    FromAgentMessage, GovernedToolGrant, HeadlessErrorType, InitConfig, ServerCapabilities,
+    ThinkingLevel, UtilityCommandShellMode, UtilityCommandTerminalMode, CODEX_SUBAGENT_TOOL_PREFIX,
     CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 };
 use crate::headless::{AgentState, SessionReplay};
@@ -137,6 +137,8 @@ pub(super) struct RuntimeStateSnapshot {
     pub(super) last_ttft_ms: Option<u64>,
     pub(super) is_ready: bool,
     pub(super) is_responding: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) server_capabilities: Option<ServerCapabilities>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,6 +263,7 @@ impl SnapshotManifest {
                 client_protocol_version: state.client_protocol_version.clone(),
                 client_info: state.client_info.clone(),
                 capabilities: state.capabilities.clone(),
+                server_capabilities: state.server_capabilities.clone(),
                 opt_out_notifications: state.opt_out_notifications.clone(),
                 connection_role: state.connection_role,
                 connection_count: state.connection_count,

@@ -144,6 +144,13 @@ static SAFE_TOOLS: std::sync::LazyLock<HashSet<&'static str>> = std::sync::LazyL
         "status",
         "todo",
         "ask_user",
+        "get_harness_context",
+        "propose_harness_refinement",
+        "get_rlm_context",
+        "render_rlm_context",
+        "get_mailbox",
+        "read_mailbox",
+        "tool_search",
         "read_image",
         "mcp_list_resources",
         "mcp_read_resource",
@@ -1285,6 +1292,46 @@ mod tests {
     }
 
     #[test]
+    fn test_read_only_durable_context_tools_do_not_require_approval() {
+        let fw = test_firewall();
+
+        for tool in [
+            "get_harness_context",
+            "propose_harness_refinement",
+            "get_rlm_context",
+            "render_rlm_context",
+            "get_mailbox",
+            "read_mailbox",
+        ] {
+            assert!(
+                fw.check_tool(tool, &json!({})).is_allowed(),
+                "read-only context tool {tool} must not wait for operator approval"
+            );
+        }
+    }
+
+    #[test]
+    fn test_durable_context_tools_with_side_effects_require_approval() {
+        let fw = test_firewall();
+
+        for tool in [
+            "apply_harness_refinement",
+            "reject_harness_refinement",
+            "set_rlm_context",
+            "append_rlm_context",
+            "clear_rlm_context",
+            "send_mailbox",
+            "ack_mailbox",
+            "compact_mailbox",
+        ] {
+            assert!(
+                fw.check_tool(tool, &json!({})).requires_approval(),
+                "durable context tool with side effects {tool} must require operator approval"
+            );
+        }
+    }
+
+    #[test]
     fn test_check_tool_mcp_requires_approval_by_default() {
         let fw = test_firewall();
 
@@ -1333,6 +1380,17 @@ mod tests {
             !verdict.is_allowed(),
             "search cwd outside the workspace must not bypass path checks"
         );
+    }
+
+    #[test]
+    fn test_tool_search_activation_is_read_only() {
+        let fw = test_firewall();
+        assert!(fw
+            .check_tool(
+                "tool_search",
+                &json!({"query": "computer browser terminal"}),
+            )
+            .is_allowed());
     }
 
     #[test]

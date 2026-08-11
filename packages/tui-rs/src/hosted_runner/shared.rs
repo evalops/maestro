@@ -46,7 +46,8 @@ impl SharedRunner {
         let last_init = restored_snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.last_init.as_ref())
-            .and_then(RuntimeInitSnapshot::to_init_config);
+            .and_then(RuntimeInitSnapshot::to_init_config)
+            .or_else(|| loaded_thread.last_init.clone());
         let restore_status = restore_manifest
             .as_ref()
             .map(|manifest| manifest.runtime.flush_status);
@@ -275,6 +276,14 @@ impl SharedRunner {
                     .and_then(|connection| connection.capabilities.clone())
                     .or_else(|| agent_state.and_then(|state| state.capabilities.clone()))
                     .or_else(|| restored_state.and_then(|state| state.capabilities.clone())),
+                server_capabilities: agent_state.map_or_else(
+                    || {
+                        restored_state
+                            .and_then(|state| state.server_capabilities.clone())
+                            .or_else(|| Some(crate::headless::native_server_capabilities()))
+                    },
+                    |state| state.server_capabilities.clone(),
+                ),
                 opt_out_notifications: preferred_connection
                     .and_then(|connection| {
                         (!connection.opt_out_notifications.is_empty())
@@ -486,7 +495,8 @@ impl SharedRunner {
             self.config.runtime_generation,
             state.cursor,
             &state.envelopes,
-            ResponseIdempotencyView {
+            ThreadJournalMetadataView {
+                last_init: state.last_init.as_ref(),
                 keys: &state.response_idempotency_keys,
                 digests: &state.response_idempotency_digests,
                 request_owners: &state.response_request_owners,
@@ -556,15 +566,14 @@ impl SharedRunner {
         let Some(agent_state) = self.prune_pending_controller_events(state) else {
             return Vec::new();
         };
-        agent_state
-            .pending_client_tools
-            .iter()
+        pending_controller_requests(&agent_state)
+            .into_iter()
             .filter_map(|pending| {
                 state
                     .pending_controller_events
                     .iter()
                     .rev()
-                    .find(|message| pending_controller_event_matches(pending, message))
+                    .find(|message| pending_controller_event_matches(&pending, message))
                     .cloned()
             })
             .collect()
@@ -575,20 +584,29 @@ impl SharedRunner {
         state: &mut RunnerState,
     ) -> Option<AgentState> {
         let agent_state = self.message_executor.state().ok().flatten()?;
-        let live_pending = agent_state
-            .pending_client_tools
-            .iter()
-            .map(|pending| {
-                (
-                    (pending.call_id.as_str(), pending.request_id.as_deref()),
-                    pending,
-                )
-            })
-            .collect::<HashMap<_, _>>();
+        let live_pending = pending_controller_requests(&agent_state);
+        let mut live_index = HashMap::new();
+        for pending in &live_pending {
+            let key = pending_controller_request_key(pending);
+            live_index
+                .entry(key)
+                .or_insert_with(Vec::new)
+                .push(*pending);
+            if key.3.is_some() {
+                live_index
+                    .entry((key.0, key.1, key.2, None))
+                    .or_insert_with(Vec::new)
+                    .push(*pending);
+            }
+        }
         state.pending_controller_events.retain(|message| {
-            pending_controller_event_identity(message)
-                .and_then(|identity| live_pending.get(&identity))
-                .is_some_and(|pending| pending_controller_event_matches(pending, message))
+            pending_controller_event_key(message)
+                .and_then(|key| live_index.get(&key))
+                .is_some_and(|pending| {
+                    pending
+                        .iter()
+                        .any(|pending| pending_controller_event_matches(pending, message))
+                })
         });
         Some(agent_state)
     }
@@ -625,6 +643,7 @@ impl SharedRunner {
     }
 
     pub(super) fn publish_message(&self, state: &mut RunnerState, message: FromAgentMessage) {
+        let message = normalize_hosted_controller_request(message);
         // Stream chunks stay in the bounded in-memory replay buffer. Persist
         // only lifecycle boundaries so token streaming does not serialize and
         // fsync the entire journal for every chunk. A crash mid-response is
@@ -657,15 +676,14 @@ impl SharedRunner {
         });
         let agent_state = self.prune_pending_controller_events(state);
         let matching_pending = agent_state.as_ref().and_then(|agent_state| {
-            agent_state
-                .pending_client_tools
-                .iter()
+            pending_controller_requests(agent_state)
+                .into_iter()
                 .find(|pending| pending_controller_event_matches(pending, &message))
         });
         if let Some(pending) = matching_pending {
             state
                 .pending_controller_events
-                .retain(|existing| !pending_controller_event_matches(pending, existing));
+                .retain(|existing| !pending_controller_event_matches(&pending, existing));
             // Authoritative pending state is the bound: every live request keeps
             // exactly one raw event, regardless of the generic replay limit.
             state.pending_controller_events.push_back(message.clone());
@@ -994,6 +1012,28 @@ impl SharedRunner {
     }
 }
 
+fn normalize_hosted_controller_request(message: FromAgentMessage) -> FromAgentMessage {
+    match message {
+        FromAgentMessage::ToolCall {
+            call_id,
+            tool_execution_id,
+            tool,
+            args,
+            requires_approval: true,
+        } => FromAgentMessage::ServerRequest {
+            request_id: call_id.clone(),
+            request_type: ServerRequestType::Approval,
+            call_id,
+            tool_execution_id,
+            tool,
+            args,
+            reason: "tool requires approval".to_string(),
+            started_at_ms: None,
+        },
+        message => message,
+    }
+}
+
 fn coarse_replay_has_complete_response_boundaries(
     envelopes: &VecDeque<StreamEnvelope>,
     live_active_responses: &HashSet<String>,
@@ -1031,44 +1071,83 @@ fn coarse_replay_has_complete_response_boundaries(
         .all(|response_id| active_responses.contains(response_id.as_str()))
 }
 
-fn pending_controller_event_identity(message: &FromAgentMessage) -> Option<(&str, Option<&str>)> {
-    match message {
-        FromAgentMessage::ClientToolRequest { call_id, .. }
-        | FromAgentMessage::GovernedClientToolRequest { call_id, .. } => Some((call_id, None)),
-        FromAgentMessage::ServerRequest {
-            request_id,
-            request_type: ServerRequestType::ClientTool,
-            call_id,
-            ..
-        } => Some((
-            call_id,
-            (request_id != call_id).then_some(request_id.as_str()),
-        )),
-        _ => None,
+#[derive(Clone, Copy)]
+struct PendingControllerRequest<'a> {
+    request_type: ServerRequestType,
+    pending: &'a crate::headless::PendingApproval,
+}
+
+type PendingControllerEventKey<'a> = (u8, &'a str, Option<&'a str>, Option<&'a str>);
+
+const fn server_request_type_key(request_type: ServerRequestType) -> u8 {
+    match request_type {
+        ServerRequestType::Approval => 0,
+        ServerRequestType::ClientTool => 1,
+        ServerRequestType::UserInput => 2,
+        ServerRequestType::ToolRetry => 3,
     }
+}
+
+fn pending_controller_request_key<'a>(
+    request: &PendingControllerRequest<'a>,
+) -> PendingControllerEventKey<'a> {
+    (
+        server_request_type_key(request.request_type),
+        request.pending.call_id.as_str(),
+        request.pending.request_id.as_deref(),
+        request.pending.tool_execution_id.as_deref(),
+    )
+}
+
+fn pending_controller_requests(state: &AgentState) -> Vec<PendingControllerRequest<'_>> {
+    [
+        (ServerRequestType::Approval, &state.pending_approvals),
+        (ServerRequestType::ClientTool, &state.pending_client_tools),
+        (ServerRequestType::UserInput, &state.pending_user_inputs),
+        (ServerRequestType::ToolRetry, &state.pending_tool_retries),
+    ]
+    .into_iter()
+    .flat_map(|(request_type, pending)| {
+        pending.iter().map(move |pending| PendingControllerRequest {
+            request_type,
+            pending,
+        })
+    })
+    .collect()
 }
 
 fn pending_controller_event_key(
     message: &FromAgentMessage,
-) -> Option<(&str, Option<&str>, Option<&str>)> {
+) -> Option<PendingControllerEventKey<'_>> {
     match message {
         FromAgentMessage::ClientToolRequest {
             call_id,
             tool_execution_id,
             ..
-        } => Some((call_id, None, tool_execution_id.as_deref())),
+        } => Some((
+            server_request_type_key(ServerRequestType::ClientTool),
+            call_id,
+            None,
+            tool_execution_id.as_deref(),
+        )),
         FromAgentMessage::GovernedClientToolRequest {
             call_id,
             tool_execution_id,
             ..
-        } => Some((call_id, None, Some(tool_execution_id.as_str()))),
+        } => Some((
+            server_request_type_key(ServerRequestType::ClientTool),
+            call_id,
+            None,
+            Some(tool_execution_id.as_str()),
+        )),
         FromAgentMessage::ServerRequest {
             request_id,
-            request_type: ServerRequestType::ClientTool,
+            request_type,
             call_id,
             tool_execution_id,
             ..
         } => Some((
+            server_request_type_key(*request_type),
             call_id,
             (request_id != call_id).then_some(request_id.as_str()),
             tool_execution_id.as_deref(),
@@ -1078,16 +1157,18 @@ fn pending_controller_event_key(
 }
 
 fn pending_controller_event_matches(
-    pending: &crate::headless::PendingApproval,
+    request: &PendingControllerRequest<'_>,
     message: &FromAgentMessage,
 ) -> bool {
+    let pending = request.pending;
     match message {
         FromAgentMessage::ClientToolRequest {
             call_id,
             tool_execution_id,
             ..
         } => {
-            pending.request_id.is_none()
+            request.request_type == ServerRequestType::ClientTool
+                && pending.request_id.is_none()
                 && pending.call_id == *call_id
                 && pending.tool_execution_id == *tool_execution_id
         }
@@ -1096,19 +1177,21 @@ fn pending_controller_event_matches(
             tool_execution_id,
             ..
         } => {
-            pending.request_id.is_none()
+            request.request_type == ServerRequestType::ClientTool
+                && pending.request_id.is_none()
                 && pending.call_id == *call_id
                 && pending.tool_execution_id.as_deref() == Some(tool_execution_id.as_str())
         }
         FromAgentMessage::ServerRequest {
             request_id,
-            request_type: ServerRequestType::ClientTool,
+            request_type,
             call_id,
             tool_execution_id,
             ..
         } => {
             let request_id = (request_id != call_id).then_some(request_id.as_str());
-            pending.call_id == *call_id
+            request.request_type == *request_type
+                && pending.call_id == *call_id
                 && pending.request_id.as_deref() == request_id
                 && tool_execution_id.as_ref().is_none_or(|raw_execution_id| {
                     pending.tool_execution_id.as_ref() == Some(raw_execution_id)

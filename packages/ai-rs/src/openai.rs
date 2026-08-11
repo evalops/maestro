@@ -117,6 +117,9 @@ use super::types::{
     Role, StreamEvent, Tool,
 };
 
+pub(crate) const MANAGED_GATEWAY_RESPONSE_OPEN_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
 /// SSE event structure for Responses API (matches `OpenAI`'s format)
 ///
 /// # Serde Field Attributes
@@ -204,6 +207,20 @@ fn incomplete_response_error(response: Option<&serde_json::Value>) -> Incomplete
 
 const RESPONSES_MISSING_TERMINAL_EVENT_ERROR: &str =
     "openai_response_protocol_error: kind=transient reason=missing_terminal_event";
+
+async fn send_with_response_open_timeout(
+    request: reqwest::RequestBuilder,
+    timeout: Option<std::time::Duration>,
+) -> Result<reqwest::Response> {
+    let send = request.send();
+    match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, send)
+            .await
+            .map_err(|_| anyhow::anyhow!("managed gateway response headers timed out"))?,
+        None => send.await,
+    }
+    .context("Failed to send request to OpenAI API")
+}
 
 fn missing_text_suffix(emitted: &str, aggregate: &str) -> Option<String> {
     if aggregate.is_empty() || emitted.starts_with(aggregate) {
@@ -571,10 +588,11 @@ fn strip_provider_model_prefix<'a>(model: &'a str, provider: &str) -> &'a str {
 /// OpenRouter exposes one OpenAI-compatible Chat Completions surface for its
 /// broad model catalog. Its model ids are opaque, often nested
 /// (`openrouter/anthropic/claude-...`), and must not inherit OpenAI's model-name
-/// heuristic. The explicitly mapped gpt-5.6 family is the one OpenRouter
-/// Responses route currently owned by Platform; all other OpenRouter ids stay
-/// on Chat Completions so adding a new upstream model cannot accidentally send
-/// it through an incompatible beta shape.
+/// heuristic. OpenRouter's stable Chat Completions surface owns routed models;
+/// only the explicitly mapped plain gpt-5.6 alias remains on its beta Responses
+/// surface. In particular, Terra must use Chat Completions: production proved
+/// that the beta Responses route can accept the request without opening a
+/// response, exhausting the bounded stream retry budget without an answer.
 fn uses_responses_api(provider: Option<&str>, model: &str) -> bool {
     let managed_namespace = has_managed_model_prefix(model);
     let model = strip_managed_model_prefix(model).trim();
@@ -592,7 +610,7 @@ fn uses_responses_api(provider: Option<&str>, model: &str) -> bool {
     let normalized = normalized.to_ascii_lowercase();
 
     if is_openrouter {
-        return normalized == "gpt-5.6" || normalized.starts_with("gpt-5.6-");
+        return normalized == "gpt-5.6";
     }
 
     // Direct OpenAI and managed OpenAI routes use the Responses families
@@ -702,6 +720,8 @@ pub struct OpenAiClient {
     request_extensions: serde_json::Map<String, serde_json::Value>,
     managed_gateway: bool,
     route_provider: Option<String>,
+    #[cfg(test)]
+    response_open_timeout_override: Option<std::time::Duration>,
 }
 
 impl OpenAiClient {
@@ -721,6 +741,8 @@ impl OpenAiClient {
             request_extensions: serde_json::Map::new(),
             managed_gateway: false,
             route_provider: None,
+            #[cfg(test)]
+            response_open_timeout_override: None,
         })
     }
 
@@ -740,6 +762,8 @@ impl OpenAiClient {
             request_extensions: serde_json::Map::new(),
             managed_gateway: false,
             route_provider: None,
+            #[cfg(test)]
+            response_open_timeout_override: None,
         })
     }
 
@@ -750,6 +774,28 @@ impl OpenAiClient {
 
     pub(crate) fn routed_provider(&self) -> Option<&str> {
         self.route_provider.as_deref()
+    }
+
+    pub(crate) fn is_managed_gateway(&self) -> bool {
+        self.managed_gateway
+    }
+
+    fn response_open_timeout(&self) -> Option<std::time::Duration> {
+        #[cfg(test)]
+        if let Some(timeout) = self.response_open_timeout_override {
+            return Some(timeout);
+        }
+        self.managed_gateway
+            .then_some(MANAGED_GATEWAY_RESPONSE_OPEN_TIMEOUT)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_response_open_timeout_for_test(
+        mut self,
+        timeout: std::time::Duration,
+    ) -> Self {
+        self.response_open_timeout_override = Some(timeout);
+        self
     }
 
     pub(crate) fn with_managed_gateway_context(
@@ -1454,20 +1500,31 @@ impl AiClient for OpenAiClient {
         let api_url = self.request_url(&config.model);
 
         // Make request
-        let response = self
+        let request = self
             .client
             .post(&api_url)
             .headers(self.headers())
-            .json(&body)
-            .send()
-            .await
-            .context("Failed to send request to OpenAI API")?;
+            .json(&body);
+        let response =
+            send_with_response_open_timeout(request, self.response_open_timeout()).await?;
 
         // Check for errors
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            let _ = tx.send(StreamEvent::Error {
+            let kind = if status.is_server_error()
+                || matches!(
+                    status,
+                    reqwest::StatusCode::REQUEST_TIMEOUT
+                        | reqwest::StatusCode::CONFLICT
+                        | reqwest::StatusCode::TOO_MANY_REQUESTS
+                ) {
+                ProviderStreamErrorKind::TransientProtocol
+            } else {
+                ProviderStreamErrorKind::ProviderDeclaredFailure
+            };
+            let _ = tx.send(StreamEvent::ProviderError {
+                kind,
                 message: format!(
                     "API error {status}: {}",
                     super::summarize_error_body(&error_text)
@@ -1848,7 +1905,8 @@ impl AiClient for OpenAiClient {
                             }
                         }
                         Err(e) => {
-                            let _ = tx.send(StreamEvent::Error {
+                            let _ = tx.send(StreamEvent::ProviderError {
+                                kind: ProviderStreamErrorKind::TransientProtocol,
                                 message: format!("SSE stream error: {e}"),
                             });
                             return;
@@ -2044,7 +2102,8 @@ impl AiClient for OpenAiClient {
                             }
                         }
                         Err(e) => {
-                            let _ = tx.send(StreamEvent::Error {
+                            let _ = tx.send(StreamEvent::ProviderError {
+                                kind: ProviderStreamErrorKind::TransientProtocol,
                                 message: format!("Stream error: {e}"),
                             });
                             break;
@@ -2342,7 +2401,7 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_model_ids_use_chat_completions_except_mapped_responses_family() {
+    fn openrouter_models_use_stable_chat_completions_except_plain_gpt_5_6() {
         for model in [
             "openrouter/anthropic/claude-sonnet-4.5",
             "openrouter/google/gemini-2.5-pro",
@@ -2351,27 +2410,20 @@ mod tests {
             "openrouter/openai/o3-mini",
             "openrouter/openrouter/auto",
             "evalops/openrouter/gpt-5.6",
-        ] {
-            assert!(
-                !uses_responses_api(None, model),
-                "unmapped OpenRouter model must use Chat Completions: {model}"
-            );
-        }
-        for model in [
-            "openrouter/gpt-5.6",
             "openrouter/gpt-5.6-terra",
             "openrouter/openai/gpt-5.6-terra",
         ] {
             assert!(
-                uses_responses_api(None, model),
-                "mapped OpenRouter Responses model must use Responses: {model}"
+                !uses_responses_api(None, model),
+                "OpenRouter model must use Chat Completions: {model}"
             );
         }
+        assert!(uses_responses_api(None, "openrouter/gpt-5.6"));
         assert!(uses_responses_api(
             Some("openrouter"),
             "evalops/openai/gpt-5.6"
         ));
-        assert!(uses_responses_api(
+        assert!(!uses_responses_api(
             Some("openrouter"),
             "evalops/openai/gpt-5.6-terra"
         ));
@@ -2576,19 +2628,19 @@ mod tests {
         );
         assert_eq!(chat_body["model"], "anthropic/claude-sonnet-4.5");
 
-        let responses_body = client.build_request_body(
+        let terra_body = client.build_request_body(
             &messages,
             &RequestConfig {
                 model: "openai/gpt-5.6-terra".to_string(),
                 ..Default::default()
             },
         );
-        assert_eq!(responses_body["model"], "openai/gpt-5.6-terra");
-        assert!(responses_body.get("input").is_some());
-        assert!(responses_body.get("messages").is_none());
+        assert_eq!(terra_body["model"], "openai/gpt-5.6-terra");
+        assert!(terra_body.get("messages").is_some());
+        assert!(terra_body.get("input").is_none());
         assert_eq!(
             client.request_url("openai/gpt-5.6-terra"),
-            "https://openrouter.example/v1/responses"
+            "https://openrouter.example/v1/chat/completions"
         );
     }
 
@@ -2871,6 +2923,10 @@ mod tests {
             client.headers().get("x-organization-id").unwrap(),
             "org_123"
         );
+        assert_eq!(
+            client.response_open_timeout(),
+            Some(MANAGED_GATEWAY_RESPONSE_OPEN_TIMEOUT)
+        );
 
         let body = client.build_request_body(
             &[Message {
@@ -2884,6 +2940,120 @@ mod tests {
         );
         assert_eq!(body["provider_ref"]["provider"], "anthropic");
         assert_eq!(body["provider_ref"]["credential_name"], "team-shared");
+    }
+
+    #[tokio::test]
+    async fn managed_gateway_timeout_response_is_a_typed_transient_stream_failure() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock gateway");
+        let address = listener.local_addr().expect("mock gateway address");
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept gateway request");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).expect("read gateway request");
+            let body = r#"{"error":{"type":"server_error","message":"operation timeout"}}"#;
+            write!(
+                stream,
+                "HTTP/1.1 504 Gateway Timeout\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body,
+            )
+            .expect("write gateway timeout");
+        });
+
+        let client = OpenAiClient::with_base_url("delegated-token", format!("http://{address}/v1"))
+            .unwrap()
+            .with_managed_gateway_context(
+                "org_123",
+                serde_json::json!({
+                    "provider": "openrouter",
+                    "environment": "prod",
+                    "credential_name": "default"
+                }),
+            )
+            .unwrap();
+        let mut events = client
+            .stream(
+                &[],
+                &RequestConfig {
+                    model: "evalops/openai/gpt-5.6-terra".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("gateway response opened");
+
+        assert!(matches!(
+            events.recv().await,
+            Some(StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message,
+            }) if message.contains("504 Gateway Timeout")
+        ));
+    }
+
+    #[tokio::test]
+    async fn managed_gateway_response_open_timeout_stops_stalled_headers() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock gateway");
+        let address = listener.local_addr().expect("mock gateway address");
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept gateway request");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).expect("read gateway request");
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        });
+
+        let request = reqwest::Client::new().get(format!("http://{address}/responses"));
+        let error =
+            send_with_response_open_timeout(request, Some(std::time::Duration::from_millis(25)))
+                .await
+                .expect_err("stalled response opening must time out");
+
+        assert!(
+            error
+                .to_string()
+                .contains("managed gateway response headers timed out"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_gateway_response_open_timeout_does_not_cover_stream_body() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock gateway");
+        let address = listener.local_addr().expect("mock gateway address");
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept gateway request");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).expect("read gateway request");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\n")
+                .expect("write response headers");
+            stream.flush().expect("flush response headers");
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            stream.write_all(b"hello").expect("write delayed body");
+        });
+
+        let request = reqwest::Client::new().get(format!("http://{address}/responses"));
+        let response =
+            send_with_response_open_timeout(request, Some(std::time::Duration::from_millis(50)))
+                .await
+                .expect("response headers should arrive within the open timeout");
+        let body = response
+            .text()
+            .await
+            .expect("body may continue past the response-open timeout");
+
+        assert_eq!(body, "hello");
     }
 
     #[test]

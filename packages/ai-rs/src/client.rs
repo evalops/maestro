@@ -243,6 +243,15 @@ pub const DEFAULT_STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration
 /// before the failure is surfaced to the caller as a terminal error.
 pub const DEFAULT_STREAM_MAX_RETRIES: u32 = 2;
 
+/// Managed gateway calls are interactive product traffic. Bound both a
+/// request that never opens and a stream that opens without producing an
+/// event tightly enough for the outer turn lifecycle to observe terminal
+/// failure. Two retries retain transient recovery without leaving the turn
+/// indefinitely RUNNING.
+pub const MANAGED_GATEWAY_STREAM_IDLE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30);
+pub const MANAGED_GATEWAY_STREAM_MAX_RETRIES: u32 = 2;
+
 /// Unified AI client trait
 #[allow(async_fn_in_trait)]
 pub trait AiClient: Send + Sync {
@@ -288,6 +297,20 @@ pub enum UnifiedClient {
 }
 
 impl UnifiedClient {
+    fn stream_idle_policy(&self) -> (std::time::Duration, u32) {
+        match self {
+            Self::OpenAI(client) if client.is_managed_gateway() => (
+                MANAGED_GATEWAY_STREAM_IDLE_TIMEOUT,
+                MANAGED_GATEWAY_STREAM_MAX_RETRIES,
+            ),
+            _ => (DEFAULT_STREAM_IDLE_TIMEOUT, DEFAULT_STREAM_MAX_RETRIES),
+        }
+    }
+
+    fn stream_owner_starts_initial_attempt(&self) -> bool {
+        matches!(self, Self::OpenAI(client) if client.is_managed_gateway())
+    }
+
     /// Create client for Anthropic
     pub fn anthropic() -> Result<Self> {
         Ok(Self::Anthropic(AnthropicClient::from_env()?))
@@ -631,6 +654,7 @@ impl UnifiedClient {
         config: RequestConfig,
     ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
         let provider = self.provider_name().to_string();
+        let (idle_timeout, max_retries) = self.stream_idle_policy();
         let model = config.model.trim().to_string();
         let provider_model = telemetry_provider_model(&provider, &model);
         let started = Instant::now();
@@ -646,32 +670,40 @@ impl UnifiedClient {
             thinking_enabled = config.thinking.is_some(),
             cache_system_prompt = config.cache_system_prompt,
         );
-        // Start the first attempt inline so connect/request failures surface
-        // from this call exactly as they did before the idle policy existed.
-        let first = match self.stream_once(messages.as_slice(), &config).await {
-            Ok(first) => first,
-            Err(error) => {
-                tracing::warn!(
-                    target: "maestro.llm",
-                    event = "llm_stream_start_failed",
-                    provider = %provider,
-                    model = %model,
-                    provider_model = %provider_model,
-                    duration_ms = started.elapsed().as_millis() as u64,
-                    outcome = "request_error",
-                );
-                return Err(error);
-            }
+        // Managed-gateway response opening is part of the bounded provider
+        // attempt budget. Starting it here would let an opening timeout escape
+        // to the native request loop before the stream retry owner exists,
+        // producing one outer retry plus a fresh inner retry budget. Direct
+        // providers retain their historical synchronous start-error contract.
+        let first = if self.stream_owner_starts_initial_attempt() {
+            None
+        } else {
+            let first = match self.stream_once(messages.as_slice(), &config).await {
+                Ok(first) => first,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "maestro.llm",
+                        event = "llm_stream_start_failed",
+                        provider = %provider,
+                        model = %model,
+                        provider_model = %provider_model,
+                        duration_ms = started.elapsed().as_millis() as u64,
+                        outcome = "request_error",
+                    );
+                    return Err(error);
+                }
+            };
+            tracing::debug!(
+                target: "maestro.llm",
+                event = "llm_stream_open",
+                provider = %provider,
+                model = %model,
+                provider_model = %provider_model,
+                duration_ms = started.elapsed().as_millis() as u64,
+                outcome = "stream_open",
+            );
+            Some(first)
         };
-        tracing::debug!(
-            target: "maestro.llm",
-            event = "llm_stream_open",
-            provider = %provider,
-            model = %model,
-            provider_model = %provider_model,
-            duration_ms = started.elapsed().as_millis() as u64,
-            outcome = "stream_open",
-        );
 
         let (tx, rx) = mpsc::unbounded_channel();
         let client = self.clone();
@@ -698,8 +730,8 @@ impl UnifiedClient {
                                 .await
                         }
                     },
-                    DEFAULT_STREAM_IDLE_TIMEOUT,
-                    DEFAULT_STREAM_MAX_RETRIES,
+                    idle_timeout,
+                    max_retries,
                     tx,
                 )
                 .await;
@@ -736,20 +768,23 @@ impl UnifiedClient {
 /// Forward events from streaming attempts to `tx`, bounding how long an
 /// attempt may go without delivering any event.
 ///
-/// `first` is the already-started first attempt; `begin_attempt` starts a
-/// fresh attempt and is only used for retries. An attempt that stalls (no
-/// event for `idle_timeout`) is retried from scratch up to `max_retries`
-/// times, but only while no content event has been forwarded yet — replaying
-/// a request after partial content would duplicate it for the consumer. A
-/// stall after partial content, an attempt that closes without a terminal
-/// event, or retries that are exhausted produces a typed transient protocol
-/// error. Retry decisions are independent from that final classification.
+/// `first` is an optional already-started first attempt. Managed-gateway
+/// callers pass `None`, making this function the sole owner of opening the
+/// first request and every retry. Other providers preserve their historical
+/// inline-open behavior by passing `Some`. An attempt that stalls (no
+/// event for `idle_timeout`) or returns a typed transient provider error is
+/// retried from scratch up to `max_retries` times, but only while no content
+/// event has been forwarded yet — replaying a request after partial content
+/// would duplicate it for the consumer. A stall after partial content, an
+/// attempt that closes without a terminal event, or retries that are exhausted
+/// produces a typed transient protocol error.
 ///
-/// Only the streaming phase is bounded here; request/connect semantics are
-/// unchanged. A retried attempt's receiver is dropped, which detaches the
-/// provider's stream task until its HTTP connection ends.
+/// For managed gateways, response opening and streaming share this budget.
+/// Other providers keep their existing request/connect semantics. A retried
+/// attempt's receiver is dropped, which detaches the provider's stream task
+/// until its HTTP connection ends.
 async fn forward_stream_with_idle_policy<F, Fut>(
-    first: mpsc::UnboundedReceiver<StreamEvent>,
+    first: Option<mpsc::UnboundedReceiver<StreamEvent>>,
     begin_attempt: F,
     idle_timeout: std::time::Duration,
     max_retries: u32,
@@ -759,13 +794,67 @@ async fn forward_stream_with_idle_policy<F, Fut>(
     Fut: std::future::Future<Output = Result<mpsc::UnboundedReceiver<StreamEvent>>>,
 {
     let max_attempts = max_retries.saturating_add(1);
-    let mut attempt = 1u32;
-    let mut attempt_rx = first;
+    let mut attempt = u32::from(first.is_some());
+    let mut pending_attempt = first;
     let mut begin_attempt = Some(begin_attempt);
     let stream_started = Instant::now();
-    let mut attempt_started = Instant::now();
     let mut events_forwarded = 0u64;
     loop {
+        let mut attempt_rx = if let Some(first) = pending_attempt.take() {
+            first
+        } else {
+            loop {
+                attempt += 1;
+                let Some(begin_attempt_fn) = begin_attempt.as_mut() else {
+                    tracing::error!(
+                        target: "maestro.llm",
+                        event = "llm_stream_failed",
+                        reason = "retry_state_unavailable",
+                        attempt,
+                        max_attempts,
+                        duration_ms = stream_started.elapsed().as_millis() as u64,
+                        events_forwarded,
+                    );
+                    let _ = tx.send(StreamEvent::ProviderError {
+                        kind: ProviderStreamErrorKind::TransientProtocol,
+                        message: "Provider stream retry state was unavailable".to_string(),
+                    });
+                    return;
+                };
+                match begin_attempt_fn().await {
+                    Ok(next) => break next,
+                    Err(err) if attempt < max_attempts => {
+                        tracing::warn!(
+                            target: "maestro.llm",
+                            event = "llm_stream_retry",
+                            reason = "attempt_open_failed",
+                            attempt,
+                            max_attempts,
+                            duration_ms = stream_started.elapsed().as_millis() as u64,
+                            events_forwarded,
+                            error = %err,
+                        );
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            target: "maestro.llm",
+                            event = "llm_stream_failed",
+                            reason = "attempt_open_failed",
+                            attempt,
+                            max_attempts,
+                            duration_ms = stream_started.elapsed().as_millis() as u64,
+                            events_forwarded,
+                        );
+                        let _ = tx.send(StreamEvent::ProviderError {
+                            kind: ProviderStreamErrorKind::TransientProtocol,
+                            message: format!("Provider stream opening failed: {err:#}"),
+                        });
+                        return;
+                    }
+                }
+            }
+        };
+        let attempt_started = Instant::now();
         let mut committed_content = false;
         loop {
             let event = match tokio::time::timeout(idle_timeout, attempt_rx.recv()).await {
@@ -869,6 +958,28 @@ async fn forward_stream_with_idle_policy<F, Fut>(
                 // normal successful path.
                 begin_attempt = None;
             }
+            if matches!(
+                &event,
+                StreamEvent::ProviderError {
+                    kind: ProviderStreamErrorKind::TransientProtocol,
+                    ..
+                }
+            ) && !committed_content
+                && attempt < max_attempts
+            {
+                tracing::warn!(
+                    target: "maestro.llm",
+                    event = "llm_stream_retry",
+                    reason = "transient_provider_error",
+                    attempt,
+                    max_attempts,
+                    committed_content,
+                    attempt_duration_ms = attempt_started.elapsed().as_millis() as u64,
+                    duration_ms = stream_started.elapsed().as_millis() as u64,
+                    events_forwarded,
+                );
+                break;
+            }
             let terminal_error = matches!(
                 &event,
                 StreamEvent::Error { .. } | StreamEvent::ProviderError { .. }
@@ -922,41 +1033,6 @@ async fn forward_stream_with_idle_policy<F, Fut>(
                         events_forwarded,
                     );
                 }
-                return;
-            }
-        }
-        attempt += 1;
-        attempt_started = Instant::now();
-        let Some(begin_attempt_fn) = begin_attempt.as_mut() else {
-            tracing::error!(
-                target: "maestro.llm",
-                event = "llm_stream_failed",
-                reason = "retry_state_unavailable",
-                attempt,
-                max_attempts,
-                duration_ms = stream_started.elapsed().as_millis() as u64,
-                events_forwarded,
-            );
-            let _ = tx.send(StreamEvent::Error {
-                message: "Provider stream retry state was unavailable".to_string(),
-            });
-            return;
-        };
-        match begin_attempt_fn().await {
-            Ok(next) => attempt_rx = next,
-            Err(err) => {
-                tracing::error!(
-                    target: "maestro.llm",
-                    event = "llm_stream_failed",
-                    reason = "retry_start_failed",
-                    attempt,
-                    max_attempts,
-                    duration_ms = stream_started.elapsed().as_millis() as u64,
-                    events_forwarded,
-                );
-                let _ = tx.send(StreamEvent::Error {
-                    message: format!("Provider stream retry failed: {err:#}"),
-                });
                 return;
             }
         }
@@ -1481,6 +1557,37 @@ mod stream_idle_policy_tests {
         assert_eq!(DEFAULT_STREAM_MAX_RETRIES, 2);
     }
 
+    #[test]
+    fn managed_gateway_uses_product_bounded_stream_policy() {
+        let direct = UnifiedClient::OpenAI(OpenAiClient::new("test-key").expect("direct client"));
+        assert_eq!(
+            direct.stream_idle_policy(),
+            (DEFAULT_STREAM_IDLE_TIMEOUT, DEFAULT_STREAM_MAX_RETRIES)
+        );
+
+        let managed = UnifiedClient::OpenAI(
+            OpenAiClient::with_base_url("delegated-token", "http://gateway.invalid/v1")
+                .expect("managed client")
+                .with_managed_gateway_context(
+                    "org-test",
+                    serde_json::json!({
+                        "provider": "openrouter",
+                        "environment": "production",
+                        "credential_name": "default"
+                    }),
+                )
+                .expect("managed scope"),
+        );
+        assert_eq!(
+            managed.stream_idle_policy(),
+            (
+                MANAGED_GATEWAY_STREAM_IDLE_TIMEOUT,
+                MANAGED_GATEWAY_STREAM_MAX_RETRIES
+            )
+        );
+        assert_eq!(MANAGED_GATEWAY_STREAM_IDLE_TIMEOUT, Duration::from_secs(30));
+    }
+
     #[tokio::test]
     async fn stalled_stream_exhausts_retries_and_surfaces_error() {
         let attempts = Attempts::new(AtomicU32::new(0));
@@ -1489,7 +1596,7 @@ mod stream_idle_policy_tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         forward_stream_with_idle_policy(
-            first,
+            Some(first),
             || {
                 attempts.fetch_add(1, Ordering::SeqCst);
                 let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
@@ -1543,7 +1650,7 @@ mod stream_idle_policy_tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         forward_stream_with_idle_policy(
-            attempt_rx,
+            Some(attempt_rx),
             || {
                 retried.fetch_add(1, Ordering::SeqCst);
                 let (retry_tx, retry_rx) = mpsc::unbounded_channel();
@@ -1579,7 +1686,7 @@ mod stream_idle_policy_tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         forward_stream_with_idle_policy(
-            first,
+            Some(first),
             || {
                 attempts.fetch_add(1, Ordering::SeqCst);
                 let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
@@ -1618,7 +1725,7 @@ mod stream_idle_policy_tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         forward_stream_with_idle_policy(
-            first_rx,
+            Some(first_rx),
             || {
                 attempts.fetch_add(1, Ordering::SeqCst);
                 let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
@@ -1648,7 +1755,7 @@ mod stream_idle_policy_tests {
     }
 
     #[tokio::test]
-    async fn provider_error_event_is_forwarded_without_retry() {
+    async fn legacy_untyped_error_is_forwarded_without_retry() {
         let retried = Attempts::new(AtomicU32::new(0));
         let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
         attempt_tx
@@ -1660,7 +1767,7 @@ mod stream_idle_policy_tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         forward_stream_with_idle_policy(
-            attempt_rx,
+            Some(attempt_rx),
             || {
                 retried.fetch_add(1, Ordering::SeqCst);
                 async move { unreachable!("provider errors must not retry") }
@@ -1680,6 +1787,240 @@ mod stream_idle_policy_tests {
     }
 
     #[tokio::test]
+    async fn transient_provider_error_is_retried_only_by_stream_owner() {
+        let attempts = Attempts::new(AtomicU32::new(0));
+        let (first_tx, first_rx) = mpsc::unbounded_channel();
+        first_tx
+            .send(StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message: "gateway operation timeout".to_string(),
+            })
+            .unwrap();
+        drop(first_tx);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        forward_stream_with_idle_policy(
+            Some(first_rx),
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
+                attempt_tx
+                    .send(StreamEvent::ProviderError {
+                        kind: ProviderStreamErrorKind::TransientProtocol,
+                        message: "gateway operation timeout".to_string(),
+                    })
+                    .unwrap();
+                drop(attempt_tx);
+                async move { Ok(attempt_rx) }
+            },
+            IDLE,
+            RETRIES,
+            tx,
+        )
+        .await;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), RETRIES);
+        let events = drain(&mut rx);
+        assert!(matches!(
+            events.as_slice(),
+            [StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message,
+            }] if message == "gateway operation timeout"
+        ));
+    }
+
+    #[tokio::test]
+    async fn retry_open_failures_exhaust_one_stream_budget_with_one_typed_terminal() {
+        let retry_starts = Attempts::new(AtomicU32::new(0));
+        let (first_tx, first_rx) = mpsc::unbounded_channel();
+        first_tx
+            .send(StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message: "gateway operation timeout".to_string(),
+            })
+            .unwrap();
+        drop(first_tx);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        forward_stream_with_idle_policy(
+            Some(first_rx),
+            || {
+                retry_starts.fetch_add(1, Ordering::SeqCst);
+                async { Err(anyhow::anyhow!("gateway response-open timeout")) }
+            },
+            IDLE,
+            RETRIES,
+            tx,
+        )
+        .await;
+
+        assert_eq!(
+            retry_starts.load(Ordering::SeqCst),
+            RETRIES,
+            "the initial request plus retry starts must equal the bounded attempt budget"
+        );
+        let events = drain(&mut rx);
+        assert!(matches!(
+            events.as_slice(),
+            [StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message,
+            }] if message.contains("gateway response-open timeout")
+        ));
+    }
+
+    #[tokio::test]
+    async fn managed_gateway_timeout_has_one_bounded_retry_owner() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock gateway");
+        let address = listener.local_addr().expect("mock gateway address");
+        let requests = Attempts::new(AtomicU32::new(0));
+        let server_requests = Arc::clone(&requests);
+        let server = std::thread::spawn(move || {
+            for _ in 0..=MANAGED_GATEWAY_STREAM_MAX_RETRIES {
+                let (mut stream, _) = listener.accept().expect("accept gateway request");
+                let mut request = [0_u8; 4096];
+                let _ = stream.read(&mut request).expect("read gateway request");
+                server_requests.fetch_add(1, Ordering::SeqCst);
+                let body = r#"{"error":{"type":"server_error","message":"operation timed out"}}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 504 Gateway Timeout\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body,
+                )
+                .expect("write gateway timeout");
+            }
+        });
+
+        let client = UnifiedClient::OpenAI(
+            OpenAiClient::with_base_url("delegated-token", format!("http://{address}/v1"))
+                .expect("managed gateway client")
+                .with_managed_gateway_context(
+                    "org-test",
+                    serde_json::json!({
+                        "provider": "openrouter",
+                        "environment": "production",
+                        "credential_name": "default"
+                    }),
+                )
+                .expect("managed gateway scope"),
+        );
+        let mut events = client
+            .stream_owned_config_shared_messages(
+                Arc::new(Vec::new()),
+                RequestConfig {
+                    model: "evalops/openai/gpt-5.6-terra".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("gateway stream opens");
+
+        assert!(matches!(
+            events.recv().await,
+            Some(StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message,
+            }) if message.contains("504 Gateway Timeout")
+        ));
+        assert!(
+            events.recv().await.is_none(),
+            "terminal error must be emitted once"
+        );
+        server.join().expect("mock gateway server");
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            MANAGED_GATEWAY_STREAM_MAX_RETRIES + 1,
+            "the stream owner must be the only retry owner"
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_gateway_response_open_timeouts_share_the_stream_attempt_budget() {
+        use std::io::Read;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind stalled mock gateway");
+        listener
+            .set_nonblocking(true)
+            .expect("set mock gateway nonblocking");
+        let address = listener.local_addr().expect("mock gateway address");
+        let requests = Attempts::new(AtomicU32::new(0));
+        let server_requests = Arc::clone(&requests);
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_millis(500);
+            let mut last_request = std::time::Instant::now();
+            while std::time::Instant::now() < deadline
+                && (server_requests.load(Ordering::SeqCst) < MANAGED_GATEWAY_STREAM_MAX_RETRIES + 1
+                    || last_request.elapsed() < Duration::from_millis(100))
+            {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request = [0_u8; 4096];
+                        let _ = stream.read(&mut request).expect("read gateway request");
+                        server_requests.fetch_add(1, Ordering::SeqCst);
+                        last_request = std::time::Instant::now();
+                        // Accept the request but never open an HTTP response.
+                        // Keep the socket alive past the client-side boundary.
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("accept mock gateway request: {error}"),
+                }
+            }
+        });
+
+        let client = UnifiedClient::OpenAI(
+            OpenAiClient::with_base_url("delegated-token", format!("http://{address}/v1"))
+                .expect("managed gateway client")
+                .with_managed_gateway_context(
+                    "org-test",
+                    serde_json::json!({
+                        "provider": "openrouter",
+                        "environment": "production",
+                        "credential_name": "default"
+                    }),
+                )
+                .expect("managed gateway scope")
+                .with_response_open_timeout_for_test(Duration::from_millis(25)),
+        );
+        let mut events = client
+            .stream_owned_config_shared_messages(
+                Arc::new(Vec::new()),
+                RequestConfig {
+                    model: "evalops/openai/gpt-5.6-terra".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("stream owner is established before opening attempt one");
+
+        assert!(matches!(
+            events.recv().await,
+            Some(StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message,
+            }) if message.contains("response headers timed out")
+        ));
+        assert!(
+            events.recv().await.is_none(),
+            "exhaustion must emit exactly one typed terminal event"
+        );
+        server.join().expect("mock gateway server");
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            MANAGED_GATEWAY_STREAM_MAX_RETRIES + 1,
+            "initial response opening and retries must share one three-attempt budget"
+        );
+    }
+
+    #[tokio::test]
     async fn deterministic_request_error_is_forwarded_once_without_retry() {
         let retried = Attempts::new(AtomicU32::new(0));
         let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
@@ -1693,7 +2034,7 @@ mod stream_idle_policy_tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         forward_stream_with_idle_policy(
-            attempt_rx,
+            Some(attempt_rx),
             || {
                 retried.fetch_add(1, Ordering::SeqCst);
                 async move { unreachable!("deterministic request errors must not retry") }
@@ -1730,7 +2071,7 @@ mod stream_idle_policy_tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         forward_stream_with_idle_policy(
-            attempt_rx,
+            Some(attempt_rx),
             || {
                 retried.fetch_add(1, Ordering::SeqCst);
                 let (retry_tx, retry_rx) = mpsc::unbounded_channel::<StreamEvent>();
@@ -1767,7 +2108,7 @@ mod stream_idle_policy_tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         forward_stream_with_idle_policy(
-            first_rx,
+            Some(first_rx),
             || {
                 attempts.fetch_add(1, Ordering::SeqCst);
                 let (attempt_tx, attempt_rx) = mpsc::unbounded_channel();
@@ -1816,7 +2157,7 @@ mod stream_idle_policy_tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         forward_stream_with_idle_policy(
-            attempt_rx,
+            Some(attempt_rx),
             || {
                 retried.fetch_add(1, Ordering::SeqCst);
                 let (retry_tx, retry_rx) = mpsc::unbounded_channel::<StreamEvent>();

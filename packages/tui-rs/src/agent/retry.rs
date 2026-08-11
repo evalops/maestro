@@ -190,6 +190,7 @@ impl ErrorKind {
             || lower.contains("temporarily")
             || lower.contains("try again")
             || lower.contains("timeout")
+            || lower.contains("timed out")
             || lower.contains("connection")
             || lower.contains("network")
         {
@@ -614,6 +615,9 @@ mod tests {
         assert_eq!(kind, ErrorKind::Transient);
 
         let kind = ErrorKind::classify("Connection timeout");
+        assert_eq!(kind, ErrorKind::Transient);
+
+        let kind = ErrorKind::classify("Failed to send request to OpenAI API: operation timed out");
         assert_eq!(kind, ErrorKind::Transient);
 
         let kind = ErrorKind::classify("API is overloaded");

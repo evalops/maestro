@@ -337,6 +337,9 @@ Minimal hello:
 
 Handshake acknowledgement:
 
+The `native_tools` array below is abbreviated; a live response contains one
+entry for every native tool in the Maestro registry.
+
 ```json
 {
   "type": "hello_ok",
@@ -345,10 +348,13 @@ Handshake acknowledgement:
       "client_protocol_version": "2026-08-07",
   "role": "controller",
   "server_capabilities": {
-    "server_requests": ["approval", "client_tool", "mcp_elicitation", "user_input", "tool_retry"],
+    "server_requests": ["approval", "client_tool", "user_input", "tool_retry"],
     "utility_operations": ["command_exec", "file_search", "file_watch", "file_read"],
     "raw_agent_events": true,
-    "connection_roles": ["controller", "viewer"]
+    "connection_roles": ["controller", "viewer"],
+    "native_tools": [
+      {"name": "bash", "requires_approval": true, "version": "current"}
+    ]
   }
 }
 ```
@@ -394,6 +400,10 @@ Advertised server capabilities in `hello_ok.server_capabilities`:
   - whether raw internal agent events are available as an opt-in stream
 - `connection_roles`
   - connection roles the runtime understands
+- `native_tools`
+  - the authoritative Maestro-native registry entries, including baseline approval metadata and the active behavior version when the tool is version-managed
+
+The `requires_approval` value in `native_tools` is registry metadata. Argument-aware policy and the action firewall can change the decision for an individual call; clients must use the emitted `tool_call.requires_approval` value for that call and must not recreate a tool allowlist.
 
 Optional notification opt-outs in `hello.opt_out_notifications`:
 
@@ -435,9 +445,11 @@ Supported `server_request_response.request_type` values:
 
 - `approval`
 - `client_tool`
-- `mcp_elicitation`
 - `user_input`
 - `tool_retry`
+
+`mcp_elicitation` remains in the protobuf schema as a schema-only request type.
+The native Maestro runtime does not advertise or resolve it.
 
 ### Utility Operations
 

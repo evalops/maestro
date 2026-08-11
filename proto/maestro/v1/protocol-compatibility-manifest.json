@@ -5,7 +5,7 @@
     "canonicalization": "rfc8785",
     "encoding": "utf-8"
   },
-  "compatibilityDigest": "sha256:dcd046a2f511a0598aa133c2a9f18d347edb4ce245796ea1e9ad3caf5041eaef",
+  "compatibilityDigest": "sha256:c7e9cd6e164a13692d279b1d2fda35e61faabe15bfeedaa4f511f1e917f67a84",
   "buildIdentity": {
     "sourceSha": null,
     "buildDigest": null,
@@ -31,8 +31,8 @@
         "2026-08-08"
       ],
       "schemaDeclaredVersion": "2026-08-08",
-      "schemaContractDigest": "sha256:50cc5c0798003dbf2dfaacab7db59f9c6bb046a86e7f947798298c3b19e23535",
-      "runtimeContractDigest": "sha256:ac059c4aed792a72c540befa3979a8e4b6d9d3de7b100f57a7ef27b322d7a81c",
+      "schemaContractDigest": "sha256:cfb0160bb55cb01a05f9b0871da7dba2be3d1fca58b35ebda27fec68f6ec94bf",
+      "runtimeContractDigest": "sha256:b9940c3451a609bfe827a56a6002b716b5842bcff490fdd48f1129c358a83f60",
       "messages": {
         "toRuntime": [
           "hello",
@@ -160,7 +160,7 @@
       }
     },
     "thread": {
-      "contractDigest": "sha256:f298e1d2510b166ea5f28219d73663de961e3415b94e6dd972fdbdbd6d12add7",
+      "contractDigest": "sha256:3be37dcaa27d081f309553109eed24e149af6eae37f050e72812b183b30c6511",
       "supportedVersions": [
         {
           "version": "evalops.maestro.thread.v1",

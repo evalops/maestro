@@ -356,6 +356,14 @@ fn remote_runtime_state_snapshot_maps_into_agent_state() {
             transcript_grade: None,
             governed_code_mode: None,
         }),
+        server_capabilities: Some(crate::headless::ServerCapabilities {
+            native_tools: vec![crate::headless::NativeToolCapability {
+                name: "bash".to_string(),
+                requires_approval: true,
+                version: Some("current".to_string()),
+            }],
+            ..crate::headless::ServerCapabilities::default()
+        }),
         opt_out_notifications: Some(vec!["status".to_string()]),
         connection_role: Some(ConnectionRole::Controller),
         connection_count: 1,
@@ -506,6 +514,14 @@ fn remote_runtime_state_snapshot_maps_into_agent_state() {
     assert_eq!(
         state.client_info.as_ref().map(|info| info.name.as_str()),
         Some("maestro-tui-rs")
+    );
+    assert_eq!(
+        state
+            .server_capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.native_tools.first())
+            .map(|tool| tool.name.as_str()),
+        Some("bash")
     );
     assert_eq!(
         state
