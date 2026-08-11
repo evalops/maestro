@@ -182,11 +182,18 @@ message GovernedToolGrant {
   repeated ExternalToolDefinition external_tools = 20;
 }
 
+message NativeToolCapability {
+  string name = 1;
+  bool requires_approval = 2;
+  optional string version = 3;
+}
+
 message ServerCapabilities {
   repeated ServerRequestType server_requests = 1;
   repeated UtilityOperation utility_operations = 2;
   optional bool raw_agent_events = 3;
   repeated ConnectionRole connection_roles = 4;
+  repeated NativeToolCapability native_tools = 5;
 }
 
 message ToolResponseResult {

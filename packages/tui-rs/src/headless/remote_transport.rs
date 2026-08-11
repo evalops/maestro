@@ -24,8 +24,8 @@ use super::async_transport::{AsyncTransportError, RemoteErrorKind};
 use super::messages::{
     ActiveFileWatch, ActiveUtilityCommand, AgentState, ApprovalMode, ClientCapabilities,
     ClientInfo, CodexSubagentContinuityEdge, ConnectionRole, ConnectionState, FromAgentMessage,
-    GovernedClientToolBinding, HeadlessErrorType, InitConfig, PendingApproval, ServerRequestType,
-    StreamingResponse, ThinkingLevel, ToAgentMessage, UtilityCommandShellMode,
+    GovernedClientToolBinding, HeadlessErrorType, InitConfig, PendingApproval, ServerCapabilities,
+    ServerRequestType, StreamingResponse, ThinkingLevel, ToAgentMessage, UtilityCommandShellMode,
     UtilityCommandTerminalMode, UtilityOperation,
 };
 
@@ -303,6 +303,8 @@ struct RemoteRuntimeStateSnapshot {
     #[serde(default)]
     capabilities: Option<ClientCapabilities>,
     #[serde(default)]
+    server_capabilities: Option<ServerCapabilities>,
+    #[serde(default)]
     opt_out_notifications: Option<Vec<String>>,
     #[serde(default)]
     connection_role: Option<ConnectionRole>,
@@ -373,6 +375,7 @@ impl RemoteRuntimeStateSnapshot {
             client_protocol_version: self.client_protocol_version,
             client_info: self.client_info,
             capabilities: self.capabilities,
+            server_capabilities: self.server_capabilities,
             opt_out_notifications: self.opt_out_notifications,
             connection_role: self.connection_role,
             connection_count: self.connection_count,

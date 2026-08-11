@@ -208,8 +208,8 @@ socket.
 Connections negotiate:
 
 - role: `controller` or `viewer`
-- server request capabilities: `approval`, `client_tool`, `mcp_elicitation`,
-  `user_input`, `tool_retry`
+- server request capabilities: `approval`, `client_tool`, `user_input`,
+  `tool_retry`
 - utility operations: `command_exec`, `file_search`, `file_read`, `file_watch`
 - notification opt-outs: `status`, `heartbeat`, `connection_info`,
   `compaction`

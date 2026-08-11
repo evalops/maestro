@@ -17,8 +17,9 @@ mod tests {
     use super::maestro::v1::to_agent_envelope::Payload;
     use super::maestro::v1::{
         CodeMode, FromAgentEnvelope, GovernedInitMessage, GovernedToolGrant, HelloMessage,
-        ProviderErrorMessage, ProviderStreamErrorKind, ResponseAcceptedMessage, ToAgentEnvelope,
-        ToolEndMessage, ToolResponseMessage, TurnCompletedMessage, TurnInterruptedMessage,
+        NativeToolCapability, ProviderErrorMessage, ProviderStreamErrorKind,
+        ResponseAcceptedMessage, ServerCapabilities, ToAgentEnvelope, ToolEndMessage,
+        ToolResponseMessage, TurnCompletedMessage, TurnInterruptedMessage,
     };
 
     #[test]
@@ -54,6 +55,31 @@ mod tests {
             })),
         };
         assert!(matches!(governed.payload, Some(Payload::GovernedInit(_))));
+
+        let hello_ok = super::maestro::v1::HelloOkMessage {
+            server_capabilities: Some(ServerCapabilities {
+                native_tools: vec![NativeToolCapability {
+                    name: "bash".to_string(),
+                    requires_approval: true,
+                    version: Some("current".to_string()),
+                }],
+                ..ServerCapabilities::default()
+            }),
+            ..super::maestro::v1::HelloOkMessage::default()
+        };
+        let encoded = hello_ok.encode_to_vec();
+        let decoded = super::maestro::v1::HelloOkMessage::decode(encoded.as_slice())
+            .expect("decode hello acknowledgement");
+        let tool = decoded
+            .server_capabilities
+            .expect("server capabilities")
+            .native_tools
+            .into_iter()
+            .next()
+            .expect("native tool capability");
+        assert_eq!(tool.name, "bash");
+        assert!(tool.requires_approval);
+        assert_eq!(tool.version.as_deref(), Some("current"));
     }
 
     #[test]

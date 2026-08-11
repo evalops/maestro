@@ -9,8 +9,8 @@ use std::os::unix::fs::PermissionsExt;
 
 use super::*;
 use crate::headless::messages::{CodexSubagentContinuityEdge, ToolRetryDecisionAction};
-use crate::headless::PendingApproval;
 use crate::headless::RemoteTransportConfig;
+use crate::headless::{NativeToolCapability, PendingApproval};
 use crate::hosted_runner::rendezvous_protocol::RendezvousMode;
 
 #[tokio::test]
@@ -736,15 +736,12 @@ impl HostedRunnerHeadlessMessageExecutor for RecordingThreadExecutor {
             .expect("recorded prompts")
             .push(content.clone());
         let messages = if content == "needs approval" {
-            vec![FromAgentMessage::ServerRequest {
-                request_id: "approval-1".to_string(),
-                request_type: ServerRequestType::Approval,
+            vec![FromAgentMessage::ToolCall {
                 call_id: "call-1".to_string(),
                 tool_execution_id: None,
                 tool: "bash".to_string(),
                 args: json!({"command": "deploy"}),
-                reason: "production deploy".to_string(),
-                started_at_ms: None,
+                requires_approval: true,
             }]
         } else {
             vec![
@@ -1300,6 +1297,147 @@ async fn attach_thread_controller(
     )
 }
 
+#[tokio::test]
+async fn hosted_init_reaches_the_native_agent_executor() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let executor = Arc::new(ResponseRecordingExecutor::default());
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+    )
+    .await
+    .expect("start hosted runner");
+    let client = reqwest::Client::new();
+    let connection_id = "conn_init_forward";
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), connection_id).await;
+
+    let init_ack: serde_json::Value = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/messages",
+            handle.base_url()
+        ))
+        .header("x-maestro-headless-connection-id", connection_id)
+        .header("x-maestro-headless-subscriber-id", &subscription_id)
+        .header("x-maestro-headless-connection-capability", &capability)
+        .json(&json!({
+            "type": "init",
+            "system_prompt": "The private computer is already provisioned."
+        }))
+        .send()
+        .await
+        .expect("init response")
+        .error_for_status()
+        .expect("init status")
+        .json()
+        .await
+        .expect("init acknowledgement");
+    assert_eq!(init_ack["execution"], "runtime_handled");
+    assert_eq!(init_ack["snapshot"]["last_init"]["type"], "init");
+
+    {
+        let messages = executor.messages.lock().expect("recorded init messages");
+        assert!(matches!(
+            messages.as_slice(),
+            [ToAgentMessage::Init {
+                system_prompt: Some(prompt),
+                approval_mode: None,
+                ..
+            }] if prompt == "The private computer is already provisioned."
+        ));
+    }
+    handle.shutdown().await;
+
+    let restarted = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        Arc::new(ResponseRecordingExecutor::default()),
+    )
+    .await
+    .expect("restart hosted runner");
+    let snapshot: serde_json::Value = client
+        .get(format!(
+            "{}/api/headless/sessions/sess_test/state",
+            restarted.base_url()
+        ))
+        .send()
+        .await
+        .expect("restored state response")
+        .error_for_status()
+        .expect("restored state status")
+        .json()
+        .await
+        .expect("restored state json");
+    assert_eq!(
+        snapshot["last_init"]["system_prompt"],
+        "The private computer is already provisioned."
+    );
+    restarted.shutdown().await;
+}
+
+#[tokio::test]
+async fn failed_init_persistence_restores_the_previous_runtime_snapshot() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        Arc::new(ResponseRecordingExecutor::default()),
+    )
+    .await
+    .expect("start hosted runner");
+    let client = reqwest::Client::new();
+    let connection_id = "conn_init_persist_failure";
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), connection_id).await;
+    let previous_status = handle
+        .shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .last_status
+        .clone();
+    handle.shared.fail_next_thread_persistences(1);
+
+    let response = client
+        .post(format!(
+            "{}/api/headless/sessions/sess_test/messages",
+            handle.base_url()
+        ))
+        .header("x-maestro-headless-connection-id", connection_id)
+        .header("x-maestro-headless-subscriber-id", &subscription_id)
+        .header("x-maestro-headless-connection-capability", &capability)
+        .json(&json!({
+            "type": "init",
+            "system_prompt": "This init must not survive a failed journal write."
+        }))
+        .send()
+        .await
+        .expect("init response");
+    assert!(response.status().is_server_error());
+
+    let snapshot: serde_json::Value = client
+        .get(format!(
+            "{}/api/headless/sessions/sess_test/state",
+            handle.base_url()
+        ))
+        .send()
+        .await
+        .expect("state response")
+        .error_for_status()
+        .expect("state status")
+        .json()
+        .await
+        .expect("state json");
+    assert!(snapshot["last_init"].is_null());
+    {
+        let state = handle
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(state.last_status, previous_status);
+    }
+    handle.shutdown().await;
+}
+
 fn response_headers(
     connection_id: &str,
     subscription_id: &str,
@@ -1573,9 +1711,57 @@ fn supervisor_executor_negotiates_hello_without_mutating_shared_runtime() {
                 transcript_grade: Some(crate::transcript::TranscriptGrade::Block),
                 ..
             }),
+            server_capabilities: Some(server_capabilities),
             ..
         }] if connection_id == "conn_block"
+            && server_capabilities
+                .native_tools
+                .iter()
+                .any(|tool| tool.name == "bash" && tool.version.as_deref() == Some("current"))
     ));
+}
+
+#[test]
+fn hosted_server_capabilities_follow_attached_agent_state() {
+    let attached = ServerCapabilities {
+        native_tools: vec![NativeToolCapability {
+            name: "attached-only-tool".to_string(),
+            requires_approval: false,
+            version: Some("agent-build".to_string()),
+        }],
+        ..ServerCapabilities::default()
+    };
+    let executor = StatefulRuntimeExecutor::new(AgentState {
+        server_capabilities: Some(attached.clone()),
+        ..AgentState::default()
+    });
+
+    assert_eq!(server_capabilities_for_executor(&executor), Some(attached));
+}
+
+#[test]
+fn supervisor_hello_capabilities_prefer_attached_agent_state() {
+    let attached = ServerCapabilities {
+        native_tools: vec![NativeToolCapability {
+            name: "child-build-tool".to_string(),
+            requires_approval: true,
+            version: Some("child-build".to_string()),
+        }],
+        ..ServerCapabilities::default()
+    };
+    let mut supervisor = AgentSupervisor::new(crate::headless::SupervisorConfig::default());
+    supervisor.restore_session_replay(crate::headless::SessionReplay {
+        state: AgentState {
+            server_capabilities: Some(attached.clone()),
+            ..AgentState::default()
+        },
+        last_init: None,
+        semantic_conversation: None,
+    });
+    let executor =
+        AgentSupervisorHostedRunnerMessageExecutor::new(Arc::new(Mutex::new(supervisor)));
+
+    assert_eq!(executor.negotiated_server_capabilities(), Some(attached));
 }
 
 fn stream_message(cursor: u64, message: FromAgentMessage) -> StreamEnvelope {
@@ -2260,6 +2446,18 @@ fn controller_subscribe_returns_only_current_raw_pending_executable_events() {
         "command": "curl -H 'Authorization: Bearer completed-controller-secret' example.test"
     });
     let mut agent_state = AgentState::default();
+    let approval_args = serde_json::json!({
+        "query": "computer browser create private computer terminal",
+        "marker": "pending-approval-reconnect"
+    });
+    agent_state.pending_approvals.push(PendingApproval {
+        call_id: "call_approval".to_string(),
+        tool_execution_id: None,
+        request_id: None,
+        tool: "tool_search".to_string(),
+        args: approval_args.clone(),
+        started_at_ms: None,
+    });
     agent_state.pending_client_tools.push(PendingApproval {
         call_id: "call_pending".to_string(),
         tool_execution_id: Some("exec_pending".to_string()),
@@ -2278,6 +2476,16 @@ fn controller_subscribe_returns_only_current_raw_pending_executable_events() {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::ToolCall {
+                call_id: "call_approval".to_string(),
+                tool_execution_id: None,
+                tool: "tool_search".to_string(),
+                args: approval_args.clone(),
+                requires_approval: true,
+            },
+        );
         shared.publish_message(
             &mut state,
             FromAgentMessage::ClientToolRequest {
@@ -2329,7 +2537,7 @@ fn controller_subscribe_returns_only_current_raw_pending_executable_events() {
         );
         assert_eq!(
             state.pending_controller_events.len(),
-            1,
+            2,
             "later non-executable traffic must not consume the pending-event bound"
         );
     }
@@ -2376,11 +2584,16 @@ fn controller_subscribe_returns_only_current_raw_pending_executable_events() {
     let pending_events = controller["controller_pending_events"]
         .as_array()
         .expect("controller pending events");
-    assert_eq!(pending_events.len(), 1);
-    assert_eq!(pending_events[0]["type"], "client_tool_request");
-    assert_eq!(pending_events[0]["call_id"], "call_pending");
-    assert_eq!(pending_events[0]["tool_execution_id"], "exec_pending");
-    assert_eq!(pending_events[0]["args"], pending_args);
+    assert_eq!(pending_events.len(), 2);
+    assert_eq!(pending_events[0]["type"], "server_request");
+    assert_eq!(pending_events[0]["request_type"], "approval");
+    assert_eq!(pending_events[0]["request_id"], "call_approval");
+    assert_eq!(pending_events[0]["call_id"], "call_approval");
+    assert_eq!(pending_events[0]["args"], approval_args);
+    assert_eq!(pending_events[1]["type"], "client_tool_request");
+    assert_eq!(pending_events[1]["call_id"], "call_pending");
+    assert_eq!(pending_events[1]["tool_execution_id"], "exec_pending");
+    assert_eq!(pending_events[1]["args"], pending_args);
     assert!(controller.to_string().contains("pending-controller-secret"));
     assert!(!controller
         .to_string()
@@ -4056,6 +4269,7 @@ fn runtime_state_snapshot_serializes_empty_codex_subagent_edges() {
             client_protocol_version: None,
             client_info: None,
             capabilities: None,
+            server_capabilities: None,
             opt_out_notifications: None,
             connection_role: None,
             connection_count: 0,
@@ -7559,7 +7773,7 @@ async fn durable_thread_appends_idempotent_turns_and_exposes_waiting_state() {
 
     let response_request = json!({
         "type": "server_request_response",
-        "request_id": "approval-1",
+        "request_id": "call-1",
         "request_type": "approval",
         "approved": true,
         "reason": "approved by the operator"
@@ -7573,7 +7787,7 @@ async fn durable_thread_appends_idempotent_turns_and_exposes_waiting_state() {
         .header("x-maestro-headless-connection-id", "conn_thread")
         .header("x-maestro-headless-subscriber-id", &subscription_id)
         .header("x-maestro-headless-connection-capability", &capability)
-        .header("x-maestro-idempotency-key", "response-turn-2-approval-1")
+        .header("x-maestro-idempotency-key", "response-turn-2-call-1")
         .json(&response_request)
         .send()
         .await
@@ -7589,7 +7803,7 @@ async fn durable_thread_appends_idempotent_turns_and_exposes_waiting_state() {
         .header("x-maestro-headless-connection-id", "conn_thread")
         .header("x-maestro-headless-subscriber-id", &subscription_id)
         .header("x-maestro-headless-connection-capability", &capability)
-        .header("x-maestro-idempotency-key", "response-turn-2-approval-1")
+        .header("x-maestro-idempotency-key", "response-turn-2-call-1")
         .json(&response_request)
         .send()
         .await

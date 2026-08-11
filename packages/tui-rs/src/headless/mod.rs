@@ -224,15 +224,58 @@ fn local_controller_capabilities() -> messages::ClientCapabilities {
     }
 }
 
+/// Build the runtime-owned server capability surface for headless clients.
+///
+/// The native registry is the only source of the tool names and baseline
+/// approval metadata. A client must not recreate this list or infer a
+/// per-call decision from it; the native tool event remains authoritative for
+/// argument-aware approval and action-firewall outcomes.
+pub(crate) fn native_server_capabilities() -> messages::ServerCapabilities {
+    let mut native_tools = crate::tools::ToolRegistry::new()
+        .tools()
+        .map(|definition| {
+            let name = definition.tool.name.clone();
+            messages::NativeToolCapability {
+                requires_approval: definition.requires_approval,
+                version: crate::tools::versions::is_version_managed(&name)
+                    .then(|| "current".to_string()),
+                name,
+            }
+        })
+        .collect::<Vec<_>>();
+    native_tools.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+
+    messages::ServerCapabilities {
+        server_requests: vec![
+            messages::ServerRequestType::Approval,
+            messages::ServerRequestType::ClientTool,
+            messages::ServerRequestType::UserInput,
+            messages::ServerRequestType::ToolRetry,
+        ],
+        utility_operations: vec![
+            messages::UtilityOperation::CommandExec,
+            messages::UtilityOperation::FileSearch,
+            messages::UtilityOperation::FileRead,
+            messages::UtilityOperation::FileWatch,
+        ],
+        raw_agent_events: true,
+        connection_roles: vec![
+            messages::ConnectionRole::Viewer,
+            messages::ConnectionRole::Controller,
+        ],
+        native_tools,
+    }
+}
+
 // Core message types
 pub use messages::{
     ActiveTool, AgentEvent, AgentState, ApprovalMode, ClientCapabilities, ClientInfo,
     ClientToolExecutionOwner, ClientToolResultContent, CodeMode, ConnectionRole,
     ExternalToolDefinition, FromAgentMessage, GovernedToolGrant, HeadlessErrorType, HistoryMessage,
-    HistoryRole, InitConfig, PendingApproval, ServerRequestResolutionStatus,
-    ServerRequestResolvedBy, ServerRequestType, StreamingResponse, ThinkingLevel, ToAgentMessage,
-    TokenUsage, ToolResult, UtilityCommandShellMode, UtilityCommandStream, UtilityOperation,
-    HEADLESS_PROTOCOL_VERSION,
+    HistoryRole, InitConfig, NativeToolCapability, PendingApproval, ServerCapabilities,
+    ServerRequestResolutionStatus, ServerRequestResolvedBy, ServerRequestType, StreamingResponse,
+    ThinkingLevel, ToAgentMessage, TokenUsage, ToolResult, UtilityCommandShellMode,
+    UtilityCommandStream, UtilityOperation, HEADLESS_PROTOCOL_VERSION,
 };
 pub use proto::maestro::v1 as proto_types;
 

@@ -365,6 +365,7 @@ fn parse_hello_ok_message() {
             client_protocol_version,
             client_info,
             capabilities,
+            server_capabilities,
             opt_out_notifications,
             role,
             controller_connection_id,
@@ -384,6 +385,7 @@ fn parse_hello_ok_message() {
                     .map(|caps| caps.len()),
                 Some(1)
             );
+            assert!(server_capabilities.is_none());
             assert_eq!(opt_out_notifications, Some(vec!["status".to_string()]));
             assert_eq!(role, Some(ConnectionRole::Controller));
             assert_eq!(controller_connection_id.as_deref(), Some("conn_remote"));
@@ -391,6 +393,77 @@ fn parse_hello_ok_message() {
         }
         _ => panic!("Expected HelloOk message"),
     }
+}
+
+#[test]
+fn hello_ok_keeps_client_and_server_capabilities_separate() {
+    let message = FromAgentMessage::HelloOk {
+        protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
+        connection_id: Some("conn_native".to_string()),
+        client_protocol_version: Some("2026-08-08".to_string()),
+        client_info: None,
+        capabilities: Some(ClientCapabilities {
+            server_requests: Some(vec![ServerRequestType::Approval]),
+            ..ClientCapabilities::default()
+        }),
+        server_capabilities: Some(ServerCapabilities {
+            native_tools: vec![NativeToolCapability {
+                name: "bash".to_string(),
+                requires_approval: true,
+                version: Some("current".to_string()),
+            }],
+            ..ServerCapabilities::default()
+        }),
+        opt_out_notifications: None,
+        role: Some(ConnectionRole::Controller),
+        controller_connection_id: None,
+        lease_expires_at: None,
+    };
+
+    let json = serde_json::to_value(message).expect("serialize hello acknowledgement");
+    assert_eq!(json["capabilities"]["server_requests"][0], "approval");
+    assert_eq!(
+        json["server_capabilities"]["native_tools"][0]["name"],
+        "bash"
+    );
+    assert_eq!(
+        json["server_capabilities"]["native_tools"][0]["requires_approval"],
+        true
+    );
+}
+
+#[test]
+fn hello_ok_tolerates_partial_and_unknown_server_capabilities() {
+    let json = r#"{
+        "type":"hello_ok",
+        "protocol_version":"2026-08-08",
+        "server_capabilities":{
+            "server_requests":["approval","mcp_elicitation","future_request"],
+            "native_tools":[]
+        }
+    }"#;
+    let message: FromAgentMessage =
+        serde_json::from_str(json).expect("parse hello acknowledgement");
+
+    let FromAgentMessage::HelloOk {
+        server_capabilities: Some(capabilities),
+        ..
+    } = message
+    else {
+        panic!("expected hello acknowledgement with server capabilities");
+    };
+    assert_eq!(
+        capabilities.server_requests,
+        vec![ServerRequestType::Approval]
+    );
+    assert!(capabilities.utility_operations.is_empty());
+    assert!(!capabilities.raw_agent_events);
+    assert!(capabilities.connection_roles.is_empty());
+    assert!(capabilities.native_tools.is_empty());
+
+    let empty_json = serde_json::to_value(ServerCapabilities::default())
+        .expect("serialize empty server capabilities");
+    assert_eq!(empty_json["native_tools"], serde_json::json!([]));
 }
 
 #[test]
@@ -1202,6 +1275,14 @@ fn state_tracks_protocol_version_from_hello_ok() {
             transcript_grade: None,
             governed_code_mode: None,
         }),
+        server_capabilities: Some(ServerCapabilities {
+            native_tools: vec![NativeToolCapability {
+                name: "bash".to_string(),
+                requires_approval: true,
+                version: Some("current".to_string()),
+            }],
+            ..ServerCapabilities::default()
+        }),
         opt_out_notifications: Some(vec!["connection_info".to_string()]),
         role: Some(ConnectionRole::Controller),
         controller_connection_id: Some("conn_remote".to_string()),
@@ -1218,6 +1299,18 @@ fn state_tracks_protocol_version_from_hello_ok() {
     assert_eq!(
         state.controller_connection_id.as_deref(),
         Some("conn_remote")
+    );
+    assert_eq!(
+        state
+            .server_capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.native_tools.first())
+            .map(|tool| (
+                tool.name.as_str(),
+                tool.requires_approval,
+                tool.version.as_deref()
+            )),
+        Some(("bash", true, Some("current")))
     );
 }
 

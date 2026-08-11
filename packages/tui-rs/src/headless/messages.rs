@@ -92,7 +92,7 @@
 //! ```
 
 use crate::agent::ExecutionReceipt;
-use serde::{Deserialize, Serialize};
+use serde::{de::Deserializer, Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub(crate) const CODEX_SUBAGENT_TOOL_PREFIX: &str = "codex.subagent.";
@@ -529,6 +529,49 @@ pub struct ClientCapabilities {
     pub governed_code_mode: Option<bool>,
 }
 
+fn deserialize_known_server_request_types<'de, D>(
+    deserializer: D,
+) -> Result<Vec<ServerRequestType>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(values
+        .into_iter()
+        .filter_map(|value| serde_json::from_value(value).ok())
+        .collect())
+}
+
+/// Capabilities advertised by the Maestro runtime.
+///
+/// `native_tools` is the authoritative registry surface for this runtime. The
+/// per-tool `requires_approval` value is registry metadata, not a promise that
+/// every invocation has the same outcome: argument-aware approval and the
+/// action firewall can still require approval for a particular call. Clients
+/// must use `ToolCall.requires_approval` for that per-call decision.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerCapabilities {
+    #[serde(default, deserialize_with = "deserialize_known_server_request_types")]
+    pub server_requests: Vec<ServerRequestType>,
+    #[serde(default)]
+    pub utility_operations: Vec<UtilityOperation>,
+    #[serde(default)]
+    pub raw_agent_events: bool,
+    #[serde(default)]
+    pub connection_roles: Vec<ConnectionRole>,
+    #[serde(default)]
+    pub native_tools: Vec<NativeToolCapability>,
+}
+
+/// Stable metadata for one native tool in the Maestro registry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NativeToolCapability {
+    pub name: String,
+    pub requires_approval: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
 /// Snapshot of a live headless connection attached to a runtime.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectionState {
@@ -727,6 +770,8 @@ pub enum FromAgentMessage {
         client_info: Option<ClientInfo>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         capabilities: Option<ClientCapabilities>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server_capabilities: Option<ServerCapabilities>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         opt_out_notifications: Option<Vec<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

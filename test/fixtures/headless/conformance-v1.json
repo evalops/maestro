@@ -37,7 +37,6 @@
 					"server_requests": [
 						"approval",
 						"client_tool",
-						"mcp_elicitation",
 						"user_input",
 						"tool_retry"
 					],

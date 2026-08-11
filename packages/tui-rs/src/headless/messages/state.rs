@@ -4,9 +4,9 @@ use std::collections::HashMap;
 
 use super::{
     ClientCapabilities, ClientInfo, ConnectionRole, ConnectionState, FromAgentMessage,
-    HeadlessErrorType, ResponseToolsSummary, ServerRequestResolutionStatus, ServerRequestType,
-    ToAgentMessage, TokenUsage, UtilityCommandShellMode, UtilityCommandTerminalMode,
-    CODEX_SUBAGENT_TOOL_PREFIX, CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+    HeadlessErrorType, ResponseToolsSummary, ServerCapabilities, ServerRequestResolutionStatus,
+    ServerRequestType, ToAgentMessage, TokenUsage, UtilityCommandShellMode,
+    UtilityCommandTerminalMode, CODEX_SUBAGENT_TOOL_PREFIX, CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 };
 
 /// # State Synchronization
@@ -54,6 +54,7 @@ pub struct AgentState {
     pub client_protocol_version: Option<String>,
     pub client_info: Option<ClientInfo>,
     pub capabilities: Option<ClientCapabilities>,
+    pub server_capabilities: Option<ServerCapabilities>,
     pub opt_out_notifications: Option<Vec<String>>,
     pub connection_role: Option<ConnectionRole>,
     pub connection_count: usize,
@@ -801,6 +802,7 @@ impl AgentState {
                 client_protocol_version,
                 client_info,
                 capabilities,
+                server_capabilities,
                 opt_out_notifications,
                 role,
                 controller_connection_id,
@@ -810,6 +812,7 @@ impl AgentState {
                 self.client_protocol_version = client_protocol_version;
                 self.client_info = client_info;
                 self.capabilities = capabilities;
+                self.server_capabilities = server_capabilities;
                 self.opt_out_notifications = opt_out_notifications;
                 self.connection_role = role;
                 self.controller_connection_id = controller_connection_id;

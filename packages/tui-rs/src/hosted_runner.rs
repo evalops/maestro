@@ -32,13 +32,13 @@ use uuid::Uuid;
 
 use crate::headless::messages::{
     ClientCapabilities, ClientInfo, ConnectionRole, ConnectionState, FromAgentMessage, InitConfig,
-    ServerRequestType, ThinkingLevel, ToAgentMessage, UtilityCommandShellMode,
+    ServerCapabilities, ServerRequestType, ThinkingLevel, ToAgentMessage, UtilityCommandShellMode,
     UtilityCommandStream, UtilityCommandTerminalMode, UtilityFileSearchMatch, UtilityOperation,
     HEADLESS_PROTOCOL_VERSION,
 };
 use crate::headless::{
-    response_ack_request_id, AgentState, AgentSupervisor, AsyncTransportError,
-    ResponseAcknowledgement, SessionReplay,
+    native_server_capabilities, response_ack_request_id, AgentState, AgentSupervisor,
+    AsyncTransportError, ResponseAcknowledgement, SessionReplay,
 };
 use crate::headless_server::{verify_governed_tool_grant, GovernedGrantVerificationContext};
 
@@ -1058,7 +1058,7 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
                 duration_ms = started.elapsed().as_millis() as u64,
             );
             return Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
-                vec![hosted_hello_ok_for_context(context)],
+                vec![self.hosted_hello_ok_for_context(context)],
                 "Rust hosted runner negotiated the connection at the hosted boundary",
             ));
         }
@@ -1416,17 +1416,43 @@ impl HostedRunnerHeadlessMessageExecutor for TransportOnlyHostedRunnerMessageExe
     }
 }
 
-fn hosted_hello_ok_for_context(context: &HostedRunnerHeadlessMessageContext) -> FromAgentMessage {
-    FromAgentMessage::HelloOk {
-        protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
-        connection_id: Some(context.connection_id.clone()),
-        client_protocol_version: context.client_protocol_version.clone(),
-        client_info: context.client_info.clone(),
-        capabilities: context.capabilities.clone(),
-        opt_out_notifications: context.opt_out_notifications.clone(),
-        role: Some(context.role),
-        controller_connection_id: context.controller_connection_id.clone(),
-        lease_expires_at: Some(context.lease_expires_at.clone()),
+impl AgentSupervisorHostedRunnerMessageExecutor {
+    fn negotiated_server_capabilities(&self) -> Option<ServerCapabilities> {
+        let Ok(supervisor) = self.supervisor.lock() else {
+            return Some(native_server_capabilities());
+        };
+        supervisor
+            .state()
+            .server_capabilities
+            .clone()
+            .or_else(|| (supervisor.transport_generation() == 0).then(native_server_capabilities))
+    }
+
+    fn hosted_hello_ok_for_context(
+        &self,
+        context: &HostedRunnerHeadlessMessageContext,
+    ) -> FromAgentMessage {
+        FromAgentMessage::HelloOk {
+            protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
+            connection_id: Some(context.connection_id.clone()),
+            client_protocol_version: context.client_protocol_version.clone(),
+            client_info: context.client_info.clone(),
+            capabilities: context.capabilities.clone(),
+            server_capabilities: self.negotiated_server_capabilities(),
+            opt_out_notifications: context.opt_out_notifications.clone(),
+            role: Some(context.role),
+            controller_connection_id: context.controller_connection_id.clone(),
+            lease_expires_at: Some(context.lease_expires_at.clone()),
+        }
+    }
+}
+
+fn server_capabilities_for_executor(
+    message_executor: &dyn HostedRunnerHeadlessMessageExecutor,
+) -> Option<ServerCapabilities> {
+    match message_executor.state() {
+        Ok(Some(agent_state)) => agent_state.server_capabilities,
+        Ok(None) | Err(_) => Some(native_server_capabilities()),
     }
 }
 
@@ -3622,6 +3648,8 @@ async fn handle_message_inner(
                             lease_expires_at(connection)
                         });
                 let controller_connection_id = state.controller_connection_id.clone();
+                let server_capabilities =
+                    server_capabilities_for_executor(shared.message_executor.as_ref());
                 shared.publish_message(
                     &mut state,
                     FromAgentMessage::HelloOk {
@@ -3630,6 +3658,7 @@ async fn handle_message_inner(
                         client_protocol_version: protocol_version.clone(),
                         client_info: client_info.clone(),
                         capabilities: capabilities.clone(),
+                        server_capabilities,
                         opt_out_notifications: opt_out_notifications.clone(),
                         role: Some(resolved_role),
                         controller_connection_id,
@@ -3638,42 +3667,42 @@ async fn handle_message_inner(
                 );
             }
             ToAgentMessage::Init {
-                system_prompt,
-                append_system_prompt,
-                thinking_level,
-                approval_mode,
-                history,
+                system_prompt: _,
+                append_system_prompt: _,
+                thinking_level: _,
+                approval_mode: _,
+                history: _,
             } => {
-                state.last_init = Some(InitConfig {
-                    system_prompt: system_prompt.clone(),
-                    append_system_prompt: append_system_prompt.clone(),
-                    thinking_level: *thinking_level,
-                    approval_mode: *approval_mode,
-                    history: history.clone(),
-                    code_mode: None,
-                    tool_grant: None,
-                });
-                state.last_status = Some("Initialized".to_string());
+                executor_request = Some((
+                    Arc::clone(&shared.message_executor),
+                    message_context(
+                        &state,
+                        &resolved_connection_id,
+                        subscription_id.clone(),
+                        &shared.config.workspace_root,
+                        response_idempotency_key.clone(),
+                    )?,
+                ));
             }
             ToAgentMessage::GovernedInit {
-                system_prompt,
-                append_system_prompt,
-                thinking_level,
-                approval_mode,
-                history,
-                code_mode,
-                tool_grant,
+                system_prompt: _,
+                append_system_prompt: _,
+                thinking_level: _,
+                approval_mode: _,
+                history: _,
+                code_mode: _,
+                tool_grant: _,
             } => {
-                state.last_init = Some(InitConfig {
-                    system_prompt: system_prompt.clone(),
-                    append_system_prompt: append_system_prompt.clone(),
-                    thinking_level: *thinking_level,
-                    approval_mode: *approval_mode,
-                    history: history.clone(),
-                    code_mode: Some(*code_mode),
-                    tool_grant: Some(tool_grant.clone()),
-                });
-                state.last_status = Some("Governed code initialized".to_string());
+                executor_request = Some((
+                    Arc::clone(&shared.message_executor),
+                    message_context(
+                        &state,
+                        &resolved_connection_id,
+                        subscription_id.clone(),
+                        &shared.config.workspace_root,
+                        response_idempotency_key.clone(),
+                    )?,
+                ));
             }
             ToAgentMessage::Prompt { content, .. }
             | ToAgentMessage::Steer { content, .. }
@@ -3786,6 +3815,75 @@ async fn handle_message_inner(
         shared.prune_pending_controller_events(&mut state);
         for message in result.messages {
             shared.publish_message(&mut state, message);
+        }
+        if matches!(
+            &message,
+            ToAgentMessage::Init { .. } | ToAgentMessage::GovernedInit { .. }
+        ) && !state.ready
+        {
+            return Err(runtime_availability_error(
+                &state,
+                "native runtime rejected initialization",
+            ));
+        }
+        match &message {
+            ToAgentMessage::Init {
+                system_prompt,
+                append_system_prompt,
+                thinking_level,
+                approval_mode,
+                history,
+            } => {
+                let previous_last_init = state.last_init.replace(InitConfig {
+                    system_prompt: system_prompt.clone(),
+                    append_system_prompt: append_system_prompt.clone(),
+                    thinking_level: *thinking_level,
+                    approval_mode: *approval_mode,
+                    history: history.clone(),
+                    code_mode: None,
+                    tool_grant: None,
+                });
+                let previous_last_status = state.last_status.replace("Initialized".to_string());
+                if let Err(error) = shared.persist_thread_for_request(&state) {
+                    state.last_init = previous_last_init;
+                    state.last_status = previous_last_status;
+                    return Err(HostedError::new(
+                        HostedRunnerErrorCode::RuntimeFailed,
+                        format!("failed to persist applied init: {error}"),
+                    ));
+                }
+            }
+            ToAgentMessage::GovernedInit {
+                system_prompt,
+                append_system_prompt,
+                thinking_level,
+                approval_mode,
+                history,
+                code_mode,
+                tool_grant,
+            } => {
+                let previous_last_init = state.last_init.replace(InitConfig {
+                    system_prompt: system_prompt.clone(),
+                    append_system_prompt: append_system_prompt.clone(),
+                    thinking_level: *thinking_level,
+                    approval_mode: *approval_mode,
+                    history: history.clone(),
+                    code_mode: Some(*code_mode),
+                    tool_grant: Some(tool_grant.clone()),
+                });
+                let previous_last_status = state
+                    .last_status
+                    .replace("Governed code initialized".to_string());
+                if let Err(error) = shared.persist_thread_for_request(&state) {
+                    state.last_init = previous_last_init;
+                    state.last_status = previous_last_status;
+                    return Err(HostedError::new(
+                        HostedRunnerErrorCode::RuntimeFailed,
+                        format!("failed to persist applied governed init: {error}"),
+                    ));
+                }
+            }
+            _ => {}
         }
     }
 
