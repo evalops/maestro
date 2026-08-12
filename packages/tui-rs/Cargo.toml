@@ -26,7 +26,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Terminal handling
-crossterm = { version = "0.28", features = ["bracketed-paste", "event-stream"] }
+crossterm = { version = "0.29", features = ["bracketed-paste", "event-stream"] }
 ratatui = { version = "0.29", features = ["unstable-widget-ref"] }
 uncurses = "0.0.1"
 
