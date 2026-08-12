@@ -1442,13 +1442,12 @@ impl HostedRunnerHeadlessMessageExecutor for TransportOnlyHostedRunnerMessageExe
 impl AgentSupervisorHostedRunnerMessageExecutor {
     fn negotiated_server_capabilities(&self) -> Option<ServerCapabilities> {
         let Ok(supervisor) = self.supervisor.lock() else {
-            return Some(native_server_capabilities());
+            return Some(native_server_capabilities_without_governed_grants());
         };
-        supervisor
-            .state()
-            .server_capabilities
-            .clone()
-            .or_else(|| (supervisor.transport_generation() == 0).then(native_server_capabilities))
+        supervisor.state().server_capabilities.clone().or_else(|| {
+            (supervisor.transport_generation() == 0)
+                .then(native_server_capabilities_without_governed_grants)
+        })
     }
 
     fn hosted_hello_ok_for_context(

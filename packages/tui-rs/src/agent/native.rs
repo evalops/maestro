@@ -1489,6 +1489,7 @@ impl NativeAgent {
             runtime_audit: Arc::clone(&runtime_audit),
             codex_file_change_paths_by_item: HashMap::new(),
             codex_native_tools_by_item: HashMap::new(),
+            codex_native_pending_completions: HashMap::new(),
         };
 
         // Spawn the background task
@@ -2320,6 +2321,10 @@ struct NativeAgentRunner {
     /// Approved Codex-native operations awaiting their authoritative
     /// `item/completed` notification, keyed by Codex item id.
     codex_native_tools_by_item: HashMap<String, CodexNativeToolCorrelation>,
+
+    /// Native operation completions that arrived before their approval could
+    /// record an item correlation, keyed by Codex item id.
+    codex_native_pending_completions: HashMap<String, bool>,
 }
 
 /// itemId → path → per-path patch metadata (may be an empty object).
@@ -2566,6 +2571,22 @@ fn codex_native_denied_by_active_tools(
     }
 }
 
+/// Whether a Codex `item/tool/call` names a tool absent from the live
+/// governed allowlist.
+fn codex_tool_call_denied_by_active_tools(
+    tool_name: &str,
+    active_tool_names: &HashSet<String>,
+) -> Option<String> {
+    if active_tool_names
+        .iter()
+        .any(|active| active.eq_ignore_ascii_case(tool_name))
+    {
+        None
+    } else {
+        Some(format!("active tool allowlist excludes `{tool_name}`"))
+    }
+}
+
 /// Merge patch metadata objects.
 ///
 /// Keys present in `from` overwrite `into` (later notifications win). Keys
@@ -2786,6 +2807,28 @@ fn remember_codex_file_change_item_paths(
     }
 }
 
+/// Preserve file-change paths carried by an `item/completed` notification.
+///
+/// The completion stream has a separate lifecycle owner from the ordinary
+/// file-change notification stream, but a later item-id-only approval still
+/// needs the completed item's paths for policy and firewall evaluation.
+fn remember_codex_file_change_completion_paths(
+    notification: &crate::codex_app_server::Notification,
+    known_item_paths: &mut CodexFileChangeItemCache,
+) {
+    let Some(params) = notification.params.as_ref() else {
+        return;
+    };
+    let is_file_change = params
+        .pointer("/item/type")
+        .or_else(|| params.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("fileChange"));
+    if is_file_change {
+        remember_codex_file_change_item_paths(params, known_item_paths);
+    }
+}
+
 fn codex_native_item_id(params: Option<&Value>) -> Option<&str> {
     let params = params?;
     params
@@ -2864,11 +2907,20 @@ fn codex_native_completion(
     ))
 }
 
+#[cfg(test)]
 fn project_codex_native_completion(
     notification: &crate::codex_app_server::Notification,
     correlations: &mut HashMap<String, CodexNativeToolCorrelation>,
 ) -> Option<FromAgent> {
     let (item_id, success) = codex_native_completion(notification)?;
+    project_codex_native_completion_parts(item_id, success, correlations)
+}
+
+fn project_codex_native_completion_parts(
+    item_id: String,
+    success: bool,
+    correlations: &mut HashMap<String, CodexNativeToolCorrelation>,
+) -> Option<FromAgent> {
     let correlation = correlations.remove(&item_id)?;
     let result = if success {
         ToolResult::success(format!("{} completed", correlation.tool_name))
@@ -2887,6 +2939,45 @@ fn project_codex_native_completion(
         result: Some(result),
         receipt: Some(execution.receipt),
     })
+}
+
+/// Project a completion immediately when its approval correlation already
+/// exists, or retain the authoritative outcome until that correlation is
+/// recorded. The app-server may deliver `item/completed` before the approval
+/// request, so dropping an unmatched completion would lose the terminal tool
+/// receipt permanently.
+fn project_or_defer_codex_native_completion(
+    notification: &crate::codex_app_server::Notification,
+    correlations: &mut HashMap<String, CodexNativeToolCorrelation>,
+    pending: &mut HashMap<String, bool>,
+) -> Option<FromAgent> {
+    let (item_id, success) = codex_native_completion(notification)?;
+    if let Some(event) =
+        project_codex_native_completion_parts(item_id.clone(), success, correlations)
+    {
+        return Some(event);
+    }
+    pending.insert(item_id, success);
+    None
+}
+
+fn project_deferred_codex_native_completion(
+    params: Option<&Value>,
+    pending: &mut HashMap<String, bool>,
+    correlations: &mut HashMap<String, CodexNativeToolCorrelation>,
+) -> Option<FromAgent> {
+    let item_id = codex_native_item_id(params)?;
+    let success = pending.remove(item_id)?;
+    project_codex_native_completion_parts(item_id.to_owned(), success, correlations)
+}
+
+fn discard_deferred_codex_native_completion(
+    params: Option<&Value>,
+    pending: &mut HashMap<String, bool>,
+) {
+    if let Some(item_id) = codex_native_item_id(params) {
+        pending.remove(item_id);
+    }
 }
 
 /// Canonical policy-hook input for a Codex-native file-change approval.
@@ -5555,6 +5646,13 @@ impl NativeAgentRunner {
             bail!("No user message available for Codex app-server turn");
         }
 
+        // `tool_search` may activate schemas while this turn is in flight,
+        // but those tools are not part of the model's turn-start contract.
+        // Keep policy decisions on the same immutable snapshot so a later
+        // same-turn item/tool/call cannot widen the governed execution set.
+        let turn_start_active_tool_names = self.active_tool_names.clone();
+        self.codex_native_pending_completions.clear();
+
         let response_id = Uuid::new_v4().to_string();
         let _ = self.event_tx.send(FromAgent::ResponseStart {
             response_id: response_id.clone(),
@@ -5687,7 +5785,14 @@ impl NativeAgentRunner {
                     self.reconcile_codex_completed_segment(&mut streamed_assistant)
                         .await?;
                     self.flush_codex_streamed_assistant(&mut streamed_assistant);
-                    self.handle_codex_server_request(request).await?;
+                    // Native completion notifications share the ordered
+                    // server-request prefix but have a separate drain. Pull
+                    // them in before policy evaluates an item-id-only
+                    // approval, otherwise a queued item/completed path is
+                    // invisible and the action firewall fails closed.
+                    self.drain_codex_native_operation_completions().await;
+                    self.handle_codex_server_request(request, &turn_start_active_tool_names)
+                        .await?;
                 }
             }
         }
@@ -5898,9 +6003,15 @@ impl NativeAgentRunner {
             .take_native_operation_completion_notifications()
             .await;
         for note in notes {
-            if let Some(event) =
-                project_codex_native_completion(&note, &mut self.codex_native_tools_by_item)
-            {
+            remember_codex_file_change_completion_paths(
+                &note,
+                &mut self.codex_file_change_paths_by_item,
+            );
+            if let Some(event) = project_or_defer_codex_native_completion(
+                &note,
+                &mut self.codex_native_tools_by_item,
+                &mut self.codex_native_pending_completions,
+            ) {
                 let _ = self.event_tx.send(event);
             }
         }
@@ -5909,6 +6020,7 @@ impl NativeAgentRunner {
     async fn handle_codex_server_request(
         &mut self,
         request: crate::codex_app_server::IncomingServerRequest,
+        turn_start_active_tool_names: &HashSet<String>,
     ) -> Result<()> {
         use super::codex_app_server_turns::{
             approval_decision, parse_tool_call_params, tool_call_error_result,
@@ -5945,6 +6057,15 @@ impl NativeAgentRunner {
 
                 let tool_key = registry_name.to_lowercase();
                 self.record_codex_tool_use(&call_id, &registry_name, &args);
+
+                if let Some(reason) =
+                    codex_tool_call_denied_by_active_tools(&tool_key, turn_start_active_tool_names)
+                {
+                    let error = format!("Tool denied by governed allowlist: {reason}");
+                    self.record_codex_tool_result(&call_id, error.clone(), true);
+                    request.respond(tool_call_error_result(error));
+                    return Ok(());
+                }
 
                 // This handler is the second place that decides whether a tool
                 // executes. The HTTP tool loop runs `PreToolUse` before the
@@ -6220,8 +6341,10 @@ impl NativeAgentRunner {
                 };
 
                 let denies_mutation = config_denies_mutation(self.config.sandbox_policy.as_ref());
-                let profile_denial =
-                    codex_native_denied_by_active_tools(&request.method, &self.active_tool_names);
+                let profile_denial = codex_native_denied_by_active_tools(
+                    &request.method,
+                    turn_start_active_tool_names,
+                );
                 let firewall_decision = codex_native_firewall_decision(
                     &self.config.cwd,
                     &request.method,
@@ -6245,6 +6368,10 @@ impl NativeAgentRunner {
                     None
                 };
                 if let Some(reason) = denial_reason {
+                    discard_deferred_codex_native_completion(
+                        request.params.as_ref(),
+                        &mut self.codex_native_pending_completions,
+                    );
                     let _ = self.event_tx.send(FromAgent::Status {
                         message: format!("Declined Codex-native {} ({reason})", request.method),
                     });
@@ -6266,6 +6393,13 @@ impl NativeAgentRunner {
                         policy_tool,
                         &mut self.codex_native_tools_by_item,
                     );
+                    if let Some(event) = project_deferred_codex_native_completion(
+                        request.params.as_ref(),
+                        &mut self.codex_native_pending_completions,
+                        &mut self.codex_native_tools_by_item,
+                    ) {
+                        let _ = self.event_tx.send(event);
+                    }
                     request.respond(approval_decision(true));
                     return Ok(());
                 }
@@ -6290,6 +6424,10 @@ impl NativeAgentRunner {
                 let (approved, _, _) = match response {
                     ToolResponseWait::Response(response) => response,
                     ToolResponseWait::Cancelled => {
+                        discard_deferred_codex_native_completion(
+                            request.params.as_ref(),
+                            &mut self.codex_native_pending_completions,
+                        );
                         let cancelled_ids = HashSet::from([policy_call_id.clone()]);
                         discard_cancelled_tool_responses(
                             &cancelled_ids,
@@ -6305,6 +6443,10 @@ impl NativeAgentRunner {
                         return Ok(());
                     }
                     ToolResponseWait::Closed => {
+                        discard_deferred_codex_native_completion(
+                            request.params.as_ref(),
+                            &mut self.codex_native_pending_completions,
+                        );
                         let _ = self.event_tx.send(FromAgent::CodexNativeDecision {
                             method: request.method.clone(),
                             decision: "channel_closed".to_owned(),
@@ -6333,6 +6475,18 @@ impl NativeAgentRunner {
                         &policy_call_id,
                         policy_tool,
                         &mut self.codex_native_tools_by_item,
+                    );
+                    if let Some(event) = project_deferred_codex_native_completion(
+                        request.params.as_ref(),
+                        &mut self.codex_native_pending_completions,
+                        &mut self.codex_native_tools_by_item,
+                    ) {
+                        let _ = self.event_tx.send(event);
+                    }
+                } else {
+                    discard_deferred_codex_native_completion(
+                        request.params.as_ref(),
+                        &mut self.codex_native_pending_completions,
                     );
                 }
                 request.respond(approval_decision(approved));
@@ -10427,6 +10581,181 @@ mod tests {
         agent.shutdown().await;
     }
 
+    #[tokio::test]
+    async fn codex_file_change_completion_before_approval_fixture() {
+        let Ok(output_path) = std::env::var("MAESTRO_CODEX_FILE_CHANGE_EVENTS") else {
+            return;
+        };
+        let workspace = std::path::PathBuf::from(
+            std::env::var("MAESTRO_CODEX_FIXTURE_WORKSPACE").expect("fixture workspace"),
+        );
+        let config = NativeAgentConfig {
+            model: "openai-codex/gpt-5.5".to_owned(),
+            cwd: workspace.display().to_string(),
+            approval_mode: ApprovalMode::Yolo,
+            ..NativeAgentConfig::default()
+        };
+        let (agent, mut events) =
+            NativeAgent::new(config).expect("Codex file-change fixture agent");
+        agent
+            .prompt(
+                "use the file-change tool and then finish".to_owned(),
+                vec![],
+            )
+            .await
+            .expect("fixture prompt");
+
+        let mut captured = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let event = events.recv().await.expect("fixture event");
+                let done = matches!(event, FromAgent::ResponseEnd { .. });
+                captured.push(serde_json::to_value(&event).expect("event json"));
+                if done {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("file-change fixture timeout");
+        std::fs::write(
+            &output_path,
+            serde_json::to_vec(&captured).expect("events json"),
+        )
+        .expect("write file-change fixture events");
+        agent.shutdown().await;
+    }
+
+    #[test]
+    fn queued_file_change_completion_is_drained_before_item_id_only_approval() {
+        let root = tempfile::tempdir().expect("fixture root");
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let changed_path = workspace.join("src.rs");
+        std::fs::write(&changed_path, "before").expect("fixture source");
+        let events_path = root.path().join("events.json");
+        let script_log = root.path().join("app-server.log");
+        let script = root.path().join("app-server.js");
+        let changed_path_literal = serde_json::to_string(&changed_path.display().to_string())
+            .expect("changed path literal");
+        let script_log_literal =
+            serde_json::to_string(&script_log.display().to_string()).expect("script log literal");
+        let script_source = r"const rl = require('readline').createInterface({input: process.stdin});
+const fs = require('fs');
+const changedPath = __CHANGED_PATH__;
+const log = __SCRIPT_LOG__;
+function send(value) {
+  fs.appendFileSync(log, `OUT ${JSON.stringify(value)}\n`);
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+function completedFileChange() {
+  return {
+    method: 'item/completed',
+    params: {
+      turnId: 'turn-causal',
+      item: {
+        id: 'item-write',
+        type: 'fileChange',
+        status: 'completed',
+        changes: [{path: changedPath, kind: {type: 'update'}, content: 'patched'}]
+      }
+    }
+  };
+}
+rl.on('line', line => {
+  fs.appendFileSync(log, `IN ${line}\n`);
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    send({id: message.id, result: {protocolVersion: '2025-01-01', capabilities: {}}});
+  } else if (message.method === 'thread/start') {
+    send({id: message.id, result: {thread: {id: 'thread-causal'}}});
+  } else if (message.method === 'turn/start') {
+    send({id: message.id, result: {turn: {id: 'turn-causal'}}});
+    setTimeout(() => {
+      send({method: 'item/agentMessage/delta', params: {turnId: 'turn-causal', delta: 'before tool '}});
+      // This notification is deliberately adjacent to the approval request.
+      // The runtime must drain it before the item-id-only policy check.
+      send(completedFileChange());
+      send({
+        id: 'approval-1',
+        method: 'item/fileChange/requestApproval',
+        params: {threadId: 'thread-causal', turnId: 'turn-causal', itemId: 'item-write'}
+      });
+    }, 10);
+  } else if (message.id === 'approval-1' && message.result) {
+    fs.appendFileSync(log, `DECISION ${JSON.stringify(message.result)}\n`);
+    setTimeout(() => {
+      send({method: 'item/agentMessage/delta', params: {turnId: 'turn-causal', delta: 'after tool'}});
+      send({method: 'turn/completed', params: {turnId: 'turn-causal'}});
+    }, 10);
+  }
+});
+"
+            .replace("__CHANGED_PATH__", &changed_path_literal)
+            .replace("__SCRIPT_LOG__", &script_log_literal);
+        std::fs::write(&script, script_source).expect("app-server script");
+
+        let output =
+            std::process::Command::new(std::env::current_exe().expect("current test binary"))
+                .arg("agent::native::tests::codex_file_change_completion_before_approval_fixture")
+                .arg("--exact")
+                .arg("--nocapture")
+                .env("MAESTRO_CODEX_FILE_CHANGE_EVENTS", &events_path)
+                .env("MAESTRO_CODEX_FIXTURE_WORKSPACE", &workspace)
+                .env("MAESTRO_HOME", root.path().join("maestro-home"))
+                .env("MAESTRO_CODEX_APP_SERVER_COMMAND", "node")
+                .env("MAESTRO_TOOL_PROFILE", "all")
+                .env("OPENAI_CODEX_TOKEN", "fixture-token")
+                .env("RUST_BACKTRACE", "1")
+                .env("RUST_MIN_STACK", "16777216")
+                .env(
+                    "MAESTRO_CODEX_APP_SERVER_ARGS_JSON",
+                    serde_json::to_string(&vec![script.display().to_string()])
+                        .expect("script args"),
+                )
+                .output()
+                .expect("spawn fixture child");
+        assert!(
+            output.status.success(),
+            "file-change fixture failed: {}; stdout: {}; stderr: {}; app-server log: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+            std::fs::read_to_string(&script_log).unwrap_or_default(),
+        );
+        let events: Vec<Value> =
+            serde_json::from_slice(&std::fs::read(&events_path).expect("file-change events file"))
+                .expect("file-change events json");
+        let decision = events
+            .iter()
+            .find(|event| event["type"] == "codex_native_decision")
+            .expect("native approval decision");
+        assert_eq!(decision["method"], "item/fileChange/requestApproval");
+        assert_eq!(
+            decision["decision"], "approved_policy",
+            "the queued completion path must make the item-id-only approval firewall-safe: {events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "tool_end")
+                .count(),
+            1,
+            "the approved completion must project one terminal tool receipt: {events:?}"
+        );
+        assert!(events.iter().any(|event| {
+            event["type"] == "response_chunk" && event["content"] == "before tool "
+        }));
+        assert!(events.iter().any(|event| {
+            event["type"] == "response_chunk" && event["content"] == "after tool"
+        }));
+        let log = std::fs::read_to_string(&script_log).expect("app-server log");
+        assert!(
+            log.contains(r#"DECISION {"decision":"accept"}"#),
+            "Codex must receive an accepted approval after the causal completion drain: {log}"
+        );
+    }
+
     #[test]
     fn codex_terminal_empty_response_fails_closed() {
         let root = tempfile::tempdir().expect("fixture root");
@@ -12826,6 +13155,33 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
     }
 
     #[test]
+    fn completed_file_change_preserves_paths_for_item_id_only_approval() {
+        let notification = crate::codex_app_server::Notification {
+            method: "item/completed".to_owned(),
+            params: Some(json!({
+                "item": {
+                    "id": "item-completed-write",
+                    "type": "fileChange",
+                    "status": "completed",
+                    "changes": [{
+                        "path": "/tmp/workspace/src.rs",
+                        "kind": {"type": "update", "content": "patched"}
+                    }]
+                }
+            })),
+        };
+        let mut known = HashMap::new();
+
+        remember_codex_file_change_completion_paths(&notification, &mut known);
+
+        let approval_paths = codex_native_file_change_paths(
+            &json!({"itemId": "item-completed-write"}),
+            Some(&known),
+        );
+        assert_eq!(approval_paths, ["/tmp/workspace/src.rs"]);
+    }
+
+    #[test]
     fn yolo_policy_approval_correlates_one_named_native_completion() {
         assert!(
             !codex_native_approval_requires_user(crate::state::ApprovalMode::Yolo),
@@ -12984,6 +13340,64 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
 
         assert!(project_codex_native_completion(&notification, &mut correlations).is_none());
         assert!(correlations.contains_key("approved-item"));
+    }
+
+    #[test]
+    fn preapproval_codex_native_completion_is_deferred_until_approval() {
+        let notification = crate::codex_app_server::Notification {
+            method: "item/completed".to_owned(),
+            params: Some(json!({
+                "item": {
+                    "id": "item-before-approval",
+                    "type": "fileChange",
+                    "status": "completed"
+                }
+            })),
+        };
+        let mut pending = HashMap::new();
+        let mut correlations = HashMap::new();
+
+        assert!(project_or_defer_codex_native_completion(
+            &notification,
+            &mut correlations,
+            &mut pending,
+        )
+        .is_none());
+        assert_eq!(pending.get("item-before-approval"), Some(&true));
+
+        let approval = json!({"itemId": "item-before-approval"});
+        remember_approved_codex_native_operation(
+            Some(&approval),
+            "call-before-approval",
+            "codex_file_change",
+            &mut correlations,
+        );
+        let terminal = project_deferred_codex_native_completion(
+            Some(&approval),
+            &mut pending,
+            &mut correlations,
+        )
+        .expect("the deferred completion must emit after approval correlation");
+
+        assert!(matches!(
+            terminal,
+            FromAgent::ToolEnd {
+                call_id,
+                success: true,
+                receipt: Some(receipt),
+                ..
+            } if call_id == "call-before-approval"
+                && receipt.call_id == "call-before-approval"
+                && receipt.tool_name == "codex_file_change"
+        ));
+        assert!(pending.is_empty());
+        assert!(correlations.is_empty());
+        assert!(project_deferred_codex_native_completion(
+            Some(&approval),
+            &mut pending,
+            &mut correlations,
+        )
+        .is_none());
     }
 
     #[test]
@@ -13569,6 +13983,32 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             &with_write
         )
         .is_none());
+    }
+
+    #[test]
+    fn stale_codex_tool_calls_are_denied_by_the_current_active_allowlist() {
+        let empty = HashSet::new();
+        let allowed = HashSet::from([String::from("read"), String::from("write")]);
+
+        assert!(codex_tool_call_denied_by_active_tools("write", &empty).is_some());
+        assert!(codex_tool_call_denied_by_active_tools("write", &allowed).is_none());
+        assert!(codex_tool_call_denied_by_active_tools("READ", &allowed).is_none());
+    }
+
+    #[test]
+    fn tool_search_activation_does_not_expand_the_current_codex_turn_allowlist() {
+        let turn_start = HashSet::from([String::from("tool_search"), String::from("read")]);
+        let mut live_after_tool_search = turn_start.clone();
+        live_after_tool_search.insert("write".to_owned());
+
+        assert!(
+            codex_tool_call_denied_by_active_tools("write", &turn_start).is_some(),
+            "same-turn calls must use the turn-start snapshot"
+        );
+        assert!(
+            codex_tool_call_denied_by_active_tools("write", &live_after_tool_search).is_none(),
+            "the live set may contain a tool activated for the next turn"
+        );
     }
 
     #[test]

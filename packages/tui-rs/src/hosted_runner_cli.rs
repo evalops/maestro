@@ -663,7 +663,6 @@ fn reject_legacy_launch_sources(
         "MAESTRO_HOSTED_RUNNER_LISTEN",
         "MAESTRO_HOSTED_RUNNER_HOST",
         "MAESTRO_HOSTED_RUNNER_PORT",
-        "PORT",
         "MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
         "MAESTRO_WORKSPACE_ID",
         "MAESTRO_REMOTE_RUNNER_AGENT_ID",
@@ -1769,12 +1768,15 @@ mod tests {
         )
         .expect("descriptor file");
 
-        let env = HashMap::from([(
-            HOSTED_LAUNCH_SPEC_FILE_ENV.to_string(),
-            descriptor.to_string_lossy().into_owned(),
-        )]);
+        let env = HashMap::from([
+            (
+                HOSTED_LAUNCH_SPEC_FILE_ENV.to_string(),
+                descriptor.to_string_lossy().into_owned(),
+            ),
+            ("PORT".to_string(), "3000".to_string()),
+        ]);
         let config = resolve_hosted_runner_launch_config(["maestro hosted-runner"], &env)
-            .expect("descriptor env path should resolve");
+            .expect("generic PORT must not conflict with descriptor coordinates");
         assert_eq!(config.runner.runner_session_id, "runner");
 
         let conflicting_env = HashMap::from([
