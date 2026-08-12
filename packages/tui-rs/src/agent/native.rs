@@ -784,6 +784,8 @@ enum AgentCommand {
         kind: PromptKind,
         /// Optional queue id for correlating queued prompts with UI state.
         queue_id: Option<u64>,
+        /// Correlation identity bound to this exact governed runtime turn.
+        managed_request_lineage: Option<String>,
     },
 
     /// Reinsert a follow-up at the front of the follow-up subsection.
@@ -1486,6 +1488,7 @@ impl NativeAgent {
             runtime_prompt_revision: 0,
             runtime_audit: Arc::clone(&runtime_audit),
             codex_file_change_paths_by_item: HashMap::new(),
+            codex_native_tools_by_item: HashMap::new(),
         };
 
         // Spawn the background task
@@ -1570,12 +1573,26 @@ impl NativeAgent {
         kind: PromptKind,
         queue_id: Option<u64>,
     ) -> Result<()> {
+        self.prompt_with_kind_and_lineage(content, attachments, kind, queue_id, None)
+            .await
+    }
+
+    /// Send a prompt with correlation bound to the prompt rather than session state.
+    pub async fn prompt_with_kind_and_lineage(
+        &self,
+        content: String,
+        attachments: Vec<String>,
+        kind: PromptKind,
+        queue_id: Option<u64>,
+        managed_request_lineage: Option<String>,
+    ) -> Result<()> {
         self.command_tx
             .send(AgentCommand::Prompt {
                 content,
                 attachments,
                 kind,
                 queue_id,
+                managed_request_lineage,
             })
             .map_err(|e| anyhow::anyhow!("Failed to send prompt: {e}"))?;
         Ok(())
@@ -2299,10 +2316,20 @@ struct NativeAgentRunner {
     /// item notifications; this map correlates them so the action firewall and
     /// path-sensitive policy hooks see the same full change set.
     codex_file_change_paths_by_item: CodexFileChangeItemCache,
+
+    /// Approved Codex-native operations awaiting their authoritative
+    /// `item/completed` notification, keyed by Codex item id.
+    codex_native_tools_by_item: HashMap<String, CodexNativeToolCorrelation>,
 }
 
 /// itemId → path → per-path patch metadata (may be an empty object).
 type CodexFileChangeItemCache = HashMap<String, Map<String, Value>>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CodexNativeToolCorrelation {
+    call_id: String,
+    tool_name: String,
+}
 
 /// One finished Codex tool call, ready to be turned into a wire response.
 struct CodexToolOutcome<'a> {
@@ -2757,6 +2784,109 @@ fn remember_codex_file_change_item_paths(
     for (path, meta) in entries {
         insert_file_change_entry(entry, &path, meta);
     }
+}
+
+fn codex_native_item_id(params: Option<&Value>) -> Option<&str> {
+    let params = params?;
+    params
+        .get("itemId")
+        .or_else(|| params.get("item_id"))
+        .or_else(|| params.pointer("/item/id"))
+        .and_then(Value::as_str)
+        .filter(|item_id| !item_id.trim().is_empty())
+}
+
+fn remember_approved_codex_native_operation(
+    params: Option<&Value>,
+    call_id: &str,
+    tool_name: &str,
+    correlations: &mut HashMap<String, CodexNativeToolCorrelation>,
+) {
+    let Some(item_id) = codex_native_item_id(params) else {
+        return;
+    };
+    correlations.insert(
+        item_id.to_owned(),
+        CodexNativeToolCorrelation {
+            call_id: call_id.to_owned(),
+            tool_name: tool_name.to_owned(),
+        },
+    );
+}
+
+fn codex_native_completion(
+    notification: &crate::codex_app_server::Notification,
+) -> Option<(String, bool)> {
+    if notification.method != "item/completed" {
+        return None;
+    }
+    let params = notification.params.as_ref()?;
+    let item = params.get("item")?;
+    if !matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("fileChange" | "commandExecution")
+    ) {
+        return None;
+    }
+    let item_id = item
+        .get("id")
+        .or_else(|| params.get("itemId"))
+        .and_then(Value::as_str)?
+        .trim();
+    if item_id.is_empty() {
+        return None;
+    }
+    let failed_status = item
+        .get("status")
+        .or_else(|| params.get("status"))
+        .and_then(Value::as_str)
+        .is_some_and(|status| matches!(status, "failed" | "cancelled" | "canceled"));
+    let is_error = item
+        .get("isError")
+        .or_else(|| item.get("is_error"))
+        .or_else(|| params.get("isError"))
+        .or_else(|| params.get("is_error"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let nonzero_exit = matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("commandExecution")
+    ) && item
+        .get("exitCode")
+        .or_else(|| item.get("exit_code"))
+        .or_else(|| params.get("exitCode"))
+        .or_else(|| params.get("exit_code"))
+        .and_then(Value::as_i64)
+        .is_some_and(|exit_code| exit_code != 0);
+    Some((
+        item_id.to_owned(),
+        !failed_status && !is_error && !nonzero_exit,
+    ))
+}
+
+fn project_codex_native_completion(
+    notification: &crate::codex_app_server::Notification,
+    correlations: &mut HashMap<String, CodexNativeToolCorrelation>,
+) -> Option<FromAgent> {
+    let (item_id, success) = codex_native_completion(notification)?;
+    let correlation = correlations.remove(&item_id)?;
+    let result = if success {
+        ToolResult::success(format!("{} completed", correlation.tool_name))
+    } else {
+        ToolResult::failure(format!("{} failed", correlation.tool_name))
+    };
+    let execution = ToolExecution::from_legacy(
+        &correlation.call_id,
+        &correlation.tool_name,
+        ExecutionSource::Native,
+        result.clone(),
+    );
+    Some(FromAgent::ToolEnd {
+        call_id: correlation.call_id,
+        success,
+        result: Some(result),
+        receipt: Some(execution.receipt),
+    })
 }
 
 /// Canonical policy-hook input for a Codex-native file-change approval.
@@ -3542,13 +3672,15 @@ impl NativeAgentRunner {
         attachments: Vec<String>,
         kind: PromptKind,
         queue_id: Option<u64>,
+        managed_request_lineage: Option<String>,
     ) {
         let id = queue_id.unwrap_or_else(|| self.pending_messages.reserve_id());
         let pending = if kind == PromptKind::Steer {
             PendingMessage::urgent_with_kind_and_id_and_attachments(content, kind, id, attachments)
         } else {
             PendingMessage::with_kind_and_id_and_attachments(content, kind, id, attachments)
-        };
+        }
+        .with_managed_request_lineage(managed_request_lineage);
         let dropped = self.pending_messages.push_message(pending);
         if let Some(dropped) = dropped {
             let _ = self.event_tx.send(FromAgent::Status {
@@ -3603,6 +3735,7 @@ impl NativeAgentRunner {
                     attachments,
                     kind,
                     queue_id,
+                    managed_request_lineage,
                 } => {
                     if should_defer_prompt_command(kind, cancelled) {
                         self.deferred_commands.push_back(AgentCommand::Prompt {
@@ -3610,9 +3743,16 @@ impl NativeAgentRunner {
                             attachments,
                             kind,
                             queue_id,
+                            managed_request_lineage,
                         });
                     } else {
-                        self.enqueue_pending_prompt(content, attachments, kind, queue_id);
+                        self.enqueue_pending_prompt(
+                            content,
+                            attachments,
+                            kind,
+                            queue_id,
+                            managed_request_lineage,
+                        );
                     }
                 }
                 AgentCommand::Cancel { clear_pending } => {
@@ -3838,7 +3978,8 @@ impl NativeAgentRunner {
             QueueMode::All => usize::MAX,
             QueueMode::One => 1,
         };
-        self.pending_messages.drain_leading_kind(kind, max_count)
+        self.pending_messages
+            .drain_leading_kind_and_lineage(kind, max_count)
     }
 
     fn dequeue_next_turn_messages(&mut self, allow_follow_ups: bool) -> Vec<PendingMessage> {
@@ -3978,6 +4119,9 @@ impl NativeAgentRunner {
         &mut self,
         pending: Vec<PendingMessage>,
     ) -> Result<bool> {
+        let managed_request_lineage = pending
+            .first()
+            .and_then(|message| message.managed_request_lineage.clone());
         let mut next_prompt_context: Option<String> = None;
         let mut appended = false;
         for pending_message in pending {
@@ -3995,6 +4139,11 @@ impl NativeAgentRunner {
             }
         }
         self.prompt_context = next_prompt_context;
+        if appended {
+            if let Some(client) = self.client.as_mut() {
+                client.set_managed_request_lineage(managed_request_lineage);
+            }
+        }
         Ok(appended)
     }
 
@@ -4200,10 +4349,21 @@ impl NativeAgentRunner {
                     attachments,
                     kind,
                     queue_id,
+                    managed_request_lineage,
                 } => {
                     if self.busy {
-                        self.enqueue_pending_prompt(content, attachments, kind, queue_id);
+                        self.enqueue_pending_prompt(
+                            content,
+                            attachments,
+                            kind,
+                            queue_id,
+                            managed_request_lineage,
+                        );
                         continue;
+                    }
+
+                    if let Some(client) = self.client.as_mut() {
+                        client.set_managed_request_lineage(managed_request_lineage);
                     }
 
                     if kind == PromptKind::SideQuestion {
@@ -5423,6 +5583,7 @@ impl NativeAgentRunner {
         let mut streamed_assistant = String::new();
 
         loop {
+            self.drain_codex_native_operation_completions().await;
             if self.drain_pending_commands() {
                 return Err(anyhow::anyhow!("Request cancelled"));
             }
@@ -5445,6 +5606,7 @@ impl NativeAgentRunner {
             match event {
                 TurnWaitEvent::Pending => continue,
                 TurnWaitEvent::Completed(result) => {
+                    self.drain_codex_native_operation_completions().await;
                     self.codex_active_turn_id = None;
                     let (completion_delta, full_text) = Self::reconcile_codex_completion_text(
                         &streamed_assistant,
@@ -5724,6 +5886,22 @@ impl NativeAgentRunner {
                     params,
                     &mut self.codex_file_change_paths_by_item,
                 );
+            }
+        }
+    }
+
+    async fn drain_codex_native_operation_completions(&mut self) {
+        let Some(session) = self.codex_session.as_ref() else {
+            return;
+        };
+        let notes = session
+            .take_native_operation_completion_notifications()
+            .await;
+        for note in notes {
+            if let Some(event) =
+                project_codex_native_completion(&note, &mut self.codex_native_tools_by_item)
+            {
+                let _ = self.event_tx.send(event);
             }
         }
     }
@@ -6082,6 +6260,12 @@ impl NativeAgentRunner {
                         method: request.method.clone(),
                         decision: "approved_policy".to_owned(),
                     });
+                    remember_approved_codex_native_operation(
+                        request.params.as_ref(),
+                        &policy_call_id,
+                        policy_tool,
+                        &mut self.codex_native_tools_by_item,
+                    );
                     request.respond(approval_decision(true));
                     return Ok(());
                 }
@@ -6143,6 +6327,14 @@ impl NativeAgentRunner {
                     }
                     .to_owned(),
                 });
+                if approved {
+                    remember_approved_codex_native_operation(
+                        request.params.as_ref(),
+                        &policy_call_id,
+                        policy_tool,
+                        &mut self.codex_native_tools_by_item,
+                    );
+                }
                 request.respond(approval_decision(approved));
                 Ok(())
             }
@@ -11447,6 +11639,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
                 attachments: vec!["must-not-be-read.txt".to_string()],
                 kind: PromptKind::Prompt,
                 queue_id: None,
+                managed_request_lineage: None,
             })
             .expect("buffer prompt");
 
@@ -11955,6 +12148,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
                 attachments: Vec::new(),
                 kind: PromptKind::Prompt,
                 queue_id: Some(41),
+                managed_request_lineage: None,
             })
             .expect("queue prompt");
         let (tool_response_tx, _tool_response_rx) = mpsc::unbounded_channel();
@@ -12588,6 +12782,245 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
     }
 
     #[test]
+    fn approved_codex_native_completion_emits_one_receipt_bearing_tool_end() {
+        let mut correlations = HashMap::from([(
+            "item-write-1".to_owned(),
+            CodexNativeToolCorrelation {
+                call_id: "call-write-1".to_owned(),
+                tool_name: "codex_file_change".to_owned(),
+            },
+        )]);
+        let notification = crate::codex_app_server::Notification {
+            method: "item/completed".to_owned(),
+            params: Some(json!({
+                "turnId": "turn-1",
+                "item": {
+                    "id": "item-write-1",
+                    "type": "fileChange",
+                    "status": "completed"
+                }
+            })),
+        };
+
+        let event = project_codex_native_completion(&notification, &mut correlations)
+            .expect("approved native write completion must project");
+        assert!(
+            correlations.is_empty(),
+            "completion has one idempotency owner"
+        );
+        assert!(matches!(
+            event,
+            FromAgent::ToolEnd {
+                call_id,
+                success: true,
+                result: Some(ToolResult { success: true, .. }),
+                receipt: Some(receipt),
+            } if call_id == "call-write-1"
+                && receipt.call_id == "call-write-1"
+                && receipt.tool_name == "codex_file_change"
+        ));
+        assert!(
+            project_codex_native_completion(&notification, &mut correlations).is_none(),
+            "replayed item/completed must not emit a duplicate ToolEnd"
+        );
+    }
+
+    #[test]
+    fn yolo_policy_approval_correlates_one_named_native_completion() {
+        assert!(
+            !codex_native_approval_requires_user(crate::state::ApprovalMode::Yolo),
+            "Yolo follows the approved_policy branch without a ToolCall prompt"
+        );
+        let params = json!({"itemId": "item-yolo-write"});
+        let mut correlations = HashMap::new();
+        remember_approved_codex_native_operation(
+            Some(&params),
+            "call-yolo-write",
+            "codex_file_change",
+            &mut correlations,
+        );
+        let notification = crate::codex_app_server::Notification {
+            method: "item/completed".to_owned(),
+            params: Some(json!({
+                "item": {
+                    "id": "item-yolo-write",
+                    "type": "fileChange",
+                    "status": "completed"
+                }
+            })),
+        };
+
+        let terminals = [notification.clone(), notification]
+            .into_iter()
+            .filter_map(|notification| {
+                project_codex_native_completion(&notification, &mut correlations)
+            })
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            terminals.as_slice(),
+            [FromAgent::ToolEnd {
+                call_id,
+                success: true,
+                receipt: Some(receipt),
+                ..
+            }] if call_id == "call-yolo-write"
+                && receipt.call_id == "call-yolo-write"
+                && receipt.tool_name == "codex_file_change"
+                && receipt.status == crate::agent::ExecutionStatus::Succeeded
+        ));
+        assert!(correlations.is_empty());
+    }
+
+    #[test]
+    fn replayed_native_completion_emits_exactly_one_named_success_wire_terminal() {
+        let mut correlations = HashMap::from([(
+            "item-write-wire".to_owned(),
+            CodexNativeToolCorrelation {
+                call_id: "call-write-wire".to_owned(),
+                tool_name: "codex_file_change".to_owned(),
+            },
+        )]);
+        let notification = crate::codex_app_server::Notification {
+            method: "item/completed".to_owned(),
+            params: Some(json!({
+                "item": {
+                    "id": "item-write-wire",
+                    "type": "fileChange",
+                    "status": "completed"
+                }
+            })),
+        };
+
+        let terminals = [notification.clone(), notification]
+            .into_iter()
+            .filter_map(|notification| {
+                project_codex_native_completion(&notification, &mut correlations)
+            })
+            .filter_map(crate::headless_server::tool_end_message_from_agent)
+            .collect::<Vec<_>>();
+
+        assert!(matches!(
+            terminals.as_slice(),
+            [crate::headless::FromAgentMessage::ToolEnd {
+                call_id,
+                tool_execution_id: None,
+                success: true,
+                tool: Some(tool),
+                receipt: Some(receipt),
+                ..
+            }] if call_id == "call-write-wire"
+                && tool == "codex_file_change"
+                && receipt.call_id == "call-write-wire"
+                && receipt.tool_name == "codex_file_change"
+        ));
+    }
+
+    #[tokio::test]
+    async fn approved_dynamic_write_emits_one_named_receipt_bearing_wire_terminal() {
+        let dir = tempfile::tempdir().expect("temporary workspace");
+        let executor = ToolExecutor::new(dir.path().to_string_lossy().into_owned());
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let call_id = "call_production_shaped_write";
+        let args = json!({
+            "file_path": "approved.txt",
+            "content": "approved write"
+        });
+
+        // `item/tool/call` performs approval before this exact executor boundary.
+        // ToolExecutor remains the sole producer of its typed terminal; the
+        // headless adapter must preserve the receipt's canonical tool identity.
+        let execution = executor
+            .execute_with_receipt("write", &args, Some(&event_tx), call_id)
+            .await;
+        assert!(matches!(
+            execution.outcome,
+            crate::agent::ToolOutcome::Succeeded { .. }
+        ));
+
+        let terminals = std::iter::from_fn(|| event_rx.try_recv().ok())
+            .filter_map(crate::headless_server::tool_end_message_from_agent)
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            terminals.as_slice(),
+            [crate::headless::FromAgentMessage::ToolEnd {
+                call_id: wire_call_id,
+                tool_execution_id: None,
+                success: true,
+                tool: Some(tool),
+                receipt: Some(receipt),
+                ..
+            }] if wire_call_id == call_id
+                && tool == "write"
+                && receipt.call_id == call_id
+                && receipt.tool_name == "write"
+                && receipt.status == crate::agent::ExecutionStatus::Succeeded
+        ));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("approved.txt"))
+                .expect("approved write output"),
+            "approved write"
+        );
+    }
+
+    #[test]
+    fn uncorrelated_codex_native_completion_cannot_claim_tool_success() {
+        let notification = crate::codex_app_server::Notification {
+            method: "item/completed".to_owned(),
+            params: Some(json!({
+                "item": {
+                    "id": "different-item",
+                    "type": "fileChange",
+                    "status": "completed"
+                }
+            })),
+        };
+        let mut correlations = HashMap::from([(
+            "approved-item".to_owned(),
+            CodexNativeToolCorrelation {
+                call_id: "approved-call".to_owned(),
+                tool_name: "codex_file_change".to_owned(),
+            },
+        )]);
+
+        assert!(project_codex_native_completion(&notification, &mut correlations).is_none());
+        assert!(correlations.contains_key("approved-item"));
+    }
+
+    #[test]
+    fn nonzero_codex_command_completion_projects_failure() {
+        let mut correlations = HashMap::from([(
+            "item-command-1".to_owned(),
+            CodexNativeToolCorrelation {
+                call_id: "call-command-1".to_owned(),
+                tool_name: "codex_command_execution".to_owned(),
+            },
+        )]);
+        let notification = crate::codex_app_server::Notification {
+            method: "item/completed".to_owned(),
+            params: Some(json!({
+                "item": {
+                    "id": "item-command-1",
+                    "type": "commandExecution",
+                    "exitCode": 17
+                }
+            })),
+        };
+
+        assert!(matches!(
+            project_codex_native_completion(&notification, &mut correlations),
+            Some(FromAgent::ToolEnd {
+                call_id,
+                success: false,
+                result: Some(ToolResult { success: false, .. }),
+                receipt: Some(receipt),
+            }) if call_id == "call-command-1"
+                && receipt.call_id == "call-command-1"
+                && receipt.tool_name == "codex_command_execution"
+        ));
+        assert!(correlations.is_empty());
+    }
+
+    #[test]
     fn a_policy_hook_blocks_a_codex_native_mutation() {
         // Round 4 routed `item/tool/call` through the hook pipeline. A
         // Codex-native mutation is approved on a different branch, so a hook
@@ -13183,24 +13616,28 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
                 attachments: Vec::new(),
                 kind: PromptKind::Prompt,
                 queue_id: Some(1),
+                managed_request_lineage: None,
             },
             AgentCommand::Prompt {
                 content: "steer before cancel".to_string(),
                 attachments: Vec::new(),
                 kind: PromptKind::Steer,
                 queue_id: Some(2),
+                managed_request_lineage: None,
             },
             AgentCommand::Prompt {
                 content: "follow-up before cancel".to_string(),
                 attachments: Vec::new(),
                 kind: PromptKind::FollowUp,
                 queue_id: Some(3),
+                managed_request_lineage: None,
             },
             AgentCommand::Prompt {
                 content: "side question before cancel".to_string(),
                 attachments: Vec::new(),
                 kind: PromptKind::SideQuestion,
                 queue_id: Some(4),
+                managed_request_lineage: None,
             },
         ]);
 
@@ -13211,6 +13648,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             attachments: Vec::new(),
             kind: PromptKind::Prompt,
             queue_id: Some(5),
+            managed_request_lineage: None,
         });
         assert!(matches!(
             deferred_commands.pop_front(),

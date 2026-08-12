@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "packages/maestro-rs",
+    "packages/runtime-rs",
     "packages/scenario-rs",
     "packages/ai-rs",
     "packages/control-plane-rs",
@@ -41,6 +42,7 @@ libc = "0.2"
 maestro-ai = { path = "packages/ai-rs" }
 maestro-control-plane = { path = "packages/control-plane-rs" }
 maestro-execpolicy = { path = "packages/execpolicy-rs" }
+maestro-runtime = { path = "packages/runtime-rs" }
 maestro-tui = { path = "packages/tui-rs" }
 # Shared by maestro-tui and maestro-control-plane; keep both crates on the
 # same version here so a security bump (e.g. the lopdf RUSTSEC-2026-0187

@@ -194,6 +194,7 @@ message ServerCapabilities {
   optional bool raw_agent_events = 3;
   repeated ConnectionRole connection_roles = 4;
   repeated NativeToolCapability native_tools = 5;
+  repeated string governed_tool_grant_algorithms = 6;
 }
 
 message ToolResponseResult {

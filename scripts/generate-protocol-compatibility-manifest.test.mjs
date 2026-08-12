@@ -118,6 +118,36 @@ test("serde wire renames and thread validation changes alter compatibility", () 
 	);
 });
 
+test("hosted thread compatibility matrix changes alter the thread digest", () => {
+	const sources = readCanonicalSources();
+	const baseline = buildCompatibilityManifest({ sources });
+	const changedMatrix = sources.threadCompatibilityMatrix.replace(
+		'"current": "evalops.maestro.thread.v2"',
+		'"current": "evalops.maestro.thread.v3"',
+	);
+	assert.notEqual(changedMatrix, sources.threadCompatibilityMatrix);
+	const changed = buildCompatibilityManifest({
+		sources: { ...sources, threadCompatibilityMatrix: changedMatrix },
+	});
+
+	assert.notEqual(
+		changed.compatibility.thread.contractDigest,
+		baseline.compatibility.thread.contractDigest,
+	);
+	assert.notEqual(changed.compatibilityDigest, baseline.compatibilityDigest);
+});
+
+test("governed thread sources require the compatibility matrix", () => {
+	const sources = readCanonicalSources();
+	const withoutMatrix = { ...sources };
+	delete withoutMatrix.threadCompatibilityMatrix;
+
+	assert.throws(
+		() => buildCompatibilityManifest({ sources: withoutMatrix }),
+		/governed thread sources require hosted-thread-compatibility-matrix\.json/,
+	);
+});
+
 test("protobuf field changes alter the compatibility digest", () => {
 	const sources = readCanonicalSources();
 	const baseline = buildCompatibilityManifest({ sources });
@@ -151,6 +181,89 @@ test("resident validation changes alter the compatibility digest", () => {
 		},
 	});
 	assert.notEqual(changed.compatibilityDigest, baseline.compatibilityDigest);
+});
+
+test("runtime-owned protocol semantics are bound into the compatibility digest", () => {
+	const sources = readCanonicalSources();
+	const baseline = buildCompatibilityManifest({ sources });
+	const changed = buildCompatibilityManifest({
+		sources: {
+			...sources,
+			runtimeFixture: sources.runtimeFixture.replace(
+				'"responseEndTerminal": false',
+				'"responseEndTerminal": true',
+			),
+		},
+	});
+
+	assert.notEqual(changed.compatibilityDigest, baseline.compatibilityDigest);
+	assert.equal(
+		baseline.compatibility.runtime.schemaVersion,
+		"evalops.maestro.headless-protocol.v1",
+	);
+});
+
+test("runtime contract digest is bound to the serialized runtime fixture", () => {
+	const sources = readCanonicalSources();
+	const baseline = buildCompatibilityManifest({ sources });
+	const changed = buildCompatibilityManifest({
+		sources: {
+			...sources,
+			runtimeFixture: sources.runtimeFixture.replace(
+				'"responseEndTerminal": false',
+				'"responseEndTerminal": true',
+			),
+		},
+	});
+
+	assert.notEqual(
+		changed.compatibility.runtime.contractDigest,
+		baseline.compatibility.runtime.contractDigest,
+	);
+	assert.notEqual(changed.compatibilityDigest, baseline.compatibilityDigest);
+
+	const testOnlySourceChange = buildCompatibilityManifest({
+		sources: {
+			...sources,
+			runtimeProtocol: sources.runtimeProtocol.replace(
+				"checked_in_fixture_matches_typed_contract",
+				"changed_test_only_fixture_name",
+			),
+		},
+	});
+	assert.equal(
+		testOnlySourceChange.compatibility.runtime.contractDigest,
+		baseline.compatibility.runtime.contractDigest,
+	);
+	assert.equal(testOnlySourceChange.compatibilityDigest, baseline.compatibilityDigest);
+});
+
+test("runtime contract digest is independent of JSON object key order", () => {
+	const sources = readCanonicalSources();
+	const baseline = buildCompatibilityManifest({ sources });
+	const reverseObjectKeys = (value) => {
+		if (Array.isArray(value)) return value.map(reverseObjectKeys);
+		if (value !== null && typeof value === "object") {
+			return Object.fromEntries(
+				Object.entries(value)
+					.reverse()
+					.map(([key, child]) => [key, reverseObjectKeys(child)]),
+			);
+		}
+		return value;
+	};
+	const reorderedFixture = JSON.stringify(
+		reverseObjectKeys(JSON.parse(sources.runtimeFixture)),
+	);
+	const reordered = buildCompatibilityManifest({
+		sources: { ...sources, runtimeFixture: reorderedFixture },
+	});
+
+	assert.equal(
+		reordered.compatibility.runtime.contractDigest,
+		baseline.compatibility.runtime.contractDigest,
+	);
+	assert.equal(reordered.compatibilityDigest, baseline.compatibilityDigest);
 });
 
 test("check mode rejects a stale manifest", () => {
@@ -203,6 +316,8 @@ test("source-root receipt generation supports the legacy v1-only recovery source
 		headlessSchema: "proto/maestro/v1/headless.proto",
 		headlessGenerated: "packages/tui-rs/src/headless/generated_protocol.rs",
 		headlessRuntime: "packages/tui-rs/src/headless/messages.rs",
+		runtimeProtocol: "packages/runtime-rs/src/protocol.rs",
+		runtimeFixture: "packages/runtime-rs/fixtures/headless-protocol-v1.json",
 		transcript: "packages/tui-rs/src/transcript.rs",
 		thread: "packages/tui-rs/src/hosted_runner/thread_protocol.rs",
 		resident: "packages/tui-rs/src/hosted_runner_cli.rs",
@@ -260,6 +375,19 @@ pub(super) const GOVERNED_THREAD_REQUIRED_FIELDS: &[&str] = &["codeMode", "toolG
 		assert.equal(receipt.compatibility.governedCode, null);
 		assert.equal(receipt.buildIdentity.sourceSha, sourceSha);
 		assert.equal(receipt.buildIdentity.buildDigest, buildDigest);
+		assert(
+			!receipt.generatedFrom.includes(
+				"proto/maestro/v1/hosted-thread-compatibility-matrix.json",
+			),
+		);
+		const withoutMatrix = { ...legacySources };
+		delete withoutMatrix.threadCompatibilityMatrix;
+		const expectedLegacy = buildCompatibilityManifest({ sources: withoutMatrix });
+		assert.equal(receipt.compatibilityDigest, expectedLegacy.compatibilityDigest);
+		assert.equal(
+			receipt.compatibility.thread.contractDigest,
+			expectedLegacy.compatibility.thread.contractDigest,
+		);
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}

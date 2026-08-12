@@ -280,7 +280,8 @@ impl SharedRunner {
                     || {
                         restored_state
                             .and_then(|state| state.server_capabilities.clone())
-                            .or_else(|| Some(crate::headless::native_server_capabilities()))
+                            .map(server_capabilities_without_governed_grants)
+                            .or_else(|| Some(native_server_capabilities_without_governed_grants()))
                     },
                     |state| state.server_capabilities.clone(),
                 ),

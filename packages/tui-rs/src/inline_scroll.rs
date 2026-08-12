@@ -24,6 +24,7 @@ use crossterm::style::{
 };
 use crossterm::terminal::{Clear, ClearType};
 use crossterm::Command;
+use ratatui::prelude::IntoCrossterm;
 use ratatui::style::{Color, Modifier};
 use ratatui::text::{Line, Span};
 
@@ -120,8 +121,12 @@ pub fn insert_history_lines<W: Write>(
             queue!(
                 writer,
                 SetColors(Colors::new(
-                    line.style.fg.map_or(CColor::Reset, Into::into),
-                    line.style.bg.map_or(CColor::Reset, Into::into)
+                    line.style
+                        .fg
+                        .map_or(CColor::Reset, IntoCrossterm::into_crossterm),
+                    line.style
+                        .bg
+                        .map_or(CColor::Reset, IntoCrossterm::into_crossterm)
                 ))
             )?;
 
@@ -233,7 +238,10 @@ fn write_styled_spans<W: Write>(writer: &mut W, spans: &[Span<'_>]) -> io::Resul
         if next_fg != current_fg || next_bg != current_bg {
             queue!(
                 writer,
-                SetColors(Colors::new(next_fg.into(), next_bg.into()))
+                SetColors(Colors::new(
+                    next_fg.into_crossterm(),
+                    next_bg.into_crossterm(),
+                ))
             )?;
             current_fg = next_fg;
             current_bg = next_bg;

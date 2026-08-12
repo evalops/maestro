@@ -297,6 +297,14 @@ pub enum UnifiedClient {
 }
 
 impl UnifiedClient {
+    /// Bind managed-gateway requests to the authenticated runtime turn.
+    /// Direct provider clients ignore this correlation-only context.
+    pub fn set_managed_request_lineage(&mut self, lineage_id: Option<String>) {
+        if let Self::OpenAI(client) = self {
+            client.set_managed_request_lineage(lineage_id);
+        }
+    }
+
     fn stream_idle_policy(&self) -> (std::time::Duration, u32) {
         match self {
             Self::OpenAI(client) if client.is_managed_gateway() => (

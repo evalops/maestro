@@ -5,7 +5,7 @@
     "canonicalization": "rfc8785",
     "encoding": "utf-8"
   },
-  "compatibilityDigest": "sha256:c7e9cd6e164a13692d279b1d2fda35e61faabe15bfeedaa4f511f1e917f67a84",
+  "compatibilityDigest": "sha256:b9d3c9f2d0f19e4357d3a3aea539706880dd32b0c007b5592e1f2c92ae01b32f",
   "buildIdentity": {
     "sourceSha": null,
     "buildDigest": null,
@@ -19,8 +19,11 @@
     "proto/maestro/v1/headless.proto",
     "packages/tui-rs/src/headless/generated_protocol.rs",
     "packages/tui-rs/src/headless/messages.rs",
+    "packages/runtime-rs/src/protocol.rs",
+    "packages/runtime-rs/fixtures/headless-protocol-v1.json",
     "packages/tui-rs/src/transcript.rs",
     "packages/tui-rs/src/hosted_runner/thread_protocol.rs",
+    "proto/maestro/v1/hosted-thread-compatibility-matrix.json",
     "packages/tui-rs/src/hosted_runner_cli.rs",
     "packages/tui-rs/src/hosted_runner.rs",
     "packages/tui-rs/src/hosted_runner/rendezvous_protocol.rs"
@@ -31,8 +34,8 @@
         "2026-08-08"
       ],
       "schemaDeclaredVersion": "2026-08-08",
-      "schemaContractDigest": "sha256:cfb0160bb55cb01a05f9b0871da7dba2be3d1fca58b35ebda27fec68f6ec94bf",
-      "runtimeContractDigest": "sha256:b9940c3451a609bfe827a56a6002b716b5842bcff490fdd48f1129c358a83f60",
+      "schemaContractDigest": "sha256:643ac3c4ad187e0f679a4cd8bff8d8607e919fd9d7b4ef0a8a1c89cbd83b9c35",
+      "runtimeContractDigest": "sha256:f9feffbf4e378a055753ec0690c20f8d515e1ab68cc223cab0d6c398b5d7eda7",
       "messages": {
         "toRuntime": [
           "hello",
@@ -160,7 +163,7 @@
       }
     },
     "thread": {
-      "contractDigest": "sha256:3be37dcaa27d081f309553109eed24e149af6eae37f050e72812b183b30c6511",
+      "contractDigest": "sha256:3a0f9508748ef7238e6d459e3f350aecb54d0409a1db902b3e49f60e0c78f656",
       "supportedVersions": [
         {
           "version": "evalops.maestro.thread.v1",
@@ -182,6 +185,10 @@
       "identityProtocolVersion": "evalops.remote-runner.identity.v1",
       "identityBindingProtocolVersion": "evalops.maestro.hosted-runner-identity-binding.v1",
       "rendezvousProtocolVersion": "evalops.maestro.hosted-runner-rendezvous.v1"
+    },
+    "runtime": {
+      "schemaVersion": "evalops.maestro.headless-protocol.v1",
+      "contractDigest": "sha256:a8b61e700bb628cbdef3393e35d653ed518f02aa79f8b7a468d550bfbbb83fb8"
     },
     "governedCode": {
       "codeModes": [
