@@ -1937,6 +1937,41 @@ fn supervisor_hello_capabilities_prefer_attached_agent_state() {
     assert_eq!(executor.negotiated_server_capabilities(), Some(attached));
 }
 
+#[test]
+fn supervisor_hello_fallback_withholds_governed_grant_algorithms() {
+    const ENV: &str = "MAESTRO_PLATFORM_TOOL_GRANT_ED25519_PUBLIC_KEYS";
+    let _guard = crate::headless_server::GOVERNED_GRANT_ENV_LOCK
+        .lock()
+        .expect("governed grant environment lock");
+    let previous = std::env::var_os(ENV);
+    // SAFETY: this test holds the shared lock for the dedicated environment
+    // key and restores its prior value before releasing it.
+    unsafe {
+        std::env::set_var(
+            ENV,
+            r#"{"active":{"algorithm":"ed25519","public_key":"11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=","state":"active"}}"#,
+        );
+    }
+
+    let supervisor = Arc::new(Mutex::new(AgentSupervisor::new(
+        crate::headless::SupervisorConfig::default(),
+    )));
+    let executor = AgentSupervisorHostedRunnerMessageExecutor::new(supervisor);
+    let capabilities = executor
+        .negotiated_server_capabilities()
+        .expect("pre-transport fallback capabilities");
+    assert!(capabilities.governed_tool_grant_algorithms.is_empty());
+
+    // SAFETY: restore the value while the same dedicated environment lock is
+    // still held.
+    unsafe {
+        match previous {
+            Some(value) => std::env::set_var(ENV, value),
+            None => std::env::remove_var(ENV),
+        }
+    }
+}
+
 fn stream_message(cursor: u64, message: FromAgentMessage) -> StreamEnvelope {
     StreamEnvelope::Message {
         cursor,
