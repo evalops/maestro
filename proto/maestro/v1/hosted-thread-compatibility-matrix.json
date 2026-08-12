@@ -1,0 +1,174 @@
+{
+  "schema": "evalops.maestro.thread-compatibility-matrix.v1",
+  "threadProtocolVersions": {
+    "prior": "evalops.maestro.thread.v1",
+    "current": "evalops.maestro.thread.v2",
+    "incompatible": "evalops.maestro.thread.v3"
+  },
+  "appendTurnCases": [
+    {
+      "name": "prior_v1_payload",
+      "expected": "accepted",
+      "payload": {
+        "protocolVersion": "evalops.maestro.thread.v1",
+        "turnId": "turn-prior",
+        "kind": "user_message",
+        "content": "hello",
+        "attachments": []
+      }
+    },
+    {
+      "name": "current_v2_empty_least_privilege_grant",
+      "expected": "accepted",
+      "payload": {
+        "protocolVersion": "evalops.maestro.thread.v2",
+        "turnId": "turn-current",
+        "kind": "user_message",
+        "content": "hello",
+        "attachments": [],
+        "codeMode": "governed_code",
+        "toolGrant": {
+          "envelope_version": 2,
+          "grant_id": "grant-empty",
+          "grant_version": 1,
+          "issuer": "evalops.platform",
+          "audience": "evalops.maestro",
+          "organization_id": "org-1",
+          "workspace_id": "workspace-1",
+          "thread_id": "thread-1",
+          "turn_id": "turn-current",
+          "run_id": "run_turn-current",
+          "runtime_generation": 1,
+          "grant_epoch": 1,
+          "issued_at_ms": 1,
+          "not_before_ms": 1,
+          "expires_at_ms": 9223372036854775807,
+          "grant_hash": "sha256:compatibility-fixture-placeholder",
+          "signing_key_id": "key-1",
+          "grant_signature": "ed25519:compatibility-fixture-placeholder",
+          "native_tool_ids": [],
+          "external_tools": []
+        }
+      }
+    },
+    {
+      "name": "unknown_additive_fields",
+      "expected": "accepted",
+      "payload": {
+        "protocolVersion": "evalops.maestro.thread.v2",
+        "turnId": "turn-additive",
+        "kind": "user_message",
+        "content": "hello",
+        "attachments": [],
+        "codeMode": "governed_code",
+        "toolGrant": {
+          "envelope_version": 2,
+          "grant_id": "grant-additive",
+          "grant_version": 1,
+          "issuer": "evalops.platform",
+          "audience": "evalops.maestro",
+          "organization_id": "org-1",
+          "workspace_id": "workspace-1",
+          "thread_id": "thread-1",
+          "turn_id": "turn-additive",
+          "run_id": "run_turn-additive",
+          "runtime_generation": 1,
+          "grant_epoch": 1,
+          "issued_at_ms": 1,
+          "not_before_ms": 1,
+          "expires_at_ms": 9223372036854775807,
+          "grant_hash": "sha256:compatibility-fixture-placeholder",
+          "signing_key_id": "key-1",
+          "grant_signature": "ed25519:compatibility-fixture-placeholder",
+          "native_tool_ids": [],
+          "external_tools": []
+        },
+        "futureEnvelopeField": {
+          "producer": "rolling-platform-worker",
+          "revision": 2
+        }
+      }
+    },
+    {
+      "name": "explicit_incompatible_version",
+      "expected": "rejected",
+      "payload": {
+        "protocolVersion": "evalops.maestro.thread.v3",
+        "turnId": "turn-incompatible",
+        "kind": "user_message",
+        "content": "hello",
+        "codeMode": "governed_code",
+        "toolGrant": {
+          "envelope_version": 2,
+          "grant_id": "grant-incompatible",
+          "grant_version": 1,
+          "issuer": "evalops.platform",
+          "audience": "evalops.maestro",
+          "organization_id": "org-1",
+          "workspace_id": "workspace-1",
+          "thread_id": "thread-1",
+          "turn_id": "turn-incompatible",
+          "run_id": "run_turn-incompatible",
+          "runtime_generation": 1,
+          "grant_epoch": 1,
+          "issued_at_ms": 1,
+          "not_before_ms": 1,
+          "expires_at_ms": 9223372036854775807,
+          "grant_hash": "sha256:compatibility-fixture-placeholder",
+          "signing_key_id": "key-1",
+          "grant_signature": "ed25519:compatibility-fixture-placeholder",
+          "native_tool_ids": [],
+          "external_tools": []
+        }
+      }
+    }
+  ],
+  "eventCases": [
+    {
+      "name": "response_end_is_framing",
+      "expectedPhase": "running",
+      "message": {
+        "type": "response_end",
+        "response_id": "response-1",
+        "usage": null,
+        "tools_summary": null,
+        "futureEventField": "ignored-additive-metadata"
+      }
+    },
+    {
+      "name": "turn_completed_is_terminal",
+      "expectedPhase": "completed",
+      "message": {
+        "type": "turn_completed",
+        "response_id": "turn-1",
+        "futureEventField": "ignored-additive-metadata"
+      }
+    },
+    {
+      "name": "turn_interrupted_is_terminal",
+      "expectedPhase": "interrupted",
+      "message": {
+        "type": "turn_interrupted",
+        "response_id": "turn-1",
+        "reason": "cancelled"
+      }
+    },
+    {
+      "name": "provider_error_is_terminal",
+      "expectedPhase": "failed",
+      "message": {
+        "type": "provider_error",
+        "kind": "transient_protocol",
+        "message": "provider ended without terminal event"
+      }
+    },
+    {
+      "name": "unknown_event_type_rejected",
+      "expectedPhase": "invalid",
+      "message": {
+        "type": "future_terminal",
+        "response_id": "turn-1"
+      }
+    }
+  ]
+}

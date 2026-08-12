@@ -514,6 +514,19 @@ impl CodexAppServerTurnSession {
             .await
     }
 
+    /// Drain completed Codex-native command/file operations.
+    ///
+    /// Codex executes these operations itself after Maestro answers the
+    /// requestApproval RPC. Their authoritative completion arrives as an
+    /// `item/completed` notification rather than an `item/tool/call` result,
+    /// so the native runner must consume it explicitly to close the public
+    /// ToolCall/ToolEnd lifecycle.
+    pub async fn take_native_operation_completion_notifications(&self) -> Vec<Notification> {
+        self.client
+            .take_notifications_where(is_native_operation_completion_notification)
+            .await
+    }
+
     /// Drain `turn/usage` notifications for a specific turn.
     pub async fn take_usage_notifications_for_turn(&self, turn_id: &str) -> Vec<Value> {
         self.client
@@ -651,7 +664,10 @@ fn thread_resume_params(
 /// Excludes assistant message traffic (including v2 `item/completed`
 /// agentMessage items) so `take_completed_assistant_text` still sees them.
 fn is_file_change_item_notification(n: &Notification) -> bool {
-    if is_agent_message_notification(n) || n.method == "item/tool/call" {
+    if is_agent_message_notification(n)
+        || n.method == "item/tool/call"
+        || is_native_operation_completion_notification(n)
+    {
         return false;
     }
     let method = n.method.as_str();
@@ -659,6 +675,20 @@ fn is_file_change_item_notification(n: &Notification) -> bool {
         || method.contains("FileChange")
         || method.contains("file_change")
         || method.starts_with("item/")
+}
+
+fn is_native_operation_completion_notification(n: &Notification) -> bool {
+    if n.method != "item/completed" {
+        return false;
+    }
+    matches!(
+        n.params
+            .as_ref()
+            .and_then(|params| params.get("item"))
+            .and_then(|item| item.get("type"))
+            .and_then(Value::as_str),
+        Some("fileChange" | "commandExecution")
+    )
 }
 
 fn notification_matches_turn_id(n: &Notification, turn_id: &str) -> bool {
@@ -1247,7 +1277,13 @@ mod tests {
         assert!(!is_file_change_item_notification(&assistant_completed));
         assert!(!is_file_change_item_notification(&assistant_delta));
         assert!(!is_file_change_item_notification(&tool_call));
-        assert!(is_file_change_item_notification(&file_change_item));
+        assert!(is_native_operation_completion_notification(
+            &file_change_item
+        ));
+        assert!(
+            !is_file_change_item_notification(&file_change_item),
+            "item/completed is owned exclusively by the native completion drain"
+        );
         assert!(is_file_change_item_notification(&file_change_named));
     }
 

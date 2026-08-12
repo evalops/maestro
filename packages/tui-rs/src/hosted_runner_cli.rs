@@ -12,13 +12,17 @@ use serde_json::json;
 use crate::headless::{
     AgentEvent, AgentSupervisor, SessionRecorder, SupervisorConfig, SupervisorEvent,
 };
+use crate::hosted_runner::rendezvous_protocol::RendezvousMode;
 use crate::hosted_runner::{
     load_hosted_runner_session_replay, prepare_hosted_runner, start_prepared_hosted_runner,
-    AgentSupervisorHostedRunnerMessageExecutor, HostedRunnerConfig, HostedRunnerHandle,
+    AgentSupervisorHostedRunnerMessageExecutor, HostedRunnerConfig, HostedRunnerConfigError,
+    HostedRunnerHandle,
 };
 
 const RESIDENT_MODEL_READY_CONTRACT_REVISION: &str = "maestro-resident-model-ready-v3";
 const HEADLESS_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const HOSTED_LAUNCH_SPEC_FILE_ENV: &str = "MAESTRO_HOSTED_LAUNCH_SPEC_FILE";
+const MAX_HOSTED_LAUNCH_SPEC_FILE_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -26,6 +30,11 @@ const HEADLESS_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_se
     about = "Run the Rust Maestro hosted remote-runner runtime"
 )]
 pub struct HostedRunnerCliArgs {
+    /// Versioned JSON launch descriptor. Legacy CLI/env coordinates cannot be
+    /// combined with this input.
+    #[arg(long)]
+    config: Option<PathBuf>,
+
     /// Platform remote-runner session id.
     #[arg(long)]
     runner_session_id: Option<String>,
@@ -87,10 +96,168 @@ pub struct HostedRunnerCliArgs {
     from_config: bool,
 }
 
+/// Resolved hosted-runner startup configuration.
+///
+/// The runtime boundary is derived from [`Self::runner`] through
+/// [`Self::runtime_boundary`] so adding the native boundary remains
+/// source-compatible for downstream struct literals.
+#[derive(Debug)]
 pub struct HostedRunnerLaunchConfig {
     pub runner: HostedRunnerConfig,
     pub supervisor: SupervisorConfig,
     pub agent_id: Option<String>,
+}
+
+impl HostedRunnerLaunchConfig {
+    /// Derives the transport-neutral, pre-start runtime identity snapshot.
+    ///
+    /// This accessor does not observe post-bind or post-session state. A
+    /// requested port `0` and a restored or fallback session identity remain
+    /// configuration inputs rather than authoritative runtime observations;
+    /// listener and child-process ownership stays with the hosted runner.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation errors as [`HostedRunnerConfig::runtime_boundary`].
+    pub fn runtime_boundary(
+        &self,
+    ) -> Result<maestro_runtime::HostedRuntimeBoundary, HostedRunnerConfigError> {
+        self.runner.runtime_boundary()
+    }
+
+    /// Compiles the resolved compatibility-edge inputs into one typed launch
+    /// snapshot.
+    ///
+    /// The supplied map must be the merged map after CLI flags have been
+    /// translated to canonical environment keys. The returned document is a
+    /// pre-start identity snapshot: it does not observe a bound port, restored
+    /// session, listener, or child process, and it does not move ownership of
+    /// either listener or child lifecycle out of the hosted runner.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation errors for an incomplete identity, invalid workspace,
+    /// or inconsistent workload-identity launch.
+    pub fn launch_spec(
+        &self,
+        resolved_env: &HashMap<String, String>,
+    ) -> Result<maestro_runtime::HostedLaunchSpec> {
+        let boundary = self.runtime_boundary()?;
+        let workload_identity = self.runner.workload_identity.as_ref().map(|identity| {
+            maestro_runtime::HostedLaunchWorkloadIdentity {
+                kubernetes_token_file: identity
+                    .kubernetes_token_file
+                    .to_string_lossy()
+                    .into_owned(),
+                identity_tls_ca_file: identity.identity_tls_ca_file.to_string_lossy().into_owned(),
+                identity_exchange_url: identity.identity_exchange_url.to_string(),
+                organization_id: identity.organization_id.clone(),
+                workspace_id: identity.workspace_id.clone(),
+                sandbox_id: identity.sandbox_id.to_string(),
+                placement_generation: identity.placement_generation,
+            }
+        });
+        let rendezvous = self.runner.rendezvous.as_ref().map(|rendezvous| {
+            let mode = match rendezvous.mode {
+                RendezvousMode::Inbound => maestro_runtime::HostedLaunchRendezvousMode::Inbound,
+                RendezvousMode::OutboundShadow => {
+                    maestro_runtime::HostedLaunchRendezvousMode::OutboundShadow
+                }
+                RendezvousMode::Outbound => maestro_runtime::HostedLaunchRendezvousMode::Outbound,
+            };
+            maestro_runtime::HostedLaunchRendezvous {
+                mode,
+                endpoint: rendezvous.endpoint.clone(),
+                server_name: rendezvous.server_name.clone(),
+                identity_exchange_url: rendezvous.identity_exchange_url.to_string(),
+                activation_id: rendezvous.activation_id.to_string(),
+                nonce_file: first_env(resolved_env, &["MAESTRO_RENDEZVOUS_NONCE_FILE"]),
+                nonce_present: true,
+            }
+        });
+        let model = crate::headless_server::resolve_headless_model(None, resolved_env);
+        let secret_files = maestro_runtime::HostedLaunchSecretFileRefs {
+            static_bearer: first_env(
+                resolved_env,
+                &[
+                    "MAESTRO_HOSTED_RUNNER_AUTH_TOKEN_FILE",
+                    "MAESTRO_WEB_API_KEY_FILE",
+                ],
+            ),
+            managed_gateway_access_token: first_env(
+                resolved_env,
+                &["MAESTRO_EVALOPS_ACCESS_TOKEN_FILE"],
+            ),
+            projected_workload_token: workload_identity
+                .as_ref()
+                .map(|identity| identity.kubernetes_token_file.clone()),
+            identity_tls_ca: workload_identity
+                .as_ref()
+                .map(|identity| identity.identity_tls_ca_file.clone()),
+        };
+
+        Ok(maestro_runtime::HostedLaunchSpec::new(
+            maestro_runtime::HostedLaunchSpecInput {
+                runtime: maestro_runtime::HostedLaunchRuntime {
+                    runner_session_id: boundary.runner_session_id,
+                    bind_address: boundary.bind_address,
+                    runtime_generation: boundary.runtime_generation,
+                    owner_instance_id: boundary.owner_instance_id,
+                    attach_audience: boundary.attach_audience,
+                    causal_receipt_id: boundary.causal_receipt_id,
+                },
+                workspace: maestro_runtime::HostedLaunchWorkspace {
+                    root: boundary.workspace_root,
+                    workspace_id: boundary.workspace_id,
+                    agent_run_id: boundary.agent_run_id,
+                    maestro_session_id: boundary.maestro_session_id,
+                },
+                identity: maestro_runtime::HostedLaunchIdentity {
+                    auth_mode: boundary.auth_mode,
+                    workload_identity,
+                },
+                model: maestro_runtime::HostedLaunchModelContract {
+                    model,
+                    base_url: first_env(resolved_env, &["MAESTRO_EVALOPS_BASE_URL"]),
+                    organization_id: first_env(resolved_env, &["MAESTRO_EVALOPS_ORG_ID"]),
+                    workspace_id: first_env(resolved_env, &["MAESTRO_EVALOPS_WORKSPACE_ID"]),
+                    provider: first_env(resolved_env, &["MAESTRO_EVALOPS_PROVIDER"]),
+                    environment: first_env(resolved_env, &["MAESTRO_EVALOPS_ENVIRONMENT"]),
+                    credential_name: first_env(resolved_env, &["MAESTRO_EVALOPS_CREDENTIAL_NAME"]),
+                    team_id: first_env(resolved_env, &["MAESTRO_EVALOPS_TEAM_ID"]),
+                    resident_contract_revision: first_env(
+                        resolved_env,
+                        &["MAESTRO_RESIDENT_CONTRACT_REVISION"],
+                    ),
+                },
+                restore: maestro_runtime::HostedLaunchRestoreIntent {
+                    snapshot_root: self
+                        .runner
+                        .snapshot_root
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().into_owned()),
+                    restore_manifest_path: self
+                        .runner
+                        .restore_manifest_path
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().into_owned()),
+                },
+                rendezvous,
+                secret_files,
+                headless_cli_path: first_env(
+                    resolved_env,
+                    &[
+                        "MAESTRO_HEADLESS_CLI_PATH",
+                        "MAESTRO_AGENT_SCRIPT",
+                        "MAESTRO_CLI_PATH",
+                    ],
+                ),
+                profile: first_env(resolved_env, &["MAESTRO_PROFILE"]),
+                agent_dir: first_env(resolved_env, &["MAESTRO_AGENT_DIR"]),
+                agent_id: self.agent_id.clone(),
+            },
+        )?)
+    }
 }
 
 pub struct HostedRunnerCliRuntime {
@@ -166,14 +333,48 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
+    resolve_hosted_runner_launch_config_with_env(args, env).map(|(config, _)| config)
+}
+
+fn resolve_hosted_runner_launch_config_with_env<I, T>(
+    args: I,
+    env: &HashMap<String, String>,
+) -> Result<(HostedRunnerLaunchConfig, HashMap<String, String>)>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
     let cli = HostedRunnerCliArgs::try_parse_from(args)?;
-    let mut merged_env = env.clone();
-    apply_cli_env_overrides(&mut merged_env, &cli);
+    let config_path = match (
+        cli.config.as_ref(),
+        first_env(env, &[HOSTED_LAUNCH_SPEC_FILE_ENV]),
+    ) {
+        (Some(_), Some(_)) => {
+            anyhow::bail!(
+                "hosted launch spec must be supplied by either --config or {HOSTED_LAUNCH_SPEC_FILE_ENV}, not both"
+            )
+        }
+        (Some(path), None) => Some(path.clone()),
+        (None, Some(path)) => Some(PathBuf::from(path)),
+        (None, None) => None,
+    };
+    let (runner, merged_env, descriptor_input) = if let Some(config_path) = config_path {
+        reject_legacy_launch_sources(&cli, env)?;
+        let spec = read_hosted_launch_spec_file(&config_path)?;
+        let mut merged_env = env.clone();
+        apply_launch_spec_env(&mut merged_env, &spec);
+        let runner = HostedRunnerConfig::from_launch_spec(&spec)?;
+        (runner, merged_env, true)
+    } else {
+        let mut merged_env = env.clone();
+        apply_cli_env_overrides(&mut merged_env, &cli);
+        let runner = HostedRunnerConfig::from_env_map(&merged_env)?;
+        (runner, merged_env, false)
+    };
     validate_resident_contract(&merged_env)?;
 
-    let runner = HostedRunnerConfig::from_env_map(&merged_env)?;
-    let auth_required =
-        first_env(&merged_env, &["MAESTRO_WEB_REQUIRE_KEY"]).as_deref() != Some("0");
+    let auth_required = !descriptor_input
+        && first_env(&merged_env, &["MAESTRO_WEB_REQUIRE_KEY"]).as_deref() != Some("0");
     if auth_required && runner.auth_token.is_none() && runner.workload_identity.is_none() {
         anyhow::bail!(
             "maestro hosted-runner requires MAESTRO_HOSTED_RUNNER_AUTH_TOKEN or MAESTRO_WEB_API_KEY; set MAESTRO_WEB_REQUIRE_KEY=0 only for local testing"
@@ -198,14 +399,17 @@ where
     supervisor.transport.cwd = Some(runner.workspace_root.to_string_lossy().to_string());
     supervisor.transport.env = hosted_agent_env(&runner, &merged_env)?;
 
-    Ok(HostedRunnerLaunchConfig {
-        runner,
-        supervisor,
-        agent_id: first_env(
-            &merged_env,
-            &["MAESTRO_REMOTE_RUNNER_AGENT_ID", "MAESTRO_AGENT_ID"],
-        ),
-    })
+    Ok((
+        HostedRunnerLaunchConfig {
+            runner,
+            supervisor,
+            agent_id: first_env(
+                &merged_env,
+                &["MAESTRO_REMOTE_RUNNER_AGENT_ID", "MAESTRO_AGENT_ID"],
+            ),
+        },
+        merged_env,
+    ))
 }
 
 async fn join_hosted_runner_startup<HF, PF, H, P, E>(
@@ -259,7 +463,19 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let mut config = resolve_hosted_runner_launch_config(args, env)?;
+    let (mut config, resolved_env) = resolve_hosted_runner_launch_config_with_env(args, env)?;
+    let runtime_boundary = config.runtime_boundary()?;
+    let launch_spec = config.launch_spec(&resolved_env)?;
+    tracing::info!(
+        runtime_product = maestro_runtime::RUNTIME_PRODUCT_ID,
+        runtime_boundary = %runtime_boundary.schema_version,
+        runtime_topology = %runtime_boundary.topology,
+        launch_spec_version = %launch_spec.schema_version,
+        launch_spec_digest = %launch_spec.redacted_digest(),
+        runner_session_id = %runtime_boundary.runner_session_id,
+        runtime_generation = runtime_boundary.runtime_generation,
+        "resolved native Maestro runtime launch spec"
+    );
     let restore_replay = load_hosted_runner_session_replay(&config.runner).await?;
     let session_id = resolve_hosted_session_id(
         config.runner.maestro_session_id.as_deref(),
@@ -290,6 +506,7 @@ where
     let expected_provider = managed_model(&expected_model).then(|| {
         first_env(&child_env, &["MAESTRO_EVALOPS_PROVIDER"]).unwrap_or_else(|| "openai".to_string())
     });
+    let causal_receipt_id = config.runner.causal_receipt_id.clone();
     let mut supervisor = AgentSupervisor::new(config.supervisor).with_session_recorder(recorder);
     if let Some(replay) = restore_replay {
         supervisor.restore_session_replay(crate::headless::SessionReplay {
@@ -314,9 +531,12 @@ where
     )
     .await?;
     let supervisor = Arc::new(Mutex::new(supervisor));
-    let executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(
-        supervisor.clone(),
-    ));
+    let executor = Arc::new(
+        AgentSupervisorHostedRunnerMessageExecutor::new_with_causal_receipt_id(
+            supervisor.clone(),
+            causal_receipt_id,
+        ),
+    );
     let handle = match start_prepared_hosted_runner(prepared, executor) {
         Ok(handle) => handle,
         Err(error) => {
@@ -384,6 +604,327 @@ async fn wait_for_shutdown_signal() -> Result<HostedRunnerShutdownSignal> {
     {
         tokio::signal::ctrl_c().await?;
         Ok(HostedRunnerShutdownSignal::Interrupt)
+    }
+}
+
+fn read_hosted_launch_spec_file(path: &PathBuf) -> Result<maestro_runtime::HostedLaunchSpec> {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("hosted launch spec file is unavailable: {}", path.display()))?;
+    if !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > MAX_HOSTED_LAUNCH_SPEC_FILE_BYTES as u64
+    {
+        anyhow::bail!("hosted launch spec file is invalid or exceeds the bounded size")
+    }
+    let document = fs::read(path)
+        .with_context(|| format!("hosted launch spec file is unreadable: {}", path.display()))?;
+    if document.is_empty() || document.len() > MAX_HOSTED_LAUNCH_SPEC_FILE_BYTES {
+        anyhow::bail!("hosted launch spec file is invalid or exceeds the bounded size")
+    }
+    let document =
+        String::from_utf8(document).context("hosted launch spec file must be valid UTF-8 JSON")?;
+    maestro_runtime::HostedLaunchSpec::from_json_str(&document)
+        .map_err(|error| anyhow::anyhow!("hosted launch spec validation failed: {error}"))
+}
+
+fn reject_legacy_launch_sources(
+    cli: &HostedRunnerCliArgs,
+    env: &HashMap<String, String>,
+) -> Result<()> {
+    let cli_has_legacy_coordinates = [
+        cli.runner_session_id.is_some(),
+        cli.owner_instance_id.is_some(),
+        cli.workspace_root.is_some(),
+        cli.snapshot_root.is_some(),
+        cli.restore_manifest.is_some(),
+        cli.listen.is_some(),
+        cli.host.is_some(),
+        cli.port.is_some(),
+        cli.workspace_id.is_some(),
+        cli.agent_id.is_some(),
+        cli.agent_run_id.is_some(),
+        cli.maestro_session_id.is_some(),
+        cli.attach_audience.is_some(),
+        cli.agent_cli_path.is_some(),
+    ]
+    .into_iter()
+    .any(|present| present);
+    const LEGACY_LAUNCH_ENV_KEYS: &[&str] = &[
+        "MAESTRO_RUNNER_SESSION_ID",
+        "REMOTE_RUNNER_SESSION_ID",
+        "MAESTRO_WORKSPACE_ROOT",
+        "WORKSPACE_ROOT",
+        "MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID",
+        "REMOTE_RUNNER_OWNER_INSTANCE_ID",
+        "MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT",
+        "REMOTE_RUNNER_SNAPSHOT_ROOT",
+        "MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST",
+        "REMOTE_RUNNER_RESTORE_MANIFEST",
+        "MAESTRO_HOSTED_RUNNER_LISTEN",
+        "MAESTRO_HOSTED_RUNNER_HOST",
+        "MAESTRO_HOSTED_RUNNER_PORT",
+        "PORT",
+        "MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
+        "MAESTRO_WORKSPACE_ID",
+        "MAESTRO_REMOTE_RUNNER_AGENT_ID",
+        "MAESTRO_AGENT_ID",
+        "MAESTRO_AGENT_RUN_ID",
+        "MAESTRO_SESSION_ID",
+        "MAESTRO_ATTACH_AUDIENCE",
+        "MAESTRO_CAUSAL_RECEIPT_ID",
+        "MAESTRO_PLACEMENT_GENERATION",
+        "MAESTRO_SANDBOXWICH_PLACEMENT_GENERATION",
+        "MAESTRO_REMOTE_RUNNER_GENERATION",
+        "MAESTRO_HEADLESS_CLI_PATH",
+        "MAESTRO_AGENT_SCRIPT",
+        "MAESTRO_CLI_PATH",
+        "MAESTRO_PROFILE",
+        "MAESTRO_AGENT_DIR",
+        "MAESTRO_MODEL",
+        "MAESTRO_DEFAULT_MODEL",
+        "MAESTRO_EVALOPS_BASE_URL",
+        "MAESTRO_EVALOPS_ORG_ID",
+        "MAESTRO_EVALOPS_WORKSPACE_ID",
+        "MAESTRO_EVALOPS_PROVIDER",
+        "MAESTRO_EVALOPS_ENVIRONMENT",
+        "MAESTRO_EVALOPS_CREDENTIAL_NAME",
+        "MAESTRO_EVALOPS_TEAM_ID",
+        "MAESTRO_EVALOPS_ACCESS_TOKEN",
+        "MAESTRO_EVALOPS_ACCESS_TOKEN_FILE",
+        "MAESTRO_RESIDENT_CONTRACT_REVISION",
+        "MAESTRO_HOSTED_RUNNER_AUTH_TOKEN",
+        "MAESTRO_WEB_API_KEY",
+        "MAESTRO_HOSTED_RUNNER_AUTH_TOKEN_FILE",
+        "MAESTRO_WEB_API_KEY_FILE",
+        "MAESTRO_RUNNER_CLIENT_CA_FILE",
+        "MAESTRO_KUBERNETES_TOKEN_FILE",
+        "MAESTRO_IDENTITY_TLS_CA_FILE",
+        "MAESTRO_IDENTITY_EXCHANGE_URL",
+        "MAESTRO_ORGANIZATION_ID",
+        "MAESTRO_SANDBOX_ID",
+        "MAESTRO_RENDEZVOUS_MODE",
+        "MAESTRO_RENDEZVOUS_OUTBOUND_PREFER",
+        "MAESTRO_RENDEZVOUS_ENDPOINT",
+        "MAESTRO_RENDEZVOUS_SERVER_NAME",
+        "MAESTRO_RENDEZVOUS_IDENTITY_EXCHANGE_URL",
+        "MAESTRO_RENDEZVOUS_ACTIVATION_ID",
+        "MAESTRO_RENDEZVOUS_NONCE",
+        "MAESTRO_RENDEZVOUS_NONCE_FILE",
+    ];
+    let env_has_legacy_coordinates = LEGACY_LAUNCH_ENV_KEYS
+        .iter()
+        .any(|key| first_env(env, &[*key]).is_some());
+    if cli_has_legacy_coordinates || env_has_legacy_coordinates {
+        anyhow::bail!(
+            "hosted launch spec config cannot be combined with legacy hosted-runner launch coordinates"
+        );
+    }
+    Ok(())
+}
+
+fn apply_launch_spec_env(
+    env: &mut HashMap<String, String>,
+    spec: &maestro_runtime::HostedLaunchSpec,
+) {
+    env.insert(
+        "MAESTRO_RUNNER_SESSION_ID".to_string(),
+        spec.runtime.runner_session_id.clone(),
+    );
+    env.insert(
+        "MAESTRO_WORKSPACE_ROOT".to_string(),
+        spec.workspace.root.clone(),
+    );
+    env.insert(
+        "MAESTRO_HOSTED_RUNNER_LISTEN".to_string(),
+        spec.runtime.bind_address.clone(),
+    );
+    env.insert(
+        "MAESTRO_REMOTE_RUNNER_GENERATION".to_string(),
+        spec.runtime.runtime_generation.to_string(),
+    );
+    set_string(
+        env,
+        "MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID",
+        spec.runtime.owner_instance_id.as_deref(),
+    );
+    set_string(
+        env,
+        "MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
+        spec.workspace.workspace_id.as_deref(),
+    );
+    set_string(
+        env,
+        "MAESTRO_AGENT_RUN_ID",
+        spec.workspace.agent_run_id.as_deref(),
+    );
+    set_string(
+        env,
+        "MAESTRO_SESSION_ID",
+        spec.workspace.maestro_session_id.as_deref(),
+    );
+    set_string(
+        env,
+        "MAESTRO_CAUSAL_RECEIPT_ID",
+        spec.runtime.causal_receipt_id.as_deref(),
+    );
+    set_string(
+        env,
+        "MAESTRO_ATTACH_AUDIENCE",
+        spec.runtime.attach_audience.as_deref(),
+    );
+    set_string(env, "MAESTRO_MODEL", Some(spec.model.model.as_str()));
+    set_string(
+        env,
+        "MAESTRO_EVALOPS_BASE_URL",
+        spec.model.base_url.as_deref(),
+    );
+    set_string(
+        env,
+        "MAESTRO_EVALOPS_ORG_ID",
+        spec.model.organization_id.as_deref(),
+    );
+    set_string(
+        env,
+        "MAESTRO_EVALOPS_WORKSPACE_ID",
+        spec.model.workspace_id.as_deref(),
+    );
+    set_string(
+        env,
+        "MAESTRO_EVALOPS_PROVIDER",
+        spec.model.provider.as_deref(),
+    );
+    set_string(
+        env,
+        "MAESTRO_EVALOPS_ENVIRONMENT",
+        spec.model.environment.as_deref(),
+    );
+    set_string(
+        env,
+        "MAESTRO_EVALOPS_CREDENTIAL_NAME",
+        spec.model.credential_name.as_deref(),
+    );
+    set_string(
+        env,
+        "MAESTRO_EVALOPS_TEAM_ID",
+        spec.model.team_id.as_deref(),
+    );
+    set_string(
+        env,
+        "MAESTRO_RESIDENT_CONTRACT_REVISION",
+        spec.model.resident_contract_revision.as_deref(),
+    );
+    set_string(
+        env,
+        "MAESTRO_HOSTED_RUNNER_AUTH_TOKEN_FILE",
+        spec.secret_files.static_bearer.as_deref(),
+    );
+    set_string(
+        env,
+        "MAESTRO_EVALOPS_ACCESS_TOKEN_FILE",
+        spec.secret_files.managed_gateway_access_token.as_deref(),
+    );
+    set_string(
+        env,
+        "MAESTRO_REMOTE_RUNNER_AGENT_ID",
+        spec.agent_id.as_deref(),
+    );
+    set_string(env, "MAESTRO_AGENT_ID", spec.agent_id.as_deref());
+    set_string(env, "MAESTRO_PROFILE", spec.profile.as_deref());
+    set_string(env, "MAESTRO_AGENT_DIR", spec.agent_dir.as_deref());
+    set_string(
+        env,
+        "MAESTRO_HEADLESS_CLI_PATH",
+        spec.headless_cli_path.as_deref(),
+    );
+    if let Some(snapshot_root) = spec.restore.snapshot_root.as_deref() {
+        env.insert(
+            "MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT".to_string(),
+            snapshot_root.to_string(),
+        );
+    }
+    if let Some(restore_manifest) = spec.restore.restore_manifest_path.as_deref() {
+        env.insert(
+            "MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST".to_string(),
+            restore_manifest.to_string(),
+        );
+    }
+    if let Some(workload) = spec.identity.workload_identity.as_ref() {
+        env.insert(
+            "MAESTRO_KUBERNETES_TOKEN_FILE".to_string(),
+            workload.kubernetes_token_file.clone(),
+        );
+        env.insert(
+            "MAESTRO_IDENTITY_TLS_CA_FILE".to_string(),
+            workload.identity_tls_ca_file.clone(),
+        );
+        env.insert(
+            "MAESTRO_IDENTITY_EXCHANGE_URL".to_string(),
+            workload.identity_exchange_url.clone(),
+        );
+        env.insert(
+            "MAESTRO_ORGANIZATION_ID".to_string(),
+            workload.organization_id.clone(),
+        );
+        env.insert(
+            "MAESTRO_WORKSPACE_ID".to_string(),
+            workload.workspace_id.clone(),
+        );
+        env.insert(
+            "MAESTRO_SANDBOX_ID".to_string(),
+            workload.sandbox_id.clone(),
+        );
+        env.insert(
+            "MAESTRO_PLACEMENT_GENERATION".to_string(),
+            workload.placement_generation.to_string(),
+        );
+        set_string(
+            env,
+            "MAESTRO_KUBERNETES_TOKEN_FILE",
+            spec.secret_files.projected_workload_token.as_deref(),
+        );
+        set_string(
+            env,
+            "MAESTRO_IDENTITY_TLS_CA_FILE",
+            spec.secret_files.identity_tls_ca.as_deref(),
+        );
+    }
+    if let Some(rendezvous) = spec.rendezvous.as_ref() {
+        let mode = match rendezvous.mode {
+            maestro_runtime::HostedLaunchRendezvousMode::Inbound => "inbound",
+            maestro_runtime::HostedLaunchRendezvousMode::OutboundShadow => "outbound_shadow",
+            maestro_runtime::HostedLaunchRendezvousMode::Outbound => "outbound",
+        };
+        env.insert("MAESTRO_RENDEZVOUS_MODE".to_string(), mode.to_string());
+        env.insert(
+            "MAESTRO_RENDEZVOUS_ENDPOINT".to_string(),
+            rendezvous.endpoint.clone(),
+        );
+        env.insert(
+            "MAESTRO_RENDEZVOUS_SERVER_NAME".to_string(),
+            rendezvous.server_name.clone(),
+        );
+        env.insert(
+            "MAESTRO_RENDEZVOUS_IDENTITY_EXCHANGE_URL".to_string(),
+            rendezvous.identity_exchange_url.clone(),
+        );
+        env.insert(
+            "MAESTRO_RENDEZVOUS_ACTIVATION_ID".to_string(),
+            rendezvous.activation_id.clone(),
+        );
+        set_string(
+            env,
+            "MAESTRO_RENDEZVOUS_NONCE_FILE",
+            rendezvous.nonce_file.as_deref(),
+        );
+        if matches!(
+            rendezvous.mode,
+            maestro_runtime::HostedLaunchRendezvousMode::Outbound
+        ) {
+            env.insert(
+                "MAESTRO_RENDEZVOUS_OUTBOUND_PREFER".to_string(),
+                "true".to_string(),
+            );
+        }
     }
 }
 
@@ -510,6 +1051,12 @@ fn hosted_agent_env(
     }
     if let Some(maestro_session_id) = runner.maestro_session_id.as_ref() {
         env.push(("MAESTRO_SESSION_ID".to_string(), maestro_session_id.clone()));
+    }
+    if let Some(causal_receipt_id) = runner.causal_receipt_id.as_ref() {
+        env.push((
+            "MAESTRO_CAUSAL_RECEIPT_ID".to_string(),
+            causal_receipt_id.clone(),
+        ));
     }
     if let Some(attach_audience) = runner.attach_audience.as_ref() {
         env.push((
@@ -730,10 +1277,10 @@ fn set_path(env: &mut HashMap<String, String>, key: &str, value: Option<&PathBuf
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
     use std::fs;
     use std::io::Write;
     use std::net::TcpListener;
-
     use tempfile::tempdir;
 
     use super::*;
@@ -950,6 +1497,10 @@ mod tests {
         let env = HashMap::from([
             ("MAESTRO_PROFILE".to_string(), "sandbox".to_string()),
             ("MAESTRO_WEB_REQUIRE_KEY".to_string(), "0".to_string()),
+            (
+                "MAESTRO_CAUSAL_RECEIPT_ID".to_string(),
+                "causal.receipt:platform-1".to_string(),
+            ),
         ]);
         let config = resolve_hosted_runner_launch_config(
             [
@@ -988,10 +1539,27 @@ mod tests {
         assert_eq!(config.runner.workspace_id.as_deref(), Some("ws_cli"));
         assert_eq!(config.runner.agent_run_id.as_deref(), Some("run_cli"));
         assert_eq!(
+            config.runner.causal_receipt_id.as_deref(),
+            Some("causal.receipt:platform-1")
+        );
+        assert_eq!(
             config.runner.maestro_session_id.as_deref(),
             Some("sess_cli")
         );
         assert_eq!(config.runner.attach_audience.as_deref(), Some("aud_cli"));
+        let runtime_boundary = config
+            .runtime_boundary()
+            .expect("launch config should expose the runtime boundary");
+        assert_eq!(runtime_boundary.runner_session_id, "mrs_cli");
+        assert_eq!(runtime_boundary.runtime_generation, 0);
+        assert_eq!(
+            runtime_boundary.workspace_root,
+            config.runner.workspace_root.to_string_lossy()
+        );
+        assert_eq!(
+            runtime_boundary.topology,
+            maestro_runtime::HOSTED_RUNTIME_TOPOLOGY
+        );
         assert_eq!(
             config.supervisor.transport.cli_path,
             agent.to_string_lossy()
@@ -1011,6 +1579,9 @@ mod tests {
             .iter()
             .any(|(key, value)| { key == "MAESTRO_PROFILE" && value == "sandbox" }));
         assert!(config.supervisor.transport.env.iter().any(|(key, value)| {
+            key == "MAESTRO_CAUSAL_RECEIPT_ID" && value == "causal.receipt:platform-1"
+        }));
+        assert!(config.supervisor.transport.env.iter().any(|(key, value)| {
             key == "MAESTRO_AGENT_DIR"
                 && value
                     == &config
@@ -1019,6 +1590,478 @@ mod tests {
                         .join(".maestro/agent")
                         .to_string_lossy()
         }));
+    }
+
+    #[test]
+    fn config_file_compiles_to_existing_runner_inputs_without_secret_leakage() {
+        let workspace = tempdir().expect("workspace");
+        let secret_file = workspace.path().join("static-bearer");
+        let sentinel = "descriptor-static-bearer-sentinel";
+        fs::write(&secret_file, format!("{sentinel}\n")).expect("static bearer");
+        let descriptor = workspace.path().join("hosted-launch-spec.json");
+        let mut document = json!({
+            "schemaVersion": maestro_runtime::HOSTED_LAUNCH_SPEC_VERSION,
+            "runtime": {
+                "runnerSessionId": "descriptor-runner",
+                "bindAddress": "127.0.0.1:0",
+                "runtimeGeneration": 11,
+                "ownerInstanceId": "  descriptor-owner  ",
+                "attachAudience": "  descriptor-audience  ",
+                "causalReceiptId": "descriptor-receipt"
+            },
+            "workspace": {
+                "root": workspace.path(),
+                "workspaceId": "descriptor-workspace",
+                "agentRunId": "  descriptor-run  ",
+                "maestroSessionId": "descriptor-session"
+            },
+            "identity": {"authMode": "static_bearer", "workloadIdentity": null},
+            "model": {"model": "gpt-5.5", "provider": "test", "environment": "test"},
+            "restore": {"snapshotRoot": workspace.path().join("snapshots"), "restoreManifestPath": null},
+            "rendezvous": null,
+            "secretFiles": {
+                "staticBearer": &secret_file,
+                "managedGatewayAccessToken": null,
+                "projectedWorkloadToken": null,
+                "identityTlsCa": null
+            },
+            "headlessCliPath": "maestro",
+            "profile": "descriptor-profile",
+            "agentDir": workspace.path().join("agent"),
+            "agentId": "descriptor-agent"
+        });
+        fs::write(
+            &descriptor,
+            serde_json::to_vec_pretty(&document).expect("descriptor JSON"),
+        )
+        .expect("descriptor file");
+
+        let (config, resolved_env) = resolve_hosted_runner_launch_config_with_env(
+            [
+                "maestro hosted-runner",
+                "--config",
+                descriptor.to_str().expect("descriptor path"),
+            ],
+            &HashMap::new(),
+        )
+        .expect("descriptor should resolve before listener bind");
+
+        assert_eq!(config.runner.runner_session_id, "descriptor-runner");
+        assert_eq!(config.runner.bind_addr.port(), 0);
+        assert_eq!(config.runner.runtime_generation, 11);
+        assert_eq!(
+            config.runner.owner_instance_id.as_deref(),
+            Some("descriptor-owner")
+        );
+        assert_eq!(
+            config.runner.agent_run_id.as_deref(),
+            Some("descriptor-run")
+        );
+        assert_eq!(
+            config.runner.attach_audience.as_deref(),
+            Some("descriptor-audience")
+        );
+        assert_eq!(config.runner.auth_token.as_deref(), Some(sentinel));
+        assert_eq!(config.agent_id.as_deref(), Some("descriptor-agent"));
+        assert_eq!(config.supervisor.transport.cli_path, "maestro");
+        assert_eq!(
+            config.supervisor.transport.cwd,
+            Some(config.runner.workspace_root.to_string_lossy().into_owned())
+        );
+        let launch_spec = config
+            .launch_spec(&resolved_env)
+            .expect("resolved config should produce typed launch spec");
+        assert_eq!(
+            launch_spec.schema_version,
+            maestro_runtime::HOSTED_LAUNCH_SPEC_VERSION
+        );
+        assert_eq!(launch_spec.runtime.bind_address, "127.0.0.1:0");
+        assert_eq!(launch_spec.profile.as_deref(), Some("descriptor-profile"));
+        assert_eq!(launch_spec.agent_id.as_deref(), Some("descriptor-agent"));
+        let encoded = serde_json::to_string(&launch_spec).expect("launch spec JSON");
+        assert!(encoded.contains(secret_file.to_string_lossy().as_ref()));
+        assert!(!encoded.contains(sentinel));
+        assert!(!config
+            .supervisor
+            .transport
+            .env
+            .iter()
+            .any(|(_, value)| value == sentinel));
+
+        document["secretFiles"]["managedGatewayAccessToken"] =
+            json!(workspace.path().join("managed-gateway-token"));
+        fs::write(
+            &descriptor,
+            serde_json::to_vec_pretty(&document).expect("orphaned managed secret JSON"),
+        )
+        .expect("orphaned managed secret descriptor file");
+        let error = resolve_hosted_runner_launch_config(
+            [
+                "maestro hosted-runner",
+                "--config",
+                descriptor.to_str().expect("descriptor path"),
+            ],
+            &HashMap::new(),
+        )
+        .expect_err("orphaned managed gateway secret must fail closed");
+        assert!(error
+            .to_string()
+            .contains("managedGatewayAccessToken requires a managed model launch contract"));
+        assert!(!error.to_string().contains(sentinel));
+    }
+
+    #[test]
+    fn legacy_partial_model_metadata_still_resolves_and_produces_snapshot() {
+        let workspace = tempdir().expect("workspace");
+        let listen = format!("127.0.0.1:{}", unused_tcp_port());
+        let env = HashMap::from([
+            ("MAESTRO_WEB_REQUIRE_KEY".to_string(), "0".to_string()),
+            (
+                "MAESTRO_EVALOPS_BASE_URL".to_string(),
+                "https://gateway.example/v1".to_string(),
+            ),
+        ]);
+        let (config, resolved_env) = resolve_hosted_runner_launch_config_with_env(
+            [
+                "maestro hosted-runner",
+                "--runner-session-id",
+                "legacy-runner",
+                "--workspace-root",
+                workspace.path().to_str().expect("workspace path"),
+                "--listen",
+                listen.as_str(),
+            ],
+            &env,
+        )
+        .expect("legacy ordinary-model launch should remain compatible");
+
+        let spec = config
+            .launch_spec(&resolved_env)
+            .expect("legacy telemetry snapshot must not enforce executable model tuple");
+        assert_eq!(
+            spec.model.base_url.as_deref(),
+            Some("https://gateway.example/v1")
+        );
+        assert!(spec.model.organization_id.is_none());
+        assert!(spec.model.workspace_id.is_none());
+        assert!(spec.model.provider.is_none());
+    }
+
+    #[test]
+    fn descriptor_env_path_is_supported_and_legacy_coordinates_are_rejected() {
+        let workspace = tempdir().expect("workspace");
+        let secret_file = workspace.path().join("static-bearer");
+        fs::write(&secret_file, "descriptor-secret\n").expect("static bearer");
+        let descriptor = workspace.path().join("hosted-launch-spec.json");
+        let document = json!({
+            "schemaVersion": maestro_runtime::HOSTED_LAUNCH_SPEC_VERSION,
+            "runtime": {"runnerSessionId": "runner", "bindAddress": "127.0.0.1:0", "runtimeGeneration": 1},
+            "workspace": {"root": workspace.path()},
+            "identity": {"authMode": "static_bearer", "workloadIdentity": null},
+            "model": {"model": "gpt-5.5"},
+            "restore": {"snapshotRoot": null, "restoreManifestPath": null},
+            "rendezvous": null,
+            "secretFiles": {"staticBearer": &secret_file, "managedGatewayAccessToken": null, "projectedWorkloadToken": null, "identityTlsCa": null}
+        });
+        fs::write(
+            &descriptor,
+            serde_json::to_vec(&document).expect("descriptor JSON"),
+        )
+        .expect("descriptor file");
+
+        let env = HashMap::from([(
+            HOSTED_LAUNCH_SPEC_FILE_ENV.to_string(),
+            descriptor.to_string_lossy().into_owned(),
+        )]);
+        let config = resolve_hosted_runner_launch_config(["maestro hosted-runner"], &env)
+            .expect("descriptor env path should resolve");
+        assert_eq!(config.runner.runner_session_id, "runner");
+
+        let conflicting_env = HashMap::from([
+            (
+                HOSTED_LAUNCH_SPEC_FILE_ENV.to_string(),
+                descriptor.to_string_lossy().into_owned(),
+            ),
+            (
+                "MAESTRO_RUNNER_SESSION_ID".to_string(),
+                "legacy".to_string(),
+            ),
+        ]);
+        let error =
+            resolve_hosted_runner_launch_config(["maestro hosted-runner"], &conflicting_env)
+                .expect_err("descriptor must not mix env coordinates");
+        assert!(error.to_string().contains("cannot be combined"));
+
+        let conflicting_cli = resolve_hosted_runner_launch_config(
+            [
+                "maestro hosted-runner",
+                "--config",
+                descriptor.to_str().expect("descriptor path"),
+                "--runner-session-id",
+                "legacy",
+            ],
+            &HashMap::new(),
+        )
+        .expect_err("descriptor must not mix CLI coordinates");
+        assert!(conflicting_cli.to_string().contains("cannot be combined"));
+    }
+
+    #[test]
+    fn descriptor_rejects_outbound_rendezvous_without_workload_identity() {
+        let workspace = tempdir().expect("workspace");
+        let secret_file = workspace.path().join("static-bearer");
+        let nonce_file = workspace.path().join("rendezvous-nonce");
+        fs::write(&secret_file, "descriptor-secret\n").expect("static bearer");
+        fs::write(&nonce_file, "descriptor-nonce\n").expect("rendezvous nonce");
+        let descriptor = workspace.path().join("hosted-launch-spec.json");
+        let document = json!({
+            "schemaVersion": maestro_runtime::HOSTED_LAUNCH_SPEC_VERSION,
+            "runtime": {"runnerSessionId": "runner", "bindAddress": "127.0.0.1:0", "runtimeGeneration": 1},
+            "workspace": {"root": workspace.path()},
+            "identity": {"authMode": "static_bearer", "workloadIdentity": null},
+            "model": {"model": "gpt-5.5"},
+            "restore": {"snapshotRoot": null, "restoreManifestPath": null},
+            "rendezvous": {
+                "mode": "outbound_shadow",
+                "endpoint": "rendezvous.example:443",
+                "serverName": "rendezvous.example",
+                "identityExchangeUrl": "https://identity.example/exchange",
+                "activationId": "00000000-0000-0000-0000-000000000008",
+                "nonceFile": &nonce_file,
+                "noncePresent": true
+            },
+            "secretFiles": {
+                "staticBearer": &secret_file,
+                "managedGatewayAccessToken": null,
+                "projectedWorkloadToken": null,
+                "identityTlsCa": null
+            }
+        });
+        fs::write(
+            &descriptor,
+            serde_json::to_vec(&document).expect("descriptor JSON"),
+        )
+        .expect("descriptor file");
+
+        let error = resolve_hosted_runner_launch_config(
+            [
+                "maestro hosted-runner",
+                "--config",
+                descriptor.to_str().expect("descriptor path"),
+            ],
+            &HashMap::new(),
+        )
+        .expect_err("outbound rendezvous must require workload identity");
+        assert!(error
+            .to_string()
+            .contains("outbound rendezvous requires projected workload identity"));
+        assert!(!error.to_string().contains("descriptor-secret"));
+    }
+
+    #[test]
+    fn descriptor_session_id_is_trimmed_and_blank_is_rejected() {
+        let workspace = tempdir().expect("workspace");
+        let descriptor = workspace.path().join("hosted-launch-spec.json");
+        let mut document = json!({
+            "schemaVersion": maestro_runtime::HOSTED_LAUNCH_SPEC_VERSION,
+            "runtime": {"runnerSessionId": "runner", "bindAddress": "127.0.0.1:0", "runtimeGeneration": 1},
+            "workspace": {"root": workspace.path(), "workspaceId": "  descriptor-workspace  ", "maestroSessionId": "  descriptor-session  "},
+            "identity": {"authMode": "none", "workloadIdentity": null},
+            "model": {"model": "gpt-5.5"},
+            "restore": {"snapshotRoot": null, "restoreManifestPath": null},
+            "rendezvous": null,
+            "secretFiles": {
+                "staticBearer": null,
+                "managedGatewayAccessToken": null,
+                "projectedWorkloadToken": null,
+                "identityTlsCa": null
+            }
+        });
+        fs::write(
+            &descriptor,
+            serde_json::to_vec(&document).expect("descriptor JSON"),
+        )
+        .expect("descriptor file");
+
+        let config = resolve_hosted_runner_launch_config(
+            [
+                "maestro hosted-runner",
+                "--config",
+                descriptor.to_str().expect("descriptor path"),
+            ],
+            &HashMap::new(),
+        )
+        .expect("padded session identity should be normalized");
+        assert_eq!(
+            config.runner.maestro_session_id.as_deref(),
+            Some("descriptor-session")
+        );
+        assert_eq!(
+            config.runner.workspace_id.as_deref(),
+            Some("descriptor-workspace")
+        );
+        document["workspace"]["maestroSessionId"] = json!(" \t");
+        fs::write(
+            &descriptor,
+            serde_json::to_vec(&document).expect("blank descriptor JSON"),
+        )
+        .expect("blank descriptor file");
+        let error = resolve_hosted_runner_launch_config(
+            [
+                "maestro hosted-runner",
+                "--config",
+                descriptor.to_str().expect("descriptor path"),
+            ],
+            &HashMap::new(),
+        )
+        .expect_err("blank session identity must fail closed");
+        assert!(error.to_string().contains("workspace.maestroSessionId"));
+
+        document["workspace"]["maestroSessionId"] = json!("descriptor-session");
+        document["workspace"]["workspaceId"] = json!(" \t");
+        fs::write(
+            &descriptor,
+            serde_json::to_vec(&document).expect("blank workspace descriptor JSON"),
+        )
+        .expect("blank workspace descriptor file");
+        let error = resolve_hosted_runner_launch_config(
+            [
+                "maestro hosted-runner",
+                "--config",
+                descriptor.to_str().expect("descriptor path"),
+            ],
+            &HashMap::new(),
+        )
+        .expect_err("blank workspace identity must fail closed");
+        assert!(error.to_string().contains("workspace.workspaceId"));
+    }
+
+    #[test]
+    fn descriptor_optional_identity_fields_reject_blank_values() {
+        let workspace = tempdir().expect("workspace");
+        let descriptor = workspace.path().join("hosted-launch-spec.json");
+        let mut document = json!({
+            "schemaVersion": maestro_runtime::HOSTED_LAUNCH_SPEC_VERSION,
+            "runtime": {
+                "runnerSessionId": "runner",
+                "bindAddress": "127.0.0.1:0",
+                "runtimeGeneration": 1,
+                "ownerInstanceId": " \t"
+            },
+            "workspace": {"root": workspace.path(), "agentRunId": "agent-run"},
+            "identity": {"authMode": "none", "workloadIdentity": null},
+            "model": {"model": "gpt-5.5"},
+            "restore": {"snapshotRoot": null, "restoreManifestPath": null},
+            "rendezvous": null,
+            "secretFiles": {
+                "staticBearer": null,
+                "managedGatewayAccessToken": null,
+                "projectedWorkloadToken": null,
+                "identityTlsCa": null
+            }
+        });
+        fs::write(
+            &descriptor,
+            serde_json::to_vec(&document).expect("descriptor JSON"),
+        )
+        .expect("descriptor file");
+
+        let error = resolve_hosted_runner_launch_config(
+            [
+                "maestro hosted-runner",
+                "--config",
+                descriptor.to_str().expect("descriptor path"),
+            ],
+            &HashMap::new(),
+        )
+        .expect_err("blank owner identity must fail closed");
+        assert!(error.to_string().contains("runtime.ownerInstanceId"));
+
+        document["runtime"]["ownerInstanceId"] = json!("owner");
+        document["agentId"] = json!(" \t");
+        fs::write(
+            &descriptor,
+            serde_json::to_vec(&document).expect("blank agent descriptor JSON"),
+        )
+        .expect("blank agent descriptor file");
+        let error = resolve_hosted_runner_launch_config(
+            [
+                "maestro hosted-runner",
+                "--config",
+                descriptor.to_str().expect("descriptor path"),
+            ],
+            &HashMap::new(),
+        )
+        .expect_err("blank agent identity must fail closed");
+        assert!(error.to_string().contains("agentId"));
+
+        document["agentId"] = json!("agent");
+        document["rendezvous"] = json!({
+            "mode": "inbound",
+            "endpoint": "rendezvous.example:not-a-port",
+            "serverName": "rendezvous.example",
+            "identityExchangeUrl": "https://identity.example/exchange",
+            "activationId": "00000000-0000-0000-0000-000000000008",
+            "nonceFile": null,
+            "noncePresent": false
+        });
+        fs::write(
+            &descriptor,
+            serde_json::to_vec(&document).expect("invalid endpoint descriptor JSON"),
+        )
+        .expect("invalid endpoint descriptor file");
+        let error = resolve_hosted_runner_launch_config(
+            [
+                "maestro hosted-runner",
+                "--config",
+                descriptor.to_str().expect("descriptor path"),
+            ],
+            &HashMap::new(),
+        )
+        .expect_err("invalid rendezvous endpoint must fail closed");
+        assert!(error.to_string().contains("rendezvous.endpoint"));
+    }
+
+    #[test]
+    fn descriptor_causal_receipt_id_uses_legacy_bounded_validation() {
+        let workspace = tempdir().expect("workspace");
+        let descriptor = workspace.path().join("hosted-launch-spec.json");
+        let document = json!({
+            "schemaVersion": maestro_runtime::HOSTED_LAUNCH_SPEC_VERSION,
+            "runtime": {
+                "runnerSessionId": "runner",
+                "bindAddress": "127.0.0.1:0",
+                "runtimeGeneration": 1,
+                "causalReceiptId": "contains whitespace"
+            },
+            "workspace": {"root": workspace.path()},
+            "identity": {"authMode": "none", "workloadIdentity": null},
+            "model": {"model": "gpt-5.5"},
+            "restore": {"snapshotRoot": null, "restoreManifestPath": null},
+            "rendezvous": null,
+            "secretFiles": {
+                "staticBearer": null,
+                "managedGatewayAccessToken": null,
+                "projectedWorkloadToken": null,
+                "identityTlsCa": null
+            }
+        });
+        fs::write(
+            &descriptor,
+            serde_json::to_vec(&document).expect("descriptor JSON"),
+        )
+        .expect("descriptor file");
+
+        let error = resolve_hosted_runner_launch_config(
+            [
+                "maestro hosted-runner",
+                "--config",
+                descriptor.to_str().expect("descriptor path"),
+            ],
+            &HashMap::new(),
+        )
+        .expect_err("descriptor causal receipt must use legacy validation");
+        assert!(error.to_string().contains("MAESTRO_CAUSAL_RECEIPT_ID"));
     }
 
     #[test]

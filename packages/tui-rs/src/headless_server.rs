@@ -20,7 +20,6 @@
 //! - `ApprovalMode::Prompt` / unset → wait for client `ToolResponse`
 
 use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -29,11 +28,13 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use base64::Engine as _;
+use ring::signature::{UnparsedPublicKey, ED25519};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
+use crate::agent::protocol::ExecutionReceipt;
 use crate::agent::{
     CredentialVault, ExecutionSource, FromAgent, NativeAgent, NativeAgentConfig, PromptKind,
     ToolDefinition, ToolResponseConsumption, ToolResponseMessage, ToolResult,
@@ -469,14 +470,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(&mut encoded, "{byte:02x}").expect("writing to a string cannot fail");
-    }
-    encoded
-}
-
 fn canonical_json_digest(value: &serde_json::Value) -> Result<String> {
     let bytes = serde_json::to_vec(value).context("serialize governed tool material")?;
     Ok(format!("sha256:{}", sha256_hex(&bytes)))
@@ -595,9 +588,6 @@ fn validate_governed_grant_shape(grant: &GovernedToolGrant) -> Result<()> {
     if grant.not_before_ms > grant.expires_at_ms || grant.issued_at_ms > grant.expires_at_ms {
         anyhow::bail!("governed tool grant validity window is invalid");
     }
-    if grant.native_tool_ids.is_empty() && grant.external_tools.is_empty() {
-        anyhow::bail!("governed tool grant must contain at least one capability");
-    }
     let mut native_ids = HashSet::new();
     let mut previous_native_id: Option<&str> = None;
     for name in &grant.native_tool_ids {
@@ -654,7 +644,31 @@ fn validate_governed_grant_shape(grant: &GovernedToolGrant) -> Result<()> {
 
 pub(crate) const GOVERNED_GRANT_ISSUER: &str = "evalops.platform";
 pub(crate) const GOVERNED_GRANT_AUDIENCE: &str = "evalops.maestro";
-const GOVERNED_GRANT_KEYS_ENV: &str = "MAESTRO_PLATFORM_TOOL_GRANT_HMAC_KEYS";
+const GOVERNED_GRANT_PUBLIC_KEYS_ENV: &str = "MAESTRO_PLATFORM_TOOL_GRANT_ED25519_PUBLIC_KEYS";
+#[cfg(test)]
+pub(crate) static GOVERNED_GRANT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GovernedGrantPublicKey {
+    algorithm: GovernedGrantPublicKeyAlgorithm,
+    public_key: String,
+    state: GovernedGrantPublicKeyState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum GovernedGrantPublicKeyAlgorithm {
+    Ed25519,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum GovernedGrantPublicKeyState {
+    Active,
+    Retiring,
+    Inactive,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct GovernedGrantVerificationContext<'a> {
@@ -689,28 +703,16 @@ fn governed_grant_canonical_value(grant: &GovernedToolGrant) -> serde_json::Valu
     })
 }
 
-fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
-    const BLOCK: usize = 64;
-    let mut normalized = [0u8; BLOCK];
-    if key.len() > BLOCK {
-        normalized[..32].copy_from_slice(&Sha256::digest(key));
-    } else {
-        normalized[..key.len()].copy_from_slice(key);
-    }
-    let mut inner_pad = [0x36u8; BLOCK];
-    let mut outer_pad = [0x5cu8; BLOCK];
-    for index in 0..BLOCK {
-        inner_pad[index] ^= normalized[index];
-        outer_pad[index] ^= normalized[index];
-    }
-    let mut inner = Sha256::new();
-    inner.update(inner_pad);
-    inner.update(message);
-    let inner = inner.finalize();
-    let mut outer = Sha256::new();
-    outer.update(outer_pad);
-    outer.update(inner);
-    outer.finalize().into()
+fn governed_grant_canonical_bytes(grant: &GovernedToolGrant) -> Result<Vec<u8>> {
+    serde_json::to_vec(&governed_grant_canonical_value(grant))
+        .context("serialize governed tool grant canonical payload")
+}
+
+#[cfg(test)]
+pub(crate) fn governed_tool_grant_canonical_bytes_for_test(
+    grant: &GovernedToolGrant,
+) -> Result<Vec<u8>> {
+    governed_grant_canonical_bytes(grant)
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
@@ -723,23 +725,49 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         == 0
 }
 
-fn governed_grant_keys_from_env() -> Result<HashMap<String, Vec<u8>>> {
-    let raw = std::env::var(GOVERNED_GRANT_KEYS_ENV)
-        .context("governed tool grant verification keys are not configured")?;
-    let encoded = serde_json::from_str::<HashMap<String, String>>(&raw)
-        .context("parse governed tool grant verification keys")?;
-    encoded
-        .into_iter()
-        .map(|(id, value)| {
-            let key = base64::engine::general_purpose::STANDARD
-                .decode(value)
-                .context("decode governed tool grant verification key")?;
-            if key.len() < 32 {
-                anyhow::bail!("governed tool grant verification key is too short");
-            }
-            Ok((id, key))
-        })
-        .collect()
+fn governed_grant_keys_from_env() -> Result<HashMap<String, GovernedGrantPublicKey>> {
+    let raw = std::env::var(GOVERNED_GRANT_PUBLIC_KEYS_ENV)
+        .context("governed tool grant public verification keys are not configured")?;
+    governed_grant_keys_from_json(&raw)
+}
+
+/// Advertises only verifier algorithms that are fully configured and valid.
+/// Old resident processes omit this capability, allowing a newer Runner Host
+/// to preserve v1 chat continuity without attempting a governed v2 turn.
+pub(crate) fn governed_grant_verifier_algorithms() -> Vec<&'static str> {
+    governed_grant_keys_from_env()
+        .ok()
+        .filter(|keys| !keys.is_empty())
+        .map(|_| vec!["ed25519"])
+        .unwrap_or_default()
+}
+
+fn governed_grant_keys_from_json(raw: &str) -> Result<HashMap<String, GovernedGrantPublicKey>> {
+    let keys = serde_json::from_str::<HashMap<String, GovernedGrantPublicKey>>(raw)
+        .context("parse governed tool grant public verification keys")?;
+    if keys.keys().any(|key_id| key_id.trim().is_empty()) {
+        anyhow::bail!("governed tool grant public key ids must not be blank");
+    }
+    if keys
+        .values()
+        .any(|key| key.state == GovernedGrantPublicKeyState::Inactive)
+    {
+        anyhow::bail!("inactive governed tool grant public keys must not be distributed");
+    }
+    for key in keys.values() {
+        let public_key = base64::engine::general_purpose::STANDARD
+            .decode(&key.public_key)
+            .context("decode governed tool grant public verification key")?;
+        let public_key: [u8; 32] = public_key.try_into().map_err(|_| {
+            anyhow::anyhow!("governed tool grant public verification key must be 32 bytes")
+        })?;
+        let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&public_key)
+            .map_err(|_| anyhow::anyhow!("validate governed tool grant public verification key"))?;
+        if verifying_key.is_weak() {
+            anyhow::bail!("governed tool grant public verification key must not be weak");
+        }
+    }
+    Ok(keys)
 }
 
 pub(crate) fn verify_governed_tool_grant(
@@ -755,7 +783,7 @@ fn verify_governed_tool_grant_with_keys(
     grant: &GovernedToolGrant,
     context: &GovernedGrantVerificationContext<'_>,
     now_ms: i64,
-    keys: &HashMap<String, Vec<u8>>,
+    keys: &HashMap<String, GovernedGrantPublicKey>,
 ) -> Result<()> {
     validate_governed_grant_shape(grant)?;
     if grant.issuer != GOVERNED_GRANT_ISSUER || grant.audience != GOVERNED_GRANT_AUDIENCE {
@@ -773,7 +801,7 @@ fn verify_governed_tool_grant_with_keys(
     if now_ms < grant.not_before_ms || now_ms > grant.expires_at_ms {
         anyhow::bail!("governed tool grant is not currently valid");
     }
-    let canonical = serde_json::to_vec(&governed_grant_canonical_value(grant))?;
+    let canonical = governed_grant_canonical_bytes(grant)?;
     let expected_hash = format!("sha256:{}", sha256_hex(&canonical));
     if !constant_time_eq(expected_hash.as_bytes(), grant.grant_hash.as_bytes()) {
         anyhow::bail!("governed tool grant hash mismatch");
@@ -781,13 +809,27 @@ fn verify_governed_tool_grant_with_keys(
     let key = keys
         .get(&grant.signing_key_id)
         .context("unknown governed tool grant signing key")?;
-    let expected_signature = format!("hmac-sha256:{}", hex_encode(&hmac_sha256(key, &canonical)));
-    if !constant_time_eq(
-        expected_signature.as_bytes(),
-        grant.grant_signature.as_bytes(),
-    ) {
-        anyhow::bail!("governed tool grant signature mismatch");
+    if key.algorithm != GovernedGrantPublicKeyAlgorithm::Ed25519
+        || key.state == GovernedGrantPublicKeyState::Inactive
+    {
+        anyhow::bail!("governed tool grant signing key is not active");
     }
+    let public_key = base64::engine::general_purpose::STANDARD
+        .decode(&key.public_key)
+        .context("decode governed tool grant public verification key")?;
+    if public_key.len() != 32 {
+        anyhow::bail!("governed tool grant public verification key must be 32 bytes");
+    }
+    let signature = grant
+        .grant_signature
+        .strip_prefix("ed25519:")
+        .context("governed tool grant signature algorithm mismatch")?;
+    let signature = base64::engine::general_purpose::STANDARD
+        .decode(signature)
+        .context("decode governed tool grant signature")?;
+    UnparsedPublicKey::new(&ED25519, public_key)
+        .verify(&canonical, &signature)
+        .map_err(|_| anyhow::anyhow!("governed tool grant signature mismatch"))?;
     Ok(())
 }
 
@@ -798,9 +840,16 @@ async fn submit_prompt_with_kind(
     kind: PromptKind,
 ) -> Result<()> {
     let atts = attachments.unwrap_or_default();
+    let managed_request_lineage = state
+        .governed_grant
+        .as_ref()
+        .map(managed_request_lineage_id);
     match state.agent_mut() {
         Ok(agent) => {
-            if let Err(err) = agent.prompt_with_kind(content, atts, kind, None).await {
+            if let Err(err) = agent
+                .prompt_with_kind_and_lineage(content, atts, kind, None, managed_request_lineage)
+                .await
+            {
                 emit(&FromAgentMessage::Error {
                     request_id: None,
                     message: format!("Failed to send prompt: {err:#}"),
@@ -827,6 +876,21 @@ async fn submit_prompt_with_kind(
         }
     }
     Ok(())
+}
+
+fn managed_request_lineage_id(grant: &GovernedToolGrant) -> String {
+    let mut material = b"maestro-managed-turn-v2".to_vec();
+    for value in [
+        grant.organization_id.as_str(),
+        grant.workspace_id.as_str(),
+        grant.thread_id.as_str(),
+        grant.run_id.as_str(),
+        grant.turn_id.as_str(),
+    ] {
+        material.extend_from_slice(&(value.len() as u64).to_be_bytes());
+        material.extend_from_slice(value.as_bytes());
+    }
+    format!("maestro-turn-v2:{}", sha256_hex(&material))
 }
 
 fn apply_init_settings(
@@ -2216,14 +2280,7 @@ async fn handle_agent_event(
                 meta.pending_tool_calls.remove(&call_id);
                 meta.tool_execution_ids.remove(&call_id)
             };
-            let terminal = FromAgentMessage::ToolEnd {
-                call_id,
-                tool_execution_id: tool_execution_id.clone(),
-                success,
-                tool: None,
-                details: None,
-                receipt,
-            };
+            let terminal = tool_end_message(call_id, tool_execution_id.clone(), success, receipt);
             if tool_execution_id.is_some() {
                 emit(&terminal)?;
             } else {
@@ -2345,6 +2402,37 @@ async fn handle_agent_event(
         _ => {}
     }
     Ok(())
+}
+
+fn tool_end_message(
+    call_id: String,
+    tool_execution_id: Option<String>,
+    success: bool,
+    receipt: Option<ExecutionReceipt>,
+) -> FromAgentMessage {
+    let tool = receipt.as_ref().map(|receipt| receipt.tool_name.clone());
+    FromAgentMessage::ToolEnd {
+        call_id,
+        tool_execution_id,
+        success,
+        tool,
+        details: None,
+        receipt,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn tool_end_message_from_agent(event: FromAgent) -> Option<FromAgentMessage> {
+    let FromAgent::ToolEnd {
+        call_id,
+        success,
+        receipt,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    Some(tool_end_message(call_id, None, success, receipt))
 }
 
 fn coalesce_response_chunks(chunks: &mut Vec<(String, bool)>) -> String {
@@ -3108,10 +3196,15 @@ fn tool_lifecycle_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ring::signature::{Ed25519KeyPair, KeyPair};
     use serde_json::json;
 
     const TEST_GRANT_KEY_ID: &str = "test-key";
-    const TEST_GRANT_KEY: &[u8] = b"0123456789abcdef0123456789abcdef";
+    const TEST_GRANT_KEY_SEED: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
+
+    fn test_grant_key_pair() -> Ed25519KeyPair {
+        Ed25519KeyPair::from_seed_unchecked(TEST_GRANT_KEY_SEED).expect("test signing key")
+    }
 
     fn test_grant_context() -> GovernedGrantVerificationContext<'static> {
         GovernedGrantVerificationContext {
@@ -3128,8 +3221,9 @@ mod tests {
         let canonical = serde_json::to_vec(&governed_grant_canonical_value(grant)).unwrap();
         grant.grant_hash = format!("sha256:{}", sha256_hex(&canonical));
         grant.grant_signature = format!(
-            "hmac-sha256:{}",
-            hex_encode(&hmac_sha256(TEST_GRANT_KEY, &canonical))
+            "ed25519:{}",
+            base64::engine::general_purpose::STANDARD
+                .encode(test_grant_key_pair().sign(&canonical).as_ref())
         );
     }
 
@@ -3160,8 +3254,29 @@ mod tests {
         grant
     }
 
-    fn test_grant_keys() -> HashMap<String, Vec<u8>> {
-        HashMap::from([(TEST_GRANT_KEY_ID.to_string(), TEST_GRANT_KEY.to_vec())])
+    #[test]
+    fn managed_lineage_is_stable_within_and_distinct_across_authenticated_threads() {
+        let first = test_grant();
+        let replay = first.clone();
+        let mut other_thread = first.clone();
+        other_thread.thread_id = "thread-2".to_string();
+
+        let first_lineage = managed_request_lineage_id(&first);
+        assert_eq!(first_lineage, managed_request_lineage_id(&replay));
+        assert_ne!(first_lineage, managed_request_lineage_id(&other_thread));
+        assert!(first_lineage.starts_with("maestro-turn-v2:"));
+    }
+
+    fn test_grant_keys() -> HashMap<String, GovernedGrantPublicKey> {
+        HashMap::from([(
+            TEST_GRANT_KEY_ID.to_string(),
+            GovernedGrantPublicKey {
+                algorithm: GovernedGrantPublicKeyAlgorithm::Ed25519,
+                public_key: base64::engine::general_purpose::STANDARD
+                    .encode(test_grant_key_pair().public_key().as_ref()),
+                state: GovernedGrantPublicKeyState::Active,
+            },
+        )])
     }
 
     #[test]
@@ -3171,10 +3286,7 @@ mod tests {
             grant.grant_hash,
             "sha256:8d521b079076a547f048d28439d48d7e8081c2b7bfca47abfe8d0dc05ea1f298"
         );
-        assert_eq!(
-            grant.grant_signature,
-            "hmac-sha256:498f0e7ab5d59d18d9b5adf2e045bcf8594f7b67cc3ca96699d870743a9b14eb"
-        );
+        assert!(grant.grant_signature.starts_with("ed25519:"));
         let context = test_grant_context();
         let keys = test_grant_keys();
         verify_governed_tool_grant_with_keys(&grant, &context, 1_000, &keys)
@@ -3209,12 +3321,213 @@ mod tests {
             verify_governed_tool_grant_with_keys(&grant, &context, 1_000, &HashMap::new()).is_err()
         );
 
+        let mut inactive_keys = keys.clone();
+        inactive_keys.get_mut(TEST_GRANT_KEY_ID).unwrap().state =
+            GovernedGrantPublicKeyState::Inactive;
+        assert!(
+            verify_governed_tool_grant_with_keys(&grant, &context, 1_000, &inactive_keys).is_err()
+        );
+
         let mut unknown_version = grant;
         unknown_version.envelope_version = 3;
         sign_test_grant(&mut unknown_version);
         assert!(
             verify_governed_tool_grant_with_keys(&unknown_version, &context, 1_000, &keys).is_err()
         );
+    }
+
+    #[test]
+    fn governed_grant_public_key_set_rejects_secret_fields_and_inactive_signers() {
+        let public_key = base64::engine::general_purpose::STANDARD
+            .encode(test_grant_key_pair().public_key().as_ref());
+        let parsed = governed_grant_keys_from_json(
+            &json!({
+                "active": {
+                    "algorithm": "ed25519",
+                    "public_key": public_key,
+                    "state": "active"
+                },
+                "previous": {
+                    "algorithm": "ed25519",
+                    "public_key": public_key,
+                    "state": "retiring"
+                }
+            })
+            .to_string(),
+        )
+        .expect("public-only rotation set");
+        assert_eq!(parsed.len(), 2);
+
+        for secret_field in ["private_key", "private_key_pkcs8", "secret", "hmac_key"] {
+            let mut entry = json!({
+                "algorithm": "ed25519",
+                "public_key": public_key,
+                "state": "active"
+            });
+            entry[secret_field] = json!("must-never-enter-the-resident");
+            assert!(
+                governed_grant_keys_from_json(&json!({"active": entry}).to_string()).is_err(),
+                "secret-shaped field {secret_field} must fail closed"
+            );
+        }
+
+        let mut grant = test_grant();
+        grant.signing_key_id = "inactive".into();
+        sign_test_grant(&mut grant);
+        let inactive = HashMap::from([(
+            "inactive".to_string(),
+            GovernedGrantPublicKey {
+                algorithm: GovernedGrantPublicKeyAlgorithm::Ed25519,
+                public_key,
+                state: GovernedGrantPublicKeyState::Inactive,
+            },
+        )]);
+        assert!(verify_governed_tool_grant_with_keys(
+            &grant,
+            &test_grant_context(),
+            1_000,
+            &inactive
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn governed_grant_environment_accepts_only_public_rotation_material() {
+        let _guard = GOVERNED_GRANT_ENV_LOCK.lock().unwrap();
+        let previous = std::env::var_os(GOVERNED_GRANT_PUBLIC_KEYS_ENV);
+        let public_key = base64::engine::general_purpose::STANDARD
+            .encode(test_grant_key_pair().public_key().as_ref());
+        let value = json!({
+            "active": {
+                "algorithm": "ed25519",
+                "public_key": public_key,
+                "state": "active"
+            },
+            "previous": {
+                "algorithm": "ed25519",
+                "public_key": public_key,
+                "state": "retiring"
+            }
+        })
+        .to_string();
+        // SAFETY: this test holds the module-local lock for this dedicated env key
+        // and restores its prior value before releasing the lock.
+        unsafe { std::env::set_var(GOVERNED_GRANT_PUBLIC_KEYS_ENV, value) };
+        let parsed = governed_grant_keys_from_env().expect("public rotation env");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(governed_grant_verifier_algorithms(), ["ed25519"]);
+
+        let secret = json!({
+            "active": {
+                "algorithm": "ed25519",
+                "public_key": public_key,
+                "state": "active",
+                "private_key_pkcs8": "forbidden"
+            }
+        })
+        .to_string();
+        // SAFETY: guarded and restored as above.
+        unsafe { std::env::set_var(GOVERNED_GRANT_PUBLIC_KEYS_ENV, secret) };
+        assert!(governed_grant_keys_from_env().is_err());
+        assert!(governed_grant_verifier_algorithms().is_empty());
+
+        let inactive = json!({
+            "retired": {
+                "algorithm": "ed25519",
+                "public_key": public_key,
+                "state": "inactive"
+            }
+        })
+        .to_string();
+        // SAFETY: guarded and restored as above.
+        unsafe { std::env::set_var(GOVERNED_GRANT_PUBLIC_KEYS_ENV, inactive) };
+        assert!(governed_grant_keys_from_env().is_err());
+        assert!(governed_grant_verifier_algorithms().is_empty());
+
+        let blank_key_id = json!({
+            "  ": {
+                "algorithm": "ed25519",
+                "public_key": base64::engine::general_purpose::STANDARD
+                    .encode(test_grant_key_pair().public_key().as_ref()),
+                "state": "active"
+            }
+        })
+        .to_string();
+        // SAFETY: guarded and restored as above.
+        unsafe { std::env::set_var(GOVERNED_GRANT_PUBLIC_KEYS_ENV, blank_key_id) };
+        assert!(governed_grant_keys_from_env().is_err());
+        assert!(governed_grant_verifier_algorithms().is_empty());
+
+        for malformed in ["not-base64", "c2hvcnQ="] {
+            let malformed_retiring = json!({
+                "previous": {
+                    "algorithm": "ed25519",
+                    "public_key": malformed,
+                    "state": "retiring"
+                }
+            })
+            .to_string();
+            // SAFETY: guarded and restored as above.
+            unsafe { std::env::set_var(GOVERNED_GRANT_PUBLIC_KEYS_ENV, malformed_retiring) };
+            assert!(governed_grant_keys_from_env().is_err());
+        }
+
+        let invalid_point = json!({
+            "active": {
+                "algorithm": "ed25519",
+                "public_key": base64::engine::general_purpose::STANDARD.encode([7_u8; 32]),
+                "state": "active"
+            }
+        })
+        .to_string();
+        // SAFETY: guarded and restored as above.
+        unsafe { std::env::set_var(GOVERNED_GRANT_PUBLIC_KEYS_ENV, invalid_point) };
+        assert!(governed_grant_keys_from_env().is_err());
+        assert!(governed_grant_verifier_algorithms().is_empty());
+
+        let mut weak_public_key = [0_u8; 32];
+        weak_public_key[0] = 1;
+        let weak_point = json!({
+            "active": {
+                "algorithm": "ed25519",
+                "public_key": base64::engine::general_purpose::STANDARD.encode(weak_public_key),
+                "state": "active"
+            }
+        })
+        .to_string();
+        // SAFETY: guarded and restored as above.
+        unsafe { std::env::set_var(GOVERNED_GRANT_PUBLIC_KEYS_ENV, weak_point) };
+        assert!(governed_grant_keys_from_env().is_err());
+        assert!(governed_grant_verifier_algorithms().is_empty());
+
+        // SAFETY: guarded and restored as above.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var(GOVERNED_GRANT_PUBLIC_KEYS_ENV, value),
+                None => std::env::remove_var(GOVERNED_GRANT_PUBLIC_KEYS_ENV),
+            }
+        }
+    }
+
+    #[test]
+    fn authenticated_governed_grant_can_explicitly_deny_all_tools() {
+        let mut grant = test_grant();
+        grant.native_tool_ids.clear();
+        grant.external_tools.clear();
+        sign_test_grant(&mut grant);
+
+        verify_governed_tool_grant_with_keys(
+            &grant,
+            &test_grant_context(),
+            1_000,
+            &test_grant_keys(),
+        )
+        .expect("signed zero-capability grant remains authenticated");
+        let (allowed, external, bindings) = governed_agent_inputs(&grant)
+            .expect("ordinary governed chat must not require ambient tool authority");
+        assert!(allowed.is_empty());
+        assert!(external.is_empty());
+        assert!(bindings.is_empty());
     }
 
     #[test]
@@ -3967,6 +4280,37 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
             } if call_id == "call-1"
                 && tool_execution_id == "tool-execution-1"
                 && t == "read"
+        ));
+    }
+
+    #[test]
+    fn native_tool_end_wire_message_preserves_correlated_safe_name() {
+        let receipt = crate::agent::protocol::ToolExecution::from_legacy(
+            "call-write-1",
+            "codex_file_change",
+            ExecutionSource::Native,
+            ToolResult::success("completed"),
+        )
+        .receipt;
+
+        assert!(matches!(
+            tool_end_message(
+                "call-write-1".to_owned(),
+                None,
+                true,
+                Some(receipt),
+            ),
+            FromAgentMessage::ToolEnd {
+                call_id,
+                tool_execution_id: None,
+                success: true,
+                tool: Some(tool),
+                receipt: Some(receipt),
+                ..
+            } if call_id == "call-write-1"
+                && tool == "codex_file_change"
+                && receipt.call_id == "call-write-1"
+                && receipt.tool_name == "codex_file_change"
         ));
     }
 

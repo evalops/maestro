@@ -1,0 +1,120 @@
+{
+  "schemaVersion": "evalops.maestro.headless-protocol.v1",
+  "protocolVersion": "2026-08-08",
+  "terminalReducer": {
+    "version": "evalops.maestro.headless-terminal-reducer.v1",
+    "responseEndTerminal": false,
+    "explicitTurnTerminalRequired": true,
+    "firstTerminalWins": true,
+    "staleResponseEventsIgnored": true,
+    "responseRotationAllowed": true,
+    "turnTerminalResponseIds": [
+      "done",
+      "continue"
+    ],
+    "turnTerminalResponseIdIndependent": true,
+    "fatalErrorsAreInterruptions": true
+  },
+  "toRuntimeMessages": [
+    "hello",
+    "init",
+    "governed_init",
+    "prompt",
+    "governed_prompt",
+    "governed_steer",
+    "interrupt",
+    "tool_response",
+    "client_tool_result",
+    "governed_client_tool_result",
+    "server_request_response",
+    "utility_command_start",
+    "utility_command_terminate",
+    "utility_command_stdin",
+    "utility_command_resize",
+    "utility_file_search",
+    "utility_file_read",
+    "utility_file_watch_start",
+    "utility_file_watch_stop",
+    "cancel",
+    "shutdown",
+    "restore_conversation",
+    "steer"
+  ],
+  "fromRuntimeMessages": [
+    "hello_ok",
+    "ready",
+    "response_start",
+    "response_chunk",
+    "response_end",
+    "tool_call",
+    "tool_start",
+    "tool_output",
+    "tool_end",
+    "client_tool_request",
+    "governed_client_tool_request",
+    "server_request",
+    "server_request_resolved",
+    "raw_agent_event",
+    "utility_command_started",
+    "utility_command_resized",
+    "utility_command_output",
+    "utility_command_exited",
+    "utility_file_search_results",
+    "utility_file_read_result",
+    "utility_file_watch_started",
+    "utility_file_watch_event",
+    "utility_file_watch_stopped",
+    "error",
+    "status",
+    "compaction",
+    "session_info",
+    "connection_info",
+    "response_accepted",
+    "turn_completed",
+    "turn_interrupted",
+    "provider_error",
+    "conversation_snapshot",
+    "codex_session_state",
+    "codex_turn_state",
+    "codex_usage_state",
+    "codex_compatibility"
+  ],
+  "runtimeOnlyToRuntimeMessages": [
+    "restore_conversation",
+    "steer"
+  ],
+  "runtimeOnlyFromRuntimeMessages": [
+    "conversation_snapshot",
+    "codex_session_state",
+    "codex_turn_state",
+    "codex_usage_state",
+    "codex_compatibility"
+  ],
+  "capabilities": {
+    "schemaOnlyServerRequests": [
+      "mcp_elicitation"
+    ],
+    "serverRequests": [
+      "approval",
+      "client_tool",
+      "user_input",
+      "tool_retry"
+    ],
+    "utilityOperations": [
+      "command_exec",
+      "file_search",
+      "file_watch",
+      "file_read"
+    ],
+    "connectionRoles": [
+      "viewer",
+      "controller"
+    ],
+    "notifications": [
+      "status",
+      "heartbeat",
+      "connection_info",
+      "compaction"
+    ]
+  }
+}

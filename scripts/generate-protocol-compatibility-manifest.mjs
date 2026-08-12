@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,8 +16,11 @@ const SOURCE_PATHS = {
 	headlessSchema: "proto/maestro/v1/headless.proto",
 	headlessGenerated: "packages/tui-rs/src/headless/generated_protocol.rs",
 	headlessRuntime: "packages/tui-rs/src/headless/messages.rs",
+	runtimeProtocol: "packages/runtime-rs/src/protocol.rs",
+	runtimeFixture: "packages/runtime-rs/fixtures/headless-protocol-v1.json",
 	transcript: "packages/tui-rs/src/transcript.rs",
 	thread: "packages/tui-rs/src/hosted_runner/thread_protocol.rs",
+	threadCompatibilityMatrix: "proto/maestro/v1/hosted-thread-compatibility-matrix.json",
 	resident: "packages/tui-rs/src/hosted_runner_cli.rs",
 	hostedRunner: "packages/tui-rs/src/hosted_runner.rs",
 	rendezvous: "packages/tui-rs/src/hosted_runner/rendezvous_protocol.rs",
@@ -324,6 +327,13 @@ function sourceContractDigest(...sources) {
 	return `sha256:${createHash("sha256").update(tokens, "utf8").digest("hex")}`;
 }
 
+function jsonContractDigest(source) {
+	const parsed = JSON.parse(source);
+	return `sha256:${createHash("sha256")
+		.update(canonicalizeForDigest(parsed), "utf8")
+		.digest("hex")}`;
+}
+
 function validateSourceSha(value) {
 	if (value !== null && !/^[0-9a-f]{40}$/i.test(value)) {
 		throw new Error("source SHA must contain 40 hexadecimal characters");
@@ -338,10 +348,13 @@ function validateBuildDigest(value) {
 
 export function readCanonicalSources(root = ROOT) {
 	return Object.fromEntries(
-		Object.entries(SOURCE_PATHS).map(([name, path]) => [
-			name,
-			readFileSync(resolve(root, path), "utf8"),
-		]),
+		Object.entries(SOURCE_PATHS).flatMap(([name, path]) => {
+			const sourcePath = resolve(root, path);
+			if (name === "threadCompatibilityMatrix" && !existsSync(sourcePath)) {
+				return [];
+			}
+			return [[name, readFileSync(sourcePath, "utf8")]];
+		}),
 	);
 }
 
@@ -421,6 +434,16 @@ export function buildCompatibilityManifest({
 			),
 		});
 	}
+	const threadContractSources = [sources.thread];
+	if (sources.threadCompatibilityMatrix === undefined) {
+		if (threadV2 !== null) {
+			throw new Error(
+				"governed thread sources require hosted-thread-compatibility-matrix.json",
+			);
+		}
+	} else {
+		threadContractSources.push(sources.threadCompatibilityMatrix);
+	}
 
 	const compatibility = {
 		headless: {
@@ -460,7 +483,7 @@ export function buildCompatibilityManifest({
 			capabilities,
 		},
 		thread: {
-			contractDigest: sourceContractDigest(sources.thread),
+			contractDigest: sourceContractDigest(...threadContractSources),
 			supportedVersions: threadVersions,
 		},
 		resident: {
@@ -483,6 +506,13 @@ export function buildCompatibilityManifest({
 				sources.rendezvous,
 				"RENDEZVOUS_PROTOCOL_VERSION",
 			),
+		},
+		runtime: {
+			schemaVersion: parseRustStringConstant(
+				sources.runtimeProtocol,
+				"HEADLESS_PROTOCOL_SCHEMA_VERSION",
+			),
+			contractDigest: jsonContractDigest(sources.runtimeFixture),
 		},
 		governedCode:
 			threadV2 === null
@@ -521,7 +551,9 @@ export function buildCompatibilityManifest({
 		digestEncoding,
 		compatibilityDigest,
 		buildIdentity,
-		generatedFrom: Object.values(SOURCE_PATHS),
+		generatedFrom: Object.entries(SOURCE_PATHS)
+			.filter(([name]) => sources[name] !== undefined)
+			.map(([, path]) => path),
 		compatibility,
 	};
 	const receiptDigest = normalizedSourceSha

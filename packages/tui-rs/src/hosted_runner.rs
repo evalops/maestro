@@ -545,6 +545,7 @@ pub trait HostedRunnerHeadlessMessageExecutor: Send + Sync {
 #[derive(Clone)]
 pub struct AgentSupervisorHostedRunnerMessageExecutor {
     supervisor: Arc<Mutex<AgentSupervisor>>,
+    causal_receipt_id: Option<String>,
     response_ledger_transaction: Arc<Mutex<()>>,
     queued_responses: Arc<Mutex<HashMap<String, QueuedResponseOwnership>>>,
     queued_unkeyed_responses: Arc<Mutex<HashMap<String, u64>>>,
@@ -570,8 +571,17 @@ struct QueuedResponseOwnership {
 impl AgentSupervisorHostedRunnerMessageExecutor {
     #[must_use]
     pub fn new(supervisor: Arc<Mutex<AgentSupervisor>>) -> Self {
+        Self::new_with_causal_receipt_id(supervisor, None)
+    }
+
+    #[must_use]
+    pub fn new_with_causal_receipt_id(
+        supervisor: Arc<Mutex<AgentSupervisor>>,
+        causal_receipt_id: Option<String>,
+    ) -> Self {
         Self {
             supervisor,
+            causal_receipt_id,
             response_ledger_transaction: Arc::new(Mutex::new(())),
             queued_responses: Arc::new(Mutex::new(HashMap::new())),
             queued_unkeyed_responses: Arc::new(Mutex::new(HashMap::new())),
@@ -581,6 +591,10 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
             #[cfg(test)]
             ledger_admission_barriers: Arc::new(Mutex::new(None)),
         }
+    }
+
+    fn causal_receipt_id(&self) -> &str {
+        self.causal_receipt_id.as_deref().unwrap_or("")
     }
 
     #[cfg(test)]
@@ -783,6 +797,7 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
                 ) {
                     tracing::warn!(
                         event = "queued_response_rejection_ledger_stale",
+                        causal_receipt_id = self.causal_receipt_id(),
                         error = %error,
                         "rejected response ledger cleanup failed; in-memory ownership released and the stale pending entry clears on retry",
                     );
@@ -989,6 +1004,7 @@ impl HostedRunnerHeadlessMessageExecutor for AgentSupervisorHostedRunnerMessageE
                 ) {
                     tracing::warn!(
                         event = "drained_rejection_ledger_stale",
+                        causal_receipt_id = self.causal_receipt_id(),
                         error = %error,
                         "rejected response ledger cleanup failed during drain; the stale pending entry clears on retry",
                     );
@@ -1052,6 +1068,7 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
             tracing::debug!(
                 target: "maestro.hosted",
                 event = "hosted_message_transport_handled",
+                causal_receipt_id = self.causal_receipt_id(),
                 session_id = %context.session_id,
                 connection_id = %context.connection_id,
                 message_kind,
@@ -1143,6 +1160,7 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
         tracing::info!(
             target: "maestro.hosted",
             event = "hosted_model_binding_dispatch",
+            causal_receipt_id = self.causal_receipt_id(),
             session_id = %context.session_id,
             connection_id = %context.connection_id,
             message_kind,
@@ -1166,6 +1184,7 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
                     tracing::warn!(
                         target: "maestro.hosted",
                         event = "hosted_model_binding_dispatch_failed",
+                        causal_receipt_id = self.causal_receipt_id(),
                         session_id = %context.session_id,
                         connection_id = %context.connection_id,
                         message_kind,
@@ -1190,6 +1209,7 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
             tracing::warn!(
                 target: "maestro.hosted",
                 event = "hosted_model_binding_dispatch_failed",
+                causal_receipt_id = self.causal_receipt_id(),
                 session_id = %context.session_id,
                 connection_id = %context.connection_id,
                 message_kind,
@@ -1253,6 +1273,7 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
             tracing::info!(
                 target: "maestro.hosted",
                 event = "hosted_response_queued",
+                causal_receipt_id = self.causal_receipt_id(),
                 session_id = %context.session_id,
                 connection_id = %context.connection_id,
                 message_kind,
@@ -1288,6 +1309,7 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
                 tracing::warn!(
                     target: "maestro.hosted",
                     event = "hosted_response_idempotency_memory_only",
+                    causal_receipt_id = self.causal_receipt_id(),
                     session_id = %context.session_id,
                     connection_id = %context.connection_id,
                     message_kind,
@@ -1298,6 +1320,7 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
         tracing::info!(
             target: "maestro.hosted",
             event = "hosted_model_binding_dispatch_completed",
+            causal_receipt_id = self.causal_receipt_id(),
             session_id = %context.session_id,
             connection_id = %context.connection_id,
             message_kind,
@@ -1452,8 +1475,27 @@ fn server_capabilities_for_executor(
 ) -> Option<ServerCapabilities> {
     match message_executor.state() {
         Ok(Some(agent_state)) => agent_state.server_capabilities,
-        Ok(None) | Err(_) => Some(native_server_capabilities()),
+        Ok(None) | Err(_) => Some(native_server_capabilities_without_governed_grants()),
     }
+}
+
+fn native_server_capabilities_without_governed_grants() -> ServerCapabilities {
+    server_capabilities_without_governed_grants(native_server_capabilities())
+}
+
+fn server_capabilities_without_governed_grants(
+    mut capabilities: ServerCapabilities,
+) -> ServerCapabilities {
+    capabilities.governed_tool_grant_algorithms.clear();
+    capabilities
+}
+
+fn governed_grant_algorithms_for_executor(
+    message_executor: &dyn HostedRunnerHeadlessMessageExecutor,
+) -> Vec<String> {
+    server_capabilities_for_executor(message_executor)
+        .map(|capabilities| capabilities.governed_tool_grant_algorithms)
+        .unwrap_or_default()
 }
 
 fn hosted_runner_error_from_async_transport(error: AsyncTransportError) -> HostedRunnerError {
@@ -2552,6 +2594,7 @@ async fn route_request(
         "hosted_runner.http",
         method = request.method.as_str(),
         route_class = hosted_route_class(&request.path),
+        causal_receipt_id = shared.config.causal_receipt_id.as_deref().unwrap_or(""),
         http_status = tracing::field::Empty,
         duration_ms = tracing::field::Empty,
         outcome = tracing::field::Empty,
@@ -2939,6 +2982,7 @@ fn handle_connection_create(
             "controller_connection_id": state.controller_connection_id,
             "lease_expires_at": lease_expires_at,
             "heartbeat_interval_ms": DEFAULT_HEARTBEAT_INTERVAL_MS,
+            "governed_tool_grant_algorithms": governed_grant_algorithms_for_executor(shared.message_executor.as_ref()),
             "snapshot": snapshot,
         }),
     )
@@ -3076,6 +3120,7 @@ fn handle_subscribe(
             "controller_connection_id": snapshot.state.controller_connection_id,
             "lease_expires_at": lease_expires_at,
             "heartbeat_interval_ms": DEFAULT_HEARTBEAT_INTERVAL_MS,
+            "governed_tool_grant_algorithms": governed_grant_algorithms_for_executor(shared.message_executor.as_ref()),
             "snapshot": snapshot,
         }),
     )
@@ -3169,6 +3214,16 @@ async fn handle_append_turn(
                     "turnId was already used with a different payload",
                 ));
             }
+            tracing::info!(
+                target: "maestro.hosted",
+                event = "hosted_thread_turn_replayed",
+                causal_receipt_id = shared.config.causal_receipt_id.as_deref().unwrap_or(""),
+                thread_id = %thread_id,
+                turn_id = %turn.turn_id,
+                run_id = %turn.run_id,
+                phase = ?turn.phase,
+                replayed = true,
+            );
             return json_response(
                 200,
                 json!({
@@ -3285,6 +3340,16 @@ async fn handle_append_turn(
         .thread
         .turn(&input.turn_id)
         .expect("accepted turn remains in append-only thread");
+    tracing::info!(
+        target: "maestro.hosted",
+        event = "hosted_thread_turn_dispatched",
+        causal_receipt_id = shared.config.causal_receipt_id.as_deref().unwrap_or(""),
+        thread_id = %thread_id,
+        turn_id = %turn.turn_id,
+        run_id = %turn.run_id,
+        phase = ?turn.phase,
+        replayed = false,
+    );
     json_response(
         200,
         json!({
@@ -3543,6 +3608,17 @@ async fn handle_message_inner(
                     }
                 }
                 let snapshot = shared.public_snapshot(&state);
+                tracing::info!(
+                    target: "maestro.hosted",
+                    event = "hosted_message_replayed",
+                    causal_receipt_id = shared.config.causal_receipt_id.as_deref().unwrap_or(""),
+                    session_id = %state.session_id,
+                    connection_id = %resolved_connection_id,
+                    message_kind = hosted_message_kind(&message),
+                    response_request_id_present = response_request_id.is_some(),
+                    replayed = true,
+                    cursor = snapshot.cursor,
+                );
                 return json_response(
                     200,
                     json!({

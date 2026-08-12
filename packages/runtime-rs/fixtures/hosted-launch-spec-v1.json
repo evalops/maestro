@@ -1,0 +1,58 @@
+{
+  "schemaVersion": "evalops.maestro.hosted-launch-spec.v1",
+  "runtime": {
+    "runnerSessionId": "runner-fixture",
+    "bindAddress": "127.0.0.1:0",
+    "runtimeGeneration": 7,
+    "ownerInstanceId": "owner-fixture",
+    "attachAudience": "audience-fixture",
+    "causalReceiptId": "receipt-fixture"
+  },
+  "workspace": {
+    "root": "/workspace",
+    "workspaceId": "workspace-fixture",
+    "agentRunId": "run-fixture",
+    "maestroSessionId": "session-fixture"
+  },
+  "identity": {
+    "authMode": "workload_identity",
+    "workloadIdentity": {
+      "kubernetesTokenFile": "/var/run/secrets/tokens/identity",
+      "identityTlsCaFile": "/var/run/secrets/identity/ca.crt",
+      "identityExchangeUrl": "https://identity.example/exchange",
+      "organizationId": "org-fixture",
+      "workspaceId": "workspace-fixture",
+      "sandboxId": "00000000-0000-0000-0000-000000000007",
+      "placementGeneration": 7
+    }
+  },
+  "model": {
+    "model": "gpt-5.5",
+    "baseUrl": "https://gateway.example/v1",
+    "organizationId": "org-fixture",
+    "workspaceId": "workspace-fixture",
+    "provider": "openai",
+    "environment": "test",
+    "residentContractRevision": "maestro-resident-model-ready-v3"
+  },
+  "restore": {
+    "snapshotRoot": "/workspace/.maestro/runner-snapshots",
+    "restoreManifestPath": null
+  },
+  "rendezvous": {
+    "mode": "outbound_shadow",
+    "endpoint": "rendezvous.example:443",
+    "serverName": "rendezvous.example",
+    "identityExchangeUrl": "https://identity.example/exchange",
+    "activationId": "00000000-0000-0000-0000-000000000008",
+    "nonceFile": "/var/run/secrets/rendezvous/nonce",
+    "noncePresent": true
+  },
+  "secretFiles": {
+    "staticBearer": null,
+    "managedGatewayAccessToken": "/var/run/secrets/evalops/access-token",
+    "projectedWorkloadToken": "/var/run/secrets/tokens/identity",
+    "identityTlsCa": "/var/run/secrets/identity/ca.crt"
+  },
+  "agentId": "agent-fixture"
+}

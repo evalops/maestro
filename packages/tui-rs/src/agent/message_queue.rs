@@ -76,6 +76,9 @@ pub struct PendingMessage {
     pub queued_at: u64,
     /// Optional priority (higher = more urgent)
     pub priority: u8,
+    /// Correlation identity for the governed runtime turn that queued this prompt.
+    /// Kept on the message so later turns cannot overwrite it before dispatch.
+    pub managed_request_lineage: Option<String>,
 }
 
 /// Destination for an explicit queue reorder.
@@ -116,6 +119,7 @@ impl PendingMessage {
             kind,
             queued_at: current_timestamp_ms(),
             priority: 0,
+            managed_request_lineage: None,
         }
     }
 
@@ -148,7 +152,15 @@ impl PendingMessage {
             kind,
             queued_at: current_timestamp_ms(),
             priority: 100,
+            managed_request_lineage: None,
         }
+    }
+
+    /// Attach managed-gateway correlation to this exact queued prompt.
+    #[must_use]
+    pub fn with_managed_request_lineage(mut self, lineage_id: Option<String>) -> Self {
+        self.managed_request_lineage = lineage_id;
+        self
     }
 
     /// How long this message has been waiting (in milliseconds)
@@ -442,6 +454,42 @@ impl MessageQueue {
         drained
     }
 
+    /// Drain leading messages of one kind that belong to the same managed turn.
+    ///
+    /// Ungoverned messages all carry `None` and retain the existing batching
+    /// behavior. Governed messages from distinct turns remain separate requests.
+    pub fn drain_leading_kind_and_lineage(
+        &mut self,
+        kind: PromptKind,
+        max_count: usize,
+    ) -> Vec<PendingMessage> {
+        if max_count == 0 {
+            return Vec::new();
+        }
+        let expected_lineage = self
+            .queue
+            .front()
+            .filter(|message| message.kind == kind)
+            .map(|message| message.managed_request_lineage.clone());
+        let Some(expected_lineage) = expected_lineage else {
+            return Vec::new();
+        };
+
+        let mut drained = Vec::new();
+        while drained.len() < max_count {
+            let Some(front) = self.queue.front() else {
+                break;
+            };
+            if front.kind != kind || front.managed_request_lineage != expected_lineage {
+                break;
+            }
+            if let Some(next) = self.queue.pop_front() {
+                drained.push(next);
+            }
+        }
+        drained
+    }
+
     /// Drain messages that have been waiting longer than the threshold
     pub fn drain_stale(&mut self, max_wait_ms: u64) -> Vec<PendingMessage> {
         let mut stale = Vec::new();
@@ -704,6 +752,38 @@ mod tests {
             vec![second_id, third_id, first_id]
         );
         assert!(!queue.move_by_id(999, QueuePlacement::Front));
+    }
+
+    #[test]
+    fn governed_turn_lineage_prevents_cross_turn_queue_batching() {
+        let mut queue = MessageQueue::new();
+        for (content, lineage) in [
+            ("first", "maestro-turn-v1:first"),
+            ("second", "maestro-turn-v1:second"),
+        ] {
+            queue.push_message(
+                PendingMessage::urgent_with_kind_and_id_and_attachments(
+                    content,
+                    PromptKind::Steer,
+                    0,
+                    Vec::new(),
+                )
+                .with_managed_request_lineage(Some(lineage.to_string())),
+            );
+        }
+
+        let first = queue.drain_leading_kind_and_lineage(PromptKind::Steer, usize::MAX);
+        assert_eq!(first.len(), 1);
+        assert_eq!(
+            first[0].managed_request_lineage.as_deref(),
+            Some("maestro-turn-v1:first")
+        );
+        let second = queue.drain_leading_kind_and_lineage(PromptKind::Steer, usize::MAX);
+        assert_eq!(second.len(), 1);
+        assert_eq!(
+            second[0].managed_request_lineage.as_deref(),
+            Some("maestro-turn-v1:second")
+        );
     }
 
     #[test]

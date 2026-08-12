@@ -670,7 +670,171 @@ fn atomic_write_private_json<T: Serialize>(path: &Path, value: &T) -> io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
     use maestro_ai::ProviderStreamErrorKind;
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+    use serde::Deserialize;
+    use sha2::{Digest, Sha256};
+    use std::ffi::OsString;
+
+    const HOSTED_THREAD_COMPATIBILITY_FIXTURE: &str =
+        include_str!("../../../../proto/maestro/v1/hosted-thread-compatibility-matrix.json");
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct CompatibilityMatrix {
+        schema: String,
+        thread_protocol_versions: ThreadProtocolVersions,
+        append_turn_cases: Vec<AppendTurnCompatibilityCase>,
+        event_cases: Vec<EventCompatibilityCase>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ThreadProtocolVersions {
+        prior: String,
+        current: String,
+        incompatible: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct AppendTurnCompatibilityCase {
+        name: String,
+        expected: String,
+        payload: serde_json::Value,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EventCompatibilityCase {
+        name: String,
+        expected_phase: String,
+        message: serde_json::Value,
+    }
+
+    const COMPATIBILITY_GRANT_VERIFIER_ENV: &str =
+        "MAESTRO_PLATFORM_TOOL_GRANT_ED25519_PUBLIC_KEYS";
+    const COMPATIBILITY_GRANT_KEY_ID: &str = "key-1";
+    const COMPATIBILITY_GRANT_KEY_SEED: &[u8; 32] = b"0123456789abcdef0123456789abcdef";
+    const COMPATIBILITY_GRANT_HASH_PLACEHOLDER: &str = "sha256:compatibility-fixture-placeholder";
+    const COMPATIBILITY_GRANT_SIGNATURE_PLACEHOLDER: &str =
+        "ed25519:compatibility-fixture-placeholder";
+
+    struct CompatibilityVerifierEnv {
+        previous: Option<OsString>,
+    }
+
+    impl CompatibilityVerifierEnv {
+        fn install() -> Self {
+            let previous = std::env::var_os(COMPATIBILITY_GRANT_VERIFIER_ENV);
+            let key_pair = Ed25519KeyPair::from_seed_unchecked(COMPATIBILITY_GRANT_KEY_SEED)
+                .expect("compatibility signing key");
+            let configured = serde_json::json!({
+                COMPATIBILITY_GRANT_KEY_ID: {
+                    "algorithm": "ed25519",
+                    "public_key": base64::engine::general_purpose::STANDARD
+                        .encode(key_pair.public_key().as_ref()),
+                    "state": "active"
+                }
+            })
+            .to_string();
+            // SAFETY: the compatibility test holds the shared verifier env
+            // lock for the complete duration of this guard's lifetime.
+            unsafe { std::env::set_var(COMPATIBILITY_GRANT_VERIFIER_ENV, configured) };
+            Self { previous }
+        }
+    }
+
+    impl Drop for CompatibilityVerifierEnv {
+        fn drop(&mut self) {
+            // SAFETY: the compatibility test still holds the shared verifier
+            // env lock while this guard restores the prior process state.
+            unsafe {
+                if let Some(previous) = self.previous.take() {
+                    std::env::set_var(COMPATIBILITY_GRANT_VERIFIER_ENV, previous);
+                } else {
+                    std::env::remove_var(COMPATIBILITY_GRANT_VERIFIER_ENV);
+                }
+            }
+        }
+    }
+
+    fn materialize_compatibility_grant(grant: &mut GovernedToolGrant) {
+        // The shared JSON keeps authentication values as explicit placeholders;
+        // produce them here with the same canonicalization and Ed25519 signing
+        // boundary used by the hosted append-turn verifier.
+        assert_eq!(grant.signing_key_id, COMPATIBILITY_GRANT_KEY_ID);
+        assert_eq!(
+            grant.grant_hash, COMPATIBILITY_GRANT_HASH_PLACEHOLDER,
+            "accepted fixture grants must make their test-only auth placeholders explicit"
+        );
+        assert_eq!(
+            grant.grant_signature, COMPATIBILITY_GRANT_SIGNATURE_PLACEHOLDER,
+            "accepted fixture grants must make their test-only auth placeholders explicit"
+        );
+
+        let canonical = crate::headless_server::governed_tool_grant_canonical_bytes_for_test(grant)
+            .expect("serialize compatibility grant canonical payload");
+        grant.grant_hash = format!("sha256:{:x}", Sha256::digest(&canonical));
+        let key_pair = Ed25519KeyPair::from_seed_unchecked(COMPATIBILITY_GRANT_KEY_SEED)
+            .expect("compatibility signing key");
+        grant.grant_signature = format!(
+            "ed25519:{}",
+            base64::engine::general_purpose::STANDARD.encode(key_pair.sign(&canonical).as_ref())
+        );
+    }
+
+    fn verify_compatibility_grant(request: &mut AppendTurnRequest) {
+        let turn_id = request.turn_id.clone();
+        let expected_run_id = format!("run_{turn_id}");
+        let grant = request
+            .tool_grant
+            .as_mut()
+            .expect("accepted governed fixture carries a grant");
+        assert_eq!(grant.run_id, expected_run_id);
+        assert_eq!(grant.turn_id, turn_id);
+        materialize_compatibility_grant(grant);
+
+        crate::headless_server::verify_governed_tool_grant(
+            grant,
+            &crate::headless_server::GovernedGrantVerificationContext {
+                organization_id: "org-1",
+                workspace_id: "workspace-1",
+                thread_id: "thread-1",
+                turn_id: &turn_id,
+                run_id: &expected_run_id,
+                runtime_generation: 1,
+            },
+            1,
+        )
+        .unwrap_or_else(|error| {
+            panic!("{turn_id} must pass the production grant verifier: {error:#}")
+        });
+    }
+
+    fn assert_exact_case_names<T>(
+        kind: &str,
+        cases: &[T],
+        expected: &[&str],
+        name: impl Fn(&T) -> &str,
+    ) {
+        let mut actual = cases.iter().map(name).collect::<Vec<_>>();
+        actual.sort_unstable();
+        let before_dedup = actual.len();
+        actual.dedup();
+        assert_eq!(
+            actual.len(),
+            before_dedup,
+            "{kind} compatibility scenario names must be unique"
+        );
+
+        let mut expected = expected.to_vec();
+        expected.sort_unstable();
+        assert_eq!(
+            actual, expected,
+            "{kind} compatibility scenarios must match the required executable matrix"
+        );
+    }
 
     fn test_governed_grant() -> GovernedToolGrant {
         GovernedToolGrant {
@@ -810,6 +974,139 @@ mod tests {
         );
         state.mark_dispatched(2);
         state
+    }
+
+    fn phase_name(phase: ThreadPhase) -> &'static str {
+        match phase {
+            ThreadPhase::Idle => "idle",
+            ThreadPhase::Accepted => "accepted",
+            ThreadPhase::Running => "running",
+            ThreadPhase::WaitingForApproval => "waiting_for_approval",
+            ThreadPhase::WaitingForInput => "waiting_for_input",
+            ThreadPhase::WaitingForClientTool => "waiting_for_client_tool",
+            ThreadPhase::WaitingForRetry => "waiting_for_retry",
+            ThreadPhase::Completed => "completed",
+            ThreadPhase::Failed => "failed",
+            ThreadPhase::Interrupted => "interrupted",
+        }
+    }
+
+    #[test]
+    fn versioned_hosted_thread_compatibility_matrix_covers_requests_and_events() {
+        let matrix: CompatibilityMatrix =
+            serde_json::from_str(HOSTED_THREAD_COMPATIBILITY_FIXTURE).expect("valid fixture");
+
+        assert_eq!(
+            matrix.schema,
+            "evalops.maestro.thread-compatibility-matrix.v1"
+        );
+        assert_eq!(
+            matrix.thread_protocol_versions.prior,
+            THREAD_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            matrix.thread_protocol_versions.current,
+            GOVERNED_THREAD_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            matrix.thread_protocol_versions.incompatible,
+            "evalops.maestro.thread.v3"
+        );
+
+        assert_exact_case_names(
+            "append-turn",
+            &matrix.append_turn_cases,
+            &[
+                "prior_v1_payload",
+                "current_v2_empty_least_privilege_grant",
+                "unknown_additive_fields",
+                "explicit_incompatible_version",
+            ],
+            |case| case.name.as_str(),
+        );
+        assert_exact_case_names(
+            "event",
+            &matrix.event_cases,
+            &[
+                "response_end_is_framing",
+                "turn_completed_is_terminal",
+                "turn_interrupted_is_terminal",
+                "provider_error_is_terminal",
+                "unknown_event_type_rejected",
+            ],
+            |case| case.name.as_str(),
+        );
+
+        let _verifier_lock = crate::headless_server::GOVERNED_GRANT_ENV_LOCK
+            .lock()
+            .expect("governed grant verifier env lock");
+        let _verifier_env = CompatibilityVerifierEnv::install();
+
+        for case in matrix.append_turn_cases {
+            let mut request: AppendTurnRequest = serde_json::from_value(case.payload.clone())
+                .unwrap_or_else(|error| panic!("{} must deserialize: {error}", case.name));
+            let validation = request.validate();
+
+            match case.expected.as_str() {
+                "accepted" => {
+                    validation
+                        .unwrap_or_else(|error| panic!("{} must validate: {error}", case.name));
+                    if request.protocol_version == GOVERNED_THREAD_PROTOCOL_VERSION {
+                        verify_compatibility_grant(&mut request);
+                    }
+                }
+                "rejected" => {
+                    assert!(
+                        validation.is_err(),
+                        "{} must reject an incompatible request",
+                        case.name
+                    );
+                    assert_eq!(
+                        request.protocol_version, "evalops.maestro.thread.v3",
+                        "the rejection case must exercise the explicit incompatible version"
+                    );
+                }
+                expected => panic!("{} has unknown expectation {expected}", case.name),
+            }
+
+            if case.name == "current_v2_empty_least_privilege_grant" {
+                let grant = request
+                    .tool_grant
+                    .as_ref()
+                    .expect("empty-grant case carries a governed grant");
+                assert!(grant.native_tool_ids.is_empty());
+                assert!(grant.external_tools.is_empty());
+            }
+            if case.name == "unknown_additive_fields" {
+                assert!(
+                    case.payload.get("futureEnvelopeField").is_some(),
+                    "additive-field case must include its future envelope field"
+                );
+            }
+        }
+
+        for case in matrix.event_cases {
+            let parsed = serde_json::from_value::<FromAgentMessage>(case.message.clone());
+            if case.expected_phase == "invalid" {
+                assert!(
+                    parsed.is_err(),
+                    "{} must reject an unknown event type",
+                    case.name
+                );
+                continue;
+            }
+
+            let message =
+                parsed.unwrap_or_else(|error| panic!("{} must deserialize: {error}", case.name));
+            let mut state = active_state();
+            state.apply_agent_message(&message, 3);
+            assert_eq!(
+                phase_name(state.phase()),
+                case.expected_phase,
+                "unexpected phase for {}",
+                case.name
+            );
+        }
     }
 
     #[test]

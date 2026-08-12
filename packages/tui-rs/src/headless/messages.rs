@@ -115,17 +115,31 @@ pub const SUPPORTED_CLIENT_PROTOCOL_VERSIONS: &[&str] = &[HEADLESS_PROTOCOL_VERS
 /// A client that announces nothing is accepted, preserving the
 /// pre-negotiation behavior for minimal clients.
 pub fn client_protocol_version_is_supported(client_version: Option<&str>) -> bool {
-    match client_version {
-        None => true,
-        Some(version) => SUPPORTED_CLIENT_PROTOCOL_VERSIONS.contains(&version),
-    }
+    debug_assert_eq!(
+        SUPPORTED_CLIENT_PROTOCOL_VERSIONS,
+        maestro_runtime::SUPPORTED_HEADLESS_PROTOCOL_VERSIONS
+    );
+    maestro_runtime::headless_protocol_version_is_supported(client_version)
 }
 
 /// Rejection message for a `Hello` this build cannot serve.
 pub fn unsupported_client_protocol_version_message(client_version: &str) -> String {
-    format!(
-        "unsupported client protocol version: {client_version}; this agent speaks {}",
-        SUPPORTED_CLIENT_PROTOCOL_VERSIONS.join(", ")
+    maestro_runtime::negotiate_headless_protocol(Some(client_version))
+        .expect_err("the caller only asks for an unsupported version")
+        .to_string()
+}
+
+/// Decode one runtime event while preserving unsupported additive tags for an
+/// adapter-level receipt or audit record.
+pub fn decode_from_agent_message(
+    raw: &str,
+) -> Result<
+    maestro_runtime::TaggedMessageDecode<FromAgentMessage>,
+    maestro_runtime::TaggedMessageDecodeError,
+> {
+    maestro_runtime::decode_tagged_message(
+        raw,
+        maestro_runtime::HEADLESS_FROM_RUNTIME_MESSAGE_NAMES,
     )
 }
 
@@ -561,6 +575,9 @@ pub struct ServerCapabilities {
     pub connection_roles: Vec<ConnectionRole>,
     #[serde(default)]
     pub native_tools: Vec<NativeToolCapability>,
+    /// Grant signature algorithms verified by this exact agent process.
+    #[serde(default)]
+    pub governed_tool_grant_algorithms: Vec<String>,
 }
 
 /// Stable metadata for one native tool in the Maestro registry.
@@ -1072,6 +1089,82 @@ pub enum FromAgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+}
+
+impl FromAgentMessage {
+    /// Projects a live runtime message into the producer-owned terminal
+    /// reducer event, when the message affects response/turn acceptance.
+    ///
+    /// This projection preserves the distinction between `response_end` and
+    /// the later explicit turn terminal.  It is an event identity adapter,
+    /// not a post-bind or post-session observation.
+    #[must_use]
+    pub fn terminal_event(&self) -> Option<maestro_runtime::TerminalEvent> {
+        match self {
+            Self::ResponseStart { response_id } => {
+                Some(maestro_runtime::TerminalEvent::ResponseStarted {
+                    response_id: response_id.clone(),
+                })
+            }
+            Self::ResponseEnd { response_id, .. } => {
+                Some(maestro_runtime::TerminalEvent::ResponseEnded {
+                    response_id: response_id.clone(),
+                })
+            }
+            Self::TurnCompleted { response_id } => {
+                Some(maestro_runtime::TerminalEvent::TurnCompleted {
+                    response_id: response_id.clone(),
+                })
+            }
+            Self::TurnInterrupted {
+                response_id,
+                reason,
+            } => Some(maestro_runtime::TerminalEvent::TurnInterrupted {
+                response_id: response_id.clone(),
+                reason: reason.clone(),
+            }),
+            Self::ProviderError { kind, message } => {
+                Some(maestro_runtime::TerminalEvent::ProviderFailed {
+                    response_id: None,
+                    kind: match kind {
+                        maestro_ai::ProviderStreamErrorKind::TransientProtocol => {
+                            maestro_runtime::TerminalErrorKind::TransientProtocol
+                        }
+                        maestro_ai::ProviderStreamErrorKind::OutputTokenExhaustion => {
+                            maestro_runtime::TerminalErrorKind::OutputTokenExhaustion
+                        }
+                        maestro_ai::ProviderStreamErrorKind::IncompleteResponse => {
+                            maestro_runtime::TerminalErrorKind::IncompleteResponse
+                        }
+                        maestro_ai::ProviderStreamErrorKind::ProviderDeclaredFailure => {
+                            maestro_runtime::TerminalErrorKind::ProviderDeclaredFailure
+                        }
+                    },
+                    message: message.clone(),
+                })
+            }
+            Self::Error {
+                message,
+                fatal,
+                terminal,
+                error_type,
+                ..
+            } => Some(maestro_runtime::TerminalEvent::Error {
+                response_id: None,
+                fatal: *fatal,
+                terminal: *terminal,
+                kind: error_type.map(|error_type| match error_type {
+                    HeadlessErrorType::Transient => maestro_runtime::TerminalErrorKind::Transient,
+                    HeadlessErrorType::Fatal => maestro_runtime::TerminalErrorKind::Fatal,
+                    HeadlessErrorType::Tool => maestro_runtime::TerminalErrorKind::Tool,
+                    HeadlessErrorType::Cancelled => maestro_runtime::TerminalErrorKind::Cancelled,
+                    HeadlessErrorType::Protocol => maestro_runtime::TerminalErrorKind::Protocol,
+                }),
+                message: message.clone(),
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// Token usage statistics

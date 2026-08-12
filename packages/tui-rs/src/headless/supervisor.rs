@@ -1836,14 +1836,17 @@ pub fn agent_event_to_message(event: &AgentEvent) -> FromAgentMessage {
             success,
             receipt,
             ..
-        } => FromAgentMessage::ToolEnd {
-            call_id: call_id.clone(),
-            tool_execution_id: tool_execution_id.clone(),
-            success: *success,
-            tool: None,
-            details: None,
-            receipt: receipt.clone(),
-        },
+        } => {
+            let tool = receipt.as_ref().map(|receipt| receipt.tool_name.clone());
+            FromAgentMessage::ToolEnd {
+                call_id: call_id.clone(),
+                tool_execution_id: tool_execution_id.clone(),
+                success: *success,
+                tool,
+                details: None,
+                receipt: receipt.clone(),
+            }
+        }
         AgentEvent::Error {
             request_id,
             message,

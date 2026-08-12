@@ -719,9 +719,15 @@ pub struct OpenAiClient {
     extra_headers: HeaderMap,
     request_extensions: serde_json::Map<String, serde_json::Value>,
     managed_gateway: bool,
+    managed_request_lineage: Option<ManagedRequestLineage>,
     route_provider: Option<String>,
     #[cfg(test)]
     response_open_timeout_override: Option<std::time::Duration>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ManagedRequestLineage {
+    pub(crate) lineage_id: String,
 }
 
 impl OpenAiClient {
@@ -740,6 +746,7 @@ impl OpenAiClient {
             extra_headers: HeaderMap::new(),
             request_extensions: serde_json::Map::new(),
             managed_gateway: false,
+            managed_request_lineage: None,
             route_provider: None,
             #[cfg(test)]
             response_open_timeout_override: None,
@@ -761,6 +768,7 @@ impl OpenAiClient {
             extra_headers: HeaderMap::new(),
             request_extensions: serde_json::Map::new(),
             managed_gateway: false,
+            managed_request_lineage: None,
             route_provider: None,
             #[cfg(test)]
             response_open_timeout_override: None,
@@ -778,6 +786,11 @@ impl OpenAiClient {
 
     pub(crate) fn is_managed_gateway(&self) -> bool {
         self.managed_gateway
+    }
+
+    pub(crate) fn set_managed_request_lineage(&mut self, lineage_id: Option<String>) {
+        self.managed_request_lineage =
+            lineage_id.map(|lineage_id| ManagedRequestLineage { lineage_id });
     }
 
     fn response_open_timeout(&self) -> Option<std::time::Duration> {
@@ -908,6 +921,24 @@ impl OpenAiClient {
         );
         headers.extend(self.extra_headers.clone());
         headers
+    }
+
+    fn managed_request(&self, mut body: serde_json::Value) -> Result<serde_json::Value> {
+        let Some(lineage) = self.managed_request_lineage.as_ref() else {
+            return Ok(body);
+        };
+        if !self.managed_gateway {
+            return Ok(body);
+        }
+
+        let object = body
+            .as_object_mut()
+            .context("managed gateway request body must be an object")?;
+        object.insert(
+            "lineage_id".to_string(),
+            serde_json::Value::String(lineage.lineage_id.clone()),
+        );
+        Ok(body)
     }
 
     /// Convert internal messages to `OpenAI` format
@@ -1493,7 +1524,7 @@ impl AiClient for OpenAiClient {
         let (tx, rx) = mpsc::unbounded_channel();
 
         // Build request body
-        let body = self.build_request_body(messages, config);
+        let body = self.managed_request(self.build_request_body(messages, config))?;
 
         // Get the appropriate API URL for this model, honoring any custom
         // provider base URL (Mistral/Groq/DeepSeek/Moonshot/DashScope/etc.).
@@ -2940,6 +2971,50 @@ mod tests {
         );
         assert_eq!(body["provider_ref"]["provider"], "anthropic");
         assert_eq!(body["provider_ref"]["credential_name"], "team-shared");
+    }
+
+    #[test]
+    fn managed_gateway_turn_lineage_is_stable_and_body_scoped() {
+        let mut client =
+            OpenAiClient::with_base_url("delegated-token", "https://llm-gateway.evalops.dev/v1")
+                .unwrap()
+                .with_managed_gateway_scope(
+                    "org_123",
+                    "workspace_456",
+                    serde_json::json!({
+                        "provider": "openrouter",
+                        "environment": "production",
+                        "credential_name": "default"
+                    }),
+                )
+                .unwrap();
+        client.set_managed_request_lineage(Some("maestro-turn-v2:digest".to_string()));
+
+        let request = |content: &str| {
+            client
+                .managed_request(client.build_request_body(
+                    &[Message {
+                        role: Role::User,
+                        content: MessageContent::Text(content.to_string()),
+                    }],
+                    &RequestConfig {
+                        model: "evalops/openrouter/auto".to_string(),
+                        ..Default::default()
+                    },
+                ))
+                .expect("managed request")
+        };
+        let first_body = request("first");
+        let replay_body = request("first");
+        let next_body = request("second");
+
+        assert_eq!(first_body["lineage_id"], replay_body["lineage_id"]);
+        assert_eq!(first_body["lineage_id"], next_body["lineage_id"]);
+        assert!(first_body["lineage_id"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("maestro-turn-v2:")));
+        assert_eq!(first_body, replay_body);
+        assert_ne!(first_body, next_body);
     }
 
     #[tokio::test]
