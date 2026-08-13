@@ -8,7 +8,6 @@ import {
 	mkdtempSync,
 	readFileSync,
 	rmSync,
-	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -23,8 +22,57 @@ const CONFORMANCE_FIXTURE = JSON.parse(
 const AUTH_TOKEN = "runtime-conformance-local-only";
 const SESSION_ID = "runtime-conformance-session-v1";
 const RUNNER_SESSION_ID = "runtime-conformance-runner-v1";
+const CONFORMANCE_FIXTURE_FILE = "runtime-conformance-fixture.txt";
 const CONFORMANCE_PROFILE = CONFORMANCE_FIXTURE.profile;
 const FETCH_TIMEOUT_MS = 15_000;
+const CONFORMANCE_EXECUTION_CASES = Object.freeze([
+	"startup_identity_and_readiness",
+	"wrong_session_rejected",
+	"harmless_shell_command",
+	"file_search_and_read",
+	"approval_request_and_resolution",
+	"idempotent_response_replay",
+	"drain_terminal_receipt",
+]);
+
+export function conformanceFixtureCommand() {
+	return `printf 'runtime conformance fixture\\nreversible test data\\n' > ${CONFORMANCE_FIXTURE_FILE}; printf runtime-conformance-shell`;
+}
+
+export function dockerConformanceRunArgs({ containerName, dockerImage }) {
+	return [
+		"run",
+		"-d",
+		// The fixture waits for stdin EOF as its shutdown signal. Keep stdin open
+		// in detached mode so the container remains alive for HTTP conformance.
+		"-i",
+		"--rm",
+		"--name",
+		containerName,
+		"-p",
+		"127.0.0.1::8080",
+		"-e",
+		`MAESTRO_RUNNER_SESSION_ID=${RUNNER_SESSION_ID}`,
+		"-e",
+		`MAESTRO_SESSION_ID=${SESSION_ID}`,
+		"-e",
+		"MAESTRO_WORKSPACE_ROOT=/conformance-workspace",
+		"-e",
+		"MAESTRO_HOSTED_RUNNER_LISTEN=0.0.0.0:8080",
+		"-e",
+		`MAESTRO_HOSTED_RUNNER_AUTH_TOKEN=${AUTH_TOKEN}`,
+		"-e",
+		"MAESTRO_MODEL=conformance-fixture",
+		// The release runner's Docker daemon is containerized. A host-path bind
+		// mount from the Node runner can therefore resolve to an empty daemon-side
+		// directory. Keep the workspace in the daemon; the conformance shell case
+		// creates its reversible fixture through Maestro after startup.
+		"--mount",
+		"type=tmpfs,destination=/conformance-workspace",
+		dockerImage,
+		"conformance",
+	];
+}
 
 function parseArgs(argv) {
 	const options = { binary: null, dockerImage: null, binaryLauncher: null, artifactDigest: null };
@@ -117,6 +165,14 @@ export function validateConformanceReceipt(receipt) {
 	assert.ok(
 		receipt.cases.every((entry) => entry.outcome === "passed"),
 		"expected negative cases must be recorded as passed after their rejection is verified",
+	);
+}
+
+export function validateConformanceExecutionOrder(executedCases) {
+	assert.deepEqual(
+		executedCases,
+		CONFORMANCE_EXECUTION_CASES,
+		"conformance must create the daemon-local fixture before file search and cover every runtime case",
 	);
 }
 
@@ -223,31 +279,12 @@ async function startRuntime(options, workspace) {
 		}
 	};
 	try {
-		const { stdout: containerOutput } = await dockerExec([
-			"run",
-			"-d",
-			"--rm",
-			"--name",
-			containerName,
-			"-p",
-			"127.0.0.1::8080",
-			"-e",
-			`MAESTRO_RUNNER_SESSION_ID=${RUNNER_SESSION_ID}`,
-			"-e",
-			`MAESTRO_SESSION_ID=${SESSION_ID}`,
-			"-e",
-			"MAESTRO_WORKSPACE_ROOT=/conformance-workspace",
-			"-e",
-			"MAESTRO_HOSTED_RUNNER_LISTEN=0.0.0.0:8080",
-			"-e",
-			`MAESTRO_HOSTED_RUNNER_AUTH_TOKEN=${AUTH_TOKEN}`,
-			"-e",
-			"MAESTRO_MODEL=conformance-fixture",
-			"-v",
-			`${workspace}:/conformance-workspace`,
-			options.dockerImage,
-			"conformance",
-		]);
+		const { stdout: containerOutput } = await dockerExec(
+			dockerConformanceRunArgs({
+				containerName,
+				dockerImage: options.dockerImage,
+			}),
+		);
 		const containerId = containerOutput.trim();
 		const { stdout: portOutput } = await dockerExec(["port", containerId, "8080/tcp"]);
 		const port = portOutput.trim().match(/:(\d+)\s*$/)?.[1];
@@ -352,8 +389,6 @@ async function main() {
 	const options = parseArgs(process.argv.slice(2));
 	const binaryPath = options.binary ? resolve(options.binary) : null;
 	const workspace = mkdtempSync(join(tmpdir(), "maestro-runtime-conformance-"));
-	const fixturePath = join(workspace, "runtime-conformance-fixture.txt");
-	writeFileSync(fixturePath, "runtime conformance fixture\nreversible test data\n");
 	let runtime;
 	let events;
 	let primaryError;
@@ -405,10 +440,13 @@ async function main() {
 		const record = (name, identity, outcome) => {
 			receipt.cases.push({ name, tool: identity, outcome });
 		};
+		const executedCases = [];
+		const markExecuted = (name) => executedCases.push(name);
 
 		const identity = await request("/.well-known/evalops/remote-runner/identity");
 		assert.equal(identity.status, 200);
 		assert.equal(identity.body.runner_session_id, RUNNER_SESSION_ID);
+		markExecuted("startup_identity_and_readiness");
 		record("startup_identity_and_readiness", "GET identity + GET /readyz", "passed");
 
 		const wrongSession = await request("/api/headless/connections", {
@@ -417,6 +455,7 @@ async function main() {
 			body: JSON.stringify({ sessionId: "wrong-session", connectionId: "wrong" }),
 		});
 		assert.ok(wrongSession.status >= 400 && wrongSession.status < 500);
+		markExecuted("wrong_session_rejected");
 		record("wrong_session_rejected", "POST /api/headless/connections", "passed");
 
 		const connection = await request("/api/headless/connections", {
@@ -459,51 +498,13 @@ async function main() {
 		assert.equal(streamResponse.status, 200);
 		events = sseCollector(streamResponse);
 
-		const search = await request(`/api/headless/sessions/${SESSION_ID}/messages`, {
-			method: "POST",
-			headers: commandHeaders,
-			body: JSON.stringify({
-				type: "utility_file_search",
-				search_id: "search-1",
-				query: "fixture",
-				cwd: ".",
-				limit: 10,
-			}),
-		});
-		assert.equal(search.status, 200);
-		const searchEvent = await events.next(
-			(event) => event.message?.type === "utility_file_search_results" && event.message.search_id === "search-1",
-			"file search result",
-		);
-		assert.ok(searchEvent.message.results.some((match) => match.path.endsWith("runtime-conformance-fixture.txt")));
-
-		const read = await request(`/api/headless/sessions/${SESSION_ID}/messages`, {
-			method: "POST",
-			headers: commandHeaders,
-			body: JSON.stringify({
-				type: "utility_file_read",
-				read_id: "read-1",
-				path: "runtime-conformance-fixture.txt",
-				cwd: ".",
-				offset: 0,
-				limit: 10,
-			}),
-		});
-		assert.equal(read.status, 200);
-		const readEvent = await events.next(
-			(event) => event.message?.type === "utility_file_read_result" && event.message.read_id === "read-1",
-			"file read result",
-		);
-		assert.match(readEvent.message.content, /reversible test data/);
-		record("file_search_and_read", "utility_file_search + utility_file_read", "passed");
-
 		const shell = await request(`/api/headless/sessions/${SESSION_ID}/messages`, {
 			method: "POST",
 			headers: commandHeaders,
 			body: JSON.stringify({
 				type: "utility_command_start",
 				command_id: "command-1",
-				command: "printf runtime-conformance-shell",
+				command: conformanceFixtureCommand(),
 				cwd: ".",
 				shell_mode: "shell",
 				terminal_mode: "pipe",
@@ -522,6 +523,49 @@ async function main() {
 		);
 		assert.equal(shellExit.message.success, true);
 		assert.equal(shellExit.message.exit_code, 0);
+		markExecuted("harmless_shell_command");
+
+		const search = await request(`/api/headless/sessions/${SESSION_ID}/messages`, {
+			method: "POST",
+			headers: commandHeaders,
+			body: JSON.stringify({
+				type: "utility_file_search",
+				search_id: "search-1",
+				query: "fixture",
+				cwd: ".",
+				limit: 10,
+			}),
+		});
+		assert.equal(search.status, 200);
+		const searchEvent = await events.next(
+			(event) => event.message?.type === "utility_file_search_results" && event.message.search_id === "search-1",
+			"file search result",
+		);
+		assert.ok(
+			searchEvent.message.results.some((match) => match.path.endsWith(CONFORMANCE_FIXTURE_FILE)),
+			`file search results: ${JSON.stringify(searchEvent.message.results)}`,
+		);
+
+		const read = await request(`/api/headless/sessions/${SESSION_ID}/messages`, {
+			method: "POST",
+			headers: commandHeaders,
+			body: JSON.stringify({
+				type: "utility_file_read",
+				read_id: "read-1",
+				path: CONFORMANCE_FIXTURE_FILE,
+				cwd: ".",
+				offset: 0,
+				limit: 10,
+			}),
+		});
+		assert.equal(read.status, 200);
+		const readEvent = await events.next(
+			(event) => event.message?.type === "utility_file_read_result" && event.message.read_id === "read-1",
+			"file read result",
+		);
+		assert.match(readEvent.message.content, /reversible test data/);
+		markExecuted("file_search_and_read");
+		record("file_search_and_read", "utility_file_search + utility_file_read", "passed");
 		record("harmless_shell_command", "utility_command_start", "passed");
 
 		const requestId = "approval-1";
@@ -573,6 +617,8 @@ async function main() {
 		});
 		assert.equal(replay.status, 200);
 		assert.equal(replay.body.replayed, true);
+		markExecuted("approval_request_and_resolution");
+		markExecuted("idempotent_response_replay");
 		record("approval_request_and_resolution", "prompt + server_request_response", "passed");
 		record("idempotent_response_replay", "x-maestro-idempotency-key", "passed");
 
@@ -584,8 +630,10 @@ async function main() {
 		assert.equal(drain.status, 200);
 		assert.equal(drain.body.status, "drained");
 		assert.equal(drain.body.runtime_receipt.kind, "drained");
+		markExecuted("drain_terminal_receipt");
 		record("drain_terminal_receipt", "POST /.well-known/evalops/remote-runner/drain", "passed");
 
+		validateConformanceExecutionOrder(executedCases);
 		validateConformanceReceipt(receipt);
 
 		console.log(JSON.stringify(receipt));

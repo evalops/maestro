@@ -63,8 +63,8 @@ test("release artifacts are proven by exact-runtime conformance and passports", 
 	assert.match(release, /host_arch.*uname -m/);
 	assert.match(release, /runtime-passport-maestro-\$\{platform\}\.cosign\.bundle/);
 	assert.match(ghcr, /Conformance against the exact OCI release artifact/);
-	assert.match(ghcr, /push: \$\{\{ github\.event_name == 'workflow_dispatch' \}\}/);
-	assert.match(ghcr, /load: \$\{\{ github\.event_name == 'push' \}\}/);
+	assert.match(ghcr, /push: \$\{\{ github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/tags\/recovery-publisher-e0c1a2d-v2' \}\}/);
+	assert.match(ghcr, /load: \$\{\{ env\.PUBLISH_MAIN == 'true' \}\}/);
 	assert.match(ghcr, /conformance-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
 	assert.match(ghcr, /IMAGE: \$\{\{ env\.IMAGE_NAME \}\}@\$\{\{ steps\.conformance-image\.outputs\.digest \}\}/);
 	assert.match(ghcr, /--docker-image "\$IMAGE"/);
@@ -74,7 +74,7 @@ test("release artifacts are proven by exact-runtime conformance and passports", 
 	assert.doesNotMatch(ghcr, /for \(index = 1; index <= NF; index \+= 1\)/);
 	assert.match(ghcr, /for \(field_index = 1; field_index <= NF; field_index \+= 1\)/);
 	assert.match(ghcr, /Remove isolated conformance image/);
-	assert.match(ghcr, /always\(\).*github\.event_name == 'push'/);
+	assert.match(ghcr, /always\(\).*env\.PUBLISH_MAIN == 'true'/);
 	assert.match(ghcr, /PUSH_MARKER/);
 	assert.match(ghcr, /touch "\$PUSH_MARKER"/);
 	assert.match(ghcr, /gh api "orgs\/\$\{package_owner\}\/packages\/container\/\$\{package_name\}\/versions\?per_page=100"/);
