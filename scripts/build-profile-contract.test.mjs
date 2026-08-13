@@ -71,6 +71,8 @@ test("release artifacts are proven by exact-runtime conformance and passports", 
 	assert.match(ghcr, /Publish isolated conformance image/);
 	assert.match(ghcr, /timeout --signal=TERM --kill-after=30s 10m docker push "\$IMAGE_TAG"/);
 	assert.match(ghcr, /pushed_digest.*EXPECTED_DIGEST/);
+	assert.doesNotMatch(ghcr, /for \(index = 1; index <= NF; index \+= 1\)/);
+	assert.match(ghcr, /for \(field_index = 1; field_index <= NF; field_index \+= 1\)/);
 	assert.match(ghcr, /Remove isolated conformance image/);
 	assert.match(ghcr, /always\(\).*github\.event_name == 'push'/);
 	assert.match(ghcr, /PUSH_MARKER/);
