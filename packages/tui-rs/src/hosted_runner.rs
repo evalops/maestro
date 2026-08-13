@@ -17,6 +17,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Duration as ChronoDuration, SecondsFormat, Utc};
+use maestro_runtime::{
+    headless_protocol_capability_digest, RuntimeLifecycleState, RuntimeReceipt,
+    RuntimeReceiptInput, RuntimeReceiptKind, RuntimeTerminalClassification,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -61,6 +65,7 @@ use thread_protocol::*;
 
 pub const HOSTED_RUNNER_IDENTITY_PATH: &str = "/.well-known/evalops/remote-runner/identity";
 pub const HOSTED_RUNNER_DRAIN_PATH: &str = "/.well-known/evalops/remote-runner/drain";
+pub const HOSTED_RUNNER_RECEIPT_PATH: &str = "/.well-known/evalops/remote-runner/receipt";
 
 pub const HOSTED_RUNNER_IDENTITY_PROTOCOL_VERSION: &str = "evalops.remote-runner.identity.v1";
 pub const HOSTED_RUNNER_DRAIN_PROTOCOL_VERSION: &str = "evalops.remote-runner.drain.v1";
@@ -72,10 +77,13 @@ pub const HOSTED_RUNNER_PLATFORM_EVIDENCE_VERSION: &str =
     "evalops.remote-runner.platform-evidence.v1";
 pub const HOSTED_RUNNER_RUNTIME_CONTINUITY_VERSION: &str =
     "evalops.remote-runner.runtime-continuity.v1";
+pub(super) const HOSTED_RUNNER_DRAIN_FINALIZATION_PENDING_STATUS: &str =
+    "Drain finalization pending";
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 15_000;
 const CONNECTION_IDLE_MS: i64 = (DEFAULT_HEARTBEAT_INTERVAL_MS as i64) * 3;
 const MAINTENANCE_PUMP_INTERVAL: Duration = Duration::from_millis(100);
+const THREAD_PERSISTENCE_RECOVERY_RETRY_DELAY: Duration = Duration::from_millis(100);
 const MAX_EVENTS: usize = 1024;
 // Response retries are short-lived transport retries; retain enough completed
 // keys to cover a burst without allowing a long-lived hosted session's journal
@@ -197,8 +205,13 @@ struct SharedRunner {
     thread_journal: Arc<ThreadJournal>,
     mutation_lifecycle: Arc<tokio::sync::Mutex<()>>,
     thread_persistence_retry_pending: Arc<AtomicBool>,
+    thread_persistence_recovery_running: Arc<AtomicBool>,
+    thread_persistence_recovery_cancellation: CancellationToken,
+    thread_persistence_recovery_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     #[cfg(test)]
     thread_persistence_failures: Arc<Mutex<usize>>,
+    #[cfg(test)]
+    executor_drain_result_persistence_failures: Arc<Mutex<usize>>,
     event_pump_cancellation: CancellationToken,
     event_pump_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -206,7 +219,28 @@ struct SharedRunner {
 struct RunnerState {
     ready: bool,
     draining: bool,
+    /// The executor has completed drain, but the final journal hand-off
+    /// failed. A later drain request retries only that durable boundary.
+    drain_finalization_pending: bool,
+    drain_runtime_failed_before_finalization: bool,
+    /// The durable Draining boundary exists, but executor ownership has not
+    /// completed its hand-off. A failed executor drain remains retryable.
+    drain_executor_pending: bool,
+    /// The executor-complete result is retained until the final Drained
+    /// snapshot is durable. It is also mirrored in a private generation-bound
+    /// handoff file so a process crash cannot cause a second executor drain.
+    pending_executor_drain_result: Option<PendingExecutorDrainResult>,
+    /// Leading messages from the retained executor result that were applied
+    /// before the durable executor-complete boundary. The journal stores this
+    /// position so restart recovery does not infer progress from bounded
+    /// replay envelopes.
+    executor_drain_result_applied_count: usize,
+    executor_drain_result_applied: bool,
     runtime_failed: bool,
+    /// A restore manifest whose runtime flush was incomplete is a permanent
+    /// not-ready fence for this generation; a later child Ready event cannot
+    /// turn the incomplete restore into execution-ready evidence.
+    restore_incomplete: bool,
     session_id: String,
     cursor: u64,
     last_init: Option<InitConfig>,
@@ -216,6 +250,12 @@ struct RunnerState {
     provider_error_kind: Option<maestro_ai::ProviderStreamErrorKind>,
     identity_binding_failures: VecDeque<IdentityBindingFailure>,
     restored_snapshot: Option<RuntimeSnapshot>,
+    restored_snapshot_lineage: Option<String>,
+    /// Durable model binding used for lifecycle receipts across restart.
+    runtime_model_binding: Option<String>,
+    /// Durable provider binding used for lifecycle receipts across restart.
+    runtime_provider_binding: Option<String>,
+    runtime_receipt: Option<RuntimeReceipt>,
     controller_connection_id: Option<String>,
     controller_stream_cancellation: CancellationToken,
     connections: HashMap<String, ConnectionRecord>,
@@ -233,6 +273,12 @@ struct RunnerState {
     controller_envelopes: VecDeque<StreamEnvelope>,
     pending_controller_events: VecDeque<FromAgentMessage>,
     thread: ThreadProtocolState,
+}
+
+#[derive(Debug, Clone)]
+struct PendingExecutorDrainResult {
+    replay_cursor: u64,
+    result: HostedRunnerDrainResult,
 }
 
 fn runtime_snapshot_is_failed(snapshot: &RuntimeSnapshot) -> bool {
@@ -437,7 +483,7 @@ pub struct HostedRunnerHeadlessMessageResult {
     pub idempotency_finalized: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct HostedRunnerDrainResult {
     pub messages: Vec<FromAgentMessage>,
     pub consumed_response_keys: Vec<String>,
@@ -537,9 +583,50 @@ pub trait HostedRunnerHeadlessMessageExecutor: Send + Sync {
         Ok(None)
     }
 
+    /// Flush the executor-owned session recorder before a terminal receipt is
+    /// published. Executors with durable session recording must return an
+    /// error when the result cannot be flushed; the hosted boundary then
+    /// withholds terminal acceptance and persists a failed runtime boundary.
     fn flush_session(&self) -> Result<Option<PathBuf>, HostedRunnerError> {
         Ok(None)
     }
+}
+
+/// Validate the supervisor-owned model/provider binding before the hosted
+/// runtime publishes its startup receipt. Invalid bindings must fail startup
+/// rather than being silently removed from the public snapshot, because the
+/// Ready receipt is the first durable execution boundary for this generation.
+pub(crate) fn validate_startup_runtime_receipt_binding(state: &AgentState) -> io::Result<()> {
+    match (state.model.as_deref(), state.provider.as_deref()) {
+        (None, None) => Ok(()),
+        (Some(_), None) | (None, Some(_)) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid startup runtime receipt binding: model and provider must be supplied together",
+        )),
+        (Some(model), Some(provider)) => HostedRunnerConfig::validate_live_runtime_receipt_binding(
+            model, provider,
+        )
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid startup runtime receipt binding: {error}"),
+            )
+        }),
+    }
+}
+
+fn validate_message_executor_startup_runtime_receipt_binding(
+    message_executor: &dyn HostedRunnerHeadlessMessageExecutor,
+) -> io::Result<()> {
+    let state = message_executor.state().map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to inspect startup runtime receipt binding: {error}"),
+        )
+    })?;
+    state
+        .as_ref()
+        .map_or(Ok(()), validate_startup_runtime_receipt_binding)
 }
 
 #[derive(Clone)]
@@ -1582,6 +1669,7 @@ pub async fn start_hosted_runner_with_message_executor(
     config: HostedRunnerConfig,
     message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
 ) -> io::Result<HostedRunnerHandle> {
+    validate_message_executor_startup_runtime_receipt_binding(message_executor.as_ref())?;
     let prepared = prepare_hosted_runner(config).await?;
     start_prepared_hosted_runner(prepared, message_executor)
 }
@@ -1612,6 +1700,9 @@ pub(crate) async fn prepare_hosted_runner(
     }
     config.workspace_root = workspace_root;
     let restore_manifest = load_restore_manifest(&config).await?;
+    config
+        .validate_runtime_receipt_identity(restore_manifest.as_ref())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
     let identity_runtime = if let Some(identity_config) = config.workload_identity.clone() {
         let exchange_started = Instant::now();
         let exchanger = match workload_identity::WorkloadIdentityExchanger::try_new(
@@ -1885,7 +1976,7 @@ fn pump_tick(shared: &SharedRunner) -> PumpTick {
             }
             shared.finalize_consumed_response_keys(&mut state, &drained.consumed_response_keys);
             shared.rollback_rejected_response_keys(&mut state, &drained.rejected_response_keys);
-            shared.retry_thread_persistence(&state);
+            shared.retry_thread_persistence(&mut state);
             if disconnected_after_ready {
                 drop(state);
                 shared.publish_runtime_error(
@@ -1907,7 +1998,7 @@ fn pump_tick(shared: &SharedRunner) -> PumpTick {
 }
 
 impl SharedRunner {
-    fn retry_thread_persistence(&self, state: &RunnerState) {
+    fn retry_thread_persistence(&self, state: &mut RunnerState) {
         if !self
             .thread_persistence_retry_pending
             .swap(false, Ordering::AcqRel)
@@ -1917,15 +2008,134 @@ impl SharedRunner {
         // The retry mechanism itself: a raw call is intentional, failure
         // re-arms the retry flag for the next pump tick.
         #[allow(clippy::disallowed_methods)]
-        if let Err(error) = self.persist_thread(state) {
-            self.thread_persistence_retry_pending
-                .store(true, Ordering::Release);
-            tracing::warn!(
-                event = "event_pump_idempotency_persistence_retry_failed",
-                error = %error,
-                "thread journal persistence retry failed; keeping the event pump and memory-only idempotency active",
-            );
+        match self.persist_thread(state) {
+            Ok(()) if state.runtime_failed => {
+                let error_type = state.last_error_type.clone();
+                self.refresh_runtime_receipt(
+                    state,
+                    RuntimeReceiptKind::Failed,
+                    None,
+                    error_type.as_deref(),
+                    None,
+                );
+            }
+            Ok(()) => {}
+            Err(error) => {
+                self.thread_persistence_retry_pending
+                    .store(true, Ordering::Release);
+                self.schedule_thread_persistence_recovery();
+                tracing::warn!(
+                    event = "event_pump_idempotency_persistence_retry_failed",
+                    error = %error,
+                    "thread journal persistence retry failed; retaining the retry boundary for the independent recovery supervisor",
+                );
+            }
         }
+    }
+
+    /// Keep retrying a failed journal boundary even when the event pump that
+    /// normally consumes the retry flag has stopped. A single supervisor is
+    /// shared across all callers so a transient failure cannot create an
+    /// unbounded set of retry tasks.
+    fn schedule_thread_persistence_recovery(&self) {
+        if self.thread_persistence_recovery_cancellation.is_cancelled() {
+            return;
+        }
+        if !self
+            .thread_persistence_retry_pending
+            .load(Ordering::Acquire)
+        {
+            return;
+        }
+        if self
+            .thread_persistence_recovery_running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        let shared = self.clone();
+        let running = self.thread_persistence_recovery_running.clone();
+        let cancellation = self.thread_persistence_recovery_cancellation.clone();
+        if tokio::runtime::Handle::try_current().is_err() {
+            running.store(false, Ordering::Release);
+            tracing::error!(
+                event = "thread_journal_recovery_supervisor_unavailable",
+                "thread journal persistence retry remains pending without a Tokio runtime"
+            );
+            return;
+        }
+
+        let task = tokio::spawn(async move {
+            loop {
+                if cancellation.is_cancelled() {
+                    break;
+                }
+                if !shared
+                    .thread_persistence_retry_pending
+                    .load(Ordering::Acquire)
+                {
+                    break;
+                }
+                let lifecycle = shared.mutation_lifecycle.clone();
+                let _lifecycle = tokio::select! {
+                    () = cancellation.cancelled() => break,
+                    lifecycle = lifecycle.lock() => lifecycle,
+                };
+                if cancellation.is_cancelled() {
+                    break;
+                }
+                {
+                    let mut state = shared
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    shared.retry_thread_persistence(&mut state);
+                }
+                if shared
+                    .thread_persistence_retry_pending
+                    .load(Ordering::Acquire)
+                {
+                    tokio::select! {
+                        () = cancellation.cancelled() => break,
+                        () = tokio::time::sleep(THREAD_PERSISTENCE_RECOVERY_RETRY_DELAY) => {}
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            running.store(false, Ordering::Release);
+            if !cancellation.is_cancelled()
+                && shared
+                    .thread_persistence_retry_pending
+                    .load(Ordering::Acquire)
+            {
+                shared.schedule_thread_persistence_recovery();
+            }
+        });
+        let mut task_slot = self
+            .thread_persistence_recovery_task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *task_slot = Some(task);
+    }
+
+    pub(super) async fn stop_thread_persistence_recovery(&self) {
+        self.thread_persistence_recovery_cancellation.cancel();
+        self.thread_persistence_retry_pending
+            .store(false, Ordering::Release);
+        let task = self
+            .thread_persistence_recovery_task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(task) = task {
+            let _ = task.await;
+        }
+        self.thread_persistence_recovery_running
+            .store(false, Ordering::Release);
     }
 
     /// Roll back the in-memory records for rejected response keys.
@@ -2059,7 +2269,7 @@ impl SharedRunner {
         state.last_status = Some("Runtime failed".to_string());
         state.last_error = Some(error.message.clone());
         state.last_error_type = Some(error_type.to_string());
-        self.publish_message(
+        self.publish_message_with_fatal_category(
             &mut state,
             FromAgentMessage::Error {
                 request_id: None,
@@ -2068,7 +2278,31 @@ impl SharedRunner {
                 terminal: true,
                 error_type: Some(crate::headless::messages::HeadlessErrorType::Fatal),
             },
+            Some(error_type),
         );
+        if self
+            .thread_persistence_retry_pending
+            .load(Ordering::Acquire)
+        {
+            // A fatal event can be the reason the event pump is stopping, so
+            // its normal next-tick retry is not available. Stage a durable
+            // failure snapshot and retry once while this error path still
+            // owns the mutation lock.
+            state.last_error_type = Some(error_type.to_string());
+            state.thread.set_runtime_failure_type(error_type);
+            let failure_snapshot = StreamEnvelope::Snapshot {
+                snapshot: self.public_snapshot(&state),
+            };
+            state.envelopes.push_back(failure_snapshot.clone());
+            state.controller_envelopes.push_back(failure_snapshot);
+            while state.envelopes.len() > MAX_EVENTS {
+                state.envelopes.pop_front();
+            }
+            while state.controller_envelopes.len() > MAX_EVENTS {
+                state.controller_envelopes.pop_front();
+            }
+            self.retry_thread_persistence(&mut state);
+        }
     }
 }
 
@@ -2638,7 +2872,10 @@ async fn route_request_inner(
     peer_addr: SocketAddr,
 ) -> HostedResult<ResponseBody> {
     if request.path.starts_with("/api/headless/")
-        || (request.path == HOSTED_RUNNER_DRAIN_PATH && !peer_addr.ip().is_loopback())
+        || (matches!(
+            request.path.as_str(),
+            HOSTED_RUNNER_DRAIN_PATH | HOSTED_RUNNER_RECEIPT_PATH
+        ) && !peer_addr.ip().is_loopback())
     {
         require_auth_header(&request.headers, shared.config.auth_token.as_deref())?;
     }
@@ -2663,6 +2900,9 @@ async fn route_request_inner(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.ready && !state.draining {
+                // Health probes are intentionally unauthenticated. Keep them
+                // to a boolean liveness/readiness result; the authenticated
+                // receipt route owns generation and tenant metadata.
                 json_response(200, json!({"ok": true}))
             } else {
                 Err(runtime_availability_error(
@@ -2671,6 +2911,15 @@ async fn route_request_inner(
                 ))
             }
         }
+        ("GET", HOSTED_RUNNER_RECEIPT_PATH) => shared.runtime_receipt().map_or_else(
+            || {
+                Err(HostedError::new(
+                    HostedRunnerErrorCode::RuntimeNotReady,
+                    "hosted runtime has not produced a durable receipt",
+                ))
+            },
+            |receipt| json_response(200, receipt),
+        ),
         ("POST", HOSTED_RUNNER_DRAIN_PATH) => {
             let input = parse_json::<DrainRequest>(&request.body)?;
             handle_drain(shared, input).await
@@ -2776,6 +3025,7 @@ fn hosted_route_class(path: &str) -> &'static str {
         path if path.ends_with("/messages") || path.ends_with("/message") => "headless.messages",
         path if path.ends_with("/heartbeat") => "headless.heartbeat",
         path if path.ends_with("/disconnect") => "headless.disconnect",
+        HOSTED_RUNNER_RECEIPT_PATH => "runtime.receipt",
         path if path.starts_with("/api/headless/threads/") => "thread.snapshot",
         path if path.starts_with("/api/headless/sessions/") => "headless.session",
         _ => "other",
@@ -2853,52 +3103,199 @@ async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult
             Some(export_path.as_str()),
         )?;
     }
-    {
+    let retry_finalization = {
         let mut state = shared
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.draining {
+        if state.drain_finalization_pending || state.pending_executor_drain_result.is_some() {
+            // The executor and event pump were already drained. Restore the
+            // state that preceded the failed final journal write and retry
+            // only the durable hand-off; a second drain() would be an
+            // invalid replay of an already-consumed executor boundary.
+            state.runtime_failed = state.drain_runtime_failed_before_finalization;
+            state.drain_executor_pending = false;
+            if !state.runtime_failed {
+                state.last_error = None;
+                state.last_error_type = None;
+            }
+            state.last_status = Some("Drained".to_string());
+            true
+        } else if state.drain_executor_pending {
+            // The generation-level Draining boundary is durable, but the
+            // executor hand-off failed or was interrupted. Retry that phase
+            // instead of reporting an unrecoverable already-draining state.
+            false
+        } else if state.draining {
             return Err(HostedError::new(
                 HostedRunnerErrorCode::RuntimeNotReady,
                 "hosted runner is already draining",
             ));
+        } else {
+            let previous_ready = state.ready;
+            let previous_draining = state.draining;
+            let previous_last_status = state.last_status.clone();
+            state.draining = true;
+            state.ready = false;
+            state.last_status = Some("Draining".to_string());
+            if let Err(error) = shared.persist_receipt_boundary(
+                &mut state,
+                RuntimeReceiptKind::Draining,
+                "drain_start",
+            ) {
+                // The pump is still running, so this request can safely be
+                // retried. Do not leave an in-memory Draining state behind
+                // when its receipt boundary never reached the journal.
+                state.ready = previous_ready;
+                state.draining = previous_draining;
+                state.last_status = previous_last_status;
+                return Err(HostedError::new(
+                    HostedRunnerErrorCode::RuntimeFailed,
+                    format!("failed to persist draining runtime state: {error}"),
+                ));
+            }
+            state.drain_executor_pending = true;
+            false
         }
-        state.draining = true;
-        state.ready = false;
-        state.last_status = Some("Draining".to_string());
+    };
+
+    if !retry_finalization {
+        shared.stop_event_pump().await.map_err(HostedError::from)?;
+        // This call is intentionally repeated for a retry after a failed
+        // executor drain. `stop_event_pump` is idempotent once the first
+        // attempt has stopped the task, and also fences a newly restarted
+        // pump before resuming the pending executor hand-off.
+        let replay_cursor = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cursor;
+        let drained = match shared.message_executor.drain() {
+            Ok(drained) => drained,
+            Err(error) => return Err(HostedError::from(error)),
+        };
+        {
+            let mut state = shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.pending_executor_drain_result = Some(PendingExecutorDrainResult {
+                replay_cursor,
+                result: drained,
+            });
+            state.executor_drain_result_applied_count = 0;
+            state.executor_drain_result_applied = false;
+            state.drain_executor_pending = false;
+            // Mark this as an in-memory finalization hand-off before writing
+            // the private result. If that write fails, the next request can
+            // retry the write from `pending_executor_drain_result` without
+            // invoking the non-idempotent executor drain a second time.
+            state.drain_finalization_pending = true;
+            state.drain_runtime_failed_before_finalization = state.runtime_failed;
+            state.last_status = Some(HOSTED_RUNNER_DRAIN_FINALIZATION_PENDING_STATUS.to_string());
+            if let Some(pending) = state.pending_executor_drain_result.as_ref() {
+                if let Err(error) = shared.persist_executor_drain_result(&state, pending) {
+                    state.last_error = Some(format!(
+                        "executor drain result handoff persistence failed: {error}"
+                    ));
+                    state.last_error_type = Some("internal".to_string());
+                    return Err(HostedError::new(
+                        HostedRunnerErrorCode::RuntimeFailed,
+                        "failed to retain executor drain result",
+                    ));
+                }
+            }
+            let drained_messages = state
+                .pending_executor_drain_result
+                .as_ref()
+                .map(|pending| pending.result.messages.len())
+                .unwrap_or_default();
+            if state.cursor > 0 || !state.connections.is_empty() || drained_messages > 0 {
+                let reason = input
+                    .reason
+                    .as_deref()
+                    .unwrap_or("platform_requested_drain");
+                shared.publish_message(
+                    &mut state,
+                    FromAgentMessage::Status {
+                        message: format!("Hosted runner is draining: {reason}"),
+                    },
+                );
+            }
+            if !shared.apply_pending_executor_drain_result(&mut state) {
+                return Err(HostedError::new(
+                    HostedRunnerErrorCode::RuntimeFailed,
+                    "failed to apply retained executor drain result",
+                ));
+            }
+        }
     }
 
-    shared.stop_event_pump().await.map_err(HostedError::from)?;
-    let drained = shared.message_executor.drain().map_err(HostedError::from)?;
+    if retry_finalization {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pending) = state.pending_executor_drain_result.clone() {
+            if let Err(error) = shared.persist_executor_drain_result(&state, &pending) {
+                state.last_status =
+                    Some(HOSTED_RUNNER_DRAIN_FINALIZATION_PENDING_STATUS.to_string());
+                state.last_error = Some(format!(
+                    "executor drain result handoff persistence failed: {error}"
+                ));
+                state.last_error_type = Some("internal".to_string());
+                return Err(HostedError::new(
+                    HostedRunnerErrorCode::RuntimeFailed,
+                    "failed to retain executor drain result",
+                ));
+            }
+            if !shared.apply_pending_executor_drain_result(&mut state) {
+                return Err(HostedError::new(
+                    HostedRunnerErrorCode::RuntimeFailed,
+                    "failed to apply retained executor drain result",
+                ));
+            }
+        }
+    }
+
     {
         let mut state = shared
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.cursor > 0 || !state.connections.is_empty() || !drained.messages.is_empty() {
-            let reason = input
-                .reason
-                .as_deref()
-                .unwrap_or("platform_requested_drain");
-            shared.publish_message(
-                &mut state,
-                FromAgentMessage::Status {
-                    message: format!("Hosted runner is draining: {reason}"),
-                },
-            );
+        state.drain_finalization_pending = true;
+        state.drain_runtime_failed_before_finalization = state.runtime_failed;
+        state.last_status = Some(HOSTED_RUNNER_DRAIN_FINALIZATION_PENDING_STATUS.to_string());
+        if let Err(error) = shared.persist_drain_finalization_boundary(&mut state) {
+            state.runtime_failed = true;
+            state.ready = false;
+            state.last_status = Some("Runtime failed".to_string());
+            state.last_error = Some(format!(
+                "durable executor-complete drain boundary write failed: {error}"
+            ));
+            state.last_error_type = Some("internal".to_string());
+            return Err(HostedError::new(
+                HostedRunnerErrorCode::RuntimeFailed,
+                "failed to persist executor-complete drain boundary",
+            ));
         }
-        for message in drained.messages {
-            shared.publish_message(&mut state, message);
-        }
-        // Both helpers are infallible: journal write failures defer to the
-        // pump retry, so a transient failure cannot abort the drain and leave
-        // every later attempt rejected as "already draining". The snapshot
-        // manifest below is the durable hand-off artifact.
-        shared.finalize_consumed_response_keys(&mut state, &drained.consumed_response_keys);
-        shared.rollback_rejected_response_keys(&mut state, &drained.rejected_response_keys);
     }
-
+    {
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A restart may have loaded the private handoff after the marker was
+        // written but before the final snapshot was accepted. Reconcile that
+        // result before composing the manifest; the normal in-process path
+        // already applied it and has no pending value here.
+        if !shared.apply_pending_executor_drain_result(&mut state) {
+            return Err(HostedError::new(
+                HostedRunnerErrorCode::RuntimeFailed,
+                "failed to apply retained executor drain result",
+            ));
+        }
+    }
     let (manifest_path, manifest) = write_snapshot_manifest(&shared, &input).await?;
     {
         let mut state = shared
@@ -2906,8 +3303,45 @@ async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.last_status = Some("Drained".to_string());
-        shared.publish_snapshot(&mut state);
+        let snapshot_lineage = manifest
+            .get("created_at")
+            .and_then(serde_json::Value::as_str)
+            .map(manifests::snapshot_lineage_from_created_at)
+            .transpose()?
+            .ok_or_else(|| {
+                HostedError::new(
+                    HostedRunnerErrorCode::RuntimeFailed,
+                    "drain manifest is missing its creation time",
+                )
+            })?;
+        state.thread.set_snapshot_lineage(&snapshot_lineage);
+        if !shared.publish_snapshot(&mut state) {
+            state.drain_finalization_pending = true;
+            return Err(HostedError::new(
+                HostedRunnerErrorCode::RuntimeFailed,
+                "failed to persist final drained runtime state",
+            ));
+        }
+        state.drain_finalization_pending = false;
+        shared.refresh_runtime_receipt(
+            &mut state,
+            RuntimeReceiptKind::Drained,
+            None,
+            None,
+            Some(snapshot_lineage),
+        );
+        if let Err(error) = shared.clear_executor_drain_result(&state) {
+            tracing::warn!(
+                event = "executor_drain_result_cleanup_failed",
+                error = %error,
+                "final drained state is durable but its crash-recovery handoff could not be removed",
+            );
+        }
+        state.pending_executor_drain_result = None;
+        state.executor_drain_result_applied_count = 0;
+        state.executor_drain_result_applied = false;
     }
+    let runtime_receipt = shared.runtime_receipt();
     json_response(
         200,
         json!({
@@ -2918,6 +3352,7 @@ async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult
             "reason": input.reason,
             "manifest_path": manifest_path.to_string_lossy(),
             "manifest": manifest,
+            "runtime_receipt": runtime_receipt,
         }),
     )
 }
@@ -3131,7 +3566,19 @@ fn handle_state(shared: SharedRunner, session_id: &str) -> HostedResult<Response
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     ensure_session_id(&shared.binding, Some(session_id))?;
-    json_response(200, shared.public_snapshot(&state))
+    let mut snapshot = serde_json::to_value(shared.public_snapshot(&state)).map_err(|error| {
+        HostedError::new(
+            HostedRunnerErrorCode::RuntimeFailed,
+            format!("failed to serialize hosted runtime snapshot: {error}"),
+        )
+    })?;
+    if let Some(object) = snapshot.as_object_mut() {
+        object.insert(
+            "runtime_receipt".to_string(),
+            serde_json::to_value(state.runtime_receipt.clone()).unwrap_or(serde_json::Value::Null),
+        );
+    }
+    json_response(200, snapshot)
 }
 
 fn handle_thread_state(shared: SharedRunner, thread_id: &str) -> HostedResult<ResponseBody> {
@@ -3157,6 +3604,7 @@ fn handle_thread_state(shared: SharedRunner, thread_id: &str) -> HostedResult<Re
                 .view(state.cursor, shared.config.runtime_generation)
                 .turns,
             "runtime": shared.public_snapshot(&state),
+            "runtime_receipt": state.runtime_receipt,
         }),
     )
 }
@@ -3283,6 +3731,17 @@ async fn handle_append_turn(
                 HostedRunnerErrorCode::RuntimeFailed,
                 format!("failed to persist accepted thread turn: {error}"),
             ));
+        }
+        // A terminal receipt describes the turn that just finished. Once a
+        // new turn is durably accepted, that receipt is no longer current;
+        // leave the endpoint empty until the new turn reaches its own
+        // lifecycle boundary instead of exposing stale terminal evidence.
+        if state
+            .runtime_receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.kind == RuntimeReceiptKind::Terminal)
+        {
+            state.runtime_receipt = None;
         }
     }
 
@@ -4236,7 +4695,7 @@ fn handle_disconnect(
         revoke_controller_streams(&mut state);
         state.controller_connection_id = None;
     }
-    shared.publish_snapshot(&mut state);
+    let _ = shared.publish_snapshot(&mut state);
     json_response(
         200,
         json!({

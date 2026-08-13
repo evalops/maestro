@@ -113,6 +113,7 @@ pub mod headless_server;
 
 /// Hosted runner contract primitives for Platform-managed Maestro runtimes.
 pub mod hosted_runner;
+pub mod hosted_runner_conformance;
 
 /// Rust hosted runner command-line entrypoints.
 pub mod hosted_runner_cli;

@@ -15,8 +15,8 @@ use crate::headless::{
 use crate::hosted_runner::rendezvous_protocol::RendezvousMode;
 use crate::hosted_runner::{
     load_hosted_runner_session_replay, prepare_hosted_runner, start_prepared_hosted_runner,
-    AgentSupervisorHostedRunnerMessageExecutor, HostedRunnerConfig, HostedRunnerConfigError,
-    HostedRunnerHandle,
+    validate_startup_runtime_receipt_binding, AgentSupervisorHostedRunnerMessageExecutor,
+    HostedRunnerConfig, HostedRunnerConfigError, HostedRunnerHandle,
 };
 
 const RESIDENT_MODEL_READY_CONTRACT_REVISION: &str = "maestro-resident-model-ready-v3";
@@ -432,11 +432,25 @@ async fn prepare_while_starting_headless<PF, P>(
 where
     PF: Future<Output = Result<P>>,
 {
+    let (validation_tx, validation_rx) = tokio::sync::oneshot::channel();
     let headless = async {
         supervisor.connect().await?;
-        await_headless_ready(supervisor, expected_model, expected_provider).await
+        await_headless_ready(supervisor, expected_model, expected_provider).await?;
+        validate_startup_runtime_receipt_binding(supervisor.state())
+            .map_err(anyhow::Error::from)
+            .context("validate startup runtime receipt binding")?;
+        validation_tx
+            .send(())
+            .map_err(|()| anyhow::anyhow!("startup preparation stopped before validation"))?;
+        Ok(())
     };
-    match join_hosted_runner_startup(headless, preparation).await {
+    let gated_preparation = async {
+        validation_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("headless startup validation failed"))?;
+        preparation.await
+    };
+    match join_hosted_runner_startup(headless, gated_preparation).await {
         Ok(((), prepared)) => Ok(prepared),
         Err(error) => {
             supervisor.shutdown_and_wait().await;

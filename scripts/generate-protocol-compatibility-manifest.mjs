@@ -18,6 +18,10 @@ const SOURCE_PATHS = {
 	headlessRuntime: "packages/tui-rs/src/headless/messages.rs",
 	runtimeProtocol: "packages/runtime-rs/src/protocol.rs",
 	runtimeFixture: "packages/runtime-rs/fixtures/headless-protocol-v1.json",
+	runtimeReceipts: "packages/runtime-rs/src/receipts.rs",
+	runtimeReceiptFixture: "packages/runtime-rs/fixtures/runtime-receipt-v1.json",
+	runtimeReceiptContractFixture:
+		"packages/runtime-rs/fixtures/runtime-receipt-contract-v1.json",
 	transcript: "packages/tui-rs/src/transcript.rs",
 	thread: "packages/tui-rs/src/hosted_runner/thread_protocol.rs",
 	threadCompatibilityMatrix: "proto/maestro/v1/hosted-thread-compatibility-matrix.json",
@@ -334,6 +338,36 @@ function jsonContractDigest(source) {
 		.digest("hex")}`;
 }
 
+function buildRuntimeReceiptCompatibility(sources) {
+	const hasReceiptSource = sources.runtimeReceipts !== undefined;
+	const hasReceiptFixture = sources.runtimeReceiptFixture !== undefined;
+	if (!hasReceiptSource && !hasReceiptFixture) return null;
+	if (hasReceiptSource !== hasReceiptFixture) {
+		throw new Error(
+			"runtime receipt source and fixture must be present together",
+		);
+	}
+	// The checked-in JSON fixture is the canonical serialized projection of the
+	// typed Rust receipt. Hashing it keeps comments and cfg(test) coverage out of
+	// the compatibility identity while the Rust fixture test binds the
+	// projection back to the live serde model.
+	const contractSource =
+		sources.runtimeReceiptContractFixture ?? sources.runtimeReceiptFixture;
+	const contractProjection = JSON.stringify({
+		contract: JSON.parse(contractSource),
+		representative: JSON.parse(sources.runtimeReceiptFixture),
+	});
+	const contractDigest = jsonContractDigest(contractProjection);
+	return {
+		schemaVersion: parseRustStringConstant(
+			sources.runtimeReceipts,
+			"RUNTIME_RECEIPT_VERSION",
+		),
+		sourceDigest: contractDigest,
+		contractDigest,
+	};
+}
+
 function validateSourceSha(value) {
 	if (value !== null && !/^[0-9a-f]{40}$/i.test(value)) {
 		throw new Error("source SHA must contain 40 hexadecimal characters");
@@ -350,7 +384,17 @@ export function readCanonicalSources(root = ROOT) {
 	return Object.fromEntries(
 		Object.entries(SOURCE_PATHS).flatMap(([name, path]) => {
 			const sourcePath = resolve(root, path);
-			if (name === "threadCompatibilityMatrix" && !existsSync(sourcePath)) {
+			if (
+				[
+					"threadCompatibilityMatrix",
+					"runtimeReceipts",
+					"runtimeReceiptFixture",
+					"runtimeReceiptContractFixture",
+				].includes(
+					name,
+				) &&
+				!existsSync(sourcePath)
+			) {
 				return [];
 			}
 			return [[name, readFileSync(sourcePath, "utf8")]];
@@ -513,6 +557,7 @@ export function buildCompatibilityManifest({
 				"HEADLESS_PROTOCOL_SCHEMA_VERSION",
 			),
 			contractDigest: jsonContractDigest(sources.runtimeFixture),
+			receipt: buildRuntimeReceiptCompatibility(sources),
 		},
 		governedCode:
 			threadV2 === null

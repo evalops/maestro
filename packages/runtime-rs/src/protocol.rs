@@ -8,6 +8,7 @@
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 /// Stable schema identity for the native headless protocol projection.
@@ -18,6 +19,7 @@ pub const HEADLESS_PROTOCOL_VERSION: &str = "2026-08-08";
 pub const HEADLESS_TERMINAL_REDUCER_VERSION: &str = "evalops.maestro.headless-terminal-reducer.v1";
 /// Producer correlation labels used for turn-level terminal messages.
 pub const HEADLESS_TURN_TERMINAL_RESPONSE_IDS: &[&str] = &["done", "continue"];
+const HEADLESS_PROTOCOL_CAPABILITY_DIGEST_PREFIX: &str = "sha256:";
 /// Versions accepted by this runtime at the compatibility boundary.
 pub const SUPPORTED_HEADLESS_PROTOCOL_VERSIONS: &[&str] = &[HEADLESS_PROTOCOL_VERSION];
 
@@ -586,6 +588,51 @@ pub const fn headless_protocol_contract() -> HeadlessProtocolContract {
     }
 }
 
+/// Recursively sort object keys before serializing the producer contract.
+///
+/// The compatibility manifest uses the same compact, UTF-8 JSON projection
+/// with lexicographically sorted object keys. The current typed contract only
+/// contains strings, booleans, arrays, and objects, so serde_json's stable
+/// primitive encoding is sufficient for this shared RFC8785-style boundary.
+fn canonicalize_json_for_digest(value: &Value) -> Value {
+    match value {
+        Value::Array(values) => {
+            Value::Array(values.iter().map(canonicalize_json_for_digest).collect())
+        }
+        Value::Object(object) => {
+            let mut entries: Vec<_> = object.iter().collect();
+            entries.sort_unstable_by_key(|(key, _)| *key);
+            let mut canonical = serde_json::Map::new();
+            for (key, value) in entries {
+                canonical.insert(key.clone(), canonicalize_json_for_digest(value));
+            }
+            Value::Object(canonical)
+        }
+        primitive => primitive.clone(),
+    }
+}
+
+fn canonical_json_for_digest(value: &Value) -> Vec<u8> {
+    serde_json::to_vec(&canonicalize_json_for_digest(value))
+        .expect("producer-owned protocol contract must serialize canonically")
+}
+
+/// Returns the digest of the producer-owned serialized protocol projection.
+///
+/// Hosted lifecycle receipts include this value so Platform can compare the
+/// capability semantics that produced the evidence without relying on a
+/// manually mirrored adapter list.
+#[must_use]
+pub fn headless_protocol_capability_digest() -> String {
+    let contract = serde_json::to_value(headless_protocol_contract())
+        .expect("producer-owned protocol contract must serialize");
+    format!(
+        "{}{:x}",
+        HEADLESS_PROTOCOL_CAPABILITY_DIGEST_PREFIX,
+        Sha256::digest(canonical_json_for_digest(&contract))
+    )
+}
+
 /// Events that affect the terminal state of one response/turn.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TerminalEvent {
@@ -1113,5 +1160,21 @@ mod tests {
         let contract = serde_json::to_value(headless_protocol_contract())
             .expect("typed protocol contract must serialize");
         assert_eq!(fixture, contract);
+    }
+
+    #[test]
+    fn capability_digest_matches_canonical_checked_in_fixture() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/headless-protocol-v1.json"))
+                .expect("protocol fixture must be valid JSON");
+        let expected = format!(
+            "{HEADLESS_PROTOCOL_CAPABILITY_DIGEST_PREFIX}{:x}",
+            Sha256::digest(canonical_json_for_digest(&fixture))
+        );
+        assert_eq!(headless_protocol_capability_digest(), expected);
+        assert_eq!(
+            headless_protocol_capability_digest(),
+            "sha256:a8b61e700bb628cbdef3393e35d653ed518f02aa79f8b7a468d550bfbbb83fb8"
+        );
     }
 }

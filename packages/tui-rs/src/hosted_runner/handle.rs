@@ -61,6 +61,7 @@ impl HostedRunnerHandle {
         if let Some(identity_task) = self.identity_task {
             let _ = identity_task.await;
         }
+        self.shared.stop_thread_persistence_recovery().await;
     }
 }
 
