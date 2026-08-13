@@ -236,7 +236,7 @@ pub(super) async fn load_restore_manifest(
         .map_err(hosted_error_to_io)
 }
 
-fn hosted_error_to_io(error: HostedError) -> io::Error {
+pub(super) fn hosted_error_to_io(error: HostedError) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
         format!("{}: {}", error.code.as_str(), error.message),

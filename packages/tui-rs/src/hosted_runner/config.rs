@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 
 use maestro_runtime::{
     HostedLaunchRendezvousMode, HostedLaunchSpec, HostedRuntimeAuthMode, HostedRuntimeBoundary,
-    HostedRuntimeBoundaryInput,
+    HostedRuntimeBoundaryInput, MAX_RUNTIME_RECEIPT_STRING_BYTES,
 };
 
+use super::manifests::SnapshotManifest;
 use super::rendezvous_protocol::{RendezvousMode, RendezvousNonce};
 
 const DEFAULT_ENV_LISTEN_HOST: &str = "0.0.0.0";
@@ -58,6 +59,60 @@ pub struct HostedRunnerRendezvousConfig {
 }
 
 impl HostedRunnerConfig {
+    pub(super) fn validate_live_runtime_receipt_binding(
+        model: &str,
+        provider: &str,
+    ) -> Result<(), HostedRunnerConfigError> {
+        for (field, value) in [("model", model), ("provider", provider)] {
+            validate_runtime_receipt_string(field, value)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_runtime_receipt_identity(
+        &self,
+        restore_manifest: Option<&SnapshotManifest>,
+    ) -> Result<(), HostedRunnerConfigError> {
+        let maestro_session_id = self
+            .maestro_session_id
+            .as_deref()
+            .or_else(|| restore_manifest.map(|manifest| manifest.maestro_session_id.as_str()))
+            .unwrap_or(self.runner_session_id.as_str());
+        let workspace_id = self
+            .workload_identity
+            .as_ref()
+            .map(|identity| identity.workspace_id.as_str())
+            .or(self.workspace_id.as_deref());
+        for (field, value) in [
+            ("runner_session_id", self.runner_session_id.as_str()),
+            ("maestro_session_id", maestro_session_id),
+        ]
+        .into_iter()
+        .chain(workspace_id.map(|value| ("workspace_id", value)))
+        .chain(
+            self.agent_run_id
+                .as_deref()
+                .map(|value| ("agent_run_id", value)),
+        ) {
+            validate_runtime_receipt_string(field, value)?;
+        }
+        if let Some(manifest) = restore_manifest {
+            for (field, value) in [
+                ("model", manifest.snapshot.state.model.as_deref()),
+                ("provider", manifest.snapshot.state.provider.as_deref()),
+                (
+                    "last_error_type",
+                    manifest.snapshot.state.last_error_type.as_deref(),
+                ),
+            ] {
+                if let Some(value) = value {
+                    validate_runtime_receipt_string(field, value)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn from_env() -> Result<Self, HostedRunnerConfigError> {
         let env = std::env::vars().collect::<HashMap<_, _>>();
         Self::from_env_map(&env)
@@ -163,7 +218,7 @@ impl HostedRunnerConfig {
         .transpose()?
         .unwrap_or(0);
 
-        Ok(Self {
+        let config = Self {
             runner_session_id: non_empty(runner_session_id, "runner_session_id")?,
             workspace_root,
             bind_addr,
@@ -188,7 +243,9 @@ impl HostedRunnerConfig {
             auth_token,
             workload_identity,
             rendezvous,
-        })
+        };
+        config.validate_runtime_receipt_identity(None)?;
+        Ok(config)
     }
 
     /// Converts an already decoded, executable launch descriptor into the
@@ -345,7 +402,7 @@ impl HostedRunnerConfig {
             ));
         }
 
-        Ok(Self {
+        let config = Self {
             runner_session_id: non_empty(
                 spec.runtime.runner_session_id.clone(),
                 "runner_session_id",
@@ -364,14 +421,16 @@ impl HostedRunnerConfig {
             auth_token,
             workload_identity,
             rendezvous,
-        })
+        };
+        config.validate_runtime_receipt_identity(None)?;
+        Ok(config)
     }
 
     pub fn new(
         runner_session_id: impl Into<String>,
         workspace_root: impl AsRef<Path>,
     ) -> Result<Self, HostedRunnerConfigError> {
-        Ok(Self {
+        let config = Self {
             runner_session_id: non_empty(runner_session_id.into(), "runner_session_id")?,
             workspace_root: resolve_config_workspace_root(Some(path_to_str(
                 workspace_root.as_ref(),
@@ -391,7 +450,9 @@ impl HostedRunnerConfig {
             auth_token: None,
             workload_identity: None,
             rendezvous: None,
-        })
+        };
+        config.validate_runtime_receipt_identity(None)?;
+        Ok(config)
     }
 
     #[must_use]
@@ -915,6 +976,29 @@ fn non_empty(value: String, field: &str) -> Result<String, HostedRunnerConfigErr
         )));
     }
     Ok(value)
+}
+
+fn validate_runtime_receipt_string(
+    field: &str,
+    value: &str,
+) -> Result<(), HostedRunnerConfigError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(HostedRunnerConfigError::new(format!(
+            "{field} must not be empty"
+        )));
+    }
+    if trimmed != value {
+        return Err(HostedRunnerConfigError::new(format!(
+            "{field} must not contain surrounding whitespace"
+        )));
+    }
+    if value.len() > MAX_RUNTIME_RECEIPT_STRING_BYTES {
+        return Err(HostedRunnerConfigError::new(format!(
+            "{field} exceeds the {MAX_RUNTIME_RECEIPT_STRING_BYTES}-byte runtime receipt limit"
+        )));
+    }
+    Ok(())
 }
 
 fn read_secret_file(path: &str, label: &str) -> Result<String, HostedRunnerConfigError> {

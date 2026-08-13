@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "evalops.maestro.runtime-receipt.v1",
+  "kind": "ready",
+  "lifecycleState": "execution_ready",
+  "runtimeGeneration": 7,
+  "runnerSessionId": "runner-fixture",
+  "maestroSessionId": "maestro-fixture",
+  "workspaceId": "workspace-fixture",
+  "agentRunId": "run-fixture",
+  "model": "gpt-5.5",
+  "provider": "openai",
+  "capabilityDigest": "sha256:fixture",
+  "replayCursor": 4,
+  "flushWatermark": 5,
+  "snapshotLineage": "snapshot:fixture",
+  "terminal": null,
+  "errorType": null
+}

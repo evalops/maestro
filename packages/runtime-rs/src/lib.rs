@@ -9,7 +9,9 @@
 
 mod boundary;
 mod launch_spec;
+pub mod passport;
 pub mod protocol;
+mod receipts;
 
 pub use boundary::{
     HostedRuntimeAuthMode, HostedRuntimeBoundary, HostedRuntimeBoundaryInput, RuntimeBoundaryError,
@@ -20,19 +22,32 @@ pub use launch_spec::{
     HostedLaunchSecretFileRefs, HostedLaunchSpec, HostedLaunchSpecError, HostedLaunchSpecInput,
     HostedLaunchWorkloadIdentity, HostedLaunchWorkspace, HOSTED_LAUNCH_SPEC_VERSION,
 };
+pub use passport::{
+    runtime_conformance_contract, runtime_passport_contract, RuntimeArtifactIdentity,
+    RuntimeArtifactIdentityInput, RuntimeArtifactKind, RuntimeConformanceIdentity,
+    RuntimeConformanceIdentityInput, RuntimePassport, RuntimePassportError, RuntimePassportInput,
+    RuntimeToolchainIdentity, RuntimeToolchainIdentityInput, RUNTIME_CONFORMANCE_PROFILE,
+    RUNTIME_CONFORMANCE_VERSION, RUNTIME_PASSPORT_PREDICATE_TYPE, RUNTIME_PASSPORT_VERSION,
+};
 pub use protocol::{
-    decode_tagged_message, headless_protocol_contract, headless_protocol_version_is_supported,
-    negotiate_headless_protocol, ConnectionRoleCapability, FromRuntimeMessageType,
-    HeadlessCapabilityProjection, HeadlessProtocolContract, HeadlessTerminalProjection,
-    NegotiatedHeadlessProtocol, NotificationCapability, SchemaOnlyServerRequestCapability,
-    ServerRequestCapability, TaggedMessageDecode, TaggedMessageDecodeError, TerminalErrorKind,
-    TerminalEvent, TerminalReducer, TerminalStatus, TerminalTransition, ToRuntimeMessageType,
-    UnknownWireMessage, UnsupportedHeadlessProtocolVersion, UtilityOperationCapability,
+    decode_tagged_message, headless_protocol_capability_digest, headless_protocol_contract,
+    headless_protocol_version_is_supported, negotiate_headless_protocol, ConnectionRoleCapability,
+    FromRuntimeMessageType, HeadlessCapabilityProjection, HeadlessProtocolContract,
+    HeadlessTerminalProjection, NegotiatedHeadlessProtocol, NotificationCapability,
+    SchemaOnlyServerRequestCapability, ServerRequestCapability, TaggedMessageDecode,
+    TaggedMessageDecodeError, TerminalErrorKind, TerminalEvent, TerminalReducer, TerminalStatus,
+    TerminalTransition, ToRuntimeMessageType, UnknownWireMessage,
+    UnsupportedHeadlessProtocolVersion, UtilityOperationCapability,
     HEADLESS_FROM_RUNTIME_MESSAGE_NAMES, HEADLESS_PROTOCOL_SCHEMA_VERSION,
     HEADLESS_PROTOCOL_VERSION, HEADLESS_RUNTIME_ONLY_FROM_RUNTIME_MESSAGE_NAMES,
     HEADLESS_RUNTIME_ONLY_TO_RUNTIME_MESSAGE_NAMES, HEADLESS_TERMINAL_REDUCER_VERSION,
     HEADLESS_TO_RUNTIME_MESSAGE_NAMES, HEADLESS_TURN_TERMINAL_RESPONSE_IDS,
     SUPPORTED_HEADLESS_PROTOCOL_VERSIONS,
+};
+pub use receipts::{
+    runtime_receipt_validation_contract, RuntimeLifecycleState, RuntimeReceipt,
+    RuntimeReceiptError, RuntimeReceiptInput, RuntimeReceiptKind, RuntimeTerminalClassification,
+    MAX_RUNTIME_RECEIPT_STRING_BYTES, RUNTIME_RECEIPT_VERSION,
 };
 
 /// Stable product identifier for the native Maestro runtime boundary.

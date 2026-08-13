@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
+use maestro_runtime::MAX_RUNTIME_RECEIPT_STRING_BYTES;
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -222,6 +223,7 @@ impl SnapshotManifest {
     /// drain/restore handoff, while the Maestro session remains the durable
     /// continuity identity.
     pub(super) fn validate_for_restore(&self, config: &HostedRunnerConfig) -> HostedResult<()> {
+        snapshot_lineage_from_created_at(&self.created_at)?;
         if let Some(expected_workspace_id) = config
             .workload_identity
             .as_ref()
@@ -317,6 +319,28 @@ impl SnapshotManifest {
             semantic_conversation: None,
         }
     }
+}
+
+/// Return the bounded lineage value that restore and drain receipts publish.
+/// Validate it at the manifest edge so an invalid restore is rejected before
+/// listener bind rather than producing a runtime that cannot expose receipts.
+pub(super) fn snapshot_lineage_from_created_at(created_at: &str) -> HostedResult<String> {
+    let lineage = format!("snapshot:{created_at}");
+    if lineage.trim() == "snapshot:" {
+        return Err(HostedError::new(
+            HostedRunnerErrorCode::InvalidSnapshotManifest,
+            "restore manifest creation time is required for runtime receipt lineage",
+        ));
+    }
+    if lineage.len() > MAX_RUNTIME_RECEIPT_STRING_BYTES {
+        return Err(HostedError::new(
+            HostedRunnerErrorCode::InvalidSnapshotManifest,
+            format!(
+                "snapshot_lineage exceeds the {MAX_RUNTIME_RECEIPT_STRING_BYTES}-byte runtime receipt limit"
+            ),
+        ));
+    }
+    Ok(lineage)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

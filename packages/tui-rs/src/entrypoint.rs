@@ -723,6 +723,17 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
         return Ok(());
     }
 
+    // Hidden release fixture command. It reuses the canonical hosted HTTP/SSE
+    // runtime so black-box conformance exercises the exact native executable.
+    if raw_args
+        .get(1)
+        .and_then(|arg| arg.to_str())
+        .is_some_and(|arg| arg == "conformance")
+    {
+        crate::hosted_runner_conformance::run().await?;
+        return Ok(());
+    }
+
     // Lightweight CLI helpers (no TUI / no full interactive loop). Utility
     // argument normalization lives here so the package shim can forward argv.
     if let Some(profile) = native_profile(&raw_args[1..]) {

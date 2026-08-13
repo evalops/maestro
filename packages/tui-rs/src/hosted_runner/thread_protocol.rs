@@ -2,11 +2,13 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread;
 
 use chrono::{SecondsFormat, Utc};
 use fd_lock::RwLock as FileLock;
+use maestro_runtime::RuntimeTerminalClassification;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -14,13 +16,14 @@ use crate::agent::session_scope::MaestroThreadId;
 use crate::headless::{CodeMode, GovernedToolGrant};
 
 use super::{
-    response_ack_request_id, FromAgentMessage, IdentityBindingFailure, ServerRequestType,
-    StreamEnvelope, ToAgentMessage,
+    response_ack_request_id, FromAgentMessage, HostedRunnerDrainResult, IdentityBindingFailure,
+    ServerRequestType, StreamEnvelope, ToAgentMessage,
 };
 
 pub(super) const THREAD_PROTOCOL_VERSION: &str = "evalops.maestro.thread.v1";
 pub(super) const GOVERNED_THREAD_PROTOCOL_VERSION: &str = "evalops.maestro.thread.v2";
 pub(super) const GOVERNED_THREAD_REQUIRED_FIELDS: &[&str] = &["codeMode", "toolGrant"];
+const EXECUTOR_DRAIN_RESULT_PROTOCOL_VERSION: &str = "evalops.maestro.executor-drain-result.v2";
 const MAX_TURN_ID_BYTES: usize = 128;
 const MAX_CONTENT_BYTES: usize = 1024 * 1024;
 const MAX_ATTACHMENTS: usize = 64;
@@ -50,6 +53,33 @@ pub(super) enum ThreadPhase {
 impl ThreadPhase {
     fn is_terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Interrupted)
+    }
+}
+
+pub(super) fn runtime_terminal_classification(
+    fatal: bool,
+    error_type: Option<crate::headless::messages::HeadlessErrorType>,
+) -> RuntimeTerminalClassification {
+    if fatal {
+        return RuntimeTerminalClassification::Fatal;
+    }
+    match error_type {
+        Some(crate::headless::messages::HeadlessErrorType::Fatal) => {
+            RuntimeTerminalClassification::Fatal
+        }
+        Some(crate::headless::messages::HeadlessErrorType::Cancelled) => {
+            RuntimeTerminalClassification::Cancelled
+        }
+        Some(crate::headless::messages::HeadlessErrorType::Protocol) => {
+            RuntimeTerminalClassification::Protocol
+        }
+        Some(crate::headless::messages::HeadlessErrorType::Tool) => {
+            RuntimeTerminalClassification::Tool
+        }
+        Some(crate::headless::messages::HeadlessErrorType::Transient) => {
+            RuntimeTerminalClassification::Transient
+        }
+        None => RuntimeTerminalClassification::NonFatal,
     }
 }
 
@@ -128,6 +158,16 @@ pub(super) struct ThreadTurnRecord {
     pub(super) phase: ThreadPhase,
     pub(super) accepted_at: String,
     pub(super) cursor: u64,
+    /// Generation that accepted this turn. Older journals are backfilled
+    /// from their document generation while loading, so rebinding a journal
+    /// to a new runtime generation cannot resurrect old terminal evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) runtime_generation: Option<u64>,
+    /// Durable producer classification for a terminal boundary. Keeping this
+    /// beside the turn phase preserves cancellation and typed error evidence
+    /// across process restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) terminal_classification: Option<RuntimeTerminalClassification>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) provider_error_kind: Option<maestro_ai::ProviderStreamErrorKind>,
 }
@@ -147,19 +187,38 @@ pub(super) struct ThreadProtocolState {
     thread_id: MaestroThreadId,
     turns: Vec<ThreadTurnRecord>,
     active_turn_ids: VecDeque<String>,
+    runtime_generation: u64,
+    runtime_failure_type: Option<String>,
+    snapshot_lineage: Option<String>,
 }
 
 impl ThreadProtocolState {
-    pub(super) fn new(thread_id: MaestroThreadId) -> Self {
+    pub(super) fn thread_id(&self) -> &MaestroThreadId {
+        &self.thread_id
+    }
+
+    pub(super) fn new(thread_id: MaestroThreadId, runtime_generation: u64) -> Self {
         Self {
             thread_id,
             turns: Vec::new(),
             active_turn_ids: VecDeque::new(),
+            runtime_generation,
+            runtime_failure_type: None,
+            snapshot_lineage: None,
         }
     }
 
-    fn restore(thread_id: MaestroThreadId, mut turns: Vec<ThreadTurnRecord>) -> Self {
+    fn restore(
+        thread_id: MaestroThreadId,
+        mut turns: Vec<ThreadTurnRecord>,
+        runtime_generation: u64,
+        persisted_runtime_generation: u64,
+        runtime_failure_type: Option<String>,
+        snapshot_lineage: Option<String>,
+    ) -> Self {
         for turn in &mut turns {
+            turn.runtime_generation
+                .get_or_insert(persisted_runtime_generation);
             if !turn.phase.is_terminal() {
                 turn.phase = ThreadPhase::Interrupted;
             }
@@ -168,11 +227,50 @@ impl ThreadProtocolState {
             thread_id,
             turns,
             active_turn_ids: VecDeque::new(),
+            runtime_generation,
+            runtime_failure_type,
+            snapshot_lineage,
         }
     }
 
     pub(super) fn turn(&self, turn_id: &str) -> Option<&ThreadTurnRecord> {
         self.turns.iter().find(|turn| turn.turn_id == turn_id)
+    }
+
+    pub(super) fn turns_for_generation(
+        &self,
+        runtime_generation: u64,
+    ) -> impl DoubleEndedIterator<Item = &ThreadTurnRecord> {
+        self.turns
+            .iter()
+            .filter(move |turn| turn.runtime_generation == Some(runtime_generation))
+    }
+
+    pub(super) fn runtime_failure_type(&self) -> Option<&str> {
+        self.runtime_failure_type.as_deref()
+    }
+
+    pub(super) fn set_runtime_failure_type(&mut self, error_type: &str) {
+        self.runtime_failure_type = Some(error_type.to_string());
+    }
+
+    pub(super) fn snapshot_lineage(&self) -> Option<&str> {
+        self.snapshot_lineage.as_deref()
+    }
+
+    pub(super) fn set_snapshot_lineage(&mut self, lineage: &str) {
+        self.snapshot_lineage = Some(lineage.to_string());
+    }
+
+    /// Start a replacement Runner Host from the restore input rather than
+    /// inheriting the source owner's turn lifecycle or runtime failure state.
+    /// The journal owner boundary is persisted immediately after this reset,
+    /// so later restarts of the replacement can recover only its own evidence.
+    pub(super) fn reset_for_replacement(&mut self) {
+        self.turns.clear();
+        self.active_turn_ids.clear();
+        self.runtime_failure_type = None;
+        self.snapshot_lineage = None;
     }
 
     pub(super) fn planned_run_id(&self, request: &AppendTurnRequest) -> String {
@@ -202,6 +300,8 @@ impl ThreadProtocolState {
             phase: ThreadPhase::Accepted,
             accepted_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
             cursor,
+            runtime_generation: Some(self.runtime_generation),
+            terminal_classification: None,
             provider_error_kind: None,
         });
     }
@@ -244,20 +344,29 @@ impl ThreadProtocolState {
         self.active_turn_ids.pop_back();
     }
 
-    pub(super) fn apply_agent_message(&mut self, message: &FromAgentMessage, cursor: u64) {
+    pub(super) fn apply_agent_message(&mut self, message: &FromAgentMessage, cursor: u64) -> bool {
         match message {
             FromAgentMessage::ResponseStart { .. } => {
                 if let Some(turn) = self.active_turn_mut() {
                     turn.phase = ThreadPhase::Running;
                     turn.cursor = cursor;
+                    true
+                } else {
+                    false
                 }
             }
-            FromAgentMessage::TurnCompleted { .. } => {
-                self.mark_active_run_terminal(ThreadPhase::Completed, cursor, None);
-            }
-            FromAgentMessage::TurnInterrupted { .. } => {
-                self.mark_active_run_terminal(ThreadPhase::Interrupted, cursor, None);
-            }
+            FromAgentMessage::TurnCompleted { .. } => self.mark_active_run_terminal(
+                ThreadPhase::Completed,
+                cursor,
+                None,
+                Some(RuntimeTerminalClassification::Completed),
+            ),
+            FromAgentMessage::TurnInterrupted { .. } => self.mark_active_run_terminal(
+                ThreadPhase::Interrupted,
+                cursor,
+                None,
+                Some(RuntimeTerminalClassification::Interrupted),
+            ),
             FromAgentMessage::ServerRequest { request_type, .. } => {
                 let phase = match request_type {
                     ServerRequestType::Approval => ThreadPhase::WaitingForApproval,
@@ -268,12 +377,18 @@ impl ThreadProtocolState {
                 if let Some(turn) = self.active_turn_mut() {
                     turn.phase = phase;
                     turn.cursor = cursor;
+                    true
+                } else {
+                    false
                 }
             }
             FromAgentMessage::ServerRequestResolved { .. } => {
                 if let Some(turn) = self.active_turn_mut() {
                     turn.phase = ThreadPhase::Running;
                     turn.cursor = cursor;
+                    true
+                } else {
+                    false
                 }
             }
             FromAgentMessage::Error {
@@ -283,7 +398,7 @@ impl ThreadProtocolState {
                 ..
             } => {
                 if !fatal && !terminal {
-                    return;
+                    return false;
                 }
                 let phase = if *fatal
                     || matches!(
@@ -294,12 +409,20 @@ impl ThreadProtocolState {
                 } else {
                     ThreadPhase::Failed
                 };
-                self.mark_active_run_terminal(phase, cursor, None);
+                self.mark_active_run_terminal(
+                    phase,
+                    cursor,
+                    None,
+                    Some(runtime_terminal_classification(*fatal, *error_type)),
+                )
             }
-            FromAgentMessage::ProviderError { kind, .. } => {
-                self.mark_active_run_terminal(ThreadPhase::Failed, cursor, Some(*kind));
-            }
-            _ => {}
+            FromAgentMessage::ProviderError { kind, .. } => self.mark_active_run_terminal(
+                ThreadPhase::Failed,
+                cursor,
+                Some(*kind),
+                Some(RuntimeTerminalClassification::ProviderFailed),
+            ),
+            _ => false,
         }
     }
 
@@ -343,24 +466,27 @@ impl ThreadProtocolState {
         phase: ThreadPhase,
         cursor: u64,
         provider_error_kind: Option<maestro_ai::ProviderStreamErrorKind>,
-    ) {
+        terminal_classification: Option<RuntimeTerminalClassification>,
+    ) -> bool {
         let Some(run_id) = self
             .active_turn_ids
             .front()
             .and_then(|turn_id| self.turn(turn_id))
             .map(|turn| turn.run_id.clone())
         else {
-            return;
+            return false;
         };
         let mut terminal_turn_ids = std::collections::HashSet::new();
         for turn in self.turns.iter_mut().filter(|turn| turn.run_id == run_id) {
             turn.phase = phase;
             turn.cursor = cursor;
             turn.provider_error_kind = provider_error_kind;
+            turn.terminal_classification = terminal_classification;
             terminal_turn_ids.insert(turn.turn_id.clone());
         }
         self.active_turn_ids
             .retain(|turn_id| !terminal_turn_ids.contains(turn_id));
+        !terminal_turn_ids.is_empty()
     }
 }
 
@@ -379,7 +505,42 @@ pub(super) struct ThreadStateView<'a> {
 struct DurableThreadDocument {
     protocol_version: String,
     thread_id: String,
+    /// Runner Host identity that last durably owned this journal. Older
+    /// journals do not carry this field and remain conservative during
+    /// replacement restore until the new owner has persisted its first
+    /// startup boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runner_session_id: Option<String>,
     runtime_generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_failure_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    snapshot_lineage: Option<String>,
+    /// Model binding used when the latest durable lifecycle evidence was
+    /// written. Older journals omit this and are backfilled from their
+    /// durable replay snapshot or the live executor state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_model: Option<String>,
+    /// Provider binding used when the latest durable lifecycle evidence was
+    /// written. Older journals omit this and are backfilled from their
+    /// durable replay snapshot or the live executor state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_provider: Option<String>,
+    /// Whether an executor-complete drain had already observed a failed
+    /// runtime before its final manifest/journal hand-off completed. This is
+    /// authoritative only while the corresponding pending-drain boundary is
+    /// active; older journals default to false.
+    #[serde(default)]
+    drain_runtime_failed_before_finalization: bool,
+    /// Number of leading messages from the retained executor drain batch
+    /// whose application was durably recorded with the executor-complete
+    /// boundary. This position is authoritative for that pending handoff and
+    /// avoids inferring progress from the bounded replay buffer.
+    #[serde(default)]
+    executor_drain_result_applied_count: usize,
+    /// Monotonic successful persistence revision used as receipt evidence.
+    #[serde(default)]
+    flush_watermark: u64,
     cursor: u64,
     turns: Vec<ThreadTurnRecord>,
     events: Vec<StreamEnvelope>,
@@ -401,8 +562,22 @@ struct DurableThreadDocument {
     pending_response_idempotency_order: Vec<String>,
 }
 
+/// Private crash-recovery handoff for the executor drain boundary. The
+/// executor has already consumed this batch when the record is written; the
+/// handoff therefore remains on disk until the final `Drained` snapshot is
+/// durable and a restart can finish the same operation without calling the
+/// executor a second time.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct DurableExecutorDrainResult {
+    protocol_version: String,
+    runtime_generation: u64,
+    replay_cursor: u64,
+    result: HostedRunnerDrainResult,
+}
+
 pub(super) struct ThreadJournal {
     path: PathBuf,
+    flush_watermark: AtomicU64,
     _lock: ThreadJournalLock,
 }
 
@@ -425,6 +600,11 @@ impl Drop for ThreadJournalLock {
 pub(super) struct LoadedThreadJournal {
     pub(super) journal: ThreadJournal,
     pub(super) state: ThreadProtocolState,
+    pub(super) persisted_runtime_generation: Option<u64>,
+    pub(super) persisted_runner_session_id: Option<String>,
+    pub(super) persisted_drain_runtime_failed_before_finalization: bool,
+    pub(super) persisted_runtime_model: Option<String>,
+    pub(super) persisted_runtime_provider: Option<String>,
     pub(super) cursor: u64,
     pub(super) events: VecDeque<StreamEnvelope>,
     pub(super) last_init: Option<crate::headless::InitConfig>,
@@ -435,9 +615,16 @@ pub(super) struct LoadedThreadJournal {
     pub(super) pending_response_idempotency: HashMap<String, ToAgentMessage>,
     pub(super) response_idempotency_order: VecDeque<String>,
     pub(super) pending_response_idempotency_order: VecDeque<String>,
+    pub(super) pending_executor_drain_result: Option<(u64, HostedRunnerDrainResult)>,
+    pub(super) executor_drain_result_applied_count: usize,
 }
 
 pub(super) struct ThreadJournalMetadataView<'a> {
+    pub(super) runner_session_id: &'a str,
+    pub(super) drain_runtime_failed_before_finalization: bool,
+    pub(super) executor_drain_result_applied_count: usize,
+    pub(super) runtime_model: Option<&'a str>,
+    pub(super) runtime_provider: Option<&'a str>,
     pub(super) last_init: Option<&'a crate::headless::InitConfig>,
     pub(super) keys: &'a HashSet<String>,
     pub(super) digests: &'a HashMap<String, String>,
@@ -457,11 +644,19 @@ impl ThreadJournal {
         let journal = Self {
             _lock: acquire_journal_lock(&path)?,
             path,
+            flush_watermark: AtomicU64::new(0),
         };
+        let pending_executor_drain_result =
+            load_executor_drain_result(workspace_root, thread_id, runtime_generation)?;
         let Some(document) = read_document(&journal.path)? else {
             return Ok(LoadedThreadJournal {
                 journal,
-                state: ThreadProtocolState::new(thread_id.to_string().into()),
+                state: ThreadProtocolState::new(thread_id.to_string().into(), runtime_generation),
+                persisted_runtime_generation: None,
+                persisted_runner_session_id: None,
+                persisted_drain_runtime_failed_before_finalization: false,
+                persisted_runtime_model: None,
+                persisted_runtime_provider: None,
                 cursor: 0,
                 events: VecDeque::new(),
                 last_init: None,
@@ -472,6 +667,8 @@ impl ThreadJournal {
                 pending_response_idempotency: HashMap::new(),
                 response_idempotency_order: VecDeque::new(),
                 pending_response_idempotency_order: VecDeque::new(),
+                pending_executor_drain_result,
+                executor_drain_result_applied_count: 0,
             });
         };
         if document.protocol_version != THREAD_PROTOCOL_VERSION || document.thread_id != thread_id {
@@ -486,6 +683,9 @@ impl ThreadJournal {
                 "durable thread journal is owned by a newer runtime generation",
             ));
         }
+        journal
+            .flush_watermark
+            .store(document.flush_watermark, Ordering::Release);
         let mut response_request_owners = document.response_request_owners;
         for (key, message) in &document.pending_response_idempotency {
             if let Some(request_id) = response_ack_request_id(message) {
@@ -494,11 +694,44 @@ impl ThreadJournal {
                     .or_insert_with(|| key.clone());
             }
         }
+        let persisted_runtime_generation = Some(document.runtime_generation);
+        // The journal is shared across replacement runtime generations, but
+        // replay envelopes are generation-local evidence. Do not carry
+        // generation N's lifecycle snapshot or fatal event into N+1's
+        // rewritten document, where a later N+1 restart could mistake it for
+        // current state.
+        let same_generation = document.runtime_generation == runtime_generation;
+        let events = if same_generation {
+            document.events
+        } else {
+            Vec::new()
+        };
+        let runtime_failure_type = same_generation
+            .then_some(document.runtime_failure_type)
+            .flatten();
+        let snapshot_lineage = same_generation
+            .then_some(document.snapshot_lineage)
+            .flatten();
         Ok(LoadedThreadJournal {
             journal,
-            state: ThreadProtocolState::restore(thread_id.to_string().into(), document.turns),
+            state: ThreadProtocolState::restore(
+                thread_id.to_string().into(),
+                document.turns,
+                runtime_generation,
+                document.runtime_generation,
+                runtime_failure_type,
+                snapshot_lineage,
+            ),
+            persisted_runtime_generation,
+            persisted_runner_session_id: document.runner_session_id,
+            persisted_drain_runtime_failed_before_finalization: same_generation
+                && document.drain_runtime_failed_before_finalization,
+            persisted_runtime_model: same_generation.then_some(document.runtime_model).flatten(),
+            persisted_runtime_provider: same_generation
+                .then_some(document.runtime_provider)
+                .flatten(),
             cursor: document.cursor,
-            events: document.events.into(),
+            events: events.into(),
             last_init: document.last_init,
             identity_binding_failures: document.identity_binding_failures.into(),
             response_idempotency_keys: document.response_idempotency_keys.into_iter().collect(),
@@ -507,6 +740,14 @@ impl ThreadJournal {
             pending_response_idempotency: document.pending_response_idempotency,
             response_idempotency_order: document.response_idempotency_order.into(),
             pending_response_idempotency_order: document.pending_response_idempotency_order.into(),
+            pending_executor_drain_result: same_generation
+                .then_some(pending_executor_drain_result)
+                .flatten(),
+            executor_drain_result_applied_count: if same_generation {
+                document.executor_drain_result_applied_count
+            } else {
+                0
+            },
         })
     }
 
@@ -524,7 +765,19 @@ impl ThreadJournal {
         let document = DurableThreadDocument {
             protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
             thread_id: state.thread_id.as_str().to_string(),
+            runner_session_id: Some(metadata.runner_session_id.to_string()),
             runtime_generation,
+            runtime_failure_type: state.runtime_failure_type.clone(),
+            snapshot_lineage: state.snapshot_lineage.clone(),
+            drain_runtime_failed_before_finalization: metadata
+                .drain_runtime_failed_before_finalization,
+            executor_drain_result_applied_count: metadata.executor_drain_result_applied_count,
+            runtime_model: metadata.runtime_model.map(str::to_string),
+            runtime_provider: metadata.runtime_provider.map(str::to_string),
+            flush_watermark: self
+                .flush_watermark
+                .load(Ordering::Acquire)
+                .saturating_add(1),
             cursor,
             turns: state.turns.clone(),
             events: events.iter().cloned().collect(),
@@ -537,7 +790,14 @@ impl ThreadJournal {
             response_idempotency_order: metadata.order.iter().cloned().collect(),
             pending_response_idempotency_order: metadata.pending_order.iter().cloned().collect(),
         };
-        atomic_write_private_json(&self.path, &document)
+        atomic_write_private_json(&self.path, &document)?;
+        self.flush_watermark
+            .store(document.flush_watermark, Ordering::Release);
+        Ok(())
+    }
+
+    pub(super) fn flush_watermark(&self) -> u64 {
+        self.flush_watermark.load(Ordering::Acquire)
     }
 }
 
@@ -547,6 +807,83 @@ fn journal_path(workspace_root: &Path, thread_id: &str) -> PathBuf {
         .join("hosted-runner")
         .join("threads")
         .join(format!("{}.json", path_safe_thread_id(thread_id)))
+}
+
+fn executor_drain_result_path(
+    workspace_root: &Path,
+    thread_id: &str,
+    runtime_generation: u64,
+) -> PathBuf {
+    workspace_root
+        .join(".maestro")
+        .join("hosted-runner")
+        .join("threads")
+        .join(format!(
+            "{}.drain-{}.json",
+            path_safe_thread_id(thread_id),
+            runtime_generation
+        ))
+}
+
+pub(super) fn persist_executor_drain_result(
+    workspace_root: &Path,
+    thread_id: &str,
+    runtime_generation: u64,
+    replay_cursor: u64,
+    result: &HostedRunnerDrainResult,
+) -> io::Result<()> {
+    let document = DurableExecutorDrainResult {
+        protocol_version: EXECUTOR_DRAIN_RESULT_PROTOCOL_VERSION.to_string(),
+        runtime_generation,
+        replay_cursor,
+        result: result.clone(),
+    };
+    atomic_write_private_json(
+        &executor_drain_result_path(workspace_root, thread_id, runtime_generation),
+        &document,
+    )
+}
+
+pub(super) fn load_executor_drain_result(
+    workspace_root: &Path,
+    thread_id: &str,
+    runtime_generation: u64,
+) -> io::Result<Option<(u64, HostedRunnerDrainResult)>> {
+    let path = executor_drain_result_path(workspace_root, thread_id, runtime_generation);
+    let document = match fs::read(&path) {
+        Ok(bytes) => {
+            serde_json::from_slice::<DurableExecutorDrainResult>(&bytes).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("invalid durable executor drain result: {error}"),
+                )
+            })?
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if document.protocol_version != EXECUTOR_DRAIN_RESULT_PROTOCOL_VERSION
+        || document.runtime_generation != runtime_generation
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "durable executor drain result identity does not match this runtime",
+        ));
+    }
+    Ok(Some((document.replay_cursor, document.result)))
+}
+
+pub(super) fn clear_executor_drain_result(
+    workspace_root: &Path,
+    thread_id: &str,
+    runtime_generation: u64,
+) -> io::Result<()> {
+    let path = executor_drain_result_path(workspace_root, thread_id, runtime_generation);
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 fn acquire_journal_lock(path: &Path) -> io::Result<ThreadJournalLock> {
@@ -904,7 +1241,7 @@ mod tests {
     #[test]
     fn governed_grant_identity_is_persisted_and_part_of_duplicate_turn_equality() {
         let request = governed_request();
-        let mut state = ThreadProtocolState::new("thread-1".to_string().into());
+        let mut state = ThreadProtocolState::new("thread-1".to_string().into(), 0);
         state.append(request.clone(), 1);
         let record = state.turn("turn-1").unwrap();
         assert!(record.matches(&request));
@@ -932,7 +1269,7 @@ mod tests {
     #[test]
     fn failed_initial_persistence_can_roll_back_an_undispatched_append() {
         let request = governed_request();
-        let mut state = ThreadProtocolState::new("thread-1".to_string().into());
+        let mut state = ThreadProtocolState::new("thread-1".to_string().into(), 0);
         state.append(request, 1);
 
         state.rollback_unpersisted_append("turn-1");
@@ -945,21 +1282,27 @@ mod tests {
     #[test]
     fn accepted_turn_is_terminally_interrupted_after_a_dispatch_persistence_crash() {
         let request = governed_request();
-        let mut before_crash = ThreadProtocolState::new("thread-1".to_string().into());
+        let mut before_crash = ThreadProtocolState::new("thread-1".to_string().into(), 0);
         before_crash.append(request, 1);
         assert_eq!(before_crash.phase(), ThreadPhase::Accepted);
 
         // The accepted snapshot is the last durable state if dispatch
         // succeeded but persisting Running failed before process death.
-        let restored =
-            ThreadProtocolState::restore(before_crash.thread_id.clone(), before_crash.turns);
+        let restored = ThreadProtocolState::restore(
+            before_crash.thread_id.clone(),
+            before_crash.turns,
+            0,
+            0,
+            None,
+            None,
+        );
 
         assert_eq!(restored.phase(), ThreadPhase::Interrupted);
         assert!(!restored.has_active_turn());
     }
 
     fn active_state() -> ThreadProtocolState {
-        let mut state = ThreadProtocolState::new("thread-positive-terminal".to_string().into());
+        let mut state = ThreadProtocolState::new("thread-positive-terminal".to_string().into(), 0);
         state.append(
             AppendTurnRequest {
                 protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
@@ -1168,7 +1511,14 @@ mod tests {
         );
         assert_eq!(state.phase(), ThreadPhase::Interrupted);
 
-        let restored = ThreadProtocolState::restore(state.thread_id.clone(), state.turns.clone());
+        let restored = ThreadProtocolState::restore(
+            state.thread_id.clone(),
+            state.turns.clone(),
+            0,
+            0,
+            None,
+            None,
+        );
         assert_eq!(restored.phase(), ThreadPhase::Interrupted);
         assert_eq!(restored.turn("turn-1").unwrap().cursor, 3);
     }
@@ -1206,6 +1556,11 @@ mod tests {
                 loaded.cursor,
                 &loaded.events,
                 ThreadJournalMetadataView {
+                    runner_session_id: "runner-test",
+                    drain_runtime_failed_before_finalization: false,
+                    executor_drain_result_applied_count: 0,
+                    runtime_model: None,
+                    runtime_provider: None,
                     last_init: loaded.last_init.as_ref(),
                     keys: &loaded.response_idempotency_keys,
                     digests: &loaded.response_idempotency_digests,
@@ -1218,7 +1573,10 @@ mod tests {
             )
             .unwrap();
         drop(loaded);
-        ThreadJournal::load(workspace_root, thread_id, 2).unwrap()
+        // A same-generation reload retains the generation-local envelope. The
+        // replacement-generation path intentionally clears it and is covered
+        // by the hosted runner lifecycle regression.
+        ThreadJournal::load(workspace_root, thread_id, 1).unwrap()
     }
 
     #[test]

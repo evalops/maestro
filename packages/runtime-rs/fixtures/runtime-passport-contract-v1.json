@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "evalops.maestro.runtime-passport.v1",
+  "predicateType": "https://evalops.dev/attestations/maestro-runtime-passport/v1",
+  "fields": [
+    "schemaVersion",
+    "predicateType",
+    "artifact",
+    "sourceSha",
+    "compatibilityDigest",
+    "launchSpecVersion",
+    "receiptVersion",
+    "conformance",
+    "behaviorProfiles",
+    "toolchain"
+  ],
+  "artifactKinds": ["native_binary", "oci_image"],
+  "behaviorProfiles": ["hosted-http-sse-v1"],
+  "rejectsUnknownFields": true,
+  "signature": "cosign-keyless-oidc"
+}

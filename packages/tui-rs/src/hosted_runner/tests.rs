@@ -1,6 +1,6 @@
 use reqwest::StatusCode;
 use std::fs;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Condvar;
 use tempfile::tempdir;
 use tokio::sync::Notify;
@@ -65,6 +65,72 @@ async fn hosted_runner_preparation_is_reversible_before_activation() {
         .await
         .expect("dropping preparation releases listener");
     drop(rebound);
+}
+
+#[tokio::test]
+async fn oversized_receipt_identity_fails_before_listener_bind() {
+    let workspace = tempdir().expect("workspace");
+    let mut config = test_config(workspace.path().to_path_buf());
+    config.runner_session_id = "r".repeat(maestro_runtime::MAX_RUNTIME_RECEIPT_STRING_BYTES + 1);
+
+    let error = match prepare_hosted_runner(config).await {
+        Ok(_) => panic!("oversized receipt identity must fail before bind"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("runner_session_id"));
+    assert!(error.to_string().contains("runtime receipt limit"));
+}
+
+#[tokio::test]
+async fn whitespace_only_receipt_identities_fail_before_listener_bind() {
+    for field in ["maestro_session_id", "workspace_id", "agent_run_id"] {
+        let workspace = tempdir().expect("workspace");
+        let config = match field {
+            "maestro_session_id" => {
+                test_config(workspace.path().to_path_buf()).with_maestro_session_id(" \t ")
+            }
+            "workspace_id" => test_config(workspace.path().to_path_buf()).with_workspace_id(" \t "),
+            "agent_run_id" => test_config(workspace.path().to_path_buf()).with_agent_run_id(" \t "),
+            _ => unreachable!("all test fields are covered above"),
+        };
+        let error = match prepare_hosted_runner(config).await {
+            Ok(_) => panic!("whitespace-only {field} must fail before bind"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains(field));
+        assert!(error.to_string().contains("must not be empty"));
+    }
+}
+
+#[tokio::test]
+async fn padded_receipt_identities_fail_before_listener_bind() {
+    for field in ["maestro_session_id", "workspace_id", "agent_run_id"] {
+        let workspace = tempdir().expect("workspace");
+        let config = match field {
+            "maestro_session_id" => {
+                test_config(workspace.path().to_path_buf()).with_maestro_session_id(" session-1 ")
+            }
+            "workspace_id" => {
+                test_config(workspace.path().to_path_buf()).with_workspace_id(" workspace-1 ")
+            }
+            "agent_run_id" => {
+                test_config(workspace.path().to_path_buf()).with_agent_run_id(" run-1 ")
+            }
+            _ => unreachable!("all test fields are covered above"),
+        };
+        let error = match prepare_hosted_runner(config).await {
+            Ok(_) => panic!("padded {field} must fail before bind"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains(field));
+        assert!(error.to_string().contains("surrounding whitespace"));
+    }
 }
 
 #[test]
@@ -152,6 +218,703 @@ fn fatal_agent_event_transitions_the_hosted_runtime_to_terminal_state() {
 }
 
 #[test]
+fn runtime_receipt_tracks_generation_bound_durable_lifecycle_boundaries() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    let ready = shared.runtime_receipt().expect("initial ready receipt");
+    assert_eq!(ready.kind, RuntimeReceiptKind::Ready);
+    assert_eq!(ready.lifecycle_state, RuntimeLifecycleState::ExecutionReady);
+    assert_eq!(ready.runtime_generation, 0);
+    assert!(ready.flush_watermark > 0);
+    assert_eq!(ready.replay_cursor, 0);
+    assert!(ready.capability_digest.starts_with("sha256:"));
+
+    {
+        let mut state = shared.state.lock().expect("state");
+        let cursor = state.cursor;
+        state.thread.append(
+            AppendTurnRequest {
+                protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                turn_id: "receipt-terminal-turn".to_string(),
+                kind: ThreadTurnKind::UserMessage,
+                content: "receipt terminal".to_string(),
+                attachments: None,
+                code_mode: None,
+                tool_grant: None,
+            },
+            cursor,
+        );
+        state.thread.mark_dispatched(cursor.saturating_add(1));
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::TurnCompleted {
+                response_id: "receipt-terminal".to_string(),
+            },
+        );
+    }
+
+    let terminal = shared.runtime_receipt().expect("terminal receipt");
+    assert_eq!(terminal.kind, RuntimeReceiptKind::Terminal);
+    assert_eq!(
+        terminal.terminal,
+        Some(RuntimeTerminalClassification::Completed)
+    );
+    assert!(terminal.replay_cursor > ready.replay_cursor);
+    assert!(terminal.flush_watermark > ready.flush_watermark);
+    let encoded = serde_json::to_string(&terminal).expect("receipt json");
+    assert!(!encoded.contains("sentinel"));
+    assert!(!encoded.contains("token"));
+
+    {
+        let mut state = shared.state.lock().expect("state");
+        let cursor = state.cursor;
+        state.thread.append(
+            AppendTurnRequest {
+                protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                turn_id: "receipt-cancelled-turn".to_string(),
+                kind: ThreadTurnKind::UserMessage,
+                content: "receipt cancelled".to_string(),
+                attachments: None,
+                code_mode: None,
+                tool_grant: None,
+            },
+            cursor,
+        );
+        state.thread.mark_dispatched(cursor.saturating_add(1));
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::Error {
+                request_id: None,
+                message: "cancelled by controller".to_string(),
+                fatal: false,
+                terminal: true,
+                error_type: Some(crate::headless::messages::HeadlessErrorType::Cancelled),
+            },
+        );
+    }
+    let cancelled = shared.runtime_receipt().expect("cancelled receipt");
+    assert_eq!(cancelled.kind, RuntimeReceiptKind::Terminal);
+    assert_eq!(cancelled.lifecycle_state, RuntimeLifecycleState::Active);
+    assert_eq!(
+        cancelled.terminal,
+        Some(RuntimeTerminalClassification::Cancelled)
+    );
+    assert!(cancelled.flush_watermark > terminal.flush_watermark);
+
+    {
+        let mut state = shared.state.lock().expect("state");
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::Error {
+                request_id: None,
+                message: "redacted runtime failure detail".to_string(),
+                fatal: true,
+                terminal: true,
+                error_type: Some(crate::headless::messages::HeadlessErrorType::Fatal),
+            },
+        );
+    }
+    let failed = shared.runtime_receipt().expect("failed receipt");
+    assert_eq!(failed.kind, RuntimeReceiptKind::Failed);
+    assert_eq!(failed.lifecycle_state, RuntimeLifecycleState::Failed);
+    assert_eq!(failed.error_type.as_deref(), Some("fatal"));
+    assert!(failed.flush_watermark > cancelled.flush_watermark);
+}
+
+#[test]
+fn late_terminal_event_does_not_override_first_terminal_receipt() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    {
+        let mut state = shared.state.lock().expect("state");
+        let cursor = state.cursor;
+        state.thread.append(
+            AppendTurnRequest {
+                protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                turn_id: "first-terminal-turn".to_string(),
+                kind: ThreadTurnKind::UserMessage,
+                content: "first terminal wins".to_string(),
+                attachments: None,
+                code_mode: None,
+                tool_grant: None,
+            },
+            cursor,
+        );
+        state.thread.mark_dispatched(cursor.saturating_add(1));
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::ProviderError {
+                kind: maestro_ai::ProviderStreamErrorKind::ProviderDeclaredFailure,
+                message: "provider stopped the turn".to_string(),
+            },
+        );
+        let first = state.runtime_receipt.as_ref().expect("first receipt");
+        assert_eq!(
+            first.terminal,
+            Some(RuntimeTerminalClassification::ProviderFailed)
+        );
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::TurnCompleted {
+                response_id: "late-response".to_string(),
+            },
+        );
+        let after_late = state
+            .runtime_receipt
+            .as_ref()
+            .expect("receipt after late event");
+        assert_eq!(
+            after_late.terminal,
+            Some(RuntimeTerminalClassification::ProviderFailed)
+        );
+    }
+}
+
+#[test]
+fn late_ready_event_does_not_replace_a_durable_terminal_receipt() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    {
+        let mut state = shared.state.lock().expect("state");
+        let cursor = state.cursor;
+        state.thread.append(
+            AppendTurnRequest {
+                protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                turn_id: "late-ready-terminal-turn".to_string(),
+                kind: ThreadTurnKind::UserMessage,
+                content: "terminal before delayed ready".to_string(),
+                attachments: None,
+                code_mode: None,
+                tool_grant: None,
+            },
+            cursor,
+        );
+        state.thread.mark_dispatched(cursor.saturating_add(1));
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::TurnCompleted {
+                response_id: "late-ready-terminal-response".to_string(),
+            },
+        );
+        let terminal = state
+            .runtime_receipt
+            .clone()
+            .expect("terminal receipt before delayed ready");
+
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::Ready {
+                protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
+                model: "delayed-ready-model".to_string(),
+                provider: "delayed-ready-provider".to_string(),
+                session_id: None,
+            },
+        );
+
+        let after_ready = state
+            .runtime_receipt
+            .as_ref()
+            .expect("terminal receipt after delayed ready");
+        assert_eq!(after_ready.kind, RuntimeReceiptKind::Terminal);
+        assert_eq!(after_ready.terminal, terminal.terminal);
+        assert_eq!(after_ready.replay_cursor, terminal.replay_cursor);
+    }
+}
+
+#[test]
+fn invalid_live_ready_binding_fails_closed_and_clears_stale_receipt() {
+    for invalid_field in ["model", "provider"] {
+        let workspace = tempdir().expect("workspace");
+        let invalid_model = "m".repeat(maestro_runtime::MAX_RUNTIME_RECEIPT_STRING_BYTES + 1);
+        let invalid_provider = "p".repeat(maestro_runtime::MAX_RUNTIME_RECEIPT_STRING_BYTES + 1);
+        let config = test_config(workspace.path().to_path_buf());
+        let executor = Arc::new(StatefulRuntimeExecutor::new(AgentState::default()));
+        let shared = SharedRunner::new_with_message_executor_and_restore(
+            config.clone(),
+            executor.clone(),
+            None,
+        );
+        assert_eq!(
+            shared
+                .runtime_receipt()
+                .as_ref()
+                .map(|receipt| receipt.kind),
+            Some(RuntimeReceiptKind::Ready)
+        );
+
+        let model = if invalid_field == "model" {
+            invalid_model.clone()
+        } else {
+            "valid-model".to_string()
+        };
+        let provider = if invalid_field == "provider" {
+            invalid_provider.clone()
+        } else {
+            "valid-provider".to_string()
+        };
+        *executor.state.lock().expect("state") = AgentState {
+            model: Some(invalid_model.clone()),
+            provider: Some(invalid_provider.clone()),
+            ..AgentState::default()
+        };
+        {
+            let mut state = shared.state.lock().expect("state");
+            shared.publish_message(
+                &mut state,
+                FromAgentMessage::Ready {
+                    protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
+                    model,
+                    provider,
+                    session_id: None,
+                },
+            );
+            assert!(
+                !state.ready,
+                "invalid {invalid_field} must not remain ready"
+            );
+            assert!(state.runtime_failed);
+            assert!(state.runtime_receipt.is_none());
+            assert_eq!(
+                state.last_error_type.as_deref(),
+                Some("invalid_runtime_receipt_identity")
+            );
+            let snapshot = shared.public_snapshot(&state);
+            assert!(snapshot.state.model.is_none());
+            assert!(snapshot.state.provider.is_none());
+        }
+        assert!(!shared.identity().ready);
+
+        drop(shared);
+        let loaded = ThreadJournal::load(workspace.path(), "sess_test", config.runtime_generation)
+            .expect("load invalid binding journal");
+        assert!(loaded.persisted_runtime_model.is_none());
+        assert!(loaded.persisted_runtime_provider.is_none());
+        let journal_events =
+            serde_json::to_string(&loaded.events).expect("serialize journal events");
+        assert!(!journal_events.contains(&invalid_model));
+        assert!(!journal_events.contains(&invalid_provider));
+        drop(loaded);
+
+        let restarted = SharedRunner::new_with_message_executor_and_restore(
+            config,
+            Arc::new(StatefulRuntimeExecutor::new(AgentState::default())),
+            None,
+        );
+        let state = restarted.state.lock().expect("restarted state");
+        assert!(!state.ready);
+        assert!(state.runtime_failed);
+        assert_eq!(
+            state.last_error_type.as_deref(),
+            Some("invalid_runtime_receipt_identity")
+        );
+        assert_eq!(
+            state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+            Some(RuntimeReceiptKind::Failed)
+        );
+        let receipt = state.runtime_receipt.as_ref().expect("failed receipt");
+        assert!(receipt.model.is_none());
+        assert!(receipt.provider.is_none());
+        assert!(state.runtime_model_binding.is_none());
+        assert!(state.runtime_provider_binding.is_none());
+    }
+}
+
+#[tokio::test]
+async fn oversized_supervisor_binding_fails_before_listener_bind_and_ready_receipt() {
+    for (field, model, provider) in [
+        (
+            "model",
+            "m".repeat(maestro_runtime::MAX_RUNTIME_RECEIPT_STRING_BYTES + 1),
+            "valid-provider".to_string(),
+        ),
+        (
+            "provider",
+            "valid-model".to_string(),
+            "p".repeat(maestro_runtime::MAX_RUNTIME_RECEIPT_STRING_BYTES + 1),
+        ),
+    ] {
+        let workspace = tempdir().expect("workspace");
+        let reserved = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reserve listener address");
+        let bind_addr = reserved.local_addr().expect("reserved listener address");
+        drop(reserved);
+        let mut config = test_config(workspace.path().to_path_buf());
+        config.bind_addr = bind_addr;
+        let executor = Arc::new(StatefulRuntimeExecutor::new(AgentState {
+            model: Some(model),
+            provider: Some(provider),
+            ..AgentState::default()
+        }));
+
+        let error = match start_hosted_runner_with_message_executor(config, executor).await {
+            Ok(_) => panic!("invalid supervisor binding must fail before listener bind"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains(field));
+        assert!(error.to_string().contains("runtime receipt limit"));
+
+        let rebound = tokio::net::TcpListener::bind(bind_addr)
+            .await
+            .expect("failed startup must leave listener unbound");
+        drop(rebound);
+    }
+}
+
+#[test]
+fn runtime_failure_receipt_preserves_origin_category() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    shared.publish_runtime_error(
+        "event_pump_failed",
+        HostedRunnerError::internal("native headless agent disconnected"),
+    );
+
+    let receipt = shared.runtime_receipt().expect("runtime failure receipt");
+    assert_eq!(receipt.kind, RuntimeReceiptKind::Failed);
+    assert_eq!(receipt.error_type.as_deref(), Some("event_pump_failed"));
+}
+
+#[test]
+fn ready_event_cannot_replace_a_durable_runtime_failure() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    shared.publish_runtime_error(
+        "event_pump_failed",
+        HostedRunnerError::internal("native headless agent disconnected"),
+    );
+    {
+        let mut state = shared.state.lock().expect("state");
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::Ready {
+                protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
+                model: "reconnected-model".to_string(),
+                provider: "reconnected-provider".to_string(),
+                session_id: None,
+            },
+        );
+    }
+    let receipt = shared
+        .runtime_receipt()
+        .expect("failed receipt remains published");
+    assert_eq!(receipt.kind, RuntimeReceiptKind::Failed);
+    assert_eq!(receipt.error_type.as_deref(), Some("event_pump_failed"));
+    let state = shared.state.lock().expect("state");
+    assert!(state.runtime_failed);
+    assert!(!state.ready);
+}
+
+#[test]
+fn same_generation_restart_recovers_idle_runtime_failure_and_fences_attachments() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let shared = SharedRunner::new(config.clone());
+    shared.publish_runtime_error(
+        "event_pump_failed",
+        HostedRunnerError::internal("native headless agent disconnected"),
+    );
+    drop(shared);
+
+    let restarted = SharedRunner::new(config);
+    let receipt = restarted
+        .runtime_receipt()
+        .expect("failed receipt survives restart without a turn");
+    assert_eq!(receipt.kind, RuntimeReceiptKind::Failed);
+    assert_eq!(receipt.lifecycle_state, RuntimeLifecycleState::Failed);
+    assert_eq!(receipt.error_type.as_deref(), Some("event_pump_failed"));
+    let state = restarted.state.lock().expect("restarted state");
+    assert!(!state.ready);
+    assert!(!state.draining);
+    assert!(state.runtime_failed);
+    drop(state);
+    let error = restarted
+        .ensure_attachable()
+        .expect_err("a failed generation must not become attachable after restart");
+    assert_eq!(error.code, HostedRunnerErrorCode::RuntimeFailed);
+}
+
+#[tokio::test]
+async fn retryable_dispatch_failure_does_not_fence_same_generation_restart() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let handle = start_hosted_runner_with_message_executor(
+        config.clone(),
+        Arc::new(RetryableDispatchFailureExecutor),
+    )
+    .await
+    .expect("start hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), "conn_retryable_dispatch").await;
+
+    let response = client
+        .post(format!(
+            "{}/api/headless/threads/sess_test/turns",
+            handle.base_url()
+        ))
+        .header(
+            "x-maestro-headless-connection-id",
+            "conn_retryable_dispatch",
+        )
+        .header("x-maestro-headless-subscriber-id", &subscription_id)
+        .header("x-maestro-headless-connection-capability", &capability)
+        .header("x-maestro-runtime-generation", "0")
+        .json(&json!({
+            "protocolVersion": THREAD_PROTOCOL_VERSION,
+            "turnId": "turn-retryable-dispatch",
+            "kind": "user_message",
+            "content": "dispatch may be retried"
+        }))
+        .send()
+        .await
+        .expect("dispatch response");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    {
+        let state = handle.shared.state.lock().expect("live state");
+        assert!(
+            state.ready,
+            "a turn dispatch failure must not fence runtime readiness"
+        );
+        assert!(!state.runtime_failed);
+        assert_eq!(
+            state
+                .thread
+                .turn("turn-retryable-dispatch")
+                .expect("failed turn remains auditable")
+                .phase,
+            ThreadPhase::Failed
+        );
+    }
+    handle.shutdown().await;
+
+    let restarted = start_hosted_runner_with_message_executor(
+        config,
+        Arc::new(RetryableDispatchFailureExecutor),
+    )
+    .await
+    .expect("restart hosted runner");
+    let receipt = restarted.shared.runtime_receipt().expect("restart receipt");
+    assert_eq!(receipt.kind, RuntimeReceiptKind::Ready);
+    assert_eq!(
+        receipt.lifecycle_state,
+        RuntimeLifecycleState::ExecutionReady
+    );
+    {
+        let state = restarted.shared.state.lock().expect("restarted state");
+        assert!(state.ready);
+        assert!(!state.runtime_failed);
+    }
+    restarted.shutdown().await;
+}
+
+#[test]
+fn same_generation_restart_scans_past_failed_steer_for_interrupted_run() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let shared = SharedRunner::new(config.clone());
+    {
+        let mut state = shared.state.lock().expect("state");
+        state.thread.append(
+            AppendTurnRequest {
+                protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                turn_id: "turn-active".to_string(),
+                kind: ThreadTurnKind::UserMessage,
+                content: "active run".to_string(),
+                attachments: None,
+                code_mode: None,
+                tool_grant: None,
+            },
+            1,
+        );
+        state.thread.mark_dispatched(2);
+        state.thread.append(
+            AppendTurnRequest {
+                protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                turn_id: "turn-failed-steer".to_string(),
+                kind: ThreadTurnKind::Steer,
+                content: "retryable steer".to_string(),
+                attachments: None,
+                code_mode: None,
+                tool_grant: None,
+            },
+            3,
+        );
+        state.thread.mark_failed(4);
+        assert_eq!(state.thread.phase(), ThreadPhase::Running);
+        shared
+            .persist_thread_for_request(&state)
+            .expect("persist active run and failed steer");
+    }
+    drop(shared);
+
+    let restarted = SharedRunner::new(config);
+    let receipt = restarted
+        .runtime_receipt()
+        .expect("interrupted run must remain auditable after restart");
+    assert_eq!(receipt.kind, RuntimeReceiptKind::Terminal);
+    assert_eq!(
+        receipt.terminal,
+        Some(RuntimeTerminalClassification::Interrupted)
+    );
+}
+
+#[test]
+fn same_generation_restart_does_not_resurrect_terminal_after_failed_user_turn() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let shared = SharedRunner::new(config.clone());
+    {
+        let mut state = shared.state.lock().expect("state");
+        state.thread.append(
+            AppendTurnRequest {
+                protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                turn_id: "turn-completed-user".to_string(),
+                kind: ThreadTurnKind::UserMessage,
+                content: "completed user turn".to_string(),
+                attachments: None,
+                code_mode: None,
+                tool_grant: None,
+            },
+            1,
+        );
+        state.thread.mark_dispatched(2);
+        state.thread.apply_agent_message(
+            &FromAgentMessage::TurnCompleted {
+                response_id: "response-completed-user".to_string(),
+            },
+            3,
+        );
+        state.thread.append(
+            AppendTurnRequest {
+                protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                turn_id: "turn-failed-user".to_string(),
+                kind: ThreadTurnKind::UserMessage,
+                content: "failed user turn".to_string(),
+                attachments: None,
+                code_mode: None,
+                tool_grant: None,
+            },
+            4,
+        );
+        state.thread.mark_failed(5);
+        shared
+            .persist_thread_for_request(&state)
+            .expect("persist completed and failed user turns");
+    }
+    drop(shared);
+
+    let restarted = SharedRunner::new(config);
+    let receipt = restarted
+        .runtime_receipt()
+        .expect("restart receipt remains available");
+    assert_eq!(receipt.kind, RuntimeReceiptKind::Ready);
+    assert_eq!(receipt.terminal, None);
+    let state = restarted.state.lock().expect("restarted state");
+    assert!(state.ready);
+    assert!(!state.runtime_failed);
+}
+
+#[test]
+fn replacement_generation_does_not_replay_old_lifecycle_envelopes_on_restart() {
+    let workspace = tempdir().expect("workspace");
+    let old_config = test_config(workspace.path().to_path_buf());
+    let old = SharedRunner::new(old_config);
+    {
+        let mut state = old.state.lock().expect("old state");
+        state.ready = false;
+        state.draining = true;
+        state.last_status = Some("Drained".to_string());
+        assert!(old.publish_snapshot(&mut state));
+    }
+    drop(old);
+
+    let replacement_config = test_config(workspace.path().to_path_buf()).with_runtime_generation(1);
+    let replacement = SharedRunner::new(replacement_config.clone());
+    let receipt = replacement
+        .runtime_receipt()
+        .expect("replacement generation receipt");
+    assert_eq!(receipt.kind, RuntimeReceiptKind::Ready);
+    assert!(
+        !replacement
+            .state
+            .lock()
+            .expect("replacement state")
+            .draining
+    );
+    drop(replacement);
+
+    let restarted = SharedRunner::new(replacement_config);
+    let receipt = restarted
+        .runtime_receipt()
+        .expect("replacement restart receipt");
+    assert_eq!(receipt.kind, RuntimeReceiptKind::Ready);
+    assert!(!restarted.state.lock().expect("restarted state").draining);
+}
+
+#[tokio::test]
+async fn runtime_receipt_endpoint_and_state_field_are_additive() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf())
+        .with_auth_token("sentinel-runtime-receipt-auth-token");
+    let handle = start_hosted_runner(config)
+        .await
+        .expect("start hosted runner");
+    let client = reqwest::Client::new();
+
+    let receipt: serde_json::Value = client
+        .get(format!(
+            "{}{}",
+            handle.base_url(),
+            HOSTED_RUNNER_RECEIPT_PATH
+        ))
+        .send()
+        .await
+        .expect("receipt response")
+        .json()
+        .await
+        .expect("receipt json");
+    assert_eq!(receipt["kind"], "ready");
+    assert_eq!(receipt["lifecycleState"], "execution_ready");
+    assert!(receipt["flushWatermark"].as_u64().unwrap_or_default() > 0);
+    assert!(!receipt
+        .to_string()
+        .contains("sentinel-runtime-receipt-auth-token"));
+    assert!(!receipt.to_string().contains("token"));
+
+    let health: serde_json::Value = client
+        .get(format!("{}/readyz", handle.base_url()))
+        .send()
+        .await
+        .expect("health response")
+        .json()
+        .await
+        .expect("health json");
+    assert_eq!(health, json!({"ok": true}));
+    assert!(health.get("runtime_receipt").is_none());
+
+    let state: serde_json::Value = client
+        .get(format!(
+            "{}/api/headless/sessions/sess_test/state",
+            handle.base_url()
+        ))
+        .header(
+            "authorization",
+            "Bearer sentinel-runtime-receipt-auth-token",
+        )
+        .send()
+        .await
+        .expect("state response")
+        .json()
+        .await
+        .expect("state json");
+    assert_eq!(state["runtime_receipt"], receipt);
+    assert!(state["state"].is_object());
+    handle.shutdown().await;
+}
+
+#[test]
 fn failed_terminal_journal_write_does_not_publish_or_replay_the_terminal() {
     let workspace = tempdir().expect("workspace");
     let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
@@ -167,16 +930,534 @@ fn failed_terminal_journal_write_does_not_publish_or_replay_the_terminal() {
     );
 
     assert_eq!(state.cursor, 0, "failed boundary must restore its cursor");
-    assert!(
-        state.envelopes.is_empty(),
-        "failed boundary must not enter replay"
-    );
     assert!(state.runtime_failed);
     assert!(!state.ready);
+    assert!(state.envelopes.iter().all(|envelope| !matches!(
+        envelope,
+        StreamEnvelope::Message { message, .. }
+            if matches!(message.as_ref(), FromAgentMessage::TurnCompleted { .. })
+    )));
+    assert!(state.envelopes.iter().any(|envelope| matches!(
+        envelope,
+        StreamEnvelope::Snapshot { snapshot }
+            if snapshot.state.last_status.as_deref() == Some("Runtime failed")
+    )));
+    assert!(
+        state.runtime_receipt.is_none(),
+        "an uncommitted lifecycle failure must not expose the prior Ready receipt"
+    );
+    // A later terminal message from the same drained executor batch must not
+    // replace the failed boundary with terminal evidence.
+    shared.publish_message(
+        &mut state,
+        FromAgentMessage::TurnCompleted {
+            response_id: "response_trailing_after_failure".to_string(),
+        },
+    );
+    shared.retry_thread_persistence(&mut state);
+    assert_eq!(
+        state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+        Some(RuntimeReceiptKind::Failed)
+    );
+    assert!(state.envelopes.iter().all(|envelope| !matches!(
+        envelope,
+        StreamEnvelope::Message { message, .. }
+            if matches!(message.as_ref(), FromAgentMessage::TurnCompleted { .. })
+    )));
     assert!(matches!(
         events.try_recv(),
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)
     ));
+}
+
+struct FailingTerminalFlushExecutor {
+    flush_calls: Arc<AtomicUsize>,
+}
+
+impl HostedRunnerHeadlessMessageExecutor for FailingTerminalFlushExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        _message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        Ok(HostedRunnerHeadlessMessageResult::transport_only(
+            Vec::new(),
+            "session flush failure fixture",
+        ))
+    }
+
+    fn flush_session(&self) -> Result<Option<PathBuf>, HostedRunnerError> {
+        self.flush_calls.fetch_add(1, Ordering::AcqRel);
+        Err(HostedRunnerError::internal(
+            "scripted session recorder flush failure",
+        ))
+    }
+}
+
+#[test]
+fn terminal_receipt_waits_for_session_recorder_flush() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let flush_calls = Arc::new(AtomicUsize::new(0));
+    let shared = SharedRunner::new_with_message_executor_and_restore(
+        config.clone(),
+        Arc::new(FailingTerminalFlushExecutor {
+            flush_calls: flush_calls.clone(),
+        }),
+        None,
+    );
+    let mut events = shared.events.subscribe();
+
+    {
+        let mut state = shared.state.lock().expect("state");
+        let cursor = state.cursor;
+        state.thread.append(
+            AppendTurnRequest {
+                protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                turn_id: "session-flush-failure-turn".to_string(),
+                kind: ThreadTurnKind::UserMessage,
+                content: "terminal requires a flushed session".to_string(),
+                attachments: None,
+                code_mode: None,
+                tool_grant: None,
+            },
+            cursor,
+        );
+        state.thread.mark_dispatched(cursor.saturating_add(1));
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::TurnCompleted {
+                response_id: "session-flush-failure-response".to_string(),
+            },
+        );
+
+        assert_eq!(flush_calls.load(Ordering::Acquire), 1);
+        assert!(state.runtime_failed);
+        assert!(!state.ready);
+        assert_eq!(
+            state.last_error_type.as_deref(),
+            Some("session_recorder_flush_failed")
+        );
+        assert_eq!(
+            state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+            Some(RuntimeReceiptKind::Failed)
+        );
+        assert!(state.envelopes.iter().any(|envelope| {
+            matches!(
+                envelope,
+                StreamEnvelope::Snapshot { snapshot }
+                    if snapshot.state.last_status.as_deref() == Some("Runtime failed")
+            )
+        }));
+        assert!(state.envelopes.iter().all(|envelope| !matches!(
+            envelope,
+            StreamEnvelope::Message { message, .. }
+                if matches!(message.as_ref(), FromAgentMessage::TurnCompleted { .. })
+        )));
+    }
+
+    let live_receipt = shared.runtime_receipt().expect("failed receipt");
+    assert_eq!(live_receipt.kind, RuntimeReceiptKind::Failed);
+    assert_eq!(
+        live_receipt.error_type.as_deref(),
+        Some("session_recorder_flush_failed")
+    );
+    assert!(matches!(
+        events.try_recv(),
+        Ok(StreamEnvelope::Snapshot { snapshot })
+            if snapshot.state.last_status.as_deref() == Some("Runtime failed")
+    ));
+
+    drop(shared);
+    let restarted = SharedRunner::new(config);
+    let restarted_receipt = restarted
+        .runtime_receipt()
+        .expect("failed flush boundary must survive restart");
+    assert_eq!(restarted_receipt.kind, RuntimeReceiptKind::Failed);
+    assert_eq!(
+        restarted_receipt.error_type.as_deref(),
+        Some("session_recorder_flush_failed")
+    );
+}
+
+#[test]
+fn failed_session_flush_does_not_replay_terminal_when_failure_fence_write_fails() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let flush_calls = Arc::new(AtomicUsize::new(0));
+    let shared = SharedRunner::new_with_message_executor_and_restore(
+        config.clone(),
+        Arc::new(FailingTerminalFlushExecutor {
+            flush_calls: flush_calls.clone(),
+        }),
+        None,
+    );
+    shared.fail_next_thread_persistences(1);
+
+    {
+        let mut state = shared.state.lock().expect("state");
+        let cursor = state.cursor;
+        state.thread.append(
+            AppendTurnRequest {
+                protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                turn_id: "session-flush-fence-write-turn".to_string(),
+                kind: ThreadTurnKind::UserMessage,
+                content: "do not replay an unflushed terminal".to_string(),
+                attachments: None,
+                code_mode: None,
+                tool_grant: None,
+            },
+            cursor,
+        );
+        state.thread.mark_dispatched(cursor.saturating_add(1));
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::TurnCompleted {
+                response_id: "session-flush-fence-write-response".to_string(),
+            },
+        );
+        assert_eq!(flush_calls.load(Ordering::Acquire), 1);
+        assert!(state.runtime_receipt.is_none());
+        assert!(state.envelopes.iter().all(|envelope| !matches!(
+            envelope,
+            StreamEnvelope::Message { message, .. }
+                if matches!(message.as_ref(), FromAgentMessage::TurnCompleted { .. })
+        )));
+        assert!(shared
+            .thread_persistence_retry_pending
+            .load(Ordering::Acquire));
+    }
+
+    drop(shared);
+    let restarted = SharedRunner::new(config);
+    let restarted_receipt = restarted
+        .runtime_receipt()
+        .expect("prior ready boundary remains the only durable evidence");
+    assert_eq!(restarted_receipt.kind, RuntimeReceiptKind::Ready);
+    assert_ne!(restarted_receipt.kind, RuntimeReceiptKind::Terminal);
+}
+
+#[test]
+fn terminal_receipt_keeps_durable_model_provider_binding_across_restart() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let shared = SharedRunner::new_with_message_executor_and_restore(
+        config.clone(),
+        Arc::new(StatefulRuntimeExecutor::new(AgentState {
+            model: Some("durable-model".to_string()),
+            provider: Some("durable-provider".to_string()),
+            ..AgentState::default()
+        })),
+        None,
+    );
+    {
+        let mut state = shared.state.lock().expect("state");
+        let cursor = state.cursor;
+        state.thread.append(
+            AppendTurnRequest {
+                protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                turn_id: "durable-binding-turn".to_string(),
+                kind: ThreadTurnKind::UserMessage,
+                content: "persist the model binding".to_string(),
+                attachments: None,
+                code_mode: None,
+                tool_grant: None,
+            },
+            cursor,
+        );
+        state.thread.mark_dispatched(cursor.saturating_add(1));
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::TurnCompleted {
+                response_id: "durable-binding-response".to_string(),
+            },
+        );
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::Ready {
+                protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
+                model: "late-ready-model".to_string(),
+                provider: "late-ready-provider".to_string(),
+                session_id: None,
+            },
+        );
+    }
+    let live_receipt = shared.runtime_receipt().expect("live terminal receipt");
+    assert_eq!(live_receipt.model.as_deref(), Some("durable-model"));
+    assert_eq!(live_receipt.provider.as_deref(), Some("durable-provider"));
+    drop(shared);
+
+    let restarted = SharedRunner::new(config);
+    let restarted_receipt = restarted
+        .runtime_receipt()
+        .expect("terminal receipt after restart");
+    assert_eq!(restarted_receipt.kind, RuntimeReceiptKind::Terminal);
+    assert_eq!(restarted_receipt.model.as_deref(), Some("durable-model"));
+    assert_eq!(
+        restarted_receipt.provider.as_deref(),
+        Some("durable-provider")
+    );
+}
+
+#[test]
+fn next_generation_does_not_reuse_persisted_model_provider_binding() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let shared = SharedRunner::new_with_message_executor_and_restore(
+        config.clone(),
+        Arc::new(StatefulRuntimeExecutor::new(AgentState {
+            model: Some("generation-zero-model".to_string()),
+            provider: Some("generation-zero-provider".to_string()),
+            ..AgentState::default()
+        })),
+        None,
+    );
+    drop(shared);
+
+    let next_generation = SharedRunner::new(config.with_runtime_generation(1));
+    let receipt = next_generation
+        .runtime_receipt()
+        .expect("next-generation ready receipt");
+    assert_eq!(receipt.model.as_deref(), Some("rust-hosted-runner"));
+    assert_eq!(receipt.provider.as_deref(), Some("rust"));
+}
+
+#[test]
+fn fatal_runtime_error_retries_failed_boundary_after_pump_stop() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let shared = SharedRunner::new(config.clone());
+    shared.fail_next_thread_persistences(1);
+
+    shared.publish_runtime_error(
+        "event_pump_failed",
+        HostedRunnerError::internal("event pump stopped"),
+    );
+
+    let receipt = shared
+        .runtime_receipt()
+        .expect("synchronous retry must publish failed receipt");
+    assert_eq!(receipt.kind, RuntimeReceiptKind::Failed);
+    assert_eq!(receipt.error_type.as_deref(), Some("event_pump_failed"));
+    drop(shared);
+
+    let restarted = SharedRunner::new(config);
+    let restarted_receipt = restarted
+        .runtime_receipt()
+        .expect("failed boundary must survive restart");
+    assert_eq!(restarted_receipt.kind, RuntimeReceiptKind::Failed);
+    assert_eq!(
+        restarted_receipt.error_type.as_deref(),
+        Some("event_pump_failed")
+    );
+}
+
+#[tokio::test]
+async fn fatal_runtime_error_recovery_continues_after_inline_retry_failure() {
+    struct FailingDrainExecutor;
+    impl HostedRunnerHeadlessMessageExecutor for FailingDrainExecutor {
+        fn execute(
+            &self,
+            _context: &HostedRunnerHeadlessMessageContext,
+            _message: ToAgentMessage,
+        ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+            Ok(HostedRunnerHeadlessMessageResult::transport_only(
+                Vec::new(),
+                "scripted",
+            ))
+        }
+
+        fn drain(&self) -> Result<HostedRunnerDrainResult, HostedRunnerError> {
+            Err(HostedRunnerError::internal("scripted drain failure"))
+        }
+    }
+
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let shared = SharedRunner::new_with_message_executor_and_restore(
+        config.clone(),
+        Arc::new(FailingDrainExecutor),
+        None,
+    );
+    // The fatal event write and the inline recovery retry both fail. The
+    // independent recovery supervisor must complete the durable failure
+    // boundary after the event-pump error path returns.
+    shared.fail_next_thread_persistences(2);
+
+    assert_eq!(pump_tick(&shared), PumpTick::Stop);
+
+    let receipt = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(receipt) = shared.runtime_receipt() {
+                if receipt.kind == RuntimeReceiptKind::Failed {
+                    break receipt;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("independent recovery supervisor must converge");
+    assert_eq!(receipt.error_type.as_deref(), Some("event_pump_failed"));
+    assert!(!shared
+        .thread_persistence_retry_pending
+        .load(Ordering::Acquire));
+    drop(shared);
+
+    let restarted = SharedRunner::new(config);
+    let restarted_receipt = restarted
+        .runtime_receipt()
+        .expect("recovered failure boundary must survive restart");
+    assert_eq!(restarted_receipt.kind, RuntimeReceiptKind::Failed);
+    assert_eq!(
+        restarted_receipt.error_type.as_deref(),
+        Some("event_pump_failed")
+    );
+}
+
+#[tokio::test]
+async fn shutdown_cancels_persistence_recovery_before_releasing_journal() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let handle = start_hosted_runner_with_message_executor(
+        config.clone(),
+        Arc::new(ScriptedRuntimeExecutor),
+    )
+    .await
+    .expect("start hosted runner");
+
+    handle
+        .shared
+        .stop_event_pump()
+        .await
+        .expect("stop event pump");
+    handle.shared.fail_next_thread_persistences(usize::MAX);
+    handle.shared.publish_runtime_error(
+        "shutdown_persistence_failure",
+        HostedRunnerError::internal("journal remains unwritable during shutdown test"),
+    );
+    assert!(handle
+        .shared
+        .thread_persistence_retry_pending
+        .load(Ordering::Acquire));
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !handle
+            .shared
+            .thread_persistence_recovery_running
+            .load(Ordering::Acquire)
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("persistence recovery supervisor must start");
+
+    handle.shutdown().await;
+
+    let restarted =
+        start_hosted_runner_with_message_executor(config, Arc::new(ScriptedRuntimeExecutor))
+            .await
+            .expect("shutdown must release the journal lock before restart");
+    restarted.shutdown().await;
+}
+
+#[tokio::test]
+async fn stopped_event_pump_schedules_deferred_persistence_recovery() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let handle =
+        start_hosted_runner_with_message_executor(config, Arc::new(ScriptedRuntimeExecutor))
+            .await
+            .expect("start hosted runner");
+
+    handle
+        .shared
+        .stop_event_pump()
+        .await
+        .expect("stop event pump");
+    handle.shared.fail_next_thread_persistences(2);
+    {
+        let mut state = handle.shared.state.lock().expect("runner state");
+        assert!(!handle.shared.publish_snapshot(&mut state));
+    }
+    assert!(handle
+        .shared
+        .thread_persistence_retry_pending
+        .load(Ordering::Acquire));
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while handle
+            .shared
+            .thread_persistence_retry_pending
+            .load(Ordering::Acquire)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("deferred persistence must recover after the event pump stops");
+
+    handle.shutdown().await;
+}
+
+#[test]
+fn failed_snapshot_persistence_clears_ready_receipt_and_arms_retry() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    shared.fail_next_thread_persistences(1);
+
+    let mut state = shared.state.lock().expect("state");
+    assert!(!shared.publish_snapshot(&mut state));
+    assert!(state.runtime_failed);
+    assert!(state.runtime_receipt.is_none());
+    shared.retry_thread_persistence(&mut state);
+    assert_eq!(
+        state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+        Some(RuntimeReceiptKind::Failed)
+    );
+}
+
+#[test]
+fn failed_snapshot_persistence_replaces_a_terminal_receipt_after_retry() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    {
+        let mut state = shared.state.lock().expect("state");
+        let cursor = state.cursor;
+        state.thread.append(
+            AppendTurnRequest {
+                protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                turn_id: "snapshot-terminal-turn".to_string(),
+                kind: ThreadTurnKind::UserMessage,
+                content: "terminal before snapshot failure".to_string(),
+                attachments: None,
+                code_mode: None,
+                tool_grant: None,
+            },
+            cursor,
+        );
+        state.thread.mark_dispatched(cursor.saturating_add(1));
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::TurnCompleted {
+                response_id: "snapshot-terminal-response".to_string(),
+            },
+        );
+        assert_eq!(
+            state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+            Some(RuntimeReceiptKind::Terminal)
+        );
+
+        shared.fail_next_thread_persistences(1);
+        assert!(!shared.publish_snapshot(&mut state));
+        assert!(state.runtime_failed);
+        assert!(state.runtime_receipt.is_none());
+        shared.retry_thread_persistence(&mut state);
+        assert_eq!(
+            state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+            Some(RuntimeReceiptKind::Failed)
+        );
+    }
 }
 
 #[test]
@@ -196,6 +1477,19 @@ fn published_turn_terminals_survive_journal_reload_with_their_replay_envelopes()
         let expected_completed = matches!(terminal, FromAgentMessage::TurnCompleted { .. });
         {
             let mut state = shared.state.lock().expect("state");
+            state.thread.append(
+                AppendTurnRequest {
+                    protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                    turn_id: "reload-terminal-turn".to_string(),
+                    kind: ThreadTurnKind::UserMessage,
+                    content: "durably terminal turn".to_string(),
+                    attachments: None,
+                    code_mode: None,
+                    tool_grant: None,
+                },
+                1,
+            );
+            state.thread.mark_dispatched(2);
             shared.publish_message(&mut state, terminal);
         }
         drop(shared);
@@ -215,6 +1509,239 @@ fn published_turn_terminals_survive_journal_reload_with_their_replay_envelopes()
             ),
             _ => false,
         }));
+        let receipt = state.runtime_receipt.as_ref().expect("reloaded receipt");
+        assert_eq!(receipt.kind, RuntimeReceiptKind::Terminal);
+        assert_eq!(
+            receipt.terminal,
+            Some(if expected_completed {
+                RuntimeTerminalClassification::Completed
+            } else {
+                RuntimeTerminalClassification::ProviderFailed
+            })
+        );
+    }
+}
+
+#[test]
+fn startup_receipt_fences_old_generations_and_prefers_a_restored_interrupted_turn() {
+    let workspace = tempdir().expect("workspace");
+    let first_config = test_config(workspace.path().to_path_buf());
+    let shared = SharedRunner::new(first_config.clone());
+    {
+        let mut state = shared.state.lock().expect("state");
+        let interrupted_turn_cursor = state.cursor;
+        state.thread.append(
+            AppendTurnRequest {
+                protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                turn_id: "completed-turn".to_string(),
+                kind: ThreadTurnKind::UserMessage,
+                content: "completed work".to_string(),
+                attachments: None,
+                code_mode: None,
+                tool_grant: None,
+            },
+            0,
+        );
+        state.thread.mark_dispatched(1);
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::TurnCompleted {
+                response_id: "response-completed".to_string(),
+            },
+        );
+        state.thread.append(
+            AppendTurnRequest {
+                protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                turn_id: "interrupted-turn".to_string(),
+                kind: ThreadTurnKind::UserMessage,
+                content: "crashed work".to_string(),
+                attachments: None,
+                code_mode: None,
+                tool_grant: None,
+            },
+            interrupted_turn_cursor,
+        );
+        shared
+            .persist_thread_for_request(&state)
+            .expect("persist interrupted turn");
+    }
+    drop(shared);
+
+    let same_generation = SharedRunner::new(first_config);
+    let same_generation_receipt = same_generation
+        .runtime_receipt()
+        .expect("same-generation startup receipt");
+    assert_eq!(same_generation_receipt.kind, RuntimeReceiptKind::Terminal);
+    assert_eq!(
+        same_generation_receipt.terminal,
+        Some(RuntimeTerminalClassification::Interrupted)
+    );
+    drop(same_generation);
+
+    let next_generation =
+        SharedRunner::new(test_config(workspace.path().to_path_buf()).with_runtime_generation(1));
+    let next_generation_receipt = next_generation
+        .runtime_receipt()
+        .expect("next-generation startup receipt");
+    assert_eq!(next_generation_receipt.kind, RuntimeReceiptKind::Ready);
+    assert_eq!(next_generation_receipt.terminal, None);
+    drop(next_generation);
+
+    let next_generation_restart =
+        SharedRunner::new(test_config(workspace.path().to_path_buf()).with_runtime_generation(1));
+    let next_generation_restart_receipt = next_generation_restart
+        .runtime_receipt()
+        .expect("rebinding the old journal must not resurrect its terminal turn");
+    assert_eq!(
+        next_generation_restart_receipt.kind,
+        RuntimeReceiptKind::Ready
+    );
+    assert_eq!(next_generation_restart_receipt.terminal, None);
+}
+
+#[test]
+fn same_generation_restart_recovers_idle_drained_boundary_and_fences_attachments() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let shared = SharedRunner::new(config.clone());
+    {
+        let mut state = shared.state.lock().expect("state");
+        state.ready = false;
+        state.draining = true;
+        state.last_status = Some("Drained".to_string());
+        state.thread.set_snapshot_lineage("snapshot:drain-test");
+        assert!(shared.publish_snapshot(&mut state));
+    }
+    drop(shared);
+
+    let restarted = SharedRunner::new(config);
+    let receipt = restarted
+        .runtime_receipt()
+        .expect("drained receipt survives restart without a turn");
+    assert_eq!(receipt.kind, RuntimeReceiptKind::Drained);
+    assert_eq!(receipt.lifecycle_state, RuntimeLifecycleState::Drained);
+    assert_eq!(receipt.runtime_generation, 0);
+    assert_eq!(
+        receipt.snapshot_lineage.as_deref(),
+        Some("snapshot:drain-test")
+    );
+    let state = restarted.state.lock().expect("restarted state");
+    assert!(!state.ready);
+    assert!(state.draining);
+    assert_eq!(state.last_status.as_deref(), Some("Drained"));
+    drop(state);
+    let error = restarted
+        .ensure_attachable()
+        .expect_err("a drained generation must not become attachable after restart");
+    assert_eq!(error.code, HostedRunnerErrorCode::RuntimeNotReady);
+}
+
+#[test]
+fn terminal_error_classifications_survive_journal_reload() {
+    let cases = [
+        (
+            FromAgentMessage::Error {
+                request_id: None,
+                message: "cancelled".to_string(),
+                fatal: false,
+                terminal: true,
+                error_type: Some(crate::headless::messages::HeadlessErrorType::Cancelled),
+            },
+            RuntimeReceiptKind::Terminal,
+            Some(RuntimeTerminalClassification::Cancelled),
+            None,
+        ),
+        (
+            FromAgentMessage::Error {
+                request_id: None,
+                message: "protocol".to_string(),
+                fatal: false,
+                terminal: true,
+                error_type: Some(crate::headless::messages::HeadlessErrorType::Protocol),
+            },
+            RuntimeReceiptKind::Terminal,
+            Some(RuntimeTerminalClassification::Protocol),
+            None,
+        ),
+        (
+            FromAgentMessage::Error {
+                request_id: None,
+                message: "tool".to_string(),
+                fatal: false,
+                terminal: true,
+                error_type: Some(crate::headless::messages::HeadlessErrorType::Tool),
+            },
+            RuntimeReceiptKind::Terminal,
+            Some(RuntimeTerminalClassification::Tool),
+            None,
+        ),
+        (
+            FromAgentMessage::Error {
+                request_id: None,
+                message: "transient".to_string(),
+                fatal: false,
+                terminal: true,
+                error_type: Some(crate::headless::messages::HeadlessErrorType::Transient),
+            },
+            RuntimeReceiptKind::Terminal,
+            Some(RuntimeTerminalClassification::Transient),
+            None,
+        ),
+        (
+            FromAgentMessage::Error {
+                request_id: None,
+                message: "untyped".to_string(),
+                fatal: false,
+                terminal: true,
+                error_type: None,
+            },
+            RuntimeReceiptKind::Terminal,
+            Some(RuntimeTerminalClassification::NonFatal),
+            None,
+        ),
+        (
+            FromAgentMessage::Error {
+                request_id: None,
+                message: "fatal".to_string(),
+                fatal: true,
+                terminal: true,
+                error_type: Some(crate::headless::messages::HeadlessErrorType::Fatal),
+            },
+            RuntimeReceiptKind::Failed,
+            None,
+            Some("fatal"),
+        ),
+    ];
+
+    for (message, expected_kind, expected_terminal, expected_error_type) in cases {
+        let workspace = tempdir().expect("workspace");
+        let config = test_config(workspace.path().to_path_buf());
+        let shared = SharedRunner::new(config.clone());
+        {
+            let mut state = shared.state.lock().expect("state");
+            let cursor = state.cursor;
+            state.thread.append(
+                AppendTurnRequest {
+                    protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                    turn_id: "classification-turn".to_string(),
+                    kind: ThreadTurnKind::UserMessage,
+                    content: "durable classification".to_string(),
+                    attachments: None,
+                    code_mode: None,
+                    tool_grant: None,
+                },
+                cursor,
+            );
+            state.thread.mark_dispatched(cursor.saturating_add(1));
+            shared.publish_message(&mut state, message);
+        }
+        drop(shared);
+
+        let reloaded = SharedRunner::new(config);
+        let receipt = reloaded.runtime_receipt().expect("reloaded receipt");
+        assert_eq!(receipt.kind, expected_kind);
+        assert_eq!(receipt.terminal, expected_terminal);
+        assert_eq!(receipt.error_type.as_deref(), expected_error_type);
     }
 }
 
@@ -476,6 +2003,20 @@ fn identity_binding_failure_ids_are_bounded_without_changing_short_ids() {
 #[derive(Debug)]
 struct ScriptedRuntimeExecutor;
 
+struct RetryableDispatchFailureExecutor;
+
+impl HostedRunnerHeadlessMessageExecutor for RetryableDispatchFailureExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        _message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        Err(HostedRunnerError::internal(
+            "transient supervisor unavailable",
+        ))
+    }
+}
+
 struct SessionArtifactExecutor {
     session_file: std::path::PathBuf,
 }
@@ -618,6 +2159,11 @@ struct PendingThreadExecutor {
     prompts: Mutex<Vec<String>>,
 }
 
+#[derive(Debug, Default)]
+struct TerminalThenPendingExecutor {
+    calls: Mutex<usize>,
+}
+
 #[derive(Default)]
 struct DispatchPersistenceFailureExecutor {
     shared: Mutex<Option<SharedRunner>>,
@@ -687,6 +2233,40 @@ impl HostedRunnerHeadlessMessageExecutor for PendingThreadExecutor {
         Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
             Vec::new(),
             "thread prompt remains active",
+        ))
+    }
+}
+
+impl HostedRunnerHeadlessMessageExecutor for TerminalThenPendingExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        _message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        let mut calls = self.calls.lock().expect("terminal-then-pending calls");
+        let messages = if *calls == 0 {
+            vec![
+                FromAgentMessage::ResponseStart {
+                    response_id: "response-turn-a".to_string(),
+                },
+                FromAgentMessage::ResponseEnd {
+                    response_id: "response-turn-a".to_string(),
+                    usage: None,
+                    tools_summary: None,
+                    duration_ms: Some(1),
+                    ttft_ms: Some(1),
+                },
+                FromAgentMessage::TurnCompleted {
+                    response_id: "turn-a".to_string(),
+                },
+            ]
+        } else {
+            Vec::new()
+        };
+        *calls += 1;
+        Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+            messages,
+            "terminal-then-pending fixture handled prompt",
         ))
     }
 }
@@ -3688,7 +5268,8 @@ fn connection_headers_accept_evalops_subscription_aliases() {
 #[tokio::test]
 async fn identity_and_drain_follow_runner_contract() {
     let workspace = tempdir().expect("workspace");
-    let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+    let config = test_config(workspace.path().to_path_buf());
+    let handle = start_hosted_runner(config.clone())
         .await
         .expect("start hosted runner");
     let client = reqwest::Client::new();
@@ -3847,6 +5428,10 @@ async fn identity_and_drain_follow_runner_contract() {
         .expect("state json");
     assert_eq!(post_drain_state["state"]["is_ready"], false);
     assert_eq!(post_drain_state["state"]["last_status"], "Drained");
+    let source_lineage = drain["runtime_receipt"]["snapshotLineage"]
+        .as_str()
+        .expect("drain receipt lineage");
+    assert!(source_lineage.starts_with("snapshot:"));
 
     let attach = client
         .post(format!("{}/api/headless/connections", handle.base_url()))
@@ -3856,6 +5441,28 @@ async fn identity_and_drain_follow_runner_contract() {
         .expect("attach response");
     assert_eq!(attach.status(), StatusCode::SERVICE_UNAVAILABLE);
     handle.shutdown().await;
+
+    let restarted = start_hosted_runner(config)
+        .await
+        .expect("restart drained hosted runner");
+    let restarted_receipt: serde_json::Value = client
+        .get(format!(
+            "{}/.well-known/evalops/remote-runner/receipt",
+            restarted.base_url()
+        ))
+        .send()
+        .await
+        .expect("restarted receipt response")
+        .error_for_status()
+        .expect("restarted receipt status")
+        .json()
+        .await
+        .expect("restarted receipt json");
+    assert_eq!(
+        restarted_receipt["snapshotLineage"].as_str(),
+        Some(source_lineage)
+    );
+    restarted.shutdown().await;
 }
 
 #[tokio::test]
@@ -3948,6 +5555,18 @@ async fn drain_manifest_records_runtime_cursor_after_activity() {
         serde_json::from_slice(&manifest_bytes).expect("manifest json");
     assert!(drain["manifest"]["snapshot"]["state"]["controller_subscription_id"].is_null());
     assert!(manifest["snapshot"]["state"]["controller_subscription_id"].is_null());
+    assert_eq!(drain["runtime_receipt"]["kind"], "drained");
+    assert_eq!(drain["runtime_receipt"]["lifecycleState"], "drained");
+    assert_eq!(
+        drain["runtime_receipt"]["replayCursor"],
+        manifest["runtime"]["cursor"]
+    );
+    assert!(
+        drain["runtime_receipt"]["flushWatermark"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0
+    );
     assert_eq!(manifest["runtime"]["flush_status"], "completed");
     assert_eq!(
         typed_manifest.runtime.flush_status,
@@ -4117,6 +5736,12 @@ async fn restore_manifest_seeds_runtime_state_and_replay_marker() {
     let restored_cursor = drain["manifest"]["runtime"]["cursor"]
         .as_u64()
         .expect("manifest cursor");
+    let source_snapshot_lineage = format!(
+        "snapshot:{}",
+        drain["manifest"]["created_at"]
+            .as_str()
+            .expect("manifest creation time")
+    );
     let mut restore_manifest = drain["manifest"].clone();
     restore_manifest["snapshot"]["state"]["pending_approvals"] = json!([{
         "call_id": "completed-restore-approval-call",
@@ -4155,7 +5780,7 @@ async fn restore_manifest_seeds_runtime_state_and_replay_marker() {
     let mut restore_config = test_config(workspace.path().to_path_buf());
     restore_config.runner_session_id = "mrs_restored".to_string();
     restore_config.maestro_session_id = None;
-    restore_config.restore_manifest_path = Some(manifest_path);
+    restore_config.restore_manifest_path = Some(manifest_path.clone());
     let live_empty_state = AgentState {
         is_ready: true,
         ..AgentState::default()
@@ -4197,6 +5822,15 @@ async fn restore_manifest_seeds_runtime_state_and_replay_marker() {
     assert_eq!(state["cursor"], restored_cursor);
     assert_eq!(state["state"]["last_status"], "Restored from snapshot");
     assert_eq!(state["state"]["is_ready"], true);
+    assert_eq!(state["runtime_receipt"]["kind"], "restored");
+    assert_eq!(
+        state["runtime_receipt"]["lifecycleState"],
+        "execution_ready"
+    );
+    assert_eq!(
+        state["runtime_receipt"]["snapshotLineage"],
+        source_snapshot_lineage
+    );
     assert_eq!(
         state["state"]["pending_approvals"][0]["call_id"],
         "completed-restore-approval-call"
@@ -4998,7 +6632,7 @@ async fn failed_restore_manifest_stays_not_ready_and_rejects_attach() {
     let mut restore_config = test_config(workspace.path().to_path_buf());
     restore_config.runner_session_id = "mrs_partial_restored".to_string();
     restore_config.maestro_session_id = None;
-    restore_config.restore_manifest_path = Some(manifest_path);
+    restore_config.restore_manifest_path = Some(manifest_path.clone());
     let restored = start_hosted_runner_with_message_executor(
         restore_config,
         Arc::new(StatefulRuntimeExecutor::new(AgentState::default())),
@@ -5041,6 +6675,31 @@ async fn failed_restore_manifest_stays_not_ready_and_rejects_attach() {
     assert_eq!(state["state"]["last_error"], "flush timed out");
     assert_eq!(state["state"]["last_error_type"], "protocol");
     assert_eq!(state["state"]["is_ready"], false);
+    assert_eq!(state["runtime_receipt"]["kind"], "failed");
+    assert_eq!(state["runtime_receipt"]["lifecycleState"], "failed");
+    assert_eq!(state["runtime_receipt"]["errorType"], "restore_incomplete");
+
+    // A child may still emit Ready after an incomplete restore. That event is
+    // not evidence that the failed restore flush became durable; the
+    // generation must retain its not-ready receipt and fence.
+    {
+        let mut state = restored.shared.state.lock().expect("restored state");
+        restored.shared.publish_message(
+            &mut state,
+            FromAgentMessage::Ready {
+                protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
+                model: "late-ready-model".to_string(),
+                provider: "late-ready-provider".to_string(),
+                session_id: None,
+            },
+        );
+        assert!(state.restore_incomplete);
+        assert!(!state.ready);
+        assert_eq!(
+            state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+            Some(RuntimeReceiptKind::Failed)
+        );
+    }
     assert!(state["state"]["current_response"].is_null());
     assert_eq!(
         state["state"]["pending_approvals"][0]["call_id"],
@@ -5116,7 +6775,220 @@ async fn failed_restore_manifest_stays_not_ready_and_rejects_attach() {
     assert!(event_text.contains(r#""type":"reset""#));
     assert!(event_text.contains("Restore interrupted before runtime flush completed"));
 
+    drop(events_response);
     restored.shutdown().await;
+}
+
+#[tokio::test]
+async fn failed_restore_boundary_survives_restart_without_manifest() {
+    let workspace = tempdir().expect("workspace");
+    let source = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+    let response = handle_drain(
+        source.clone(),
+        DrainRequest {
+            reason: Some("failed restore restart fixture".to_string()),
+            requested_by: Some("hosted runner test".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    .expect("drain source runner");
+    let ResponseBody::Json { body, .. } = response else {
+        panic!("drain should return a manifest JSON response");
+    };
+    let manifest_path = PathBuf::from(body["manifest_path"].as_str().expect("manifest path"));
+    let mut manifest = body["manifest"].clone();
+    manifest["runtime"]["flush_status"] = json!("failed");
+    manifest["runtime"]["error"] = json!("flush timed out");
+    tokio::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("failed restore manifest JSON"),
+    )
+    .await
+    .expect("write failed restore manifest");
+    drop(source);
+
+    let restore_manifest = serde_json::from_value::<SnapshotManifest>(manifest)
+        .expect("failed restore manifest fixture");
+    let mut restore_config = test_config(workspace.path().to_path_buf());
+    restore_config.runner_session_id = "mrs_failed_restore_restart".to_string();
+    restore_config.maestro_session_id = None;
+    let first = SharedRunner::new_with_message_executor_and_restore(
+        restore_config,
+        Arc::new(TransportOnlyHostedRunnerMessageExecutor),
+        Some(restore_manifest),
+    );
+    assert_eq!(
+        first.runtime_receipt().as_ref().map(|receipt| receipt.kind),
+        Some(RuntimeReceiptKind::Failed)
+    );
+    drop(first);
+
+    let mut restart_config = test_config(workspace.path().to_path_buf());
+    restart_config.runner_session_id = "mrs_failed_restore_restart".to_string();
+    restart_config.maestro_session_id = Some("sess_test".to_string());
+    let restarted = SharedRunner::new(restart_config);
+    let state = restarted.state.lock().expect("restarted state");
+    assert!(!state.ready);
+    assert!(state.runtime_failed);
+    assert_eq!(state.last_status.as_deref(), Some("Runtime failed"));
+    assert_eq!(
+        state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+        Some(RuntimeReceiptKind::Failed)
+    );
+    assert_eq!(
+        state
+            .runtime_receipt
+            .as_ref()
+            .and_then(|receipt| receipt.error_type.as_deref()),
+        Some("restore_incomplete")
+    );
+}
+
+#[tokio::test]
+async fn completed_restore_failure_preserves_snapshot_error_category() {
+    let workspace = tempdir().expect("workspace");
+    let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+        .await
+        .expect("start hosted runner");
+    let drain = handle
+        .drain_for_shutdown("completed failed restore fixture", "hosted runner test")
+        .await
+        .expect("drain hosted runner");
+    let manifest_path = PathBuf::from(drain["manifest_path"].as_str().expect("manifest path"));
+    handle.shutdown().await;
+
+    let mut manifest = drain["manifest"].clone();
+    manifest["runtime"]["flush_status"] = json!("completed");
+    manifest["runtime"]["error"] = serde_json::Value::Null;
+    manifest["snapshot"]["state"]["last_status"] = json!("Runtime failed");
+    manifest["snapshot"]["state"]["last_error"] = json!("provider rejected the restored turn");
+    manifest["snapshot"]["state"]["last_error_type"] = json!("provider");
+    tokio::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+    )
+    .await
+    .expect("write completed failed manifest");
+
+    let mut config = test_config(workspace.path().to_path_buf());
+    config.runner_session_id = "mrs_completed_failed_restore".to_string();
+    config.maestro_session_id = None;
+    config.restore_manifest_path = Some(manifest_path);
+    let restored = start_hosted_runner(config)
+        .await
+        .expect("start completed-failed restored hosted runner");
+    let client = reqwest::Client::new();
+    let state: serde_json::Value = client
+        .get(format!(
+            "{}/api/headless/sessions/sess_test/state",
+            restored.base_url()
+        ))
+        .send()
+        .await
+        .expect("completed-failed state response")
+        .json()
+        .await
+        .expect("completed-failed state json");
+    assert_eq!(state["state"]["last_error_type"], "provider");
+    assert_eq!(state["runtime_receipt"]["errorType"], "provider");
+    assert_ne!(state["runtime_receipt"]["errorType"], "restore_incomplete");
+    assert_eq!(state["runtime_receipt"]["kind"], "failed");
+    restored.shutdown().await;
+}
+
+#[tokio::test]
+async fn oversized_restored_receipt_metadata_fails_before_listener_bind() {
+    let workspace = tempdir().expect("workspace");
+    let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+        .await
+        .expect("start hosted runner");
+    let drain = handle
+        .drain_for_shutdown("oversized metadata fixture", "hosted runner test")
+        .await
+        .expect("drain hosted runner");
+    let manifest_path = PathBuf::from(drain["manifest_path"].as_str().expect("manifest path"));
+    handle.shutdown().await;
+
+    for (field, value) in [
+        (
+            "model",
+            "m".repeat(maestro_runtime::MAX_RUNTIME_RECEIPT_STRING_BYTES + 1),
+        ),
+        (
+            "provider",
+            "p".repeat(maestro_runtime::MAX_RUNTIME_RECEIPT_STRING_BYTES + 1),
+        ),
+        (
+            "last_error_type",
+            "e".repeat(maestro_runtime::MAX_RUNTIME_RECEIPT_STRING_BYTES + 1),
+        ),
+    ] {
+        let mut manifest = drain["manifest"].clone();
+        manifest["runtime"]["flush_status"] = json!("completed");
+        manifest["snapshot"]["state"]["last_status"] = json!("Runtime failed");
+        manifest["snapshot"]["state"]["last_error"] = json!("restore failed");
+        manifest["snapshot"]["state"][field] = json!(value);
+        tokio::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+        )
+        .await
+        .expect("write oversized metadata manifest");
+
+        let mut config = test_config(workspace.path().to_path_buf());
+        config.runner_session_id = format!("mrs_oversized_{field}");
+        config.restore_manifest_path = Some(manifest_path.clone());
+        let error = match prepare_hosted_runner(config).await {
+            Ok(_) => panic!("oversized restored {field} must fail before listener bind"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains(field));
+        assert!(error.to_string().contains("runtime receipt limit"));
+    }
+
+    let mut manifest = drain["manifest"].clone();
+    manifest["runtime"]["flush_status"] = json!("completed");
+    manifest["snapshot"]["state"]["last_status"] = json!("Runtime failed");
+    manifest["snapshot"]["state"]["last_error"] = json!("restore failed");
+    manifest["snapshot"]["state"]["last_error_type"] = json!(" \t ");
+    tokio::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("whitespace error type manifest json"),
+    )
+    .await
+    .expect("write whitespace error type manifest");
+    let mut config = test_config(workspace.path().to_path_buf());
+    config.runner_session_id = "mrs_whitespace_error_type".to_string();
+    config.restore_manifest_path = Some(manifest_path.clone());
+    let error = match prepare_hosted_runner(config).await {
+        Ok(_) => panic!("whitespace restored last_error_type must fail before listener bind"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("last_error_type"));
+    assert!(error.to_string().contains("must not be empty"));
+
+    let mut manifest = drain["manifest"].clone();
+    manifest["created_at"] =
+        json!("created-at-".repeat(maestro_runtime::MAX_RUNTIME_RECEIPT_STRING_BYTES));
+    tokio::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("oversized lineage json"),
+    )
+    .await
+    .expect("write oversized lineage manifest");
+    let mut config = test_config(workspace.path().to_path_buf());
+    config.runner_session_id = "mrs_oversized_lineage".to_string();
+    config.restore_manifest_path = Some(manifest_path);
+    let error = match prepare_hosted_runner(config).await {
+        Ok(_) => panic!("oversized restored snapshot lineage must fail before listener bind"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(error.to_string().contains("snapshot_lineage"));
+    assert!(error.to_string().contains("runtime receipt limit"));
 }
 
 #[tokio::test]
@@ -5185,6 +7057,9 @@ async fn skipped_restore_manifest_stays_not_ready() {
     );
     assert_eq!(state["state"]["last_error_type"], "protocol");
     assert_eq!(state["state"]["is_ready"], false);
+    assert_eq!(state["runtime_receipt"]["kind"], "failed");
+    assert_eq!(state["runtime_receipt"]["lifecycleState"], "failed");
+    assert_eq!(state["runtime_receipt"]["errorType"], "restore_incomplete");
 
     restored.shutdown().await;
 }
@@ -5923,7 +7798,7 @@ async fn event_pump_failure_marks_runtime_failed_and_rejects_admission() {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(state.runtime_failed);
         assert_eq!(state.last_status.as_deref(), Some("Runtime failed"));
-        assert_eq!(state.last_error_type.as_deref(), Some("fatal"));
+        assert_eq!(state.last_error_type.as_deref(), Some("event_pump_failed"));
     }
     let client = reqwest::Client::new();
 
@@ -6002,7 +7877,7 @@ async fn child_exit_after_ready_revokes_identity_and_fails_closed() {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(state.runtime_failed);
         assert_eq!(state.last_status.as_deref(), Some("Runtime failed"));
-        assert_eq!(state.last_error_type.as_deref(), Some("fatal"));
+        assert_eq!(state.last_error_type.as_deref(), Some("event_pump_failed"));
         assert_eq!(
             state.last_error.as_deref(),
             Some("native headless agent disconnected after becoming ready")
@@ -7837,6 +9712,80 @@ async fn failed_accepted_turn_persistence_rolls_back_and_allows_a_clean_retry() 
 }
 
 #[tokio::test]
+async fn accepting_a_new_turn_clears_the_previous_terminal_receipt() {
+    let workspace = tempdir().expect("workspace");
+    let executor = Arc::new(TerminalThenPendingExecutor::default());
+    let handle = start_hosted_runner_with_message_executor(
+        test_config(workspace.path().to_path_buf()),
+        executor,
+    )
+    .await
+    .expect("start hosted runner");
+    let client = reqwest::Client::new();
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), "conn_receipt_turns").await;
+    let turns_url = format!("{}/api/headless/threads/sess_test/turns", handle.base_url());
+    let append_turn = |turn_id: &str, content: &str| {
+        client
+            .post(&turns_url)
+            .header("x-maestro-headless-connection-id", "conn_receipt_turns")
+            .header("x-maestro-headless-subscriber-id", &subscription_id)
+            .header("x-maestro-headless-connection-capability", &capability)
+            .header("x-maestro-runtime-generation", "0")
+            .json(&json!({
+                "protocolVersion": "evalops.maestro.thread.v1",
+                "turnId": turn_id,
+                "kind": "user_message",
+                "content": content
+            }))
+    };
+
+    let first: serde_json::Value = append_turn("turn-a", "first turn")
+        .send()
+        .await
+        .expect("first turn response")
+        .error_for_status()
+        .expect("first turn status")
+        .json()
+        .await
+        .expect("first turn json");
+    assert_eq!(first["phase"], "completed");
+    assert_eq!(
+        handle
+            .shared
+            .runtime_receipt()
+            .expect("terminal receipt for first turn")
+            .terminal,
+        Some(RuntimeTerminalClassification::Completed)
+    );
+
+    let second: serde_json::Value = append_turn("turn-b", "second turn")
+        .send()
+        .await
+        .expect("second turn response")
+        .error_for_status()
+        .expect("second turn status")
+        .json()
+        .await
+        .expect("second turn json");
+    assert_eq!(second["phase"], "running");
+    assert!(handle.shared.runtime_receipt().is_none());
+
+    let receipt = client
+        .get(format!(
+            "{}{}",
+            handle.base_url(),
+            HOSTED_RUNNER_RECEIPT_PATH
+        ))
+        .send()
+        .await
+        .expect("receipt response");
+    assert_eq!(receipt.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn failed_post_dispatch_persistence_returns_success_without_duplicate_dispatch() {
     let workspace = tempdir().expect("workspace");
     let executor = Arc::new(DispatchPersistenceFailureExecutor::default());
@@ -8465,7 +10414,7 @@ async fn queued_response_restarts_pending_and_consumes_once_after_child_exit() {
         &second_supervisor,
     )));
     let second = start_hosted_runner_with_message_executor(
-        test_config(workspace.path().to_path_buf()),
+        test_config(workspace.path().to_path_buf()).with_runtime_generation(1),
         second_executor,
     )
     .await
@@ -10789,9 +12738,819 @@ async fn pump_tick_stops_on_executor_drain_error_and_when_draining() {
     assert_eq!(pump_tick(&draining), PumpTick::Stop);
 }
 
-/// The drain endpoint must succeed even when the journal write for the
-/// drained response keys fails: aborting after `draining` was set rejected
-/// every later drain as "already draining" with no manifest ever produced.
+#[tokio::test]
+async fn drain_start_persistence_failure_is_synchronous_and_retryable() {
+    let workspace = tempdir().expect("workspace");
+    let shared = scripted_shared(Vec::new(), workspace.path());
+    shared.fail_next_thread_persistences(1);
+
+    let error = match handle_drain(
+        shared.clone(),
+        DrainRequest {
+            reason: Some("start-write-failure".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    {
+        Ok(_) => panic!("drain must fail before stopping the event pump"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, HostedRunnerErrorCode::RuntimeFailed);
+
+    {
+        let state = shared.state.lock().expect("runner state");
+        assert!(state.ready, "failed drain start must roll back readiness");
+        assert!(!state.draining, "failed drain start must remain retryable");
+        assert_eq!(state.last_status.as_deref(), Some("Ready"));
+        assert_eq!(
+            state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+            Some(RuntimeReceiptKind::Ready)
+        );
+    }
+    assert!(
+        !shared.event_pump_cancellation.is_cancelled(),
+        "the event pump must not be stopped before the draining boundary is durable"
+    );
+    assert!(!shared
+        .thread_persistence_retry_pending
+        .load(Ordering::Acquire));
+
+    let response = handle_drain(
+        shared,
+        DrainRequest {
+            reason: Some("retry-after-start-write-failure".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    .expect("a retry must be able to start the drain");
+    let ResponseBody::Json { status, body } = response else {
+        panic!("drain retry must return JSON");
+    };
+    assert_eq!(status, 200);
+    assert_eq!(body["status"], "drained");
+}
+
+#[test]
+fn durable_draining_boundary_is_recovered_before_executor_handoff() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new_with_message_executor_and_restore(
+        test_config(workspace.path().to_path_buf()),
+        Arc::new(ScriptedDrainExecutor::new(Vec::new())),
+        None,
+    );
+    {
+        let mut state = shared.state.lock().expect("runner state");
+        state.ready = false;
+        state.draining = true;
+        state.last_status = Some("Draining".to_string());
+        shared
+            .persist_receipt_boundary(&mut state, RuntimeReceiptKind::Draining, "test")
+            .expect("draining boundary must be durable");
+        assert_eq!(
+            state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+            Some(RuntimeReceiptKind::Draining)
+        );
+        assert!(state.envelopes.iter().any(|envelope| {
+            matches!(
+                envelope,
+                StreamEnvelope::Snapshot { snapshot }
+                    if snapshot.state.last_status.as_deref() == Some("Draining")
+            )
+        }));
+    }
+    drop(shared);
+
+    let restarted = SharedRunner::new_with_message_executor_and_restore(
+        test_config(workspace.path().to_path_buf()),
+        Arc::new(ScriptedDrainExecutor::new(Vec::new())),
+        None,
+    );
+    let state = restarted.state.lock().expect("restarted runner state");
+    assert!(
+        !state.ready,
+        "a restarted draining generation is not attachable"
+    );
+    assert!(state.draining);
+    assert!(state.drain_executor_pending);
+    assert_eq!(state.last_status.as_deref(), Some("Draining"));
+    assert_eq!(
+        state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+        Some(RuntimeReceiptKind::Draining)
+    );
+}
+
+#[test]
+fn draining_terminal_messages_keep_the_draining_receipt_until_finalization() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let shared = SharedRunner::new(config.clone());
+    {
+        let mut state = shared.state.lock().expect("runner state");
+        let cursor = state.cursor;
+        state.thread.append(
+            AppendTurnRequest {
+                protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+                turn_id: "draining-terminal-turn".to_string(),
+                kind: ThreadTurnKind::UserMessage,
+                content: "finish while draining".to_string(),
+                attachments: None,
+                code_mode: None,
+                tool_grant: None,
+            },
+            cursor,
+        );
+        state.thread.mark_dispatched(cursor.saturating_add(1));
+        shared
+            .persist_thread_for_request(&state)
+            .expect("active turn must be durable before drain");
+        state.ready = false;
+        state.draining = true;
+        state.last_status = Some("Draining".to_string());
+        shared
+            .persist_receipt_boundary(&mut state, RuntimeReceiptKind::Draining, "test")
+            .expect("draining boundary must be durable");
+
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::TurnCompleted {
+                response_id: "draining-terminal-response".to_string(),
+            },
+        );
+
+        assert_eq!(state.last_status.as_deref(), Some("Draining"));
+        assert_eq!(
+            state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+            Some(RuntimeReceiptKind::Draining)
+        );
+    }
+
+    drop(shared);
+    let restarted = SharedRunner::new(config);
+    let restarted_receipt = restarted
+        .runtime_receipt()
+        .expect("restart must retain the draining boundary");
+    assert_eq!(restarted_receipt.kind, RuntimeReceiptKind::Draining);
+    let state = restarted.state.lock().expect("restarted runner state");
+    assert!(state.draining);
+    assert!(!state.ready);
+}
+
+struct FailOnceDrainExecutor {
+    failed: AtomicBool,
+}
+
+impl HostedRunnerHeadlessMessageExecutor for FailOnceDrainExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        _message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        Ok(HostedRunnerHeadlessMessageResult::transport_only(
+            Vec::new(),
+            "scripted",
+        ))
+    }
+
+    fn drain(&self) -> Result<HostedRunnerDrainResult, HostedRunnerError> {
+        if !self.failed.swap(true, Ordering::AcqRel) {
+            Err(HostedRunnerError::internal(
+                "scripted retryable drain failure",
+            ))
+        } else {
+            Ok(HostedRunnerDrainResult::default())
+        }
+    }
+}
+
+#[tokio::test]
+async fn executor_drain_failure_preserves_a_retryable_draining_phase() {
+    let workspace = tempdir().expect("workspace");
+    let shared = SharedRunner::new_with_message_executor_and_restore(
+        test_config(workspace.path().to_path_buf()),
+        Arc::new(FailOnceDrainExecutor {
+            failed: AtomicBool::new(false),
+        }),
+        None,
+    );
+
+    let error = match handle_drain(
+        shared.clone(),
+        DrainRequest {
+            reason: Some("retryable-executor-failure".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    {
+        Ok(_) => panic!("the first executor drain should fail"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, HostedRunnerErrorCode::Internal);
+    {
+        let state = shared.state.lock().expect("runner state");
+        assert!(!state.ready);
+        assert!(state.draining);
+        assert!(state.drain_executor_pending);
+        assert!(!state.drain_finalization_pending);
+        assert_eq!(state.last_status.as_deref(), Some("Draining"));
+        assert_eq!(
+            state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+            Some(RuntimeReceiptKind::Draining)
+        );
+    }
+
+    let response = handle_drain(
+        shared,
+        DrainRequest {
+            reason: Some("retryable-executor-failure-retry".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    .expect("the executor drain should be retryable");
+    let ResponseBody::Json { status, body } = response else {
+        panic!("drain retry must return JSON");
+    };
+    assert_eq!(status, 200);
+    assert_eq!(body["status"], "drained");
+}
+
+struct FlushOnceAfterDrainExecutor {
+    drain_calls: Arc<AtomicUsize>,
+    fail_flush_once: Arc<AtomicBool>,
+}
+
+impl HostedRunnerHeadlessMessageExecutor for FlushOnceAfterDrainExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        _message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        Ok(HostedRunnerHeadlessMessageResult::transport_only(
+            Vec::new(),
+            "scripted",
+        ))
+    }
+
+    fn drain(&self) -> Result<HostedRunnerDrainResult, HostedRunnerError> {
+        self.drain_calls.fetch_add(1, Ordering::AcqRel);
+        Ok(HostedRunnerDrainResult::default())
+    }
+
+    fn flush_session(&self) -> Result<Option<PathBuf>, HostedRunnerError> {
+        if self.fail_flush_once.swap(false, Ordering::AcqRel) {
+            return Err(HostedRunnerError::internal(
+                "scripted snapshot flush failure",
+            ));
+        }
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+async fn persisted_executor_complete_drain_resumes_without_second_executor_drain() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let drain_calls = Arc::new(AtomicUsize::new(0));
+    let fail_flush_once = Arc::new(AtomicBool::new(true));
+    let first = SharedRunner::new_with_message_executor_and_restore(
+        config.clone(),
+        Arc::new(FlushOnceAfterDrainExecutor {
+            drain_calls: drain_calls.clone(),
+            fail_flush_once: fail_flush_once.clone(),
+        }),
+        None,
+    );
+
+    let error = match handle_drain(
+        first.clone(),
+        DrainRequest {
+            reason: Some("persisted-executor-complete-phase".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    {
+        Ok(_) => panic!("the scripted manifest flush must fail after executor drain"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, HostedRunnerErrorCode::Internal);
+    assert_eq!(drain_calls.load(Ordering::Acquire), 1);
+    {
+        let state = first.state.lock().expect("first runner state");
+        assert!(state.drain_finalization_pending);
+        assert!(!state.drain_executor_pending);
+        assert_eq!(
+            state.last_status.as_deref(),
+            Some(HOSTED_RUNNER_DRAIN_FINALIZATION_PENDING_STATUS)
+        );
+        assert!(state.envelopes.iter().any(|envelope| {
+            matches!(
+                envelope,
+                StreamEnvelope::Snapshot { snapshot }
+                    if snapshot.state.last_status.as_deref()
+                        == Some(HOSTED_RUNNER_DRAIN_FINALIZATION_PENDING_STATUS)
+            )
+        }));
+    }
+    drop(first);
+
+    let restarted = SharedRunner::new_with_message_executor_and_restore(
+        config,
+        Arc::new(FlushOnceAfterDrainExecutor {
+            drain_calls: drain_calls.clone(),
+            fail_flush_once,
+        }),
+        None,
+    );
+    {
+        let state = restarted.state.lock().expect("restarted runner state");
+        assert!(state.drain_finalization_pending);
+        assert!(!state.drain_executor_pending);
+        assert_eq!(
+            state.last_status.as_deref(),
+            Some(HOSTED_RUNNER_DRAIN_FINALIZATION_PENDING_STATUS)
+        );
+    }
+
+    let response = handle_drain(
+        restarted.clone(),
+        DrainRequest {
+            reason: Some("resume-persisted-executor-complete-phase".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    .expect("finalization retry should not drain the executor again");
+    let ResponseBody::Json { status, body } = response else {
+        panic!("drain retry must return JSON");
+    };
+    assert_eq!(status, 200);
+    assert_eq!(body["status"], "drained");
+    assert_eq!(drain_calls.load(Ordering::Acquire), 1);
+    let state = restarted.state.lock().expect("final runner state");
+    assert!(!state.drain_finalization_pending);
+    assert_eq!(
+        state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+        Some(RuntimeReceiptKind::Drained)
+    );
+}
+
+struct FatalDrainFlushOnCallExecutor {
+    drain_calls: Arc<AtomicUsize>,
+    flush_calls: Arc<AtomicUsize>,
+    messages: Mutex<Option<Vec<FromAgentMessage>>>,
+}
+
+impl HostedRunnerHeadlessMessageExecutor for FatalDrainFlushOnCallExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        _message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        Ok(HostedRunnerHeadlessMessageResult::transport_only(
+            Vec::new(),
+            "scripted",
+        ))
+    }
+
+    fn drain(&self) -> Result<HostedRunnerDrainResult, HostedRunnerError> {
+        self.drain_calls.fetch_add(1, Ordering::AcqRel);
+        Ok(HostedRunnerDrainResult {
+            messages: self
+                .messages
+                .lock()
+                .expect("drain messages")
+                .take()
+                .unwrap_or_default(),
+            ..Default::default()
+        })
+    }
+
+    fn flush_session(&self) -> Result<Option<PathBuf>, HostedRunnerError> {
+        let call = self.flush_calls.fetch_add(1, Ordering::AcqRel) + 1;
+        if call == 2 {
+            return Err(HostedRunnerError::internal(
+                "scripted snapshot flush failure after fatal drain",
+            ));
+        }
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+async fn fatal_drain_failure_fence_survives_restart_before_finalization() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let drain_calls = Arc::new(AtomicUsize::new(0));
+    let flush_calls = Arc::new(AtomicUsize::new(0));
+    let first = SharedRunner::new_with_message_executor_and_restore(
+        config.clone(),
+        Arc::new(FatalDrainFlushOnCallExecutor {
+            drain_calls: drain_calls.clone(),
+            flush_calls: flush_calls.clone(),
+            messages: Mutex::new(Some(vec![FromAgentMessage::Error {
+                request_id: None,
+                message: "fatal runtime during drain".to_string(),
+                fatal: true,
+                terminal: true,
+                error_type: Some(crate::headless::messages::HeadlessErrorType::Fatal),
+            }])),
+        }),
+        None,
+    );
+
+    let error = match handle_drain(
+        first.clone(),
+        DrainRequest {
+            reason: Some("fatal-drain-before-finalization".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    {
+        Ok(_) => panic!("manifest flush must fail after the fatal drain message"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, HostedRunnerErrorCode::Internal);
+    assert_eq!(drain_calls.load(Ordering::Acquire), 1);
+    {
+        let state = first.state.lock().expect("first runner state");
+        assert!(state.runtime_failed);
+        assert!(state.drain_finalization_pending);
+        assert!(state.drain_runtime_failed_before_finalization);
+    }
+    drop(first);
+
+    let restarted = SharedRunner::new_with_message_executor_and_restore(
+        config,
+        Arc::new(FatalDrainFlushOnCallExecutor {
+            drain_calls: drain_calls.clone(),
+            flush_calls,
+            messages: Mutex::new(None),
+        }),
+        None,
+    );
+    {
+        let state = restarted.state.lock().expect("restarted runner state");
+        assert!(state.drain_finalization_pending);
+        assert!(state.drain_runtime_failed_before_finalization);
+        assert!(state.runtime_failed);
+    }
+
+    let response = handle_drain(
+        restarted.clone(),
+        DrainRequest {
+            reason: Some("retry-fatal-drain-finalization".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    .expect("fatal drain finalization retry");
+    let ResponseBody::Json { status, .. } = response else {
+        panic!("drain retry must be JSON");
+    };
+    assert_eq!(status, 200);
+    assert_eq!(drain_calls.load(Ordering::Acquire), 1);
+    let state = restarted.state.lock().expect("final runner state");
+    assert!(!state.drain_finalization_pending);
+    assert!(state.runtime_failed);
+}
+
+#[tokio::test]
+async fn current_generation_journal_wins_over_configured_restore_manifest() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let shared = SharedRunner::new(config.clone());
+    let response = handle_drain(
+        shared.clone(),
+        DrainRequest {
+            reason: Some("journal-precedes-restore".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    .expect("drain should produce a restore input");
+    let ResponseBody::Json { body, .. } = response else {
+        panic!("drain must return JSON");
+    };
+    let manifest_path = PathBuf::from(body["manifest_path"].as_str().expect("drain manifest path"));
+    let manifest: SnapshotManifest =
+        serde_json::from_value(body["manifest"].clone()).expect("restore manifest");
+    drop(shared);
+
+    let mut restore_config = config;
+    restore_config.restore_manifest_path = Some(manifest_path);
+    let restored = SharedRunner::new_with_message_executor_and_restore(
+        restore_config,
+        Arc::new(ScriptedDrainExecutor::new(Vec::new())),
+        Some(manifest),
+    );
+    let receipt = restored
+        .runtime_receipt()
+        .expect("restored receipt should be available");
+    assert_eq!(receipt.kind, RuntimeReceiptKind::Drained);
+    assert_eq!(receipt.lifecycle_state, RuntimeLifecycleState::Drained);
+    let state = restored.state.lock().expect("restored state");
+    assert!(!state.ready);
+    assert!(state.draining);
+    assert_eq!(state.last_status.as_deref(), Some("Drained"));
+}
+
+#[tokio::test]
+async fn replacement_runner_journal_owner_is_persisted_after_restore() {
+    let workspace = tempdir().expect("workspace");
+    let source_config = test_config(workspace.path().to_path_buf());
+    let source = SharedRunner::new(source_config.clone());
+    {
+        let mut state = source.state.lock().expect("source state");
+        source.publish_message(
+            &mut state,
+            FromAgentMessage::ResponseStart {
+                response_id: "replacement-owner-response".to_string(),
+            },
+        );
+    }
+    let response = handle_drain(
+        source.clone(),
+        DrainRequest {
+            reason: Some("replacement-owner-lineage".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    .expect("drain should produce a restore input");
+    let ResponseBody::Json { body, .. } = response else {
+        panic!("drain must return JSON");
+    };
+    let manifest_path = PathBuf::from(body["manifest_path"].as_str().expect("manifest path"));
+    let manifest: SnapshotManifest =
+        serde_json::from_value(body["manifest"].clone()).expect("restore manifest");
+    drop(source);
+
+    let mut replacement_config = source_config;
+    replacement_config.runner_session_id = "mrs_replacement".to_string();
+    replacement_config.restore_manifest_path = Some(manifest_path);
+    let first_start = SharedRunner::new_with_message_executor_and_restore(
+        replacement_config.clone(),
+        Arc::new(ScriptedDrainExecutor::new(Vec::new())),
+        Some(manifest.clone()),
+    );
+    assert_eq!(
+        first_start
+            .runtime_receipt()
+            .expect("replacement restore receipt")
+            .kind,
+        RuntimeReceiptKind::Restored
+    );
+    drop(first_start);
+
+    let restarted = SharedRunner::new_with_message_executor_and_restore(
+        replacement_config,
+        Arc::new(ScriptedDrainExecutor::new(Vec::new())),
+        Some(manifest),
+    );
+    let receipt = restarted
+        .runtime_receipt()
+        .expect("replacement restart receipt");
+    assert_eq!(receipt.kind, RuntimeReceiptKind::Restored);
+    assert_eq!(
+        receipt.lifecycle_state,
+        RuntimeLifecycleState::ExecutionReady
+    );
+    let state = restarted.state.lock().expect("restarted state");
+    assert!(state.ready);
+    assert!(!state.draining);
+    assert_eq!(state.last_status.as_deref(), Some("Restored from snapshot"));
+}
+
+#[tokio::test]
+async fn replacement_restore_removes_source_executor_drain_handoff() {
+    let workspace = tempdir().expect("workspace");
+    let source_config = test_config(workspace.path().to_path_buf());
+    let source = SharedRunner::new(source_config.clone());
+    let response = handle_drain(
+        source.clone(),
+        DrainRequest {
+            reason: Some("source-handoff-cleanup".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    .expect("source drain should produce a restore input");
+    let ResponseBody::Json { body, .. } = response else {
+        panic!("source drain must return JSON");
+    };
+    let manifest: SnapshotManifest =
+        serde_json::from_value(body["manifest"].clone()).expect("source restore manifest");
+    drop(source);
+
+    persist_executor_drain_result(
+        workspace.path(),
+        "sess_test",
+        source_config.runtime_generation,
+        0,
+        &HostedRunnerDrainResult {
+            messages: vec![FromAgentMessage::ResponseChunk {
+                response_id: "source-only-response".to_string(),
+                content: "must not cross replacement ownership".to_string(),
+                is_thinking: false,
+            }],
+            ..Default::default()
+        },
+    )
+    .expect("write source drain handoff");
+    assert!(load_executor_drain_result(
+        workspace.path(),
+        "sess_test",
+        source_config.runtime_generation
+    )
+    .expect("load source drain handoff")
+    .is_some());
+
+    let mut replacement_config = source_config;
+    replacement_config.runner_session_id = "mrs_replacement_handoff_cleanup".to_string();
+    replacement_config.restore_manifest_path = None;
+    let first_replacement = SharedRunner::new_with_message_executor_and_restore(
+        replacement_config.clone(),
+        Arc::new(ScriptedDrainExecutor::new(Vec::new())),
+        Some(manifest.clone()),
+    );
+    {
+        let state = first_replacement.state.lock().expect("replacement state");
+        assert!(state.pending_executor_drain_result.is_none());
+        assert!(
+            state.envelopes.iter().all(|envelope| {
+                !serde_json::to_string(envelope)
+                    .expect("serialize replacement envelope")
+                    .contains("source-only-response")
+            }),
+            "replacement must not replay the source runner handoff"
+        );
+    }
+    assert!(load_executor_drain_result(
+        workspace.path(),
+        "sess_test",
+        replacement_config.runtime_generation
+    )
+    .expect("load cleaned source drain handoff")
+    .is_none());
+    drop(first_replacement);
+
+    let restarted_replacement = SharedRunner::new_with_message_executor_and_restore(
+        replacement_config,
+        Arc::new(ScriptedDrainExecutor::new(Vec::new())),
+        Some(manifest),
+    );
+    let state = restarted_replacement
+        .state
+        .lock()
+        .expect("restarted replacement state");
+    assert!(state.pending_executor_drain_result.is_none());
+    assert!(
+        state.envelopes.iter().all(|envelope| {
+            !serde_json::to_string(envelope)
+                .expect("serialize restarted replacement envelope")
+                .contains("source-only-response")
+        }),
+        "replacement restart must not reload the source handoff"
+    );
+}
+
+struct ArmFinalJournalFailureExecutor {
+    shared: Mutex<std::sync::Weak<SharedRunner>>,
+    drained: Mutex<Option<HostedRunnerDrainResult>>,
+}
+
+impl HostedRunnerHeadlessMessageExecutor for ArmFinalJournalFailureExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        _message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        Ok(HostedRunnerHeadlessMessageResult::transport_only(
+            Vec::new(),
+            "scripted",
+        ))
+    }
+
+    fn drain(&self) -> Result<HostedRunnerDrainResult, HostedRunnerError> {
+        if let Some(shared) = self.shared.lock().expect("failure target").upgrade() {
+            shared.fail_next_thread_persistences(1);
+        }
+        Ok(self
+            .drained
+            .lock()
+            .expect("drained result")
+            .take()
+            .unwrap_or_default())
+    }
+}
+
+#[tokio::test]
+async fn drain_message_persistence_failure_keeps_retained_batch_retryable() {
+    let workspace = tempdir().expect("workspace");
+    let drained = HostedRunnerDrainResult {
+        messages: vec![
+            FromAgentMessage::ServerRequest {
+                request_id: "approval-before-failure".to_string(),
+                request_type: ServerRequestType::Approval,
+                call_id: "approval-call".to_string(),
+                tool_execution_id: None,
+                tool: "bash".to_string(),
+                args: json!({"command": "printf safe"}),
+                reason: "approval boundary".to_string(),
+                started_at_ms: None,
+            },
+            FromAgentMessage::Status {
+                message: "gated suffix must survive publication failure".to_string(),
+            },
+        ],
+        ..Default::default()
+    };
+    let executor = Arc::new(ArmFinalJournalFailureExecutor {
+        shared: Mutex::new(std::sync::Weak::new()),
+        drained: Mutex::new(Some(drained)),
+    });
+    let shared = Arc::new(SharedRunner::new_with_message_executor_and_restore(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+        None,
+    ));
+    *executor.shared.lock().expect("failure target") = Arc::downgrade(&shared);
+
+    let error = match handle_drain(
+        (*shared).clone(),
+        DrainRequest {
+            reason: Some("retained-publication-failure".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    {
+        Ok(_) => panic!("failed retained message publication must stop finalization"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, HostedRunnerErrorCode::RuntimeFailed);
+    {
+        let state = shared.state.lock().expect("runner state");
+        assert!(state.runtime_failed);
+        assert!(state.drain_finalization_pending);
+        assert!(!state.executor_drain_result_applied);
+        assert_eq!(state.executor_drain_result_applied_count, 0);
+        assert!(state.pending_executor_drain_result.is_some());
+        assert!(state.envelopes.iter().all(|envelope| {
+            !serde_json::to_string(envelope)
+                .expect("serialize failed drain envelopes")
+                .contains("gated suffix must survive publication failure")
+        }));
+        assert_ne!(
+            state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+            Some(RuntimeReceiptKind::Drained),
+            "a failed retained message must not publish a Drained receipt"
+        );
+    }
+
+    let response = handle_drain(
+        (*shared).clone(),
+        DrainRequest {
+            reason: Some("retained-publication-failure-retry".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    .expect("retained drain result must be retryable");
+    let ResponseBody::Json { status, body } = response else {
+        panic!("drain retry must return JSON");
+    };
+    assert_eq!(status, 200);
+    assert_eq!(body["status"], "drained");
+    let state = shared.state.lock().expect("final runner state");
+    assert!(state.pending_executor_drain_result.is_none());
+    assert!(state.envelopes.iter().any(|envelope| {
+        serde_json::to_string(envelope)
+            .expect("serialize successful drain envelopes")
+            .contains("gated suffix must survive publication failure")
+    }));
+}
+
+/// A failed final journal write must leave the completed drain retryable rather
+/// than rejecting every later request as "already draining".
 #[tokio::test]
 async fn drain_succeeds_despite_journal_failure_for_drained_keys() {
     let workspace = tempdir().expect("workspace");
@@ -10799,12 +13558,20 @@ async fn drain_succeeds_despite_journal_failure_for_drained_keys() {
         consumed_response_keys: vec!["drain-key".to_string()],
         ..Default::default()
     };
-    let shared = scripted_shared(vec![drained], workspace.path());
+    let executor = Arc::new(ArmFinalJournalFailureExecutor {
+        shared: Mutex::new(std::sync::Weak::new()),
+        drained: Mutex::new(Some(drained)),
+    });
+    let shared = Arc::new(SharedRunner::new_with_message_executor_and_restore(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+        None,
+    ));
+    *executor.shared.lock().expect("failure target") = Arc::downgrade(&shared);
     seed_pending_response(&shared, "drain-key", "drain-request");
-    shared.fail_next_thread_persistences(1);
 
     let response = handle_drain(
-        shared.clone(),
+        (*shared).clone(),
         DrainRequest {
             reason: Some("matrix-test".to_string()),
             requested_by: Some("tests".to_string()),
@@ -10828,4 +13595,492 @@ async fn drain_succeeds_despite_journal_failure_for_drained_keys() {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(state.response_idempotency_keys.contains("drain-key"));
     }
+}
+
+#[tokio::test]
+async fn drain_returns_failure_without_publishing_drained_receipt_after_final_journal_failure() {
+    let workspace = tempdir().expect("workspace");
+    let executor = Arc::new(ArmFinalJournalFailureExecutor {
+        shared: Mutex::new(std::sync::Weak::new()),
+        drained: Mutex::new(Some(HostedRunnerDrainResult::default())),
+    });
+    let shared = Arc::new(SharedRunner::new_with_message_executor_and_restore(
+        test_config(workspace.path().to_path_buf()),
+        executor.clone(),
+        None,
+    ));
+    *executor.shared.lock().expect("failure target") = Arc::downgrade(&shared);
+    // The start boundary succeeds. The scripted executor arms one failure
+    // after draining, so the final snapshot write is the failed hand-off.
+
+    let error = match handle_drain(
+        (*shared).clone(),
+        DrainRequest {
+            reason: Some("final-write-failure".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    {
+        Ok(_) => panic!("drain must fail when its final journal write fails"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, HostedRunnerErrorCode::RuntimeFailed);
+    assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR.as_u16());
+
+    {
+        let state = shared.state.lock().expect("runner state");
+        assert!(state.runtime_failed);
+        assert!(!state.ready);
+        assert_eq!(state.last_status.as_deref(), Some("Runtime failed"));
+        assert_eq!(
+            state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+            Some(RuntimeReceiptKind::Draining),
+            "failed flush must retain the last durably persisted receipt"
+        );
+        assert_ne!(
+            state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+            Some(RuntimeReceiptKind::Drained)
+        );
+        assert!(state.drain_finalization_pending);
+    }
+
+    let response = handle_drain(
+        (*shared).clone(),
+        DrainRequest {
+            reason: Some("final-write-failure-retry".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    .expect("the completed drain must retry its final journal hand-off");
+    let ResponseBody::Json { status, body } = response else {
+        panic!("drain retry must return JSON");
+    };
+    assert_eq!(status, 200);
+    assert_eq!(body["status"], "drained");
+    let state = shared.state.lock().expect("runner state");
+    assert!(!state.drain_finalization_pending);
+    assert_eq!(
+        state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+        Some(RuntimeReceiptKind::Drained)
+    );
+}
+
+struct CrashSafeDrainExecutor {
+    shared: Mutex<std::sync::Weak<SharedRunner>>,
+    drain_calls: Arc<AtomicUsize>,
+    arm_executor_handoff_failure: bool,
+    arm_final_journal_failure: bool,
+    duplicate_response_chunk: bool,
+}
+
+impl HostedRunnerHeadlessMessageExecutor for CrashSafeDrainExecutor {
+    fn execute(
+        &self,
+        _context: &HostedRunnerHeadlessMessageContext,
+        _message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        Ok(HostedRunnerHeadlessMessageResult::transport_only(
+            Vec::new(),
+            "scripted",
+        ))
+    }
+
+    fn drain(&self) -> Result<HostedRunnerDrainResult, HostedRunnerError> {
+        let call = self.drain_calls.fetch_add(1, Ordering::AcqRel) + 1;
+        if self.arm_executor_handoff_failure && call == 1 {
+            self.shared
+                .lock()
+                .expect("failure target")
+                .upgrade()
+                .expect("first runner remains live during drain")
+                .fail_next_executor_drain_result_persistences(1);
+        }
+        if self.arm_final_journal_failure && call == 1 {
+            self.shared
+                .lock()
+                .expect("failure target")
+                .upgrade()
+                .expect("first runner remains live during drain")
+                .fail_next_thread_persistences(1);
+        }
+        let response_chunk = FromAgentMessage::ResponseChunk {
+            response_id: "crash-safe-drain-response".to_string(),
+            content: "first batch survives marker failure".to_string(),
+            is_thinking: false,
+        };
+        let mut messages = vec![response_chunk.clone()];
+        if self.duplicate_response_chunk {
+            messages.push(response_chunk);
+        }
+        messages.push(FromAgentMessage::ClientToolRequest {
+            call_id: "crash-safe-drain-tool".to_string(),
+            tool_execution_id: None,
+            tool: "bash".to_string(),
+            args: json!({
+                "command": "printf drain-result",
+                "authorization": "drain-result-secret-must-not-persist"
+            }),
+        });
+        Ok(HostedRunnerDrainResult {
+            messages,
+            ..Default::default()
+        })
+    }
+}
+
+#[tokio::test]
+async fn executor_drain_result_survives_completion_marker_failure_and_restart() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let drain_calls = Arc::new(AtomicUsize::new(0));
+    let first_executor = Arc::new(CrashSafeDrainExecutor {
+        shared: Mutex::new(std::sync::Weak::new()),
+        drain_calls: drain_calls.clone(),
+        arm_executor_handoff_failure: false,
+        arm_final_journal_failure: true,
+        duplicate_response_chunk: false,
+    });
+    let first = Arc::new(SharedRunner::new_with_message_executor_and_restore(
+        config.clone(),
+        first_executor.clone(),
+        None,
+    ));
+    *first_executor.shared.lock().expect("failure target") = Arc::downgrade(&first);
+
+    let error = match handle_drain(
+        (*first).clone(),
+        DrainRequest {
+            reason: Some("crash-safe-marker-failure".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    {
+        Ok(_) => panic!("completion marker failure must be reported"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, HostedRunnerErrorCode::RuntimeFailed);
+    assert_eq!(drain_calls.load(Ordering::Acquire), 1);
+    let retained =
+        load_executor_drain_result(workspace.path(), "sess_test", config.runtime_generation)
+            .expect("load crash recovery handoff")
+            .expect("crash recovery handoff");
+    assert!(!serde_json::to_string(&retained)
+        .expect("serialize retained handoff")
+        .contains("drain-result-secret-must-not-persist"));
+    drop(first);
+
+    let restarted = SharedRunner::new_with_message_executor_and_restore(
+        config.clone(),
+        Arc::new(CrashSafeDrainExecutor {
+            shared: Mutex::new(std::sync::Weak::new()),
+            drain_calls: drain_calls.clone(),
+            arm_executor_handoff_failure: false,
+            arm_final_journal_failure: false,
+            duplicate_response_chunk: false,
+        }),
+        None,
+    );
+    {
+        let state = restarted.state.lock().expect("restarted runner state");
+        assert!(state.drain_finalization_pending);
+        assert!(!state.drain_executor_pending);
+        assert!(state.pending_executor_drain_result.is_some());
+        assert!(!state.executor_drain_result_applied);
+    }
+
+    let response = handle_drain(
+        restarted.clone(),
+        DrainRequest {
+            reason: Some("crash-safe-marker-retry".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    .expect("restart must finalize the retained executor result");
+    let ResponseBody::Json { status, body } = response else {
+        panic!("drain retry must be JSON");
+    };
+    assert_eq!(status, 200);
+    assert_eq!(body["status"], "drained");
+    assert_eq!(drain_calls.load(Ordering::Acquire), 1);
+    let state = restarted.state.lock().expect("final runner state");
+    assert!(state.envelopes.iter().any(|envelope| {
+        matches!(
+            envelope,
+            StreamEnvelope::Message { message, .. }
+                if matches!(
+                    message.as_ref(),
+                    FromAgentMessage::ResponseChunk { content, .. }
+                        if content == "first batch survives marker failure"
+                )
+        )
+    }));
+    assert_eq!(
+        state.runtime_receipt.as_ref().map(|receipt| receipt.kind),
+        Some(RuntimeReceiptKind::Drained)
+    );
+    assert!(state.pending_executor_drain_result.is_none());
+    assert!(
+        load_executor_drain_result(workspace.path(), "sess_test", config.runtime_generation,)
+            .expect("load cleaned crash recovery handoff")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn executor_drain_handoff_failure_retries_without_second_executor_drain() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let drain_calls = Arc::new(AtomicUsize::new(0));
+    let executor = Arc::new(CrashSafeDrainExecutor {
+        shared: Mutex::new(std::sync::Weak::new()),
+        drain_calls: drain_calls.clone(),
+        arm_executor_handoff_failure: true,
+        arm_final_journal_failure: false,
+        duplicate_response_chunk: false,
+    });
+    let shared = Arc::new(SharedRunner::new_with_message_executor_and_restore(
+        config.clone(),
+        executor.clone(),
+        None,
+    ));
+    *executor.shared.lock().expect("failure target") = Arc::downgrade(&shared);
+
+    let error = match handle_drain(
+        (*shared).clone(),
+        DrainRequest {
+            reason: Some("executor-handoff-failure".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    {
+        Ok(_) => panic!("handoff persistence failure must be reported"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, HostedRunnerErrorCode::RuntimeFailed);
+    assert_eq!(drain_calls.load(Ordering::Acquire), 1);
+    {
+        let state = shared.state.lock().expect("runner state");
+        assert!(state.drain_finalization_pending);
+        assert!(!state.drain_executor_pending);
+        assert!(state.pending_executor_drain_result.is_some());
+    }
+
+    let response = handle_drain(
+        (*shared).clone(),
+        DrainRequest {
+            reason: Some("executor-handoff-retry".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    .expect("retry must persist the retained result and finish drain");
+    let ResponseBody::Json { status, body } = response else {
+        panic!("drain retry must return JSON");
+    };
+    assert_eq!(status, 200);
+    assert_eq!(body["status"], "drained");
+    assert_eq!(drain_calls.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn retained_drain_batch_deduplication_starts_at_capture_cursor() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let drain_calls = Arc::new(AtomicUsize::new(0));
+    let executor = Arc::new(CrashSafeDrainExecutor {
+        shared: Mutex::new(std::sync::Weak::new()),
+        drain_calls,
+        arm_executor_handoff_failure: false,
+        arm_final_journal_failure: false,
+        duplicate_response_chunk: false,
+    });
+    let shared = SharedRunner::new_with_message_executor_and_restore(config, executor, None);
+    let prior = FromAgentMessage::ResponseChunk {
+        response_id: "crash-safe-drain-response".to_string(),
+        content: "first batch survives marker failure".to_string(),
+        is_thinking: false,
+    };
+    {
+        let mut state = shared.state.lock().expect("runner state");
+        shared.publish_message(&mut state, prior.clone());
+    }
+
+    handle_drain(
+        shared.clone(),
+        DrainRequest {
+            reason: Some("capture-cursor-deduplication".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    .expect("drain must succeed");
+
+    let state = shared.state.lock().expect("runner state");
+    let matching_chunks = state
+        .envelopes
+        .iter()
+        .filter(|envelope| {
+            matches!(
+                envelope,
+                StreamEnvelope::Message { message, .. }
+                    if matches!(
+                        message.as_ref(),
+                        FromAgentMessage::ResponseChunk {
+                            response_id,
+                            content,
+                            is_thinking,
+                        } if response_id == "crash-safe-drain-response"
+                            && content == "first batch survives marker failure"
+                            && !*is_thinking
+                    )
+            )
+        })
+        .count();
+    assert_eq!(matching_chunks, 2);
+}
+
+#[tokio::test]
+async fn retained_drain_batch_preserves_duplicate_messages() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let executor = Arc::new(CrashSafeDrainExecutor {
+        shared: Mutex::new(std::sync::Weak::new()),
+        drain_calls: Arc::new(AtomicUsize::new(0)),
+        arm_executor_handoff_failure: false,
+        arm_final_journal_failure: false,
+        duplicate_response_chunk: true,
+    });
+    let shared = SharedRunner::new_with_message_executor_and_restore(config, executor, None);
+
+    handle_drain(
+        shared.clone(),
+        DrainRequest {
+            reason: Some("duplicate-drain-batch".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    .expect("drain must succeed");
+
+    let state = shared.state.lock().expect("runner state");
+    let duplicate_chunks = state
+        .envelopes
+        .iter()
+        .filter(|envelope| {
+            matches!(
+                envelope,
+                StreamEnvelope::Message { message, .. }
+                    if matches!(
+                        message.as_ref(),
+                        FromAgentMessage::ResponseChunk {
+                            response_id,
+                            content,
+                            is_thinking,
+                        } if response_id == "crash-safe-drain-response"
+                            && content == "first batch survives marker failure"
+                            && !*is_thinking
+                    )
+            )
+        })
+        .count();
+    assert_eq!(duplicate_chunks, 2);
+}
+
+#[tokio::test]
+async fn executor_drain_recovery_uses_durable_applied_position_past_replay_limit() {
+    let workspace = tempdir().expect("workspace");
+    let config = test_config(workspace.path().to_path_buf());
+    let messages = (0..(MAX_EVENTS + 32))
+        .map(|index| FromAgentMessage::Status {
+            message: format!("retained-drain-message-{index}"),
+        })
+        .collect::<Vec<_>>();
+    let result = HostedRunnerDrainResult {
+        messages: messages.clone(),
+        ..Default::default()
+    };
+    let shared = SharedRunner::new_with_message_executor_and_restore(
+        config.clone(),
+        Arc::new(ScriptedDrainExecutor::new(Vec::new())),
+        None,
+    );
+    persist_executor_drain_result(
+        workspace.path(),
+        "sess_test",
+        config.runtime_generation,
+        0,
+        &result,
+    )
+    .expect("persist retained executor result");
+    {
+        let mut state = shared.state.lock().expect("runner state");
+        state.ready = false;
+        state.draining = true;
+        state.drain_executor_pending = false;
+        state.drain_finalization_pending = true;
+        state.last_status = Some(HOSTED_RUNNER_DRAIN_FINALIZATION_PENDING_STATUS.to_string());
+        state.pending_executor_drain_result = Some(PendingExecutorDrainResult {
+            replay_cursor: 0,
+            result,
+        });
+        shared.apply_pending_executor_drain_result(&mut state);
+        assert_eq!(state.executor_drain_result_applied_count, messages.len());
+        shared
+            .persist_drain_finalization_boundary(&mut state)
+            .expect("persist executor-complete marker");
+    }
+    drop(shared);
+
+    let restarted = SharedRunner::new_with_message_executor_and_restore(
+        config.clone(),
+        Arc::new(ScriptedDrainExecutor::new(Vec::new())),
+        None,
+    );
+    {
+        let state = restarted.state.lock().expect("restarted runner state");
+        assert!(state.drain_finalization_pending);
+        assert!(state.pending_executor_drain_result.is_some());
+        assert!(state.executor_drain_result_applied);
+        assert_eq!(state.executor_drain_result_applied_count, messages.len());
+        assert_eq!(state.cursor, messages.len() as u64);
+    }
+
+    handle_drain(
+        restarted.clone(),
+        DrainRequest {
+            reason: Some("replay-limit-recovery".to_string()),
+            requested_by: Some("tests".to_string()),
+            export_paths: None,
+        },
+    )
+    .await
+    .expect("restart must finalize the already-applied drain result");
+
+    let state = restarted.state.lock().expect("final runner state");
+    assert_eq!(state.cursor, messages.len() as u64);
+    assert!(state.envelopes.iter().all(|envelope| {
+        !matches!(
+            envelope,
+            StreamEnvelope::Message { message, .. }
+                if matches!(
+                    message.as_ref(),
+                    FromAgentMessage::Status { message }
+                        if message == "retained-drain-message-0"
+                )
+        )
+    }));
+    assert!(state.pending_executor_drain_result.is_none());
 }

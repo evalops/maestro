@@ -201,6 +201,18 @@ test("runtime-owned protocol semantics are bound into the compatibility digest",
 		baseline.compatibility.runtime.schemaVersion,
 		"evalops.maestro.headless-protocol.v1",
 	);
+	assert.equal(
+		baseline.compatibility.runtime.receipt.schemaVersion,
+		"evalops.maestro.runtime-receipt.v1",
+	);
+	assert.match(
+		baseline.compatibility.runtime.receipt.sourceDigest,
+		/^sha256:[0-9a-f]{64}$/,
+	);
+	assert.match(
+		baseline.compatibility.runtime.receipt.contractDigest,
+		/^sha256:[0-9a-f]{64}$/,
+	);
 });
 
 test("runtime contract digest is bound to the serialized runtime fixture", () => {
@@ -266,6 +278,107 @@ test("runtime contract digest is independent of JSON object key order", () => {
 	assert.equal(reordered.compatibilityDigest, baseline.compatibilityDigest);
 });
 
+test("runtime receipt fixture is the normalized compatibility projection", () => {
+	const sources = readCanonicalSources();
+	const baseline = buildCompatibilityManifest({ sources });
+	const changedSource = buildCompatibilityManifest({
+		sources: {
+			...sources,
+			runtimeReceipts: sources.runtimeReceipts.replace(
+				"evalops.maestro.runtime-receipt.v1",
+				"evalops.maestro.runtime-receipt.v2",
+			),
+		},
+	});
+	const changedFixture = buildCompatibilityManifest({
+		sources: {
+			...sources,
+			runtimeReceiptFixture: sources.runtimeReceiptFixture.replace(
+				'"flushWatermark": 5',
+				'"flushWatermark": 6',
+			),
+		},
+	});
+	const testOnlySourceChange = buildCompatibilityManifest({
+		sources: {
+			...sources,
+			runtimeReceipts: sources.runtimeReceipts.replace(
+				"checked_in_fixture_matches_typed_receipt_contract",
+				"renamed_test_only_receipt_fixture",
+			),
+		},
+	});
+
+	assert.notEqual(
+		changedSource.compatibility.runtime.receipt.schemaVersion,
+		baseline.compatibility.runtime.receipt.schemaVersion,
+	);
+	assert.notEqual(changedSource.compatibilityDigest, baseline.compatibilityDigest);
+	assert.equal(
+		changedSource.compatibility.runtime.receipt.sourceDigest,
+		baseline.compatibility.runtime.receipt.sourceDigest,
+	);
+	assert.equal(
+		testOnlySourceChange.compatibility.runtime.receipt.sourceDigest,
+		baseline.compatibility.runtime.receipt.sourceDigest,
+	);
+	assert.equal(testOnlySourceChange.compatibilityDigest, baseline.compatibilityDigest);
+	assert.notEqual(
+		changedFixture.compatibility.runtime.receipt.contractDigest,
+		baseline.compatibility.runtime.receipt.contractDigest,
+	);
+	assert.notEqual(
+		changedFixture.compatibility.runtime.receipt.sourceDigest,
+		baseline.compatibility.runtime.receipt.sourceDigest,
+	);
+	assert.notEqual(changedFixture.compatibilityDigest, baseline.compatibilityDigest);
+	assert.equal(
+		baseline.compatibility.runtime.receipt.sourceDigest,
+		baseline.compatibility.runtime.receipt.contractDigest,
+	);
+	const changedTerminalVariant = buildCompatibilityManifest({
+		sources: {
+			...sources,
+			runtimeReceiptContractFixture: sources.runtimeReceiptContractFixture.replace(
+				'"non_fatal"',
+				'"nonfatal"',
+			),
+		},
+	});
+	assert.notEqual(
+		changedTerminalVariant.compatibility.runtime.receipt.contractDigest,
+		baseline.compatibility.runtime.receipt.contractDigest,
+	);
+	assert.notEqual(changedTerminalVariant.compatibilityDigest, baseline.compatibilityDigest);
+	const changedValidationLimit = buildCompatibilityManifest({
+		sources: {
+			...sources,
+			runtimeReceiptContractFixture: sources.runtimeReceiptContractFixture.replace(
+				'"maxStringBytes": 256',
+				'"maxStringBytes": 128',
+			),
+		},
+	});
+	assert.notEqual(
+		changedValidationLimit.compatibility.runtime.receipt.contractDigest,
+		baseline.compatibility.runtime.receipt.contractDigest,
+	);
+	const changedKindLifecycle = buildCompatibilityManifest({
+		sources: {
+			...sources,
+			runtimeReceiptContractFixture: sources.runtimeReceiptContractFixture.replace(
+				'"terminal": ["active"]',
+				'"terminal": ["drained"]',
+			),
+		},
+	});
+	assert.notEqual(
+		changedKindLifecycle.compatibility.runtime.receipt.contractDigest,
+		baseline.compatibility.runtime.receipt.contractDigest,
+	);
+	assert.notEqual(changedKindLifecycle.compatibilityDigest, baseline.compatibilityDigest);
+});
+
 test("check mode rejects a stale manifest", () => {
 	const directory = mkdtempSync(resolve(tmpdir(), "maestro-protocol-manifest-"));
 	const output = resolve(directory, "manifest.json");
@@ -318,6 +431,8 @@ test("source-root receipt generation supports the legacy v1-only recovery source
 		headlessRuntime: "packages/tui-rs/src/headless/messages.rs",
 		runtimeProtocol: "packages/runtime-rs/src/protocol.rs",
 		runtimeFixture: "packages/runtime-rs/fixtures/headless-protocol-v1.json",
+		runtimeReceipts: "packages/runtime-rs/src/receipts.rs",
+		runtimeReceiptFixture: "packages/runtime-rs/fixtures/runtime-receipt-v1.json",
 		transcript: "packages/tui-rs/src/transcript.rs",
 		thread: "packages/tui-rs/src/hosted_runner/thread_protocol.rs",
 		resident: "packages/tui-rs/src/hosted_runner_cli.rs",
@@ -382,6 +497,7 @@ pub(super) const GOVERNED_THREAD_REQUIRED_FIELDS: &[&str] = &["codeMode", "toolG
 		);
 		const withoutMatrix = { ...legacySources };
 		delete withoutMatrix.threadCompatibilityMatrix;
+		delete withoutMatrix.runtimeReceiptContractFixture;
 		const expectedLegacy = buildCompatibilityManifest({ sources: withoutMatrix });
 		assert.equal(receipt.compatibilityDigest, expectedLegacy.compatibilityDigest);
 		assert.equal(
