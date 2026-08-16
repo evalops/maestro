@@ -6,12 +6,12 @@
 # Clippy always runs workspace-wide, even when a crate is named: CI's
 # rust-validation gate is `cargo clippy --workspace`, and a crate-scoped
 # clippy misses cross-crate type breaks (a maestro-tui signature change
-# shipped a maestro-control-plane compile error exactly this way).
+# shipped a maestro-runtime-gateway compile error exactly this way).
 set -euo pipefail
 
 usage() {
   echo "usage: $0 [crate]" >&2
-  echo "  crate  Cargo package name (e.g. maestro, maestro-tui, maestro-control-plane, ambient-agent)." >&2
+  echo "  crate  Cargo package name (e.g. maestro, maestro-tui, maestro-runtime-gateway, ambient-agent)." >&2
   echo "         Scopes tests to the crate; clippy stays workspace-wide to match CI." >&2
   echo "         Omit to run workspace-wide checks." >&2
 }

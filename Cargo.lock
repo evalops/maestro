@@ -3409,7 +3409,7 @@ version = "0.10.65"
 dependencies = [
  "anyhow",
  "ctor",
- "maestro-control-plane",
+ "maestro-runtime-gateway",
  "maestro-runtime",
  "maestro-tui",
  "serde",
@@ -3441,7 +3441,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "maestro-control-plane"
+name = "maestro-runtime-gateway"
 version = "0.1.0"
 dependencies = [
  "anyhow",

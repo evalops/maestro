@@ -1,6 +1,6 @@
 # Maestro
 
-Maestro is EvalOps' native Rust coding agent. One `maestro` executable owns the CLI, interactive terminal UI, headless protocol, hosted runner, and web control plane. Node.js and Bun are not required to run the product.
+Maestro is EvalOps' native Rust coding agent. One `maestro` executable owns the CLI, interactive terminal UI, headless protocol, hosted runner, and web runtime gateway. Node.js and Bun are not required to run the product.
 
 ## Install
 
@@ -21,7 +21,7 @@ maestro setup                   # check auth/config and show the next setup step
 maestro "fix the failing test" # interactive with an initial prompt
 maestro exec "summarize this repository"
 maestro --headless              # NDJSON protocol over stdio
-maestro web --port 3000         # browser UI and HTTP control plane
+maestro web --port 3000         # browser UI and HTTP runtime gateway
 maestro hosted-runner
 ```
 
@@ -31,9 +31,9 @@ Rust owns every agent/runtime path:
 
 - `packages/maestro-rs` — canonical executable and command dispatch
 - `packages/tui-rs` — agent core, providers, tools, TUI, and headless runtime
-- `packages/control-plane-rs` — HTTP/SSE/WebSocket control plane
+- `packages/runtime-gateway-rs` — HTTP/SSE/WebSocket runtime gateway
 
-The repository contains no TypeScript source or TypeScript build toolchain. The browser UI is a versioned static asset snapshot served by the Rust control plane; agent execution, protocols, adapters, CLI, and TUI are Rust.
+The repository contains no TypeScript source or TypeScript build toolchain. The browser UI is a versioned static asset snapshot served by the Rust runtime gateway; agent execution, protocols, adapters, CLI, and TUI are Rust.
 
 ```sh
 cargo test --workspace --locked

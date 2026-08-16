@@ -19,13 +19,13 @@ npm run build
 npm run smoke:release-native-only
 ```
 
-The browser bundle under `packages/web/dist` is a versioned static input. Product code, protocols, adapters, CLI, TUI, and the control plane are Rust.
+The browser bundle under `packages/web/dist` is a versioned static input. Product code, protocols, adapters, CLI, TUI, and the runtime gateway are Rust.
 
 ## 2. Inner loop
 
 - Interactive TUI: `cargo run --manifest-path packages/maestro-rs/Cargo.toml`
 - One-shot CLI: `cargo run --manifest-path packages/maestro-rs/Cargo.toml -- exec "summarize this repository"`
-- Web control plane: `cargo run --manifest-path packages/maestro-rs/Cargo.toml -- web --port 3000`
+- Web runtime gateway: `cargo run --manifest-path packages/maestro-rs/Cargo.toml -- web --port 3000`
 - Focused crate test: `cargo test --manifest-path packages/tui-rs/Cargo.toml <test-name>`
 
 ## 3. Safety checks
@@ -46,7 +46,7 @@ The browser bundle under `packages/web/dist` is a versioned static input. Produc
 - TUI/CLI UX: `docs/FEATURES.md`
 - Web parity: `docs/WEB_UI.md`
 - Tool behavior: `docs/TOOLS_REFERENCE.md`
-- Native crates: `packages/maestro-rs`, `packages/tui-rs`, `packages/control-plane-rs`, and `packages/ambient-agent-rs`
+- Native crates: `packages/maestro-rs`, `packages/tui-rs`, `packages/runtime-gateway-rs`, and `packages/ambient-agent-rs`
 - Historical design documents are reference material, not current build instructions.
 
 ## 5. Pre-PR checklist
@@ -61,5 +61,5 @@ The browser bundle under `packages/web/dist` is a versioned static input. Produc
 
 - Missing keys: `maestro --diag`
 - Approval blocks: check `docs/SAFETY.md`
-- Control plane: `curl http://localhost:3000/api/health`
+- Runtime gateway: `curl http://localhost:3000/api/health`
 - Sessions: see `docs/SESSIONS.md`

@@ -56,7 +56,7 @@ run-rs-debug: ## Launch Rust TUI (debug build)
 	cargo build -p maestro && \
 	./target/debug/maestro
 
-web: ## Launch the native web control plane
+web: ## Launch the native web runtime gateway
 	npm run web
 
 test: ## Full test suite

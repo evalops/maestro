@@ -1,4 +1,4 @@
-use maestro_control_plane::{serve_listener, ControlPlaneConfig};
+use maestro_runtime_gateway::{serve_listener, RuntimeGatewayConfig};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -26,7 +26,7 @@ async fn library_server_serves_health_and_static_assets() {
         .duration_since(UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("maestro-control-plane-library-{unique}"));
+    let root = std::env::temp_dir().join(format!("maestro-runtime-gateway-library-{unique}"));
     tokio::fs::create_dir_all(&root).await.expect("create root");
     tokio::fs::write(root.join("index.html"), "<main>native</main>")
         .await
@@ -34,7 +34,7 @@ async fn library_server_serves_health_and_static_assets() {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local address");
-    let config = ControlPlaneConfig::test_default().with_static_root(root.clone());
+    let config = RuntimeGatewayConfig::test_default().with_static_root(root.clone());
     let server = tokio::spawn(serve_listener(listener, config));
 
     let health = get(addr, "/healthz").await;

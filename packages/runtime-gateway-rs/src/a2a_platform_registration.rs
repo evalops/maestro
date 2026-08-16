@@ -470,7 +470,7 @@ fn a2a_platform_peer_projection(
     insert_string(
         &mut attributes,
         "publishedBy",
-        Some("maestro-control-plane-auto-registration"),
+        Some("maestro-runtime-gateway-auto-registration"),
     );
     insert_string(
         &mut attributes,

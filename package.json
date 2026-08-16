@@ -1,6 +1,6 @@
 {
   "name": "@evalops/maestro",
-  "description": "Maestro by EvalOps — native Rust coding agent, CLI, TUI, and web control plane",
+  "description": "Maestro by EvalOps — native Rust coding agent, CLI, TUI, and web runtime gateway",
   "version": "0.10.65",
   "private": false,
   "type": "module",
@@ -54,7 +54,7 @@
     "tui-rs:build": "cargo build --release --locked -p maestro-tui",
     "tui-rs:check": "cargo check --locked -p maestro-tui",
     "tui-rs:test": "cargo test --locked -p maestro-tui",
-    "control-plane-rs:build": "cargo build --release --locked -p maestro-control-plane",
+    "runtime-gateway-rs:build": "cargo build --release --locked -p maestro-runtime-gateway",
     "maestro-rs:build": "cargo build --release --locked -p maestro",
     "release:verify:published": "node scripts/smoke-registry-install.js",
     "release:verify:published:e2e": "node scripts/smoke-published-replay-e2e.js",
