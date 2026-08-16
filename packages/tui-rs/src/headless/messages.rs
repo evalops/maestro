@@ -479,8 +479,27 @@ pub struct ExternalToolDefinition {
     pub description: String,
     pub input_schema: serde_json::Value,
     pub execution_owner: ClientToolExecutionOwner,
+    /// Optional secret-free connection authority required to execute this
+    /// caller-owned tool. The client resolves the referenced connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_binding_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+}
+
+/// Secret-free connection authority carried by a signed Platform grant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConnectionGrantBinding {
+    pub binding_id: String,
+    pub connection_id: String,
+    pub provider_id: String,
+    pub generation: u64,
+    pub placement: crate::service_connections::ConnectionPlacement,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub resources: Vec<String>,
+    pub policy_hash: String,
 }
 
 /// Immutable tool authority for one governed session or hosted turn.
@@ -508,6 +527,8 @@ pub struct GovernedToolGrant {
     pub native_tool_ids: Vec<String>,
     #[serde(default)]
     pub external_tools: Vec<ExternalToolDefinition>,
+    #[serde(default)]
+    pub connection_bindings: Vec<ConnectionGrantBinding>,
 }
 
 impl GovernedToolGrant {
@@ -900,6 +921,8 @@ pub enum FromAgentMessage {
         args: serde_json::Value,
         provider_tool_name: String,
         tool_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        connection_binding_id: Option<String>,
         client_instance_id: String,
         grant_id: String,
         grant_version: u64,

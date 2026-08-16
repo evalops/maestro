@@ -1195,6 +1195,7 @@ mod tests {
             grant_signature: "hmac-sha256:signature".to_string(),
             native_tool_ids: vec!["read".to_string()],
             external_tools: Vec::new(),
+            connection_bindings: Vec::new(),
         }
     }
 

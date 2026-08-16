@@ -65,11 +65,13 @@ pub mod agents_cli;
 pub use maestro_ai as ai;
 /// File-level checkpoints for `/rewind files` (restore files an agent turn modified).
 pub mod checkpoints;
+pub mod connections_cli;
 pub mod doctor;
 /// Shared atomic-write helper (temp file + fsync + rename + parent-dir fsync)
 /// for persisted JSON/text state. See module docs for crash-safety vs.
 /// power-loss-safety guarantees.
 pub mod fs_atomic;
+pub mod local_models;
 pub mod model_catalog;
 pub mod model_monitor;
 pub mod palette_resource;
@@ -125,6 +127,7 @@ pub mod protocol;
 /// Maestro <-> Conductor bridge status types and helpers.
 pub mod bridge;
 
+pub mod service_connections;
 /// Session persistence (save/load conversations).
 /// JSONL-based session storage for resuming previous conversations.
 pub mod session;

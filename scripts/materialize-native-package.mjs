@@ -28,8 +28,9 @@ const profile = profileIndex >= 0 ? process.argv[profileIndex + 1] : "release";
 if (!profile || !/^[A-Za-z0-9_-]+$/.test(profile)) {
 	throw new Error(`Invalid Cargo profile: ${profile ?? "(missing)"}`);
 }
+const cargoTargetDir = resolve(process.env.CARGO_TARGET_DIR || "target");
 const localBinary = resolve(
-	"target",
+	cargoTargetDir,
 	profile,
 	process.platform === "win32" ? "maestro.exe" : "maestro",
 );

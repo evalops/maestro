@@ -20,6 +20,7 @@ File naming: `<platform>.json` where `<platform>` is `<os>-<arch>` —
 | `session_wire_roundtrip` | `SessionEntry` JSONL serialize + parse roundtrip |
 | `execpolicy_eval` | `Policy::check` over 500 parsed commands |
 | `message_layout_steady` | Steady-state `ChatView` redraw over 1,000 messages |
+| `model_selector_local_refresh_search` | Replace 100 discovered local rows, open the focused selector, and search |
 | `agent_loop_32_turns` | 32 scripted text turns through `NativeAgent` |
 | `agent_loop_32_tool_turns` | 32 scripted tool turns with varied, successful dispatches |
 | `agent_loop_16_multi_tool_turns` | 16 scripted turns with two varied tool calls each |

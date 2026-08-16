@@ -1,11 +1,12 @@
 # Plugins Foundation
 
 Maestro discovers **filesystem plugins** that package reusable agent
-capabilities — skills, slash-command templates, hooks, and MCP configs —
+capabilities — skills, agents, slash-command templates, hooks, MCP configs,
+and declarative connection types —
 similar to Grok-style plugin packages.
 
-This is a **foundation** slice: discovery, listing, and skill-path
-integration only. Marketplace install / UI is intentionally out of scope.
+Installed components are independently permissioned. Connection types are
+metadata only; Maestro owns secret resolution, leases, and runtime injection.
 
 ## Layout
 
@@ -16,6 +17,7 @@ integration only. Marketplace install / UI is intentionally out of scope.
   commands/            # markdown command templates
   hooks/hooks.json or hooks.toml
   .mcp.json or mcp.json
+  connections.json     # declarative types; never secret values or resolver code
 ```
 
 ## Discovery order (high → low)
@@ -40,13 +42,14 @@ All fields are optional. Missing paths fall back to conventions.
   "skills": "skills",
   "commands": "commands",
   "hooks": "hooks/hooks.toml",
-  "mcp": "mcp.json"
+  "mcp": "mcp.json",
+  "connections": "connections.json"
 }
 ```
 
 Without a manifest, Maestro looks for `skills/`, `commands/`,
 `hooks/hooks.toml|hooks/hooks.json|hooks.toml|hooks.json`, and
-`mcp.json|.mcp.json` under the plugin root.
+`mcp.json|.mcp.json`, and `connections.json` under the plugin root.
 
 ## Slash command
 
@@ -65,7 +68,11 @@ Alias: `/plugin`.
   `SkillSource::Plugin`.
 - **Commands / hooks / MCP:** paths are exposed via
   `PluginRegistry::command_dirs()`, `hook_configs()`, and `mcp_paths()` for
-  follow-up wiring. Marketplace install is not implemented here.
+  their native integrations.
+- **Connections:** `connections.json` is loaded only after the independent
+  `connections` plugin capability is enabled. New and legacy installs default
+  this capability off. The strict schema cannot provide executable secret
+  handlers. See [Managed Connections](../../../docs/design/MANAGED_CONNECTIONS.md).
 
 ## Example
 

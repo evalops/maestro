@@ -36,8 +36,8 @@ use tokio::sync::mpsc;
 
 use crate::agent::protocol::ExecutionReceipt;
 use crate::agent::{
-    CredentialVault, ExecutionSource, FromAgent, NativeAgent, NativeAgentConfig, PromptKind,
-    ToolDefinition, ToolResponseConsumption, ToolResponseMessage, ToolResult,
+    CredentialVault, ExecutionSource, FromAgent, MaxTokensSource, NativeAgent, NativeAgentConfig,
+    PromptKind, ToolDefinition, ToolResponseConsumption, ToolResponseMessage, ToolResult,
 };
 use crate::git;
 use crate::headless::messages::{
@@ -79,6 +79,7 @@ struct RuntimeMeta {
 struct ClientToolBinding {
     provider_tool_name: String,
     tool_id: String,
+    connection_binding_id: Option<String>,
     logical_name: String,
     owner: ClientToolExecutionOwner,
     grant_id: String,
@@ -238,6 +239,7 @@ impl HeadlessState {
             let config = NativeAgentConfig {
                 model: self.model.clone(),
                 max_tokens: crate::model_catalog::default_max_output_tokens(&self.model),
+                max_tokens_source: MaxTokensSource::Catalog,
                 system_prompt: Some(self.system_prompt.clone()),
                 thinking_enabled: self.thinking_enabled,
                 thinking_budget: self.thinking_budget,
@@ -475,22 +477,43 @@ fn canonical_json_digest(value: &serde_json::Value) -> Result<String> {
     Ok(format!("sha256:{}", sha256_hex(&bytes)))
 }
 
+fn is_sha256_digest(value: &str) -> bool {
+    value
+        .strip_prefix("sha256:")
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+fn is_normalized_authority_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
+        })
+}
+
 fn governed_authority_material_digest(grant: &GovernedToolGrant) -> Result<String> {
-    canonical_json_digest(&serde_json::json!({
+    let mut value = serde_json::json!({
         "native_tool_ids": grant.native_tool_ids,
         "external_tools": grant.external_tools,
-    }))
+    });
+    if !grant.connection_bindings.is_empty() {
+        value["connection_bindings"] = serde_json::json!(grant.connection_bindings);
+    }
+    canonical_json_digest(&value)
 }
 
 fn external_definition_digest(definition: &ExternalToolDefinition) -> Result<String> {
-    canonical_json_digest(&serde_json::json!({
+    let mut value = serde_json::json!({
         "tool_id": definition.tool_id,
         "name": definition.name,
         "description": definition.description,
         "input_schema": definition.input_schema,
         "execution_owner": definition.execution_owner,
         "metadata": definition.metadata,
-    }))
+    });
+    if let Some(binding_id) = &definition.connection_binding_id {
+        value["connection_binding_id"] = serde_json::json!(binding_id);
+    }
+    canonical_json_digest(&value)
 }
 
 fn qualified_client_tool_name(definition: &ExternalToolDefinition, digest: &str) -> String {
@@ -547,6 +570,7 @@ fn governed_agent_inputs(grant: &GovernedToolGrant) -> Result<GovernedAgentInput
             ClientToolBinding {
                 provider_tool_name,
                 tool_id: definition.tool_id.clone(),
+                connection_binding_id: definition.connection_binding_id.clone(),
                 logical_name: definition.name.clone(),
                 owner: definition.execution_owner.clone(),
                 grant_id: grant.grant_id.clone(),
@@ -602,6 +626,58 @@ fn validate_governed_grant_shape(grant: &GovernedToolGrant) -> Result<()> {
         previous_native_id = Some(name);
     }
     let mut owner_scoped_ids = HashSet::new();
+    let mut connection_binding_ids = HashSet::new();
+    let mut previous_connection_binding_id: Option<&str> = None;
+    if grant.connection_bindings.len() > 64 {
+        anyhow::bail!("governed connection binding count exceeds size limits");
+    }
+    for binding in &grant.connection_bindings {
+        if binding.binding_id.trim().is_empty()
+            || binding.connection_id.trim().is_empty()
+            || binding.provider_id.trim().is_empty()
+            || binding.policy_hash.trim().is_empty()
+            || !is_normalized_authority_id(&binding.binding_id)
+            || !is_normalized_authority_id(&binding.connection_id)
+            || !is_normalized_authority_id(&binding.provider_id)
+            || !is_sha256_digest(&binding.policy_hash)
+            || binding.generation == 0
+            || binding.capabilities.is_empty()
+            || binding.capabilities.len() > 128
+            || binding.resources.len() > 256
+            || binding.binding_id.len() > 256
+            || binding.connection_id.len() > 256
+            || binding.provider_id.len() > 128
+            || binding.policy_hash.len() > 256
+        {
+            anyhow::bail!("governed connection binding identity and authority must be present");
+        }
+        let mut previous_resource: Option<&str> = None;
+        for resource in &binding.resources {
+            if resource.trim().is_empty()
+                || resource.len() > 2 * 1024
+                || previous_resource.is_some_and(|previous| previous >= resource.as_str())
+            {
+                anyhow::bail!("governed connection resources must be sorted and unique");
+            }
+            previous_resource = Some(resource);
+        }
+        if previous_connection_binding_id
+            .is_some_and(|previous| previous >= binding.binding_id.as_str())
+            || !connection_binding_ids.insert(binding.binding_id.clone())
+        {
+            anyhow::bail!("governed connection bindings must be sorted and unique");
+        }
+        let mut previous_capability: Option<&str> = None;
+        for capability in &binding.capabilities {
+            if !is_normalized_authority_id(capability)
+                || previous_capability.is_some_and(|previous| previous >= capability.as_str())
+            {
+                anyhow::bail!("governed connection capabilities must be sorted and unique");
+            }
+            previous_capability = Some(capability);
+        }
+        previous_connection_binding_id = Some(&binding.binding_id);
+    }
     let mut previous_external_identity: Option<(&str, &str, u64)> = None;
     for definition in &grant.external_tools {
         if definition.tool_id.trim().is_empty()
@@ -614,6 +690,13 @@ fn validate_governed_grant_shape(grant: &GovernedToolGrant) -> Result<()> {
             || definition.execution_owner.lease_epoch == 0
         {
             anyhow::bail!("governed client tool identity and lease must be present");
+        }
+        if definition
+            .connection_binding_id
+            .as_ref()
+            .is_some_and(|id| !connection_binding_ids.contains(id))
+        {
+            anyhow::bail!("governed client tool references an unknown connection binding");
         }
         if definition.description.len() > 16 * 1024
             || serde_json::to_vec(&definition.input_schema)?.len() > 256 * 1024
@@ -681,7 +764,7 @@ pub(crate) struct GovernedGrantVerificationContext<'a> {
 }
 
 fn governed_grant_canonical_value(grant: &GovernedToolGrant) -> serde_json::Value {
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "envelope_version": grant.envelope_version,
         "grant_id": grant.grant_id,
         "grant_version": grant.grant_version,
@@ -700,7 +783,13 @@ fn governed_grant_canonical_value(grant: &GovernedToolGrant) -> serde_json::Valu
         "signing_key_id": grant.signing_key_id,
         "native_tool_ids": grant.native_tool_ids,
         "external_tools": grant.external_tools,
-    })
+    });
+    // Preserve the exact v2 canonical form for grants minted before
+    // connection bindings existed. New authority is included whenever used.
+    if !grant.connection_bindings.is_empty() {
+        value["connection_bindings"] = serde_json::json!(grant.connection_bindings);
+    }
+    value
 }
 
 fn governed_grant_canonical_bytes(grant: &GovernedToolGrant) -> Result<Vec<u8>> {
@@ -940,6 +1029,13 @@ fn apply_init_settings(
 /// Run the native headless protocol server until EOF or shutdown.
 pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> {
     let mut state = HeadlessState::new(model_override);
+    prepare_headless_local_model_with(
+        &state.model,
+        crate::local_models::discover_local_model(&state.model),
+        |route, models| crate::local_models::replace_discovered_models(0, models, Some(route)),
+    )
+    .await
+    .context("Failed to discover local model metadata for headless mode")?;
     tracing::info!(
         target: "maestro.model_binding",
         event = "maestro_model_binding_selected",
@@ -1569,6 +1665,20 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
         emit(&message)?;
     }
     Ok(exit_code)
+}
+
+async fn prepare_headless_local_model_with<F>(
+    route: &str,
+    discovery: impl std::future::Future<Output = Result<Option<crate::model_catalog::ModelInfo>>>,
+    publish: F,
+) -> Result<()>
+where
+    F: FnOnce(&str, &[crate::model_catalog::ModelInfo]),
+{
+    if let Some(discovered) = discovery.await? {
+        publish(route, std::slice::from_ref(&discovered));
+    }
+    Ok(())
 }
 
 fn protocol_error(request_id: Option<String>, message: impl Into<String>) -> Result<()> {
@@ -2205,6 +2315,7 @@ async fn handle_agent_event(
                     args,
                     provider_tool_name: binding.provider_tool_name,
                     tool_id: binding.tool_id,
+                    connection_binding_id: binding.connection_binding_id,
                     client_instance_id: binding.owner.client_instance_id,
                     grant_id: binding.grant_id,
                     grant_version: binding.grant_version,
@@ -3249,6 +3360,7 @@ mod tests {
             grant_signature: String::new(),
             native_tool_ids: vec!["bash".to_string()],
             external_tools: Vec::new(),
+            connection_bindings: Vec::new(),
         };
         sign_test_grant(&mut grant);
         grant
@@ -3334,6 +3446,71 @@ mod tests {
         assert!(
             verify_governed_tool_grant_with_keys(&unknown_version, &context, 1_000, &keys).is_err()
         );
+    }
+
+    #[test]
+    fn signed_connection_binding_is_scoped_and_tamper_evident() {
+        let mut grant = test_grant();
+        grant.connection_bindings = vec![crate::headless::messages::ConnectionGrantBinding {
+            binding_id: "github-release".into(),
+            connection_id: "github-work".into(),
+            provider_id: "github".into(),
+            generation: 4,
+            placement: crate::service_connections::ConnectionPlacement::Local,
+            capabilities: vec!["releases.read".into(), "releases.write".into()],
+            resources: vec!["repo:evalops/maestro-internal".into()],
+            policy_hash: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .into(),
+        }];
+        grant.external_tools = vec![ExternalToolDefinition {
+            tool_id: "publish-release".into(),
+            name: "publish_release".into(),
+            description: "Publish an approved release".into(),
+            input_schema: json!({"type":"object"}),
+            execution_owner: ClientToolExecutionOwner {
+                client_instance_id: "client-1".into(),
+                lease_epoch: 1,
+            },
+            connection_binding_id: Some("github-release".into()),
+            metadata: None,
+        }];
+        sign_test_grant(&mut grant);
+        verify_governed_tool_grant_with_keys(
+            &grant,
+            &test_grant_context(),
+            1_000,
+            &test_grant_keys(),
+        )
+        .expect("connection authority is part of the signed grant");
+        let (_, _, bindings) = governed_agent_inputs(&grant).unwrap();
+        assert_eq!(
+            bindings
+                .values()
+                .next()
+                .unwrap()
+                .connection_binding_id
+                .as_deref(),
+            Some("github-release")
+        );
+
+        let mut tampered = grant.clone();
+        tampered.connection_bindings[0].capabilities[1] = "releases.admin".into();
+        assert!(verify_governed_tool_grant_with_keys(
+            &tampered,
+            &test_grant_context(),
+            1_000,
+            &test_grant_keys(),
+        )
+        .is_err());
+
+        let mut unknown = grant.clone();
+        unknown.external_tools[0].connection_binding_id = Some("unknown".into());
+        sign_test_grant(&mut unknown);
+        let error = match governed_agent_inputs(&unknown) {
+            Ok(_) => panic!("unknown connection binding must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("unknown connection binding"));
     }
 
     #[test]
@@ -3542,6 +3719,7 @@ mod tests {
                 client_instance_id: "client-1".to_string(),
                 lease_epoch: 4,
             },
+            connection_binding_id: None,
             metadata: None,
         }];
         sign_test_grant(&mut grant);
@@ -3565,6 +3743,7 @@ mod tests {
         let binding = ClientToolBinding {
             provider_tool_name: "client_provider_id".to_string(),
             tool_id: "tool-1".to_string(),
+            connection_binding_id: None,
             logical_name: "deploy".to_string(),
             owner: ClientToolExecutionOwner {
                 client_instance_id: "client-1".to_string(),
@@ -3663,6 +3842,7 @@ mod tests {
             binding: ClientToolBinding {
                 provider_tool_name: "client_provider_id".to_string(),
                 tool_id: "tool-1".to_string(),
+                connection_binding_id: None,
                 logical_name: "deploy".to_string(),
                 owner: ClientToolExecutionOwner {
                     client_instance_id: "client-1".to_string(),
@@ -3738,6 +3918,7 @@ mod tests {
                     binding: ClientToolBinding {
                         provider_tool_name: "client_provider_id".to_string(),
                         tool_id: "tool-1".to_string(),
+                        connection_binding_id: None,
                         logical_name: "deploy".to_string(),
                         owner: ClientToolExecutionOwner {
                             client_instance_id: "client-1".to_string(),
@@ -3860,6 +4041,46 @@ mod tests {
             "evalops/gpt-5.5"
         );
         assert_eq!(resolve_headless_model(None, &HashMap::new()), "gpt-5.5");
+    }
+
+    #[tokio::test]
+    async fn headless_publishes_selected_local_limits_before_agent_creation() {
+        let discovered = crate::model_catalog::ModelInfo {
+            id: "headless-live-limit-test".to_owned(),
+            name: "headless-live-limit-test".to_owned(),
+            provider: "llamacpp".to_owned(),
+            description: "test local model".to_owned(),
+            capabilities: crate::model_catalog::ModelCapabilities {
+                protocol: crate::model_catalog::ModelProtocol::OpenAiChat,
+                tools: false,
+                vision: false,
+                reasoning: false,
+                streaming: true,
+                context_tokens: 8_192,
+                output_tokens: None,
+            },
+            verification: crate::model_catalog::ModelVerification {
+                state: crate::model_catalog::VerificationState::Verified,
+                source: "test".to_owned(),
+                detail: None,
+            },
+        };
+        let mut published = None;
+
+        prepare_headless_local_model_with(
+            "llamacpp/headless-live-limit-test",
+            async { Ok(Some(discovered)) },
+            |route, models| {
+                published = Some((route.to_owned(), models.to_vec()));
+            },
+        )
+        .await
+        .unwrap();
+
+        let (route, models) = published.expect("headless discovery must publish live limits");
+        assert_eq!(route, "llamacpp/headless-live-limit-test");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].capabilities.context_tokens, 8_192);
     }
 
     #[test]
@@ -4953,6 +5174,7 @@ else if(x.method==='turn/steer'){send({id:x.id,result:{turn:{id:'turn-active'}}}
                     binding: ClientToolBinding {
                         provider_tool_name: "client_provider_id".to_string(),
                         tool_id: "tool-1".to_string(),
+                        connection_binding_id: None,
                         logical_name: "deploy".to_string(),
                         owner: ClientToolExecutionOwner {
                             client_instance_id: "client-1".to_string(),

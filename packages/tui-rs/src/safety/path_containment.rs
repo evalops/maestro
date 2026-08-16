@@ -890,7 +890,10 @@ mod tests {
         assert!(is_system_path(&sys_path.join("log/messages")));
 
         if let Some(home) = dirs::home_dir() {
-            assert!(!is_system_path(&home.join("file")));
+            // Self-hosted agents may intentionally place their user home under
+            // a protected root such as /opt. A child must inherit the home's
+            // classification instead of assuming every home is unprotected.
+            assert_eq!(is_system_path(&home.join("file")), is_system_path(&home));
         }
         assert!(!is_system_path(&std::env::temp_dir().join("file")));
     }

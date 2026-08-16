@@ -10,7 +10,9 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-use crate::agent::{CredentialVault, ExecutionSource, FromAgent, NativeAgent, NativeAgentConfig};
+use crate::agent::{
+    CredentialVault, ExecutionSource, FromAgent, MaxTokensSource, NativeAgent, NativeAgentConfig,
+};
 use crate::safety::FirewallVerdict;
 use crate::sandbox::SandboxPolicy;
 use crate::state::ApprovalMode;
@@ -66,6 +68,7 @@ fn typed_terminal_exit_code(event: &FromAgent) -> Option<i32> {
 #[derive(Debug, Clone)]
 struct PrintModeLimits {
     max_tokens: u32,
+    max_tokens_source: MaxTokensSource,
     max_tool_calls: usize,
     max_turns: usize,
     workspace_only_file_tools: bool,
@@ -74,13 +77,19 @@ struct PrintModeLimits {
 
 impl PrintModeLimits {
     fn from_env(model: &str) -> Result<Self> {
+        let (max_tokens, max_tokens_is_explicit) = positive_env_with_presence(
+            "MAESTRO_PRINT_MAX_TOKENS",
+            crate::model_catalog::default_max_output_tokens(model),
+        )?;
         Ok(Self {
             // Explicit env override wins; otherwise catalog-known models get
             // their full output ceiling and unknown models the fallback.
-            max_tokens: positive_env(
-                "MAESTRO_PRINT_MAX_TOKENS",
-                crate::model_catalog::default_max_output_tokens(model),
-            )?,
+            max_tokens,
+            max_tokens_source: if max_tokens_is_explicit {
+                MaxTokensSource::Explicit
+            } else {
+                MaxTokensSource::Catalog
+            },
             max_tool_calls: positive_env("MAESTRO_PRINT_MAX_TOOL_CALLS", usize::MAX)?,
             max_turns: positive_env("MAESTRO_PRINT_MAX_TURNS", usize::MAX)?,
             workspace_only_file_tools: bool_env("MAESTRO_PRINT_WORKSPACE_ONLY_FILE_TOOLS")?,
@@ -94,8 +103,16 @@ where
     T: std::str::FromStr + PartialOrd + From<u8> + Copy,
     T::Err: std::fmt::Display,
 {
+    positive_env_with_presence(name, default).map(|(value, _)| value)
+}
+
+fn positive_env_with_presence<T>(name: &str, default: T) -> Result<(T, bool)>
+where
+    T: std::str::FromStr + PartialOrd + From<u8> + Copy,
+    T::Err: std::fmt::Display,
+{
     let Ok(raw) = std::env::var(name) else {
-        return Ok(default);
+        return Ok((default, false));
     };
     let value = raw
         .parse::<T>()
@@ -103,7 +120,7 @@ where
     if value < T::from(1) {
         bail!("{name} must be a positive integer");
     }
-    Ok(value)
+    Ok((value, true))
 }
 
 fn bool_env(name: &str) -> Result<bool> {
@@ -258,12 +275,38 @@ fn stream_chunk_for_stdout(content: &str, stdout_is_terminal: bool) -> String {
     }
 }
 
+fn validate_print_local_model(
+    route: &str,
+    discovered: &crate::model_catalog::ModelInfo,
+) -> Result<()> {
+    // Ollama lists installed models through /v1/models, but only lists loaded
+    // models (and their live context allocation) through /api/ps. An idle
+    // model must be allowed to reach the chat request that loads it.
+    if discovered.capabilities.context_tokens == 0 && discovered.provider != "ollama" {
+        bail!(
+            "Local model {route} did not report its live context limit; configure the runtime to expose context metadata before print/exec"
+        );
+    }
+    Ok(())
+}
+
 /// Run one prompt non-interactively and print the final answer.
 pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
     let model = options
         .model
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(crate::codex_auth::resolve_default_model);
+    if crate::local_models::is_local_model_route(&model) {
+        let discovered = crate::local_models::discover_local_model(&model)
+            .await?
+            .with_context(|| {
+                format!(
+                    "Local model {model} was not reported by its runtime; verify the runtime and /v1/models endpoint"
+                )
+            })?;
+        validate_print_local_model(&model, &discovered)?;
+        crate::local_models::replace_discovered_models(0, &[discovered], Some(&model));
+    }
     let limits = PrintModeLimits::from_env(&model)?;
 
     let workspace = dunce::canonicalize(
@@ -279,6 +322,7 @@ pub async fn run_print_mode(options: PrintModeOptions) -> Result<i32> {
     let config = NativeAgentConfig {
         model: model.clone(),
         max_tokens: limits.max_tokens,
+        max_tokens_source: limits.max_tokens_source,
         system_prompt: Some(system_prompt),
         thinking_enabled: false,
         thinking_budget: 0,
@@ -792,6 +836,69 @@ pub fn resolve_output_path(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn discovered_local_model(
+        provider: &str,
+        context_tokens: u32,
+    ) -> crate::model_catalog::ModelInfo {
+        crate::model_catalog::ModelInfo {
+            id: "test-model".to_owned(),
+            name: "test-model".to_owned(),
+            provider: provider.to_owned(),
+            description: "test model".to_owned(),
+            capabilities: crate::model_catalog::ModelCapabilities {
+                protocol: crate::model_catalog::ModelProtocol::OpenAiChat,
+                tools: false,
+                vision: false,
+                reasoning: false,
+                streaming: true,
+                context_tokens,
+                output_tokens: None,
+            },
+            verification: crate::model_catalog::ModelVerification {
+                state: crate::model_catalog::VerificationState::Verified,
+                source: "test".to_owned(),
+                detail: None,
+            },
+        }
+    }
+
+    static PRINT_LIMIT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn print_mode_allows_an_installed_but_idle_ollama_model() {
+        let discovered = discovered_local_model("ollama", 0);
+
+        assert!(validate_print_local_model("ollama/test-model", &discovered).is_ok());
+    }
+
+    #[test]
+    fn print_mode_still_requires_live_context_for_other_local_runtimes() {
+        let discovered = discovered_local_model("llamacpp", 0);
+
+        let error = validate_print_local_model("llamacpp/test-model", &discovered).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("did not report its live context limit"));
+    }
+
+    #[test]
+    fn print_limit_equal_to_catalog_default_is_still_explicit() {
+        let _guard = PRINT_LIMIT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let name = "MAESTRO_TEST_PRINT_MAX_TOKENS_SOURCE";
+        // SAFETY: this module serializes mutations of its private test-only key.
+        unsafe { std::env::set_var(name, "16384") };
+
+        let result = positive_env_with_presence(name, 16_384_u32);
+
+        // SAFETY: see the serialized mutation above.
+        unsafe { std::env::remove_var(name) };
+        let (value, is_explicit) = result.unwrap();
+        assert_eq!(value, 16_384);
+        assert!(is_explicit);
+    }
 
     #[test]
     fn sanitize_stream_chunk_strips_osc_injection_from_provider_delta() {

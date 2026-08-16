@@ -324,6 +324,10 @@ fn resolve_native_client(
         crate::codex_auth::read_codex_auth(),
         false,
     );
+    // Managed credentials are resolved into this caller-owned map only. The
+    // process environment and plugin code never receive the secret value.
+    let _managed_connection =
+        crate::service_connections::ConnectionBroker::merge_default_for_model(model, &mut env)?;
     let client = UnifiedClient::from_model_with_env(model, &env)?;
     let provider_name = client.provider_name().to_string();
     Ok((
@@ -399,6 +403,16 @@ fn emit_compaction_event(
     });
 }
 
+/// Provenance for the per-request output limit.
+///
+/// Catalog-derived limits follow model switches. Explicit limits are stable
+/// across switches, even when their numeric value equals a catalog default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaxTokensSource {
+    Catalog,
+    Explicit,
+}
+
 /// Configuration for the native agent
 ///
 /// Defines the AI model settings, system prompt, thinking capabilities, and execution
@@ -418,6 +432,7 @@ fn emit_compaction_event(
 /// let config = NativeAgentConfig {
 ///     model: "claude-opus-4-5-20251101".to_string(),
 ///     max_tokens: 32768,
+///     max_tokens_source: maestro_tui::agent::MaxTokensSource::Explicit,
 ///     system_prompt: Some("You are a helpful coding assistant.".to_string()),
 ///     thinking_enabled: true,
 ///     thinking_budget: 20000,
@@ -440,6 +455,9 @@ pub struct NativeAgentConfig {
     /// Limits the length of generated responses. Different models support different
     /// max token values (check provider documentation).
     pub max_tokens: u32,
+
+    /// Whether `max_tokens` came from model metadata or explicit configuration.
+    pub max_tokens_source: MaxTokensSource,
 
     /// System prompt
     ///
@@ -505,6 +523,7 @@ impl Default for NativeAgentConfig {
         Self {
             model,
             max_tokens,
+            max_tokens_source: MaxTokensSource::Catalog,
             system_prompt: None,
             thinking_enabled: false,
             thinking_budget: 10000,
@@ -812,6 +831,9 @@ enum AgentCommand {
     /// Switches to a different AI model (e.g., from Claude to GPT-5).
     /// The conversation history is preserved.
     SetModel { model: String },
+
+    /// Re-resolve catalog/runtime limits for the already active model.
+    RefreshModelBudgets,
 
     /// Update thinking configuration
     ///
@@ -1131,6 +1153,7 @@ impl NativeAgent {
     /// let config = NativeAgentConfig {
     ///     model: "claude-opus-4-5-20251101".to_string(),
     ///     max_tokens: 16384,
+    ///     max_tokens_source: maestro_tui::agent::MaxTokensSource::Explicit,
     ///     system_prompt: Some("You are a Rust expert.".to_string()),
     ///     thinking_enabled: true,
     ///     thinking_budget: 10000,
@@ -1714,6 +1737,13 @@ impl NativeAgent {
             .send(AgentCommand::SetModel { model })
             .map_err(|e| anyhow::anyhow!("Failed to set model: {e}"))?;
         Ok(())
+    }
+
+    /// Refresh context and catalog-derived output limits for the active model.
+    pub fn refresh_model_budgets(&self) -> Result<()> {
+        self.command_tx
+            .send(AgentCommand::RefreshModelBudgets)
+            .map_err(|e| anyhow::anyhow!("Failed to refresh model budgets: {e}"))
     }
 
     /// Set thinking level
@@ -3265,6 +3295,18 @@ fn output_token_allowance(configured: u32, budget: Option<u32>, spent: u64) -> u
     }
 }
 
+fn clamp_output_to_remaining_context(
+    configured: u32,
+    context_tokens: u32,
+    estimated_input_tokens: u64,
+) -> Option<u32> {
+    const REQUEST_CONTEXT_SAFETY_TOKENS: u64 = 64;
+    let remaining = u64::from(context_tokens)
+        .saturating_sub(estimated_input_tokens)
+        .saturating_sub(REQUEST_CONTEXT_SAFETY_TOKENS);
+    (remaining > 0).then(|| configured.min(u32::try_from(remaining).unwrap_or(u32::MAX)))
+}
+
 async fn recv_command_or_shutdown(
     shutdown_token: &CancellationToken,
     command_rx: &mut mpsc::UnboundedReceiver<AgentCommand>,
@@ -3394,6 +3436,24 @@ fn codex_app_server_user_text(
             .unwrap_or_default();
     }
     parts.join("\n\n")
+}
+
+fn refresh_model_budgets(
+    config: &mut NativeAgentConfig,
+    compactor: &mut super::compaction::ContextCompactor,
+    model: &str,
+) {
+    if config.max_tokens_source == MaxTokensSource::Catalog {
+        config.max_tokens = crate::model_catalog::default_max_output_tokens(model);
+    }
+    *compactor = super::compaction::ContextCompactor::new(
+        super::compaction::CompactionConfig::for_model(model, config.context_window),
+    );
+}
+
+fn set_explicit_max_tokens(config: &mut NativeAgentConfig, max_tokens: u32) {
+    config.max_tokens = max_tokens;
+    config.max_tokens_source = MaxTokensSource::Explicit;
 }
 
 impl NativeAgentRunner {
@@ -3897,8 +3957,12 @@ impl NativeAgentRunner {
                     self.config.thinking_enabled = enabled;
                     self.config.thinking_budget = budget;
                 }
+                AgentCommand::RefreshModelBudgets => {
+                    let model = self.config.model.clone();
+                    refresh_model_budgets(&mut self.config, &mut self.compactor, &model);
+                }
                 AgentCommand::SetMaxTokens { max_tokens } => {
-                    self.config.max_tokens = max_tokens;
+                    set_explicit_max_tokens(&mut self.config, max_tokens);
                 }
                 AgentCommand::SetOutputTokenBudget {
                     max_total_output_tokens,
@@ -4640,9 +4704,20 @@ impl NativeAgentRunner {
                                     && matches!(error_kind, super::retry::ErrorKind::AuthFailure)
                                 {
                                     waited_for_codex_login = true;
-                                    let requested_profile = std::env::var("MAESTRO_CODEX_PROFILE")
-                                        .ok()
-                                        .filter(|value| !value.trim().is_empty());
+                                    let requested_profile = match crate::service_connections::selected_delegated_profile_from_env("openai-codex") {
+                                        Ok(profile) => profile,
+                                        Err(error) => {
+                                            terminal_failure_event = Some(FromAgent::Error {
+                                                message: format!(
+                                                    "Codex managed connection selection failed: {error:#}"
+                                                ),
+                                                fatal: false,
+                                                terminal: true,
+                                            });
+                                            terminal_request_failure = true;
+                                            break;
+                                        }
+                                    };
                                     let identity =
                                         match crate::codex_identity::resolve_codex_identity(
                                             requested_profile.as_deref(),
@@ -4963,6 +5038,7 @@ impl NativeAgentRunner {
                         Ok((client, provider, model_route)) => {
                             self.client = client;
                             self.model_route = model_route;
+                            refresh_model_budgets(&mut self.config, &mut self.compactor, &model);
                             self.config.model = model.clone();
                             self.hooks.set_model(&model);
                             let _ = self
@@ -4987,8 +5063,12 @@ impl NativeAgentRunner {
                     self.config.thinking_enabled = enabled;
                     self.config.thinking_budget = budget;
                 }
+                AgentCommand::RefreshModelBudgets => {
+                    let model = self.config.model.clone();
+                    refresh_model_budgets(&mut self.config, &mut self.compactor, &model);
+                }
                 AgentCommand::SetMaxTokens { max_tokens } => {
-                    self.config.max_tokens = max_tokens;
+                    set_explicit_max_tokens(&mut self.config, max_tokens);
                 }
                 AgentCommand::SetOutputTokenBudget {
                     max_total_output_tokens,
@@ -5226,7 +5306,11 @@ impl NativeAgentRunner {
     }
 
     /// Build request configuration
-    fn build_config(&mut self) -> RequestConfig {
+    fn build_config(
+        &mut self,
+        request_messages: &[Message],
+        include_tools: bool,
+    ) -> Result<RequestConfig> {
         // These values are cached for the runner lifetime and updated through
         // explicit commands when app-owned goal state changes.
         let goal_tools_visible = self.goal_tools_visible;
@@ -5240,7 +5324,9 @@ impl NativeAgentRunner {
                     && cache.active_tool_names == self.active_tool_names
             })
             .map(|cache| Arc::clone(&cache.tools));
-        let tools = if let Some(tools) = cached_tools {
+        let tools = if !include_tools {
+            Arc::new(Vec::new())
+        } else if let Some(tools) = cached_tools {
             tools
         } else {
             let definitions = effective_tool_definitions(
@@ -5300,9 +5386,37 @@ impl NativeAgentRunner {
             provider_model_name(configured_model)
         };
 
-        RequestConfig {
+        let mut max_tokens = self.remaining_output_token_allowance();
+        if let Some(context_tokens) = crate::local_models::find_discovered_model(&self.config.model)
+            .map(|model| model.capabilities.context_tokens)
+            .filter(|tokens| *tokens > 0)
+        {
+            let estimated_input_tokens = self
+                .compactor
+                .estimate_tokens(request_messages)
+                .saturating_add(
+                    system
+                        .as_deref()
+                        .map_or(0, super::token_estimation::estimate_tokens),
+                )
+                .saturating_add(super::token_estimation::estimate_tokens_from_json(
+                    tools.as_ref(),
+                ));
+            max_tokens = clamp_output_to_remaining_context(
+                max_tokens,
+                context_tokens,
+                estimated_input_tokens,
+            )
+            .with_context(|| {
+                format!(
+                    "Local model request input estimate ({estimated_input_tokens} tokens) fills the live {context_tokens}-token context; reduce the prompt/history/tools or increase the runtime context"
+                )
+            })?;
+        }
+
+        Ok(RequestConfig {
             model,
-            max_tokens: self.remaining_output_token_allowance(),
+            max_tokens,
             temperature: if self.config.thinking_enabled {
                 None // Temperature must be 1 or omitted for thinking
             } else {
@@ -5316,7 +5430,7 @@ impl NativeAgentRunner {
                 .client
                 .as_ref()
                 .is_some_and(|client| client.provider() == AiProvider::Anthropic),
-        }
+        })
     }
 
     async fn run_side_question(&mut self, question: String, standalone: bool) {
@@ -5350,8 +5464,7 @@ impl NativeAgentRunner {
                 role: Role::User,
                 content: MessageContent::text(question.clone()),
             });
-            let mut config = self.build_config();
-            config.tools = Arc::new(Vec::new());
+            let config = self.build_config(&messages, false)?;
             let client = self
                 .client
                 .as_ref()
@@ -6526,9 +6639,10 @@ impl NativeAgentRunner {
             self.repair_orphaned_tool_calls();
 
             // Make the API call
-            let config = self.build_config();
+            let request_messages = Arc::clone(&self.messages);
             let provider_messages =
-                resolve_provider_history_shared(&self.messages, &self.credential_vault)?;
+                resolve_provider_history_shared(&request_messages, &self.credential_vault)?;
+            let config = self.build_config(&provider_messages, true)?;
             let client = self
                 .client
                 .as_ref()
@@ -12409,6 +12523,160 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         );
     }
 
+    #[test]
+    fn model_switch_refreshes_output_and_compaction_budgets() {
+        let mut config = NativeAgentConfig {
+            model: "uncataloged/startup-model".to_owned(),
+            ..NativeAgentConfig::default()
+        };
+        let mut compactor = super::super::compaction::ContextCompactor::new(
+            super::super::compaction::CompactionConfig::for_model(
+                &config.model,
+                config.context_window,
+            ),
+        );
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("x".repeat(400_000)),
+        }];
+
+        assert_eq!(config.max_tokens, 16_384);
+        assert!(compactor.should_auto_compact(&messages));
+
+        refresh_model_budgets(&mut config, &mut compactor, "llamacpp/Qwen3.8-27B");
+
+        assert_eq!(config.max_tokens, 32_768);
+        assert!(!compactor.should_auto_compact(&messages));
+    }
+
+    #[test]
+    fn model_switch_preserves_explicit_context_window_override() {
+        let mut config = NativeAgentConfig {
+            model: "uncataloged/startup-model".to_owned(),
+            context_window: Some(96_000),
+            ..NativeAgentConfig::default()
+        };
+        let mut compactor = super::super::compaction::ContextCompactor::new(
+            super::super::compaction::CompactionConfig::for_model(
+                &config.model,
+                config.context_window,
+            ),
+        );
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("x".repeat(400_000)),
+        }];
+
+        refresh_model_budgets(&mut config, &mut compactor, "llamacpp/Qwen3.8-27B");
+
+        assert_eq!(config.context_window, Some(96_000));
+        assert!(compactor.should_auto_compact(&messages));
+    }
+
+    #[test]
+    fn model_switch_preserves_explicit_output_token_override() {
+        let mut config = NativeAgentConfig {
+            model: "uncataloged/startup-model".to_owned(),
+            max_tokens: 7_777,
+            max_tokens_source: MaxTokensSource::Explicit,
+            ..NativeAgentConfig::default()
+        };
+        let mut compactor = super::super::compaction::ContextCompactor::new(
+            super::super::compaction::CompactionConfig::for_model(
+                &config.model,
+                config.context_window,
+            ),
+        );
+
+        refresh_model_budgets(&mut config, &mut compactor, "llamacpp/Qwen3.8-27B");
+
+        assert_eq!(config.max_tokens, 7_777);
+    }
+
+    #[test]
+    fn model_switch_preserves_explicit_output_limit_equal_to_previous_default() {
+        let mut config = NativeAgentConfig {
+            model: "uncataloged/startup-model".to_owned(),
+            max_tokens: crate::model_catalog::DEFAULT_MAX_OUTPUT_TOKENS,
+            max_tokens_source: MaxTokensSource::Explicit,
+            ..NativeAgentConfig::default()
+        };
+        let mut compactor = super::super::compaction::ContextCompactor::new(
+            super::super::compaction::CompactionConfig::for_model(
+                &config.model,
+                config.context_window,
+            ),
+        );
+
+        refresh_model_budgets(&mut config, &mut compactor, "llamacpp/Qwen3.8-27B");
+
+        assert_eq!(
+            config.max_tokens,
+            crate::model_catalog::DEFAULT_MAX_OUTPUT_TOKENS
+        );
+    }
+
+    #[test]
+    fn set_max_tokens_marks_the_limit_explicit() {
+        let mut config = NativeAgentConfig::default();
+        assert_eq!(config.max_tokens_source, MaxTokensSource::Catalog);
+        let max_tokens = config.max_tokens;
+        let mut compactor = super::super::compaction::ContextCompactor::new(
+            super::super::compaction::CompactionConfig::for_model(
+                &config.model,
+                config.context_window,
+            ),
+        );
+
+        set_explicit_max_tokens(&mut config, max_tokens);
+        refresh_model_budgets(&mut config, &mut compactor, "llamacpp/Qwen3.8-27B");
+
+        assert_eq!(config.max_tokens_source, MaxTokensSource::Explicit);
+        assert_eq!(config.max_tokens, max_tokens);
+    }
+
+    #[test]
+    fn discovered_context_limit_reaches_compaction_for_uncataloged_model() {
+        let model = crate::model_catalog::ModelInfo {
+            id: "small-runtime-model".to_owned(),
+            name: "small-runtime-model".to_owned(),
+            provider: "llamacpp".to_owned(),
+            description: "test runtime model".to_owned(),
+            capabilities: crate::model_catalog::ModelCapabilities {
+                protocol: crate::model_catalog::ModelProtocol::OpenAiChat,
+                tools: false,
+                vision: false,
+                reasoning: false,
+                streaming: true,
+                context_tokens: 8_192,
+                output_tokens: None,
+            },
+            verification: crate::model_catalog::ModelVerification {
+                state: crate::model_catalog::VerificationState::Verified,
+                source: "test-runtime".to_owned(),
+                detail: None,
+            },
+        };
+        crate::local_models::replace_discovered_models(9_001, &[model], None);
+        assert_eq!(
+            crate::model_catalog::default_max_output_tokens("llamacpp/small-runtime-model"),
+            4_096
+        );
+
+        let compactor = super::super::compaction::ContextCompactor::new(
+            super::super::compaction::CompactionConfig::for_model(
+                "llamacpp/small-runtime-model",
+                None,
+            ),
+        );
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("x".repeat(200_000)),
+        }];
+
+        assert!(compactor.should_auto_compact(&messages));
+    }
+
     #[tokio::test]
     async fn agent_cancel_interrupts_a_blocked_runner_before_queue_processing() {
         let request_token = CancellationToken::new();
@@ -14042,6 +14310,24 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             "providers reject max_tokens: 0"
         );
         assert_eq!(output_token_allowance(4_096, Some(4_096), 9_000), 1);
+    }
+
+    #[test]
+    fn local_output_allowance_fits_the_estimated_request_in_live_context() {
+        assert_eq!(
+            clamp_output_to_remaining_context(4_096, 8_192, 5_000),
+            Some(3_128)
+        );
+        assert_eq!(
+            clamp_output_to_remaining_context(2_048, 8_192, 1_000),
+            Some(2_048),
+            "remaining context must not raise the configured output cap"
+        );
+        assert_eq!(
+            clamp_output_to_remaining_context(4_096, 8_192, 9_000),
+            None,
+            "an input-filled context must fail before provider dispatch"
+        );
     }
 
     #[test]

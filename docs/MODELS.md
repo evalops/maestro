@@ -177,6 +177,70 @@ map injects defaults:
 | `groq`     | Auto-enables when `GROQ_API_KEY` is present                   |
 | ...        | (See `src/models/registry.ts` for the full list)              |
 
+## Local llama.cpp
+
+Maestro discovers models from local OpenAI-compatible runtimes in the
+background. Startup and rendering never wait for a socket. The built-in probe
+targets are:
+
+| Runtime | Default endpoint | Override |
+| --- | --- | --- |
+| llama.cpp | `http://127.0.0.1:8080/v1` | `LLAMA_CPP_BASE_URL` |
+| LM Studio | `http://127.0.0.1:1234/v1` | `LM_STUDIO_BASE_URL` |
+| Ollama | `http://127.0.0.1:11434/v1` | `OLLAMA_BASE_URL` |
+
+Unavailable and malformed endpoints are silently isolated. Detected rows lead
+the focused `/model` view and display `Local · ready`; uncataloged capabilities
+are marked as unknown. Opening `/model` refreshes discovery when the prior pass
+is at least five seconds old. Enter switches the current session, while Ctrl+D
+also persists that selection as the default. Maestro never starts a runtime or
+downloads model weights.
+
+Maestro connects to each runtime through its OpenAI-compatible Chat Completions
+API. The three providers do not require API keys. Provider-qualified routes such
+as `llamacpp/Qwen3.8-27B`, `lmstudio/my-model`, and `ollama/qwen3.6:27b` preserve
+the chosen runtime even when multiple servers expose the same model ID.
+
+Start a recent llama.cpp build with its tool-aware Jinja renderer enabled:
+
+```bash
+llama-server \
+  --model /path/to/Qwen3.8-27B-Q4_K_M.gguf \
+  --alias Qwen3.8-27B \
+  --host 127.0.0.1 \
+  --port 8080 \
+  --ctx-size 262144 \
+  --gpu-layers 99 \
+  --flash-attn on \
+  --cache-prompt \
+  --parallel 1 \
+  --jinja
+```
+
+Then add the local model and verify the live endpoint:
+
+```bash
+maestro config local --provider llamacpp --scope user
+maestro doctor --live --model llamacpp/Qwen3.8-27B
+maestro --model llamacpp/Qwen3.8-27B
+```
+
+The generated model entry advertises Qwen3.8-27B's native 262,144-token
+context window, so the server recipe uses the same limit for correct
+compaction behavior. Maestro also sends `cache_prompt: true`, allowing repeated
+conversation prefixes to reuse llama.cpp's prompt cache and reduce repeated
+prefill work. `--jinja` is required for Maestro's function tools to reach
+llama.cpp's tool-call parser. Export `LLAMA_CPP_BASE_URL` before starting
+Maestro when llama.cpp is not listening on the default endpoint.
+
+For one interactive agent, `--parallel 1` maximizes the context and cache
+residency of its single server slot. Increase `--parallel` only for concurrent
+clients: extra slots improve concurrency but divide the configured context and
+do not increase token-generation speed. Full GPU offload (`--gpu-layers 99`),
+flash attention, and Jinja are good defaults when the host supports them.
+Speculative decoding can improve some workloads, but depends on a compatible
+draft model and should be benchmarked with your prompts before adopting it.
+
 ## Chinese Model Providers (DeepSeek, Kimi, Qwen, MiniMax, GLM)
 
 Maestro ships built-in support for the major Chinese frontier providers. All of

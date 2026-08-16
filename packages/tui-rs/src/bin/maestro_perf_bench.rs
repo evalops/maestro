@@ -23,8 +23,11 @@ use std::time::{Instant, SystemTime};
 use anyhow::{bail, Context, Result};
 use maestro_tui::agent::{FromAgent, NativeAgent, NativeAgentConfig};
 use maestro_tui::ai::{ScriptedBlock, ScriptedClient, ScriptedResponse, StopReason, UnifiedClient};
-use maestro_tui::components::ChatView;
+use maestro_tui::components::{ChatView, ModelSelector};
 use maestro_tui::execpolicy::{parse_command, parse_policy, Decision};
+use maestro_tui::model_catalog::{
+    ModelCapabilities, ModelInfo, ModelProtocol, ModelVerification, VerificationState,
+};
 use maestro_tui::session::{
     AppMessage, ContentBlock, MessageContent, MessageEntry, SessionEntry, SessionHeader,
     SessionReader, ThinkingLevel, TokenUsage,
@@ -52,6 +55,8 @@ const AGENT_TURN_COUNT: usize = 32;
 const AGENT_TOOL_TURN_COUNT: usize = 32;
 const AGENT_MULTI_TOOL_TURN_COUNT: usize = 16;
 const AGENT_LONG_HISTORY_TURN_COUNT: usize = 96;
+const MODEL_SELECTOR_LOCAL_SCENARIO: &str = "model_selector_local_refresh_search";
+const DISCOVERED_MODEL_COUNT: usize = 100;
 
 /// Versioned per-platform baseline file.
 #[derive(Debug, Serialize, Deserialize)]
@@ -244,6 +249,49 @@ fn render_message_layout(state: &AppState) {
     let mut buffer = Buffer::empty(MESSAGE_LAYOUT_AREA);
     ChatView::new(state).render(MESSAGE_LAYOUT_AREA, &mut buffer);
     black_box(buffer);
+}
+
+fn discovered_model_fixture() -> Vec<ModelInfo> {
+    (0..DISCOVERED_MODEL_COUNT)
+        .map(|index| ModelInfo {
+            id: format!("local-model-{index}"),
+            name: format!("Local Model {index}"),
+            provider: match index % 3 {
+                0 => "llamacpp",
+                1 => "lmstudio",
+                _ => "ollama",
+            }
+            .to_owned(),
+            description: "Synthetic local discovery benchmark row".to_owned(),
+            capabilities: ModelCapabilities {
+                protocol: ModelProtocol::OpenAiChat,
+                tools: false,
+                vision: false,
+                reasoning: false,
+                streaming: true,
+                context_tokens: 32_768,
+                output_tokens: None,
+            },
+            verification: ModelVerification {
+                state: VerificationState::Verified,
+                source: "local-runtime".to_owned(),
+                detail: Some("Capabilities are not in the catalog".to_owned()),
+            },
+        })
+        .collect()
+}
+
+fn benchmark_local_model_selector() -> u64 {
+    let discovered = discovered_model_fixture();
+    let mut selector = ModelSelector::new();
+    let mut generation = 0_u64;
+    time_rounds(|| {
+        generation = generation.saturating_add(1);
+        black_box(selector.replace_discovered_models(generation, discovered.clone()));
+        selector.show();
+        selector.insert_str("local-model-9");
+        black_box(selector.selected_model_id());
+    })
 }
 
 fn benchmark_cwd() -> String {
@@ -527,6 +575,10 @@ fn run_scenarios() -> Result<BTreeMap<String, u64>> {
         "message_layout_steady".to_string(),
         time_rounds(|| render_message_layout(black_box(&message_layout))),
     );
+    results.insert(
+        MODEL_SELECTOR_LOCAL_SCENARIO.to_owned(),
+        benchmark_local_model_selector(),
+    );
 
     let runtime = Runtime::new().context("create agent loop perf runtime")?;
     results.insert(
@@ -742,5 +794,14 @@ mod tests {
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
         assert_eq!(parsed.len(), entries.len());
+    }
+
+    #[test]
+    fn local_model_selector_scenario_exists_and_is_positive() {
+        assert_eq!(
+            MODEL_SELECTOR_LOCAL_SCENARIO,
+            "model_selector_local_refresh_search"
+        );
+        assert!(benchmark_local_model_selector() > 0);
     }
 }

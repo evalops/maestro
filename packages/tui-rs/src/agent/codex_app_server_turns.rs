@@ -108,9 +108,8 @@ impl CodexAppServerTurnSession {
     ) -> Result<Self> {
         let model = model.into();
         let (command, args) = codex_app_server_spawn_override_from_env()?;
-        let requested_profile = env::var("MAESTRO_CODEX_PROFILE")
-            .ok()
-            .filter(|value| !value.trim().is_empty());
+        let requested_profile =
+            crate::service_connections::selected_delegated_profile_from_env("openai-codex")?;
         let workspace = cwd
             .as_deref()
             .map(std::path::Path::new)
@@ -155,9 +154,8 @@ impl CodexAppServerTurnSession {
     ) -> Result<Self> {
         let model = model.into();
         let (command, args) = codex_app_server_spawn_override_from_env()?;
-        let requested_profile = env::var("MAESTRO_CODEX_PROFILE")
-            .ok()
-            .filter(|value| !value.trim().is_empty());
+        let requested_profile =
+            crate::service_connections::selected_delegated_profile_from_env("openai-codex")?;
         let workspace = cwd
             .as_deref()
             .map(std::path::Path::new)

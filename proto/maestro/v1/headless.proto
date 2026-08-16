@@ -157,6 +157,18 @@ message ExternalToolDefinition {
   google.protobuf.Value input_schema = 4;
   ClientToolExecutionOwner execution_owner = 5;
   google.protobuf.Value metadata = 6;
+  optional string connection_binding_id = 7;
+}
+
+message ConnectionGrantBinding {
+  string binding_id = 1;
+  string connection_id = 2;
+  string provider_id = 3;
+  uint64 generation = 4;
+  string placement = 5;
+  repeated string capabilities = 6;
+  repeated string resources = 7;
+  string policy_hash = 8;
 }
 
 message GovernedToolGrant {
@@ -180,6 +192,7 @@ message GovernedToolGrant {
   string grant_signature = 18;
   repeated string native_tool_ids = 19;
   repeated ExternalToolDefinition external_tools = 20;
+  repeated ConnectionGrantBinding connection_bindings = 21;
 }
 
 message NativeToolCapability {
@@ -501,6 +514,7 @@ message GovernedClientToolRequestMessage {
   uint64 owner_lease_epoch = 13;
   string idempotency_key = 14;
   string turn_digest = 15;
+  optional string connection_binding_id = 16;
 }
 
 message ServerRequestMessage {

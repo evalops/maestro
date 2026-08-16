@@ -7,8 +7,12 @@ Maestro ships the following extension and interoperability surfaces in Rust:
   explicit trust decision. Installs are bounded and atomic; symbolic links are
   rejected.
 - `maestro plugins enable|disable <name>` controls a whole plugin.
-- `maestro plugins capability <name> <skills|commands|hooks|mcp> <on|off>`
+- `maestro plugins capability <name> <skills|agents|commands|hooks|mcp|connections> <on|off>`
   controls each executable capability independently.
+- `maestro connections` manages API-key references and delegated subscription
+  accounts. Plugin connection schemas are declarative and default off; Maestro
+  alone owns secret storage, scoped leases, revocation generations, and use
+  receipts.
 - `maestro acp` runs an ACP v1 JSON-RPC agent over stdio. It supports
   initialization, new sessions, prompts, streaming session updates, and
   cancellation.

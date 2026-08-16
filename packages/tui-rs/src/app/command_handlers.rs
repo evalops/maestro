@@ -104,6 +104,8 @@ impl App {
                         self.active_modal = ActiveModal::ThemeSelector;
                     }
                     ModalType::ModelSelector => {
+                        self.local_model_discovery
+                            .refresh_if_stale(std::time::Duration::from_secs(5));
                         let current = if self.current_model.is_empty() {
                             self.state.model.clone()
                         } else {

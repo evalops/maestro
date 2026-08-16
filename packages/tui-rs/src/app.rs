@@ -69,8 +69,8 @@ use tokio::sync::mpsc;
 
 use crate::agent::MAX_PENDING_MESSAGES;
 use crate::agent::{
-    CredentialVault, ExecutionSource, FromAgent, NativeAgent, NativeAgentConfig, PromptKind,
-    QueuePlacement, ToolExecution, ToolResponseMessage, ToolResult,
+    CredentialVault, ExecutionSource, FromAgent, MaxTokensSource, NativeAgent, NativeAgentConfig,
+    PromptKind, QueuePlacement, ToolExecution, ToolResponseMessage, ToolResult,
 };
 use crate::ai::AiProvider;
 use crate::clipboard::ClipboardManager;
@@ -574,6 +574,9 @@ pub struct App {
     /// The ratatui terminal handle for rendering.
     terminal: terminal::Terminal,
 
+    /// Whether the terminal backend is a real TTY that supports cursor-aware clears.
+    terminal_clear_supported: bool,
+
     /// Cached terminal dimensions, refreshed only at startup and on resize.
     terminal_size: Option<(u16, u16)>,
 
@@ -785,6 +788,10 @@ pub struct App {
     model_monitor: crate::model_monitor::ModelMonitor,
     model_verification_rx: std::sync::mpsc::Receiver<crate::model_monitor::ModelVerificationEvent>,
 
+    /// Nonblocking discovery actor for local OpenAI-compatible runtimes.
+    local_model_discovery: crate::local_models::LocalDiscoveryHandle,
+    local_model_discovery_rx: std::sync::mpsc::Receiver<crate::local_models::LocalDiscoveryBatch>,
+
     /// Receiver for a background `/rubber-duck` review; polled by the event loop.
     rubber_duck_rx: Option<std::sync::mpsc::Receiver<crate::rubber_duck::RubberDuckEvent>>,
 
@@ -939,7 +946,7 @@ impl App {
     /// Create an app, optionally submitting `initial_prompt` after the agent is ready.
     pub fn new_with_initial_prompt(initial_prompt: Option<String>) -> Result<Self> {
         let (terminal, capabilities) = terminal::init().context("Failed to initialize terminal")?;
-        let mut app = Self::new_with_terminal(terminal, capabilities, initial_prompt);
+        let mut app = Self::new_with_terminal(terminal, capabilities, initial_prompt, true);
         app.initialize_terminal_events();
         app.note_goal_paused_on_restart_if_needed();
         app.note_orphan_background_tasks_if_any();
@@ -1142,6 +1149,7 @@ impl App {
         terminal: terminal::Terminal,
         capabilities: TerminalCapabilities,
         initial_prompt: Option<String>,
+        terminal_clear_supported: bool,
     ) -> Self {
         let workspace_dir =
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -1175,6 +1183,7 @@ impl App {
             prompt_history,
             initial_prompt,
             context_window,
+            terminal_clear_supported,
         );
         app.state.unknown_slash_command_fallback = slash_command_fallback;
         if theme_follow {
@@ -1194,6 +1203,7 @@ impl App {
         prompt_history: crate::history::PromptHistory,
         initial_prompt: Option<String>,
         context_window: Option<u64>,
+        terminal_clear_supported: bool,
     ) -> Self {
         let cwd = std::env::current_dir()
             .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string());
@@ -1236,6 +1246,9 @@ impl App {
         let exec_commands =
             crate::exec_commands::discover_with_plugin_dirs(&workspace_dir, &plugin_command_dirs);
         let (model_monitor, model_verification_rx) = crate::model_monitor::spawn_model_monitor();
+        let (local_model_discovery, local_model_discovery_rx) =
+            crate::local_models::spawn_local_model_discovery();
+        local_model_discovery.refresh();
 
         let app_config = crate::config::load_config(&workspace_dir, None);
         let tui_settings = app_config.tui.clone();
@@ -1348,6 +1361,7 @@ impl App {
             tool_executor: Arc::new(tool_executor),
             credential_vault,
             terminal,
+            terminal_clear_supported,
             terminal_size,
             terminal_events: None,
             should_quit: false,
@@ -1414,6 +1428,8 @@ impl App {
             pending_model_change: None,
             model_monitor,
             model_verification_rx,
+            local_model_discovery,
+            local_model_discovery_rx,
             rubber_duck_rx: None,
             rubber_duck_running: false,
             current_git_branch: None,
@@ -1691,8 +1707,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         // This creates the channels and starts the agent task.
         self.spawn_agent().await?;
 
-        // Grok-style trailing prompt: submit after the agent is ready.
-        if let Some(prompt) = self.initial_prompt.take() {
+        // Grok-style trailing prompt: submit after the agent is ready and any
+        // initial local-runtime metadata has refreshed its request budgets.
+        if let Some(prompt) = self.take_initial_prompt_after_discovery().await {
             let _ = self.submit_prompt(prompt).await;
         }
 
@@ -1824,6 +1841,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             }
 
             if self.poll_model_verification() {
+                needs_redraw = true;
+            }
+
+            if self.poll_local_model_discovery() {
                 needs_redraw = true;
             }
 
@@ -2174,6 +2195,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         let config = NativeAgentConfig {
             model: model.clone(),
             max_tokens: crate::model_catalog::default_max_output_tokens(&model),
+            max_tokens_source: MaxTokensSource::Catalog,
             system_prompt: Some(self.build_system_prompt()),
             thinking_enabled,
             thinking_budget,
@@ -2596,6 +2618,59 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             }
         }
         changed
+    }
+
+    fn poll_local_model_discovery(&mut self) -> bool {
+        let mut changed = false;
+        while let Ok(batch) = self.local_model_discovery_rx.try_recv() {
+            let accepted = self
+                .model_selector
+                .replace_discovered_models(batch.generation, batch.models.clone());
+            if accepted {
+                crate::local_models::replace_discovered_models(
+                    batch.generation,
+                    &batch.models,
+                    Some(&self.current_model),
+                );
+                if crate::local_models::find_discovered_model(&self.current_model).is_some() {
+                    if let Some(agent) = &self.native_agent {
+                        if let Err(error) = agent.refresh_model_budgets() {
+                            self.state.status = Some(error.to_string());
+                        }
+                    }
+                }
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    async fn take_initial_prompt_after_discovery(&mut self) -> Option<String> {
+        let has_initial_prompt = self.initial_prompt.is_some();
+        if has_initial_prompt {
+            self.apply_startup_local_model_discovery().await;
+        }
+        self.initial_prompt.take()
+    }
+
+    async fn apply_startup_local_model_discovery(&mut self) {
+        if self.poll_local_model_discovery()
+            || !crate::local_models::is_local_model_route(&self.current_model)
+            || crate::local_models::find_discovered_model(&self.current_model).is_some()
+        {
+            return;
+        }
+
+        // Discovery probes all local runtimes concurrently with a 750ms HTTP
+        // timeout. Give that first batch a small scheduling margin so its
+        // RefreshModelBudgets command is queued before the startup prompt.
+        let deadline = Instant::now() + Duration::from_millis(800);
+        while Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            if self.poll_local_model_discovery() {
+                break;
+            }
+        }
     }
 
     /// Poll the background `/rubber-duck` review channel and post the finished
@@ -4036,7 +4111,9 @@ Slash Commands:
     /// buffer so the next frame redraws everything.
     fn reset_rendered_viewport(&mut self) {
         self.state.error = None;
-        let _ = self.terminal.clear();
+        if self.terminal_clear_supported {
+            let _ = self.terminal.clear();
+        }
     }
 
     /// Toggle expansion for the most recent tool call
@@ -4130,7 +4207,7 @@ impl Default for App {
                     terminal::init_fallback().unwrap_or_else(|fallback_err| {
                         panic!("Failed to create App: {err}; fallback failed: {fallback_err}");
                     });
-                Self::new_with_terminal(terminal, capabilities, None)
+                Self::new_with_terminal(terminal, capabilities, None, false)
             }
         }
     }

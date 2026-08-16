@@ -598,6 +598,14 @@ fn uses_responses_api(provider: Option<&str>, model: &str) -> bool {
     let model = strip_managed_model_prefix(model).trim();
     let inferred_provider = model.split_once('/').map(|(provider, _)| provider.trim());
     let provider = provider.or(inferred_provider);
+    let is_native_local = provider.is_some_and(|provider| {
+        ["llamacpp", "lmstudio", "ollama"]
+            .iter()
+            .any(|local| provider.eq_ignore_ascii_case(local))
+    });
+    if is_native_local {
+        return false;
+    }
     let is_openrouter =
         provider.is_some_and(|provider| provider.eq_ignore_ascii_case("openrouter"));
     let normalized = provider_model_name(model);
@@ -914,11 +922,13 @@ impl OpenAiClient {
     pub(crate) fn headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", self.api_key))
-                .unwrap_or_else(|_| HeaderValue::from_static("")),
-        );
+        if !self.api_key.is_empty() {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {}", self.api_key))
+                    .unwrap_or_else(|_| HeaderValue::from_static("")),
+            );
+        }
         headers.extend(self.extra_headers.clone());
         headers
     }
@@ -1268,11 +1278,26 @@ impl OpenAiClient {
             body["tools"] = serde_json::json!(self.convert_tools(&config.tools));
         }
 
+        // llama.cpp supports request-level prompt caching. Keeping this
+        // provider-scoped avoids sending an extension field to hosted APIs.
+        if self.route_provider.as_deref() == Some("llamacpp") {
+            body["cache_prompt"] = serde_json::json!(true);
+        }
+
         // GPT-5.1 supports reasoning_effort for adaptive thinking
         if let Some(thinking) = &config.thinking {
             // Map thinking budget to reasoning effort
             let effort = if thinking.budget_tokens > 10000 {
-                "high"
+                if self.route_provider.as_deref() == Some("llamacpp")
+                    && model
+                        .rsplit('/')
+                        .next()
+                        .is_some_and(|name| name.to_ascii_lowercase().starts_with("qwen3.8"))
+                {
+                    "xhigh"
+                } else {
+                    "high"
+                }
             } else if thinking.budget_tokens > 3000 {
                 "medium"
             } else {
@@ -2432,6 +2457,21 @@ mod tests {
     }
 
     #[test]
+    fn native_local_providers_always_use_chat_completions() {
+        for provider in ["llamacpp", "lmstudio", "ollama"] {
+            for model in ["gpt-5-local", "o3-local"] {
+                assert!(
+                    !uses_responses_api(Some(provider), model),
+                    "native local provider must use Chat Completions: {provider}/{model}"
+                );
+            }
+        }
+
+        assert!(uses_responses_api(Some("openai"), "gpt-5-local"));
+        assert!(uses_responses_api(Some("openai"), "o3-local"));
+    }
+
+    #[test]
     fn openrouter_models_use_stable_chat_completions_except_plain_gpt_5_6() {
         for model in [
             "openrouter/anthropic/claude-sonnet-4.5",
@@ -2589,6 +2629,13 @@ mod tests {
     }
 
     #[test]
+    fn anonymous_compatible_client_omits_authorization_header() {
+        let client = OpenAiClient::with_base_url("", "http://127.0.0.1:8080/v1").unwrap();
+
+        assert!(!client.headers().contains_key(AUTHORIZATION));
+    }
+
+    #[test]
     fn strips_provider_prefix_from_request_body_model() {
         let client = OpenAiClient::new("test-key").unwrap();
         let messages = vec![Message {
@@ -2613,6 +2660,85 @@ mod tests {
             },
         );
         assert_eq!(chat_body["model"], "gpt-4o");
+    }
+
+    #[test]
+    fn llama_cpp_requests_enable_prompt_cache_without_leaking_to_other_providers() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("Hello".to_string()),
+        }];
+        let config = RequestConfig {
+            model: "llamacpp/Qwen3.8-27B".to_string(),
+            ..Default::default()
+        };
+        let llama = OpenAiClient::with_base_url("", "http://127.0.0.1:8080/v1")
+            .unwrap()
+            .with_route_provider("llamacpp");
+        let openai = OpenAiClient::new("test-key").unwrap();
+
+        assert_eq!(
+            llama.build_request_body(&messages, &config)["cache_prompt"],
+            true
+        );
+        assert!(openai
+            .build_request_body(&messages, &config)
+            .get("cache_prompt")
+            .is_none());
+    }
+
+    #[test]
+    fn qwen38_maps_high_thinking_to_supported_xhigh_effort() {
+        let client = OpenAiClient::with_base_url("", "http://127.0.0.1:8080/v1")
+            .unwrap()
+            .with_route_provider("llamacpp");
+        let messages = vec![];
+        let config = RequestConfig {
+            model: "llamacpp/Qwen3.8-27B".to_string(),
+            thinking: Some(crate::types::ThinkingConfig::enabled(12_000)),
+            ..Default::default()
+        };
+        let other = RequestConfig {
+            model: "llamacpp/another-reasoning-model".to_string(),
+            ..config.clone()
+        };
+
+        assert_eq!(
+            client.build_request_body(&messages, &config)["reasoning_effort"],
+            "xhigh"
+        );
+        assert_eq!(
+            client.build_request_body(&messages, &other)["reasoning_effort"],
+            "high"
+        );
+
+        for provider in ["lmstudio", "ollama", "openai"] {
+            let other_provider =
+                OpenAiClient::with_base_url("test-key", "http://127.0.0.1:1234/v1")
+                    .unwrap()
+                    .with_route_provider(provider);
+            assert_eq!(
+                other_provider.build_request_body(&messages, &config)["reasoning_effort"],
+                "high",
+                "{provider} must retain the standard reasoning-effort contract"
+            );
+        }
+    }
+
+    #[test]
+    fn namespaced_qwen38_maps_high_thinking_to_supported_xhigh_effort() {
+        let client = OpenAiClient::with_base_url("", "http://127.0.0.1:8080/v1")
+            .unwrap()
+            .with_route_provider("llamacpp");
+        let config = RequestConfig {
+            model: "llamacpp/Qwen/Qwen3.8-27B".to_owned(),
+            thinking: Some(crate::types::ThinkingConfig::enabled(12_000)),
+            ..Default::default()
+        };
+
+        let body = client.build_request_body(&[], &config);
+
+        assert_eq!(body["reasoning_effort"], "xhigh");
     }
 
     #[test]

@@ -184,9 +184,14 @@ fn metadata_request(
     };
     let protocol = resolved.provider.protocol;
     let request = match protocol {
-        ProviderProtocol::OpenAi | ProviderProtocol::OpenAiCompatible => client
-            .get(metadata_url(base_url, "models")?)
-            .bearer_auth(token),
+        ProviderProtocol::OpenAi | ProviderProtocol::OpenAiCompatible => {
+            let request = client.get(metadata_url(base_url, "models")?);
+            if token.is_empty() {
+                request
+            } else {
+                request.bearer_auth(token)
+            }
+        }
         ProviderProtocol::Anthropic
         | ProviderProtocol::Google
         | ProviderProtocol::VertexAi
@@ -245,7 +250,8 @@ async fn live_metadata_check_with_env(
             true,
         );
     };
-    let Some(token) = resolved.credential.as_deref() else {
+    let token = resolved.credential.as_deref().unwrap_or_default();
+    if resolved.provider.requires_auth() && token.is_empty() {
         return check(
             "live_metadata",
             CheckStatus::Warning,
@@ -253,7 +259,7 @@ async fn live_metadata_check_with_env(
             None,
             true,
         );
-    };
+    }
     let client = match reqwest::Client::builder().timeout(LIVE_TIMEOUT).build() {
         Ok(client) => client,
         Err(_) => {
@@ -606,6 +612,13 @@ pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) 
             CheckStatus::Pass,
             format!("{} resolved with credentials", provider.provider.id),
             provider.auth_source,
+            false,
+        ),
+        Ok(provider) if !provider.provider.requires_auth() => check(
+            "provider",
+            CheckStatus::Pass,
+            format!("{} resolved without credentials", provider.provider.id),
+            None,
             false,
         ),
         Ok(provider) => check(

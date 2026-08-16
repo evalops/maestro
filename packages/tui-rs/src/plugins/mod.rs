@@ -23,12 +23,14 @@
 //!
 //! Discovery, listing, install, trust state, and a curated marketplace catalog.
 
+mod connection_types;
 mod discovery;
 mod loader;
 mod manager;
 mod manifest;
 pub mod marketplace;
 
+pub use connection_types::{ConnectionTypeDefinition, ConnectionTypeManifest};
 pub use discovery::{default_search_roots, search_roots_for_workspace, PluginOrigin};
 pub use loader::{load_manifest, resolve_components, PluginComponents};
 pub use manager::{
@@ -80,6 +82,9 @@ impl DiscoveredPlugin {
         if self.components.mcp_path.is_some() {
             parts.push("mcp");
         }
+        if self.components.connections_path.is_some() {
+            parts.push("connections");
+        }
         if parts.is_empty() {
             "no components".to_string()
         } else {
@@ -126,6 +131,10 @@ impl DiscoveredPlugin {
         match &self.components.mcp_path {
             Some(p) => msg.push_str(&format!("- **mcp:** `{}`\n", p.display())),
             None => msg.push_str("- **mcp:** _(none)_\n"),
+        }
+        match &self.components.connections_path {
+            Some(p) => msg.push_str(&format!("- **connections:** `{}`\n", p.display())),
+            None => msg.push_str("- **connections:** _(none)_\n"),
         }
 
         msg
@@ -263,6 +272,9 @@ impl PluginRegistry {
                     if !state.capability_enabled(&key, PluginCapability::Mcp) {
                         plugin.components.mcp_path = None;
                     }
+                    if !state.capability_enabled(&key, PluginCapability::Connections) {
+                        plugin.components.connections_path = None;
+                    }
                     by_name.insert(key, plugin);
                 }
             }
@@ -352,6 +364,15 @@ impl PluginRegistry {
         self.plugins
             .iter()
             .filter_map(|p| p.components.mcp_path.clone())
+            .collect()
+    }
+
+    /// Declarative connection type manifests from explicitly trusted plugins.
+    #[must_use]
+    pub fn connection_paths(&self) -> Vec<PathBuf> {
+        self.plugins
+            .iter()
+            .filter_map(|p| p.components.connections_path.clone())
             .collect()
     }
 
@@ -558,6 +579,23 @@ mod tests {
         assert!(plugin.components.skills_dir.is_some());
         assert!(plugin.components.mcp_path.is_some());
         assert_eq!(plugin.component_summary(), "skills, mcp");
+    }
+
+    #[test]
+    fn unregistered_plugin_connection_types_stay_disabled() {
+        let tmp = TempDir::new().unwrap();
+        let plugins_root = tmp.path().join("plugins");
+        make_plugin(&plugins_root, "manual-plugin", true, true);
+        write_file(
+            &plugins_root.join("manual-plugin").join("connections.json"),
+            r#"{"schemaVersion":1,"connectionTypes":[]}"#,
+        );
+
+        let registry = PluginRegistry::discover_from(&[(plugins_root, PluginOrigin::User)]);
+        let plugin = registry.get("manual-plugin").unwrap();
+        assert!(plugin.components.skills_dir.is_some());
+        assert!(plugin.components.connections_path.is_none());
+        assert!(registry.connection_paths().is_empty());
     }
 
     #[test]

@@ -131,10 +131,14 @@ impl CompactionConfig {
             })
             .filter(|value| *value > 0)
             .unwrap_or_else(|| Self::default().max_context_tokens);
+        let target_tokens = (max_context_tokens / 2).max(1);
         Self {
             max_context_tokens,
-            target_tokens: max_context_tokens / 2,
-            keep_recent_tokens: (max_context_tokens / 5).clamp(20_000, 100_000),
+            target_tokens,
+            keep_recent_tokens: (max_context_tokens / 5).clamp(1, 100_000),
+            intra_message_token_budget: Self::default()
+                .intra_message_token_budget
+                .min((max_context_tokens / 4).max(1)),
             ..Self::default()
         }
     }
@@ -1937,5 +1941,27 @@ mod tests {
         let overridden = CompactionConfig::for_model("gpt-5.5", Some(96_000));
         assert_eq!(overridden.max_context_tokens, 96_000);
         assert_eq!(overridden.target_tokens, 48_000);
+    }
+
+    #[test]
+    fn small_context_compaction_bounds_retention_and_individual_messages() {
+        let config = CompactionConfig::for_model("uncataloged/local-model", Some(8_192));
+        assert_eq!(config.target_tokens, 4_096);
+        assert_eq!(config.keep_recent_tokens, 1_638);
+        assert_eq!(config.intra_message_token_budget, 2_048);
+
+        let compactor = ContextCompactor::new(config);
+        let messages = [Role::User, Role::Assistant, Role::User, Role::Assistant]
+            .into_iter()
+            .map(|role| Message {
+                role,
+                content: MessageContent::Text("x".repeat(12_000)),
+            })
+            .collect::<Vec<_>>();
+        assert!(compactor.estimate_tokens(&messages) > 8_192);
+
+        let compacted = compactor.compact_with_tokens(&messages);
+        assert!(compacted.was_compacted());
+        assert!(compactor.estimate_tokens(&compacted.messages) <= 8_192);
     }
 }

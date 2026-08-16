@@ -8,6 +8,7 @@
     "agent_loop_96_long_history_turns": 82305328,
     "execpolicy_eval": 18902,
     "message_layout_steady": 45092,
+    "model_selector_local_refresh_search": 247000,
     "session_read_full": 1786971,
     "session_read_header": 243135,
     "session_wire_roundtrip": 1663459

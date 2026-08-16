@@ -81,8 +81,12 @@ mod bedrock;
 mod client;
 mod error;
 mod google;
+mod kimi;
 pub mod op_secret;
+#[path = "openai_wrapper.rs"]
 mod openai;
+#[path = "openai.rs"]
+mod openai_base;
 mod providers;
 pub mod sanitize;
 mod scripted;
