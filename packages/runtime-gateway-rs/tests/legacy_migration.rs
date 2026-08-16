@@ -1,4 +1,4 @@
-use maestro_control_plane::{serve_listener, ControlPlaneConfig};
+use maestro_runtime_gateway::{serve_listener, RuntimeGatewayConfig};
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -46,7 +46,7 @@ async fn corrupt_legacy_state_is_left_byte_for_byte_untouched() {
 async fn start(path: &Path) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let config = ControlPlaneConfig::test_default().with_session_store_path(path.to_path_buf());
+    let config = RuntimeGatewayConfig::test_default().with_session_store_path(path.to_path_buf());
     let server = tokio::spawn(async move { serve_listener(listener, config).await.unwrap() });
     (address, server)
 }
@@ -67,7 +67,7 @@ async fn get(address: std::net::SocketAddr, path: &str) -> String {
 
 fn test_root(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "maestro-control-plane-migration-{label}-{}-{}",
+        "maestro-runtime-gateway-migration-{label}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

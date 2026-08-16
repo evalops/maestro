@@ -41,7 +41,7 @@ We appreciate security researchers who help keep Maestro safe. With your permiss
 
 ## Running the container image
 
-`ghcr.io/evalops/maestro` binds the control plane to `0.0.0.0`, so it requires
+`ghcr.io/evalops/maestro` binds the runtime gateway to `0.0.0.0`, so it requires
 API-key auth and will refuse to start without it:
 
 ```bash
@@ -56,7 +56,7 @@ with a non-loopback `MAESTRO_CONTROL_HOST` is a startup error, not a downgrade.
 
 ## Local binds and DNS rebinding
 
-When the control plane is bound to a loopback address it validates the `Host`
+When the runtime gateway is bound to a loopback address it validates the `Host`
 header and answers `421 Misdirected Request` for anything that does not name
 that interface. Without this check, an attacker can point a short-TTL DNS record
 at `127.0.0.1` and have the victim's browser treat `http://evil.example:8080/`

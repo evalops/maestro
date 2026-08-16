@@ -1,12 +1,12 @@
 [package]
-name = "maestro-control-plane"
+name = "maestro-runtime-gateway"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Native Rust HTTP control plane for Maestro"
+description = "Native Rust HTTP runtime gateway for Maestro"
 
 [[bin]]
-name = "maestro-control-plane"
+name = "maestro-runtime-gateway"
 path = "src/main.rs"
 
 [dependencies]

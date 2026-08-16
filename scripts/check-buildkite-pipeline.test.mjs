@@ -39,7 +39,7 @@ test("Buildkite network operations are bounded", () => {
     "20m cargo test --workspace --locked --doc",
     "30m cargo build --locked -p maestro-tui",
     "45m npm run build",
-    "30m cargo test --locked -p maestro-control-plane",
+    "30m cargo test --locked -p maestro-runtime-gateway",
     "30m cargo build --locked -p maestro-scenario",
   ]) {
     assert.match(

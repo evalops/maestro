@@ -43,8 +43,9 @@ const A2A_TASK_EVENT_REPLAY_LIMIT: usize = 256;
 pub(crate) const A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY: &str = "pushNotificationConfigs";
 pub(crate) const EVALOPS_A2A_EXTENSION_URI: &str =
     "https://evalops.com/a2a/extensions/operating-plane/v1";
-pub(crate) const A2A_CONTROL_PLANE_LEDGER_PEER: &str = "maestro-control-plane";
-pub(crate) const A2A_CONTROL_PLANE_LEDGER_DISPLAY_NAME: &str = "Maestro Control Plane";
+pub(crate) const A2A_RUNTIME_GATEWAY_LEDGER_PEER: &str = "maestro-runtime-gateway";
+pub(crate) const A2A_RUNTIME_GATEWAY_LEDGER_DISPLAY_NAME: &str = "Maestro Runtime Gateway";
+pub(crate) const A2A_LEGACY_CONTROL_PLANE_LEDGER_PEER: &str = "maestro-control-plane";
 static A2A_ID_FALLBACK_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) type A2ACancelSender = watch::Sender<bool>;

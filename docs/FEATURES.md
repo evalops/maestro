@@ -6,8 +6,8 @@
 - Built-in filesystem, shell, search, web, browser, document, and delegation tools
 - Permission profiles, sandboxing, approvals, hooks, Lua, and WASM extensions
 - Persistent sessions, resume/export/import, usage and cost accounting
-- Web control plane with SSE/WebSocket chat, automations, A2A, hosted runners, telemetry, and model management
+- Web runtime gateway with SSE/WebSocket chat, automations, A2A, hosted runners, telemetry, and model management
 - Scripted scenarios, replay, trajectory evaluation, and protocol conformance
-- Slack and GitHub adapters backed by the native control plane
+- Slack and GitHub adapters backed by the native runtime gateway
 
-All product execution, browser control-plane, and adapter behavior runs through Rust. The browser client is a checked-in static asset snapshot served by the native control plane.
+All product execution, browser runtime-gateway, and adapter behavior runs through Rust. The browser client is a checked-in static asset snapshot served by the native runtime gateway.

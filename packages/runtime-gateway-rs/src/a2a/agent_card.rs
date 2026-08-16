@@ -136,7 +136,7 @@ fn a2a_agent_card_security(config: &Config) -> Option<(Value, Value)> {
                 "type": "apiKey",
                 "in": "header",
                 "name": "x-maestro-api-key",
-                "description": "Maestro control-plane API key."
+                "description": "Maestro runtime-gateway API key."
             },
             "bearer": {
                 "type": "http",

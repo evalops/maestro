@@ -99,7 +99,7 @@ test("workflow retains the full suite and an always-reporting required gate", ()
     /^  integration-tests:\n([\s\S]*?)(?=^  [a-z][a-z0-9-]+:\n)/m,
   )?.[0];
 
-  assert.match(workflow, /integration-suite:\n[\s\S]*cargo test --locked -p maestro-control-plane/);
+  assert.match(workflow, /integration-suite:\n[\s\S]*cargo test --locked -p maestro-runtime-gateway/);
   assert.ok(requiredGate, "integration-tests job must exist");
   assert.match(requiredGate, /if: \$\{\{ always\(\) \}\}/);
   assert.match(requiredGate, /needs: \[pull-request-path-check, integration-suite\]/);

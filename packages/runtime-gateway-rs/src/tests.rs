@@ -83,7 +83,7 @@ const A2A_PLATFORM_ENV_NAMES: &[&str] = &[
     "PORT",
     "MAESTRO_CONTROL_HOST",
 ];
-const CONTROL_PLANE_ENV_NAMES: &[&str] = &[
+const RUNTIME_GATEWAY_ENV_NAMES: &[&str] = &[
     "MAESTRO_CONTROL_HOST",
     "MAESTRO_WEB_API_KEY",
     "MAESTRO_WEB_REQUIRE_KEY",
@@ -118,8 +118,8 @@ fn clear_env(names: &[&str]) {
 #[test]
 fn control_plane_defaults_to_loopback_bind() {
     let _guard = ENV_LOCK.blocking_lock();
-    let snapshot = snapshot_env(CONTROL_PLANE_ENV_NAMES);
-    clear_env(CONTROL_PLANE_ENV_NAMES);
+    let snapshot = snapshot_env(RUNTIME_GATEWAY_ENV_NAMES);
+    clear_env(RUNTIME_GATEWAY_ENV_NAMES);
 
     let config = Config::from_env();
 
@@ -132,8 +132,8 @@ fn control_plane_defaults_to_loopback_bind() {
 #[test]
 fn control_plane_defaults_to_auth_on_non_loopback_bind() {
     let _guard = ENV_LOCK.blocking_lock();
-    let snapshot = snapshot_env(CONTROL_PLANE_ENV_NAMES);
-    clear_env(CONTROL_PLANE_ENV_NAMES);
+    let snapshot = snapshot_env(RUNTIME_GATEWAY_ENV_NAMES);
+    clear_env(RUNTIME_GATEWAY_ENV_NAMES);
     env::set_var("MAESTRO_CONTROL_HOST", "0.0.0.0");
 
     let config = Config::from_env();
@@ -146,8 +146,8 @@ fn control_plane_defaults_to_auth_on_non_loopback_bind() {
 #[test]
 fn require_key_kill_switch_is_ignored_on_non_loopback_bind() {
     let _guard = ENV_LOCK.blocking_lock();
-    let snapshot = snapshot_env(CONTROL_PLANE_ENV_NAMES);
-    clear_env(CONTROL_PLANE_ENV_NAMES);
+    let snapshot = snapshot_env(RUNTIME_GATEWAY_ENV_NAMES);
+    clear_env(RUNTIME_GATEWAY_ENV_NAMES);
     env::set_var("MAESTRO_CONTROL_HOST", "0.0.0.0");
     env::set_var("MAESTRO_WEB_REQUIRE_KEY", "0");
 
@@ -179,10 +179,10 @@ fn require_key_kill_switch_is_ignored_on_non_loopback_bind() {
 #[test]
 fn require_key_kill_switch_still_works_on_loopback_binds() {
     let _guard = ENV_LOCK.blocking_lock();
-    let snapshot = snapshot_env(CONTROL_PLANE_ENV_NAMES);
+    let snapshot = snapshot_env(RUNTIME_GATEWAY_ENV_NAMES);
 
     for host in ["127.0.0.1", "localhost", "::1", "[::1]", "127.0.0.2"] {
-        clear_env(CONTROL_PLANE_ENV_NAMES);
+        clear_env(RUNTIME_GATEWAY_ENV_NAMES);
         env::set_var("MAESTRO_CONTROL_HOST", host);
         env::set_var("MAESTRO_WEB_REQUIRE_KEY", "0");
 
@@ -202,8 +202,8 @@ fn require_key_kill_switch_still_works_on_loopback_binds() {
 #[test]
 fn unresolvable_bind_hosts_are_treated_as_network_exposed() {
     let _guard = ENV_LOCK.blocking_lock();
-    let snapshot = snapshot_env(CONTROL_PLANE_ENV_NAMES);
-    clear_env(CONTROL_PLANE_ENV_NAMES);
+    let snapshot = snapshot_env(RUNTIME_GATEWAY_ENV_NAMES);
+    clear_env(RUNTIME_GATEWAY_ENV_NAMES);
     env::set_var("MAESTRO_CONTROL_HOST", "maestro.internal.example");
 
     let config = Config::from_env();
@@ -216,8 +216,8 @@ fn unresolvable_bind_hosts_are_treated_as_network_exposed() {
 #[test]
 fn control_plane_requires_api_key_when_auth_required() {
     let _guard = ENV_LOCK.blocking_lock();
-    let snapshot = snapshot_env(CONTROL_PLANE_ENV_NAMES);
-    clear_env(CONTROL_PLANE_ENV_NAMES);
+    let snapshot = snapshot_env(RUNTIME_GATEWAY_ENV_NAMES);
+    clear_env(RUNTIME_GATEWAY_ENV_NAMES);
 
     env::set_var("MAESTRO_WEB_REQUIRE_KEY", "1");
     let config = Config::from_env();
@@ -2555,7 +2555,7 @@ struct TestDir {
 impl TestDir {
     fn new(label: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "maestro-control-plane-{label}-{}-{}",
+            "maestro-runtime-gateway-{label}-{}-{}",
             process::id(),
             ATTACHMENT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
@@ -3272,7 +3272,7 @@ fn valid_code_writer_capsule() -> Value {
             "taskClass": "code.implementation",
             "objective": "Add the bounded parser and its regression test.",
             "inScope": {
-                "paths": ["packages/control-plane-rs/src/a2a"],
+                "paths": ["packages/runtime-gateway-rs/src/a2a"],
                 "resources": []
             },
             "outOfScope": ["deployment"],
@@ -3286,12 +3286,12 @@ fn valid_code_writer_capsule() -> Value {
                 "tool:execute-tests"
             ],
             "mutationBoundary": {
-                "paths": ["packages/control-plane-rs/src/a2a"],
+                "paths": ["packages/runtime-gateway-rs/src/a2a"],
                 "resources": []
             },
             "expectedArtifactKinds": ["patch.summary", "test.report"],
             "acceptanceChecks": [
-                "cargo test -p maestro-control-plane subagent_capsule"
+                "cargo test -p maestro-runtime-gateway subagent_capsule"
             ],
             "stopConditions": ["scope expansion required"],
             "retryLimit": 2,
@@ -3418,10 +3418,10 @@ fn capsule_rejects_uncontracted_artifacts_and_missing_required_artifacts() {
 fn capsule_rejects_non_normalized_or_out_of_scope_mutation_paths() {
     for invalid_path in [
         "/tmp/deploy",
-        "packages/control-plane-rs/src/../deploy",
+        "packages/runtime-gateway-rs/src/../deploy",
         "packages//control-plane-rs",
         "packages\\control-plane-rs",
-        "packages/control-plane-rs/src/a2a/",
+        "packages/runtime-gateway-rs/src/a2a/",
         "",
     ] {
         let mut request = valid_code_writer_capsule();
@@ -3435,7 +3435,7 @@ fn capsule_rejects_non_normalized_or_out_of_scope_mutation_paths() {
 
     let mut out_of_scope = valid_code_writer_capsule();
     out_of_scope["capsule"]["mutationBoundary"]["paths"] =
-        serde_json::json!(["packages/control-plane-rs/src/chat.rs"]);
+        serde_json::json!(["packages/runtime-gateway-rs/src/chat.rs"]);
     assert!(matches!(
         crate::a2a::validate_subagent_capsule(&out_of_scope, "maestro.subagent.code-writer"),
         Err(crate::a2a::CapsuleValidationError::ScopeBroadening { .. })
@@ -3443,7 +3443,7 @@ fn capsule_rejects_non_normalized_or_out_of_scope_mutation_paths() {
 
     let mut read_only_mutation = valid_code_review_capsule();
     read_only_mutation["capsule"]["mutationBoundary"]["paths"] =
-        serde_json::json!(["packages/control-plane-rs/src/a2a"]);
+        serde_json::json!(["packages/runtime-gateway-rs/src/a2a"]);
     assert!(matches!(
         crate::a2a::validate_subagent_capsule(&read_only_mutation, "maestro.subagent.code-review"),
         Err(crate::a2a::CapsuleValidationError::MissingCapability { .. })
@@ -3525,7 +3525,7 @@ fn capsule_v1_rejects_unknown_fields_and_malformed_resource_ids() {
 #[test]
 fn capsule_execution_policy_enforces_scope_model_deadline_guidance_and_tools() {
     let root = TestDir::new("subagent-execution-policy");
-    let scope = root.path().join("packages/control-plane-rs/src/a2a");
+    let scope = root.path().join("packages/runtime-gateway-rs/src/a2a");
     fs::create_dir_all(&scope).expect("scope should be created");
     fs::write(scope.join("inside.rs"), "inside").expect("inside fixture should be written");
     fs::write(root.path().join("outside.rs"), "outside")
@@ -3554,7 +3554,7 @@ fn capsule_execution_policy_enforces_scope_model_deadline_guidance_and_tools() {
         .contains("Objective:\nAdd the bounded parser and its regression test."));
     assert!(policy
         .guidance
-        .contains("Acceptance checks:\n- cargo test -p maestro-control-plane subagent_capsule"));
+        .contains("Acceptance checks:\n- cargo test -p maestro-runtime-gateway subagent_capsule"));
     assert_eq!(
         policy.allowed_tools,
         ["diff", "edit", "find", "glob", "grep", "list", "read", "search", "write"]
@@ -3572,7 +3572,7 @@ fn capsule_execution_policy_enforces_scope_model_deadline_guidance_and_tools() {
     assert!(policy
         .guard_tool_call(
             "read",
-            &serde_json::json!({"path": "packages/control-plane-rs/src/a2a/inside.rs"})
+            &serde_json::json!({"path": "packages/runtime-gateway-rs/src/a2a/inside.rs"})
         )
         .is_ok());
     assert!(policy
@@ -3591,7 +3591,7 @@ fn capsule_execution_policy_enforces_scope_model_deadline_guidance_and_tools() {
         .guard_tool_call(
             "glob",
             &serde_json::json!({
-                "path": "packages/control-plane-rs/src/a2a",
+                "path": "packages/runtime-gateway-rs/src/a2a",
                 "pattern": "../../outside.rs"
             })
         )
@@ -3600,7 +3600,7 @@ fn capsule_execution_policy_enforces_scope_model_deadline_guidance_and_tools() {
         .guard_tool_call(
             "glob",
             &serde_json::json!({
-                "path": "packages/control-plane-rs/src/a2a",
+                "path": "packages/runtime-gateway-rs/src/a2a",
                 "pattern": root.path().join("outside.rs")
             })
         )
@@ -3610,7 +3610,7 @@ fn capsule_execution_policy_enforces_scope_model_deadline_guidance_and_tools() {
             "search",
             &serde_json::json!({
                 "pattern": "outside",
-                "paths": "packages/control-plane-rs/src/a2a",
+                "paths": "packages/runtime-gateway-rs/src/a2a",
                 "cwd": root.path()
             })
         )
@@ -3619,7 +3619,7 @@ fn capsule_execution_policy_enforces_scope_model_deadline_guidance_and_tools() {
         .guard_tool_call(
             "bash",
             &serde_json::json!({
-                "command": "cargo test -p maestro-control-plane subagent_capsule"
+                "command": "cargo test -p maestro-runtime-gateway subagent_capsule"
             })
         )
         .is_err());
@@ -3634,7 +3634,7 @@ fn capsule_execution_policy_enforces_scope_model_deadline_guidance_and_tools() {
 #[test]
 fn every_advertised_a2a_subagent_lane_builds_an_honest_execution_policy() {
     let root = TestDir::new("advertised-subagent-policies");
-    fs::create_dir_all(root.path().join("packages/control-plane-rs/src/a2a"))
+    fs::create_dir_all(root.path().join("packages/runtime-gateway-rs/src/a2a"))
         .expect("scope should be created");
     let advertised = crate::a2a_skill_catalog::a2a_subagent_skills("urn:test:operating-plane");
     let skill_ids = advertised
@@ -3672,7 +3672,7 @@ fn every_advertised_a2a_subagent_lane_builds_an_honest_execution_policy() {
 #[test]
 fn code_review_capsule_builds_a_read_only_execution_policy() {
     let root = TestDir::new("code-review-policy");
-    fs::create_dir_all(root.path().join("packages/control-plane-rs/src/a2a"))
+    fs::create_dir_all(root.path().join("packages/runtime-gateway-rs/src/a2a"))
         .expect("scope should be created");
     let request = valid_code_review_capsule();
     let capsule = crate::a2a::validate_subagent_capsule(&request, "maestro.subagent.code-review")
@@ -3696,7 +3696,7 @@ fn a2a_acceptance_checks_become_observed_test_report_artifacts() {
     let reports = vec![serde_json::json!({
         "kind": "acceptance.check",
         "success": true,
-        "package": "maestro-control-plane",
+        "package": "maestro-runtime-gateway",
         "filter": "subagent_capsule"
     })];
 
@@ -3716,7 +3716,7 @@ fn a2a_acceptance_checks_become_observed_test_report_artifacts() {
 #[test]
 fn capsule_execution_policy_fails_closed_for_unexecutable_boundaries_and_checks() {
     let root = TestDir::new("subagent-fail-closed-policy");
-    let scope = root.path().join("packages/control-plane-rs/src/a2a");
+    let scope = root.path().join("packages/runtime-gateway-rs/src/a2a");
     fs::create_dir_all(&scope).expect("scope should be created");
 
     let mut unsafe_check = valid_code_writer_capsule();
@@ -3749,7 +3749,7 @@ fn capsule_execution_policy_fails_closed_for_unexecutable_boundaries_and_checks(
 
     let mut future_mutation_root = valid_code_writer_capsule();
     future_mutation_root["capsule"]["mutationBoundary"]["paths"] =
-        serde_json::json!(["packages/control-plane-rs/src/a2a/future"]);
+        serde_json::json!(["packages/runtime-gateway-rs/src/a2a/future"]);
     let future_mutation_root = crate::a2a::validate_subagent_capsule(
         &future_mutation_root,
         "maestro.subagent.code-writer",
@@ -3767,7 +3767,7 @@ fn capsule_execution_policy_fails_closed_for_unexecutable_boundaries_and_checks(
 #[tokio::test(flavor = "current_thread")]
 async fn capsule_execution_policy_applies_absolute_deadline_to_tools_and_checks() {
     let root = TestDir::new("subagent-absolute-deadline");
-    let scope = root.path().join("packages/control-plane-rs/src/a2a");
+    let scope = root.path().join("packages/runtime-gateway-rs/src/a2a");
     fs::create_dir_all(&scope).expect("scope should be created");
     fs::write(scope.join("inside.rs"), "inside").expect("inside fixture should be written");
     let mut request = valid_code_writer_capsule();
@@ -3788,7 +3788,7 @@ async fn capsule_execution_policy_applies_absolute_deadline_to_tools_and_checks(
     let result = policy
         .execute_tool_call(
             "read",
-            &serde_json::json!({"path": "packages/control-plane-rs/src/a2a/inside.rs"}),
+            &serde_json::json!({"path": "packages/runtime-gateway-rs/src/a2a/inside.rs"}),
             "expired-read",
             cancel_rx.clone(),
         )
@@ -3850,7 +3850,7 @@ fn capsule_deadline_cannot_leave_an_ambient_validator_process_running() {
         let sentinel = std::path::PathBuf::from(
             env::var_os(SENTINEL_ENV).expect("child sentinel should be configured"),
         );
-        let scope = root.join("packages/control-plane-rs/src/a2a");
+        let scope = root.join("packages/runtime-gateway-rs/src/a2a");
         fs::create_dir_all(&scope).expect("scope should be created");
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -5664,9 +5664,9 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
                     "updatedAt": "2026-05-15T00:01:00Z"
                 },
                 {
-                    "id": "maestro-control-plane-other-task",
+                    "id": "maestro-runtime-gateway-other-task",
                     "kind": "message",
-                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "peer": A2A_RUNTIME_GATEWAY_LEDGER_PEER,
                     "taskId": "other-control-plane-task",
                     "contextId": "ctx-other",
                     "text": "other process request",
@@ -5774,14 +5774,14 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
     let other_control_plane_entry = entries
         .iter()
         .find(|entry| {
-            entry["peer"] == A2A_CONTROL_PLANE_LEDGER_PEER
+            entry["peer"] == A2A_RUNTIME_GATEWAY_LEDGER_PEER
                 && entry["taskId"] == "other-control-plane-task"
         })
         .expect("other process control-plane row should be retained");
     let control_plane_entry = entries
         .iter()
         .find(|entry| {
-            entry["peer"] == A2A_CONTROL_PLANE_LEDGER_PEER
+            entry["peer"] == A2A_RUNTIME_GATEWAY_LEDGER_PEER
                 && entry["taskId"] == "maestro-task-durable"
         })
         .expect("control-plane ledger row should be written");
@@ -5814,7 +5814,7 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
     );
     assert_eq!(
         control_plane_entry["peerDisplayName"],
-        A2A_CONTROL_PLANE_LEDGER_DISPLAY_NAME
+        A2A_RUNTIME_GATEWAY_LEDGER_DISPLAY_NAME
     );
     assert_eq!(control_plane_entry["a2aTask"]["id"], "maestro-task-durable");
     assert!(control_plane_entry["a2aTask"]["metadata"]
@@ -5872,7 +5872,7 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
         "raw legacy A2A rows should be migrated away from the shared TS ledger shape"
     );
     assert!(entries.iter().any(|entry| {
-        entry["peer"] == A2A_CONTROL_PLANE_LEDGER_PEER
+        entry["peer"] == A2A_RUNTIME_GATEWAY_LEDGER_PEER
             && entry["taskId"] == "raw-legacy-task"
             && entry["a2aTask"]["id"] == "raw-legacy-task"
     }));
@@ -5920,7 +5920,7 @@ async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
         .expect("reloaded ledger tasks should be an array")
         .iter()
         .find(|entry| {
-            entry["peer"] == A2A_CONTROL_PLANE_LEDGER_PEER
+            entry["peer"] == A2A_RUNTIME_GATEWAY_LEDGER_PEER
                 && entry["taskId"] == "maestro-task-durable"
         })
         .expect("reloaded control-plane ledger row should be written");
@@ -5939,9 +5939,9 @@ async fn a2a_task_load_prefers_top_level_work_graph_over_embedded_metadata() {
         serde_json::to_vec_pretty(&serde_json::json!({
         "tasks": [
             {
-                "id": "maestro-control-plane-stale-work-graph",
+                "id": "maestro-runtime-gateway-stale-work-graph",
                 "kind": "delegation",
-                "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                "peer": A2A_RUNTIME_GATEWAY_LEDGER_PEER,
                 "taskId": "stale-work-graph-task",
                 "contextId": "ctx-stale",
                 "text": "stale request",
@@ -5983,9 +5983,9 @@ async fn a2a_task_load_prefers_top_level_work_graph_over_embedded_metadata() {
                     }
                 },
                 {
-                    "id": "maestro-control-plane-empty-work-graph",
+                    "id": "maestro-runtime-gateway-empty-work-graph",
                     "kind": "delegation",
-                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "peer": A2A_RUNTIME_GATEWAY_LEDGER_PEER,
                     "taskId": "task-empty-work-graph",
                     "contextId": "ctx-empty-work-graph",
                     "text": "delegate work",
@@ -6041,9 +6041,9 @@ async fn a2a_task_load_keeps_embedded_work_graph_when_top_level_value_is_null() 
         serde_json::to_vec_pretty(&serde_json::json!({
             "tasks": [
                 {
-                    "id": "maestro-control-plane-null-work-graph",
+                    "id": "maestro-runtime-gateway-null-work-graph",
                     "kind": "delegation",
-                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "peer": A2A_RUNTIME_GATEWAY_LEDGER_PEER,
                     "taskId": "null-work-graph-task",
                     "contextId": "ctx-null",
                     "text": "null work graph request",
@@ -6102,9 +6102,9 @@ async fn a2a_task_load_refreshes_history_messages_with_matching_ids() {
         serde_json::to_vec_pretty(&serde_json::json!({
             "tasks": [
                 {
-                    "id": "maestro-control-plane-stale-history",
+                    "id": "maestro-runtime-gateway-stale-history",
                     "kind": "delegation",
-                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "peer": A2A_RUNTIME_GATEWAY_LEDGER_PEER,
                     "taskId": "stale-history-task",
                     "contextId": "ctx-stale-history",
                     "text": "run checks",
@@ -6312,9 +6312,9 @@ async fn a2a_task_load_skips_remote_cli_ledger_entries() {
                         "metadata": { "workspaceId": "legacy-ws" }
                     },
                     {
-                        "id": "maestro-control-plane-local-task",
+                        "id": "maestro-runtime-gateway-local-task",
                         "kind": "message",
-                        "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                        "peer": A2A_RUNTIME_GATEWAY_LEDGER_PEER,
                         "taskId": "local-task",
                         "contextId": "ctx-local",
                         "text": "local request",
@@ -6365,9 +6365,9 @@ async fn a2a_task_store_prefers_top_level_ledger_work_graph() {
         serde_json::to_vec_pretty(&serde_json::json!({
             "tasks": [
                 {
-                    "id": "maestro-control-plane-task-work-graph",
+                    "id": "maestro-runtime-gateway-task-work-graph",
                     "kind": "delegation",
-                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "peer": A2A_RUNTIME_GATEWAY_LEDGER_PEER,
                     "taskId": "task-work-graph",
                     "contextId": "ctx-work-graph",
                     "text": "delegate work",
@@ -6481,9 +6481,9 @@ async fn a2a_task_load_ignores_null_top_level_work_graph() {
         serde_json::to_vec_pretty(&serde_json::json!({
             "tasks": [
                 {
-                    "id": "maestro-control-plane-null-work-graph",
+                    "id": "maestro-runtime-gateway-null-work-graph",
                     "kind": "delegation",
-                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "peer": A2A_RUNTIME_GATEWAY_LEDGER_PEER,
                     "taskId": "task-null-work-graph",
                     "contextId": "ctx-null-work-graph",
                     "text": "delegate work",
@@ -6541,9 +6541,9 @@ async fn a2a_task_load_preserves_embedded_history_when_transcript_exists() {
         serde_json::to_vec_pretty(&serde_json::json!({
             "tasks": [
                 {
-                    "id": "maestro-control-plane-rich-history",
+                    "id": "maestro-runtime-gateway-rich-history",
                     "kind": "delegation",
-                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "peer": A2A_RUNTIME_GATEWAY_LEDGER_PEER,
                     "taskId": "task-rich-history",
                     "contextId": "ctx-rich-history",
                     "text": "inspect attachment",
@@ -6651,9 +6651,9 @@ async fn a2a_task_load_prefers_top_level_state_over_embedded_status() {
         serde_json::to_vec_pretty(&serde_json::json!({
             "tasks": [
                 {
-                    "id": "maestro-control-plane-stale-status",
+                    "id": "maestro-runtime-gateway-stale-status",
                     "kind": "delegation",
-                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "peer": A2A_RUNTIME_GATEWAY_LEDGER_PEER,
                     "taskId": "task-stale-status",
                     "contextId": "ctx-stale-status",
                     "text": "finish work",
@@ -6747,9 +6747,9 @@ async fn a2a_task_load_preserves_embedded_response_when_top_level_response_missi
         serde_json::to_vec_pretty(&serde_json::json!({
             "tasks": [
                 {
-                    "id": "maestro-control-plane-missing-response",
+                    "id": "maestro-runtime-gateway-missing-response",
                     "kind": "delegation",
-                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "peer": A2A_RUNTIME_GATEWAY_LEDGER_PEER,
                     "taskId": "task-missing-response",
                     "contextId": "ctx-missing-response",
                     "text": "please do the thing",
@@ -6830,9 +6830,9 @@ async fn a2a_task_load_prefers_top_level_transcript_over_stale_embedded_response
         serde_json::to_vec_pretty(&serde_json::json!({
             "tasks": [
                 {
-                    "id": "maestro-control-plane-transcript-response",
+                    "id": "maestro-runtime-gateway-transcript-response",
                     "kind": "delegation",
-                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "peer": A2A_RUNTIME_GATEWAY_LEDGER_PEER,
                     "taskId": "task-transcript-response",
                     "contextId": "ctx-transcript-response",
                     "text": "please do the thing",
@@ -6912,9 +6912,9 @@ async fn a2a_task_load_ignores_blank_top_level_response_when_embedded_response_p
         serde_json::to_vec_pretty(&serde_json::json!({
             "tasks": [
                 {
-                    "id": "maestro-control-plane-blank-response",
+                    "id": "maestro-runtime-gateway-blank-response",
                     "kind": "delegation",
-                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "peer": A2A_RUNTIME_GATEWAY_LEDGER_PEER,
                     "taskId": "task-blank-response",
                     "contextId": "ctx-blank-response",
                     "text": "please do the thing",
@@ -6996,9 +6996,9 @@ async fn a2a_task_load_preserves_rich_parts_when_history_message_is_refreshed() 
         serde_json::to_vec_pretty(&serde_json::json!({
             "tasks": [
                 {
-                    "id": "maestro-control-plane-rich-parts-refresh",
+                    "id": "maestro-runtime-gateway-rich-parts-refresh",
                     "kind": "delegation",
-                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "peer": A2A_RUNTIME_GATEWAY_LEDGER_PEER,
                     "taskId": "task-rich-parts-refresh",
                     "contextId": "ctx-rich-parts-refresh",
                     "text": "inspect attachment",
@@ -7091,9 +7091,9 @@ async fn a2a_task_load_refreshes_stale_status_from_embedded_history() {
         serde_json::to_vec_pretty(&serde_json::json!({
             "tasks": [
                 {
-                    "id": "maestro-control-plane-stale-status-history",
+                    "id": "maestro-runtime-gateway-stale-status-history",
                     "kind": "delegation",
-                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "peer": A2A_RUNTIME_GATEWAY_LEDGER_PEER,
                     "taskId": "task-stale-status-history",
                     "contextId": "ctx-stale-status-history",
                     "text": "finish work",
@@ -7429,7 +7429,7 @@ async fn a2a_task_persist_rewrites_legacy_control_plane_ledger_entries() {
         .expect("legacy task should be rewritten as a control-plane row");
 
     assert_eq!(entries.len(), 2);
-    assert_eq!(control_plane_entry["peer"], A2A_CONTROL_PLANE_LEDGER_PEER);
+    assert_eq!(control_plane_entry["peer"], A2A_RUNTIME_GATEWAY_LEDGER_PEER);
     assert_eq!(control_plane_entry["kind"], "delegation");
     assert_eq!(control_plane_entry["a2aTask"]["id"], "raw-legacy-task");
     assert_eq!(
@@ -7450,9 +7450,9 @@ async fn a2a_task_load_canonicalizes_legacy_cancelled_state() {
         serde_json::to_vec_pretty(&serde_json::json!({
             "tasks": [
                 {
-                    "id": "maestro-control-plane-cancelled-task",
+                    "id": "maestro-runtime-gateway-cancelled-task",
                     "kind": "delegation",
-                    "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                    "peer": A2A_RUNTIME_GATEWAY_LEDGER_PEER,
                     "taskId": "cancelled-task",
                     "contextId": "ctx-cancelled",
                     "text": "task canceled elsewhere",
@@ -7472,6 +7472,62 @@ async fn a2a_task_load_canonicalizes_legacy_cancelled_state() {
         loaded["cancelled-task"]["status"]["state"],
         "TASK_STATE_CANCELED"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a2a_task_ledger_migrates_legacy_control_plane_peer() {
+    let root = TestDir::new("a2a-task-ledger-legacy-control-plane-peer");
+    let base_state = test_app_state_with_sessions(HashMap::new());
+    let mut config = auth_test_config();
+    config.a2a_tasks_file_path = root.path().join("tasks.json");
+    let state = AppState {
+        config: Arc::new(config),
+        ..base_state
+    };
+    tokio::fs::write(
+        &state.config.a2a_tasks_file_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "tasks": [
+                {
+                    "id": "maestro-control-plane-legacy-task",
+                    "kind": "delegation",
+                    "peer": "maestro-control-plane",
+                    "peerDisplayName": "Maestro Control Plane",
+                    "taskId": "legacy-task",
+                    "contextId": "ctx-legacy",
+                    "text": "legacy request",
+                    "state": "TASK_STATE_COMPLETED",
+                    "updatedAt": "2026-05-15T00:01:00Z"
+                }
+            ]
+        }))
+        .expect("ledger should serialize"),
+    )
+    .await
+    .expect("ledger should be written");
+
+    let loaded = load_a2a_tasks(&state.config.a2a_tasks_file_path).await;
+    assert!(loaded.contains_key("legacy-task"));
+    state.a2a_tasks.lock().await.extend(loaded);
+
+    persist_a2a_tasks(&state).await;
+
+    let ledger: Value = serde_json::from_slice(
+        &tokio::fs::read(&state.config.a2a_tasks_file_path)
+            .await
+            .expect("ledger should be readable"),
+    )
+    .expect("ledger should be json");
+    let entries = ledger["tasks"]
+        .as_array()
+        .expect("ledger tasks should be an array");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["peer"], A2A_RUNTIME_GATEWAY_LEDGER_PEER);
+    assert_eq!(
+        entries[0]["peerDisplayName"],
+        A2A_RUNTIME_GATEWAY_LEDGER_DISPLAY_NAME
+    );
+    assert_eq!(entries[0]["taskId"], "legacy-task");
 }
 
 #[test]

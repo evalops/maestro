@@ -2,7 +2,7 @@
 
 > **Status:** Current Rust runtime. The controls documented here live under
 > `packages/tui-rs/src/safety/`, `packages/tui-rs/src/sandbox.rs`, and
-> `packages/control-plane-rs/src/auth.rs`.
+> `packages/runtime-gateway-rs/src/auth.rs`.
 
 Audience: operators and contributors configuring approvals and sandboxing.
 
@@ -92,7 +92,7 @@ Authenticated `GET /api/admin/enterprise-policy/status` and
 
 Keep the private signing key in the organization KMS or HSM. The publisher
 service signs the canonical envelope outside Maestro and submits it through
-the authenticated control plane; Maestro never receives private-key material.
+the authenticated runtime gateway; Maestro never receives private-key material.
 Configure `MAESTRO_MANAGED_POLICY_AUDIT_PATH` to select the local JSONL audit
 file. By default it is the managed-policy state path with `.audit.jsonl`
 appended.
@@ -106,7 +106,7 @@ The publisher endpoints are:
   accepted and rejected publication events, capped at 100 entries.
 
 Publication is authenticated and CSRF-protected like other state-changing
-control-plane API calls. A malformed request returns `400`; a rejected
+runtime-gateway API calls. A malformed request returns `400`; a rejected
 signature, scope, expiry, rollback, or kill-switch-reason validation returns
 `409`.
 Successful publication returns the safe managed-policy status. A valid
@@ -122,7 +122,7 @@ The intended customer flow is:
 1. Render a versioned envelope from the organization policy source.
 2. Ask the KMS/HSM to sign the canonical payload and attach the signature and
    policy hash.
-3. POST the envelope with the publisher service's control-plane credentials.
+3. POST the envelope with the publisher service's runtime-gateway credentials.
 4. Monitor the returned status and the audit endpoint, while keeping the
    remote KMS/HSM and proxy logs as the authoritative organization audit trail.
 
@@ -132,7 +132,7 @@ KMS/HSM output:
 
 ```sh
 curl -X POST "$MAESTRO_URL/api/admin/enterprise-policy/publish" \
-  -H "Authorization: Bearer <control-plane-credential>" \
+  -H "Authorization: Bearer <runtime-gateway-credential>" \
   -H "X-Maestro-CSRF: <csrf-token>" \
   -H "Content-Type: application/json" \
   --data @signed-envelope.json
@@ -208,7 +208,7 @@ secrets into prompts or use an untrusted repository with a credential that can
 modify production systems. Anything intentionally sent to a model provider or
 external tool is disclosed to that service.
 
-## Control-plane safety
+## Runtime-gateway safety
 
 For a shared or remote web deployment:
 
@@ -219,13 +219,13 @@ MAESTRO_WEB_CSRF_TOKEN="$(openssl rand -hex 32)" \
 maestro web
 ```
 
-The control plane requires authentication on non-loopback binds. It accepts
+The runtime gateway requires authentication on non-loopback binds. It accepts
 API-key, shared-secret, JWT/JWKS, or trusted-proxy authentication as described
 in `docs/THREAT_MODEL.md`. State-changing API and A2A requests are CSRF
 protected when CSRF enforcement is enabled. `MAESTRO_WEB_REQUIRE_KEY=0` is a
 loopback-only development switch.
 
-The Rust control plane does not provide general RBAC or SSO. If remote access
+The Rust runtime gateway does not provide general RBAC or SSO. If remote access
 depends on a proxy for identity or authorization, make that proxy part of the
 deployment threat model.
 
@@ -245,7 +245,7 @@ dependency-light parsing/migration leaf and is not the live approval path.
 - Use `prompt` or `fail` approval for untrusted work.
 - Prefer `read-only` or `workspace-write` native sandboxing.
 - Set `MAESTRO_NO_EGRESS_SHELL=1` for sensitive repositories.
-- Use `MAESTRO_PROFILE=prod` for shared control-plane deployments.
+- Use `MAESTRO_PROFILE=prod` for shared runtime-gateway deployments.
 - Keep provider and MCP credentials short-lived and least-privileged.
 - Run `maestro setup` after installation and `maestro doctor --live` when
   diagnosing a deployment; do not paste diagnostic secrets into tickets.

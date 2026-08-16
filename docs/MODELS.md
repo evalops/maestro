@@ -1,6 +1,6 @@
 # Providers & Factory Integration
 
-> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. Model/provider registry logic now lives in `packages/control-plane-rs/src/model_catalog.rs` and the provider modules under `packages/tui-rs/src`. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. Model/provider registry logic now lives in `packages/runtime-gateway-rs/src/model_catalog.rs` and the provider modules under `packages/tui-rs/src`. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
 
 
 For task-level selection, prefer the `low`, `medium`, `high`, and `ultra` agent profiles over selecting a model alone. Profiles keep the model, reasoning effort, Oracle, specialists, fallbacks, and budgets reproducible as one versioned unit. See [Agent Profiles](AGENT_PROFILES.md).

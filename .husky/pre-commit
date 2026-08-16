@@ -11,7 +11,7 @@ fi
 
 for manifest in \
 	packages/maestro-rs/Cargo.toml \
-	packages/control-plane-rs/Cargo.toml \
+	packages/runtime-gateway-rs/Cargo.toml \
 	packages/tui-rs/Cargo.toml \
 	packages/ambient-agent-rs/Cargo.toml
 do

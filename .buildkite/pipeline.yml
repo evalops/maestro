@@ -150,7 +150,7 @@ steps:
           for _ in $$(seq 1 60); do docker exec "$$postgres" pg_isready -U maestro >/dev/null 2>&1 && break; sleep 2; done
           MAESTRO_REDIS_URL="redis://127.0.0.1:$$redis_port" \
             MAESTRO_DATABASE_URL="postgresql://maestro:maestro@127.0.0.1:$$postgres_port/maestro" \
-            PGPASSWORD=maestro timeout --signal=TERM --kill-after=30s 30m cargo test --locked -p maestro-control-plane
+            PGPASSWORD=maestro timeout --signal=TERM --kill-after=30s 30m cargo test --locked -p maestro-runtime-gateway
 
       - label: ":repeat: Deterministic scenario replay"
         key: "scenario-replay"

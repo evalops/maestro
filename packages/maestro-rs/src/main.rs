@@ -1,6 +1,6 @@
 use anyhow::Result;
 use maestro::{classify, Command};
-use maestro_control_plane::{serve, ControlPlaneConfig};
+use maestro_runtime_gateway::{serve, RuntimeGatewayConfig};
 use std::path::{Path, PathBuf};
 
 // Process hardening must run before `main` — and therefore before the Tokio
@@ -70,7 +70,7 @@ fn main() -> Result<()> {
                     if let Some(port) = port {
                         std::env::set_var("PORT", port.to_string());
                     }
-                    serve(ControlPlaneConfig::from_env()).await
+                    serve(RuntimeGatewayConfig::from_env()).await
                 }
                 Command::Forward => maestro_tui::run_cli(raw_args).await,
                 Command::Help | Command::Version => unreachable!("handled before runtime startup"),
