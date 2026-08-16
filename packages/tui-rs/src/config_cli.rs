@@ -11,7 +11,7 @@
 //! - Themed badge rendering from the TypeScript style system
 //! - Trust-aware project reference scanning uses a best-effort trusted default
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -21,6 +21,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value as JsonValue};
 use toml::Value as TomlValue;
 
+use crate::local_models::{local_metadata_url, local_runtime_endpoints};
 use crate::path_utils::{env_path, maestro_home_dir};
 use crate::skill_cli::write_atomic;
 
@@ -98,8 +99,8 @@ Commands:
   validate                     Validate provider JSON + TOML config files
   init [--preset <id>] [--force]
                                Create project .maestro/config.json
-  local [--check] [--provider lmstudio|ollama] [--scope project|user]
-                               Manage local LM Studio / Ollama providers
+  local [--check] [--provider lmstudio|ollama|llamacpp] [--scope project|user]
+                               Manage local LM Studio / Ollama / llama.cpp providers
 
 Options:
   --json                       Machine-readable output where supported
@@ -707,7 +708,7 @@ async fn run_local(args: &[String]) -> Result<i32> {
             "--provider" => {
                 let value = args
                     .get(index + 1)
-                    .context("maestro config local --provider requires lmstudio|ollama")?;
+                    .context("maestro config local --provider requires lmstudio|ollama|llamacpp")?;
                 provider = Some(value.to_owned());
                 index += 2;
             }
@@ -724,7 +725,7 @@ async fn run_local(args: &[String]) -> Result<i32> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: maestro config local [--check] [--provider lmstudio|ollama] [--scope project|user]"
+                    "Usage: maestro config local [--check] [--provider lmstudio|ollama|llamacpp] [--scope project|user]"
                 );
                 return Ok(0);
             }
@@ -739,11 +740,9 @@ async fn run_local(args: &[String]) -> Result<i32> {
     }
 
     if check_only {
-        for (name, base_url) in [
-            ("LM Studio", "http://127.0.0.1:1234/v1"),
-            ("Ollama", "http://localhost:11434/v1"),
-        ] {
-            println!("{}", check_local_endpoint(name, base_url).await);
+        let process_env = env::vars().collect();
+        for (name, base_url) in local_endpoint_checks(&process_env) {
+            println!("{}", check_local_endpoint(name, &base_url).await);
         }
         return Ok(0);
     }
@@ -753,29 +752,30 @@ async fn run_local(args: &[String]) -> Result<i32> {
         match provider_name.to_ascii_lowercase().as_str() {
             "lmstudio" | "1" => "lmstudio",
             "ollama" | "2" => "ollama",
+            "llamacpp" | "llama.cpp" | "llama-cpp" | "3" => "llamacpp",
             other => bail!("Unknown local provider: {other}"),
         }
     } else {
         println!("  1) Add LM Studio provider");
         println!("  2) Add Ollama provider");
-        println!("  3) Check local endpoints");
-        println!("  4) Cancel");
-        let choice = prompt_line("\nChoice (1-4): ")?;
+        println!("  3) Add llama.cpp provider (Qwen3.8-27B)");
+        println!("  4) Check local endpoints");
+        println!("  5) Cancel");
+        let choice = prompt_line("\nChoice (1-5): ")?;
         match choice.trim() {
-            "3" => {
-                for (name, base_url) in [
-                    ("LM Studio", "http://127.0.0.1:1234/v1"),
-                    ("Ollama", "http://localhost:11434/v1"),
-                ] {
-                    println!("{}", check_local_endpoint(name, base_url).await);
+            "4" => {
+                let process_env = env::vars().collect();
+                for (name, base_url) in local_endpoint_checks(&process_env) {
+                    println!("{}", check_local_endpoint(name, &base_url).await);
                 }
                 return Ok(0);
             }
-            "4" => {
+            "5" => {
                 println!("\nCancelled.");
                 return Ok(0);
             }
             "2" => "ollama",
+            "3" => "llamacpp",
             _ => "lmstudio",
         }
     };
@@ -802,7 +802,8 @@ async fn run_local(args: &[String]) -> Result<i32> {
     let local_path = target_dir.join("local.json");
     let mut config = load_local_config(&local_path)?;
 
-    let provider_id = if stdin_is_tty() && interactive_local {
+    let customizable_local = stdin_is_tty() && interactive_local && template.id != "llamacpp";
+    let provider_id = if customizable_local {
         let answer = prompt_line(&format!("\nProvider id ({}): ", template.id))?;
         if answer.trim().is_empty() {
             template.id.to_owned()
@@ -812,7 +813,7 @@ async fn run_local(args: &[String]) -> Result<i32> {
     } else {
         template.id.to_owned()
     };
-    let provider_name = if stdin_is_tty() && interactive_local {
+    let provider_name = if customizable_local {
         let answer = prompt_line(&format!("Provider name ({}): ", template.name))?;
         if answer.trim().is_empty() {
             template.name.to_owned()
@@ -822,7 +823,9 @@ async fn run_local(args: &[String]) -> Result<i32> {
     } else {
         template.name.to_owned()
     };
-    let base_url = if stdin_is_tty() && interactive_local {
+    let base_url = if template.id == "llamacpp" {
+        llamacpp_base_url(&env::vars().collect(), template.base_url)
+    } else if customizable_local {
         let answer = prompt_line(&format!("Base URL ({}): ", template.base_url))?;
         if answer.trim().is_empty() {
             template.base_url.to_owned()
@@ -832,7 +835,7 @@ async fn run_local(args: &[String]) -> Result<i32> {
     } else {
         template.base_url.to_owned()
     };
-    let model_id = if stdin_is_tty() && interactive_local {
+    let model_id = if customizable_local {
         let answer = prompt_line(&format!("Model id ({}): ", template.model_id))?;
         if answer.trim().is_empty() {
             template.model_id.to_owned()
@@ -842,7 +845,7 @@ async fn run_local(args: &[String]) -> Result<i32> {
     } else {
         template.model_id.to_owned()
     };
-    let model_name = if stdin_is_tty() && interactive_local {
+    let model_name = if customizable_local {
         let answer = prompt_line(&format!("Model name ({}): ", template.model_name))?;
         if answer.trim().is_empty() {
             template.model_name.to_owned()
@@ -852,7 +855,7 @@ async fn run_local(args: &[String]) -> Result<i32> {
     } else {
         template.model_name.to_owned()
     };
-    let context_window = if stdin_is_tty() && interactive_local {
+    let context_window = if customizable_local {
         let answer = prompt_line(&format!("Context window ({}): ", template.context_window))?;
         answer
             .trim()
@@ -861,7 +864,7 @@ async fn run_local(args: &[String]) -> Result<i32> {
     } else {
         template.context_window
     };
-    let max_tokens = if stdin_is_tty() && interactive_local {
+    let max_tokens = if customizable_local {
         let answer = prompt_line(&format!("Max output tokens ({}): ", template.max_tokens))?;
         answer.trim().parse::<u64>().unwrap_or(template.max_tokens)
     } else {
@@ -889,6 +892,12 @@ async fn run_local(args: &[String]) -> Result<i32> {
     println!(
         "Reload your models (/model) after starting the local runtime to use the new provider."
     );
+    if template.id == "llamacpp" {
+        println!(
+            "Set LLAMA_CPP_BASE_URL before starting Maestro to override {}.",
+            template.base_url
+        );
+    }
     println!("Tip: run `maestro config local --check` to check connectivity.");
     Ok(0)
 }
@@ -1723,8 +1732,34 @@ fn local_provider_template(key: &str) -> Result<LocalProviderTemplate> {
             context_window: 128_000,
             max_tokens: 8192,
         }),
+        "llamacpp" => Ok(LocalProviderTemplate {
+            id: "llamacpp",
+            name: "llama.cpp (local)",
+            base_url: "http://127.0.0.1:8080/v1",
+            api: "openai-completions",
+            model_id: "llamacpp/Qwen3.8-27B",
+            model_name: "Qwen3.8-27B (local)",
+            context_window: 262_144,
+            max_tokens: 32_768,
+        }),
         other => bail!("unknown local provider template: {other}"),
     }
+}
+
+fn llamacpp_base_url(env: &BTreeMap<String, String>, default: &str) -> String {
+    let env: HashMap<String, String> = env.clone().into_iter().collect();
+    local_runtime_endpoints(&env)
+        .into_iter()
+        .find(|endpoint| endpoint.provider == "llamacpp")
+        .map_or_else(|| default.to_owned(), |endpoint| endpoint.base_url)
+}
+
+fn local_endpoint_checks(env: &BTreeMap<String, String>) -> Vec<(&'static str, String)> {
+    let env: HashMap<String, String> = env.clone().into_iter().collect();
+    local_runtime_endpoints(&env)
+        .into_iter()
+        .map(|endpoint| (endpoint.display_name, endpoint.base_url))
+        .collect()
 }
 
 struct LocalProviderOverrides {
@@ -1793,12 +1828,21 @@ async fn check_local_endpoint(name: &str, base_url: &str) -> String {
         Ok(client) => client,
         Err(error) => return format!("[{name}] client error: {error}"),
     };
-    let url = match url::Url::parse(base_url) {
-        Ok(mut parsed) => {
-            parsed.set_path("/models");
-            parsed.to_string()
-        }
+    let url = match local_metadata_url(base_url) {
+        Ok(url) => url,
         Err(error) => return format!("[{name}] invalid url: {error}"),
+    };
+    let url = match reqwest::Url::parse(&url) {
+        Ok(url) => url,
+        Err(_) => return format!("[{name}] invalid url"),
+    };
+    let redacted_url = {
+        let mut redacted = url.clone();
+        let _ = redacted.set_username("");
+        let _ = redacted.set_password(None);
+        redacted.set_query(None);
+        redacted.set_fragment(None);
+        redacted.to_string()
     };
     match client.get(url).send().await {
         Ok(response) if response.status().is_success() => {
@@ -1808,7 +1852,7 @@ async fn check_local_endpoint(name: &str, base_url: &str) -> String {
             )
         }
         Ok(response) => format!("[{name}] warn · HTTP {}", response.status().as_u16()),
-        Err(error) => format!("[{name}] error · {error}"),
+        Err(error) => format!("[{name}] error · {} · {redacted_url}", error.without_url()),
     }
 }
 
@@ -2144,5 +2188,80 @@ mod tests {
     async fn local_check_returns_success_exit() {
         let code = run_local(&["--check".into()]).await.unwrap();
         assert_eq!(code, 0);
+    }
+
+    #[tokio::test]
+    async fn local_endpoint_errors_redact_override_url_secrets() {
+        let output = check_local_endpoint(
+            "llama.cpp",
+            "http://user:password@127.0.0.1:9/v1?token=query-secret#fragment",
+        )
+        .await;
+
+        assert!(output.starts_with("[llama.cpp] error ·"));
+        assert!(output.contains("http://127.0.0.1:9/v1/models"));
+        for secret in ["user", "password", "query-secret", "fragment"] {
+            assert!(!output.contains(secret), "leaked {secret}: {output}");
+        }
+    }
+
+    #[test]
+    fn llamacpp_local_template_targets_qwen38() {
+        let template = local_provider_template("llamacpp").unwrap();
+
+        assert_eq!(template.id, "llamacpp");
+        assert_eq!(template.base_url, "http://127.0.0.1:8080/v1");
+        assert_eq!(template.api, "openai-completions");
+        assert_eq!(template.model_id, "llamacpp/Qwen3.8-27B");
+        assert_eq!(template.context_window, 262_144);
+    }
+
+    #[test]
+    fn local_metadata_url_preserves_openai_prefix() {
+        assert_eq!(
+            local_metadata_url("http://127.0.0.1:8080/v1").unwrap(),
+            "http://127.0.0.1:8080/v1/models"
+        );
+    }
+
+    #[test]
+    fn llamacpp_setup_uses_the_registry_base_url_override() {
+        let env = BTreeMap::from([(
+            "LLAMA_CPP_BASE_URL".to_owned(),
+            "http://127.0.0.1:9090/v1".to_owned(),
+        )]);
+
+        assert_eq!(
+            llamacpp_base_url(&env, "http://127.0.0.1:8080/v1"),
+            "http://127.0.0.1:9090/v1"
+        );
+    }
+
+    #[test]
+    fn local_endpoint_checks_use_all_registry_overrides() {
+        let env = BTreeMap::from([
+            (
+                "LLAMA_CPP_BASE_URL".to_owned(),
+                "http://127.0.0.1:9090/v1".to_owned(),
+            ),
+            (
+                "LM_STUDIO_BASE_URL".to_owned(),
+                "http://127.0.0.1:9123/v1".to_owned(),
+            ),
+            (
+                "OLLAMA_BASE_URL".to_owned(),
+                "http://127.0.0.1:9114/v1".to_owned(),
+            ),
+        ]);
+        let checks = local_endpoint_checks(&env);
+
+        assert_eq!(
+            checks,
+            vec![
+                ("llama.cpp", "http://127.0.0.1:9090/v1".to_owned()),
+                ("LM Studio", "http://127.0.0.1:9123/v1".to_owned()),
+                ("Ollama", "http://127.0.0.1:9114/v1".to_owned()),
+            ]
+        );
     }
 }

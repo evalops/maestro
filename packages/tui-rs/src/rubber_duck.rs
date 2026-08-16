@@ -21,7 +21,9 @@ use anyhow::{Context, Result};
 
 use crate::agent::{CredentialVault, ExecutionSource, FromAgent, NativeAgent, NativeAgentConfig};
 use crate::ai::{provider_model_name, AiProvider};
-use crate::model_catalog::{available_models, verify_model_offline, VerificationState};
+use crate::model_catalog::{
+    available_models, model_route, verify_model_offline, VerificationState,
+};
 use crate::tools::ToolExecutor;
 
 /// Read-only tools the reviewer may use to inspect surrounding code.
@@ -85,19 +87,25 @@ pub fn pick_review_model(current: &str, requested: Option<&str>) -> Result<Strin
     let models = available_models();
     // Auto-pick only models whose provider credentials are actually
     // configured; anything else would just fail when the review starts.
-    let usable = |id: &str| verify_model_offline(id).state == VerificationState::Verified;
-    if let Some(model) = models.iter().find(|model| {
-        !same_model(&model.id, current)
-            && AiProvider::from_model(&model.id) != current_provider
-            && usable(&model.id)
+    let usable = |id: &str| {
+        let verification = verify_model_offline(id);
+        verification.state == VerificationState::Verified
+            && verification.source != "provider-registry"
+    };
+    if let Some(route) = models.iter().find_map(|model| {
+        let route = model_route(model);
+        (!same_model(&route, current)
+            && AiProvider::from_model(&route) != current_provider
+            && usable(&route))
+        .then_some(route)
     }) {
-        return Ok(model.id.clone());
+        return Ok(route);
     }
-    if let Some(model) = models
-        .iter()
-        .find(|model| !same_model(&model.id, current) && usable(&model.id))
-    {
-        return Ok(model.id.clone());
+    if let Some(route) = models.iter().find_map(|model| {
+        let route = model_route(model);
+        (!same_model(&route, current) && usable(&route)).then_some(route)
+    }) {
+        return Ok(route);
     }
     Err(
         "No authenticated alternative model available for a rubber duck review. \
@@ -375,6 +383,7 @@ async fn drive_review(model: &str, cwd: &str, prompt: &str) -> Result<String> {
     let config = NativeAgentConfig {
         model: model.to_string(),
         max_tokens: crate::model_catalog::default_max_output_tokens(model),
+        max_tokens_source: crate::agent::MaxTokensSource::Catalog,
         system_prompt: Some(format!(
             "You are a senior code reviewer giving a second opinion on uncommitted changes. Working directory: {cwd}. Be concise. Your tools are read-only; never modify anything."
         )),

@@ -81,6 +81,7 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
         "acp" => crate::acp_cli::run_acp(&args[1..]).await,
         "mcp" => crate::mcp_config_cli::run_mcp_config(&args[1..]),
         "plugins" | "plugin" => crate::plugins_cli::run_plugins(&args[1..]),
+        "connections" => crate::connections_cli::run_connections(&args[1..]),
         other => bail!("unknown command: {other}"),
     }
 }

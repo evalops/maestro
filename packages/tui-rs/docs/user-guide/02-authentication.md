@@ -76,6 +76,26 @@ Common failure modes:
 
 ## API keys and environment variables
 
+Managed connections are the recommended path when developers switch accounts
+or do not want keys in their shell environment:
+
+```bash
+maestro connections types
+maestro connections add openai-api-key openai-work
+maestro connections add anthropic-api-key anthropic-work \
+  --from-1password 'op://Engineering/Anthropic/credential'
+maestro connections status openai-work
+```
+
+Literal input is hidden and stored in the OS credential store. References to
+environment variables, files, and 1Password stay non-secret metadata in
+`~/.maestro/connections.json`. Existing provider environment variables retain
+precedence unless `MAESTRO_CONNECTION=<id>` explicitly selects a connection.
+That explicit selection also replaces stale provider credential-file or
+1Password sources. Keyring rotation advances a persisted generation so leases
+issued before the rotation are rejected. Platform-only connection types must
+be configured and used through the Platform broker, not the local CLI.
+
 Export provider keys in your shell or `.env`:
 
 ```bash
@@ -99,7 +119,8 @@ Additional providers (OpenRouter, Azure OpenAI, GitHub Copilot, Groq, xAI, Cereb
 
 | Path | Role |
 |------|------|
-| `~/.maestro/keys.json` | Stored provider keys (user-facing default) |
+| `~/.maestro/connections.json` | Managed connection metadata and secret references; never literal secrets |
+| `~/.maestro/keys.json` | Legacy stored provider keys |
 | `~/.maestro/config.json` | Maestro config (including model registry overrides via `MAESTRO_CONFIG`) |
 | `~/.maestro/models.json` | Legacy models registry path |
 

@@ -1,0 +1,203 @@
+agents:
+  queue: "hetzner-linux-heavy"
+  image: "evalops-platform-ci-v3"
+
+env:
+  CI: "true"
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_TARGET_DIR: ".buildkite/cache/cargo-target"
+  npm_config_cache: ".buildkite/cache/npm"
+  npm_config_fetch_retries: "1"
+  npm_config_fetch_timeout: "30000"
+
+steps:
+  - group: ":rust: Native validation"
+    steps:
+      - label: ":lint-roller: Contracts, format, and Clippy"
+        key: "lint"
+        timeout_in_minutes: 90
+        concurrency: 2
+        concurrency_group: "hetzner-linux-heavy-workloads"
+        retry:
+          automatic:
+            - exit_status: -1
+              signal_reason: none
+              limit: 1
+            - signal_reason: agent_stop
+              limit: 1
+        cache:
+          name: "maestro-lint-${BUILDKITE_PULL_REQUEST}"
+          size: "50g"
+          paths: [".buildkite/cache"]
+        command: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=10s 5m npm ci --ignore-scripts
+          timeout --signal=TERM --kill-after=30s 45m npm run check
+          node --test scripts/check-doc-paths.test.mjs scripts/version.test.mjs
+          if [[ -f scripts/measure-ci-build-latency.test.mjs ]]; then
+            node --test scripts/measure-ci-build-latency.test.mjs
+          fi
+          npm run test:internal
+          timeout --signal=TERM --kill-after=30s 30m npm run lint
+          node --test scripts/check-advisory-expiry.test.mjs
+          node scripts/check-advisory-expiry.mjs
+
+      - label: ":test_tube: Full Rust workspace"
+        key: "rust-tests"
+        timeout_in_minutes: 90
+        concurrency: 2
+        concurrency_group: "hetzner-linux-heavy-workloads"
+        retry:
+          automatic:
+            - exit_status: -1
+              signal_reason: none
+              limit: 1
+            - signal_reason: agent_stop
+              limit: 1
+        agents:
+          queue: "hetzner-linux-heavy"
+          image: "evalops-platform-ci-v3"
+        cache:
+          name: "maestro-tests-${BUILDKITE_PULL_REQUEST}"
+          size: "50g"
+          paths: [".buildkite/cache"]
+        command: |
+          set -euo pipefail
+          export MAESTRO_TRUSTED_RUNNER_WORKSPACE_ROOTS="$$(pwd -P)"
+          maestro_test_home="$$(mktemp -d)"
+          export MAESTRO_HOME="$$maestro_test_home"
+          export MAESTRO_SUBAGENTS_DIR="$$maestro_test_home/subagents"
+          nextest_version="0.9.143"
+          nextest_archive="$$(mktemp)"
+          nextest_dir="$$(mktemp -d)"
+          trap 'rm -rf "$$maestro_test_home"; rm -f "$$nextest_archive"; rm -rf "$$nextest_dir"' EXIT
+          timeout --signal=TERM --kill-after=10s 2m curl --fail --location --silent --show-error \
+            "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$$nextest_version/cargo-nextest-$$nextest_version-x86_64-unknown-linux-gnu.tar.gz" \
+            --output "$$nextest_archive"
+          printf '%s  %s\n' \
+            66786b9abe23920d022a182d1416b1bbc8130dd4872a9553d76985a1708dcd1e \
+            "$$nextest_archive" | sha256sum --check --status
+          tar -C "$$nextest_dir" -xzf "$$nextest_archive"
+          export PATH="$$nextest_dir:$$PATH"
+          timeout --signal=TERM --kill-after=30s 45m cargo nextest run --profile buildkite --workspace --locked --no-fail-fast
+          timeout --signal=TERM --kill-after=30s 20m cargo test --workspace --locked --doc
+          export MAESTRO_TUI_BIN="$$CARGO_TARGET_DIR/debug/maestro-tui"
+          test -x "$$MAESTRO_TUI_BIN" || timeout --signal=TERM --kill-after=30s 30m cargo build --locked -p maestro-tui
+          npm run smoke:tui
+
+      - label: ":package: Native build and conformance"
+        key: "native-release"
+        timeout_in_minutes: 90
+        concurrency: 2
+        concurrency_group: "hetzner-linux-heavy-workloads"
+        retry:
+          automatic:
+            - exit_status: -1
+              signal_reason: none
+              limit: 1
+            - signal_reason: agent_stop
+              limit: 1
+        agents:
+          queue: "hetzner-linux-heavy"
+          image: "evalops-platform-ci-v3"
+        cache:
+          name: "maestro-release-${BUILDKITE_PULL_REQUEST}"
+          size: "50g"
+          paths: [".buildkite/cache"]
+        command: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=10s 5m npm ci --ignore-scripts
+          timeout --signal=TERM --kill-after=30s 45m npm run build
+          npm run smoke:release-native-only
+          node scripts/run-runtime-conformance.mjs --binary "$$CARGO_TARGET_DIR/fast-validation/maestro"
+
+  - group: ":repeat: Integration and replay"
+    steps:
+      - label: ":docker: Control-plane integration"
+        key: "integration"
+        timeout_in_minutes: 60
+        concurrency: 2
+        concurrency_group: "hetzner-linux-heavy-workloads"
+        retry:
+          automatic:
+            - exit_status: -1
+              signal_reason: none
+              limit: 1
+            - signal_reason: agent_stop
+              limit: 1
+        agents:
+          queue: "hetzner-linux-heavy"
+          image: "evalops-platform-ci-v3"
+        cache:
+          name: "maestro-integration-${BUILDKITE_PULL_REQUEST}"
+          size: "50g"
+          paths: [".buildkite/cache"]
+        command: |
+          set -euo pipefail
+          suffix="$${BUILDKITE_JOB_ID//-/}"
+          redis="maestro-redis-$$suffix"
+          postgres="maestro-postgres-$$suffix"
+          trap 'docker rm -f "$$redis" "$$postgres" >/dev/null 2>&1 || true' EXIT
+          redis_image="mirror.gcr.io/library/redis:7-alpine"
+          postgres_image="mirror.gcr.io/library/postgres:16-alpine"
+          timeout --signal=TERM --kill-after=10s 2m docker pull "$$redis_image"
+          timeout --signal=TERM --kill-after=10s 2m docker pull "$$postgres_image"
+          docker run -d --rm --name "$$redis" -p 127.0.0.1::6379 "$$redis_image"
+          docker run -d --rm --name "$$postgres" -e POSTGRES_USER=maestro -e POSTGRES_PASSWORD=maestro -e POSTGRES_DB=maestro -p 127.0.0.1::5432 "$$postgres_image"
+          redis_port="$$(docker port "$$redis" 6379/tcp | sed 's/.*://')"
+          postgres_port="$$(docker port "$$postgres" 5432/tcp | sed 's/.*://')"
+          for _ in $$(seq 1 60); do docker exec "$$postgres" pg_isready -U maestro >/dev/null 2>&1 && break; sleep 2; done
+          MAESTRO_REDIS_URL="redis://127.0.0.1:$$redis_port" \
+            MAESTRO_DATABASE_URL="postgresql://maestro:maestro@127.0.0.1:$$postgres_port/maestro" \
+            PGPASSWORD=maestro timeout --signal=TERM --kill-after=30s 30m cargo test --locked -p maestro-control-plane
+
+      - label: ":repeat: Deterministic scenario replay"
+        key: "scenario-replay"
+        timeout_in_minutes: 45
+        concurrency: 2
+        concurrency_group: "hetzner-linux-heavy-workloads"
+        retry:
+          automatic:
+            - exit_status: -1
+              signal_reason: none
+              limit: 1
+            - signal_reason: agent_stop
+              limit: 1
+        cache:
+          name: "maestro-replay-${BUILDKITE_PULL_REQUEST}"
+          size: "30g"
+          paths: [".buildkite/cache"]
+        command: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=10s 5m npm ci --ignore-scripts
+          timeout --signal=TERM --kill-after=30s 30m cargo build --locked -p maestro-scenario
+          node --test scripts/scenario-replay-governance.test.mjs
+          MAESTRO_BIN="$$CARGO_TARGET_DIR/debug/maestro-scenario" npm run check:scenario-replay-gate -- --junit-dir tmp/scenario-replay
+
+  - label: ":pipeline: CI configuration contracts"
+    key: "ci-contracts"
+    timeout_in_minutes: 30
+    concurrency: 2
+    concurrency_group: "hetzner-linux-heavy-workloads"
+    retry:
+      automatic:
+        - exit_status: -1
+          signal_reason: none
+          limit: 1
+        - signal_reason: agent_stop
+          limit: 1
+    cache:
+      name: "maestro-ci-contracts-${BUILDKITE_PULL_REQUEST}"
+      size: "20g"
+      paths: [".buildkite/cache"]
+    command: |
+      set -euo pipefail
+      timeout --signal=TERM --kill-after=10s 5m npm ci --ignore-scripts
+      test ! -d src/hooks
+      node --test scripts/check-buildkite-pipeline.test.mjs
+      node scripts/check-rust-only-runtime.mjs
+      node scripts/check-hook-dispatch-coverage.mjs
+      if [[ -f scripts/workflow-contracts.test.mjs ]]; then
+        node --test scripts/workflow-contracts.test.mjs
+      fi

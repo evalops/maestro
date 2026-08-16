@@ -2490,6 +2490,7 @@ impl SubagentManager {
         let config = NativeAgentConfig {
             model,
             max_tokens: record.max_tokens,
+            max_tokens_source: crate::agent::MaxTokensSource::Explicit,
             system_prompt: Some(system_prompt),
             thinking_enabled: false,
             thinking_budget: 0,

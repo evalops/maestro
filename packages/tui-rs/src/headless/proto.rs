@@ -58,6 +58,7 @@ mod tests {
             grant_signature: "signature".into(),
             native_tool_ids: vec!["read".into()],
             external_tools: vec![],
+            connection_bindings: vec![],
         }
     }
 
@@ -298,6 +299,7 @@ mod tests {
                 args: serde_json::json!({}),
                 provider_tool_name: "browser".into(),
                 tool_id: "tool-1".into(),
+                connection_binding_id: None,
                 client_instance_id: "client-1".into(),
                 grant_id: "grant-1".into(),
                 grant_version: 1,

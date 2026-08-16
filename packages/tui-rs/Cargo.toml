@@ -126,6 +126,7 @@ supports-color = "3"
 # Date/time handling
 chrono.workspace = true
 keyring = "4.1.5"
+rpassword = "7.4"
 
 # YAML parsing for skill files
 serde_yaml.workspace = true

@@ -58,7 +58,7 @@ mod shutdown_signal;
 /// utility handler instead of the interactive TUI, headless server, or
 /// exec/print bridges; `packages/maestro-rs` no longer keeps an independent
 /// copy of this list (see `maestro::cli::classify`).
-pub const NATIVE_UTILITY_COMMANDS: [&str; 36] = [
+pub const NATIVE_UTILITY_COMMANDS: [&str; 37] = [
     "acp",
     "sessions",
     "search",
@@ -93,6 +93,7 @@ pub const NATIVE_UTILITY_COMMANDS: [&str; 36] = [
     "a2a",
     "plugins",
     "plugin",
+    "connections",
     "doctor",
     "setup",
 ];
@@ -591,17 +592,35 @@ fn native_exec_sandbox_policy(
     }
 }
 
-fn native_exec_model(provider: Option<&str>, model: Option<&str>) -> Option<String> {
+fn native_exec_model(
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> std::result::Result<Option<String>, String> {
     let provider = provider.map(str::trim).filter(|value| !value.is_empty());
     let model = model.map(str::trim).filter(|value| !value.is_empty());
     match (provider, model) {
-        (None, None) => None,
-        (None, Some(model)) => Some(model.to_string()),
-        (Some(provider), Some(model)) if model.starts_with(&format!("{provider}/")) => {
-            Some(model.to_string())
+        (None, None) => Ok(None),
+        (None, Some(model)) => Ok(Some(model.to_string())),
+        (Some(provider), Some(model))
+            if model.split_once('/').is_some_and(|(model_provider, _)| {
+                let requested = crate::ai::ProviderRegistry::descriptor(provider)
+                    .map_or(provider, |descriptor| descriptor.id);
+                let qualified = crate::ai::ProviderRegistry::descriptor(model_provider)
+                    .map_or(model_provider, |descriptor| descriptor.id);
+                requested == qualified
+            }) =>
+        {
+            Ok(Some(model.to_string()))
         }
-        (Some(provider), Some(model)) => Some(format!("{provider}/{model}")),
+        (Some(provider), Some(model)) => Ok(Some(format!("{provider}/{model}"))),
         (Some(provider), None) => {
+            let canonical_provider = crate::ai::ProviderRegistry::descriptor(provider)
+                .map_or(provider, |descriptor| descriptor.id);
+            if matches!(canonical_provider, "lmstudio" | "ollama") {
+                return Err(format!(
+                    "--provider {provider} requires --model because the loaded local model cannot be inferred"
+                ));
+            }
             let model_provider = if matches!(provider, "evalops" | "maestro-managed") {
                 std::env::var("MAESTRO_EVALOPS_PROVIDER")
                     .ok()
@@ -610,10 +629,10 @@ fn native_exec_model(provider: Option<&str>, model: Option<&str>) -> Option<Stri
             } else {
                 provider.to_string()
             };
-            Some(format!(
+            Ok(Some(format!(
                 "{provider}/{}",
                 default_model_for_provider(&model_provider)
-            ))
+            )))
         }
     }
 }
@@ -977,7 +996,14 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
                 );
                 return Ok(2);
             }
-            let model = native_exec_model(options.provider.as_deref(), options.model.as_deref());
+            let model =
+                match native_exec_model(options.provider.as_deref(), options.model.as_deref()) {
+                    Ok(model) => model,
+                    Err(message) => {
+                        eprintln!("{message}");
+                        return Ok(2);
+                    }
+                };
             let code = crate::print_mode::run_print_mode(crate::print_mode::PrintModeOptions {
                 prompt: options.prompt,
                 json: options.json,
@@ -1041,9 +1067,20 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
         set_provider_api_key(provider, api_key);
     }
 
+    // Preserve an explicit provider in the model route for every runtime.
+    // This is particularly important for locally hosted model families whose
+    // bare names may also match a cloud-provider inference heuristic.
+    let selected_model = match native_exec_model(args.provider.as_deref(), args.model.as_deref()) {
+        Ok(model) => model,
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
+
     // Set model from CLI if provided.
     // This environment variable is read by the App during initialization.
-    if let Some(model) = &args.model {
+    if let Some(model) = &selected_model {
         std::env::set_var("MAESTRO_MODEL", model);
     }
 
@@ -1066,7 +1103,7 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
 
     // Native headless/RPC server (kills TS agent path for these modes)
     if args.headless || args.rpc {
-        let code = crate::headless_server::run_headless_server(args.model.clone()).await?;
+        let code = crate::headless_server::run_headless_server(selected_model.clone()).await?;
         return Ok(code);
     }
 
@@ -1080,7 +1117,7 @@ async fn run_agent(raw_args: Vec<std::ffi::OsString>) -> Result<i32> {
         let code = crate::print_mode::run_print_mode(crate::print_mode::PrintModeOptions {
             prompt,
             json: args.json,
-            model: args.model.clone(),
+            model: selected_model,
             output_last_message: args
                 .output_last_message
                 .as_ref()
@@ -1643,6 +1680,18 @@ mod tests {
     }
 
     #[test]
+    fn native_utility_tokens_dispatch_connections() {
+        let args = ["connections", "list", "--json"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            native_utility_tokens(&args),
+            Some(vec!["connections".into(), "list".into(), "--json".into()])
+        );
+    }
+
+    #[test]
     fn native_utility_tokens_do_not_scan_prompt_text() {
         let args = ["write", "a", "models", "command"]
             .into_iter()
@@ -1721,7 +1770,9 @@ mod tests {
             "vertex-ai"
         );
         assert_eq!(
-            native_exec_model(Some("vertex-ai"), None).as_deref(),
+            native_exec_model(Some("vertex-ai"), None)
+                .expect("vertex default")
+                .as_deref(),
             Some("vertex-ai/gemini-2.5-pro")
         );
         assert_eq!(provider_api_key_env("vertex-ai"), "GOOGLE_API_KEY");
@@ -1737,6 +1788,57 @@ mod tests {
         assert_eq!(infer_provider_from_model("qwen3-max"), "dashscope");
         assert_eq!(infer_provider_from_model("MiniMax-M2"), "minimax");
         assert_eq!(infer_provider_from_model("glm-4.6"), "zai");
+    }
+
+    #[test]
+    fn explicit_local_provider_qualifies_ambiguous_bare_model_names() {
+        assert_eq!(
+            native_exec_model(Some("ollama"), Some("qwen3.6:27b"))
+                .expect("explicit Ollama model")
+                .as_deref(),
+            Some("ollama/qwen3.6:27b")
+        );
+        assert_eq!(
+            native_exec_model(Some("lmstudio"), Some("local-model"))
+                .expect("explicit LM Studio model")
+                .as_deref(),
+            Some("lmstudio/local-model")
+        );
+    }
+
+    #[test]
+    fn explicit_provider_alias_does_not_double_qualify_an_equivalent_route() {
+        for (provider, model, expected) in [
+            ("llama.cpp", "llamacpp/Qwen3.8-27B", "llamacpp/Qwen3.8-27B"),
+            ("llamacpp", "llama.cpp/Qwen3.8-27B", "llama.cpp/Qwen3.8-27B"),
+            ("lm-studio", "lmstudio/local-model", "lmstudio/local-model"),
+            (
+                "vertex",
+                "vertex-ai/gemini-2.5-pro",
+                "vertex-ai/gemini-2.5-pro",
+            ),
+        ] {
+            assert_eq!(
+                native_exec_model(Some(provider), Some(model))
+                    .expect("explicit aliased model")
+                    .as_deref(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn arbitrary_local_provider_requires_an_explicit_model() {
+        for provider in ["lmstudio", "lm-studio", "ollama"] {
+            let error = native_exec_model(Some(provider), None).expect_err("model is required");
+            assert!(error.contains("requires --model"), "{error}");
+        }
+        assert_eq!(
+            native_exec_model(Some("llamacpp"), None)
+                .expect("llama.cpp has a built-in model")
+                .as_deref(),
+            Some("llamacpp/Qwen3.8-27B")
+        );
     }
 
     #[test]
@@ -1789,11 +1891,15 @@ mod tests {
             Ok(Some(SandboxPolicy::WorkspaceWrite { .. }))
         ));
         assert_eq!(
-            native_exec_model(Some("anthropic"), None).as_deref(),
+            native_exec_model(Some("anthropic"), None)
+                .expect("anthropic default")
+                .as_deref(),
             Some("anthropic/claude-sonnet-4-6")
         );
         assert_eq!(
-            native_exec_model(Some("evalops"), Some("gpt-4o-mini")).as_deref(),
+            native_exec_model(Some("evalops"), Some("gpt-4o-mini"))
+                .expect("managed explicit model")
+                .as_deref(),
             Some("evalops/gpt-4o-mini")
         );
     }

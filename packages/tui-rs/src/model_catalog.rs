@@ -124,8 +124,14 @@ pub(crate) const CATALOG_PROVIDERS: &[&str] = &["anthropic", "google", "openai",
 /// Providers whose defaults are shown in the model selector. Vertex AI uses
 /// the Google catalog rows mirrored by [`available_models`], but is kept out
 /// of [`CATALOG_PROVIDERS`] because models.dev has no separate Vertex entry.
-pub(crate) const MODEL_SELECTOR_PROVIDERS: &[&str] =
-    &["anthropic", "google", "vertex-ai", "openai", "xai"];
+pub(crate) const MODEL_SELECTOR_PROVIDERS: &[&str] = &[
+    "anthropic",
+    "google",
+    "vertex-ai",
+    "openai",
+    "xai",
+    "llamacpp",
+];
 
 const BUNDLED_CATALOG_JSON: &str = include_str!("model_catalog_data.json");
 
@@ -173,6 +179,7 @@ pub fn default_model_for_provider(provider: &str) -> Option<&'static str> {
         "openai-codex" | "codex" => Some("gpt-5.5"),
         "google" | "gemini" | "vertex-ai" | "vertex" => Some("gemini-2.5-pro"),
         "xai" | "grok" => Some("grok-4.5"),
+        "llamacpp" | "llama.cpp" | "llama-cpp" => Some("Qwen3.8-27B"),
         _ => None,
     }
 }
@@ -185,8 +192,49 @@ pub fn available_models() -> Vec<ModelInfo> {
     maybe_spawn_background_refresh();
     let cache = catalog_cache_path().and_then(|path| load_cache(&path));
     let mut models = select_models(&BUNDLED_CATALOG, cache.as_ref()).to_vec();
+    append_builtin_local_models(&mut models);
     mirror_vertex_models(&mut models);
     models
+}
+
+/// Return the provider-preserving route for model consumers that start a run.
+#[must_use]
+pub fn model_route(model: &ModelInfo) -> String {
+    match model.provider.as_str() {
+        "google" | "vertex-ai" | "llamacpp" | "lmstudio" | "ollama" => {
+            format!("{}/{}", model.provider, model.id)
+        }
+        _ => model.id.clone(),
+    }
+}
+
+fn append_builtin_local_models(models: &mut Vec<ModelInfo>) {
+    if models
+        .iter()
+        .any(|model| model.provider == "llamacpp" && model.id == "Qwen3.8-27B")
+    {
+        return;
+    }
+    models.push(ModelInfo {
+        id: "Qwen3.8-27B".to_owned(),
+        name: "Qwen3.8-27B (llama.cpp)".to_owned(),
+        provider: "llamacpp".to_owned(),
+        description: "Local Qwen3.8 model served by llama.cpp".to_owned(),
+        capabilities: ModelCapabilities {
+            protocol: ModelProtocol::OpenAiChat,
+            tools: true,
+            vision: true,
+            reasoning: true,
+            streaming: true,
+            context_tokens: 262_144,
+            output_tokens: Some(32_768),
+        },
+        verification: ModelVerification {
+            state: VerificationState::Catalog,
+            source: "builtin-local-catalog".to_owned(),
+            detail: None,
+        },
+    });
 }
 
 /// Vertex AI serves the same Gemini model family as Google's public API. Keep
@@ -535,6 +583,9 @@ fn uses_responses_api(model_id: &str) -> bool {
 
 #[must_use]
 pub fn find_model(id: &str) -> Option<ModelInfo> {
+    if let Some(model) = crate::local_models::find_discovered_model(id) {
+        return Some(model);
+    }
     let (provider, bare_id) = id
         .split_once('/')
         .map_or((None, id), |(provider, model)| (Some(provider), model));
@@ -569,23 +620,36 @@ pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 16_384;
 /// Catalog-declared output token limit (models.dev `limit.output`) for a
 /// model id, when known.
 ///
-/// Managed gateway ids (`evalops/…`, `maestro-managed/…`) and provider
-/// qualifiers are reduced to the bare catalog id via [`provider_model_name`]
-/// before lookup, so `evalops/gpt-5.6` resolves to the `gpt-5.6` catalog row.
+/// Provider-qualified runtime models are resolved first so discovered limits
+/// retain their provider provenance. Managed gateway ids (`evalops/…`,
+/// `maestro-managed/…`) then fall back to the bare catalog id via
+/// [`provider_model_name`], so `evalops/gpt-5.6` resolves to the `gpt-5.6` row.
 /// The returned value is the model's full output ceiling: it is a cap, not a
 /// reservation, and unused headroom costs nothing under per-token billing, so
 /// it is passed through untruncated. `None` when the model is not cataloged
 /// or the catalog has no output limit for it.
 #[must_use]
 pub fn catalog_output_token_limit(model_id: &str) -> Option<u32> {
-    find_model(&provider_model_name(model_id)).and_then(|model| model.capabilities.output_tokens)
+    find_model(model_id)
+        .or_else(|| find_model(&provider_model_name(model_id)))
+        .and_then(|model| model.capabilities.output_tokens)
 }
 
 /// Default per-request output token budget for a model id: the full catalog
-/// output limit when known, [`DEFAULT_MAX_OUTPUT_TOKENS`] otherwise.
+/// output limit when known. A discovered local model with only a live context
+/// limit uses at most half that context, preserving prompt headroom; models
+/// without either limit use [`DEFAULT_MAX_OUTPUT_TOKENS`].
 #[must_use]
 pub fn default_max_output_tokens(model_id: &str) -> u32 {
-    catalog_output_token_limit(model_id).unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS)
+    catalog_output_token_limit(model_id).unwrap_or_else(|| {
+        crate::local_models::find_discovered_model(model_id)
+            .map(|model| model.capabilities.context_tokens)
+            .filter(|tokens| *tokens > 0)
+            .map(|tokens| (tokens / 2).max(1))
+            .map_or(DEFAULT_MAX_OUTPUT_TOKENS, |tokens| {
+                tokens.min(DEFAULT_MAX_OUTPUT_TOKENS)
+            })
+    })
 }
 
 #[must_use]
@@ -598,6 +662,12 @@ pub fn has_provider_mismatch(id: &str) -> bool {
         // fails elsewhere if the prefix is truly invalid.
         return false;
     };
+    // Local OpenAI-compatible runtimes intentionally serve arbitrary model
+    // ids, including ids that also exist under a hosted catalog provider.
+    // Their explicit provider-qualified route is never a catalog mismatch.
+    if crate::local_models::LOCAL_RUNTIME_IDS.contains(&descriptor.id) {
+        return false;
+    }
     let models = available_models();
     // Prefer an exact provider+id hit (openai-codex/gpt-5.5 vs openai/gpt-5.5).
     if models
@@ -627,11 +697,18 @@ pub fn has_provider_mismatch(id: &str) -> bool {
 pub fn verify_model_offline(model_id: &str) -> ModelVerification {
     let env = std::env::vars().collect();
     match ProviderRegistry::resolve(model_id, &env) {
-        Ok(provider) if provider.credential.is_some() => ModelVerification {
-            state: VerificationState::Verified,
-            source: "environment".to_owned(),
-            detail: provider.auth_source,
-        },
+        Ok(provider) if provider.credential.is_some() || !provider.provider.requires_auth() => {
+            let authless = !provider.provider.requires_auth();
+            ModelVerification {
+                state: VerificationState::Verified,
+                source: if authless {
+                    "provider-registry".to_owned()
+                } else {
+                    "environment".to_owned()
+                },
+                detail: provider.auth_source,
+            }
+        }
         Ok(provider) => ModelVerification {
             state: VerificationState::Unavailable,
             source: "environment".to_owned(),
@@ -715,6 +792,28 @@ mod tests {
     }
 
     #[test]
+    fn authless_llamacpp_model_is_available_offline() {
+        let verification = verify_model_offline("llamacpp/Qwen3.8-27B");
+
+        assert_eq!(verification.state, VerificationState::Verified);
+        assert_eq!(verification.source, "provider-registry");
+        assert_eq!(verification.detail, None);
+    }
+
+    #[test]
+    fn local_qwen_model_exposes_runtime_limits() {
+        let model = find_model("llamacpp/Qwen3.8-27B").expect("local Qwen catalog row");
+
+        assert_eq!(model.provider, "llamacpp");
+        assert!(model.capabilities.tools);
+        assert!(model.capabilities.vision);
+        assert!(model.capabilities.reasoning);
+        assert_eq!(model.capabilities.context_tokens, 262_144);
+        assert_eq!(model.capabilities.output_tokens, Some(32_768));
+        assert_eq!(default_max_output_tokens("llamacpp/Qwen3.8-27B"), 32_768);
+    }
+
+    #[test]
     fn bundled_snapshot_drops_deprecated_ids() {
         for dead in [
             "gpt-5.1-codex-max",
@@ -757,6 +856,20 @@ mod tests {
         assert!(!has_provider_mismatch("vertex-ai/gemini-2.5-pro"));
         assert!(!has_provider_mismatch("vertex/gemini-2.5-pro"));
         assert!(find_model("vertex-ai/future-gemini").is_none());
+    }
+
+    #[test]
+    fn local_runtime_routes_do_not_fail_catalog_provider_mismatch_checks() {
+        for route in [
+            "llamacpp/gpt-5.5",
+            "llama.cpp/gpt-5.5",
+            "lmstudio/gpt-5.5",
+            "lm-studio/gpt-5.5",
+            "ollama/gpt-5.5",
+        ] {
+            assert!(!has_provider_mismatch(route), "local route {route}");
+        }
+        assert!(has_provider_mismatch("anthropic/gpt-5.5"));
     }
 
     #[test]
@@ -921,6 +1034,13 @@ mod tests {
             1,
             "temporary file must be renamed away"
         );
+    }
+
+    #[test]
+    fn local_qwen_model_route_preserves_its_provider() {
+        let model = find_model("llamacpp/Qwen3.8-27B").expect("local Qwen catalog row");
+
+        assert_eq!(model_route(&model), "llamacpp/Qwen3.8-27B");
     }
 
     #[test]

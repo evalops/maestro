@@ -277,11 +277,12 @@ pub use maestro_runtime::{TaggedMessageDecode, TaggedMessageDecodeError, Unknown
 pub use messages::{
     decode_from_agent_message, ActiveTool, AgentEvent, AgentState, ApprovalMode,
     ClientCapabilities, ClientInfo, ClientToolExecutionOwner, ClientToolResultContent, CodeMode,
-    ConnectionRole, ExternalToolDefinition, FromAgentMessage, GovernedToolGrant, HeadlessErrorType,
-    HistoryMessage, HistoryRole, InitConfig, NativeToolCapability, PendingApproval,
-    ServerCapabilities, ServerRequestResolutionStatus, ServerRequestResolvedBy, ServerRequestType,
-    StreamingResponse, ThinkingLevel, ToAgentMessage, TokenUsage, ToolResult,
-    UtilityCommandShellMode, UtilityCommandStream, UtilityOperation, HEADLESS_PROTOCOL_VERSION,
+    ConnectionGrantBinding, ConnectionRole, ExternalToolDefinition, FromAgentMessage,
+    GovernedToolGrant, HeadlessErrorType, HistoryMessage, HistoryRole, InitConfig,
+    NativeToolCapability, PendingApproval, ServerCapabilities, ServerRequestResolutionStatus,
+    ServerRequestResolvedBy, ServerRequestType, StreamingResponse, ThinkingLevel, ToAgentMessage,
+    TokenUsage, ToolResult, UtilityCommandShellMode, UtilityCommandStream, UtilityOperation,
+    HEADLESS_PROTOCOL_VERSION,
 };
 pub use proto::maestro::v1 as proto_types;
 

@@ -1,0 +1,9 @@
+[profile.buildkite]
+slow-timeout = { period = "5m", terminate-after = 2 }
+
+[[profile.buildkite.overrides]]
+filter = 'binary(pty_e2e)'
+test-group = 'pty-e2e'
+
+[test-groups.pty-e2e]
+max-threads = 1

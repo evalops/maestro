@@ -1,5 +1,22 @@
 use super::*;
 
+fn model_palette_resource(
+    model: &crate::model_catalog::ModelInfo,
+    current_route: Option<&str>,
+) -> PaletteResource {
+    let route = crate::model_catalog::model_route(model);
+    let mut resource = PaletteResource::from(model).description(format!(
+        "{} · {}k context · {:?}",
+        model.provider,
+        model.capabilities.context_tokens / 1000,
+        model.verification.state
+    ));
+    if current_route == Some(route.as_str()) {
+        resource = resource.status("current");
+    }
+    resource
+}
+
 impl App {
     /// Handle a key press
     pub(super) async fn handle_key(
@@ -641,21 +658,15 @@ impl App {
                 resource
             }));
         }
+        let models = crate::model_catalog::available_models();
+        let current_model_route = crate::components::model_selector::canonical_current_route(
+            &self.current_model,
+            &models,
+        );
         resources.extend(
-            crate::model_catalog::available_models()
-                .into_iter()
-                .map(|model| {
-                    let mut resource = PaletteResource::from(&model).description(format!(
-                        "{} · {}k context · {:?}",
-                        model.provider,
-                        model.capabilities.context_tokens / 1000,
-                        model.verification.state
-                    ));
-                    if model.id == self.current_model {
-                        resource = resource.status("current");
-                    }
-                    resource
-                }),
+            models
+                .iter()
+                .map(|model| model_palette_resource(model, current_model_route.as_deref())),
         );
         let current_theme = crate::themes::current_theme_name();
         resources.extend(crate::themes::available_themes().into_iter().map(|theme| {
@@ -1164,5 +1175,45 @@ mod focus_view_tests {
             KeyCode::Char('f'),
             CrosstermModifiers::ALT
         ));
+    }
+}
+
+#[cfg(test)]
+mod model_palette_tests {
+    use super::*;
+
+    #[test]
+    fn current_status_canonicalizes_bare_and_aliased_mirrored_routes() {
+        let models = crate::model_catalog::available_models();
+        let google = models
+            .iter()
+            .find(|model| model.provider == "google" && model.id == "gemini-2.5-pro")
+            .expect("Google Gemini row");
+        let vertex = models
+            .iter()
+            .find(|model| model.provider == "vertex-ai" && model.id == "gemini-2.5-pro")
+            .expect("Vertex Gemini row");
+
+        for (current, expected_provider) in [
+            ("gemini-2.5-pro", "google"),
+            ("gemini/gemini-2.5-pro", "google"),
+            ("vertex/gemini-2.5-pro", "vertex-ai"),
+        ] {
+            let current_route =
+                crate::components::model_selector::canonical_current_route(current, &models);
+            let google_resource = model_palette_resource(google, current_route.as_deref());
+            let vertex_resource = model_palette_resource(vertex, current_route.as_deref());
+
+            assert_eq!(
+                google_resource.status.as_deref(),
+                (expected_provider == "google").then_some("current"),
+                "current route {current}"
+            );
+            assert_eq!(
+                vertex_resource.status.as_deref(),
+                (expected_provider == "vertex-ai").then_some("current"),
+                "current route {current}"
+            );
+        }
     }
 }

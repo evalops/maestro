@@ -1,6 +1,16 @@
-import { readFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const packageJson = JSON.parse(read("package.json"));
@@ -26,7 +36,43 @@ test("PR build selects fast-validation and materializes its profile output", () 
 	assert.match(packageJson.scripts.build, /materialize-native-package\.mjs --profile fast-validation/);
 	assert.match(ci, /- run: npm run build\n\s+- run: npm run smoke:release-native-only/);
 	assert.match(materialize, /const profileIndex = process\.argv\.indexOf\("--profile"\)/);
-	assert.match(materialize, /resolve\(\s*"target",\s*profile/);
+	assert.match(materialize, /process\.env\.CARGO_TARGET_DIR \|\| "target"/);
+});
+
+test("native materialization honors CARGO_TARGET_DIR", () => {
+	const directory = mkdtempSync(join(tmpdir(), "maestro-materialize-"));
+	const targetDirectory = join(directory, "cargo-target");
+	const profileDirectory = join(targetDirectory, "fast-validation");
+	mkdirSync(profileDirectory, { recursive: true });
+	writeFileSync(join(profileDirectory, "maestro"), "native-binary");
+
+	try {
+		const result = spawnSync(
+			process.execPath,
+			[
+				new URL("materialize-native-package.mjs", import.meta.url).pathname,
+				"--profile",
+				"fast-validation",
+			],
+			{
+				cwd: directory,
+				env: { ...process.env, CARGO_TARGET_DIR: targetDirectory },
+				encoding: "utf8",
+			},
+		);
+
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(
+			readFileSync(
+				join(directory, "vendor", "maestro", `${process.platform}-${process.arch}`, "maestro"),
+				"utf8",
+			),
+			"native-binary",
+		);
+		assert(existsSync(join(directory, "bin", "maestro")));
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
 });
 
 test("release and container entrypoints select optimized release", () => {
