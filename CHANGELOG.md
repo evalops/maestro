@@ -8,6 +8,15 @@ versioning when releases are cut.
 
 ### Added
 
+- Catalog every current interactive OpenRouter model from OpenRouter's public
+  `/api/v1/models` list in `maestro models`, the TUI selector, and the
+  runtime-gateway registry. Selections use `openrouter/<vendor>/<model>` and
+  stay on Chat Completions.
+- Refresh the OpenRouter catalog automatically: hourly runtime cache
+  updates that survive a single-source outage, selector reload from that
+  cache, runtime-gateway live hydration when no gateway catalog is set, and a
+  daily workflow that opens `chore/model-catalog-refresh` when the bundled
+  snapshot drifts.
 - `/rubber-duck [model]` (alias `/duck`) in the native Rust TUI: reviews the
   current uncommitted changes (`git diff HEAD`) with a different model than
   the active session — a second-opinion review that runs in the background

@@ -4,11 +4,13 @@
  * Regenerate the bundled model catalog snapshot consumed by
  * `packages/tui-rs/src/model_catalog.rs` via `include_str!`.
  *
- * Source data is the MIT-licensed community catalog at models.dev
- * (https://models.dev/api.json). Only tool-capable, non-deprecated models for
- * providers Maestro routes natively are kept. The mapping rules here must stay
- * in sync with `map_models_dev_catalog` in `model_catalog.rs`, which applies
- * the same rules to runtime refreshes.
+ * Native provider rows come from the MIT-licensed community catalog at
+ * models.dev (https://models.dev/api.json). OpenRouter rows come from
+ * OpenRouter's public `/api/v1/models` catalog so Maestro ships every current
+ * interactive OpenRouter route (`:batch` variants are omitted). The mapping
+ * rules here must stay in sync with `map_models_dev_catalog` and
+ * `map_openrouter_catalog` in `model_catalog.rs`, which apply the same rules
+ * to runtime refreshes.
  *
  * Usage:
  *   node scripts/fetch-model-catalog.mjs [--out <path>] [--timeout-ms <ms>]
@@ -19,6 +21,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const MODELS_DEV_API_URL = "https://models.dev/api.json";
+const OPENROUTER_MODELS_API_URL = "https://openrouter.ai/api/v1/models";
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DESCRIPTION_MAX_LEN = 120;
 
@@ -50,6 +53,59 @@ function truncate(text, maxLen) {
 	const cut = text.slice(0, maxLen - 1);
 	const lastSpace = cut.lastIndexOf(" ");
 	return `${lastSpace > 0 ? cut.slice(0, lastSpace) : cut}…`;
+}
+
+function supportedParameter(model, parameter) {
+	return Array.isArray(model?.supported_parameters) && model.supported_parameters.includes(parameter);
+}
+
+function mapOpenRouterModel(model) {
+	const id = typeof model?.id === "string" ? model.id.trim() : "";
+	if (id === "" || id.endsWith(":batch")) {
+		return null;
+	}
+	const context =
+		Number.isInteger(model.context_length) && model.context_length > 0
+			? model.context_length
+			: Number.isInteger(model.top_provider?.context_length) && model.top_provider.context_length > 0
+				? model.top_provider.context_length
+				: 0;
+	if (context <= 0) {
+		return null;
+	}
+	const output = model.top_provider?.max_completion_tokens ?? model.max_completion_tokens;
+	const inputs = Array.isArray(model.architecture?.input_modalities)
+		? model.architecture.input_modalities
+		: [];
+	return {
+		id,
+		name: typeof model.name === "string" && model.name !== "" ? model.name : id,
+		provider: "openrouter",
+		description: truncate(
+			typeof model.description === "string" && model.description !== ""
+				? model.description
+				: (model.name ?? id),
+			DESCRIPTION_MAX_LEN,
+		),
+		capabilities: {
+			// OpenRouter's stable surface is Chat Completions. Do not inherit
+			// OpenAI's Responses heuristic from the nested vendor id.
+			protocol: "openai-chat",
+			tools: supportedParameter(model, "tools") || supportedParameter(model, "tool_choice"),
+			vision: inputs.includes("image"),
+			reasoning:
+				supportedParameter(model, "reasoning") ||
+				supportedParameter(model, "include_reasoning") ||
+				(model.reasoning != null && typeof model.reasoning === "object"),
+			streaming: true,
+			context_tokens: context,
+			output_tokens: Number.isInteger(output) && output > 0 ? output : undefined,
+		},
+		verification: {
+			state: "catalog",
+			source: "openrouter",
+		},
+	};
 }
 
 function mapModel(providerId, modelId, model) {
@@ -108,25 +164,15 @@ function parseArgs(argv) {
 async function main() {
 	const args = parseArgs(process.argv.slice(2));
 
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), args.timeoutMs);
-	let response;
-	try {
-		response = await fetch(MODELS_DEV_API_URL, {
-			signal: controller.signal,
-			headers: { accept: "application/json", "user-agent": "maestro-model-catalog-fetcher" },
-		});
-	} finally {
-		clearTimeout(timeout);
-	}
-	if (!response.ok) {
-		throw new Error(`models.dev fetch failed: HTTP ${response.status}`);
-	}
-	const catalog = await response.json();
+	const headers = { accept: "application/json", "user-agent": "maestro-model-catalog-fetcher" };
+	const [modelsDevCatalog, openrouterPayload] = await Promise.all([
+		fetchJson(MODELS_DEV_API_URL, args.timeoutMs, headers),
+		fetchJson(OPENROUTER_MODELS_API_URL, args.timeoutMs, headers),
+	]);
 
 	const models = [];
 	for (const providerId of Object.keys(PROVIDER_PROTOCOLS)) {
-		const providerModels = catalog[providerId]?.models;
+		const providerModels = modelsDevCatalog[providerId]?.models;
 		if (!providerModels || typeof providerModels !== "object") {
 			throw new Error(`models.dev payload is missing provider "${providerId}"`);
 		}
@@ -142,8 +188,22 @@ async function main() {
 		}
 	}
 
+	const openrouterModels = Array.isArray(openrouterPayload?.data) ? openrouterPayload.data : null;
+	if (!openrouterModels) {
+		throw new Error("OpenRouter payload is missing a data array");
+	}
+	for (const model of openrouterModels) {
+		const mapped = mapOpenRouterModel(model);
+		if (mapped) {
+			models.push(mapped);
+		}
+	}
+
 	if (models.length === 0) {
-		throw new Error("models.dev payload produced an empty catalog; refusing to write");
+		throw new Error("catalog fetch produced an empty catalog; refusing to write");
+	}
+	if (!models.some((model) => model.provider === "openrouter")) {
+		throw new Error("OpenRouter payload produced no catalog rows; refusing to write");
 	}
 
 	models.sort(
@@ -152,18 +212,33 @@ async function main() {
 
 	const snapshot = {
 		generated_at: Math.floor(Date.now() / 1000),
-		source: MODELS_DEV_API_URL,
+		source: `${MODELS_DEV_API_URL}+${OPENROUTER_MODELS_API_URL}`,
 		models,
 	};
 
 	await writeFile(args.out, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
 	const counts = Object.fromEntries(
-		Object.keys(PROVIDER_PROTOCOLS).map((providerId) => [
+		[...Object.keys(PROVIDER_PROTOCOLS), "openrouter"].map((providerId) => [
 			providerId,
 			models.filter((model) => model.provider === providerId).length,
 		]),
 	);
 	console.log(`wrote ${models.length} models to ${path.relative(REPO_ROOT, args.out)}`, counts);
+}
+
+async function fetchJson(url, timeoutMs, headers) {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), timeoutMs);
+	let response;
+	try {
+		response = await fetch(url, { signal: controller.signal, headers });
+	} finally {
+		clearTimeout(timeout);
+	}
+	if (!response.ok) {
+		throw new Error(`${url} fetch failed: HTTP ${response.status}`);
+	}
+	return response.json();
 }
 
 main().catch((error) => {

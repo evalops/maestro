@@ -53,6 +53,8 @@ pub(crate) async fn available_models(config: &Config) -> ModelRegistry {
 
     if let Some(catalog) = fetch_llm_gateway_model_catalog(config).await {
         merge_llm_gateway_model_catalog(&mut registry, &catalog);
+    } else if let Some(catalog) = fetch_openrouter_public_catalog(config).await {
+        merge_llm_gateway_model_catalog(&mut registry, &catalog);
     }
 
     if let Some(config) = read_json_value(&model_config_path()).await {
@@ -64,6 +66,33 @@ pub(crate) async fn available_models(config: &Config) -> ModelRegistry {
             .then(left.id.cmp(&right.id))
     });
     registry
+}
+
+const OPENROUTER_MODELS_API_URL: &str = "https://openrouter.ai/api/v1/models";
+
+async fn fetch_openrouter_public_catalog(config: &Config) -> Option<Value> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(config.llm_gateway_timeout_ms))
+        .user_agent(concat!(
+            "maestro-runtime-gateway/",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .build()
+        .ok()?;
+    let response = client
+        .get(OPENROUTER_MODELS_API_URL)
+        .header("accept", "application/json")
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body = response.bytes().await.ok()?;
+    if body.len() > MAX_JSON_BODY_BYTES {
+        return None;
+    }
+    serde_json::from_slice(&body).ok()
 }
 
 async fn fetch_llm_gateway_model_catalog(config: &Config) -> Option<Value> {
@@ -517,6 +546,14 @@ pub(crate) fn resolve_model(input: &str, registry: &ModelRegistry) -> Option<Mod
         return resolved;
     }
 
+    if let Some(model) = registry
+        .models
+        .iter()
+        .find(|model| model.provider == "openrouter" && model.id == candidate)
+    {
+        return Some(model.clone());
+    }
+
     // The OpenRouter catalog is intentionally live: model ids can be added,
     // aliased, or retired without a Maestro release. Preserve the exact
     // provider/model route even when the metadata endpoint is unavailable so
@@ -686,7 +723,7 @@ mod tests {
     fn shared_default_models_are_present() {
         let models = builtin_models();
 
-        for provider in ["anthropic", "openai", "google", "xai"] {
+        for provider in ["anthropic", "openai", "google", "xai", "openrouter"] {
             let default =
                 shared_catalog::default_model_for_provider(provider).expect("default model");
             assert!(
@@ -712,6 +749,27 @@ mod tests {
                 "deprecated id {dead} must not appear in the runtime-gateway catalog"
             );
         }
+    }
+
+    #[test]
+    fn catalogued_openrouter_models_keep_live_metadata() {
+        let registry = ModelRegistry {
+            models: builtin_models(),
+            aliases: HashMap::new(),
+        };
+
+        let model = resolve_model("openrouter/anthropic/claude-sonnet-4.5", &registry)
+            .expect("bundled OpenRouter rows must resolve");
+        assert_eq!(model.provider, "openrouter");
+        assert_eq!(model.id, "anthropic/claude-sonnet-4.5");
+        assert_eq!(model.api, "openai-completions");
+        assert!(model.capabilities.tools);
+        assert!(model.context_window > 0);
+
+        let unprefixed = resolve_model("anthropic/claude-sonnet-4.5", &registry)
+            .expect("OpenRouter vendor ids resolve when the native catalog misses them");
+        assert_eq!(unprefixed.provider, "openrouter");
+        assert_eq!(unprefixed.id, "anthropic/claude-sonnet-4.5");
     }
 
     #[test]
