@@ -17,7 +17,7 @@ steps:
       - label: ":lint-roller: Contracts, format, and Clippy"
         key: "lint"
         timeout_in_minutes: 90
-        concurrency: 2
+        concurrency: 3
         concurrency_group: "hetzner-linux-heavy-workloads"
         retry:
           automatic:
@@ -46,7 +46,7 @@ steps:
       - label: ":test_tube: Full Rust workspace"
         key: "rust-tests"
         timeout_in_minutes: 90
-        concurrency: 2
+        concurrency: 3
         concurrency_group: "hetzner-linux-heavy-workloads"
         retry:
           automatic:
@@ -89,7 +89,7 @@ steps:
       - label: ":package: Native build and conformance"
         key: "native-release"
         timeout_in_minutes: 90
-        concurrency: 2
+        concurrency: 3
         concurrency_group: "hetzner-linux-heavy-workloads"
         retry:
           automatic:
@@ -117,7 +117,7 @@ steps:
       - label: ":docker: Control-plane integration"
         key: "integration"
         timeout_in_minutes: 60
-        concurrency: 2
+        concurrency: 3
         concurrency_group: "hetzner-linux-heavy-workloads"
         retry:
           automatic:
@@ -155,7 +155,7 @@ steps:
       - label: ":repeat: Deterministic scenario replay"
         key: "scenario-replay"
         timeout_in_minutes: 45
-        concurrency: 2
+        concurrency: 3
         concurrency_group: "hetzner-linux-heavy-workloads"
         retry:
           automatic:
@@ -178,7 +178,7 @@ steps:
   - label: ":pipeline: CI configuration contracts"
     key: "ci-contracts"
     timeout_in_minutes: 30
-    concurrency: 2
+    concurrency: 3
     concurrency_group: "hetzner-linux-heavy-workloads"
     retry:
       automatic:

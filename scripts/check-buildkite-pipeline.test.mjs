@@ -10,8 +10,8 @@ test("Buildkite routes every Maestro job to the available heavy self-hosted pool
   assert.doesNotMatch(pipeline, /hetzner-linux-medium/);
 });
 
-test("Buildkite leaves one shared heavy worker available to other pipelines", () => {
-  assert.equal((pipeline.match(/concurrency: 2/g) ?? []).length, 6);
+test("Buildkite uses all connected shared heavy workers", () => {
+  assert.equal((pipeline.match(/concurrency: 3/g) ?? []).length, 6);
   assert.equal(
     (pipeline.match(/concurrency_group: "hetzner-linux-heavy-workloads"/g) ?? [])
       .length,
