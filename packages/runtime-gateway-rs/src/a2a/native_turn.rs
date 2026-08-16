@@ -302,7 +302,7 @@ fn parse_acceptance_check(check: &str) -> Result<AcceptanceCheck, String> {
         || parts[0] != "cargo"
         || parts[1] != "test"
         || parts[2] != "-p"
-        || parts[3] != "maestro-control-plane"
+        || parts[3] != "maestro-runtime-gateway"
         || !parts[4]
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b':'))

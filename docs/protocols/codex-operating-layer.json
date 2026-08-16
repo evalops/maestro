@@ -141,7 +141,7 @@
 		{
 			"area": "approvals-sandbox-policy",
 			"evidenceType": "source",
-			"path": "packages/control-plane-rs/src/codex_bridge.rs",
+			"path": "packages/runtime-gateway-rs/src/codex_bridge.rs",
 			"anchors": [
 				"server_requests\": [\"approval\"]",
 				"codex_headless_pending_request_id",
@@ -319,7 +319,7 @@
 		{
 			"area": "multi-agent-workgraph",
 			"evidenceType": "source",
-			"path": "packages/control-plane-rs/src/codex_bridge.rs",
+			"path": "packages/runtime-gateway-rs/src/codex_bridge.rs",
 			"anchors": [
 				"childRunIds",
 				"codexWorkGraph",
@@ -529,7 +529,7 @@
 		{
 			"area": "rust-control-plane",
 			"evidenceType": "source",
-			"path": "packages/control-plane-rs/src/model_catalog.rs",
+			"path": "packages/runtime-gateway-rs/src/model_catalog.rs",
 			"anchors": [
 				"codex_app_server_builtin_models",
 				"openai-codex",
@@ -539,7 +539,7 @@
 		{
 			"area": "rust-control-plane",
 			"evidenceType": "source",
-			"path": "packages/control-plane-rs/src/codex_subagent_dispatch.rs",
+			"path": "packages/runtime-gateway-rs/src/codex_subagent_dispatch.rs",
 			"anchors": [
 				"CODEX_SUBAGENT_DISPATCH_LANES",
 				"codex_subagent_dispatch_lanes_match_protocol_fixture",
@@ -559,7 +559,7 @@
 		{
 			"area": "rust-control-plane",
 			"evidenceType": "test",
-			"path": "packages/control-plane-rs/src/tests.rs",
+			"path": "packages/runtime-gateway-rs/src/tests.rs",
 			"anchors": [
 				"codex_headless_bridge_round_trips_prompt_approval",
 				"codex_headless_bridge_streams_tool_events_over_websocket",

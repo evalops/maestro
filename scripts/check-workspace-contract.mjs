@@ -46,7 +46,7 @@ requireText("package.json", "check:rust-only-runtime");
 requireNonEmptyFile("Cargo.lock");
 requireText("Cargo.toml", "[workspace]");
 
-for (const crate of ["ambient-agent-rs", "control-plane-rs", "maestro-rs", "tui-rs"]) {
+for (const crate of ["ambient-agent-rs", "runtime-gateway-rs", "maestro-rs", "tui-rs"]) {
 	requireFile(`packages/${crate}/Cargo.toml`);
 }
 

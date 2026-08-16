@@ -21,7 +21,7 @@ cargo run -p maestro -- exec "summarize this repository"
 cargo run -p maestro -- web --port 3000
 ```
 
-Use `cargo test -p <package> [test-name]` for focused work. Workspace package names are `maestro`, `maestro-tui`, `maestro-control-plane`, and `ambient-agent`.
+Use `cargo test -p <package> [test-name]` for focused work. Workspace package names are `maestro`, `maestro-tui`, `maestro-runtime-gateway`, and `ambient-agent`.
 
 ## Verification
 

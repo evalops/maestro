@@ -6,7 +6,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY packages/execpolicy-rs ./packages/execpolicy-rs
 COPY packages/tui-rs ./packages/tui-rs
 COPY packages/scenario-rs ./packages/scenario-rs
-COPY packages/control-plane-rs ./packages/control-plane-rs
+COPY packages/runtime-gateway-rs ./packages/runtime-gateway-rs
 COPY packages/maestro-rs ./packages/maestro-rs
 COPY packages/runtime-rs ./packages/runtime-rs
 COPY packages/ambient-agent-rs ./packages/ambient-agent-rs
@@ -20,7 +20,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY packages/execpolicy-rs ./packages/execpolicy-rs
 COPY packages/tui-rs ./packages/tui-rs
 COPY packages/scenario-rs ./packages/scenario-rs
-COPY packages/control-plane-rs ./packages/control-plane-rs
+COPY packages/runtime-gateway-rs ./packages/runtime-gateway-rs
 COPY packages/maestro-rs ./packages/maestro-rs
 COPY packages/runtime-rs ./packages/runtime-rs
 COPY packages/ambient-agent-rs ./packages/ambient-agent-rs
@@ -40,7 +40,7 @@ WORKDIR /app
 COPY --from=native /app/target/release/maestro /usr/local/bin/maestro
 COPY packages/web/dist ./packages/web/dist
 COPY skills ./skills
-# The image binds to every interface, so the control plane requires API-key
+# The image binds to every interface, so the runtime gateway requires API-key
 # auth. Supply a key at run time, for example:
 #   docker run -p 3000:3000 -e MAESTRO_WEB_API_KEY="$(openssl rand -hex 32)" ghcr.io/evalops/maestro
 # Do not add MAESTRO_WEB_REQUIRE_KEY=0 here: it is only honored for loopback

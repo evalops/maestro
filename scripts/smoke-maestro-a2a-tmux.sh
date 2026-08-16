@@ -215,10 +215,10 @@ BASE_B="http://127.0.0.1:$PORT_B"
 trap cleanup EXIT INT TERM
 
 tmux new-session -d -s "$SESSION_NAME" -n peer-a \
-	"cd '$ROOT_DIR' && env MAESTRO_HOME='$WORK_DIR/peer-a-home' MAESTRO_A2A_AGENT_NAME='Maestro A2A tmux peer A' MAESTRO_A2A_FAKE_RESPONSE='tmux peer A received the A2A message' MAESTRO_CONTROL_HOST='127.0.0.1' MAESTRO_WEB_REQUIRE_KEY='0' PORT='$PORT_A' cargo run --quiet -p maestro-control-plane --bin maestro-control-plane 2>&1 | tee '$LOG_DIR/peer-a.log'"
+	"cd '$ROOT_DIR' && env MAESTRO_HOME='$WORK_DIR/peer-a-home' MAESTRO_A2A_AGENT_NAME='Maestro A2A tmux peer A' MAESTRO_A2A_FAKE_RESPONSE='tmux peer A received the A2A message' MAESTRO_CONTROL_HOST='127.0.0.1' MAESTRO_WEB_REQUIRE_KEY='0' PORT='$PORT_A' cargo run --quiet -p maestro-runtime-gateway --bin maestro-runtime-gateway 2>&1 | tee '$LOG_DIR/peer-a.log'"
 
 tmux new-window -t "$SESSION_NAME" -n peer-b \
-	"cd '$ROOT_DIR' && env MAESTRO_HOME='$WORK_DIR/peer-b-home' MAESTRO_A2A_AGENT_NAME='Maestro A2A tmux peer B' MAESTRO_A2A_FAKE_RESPONSE='tmux peer B received the A2A message' MAESTRO_CONTROL_HOST='127.0.0.1' MAESTRO_WEB_REQUIRE_KEY='0' PORT='$PORT_B' cargo run --quiet -p maestro-control-plane --bin maestro-control-plane 2>&1 | tee '$LOG_DIR/peer-b.log'"
+	"cd '$ROOT_DIR' && env MAESTRO_HOME='$WORK_DIR/peer-b-home' MAESTRO_A2A_AGENT_NAME='Maestro A2A tmux peer B' MAESTRO_A2A_FAKE_RESPONSE='tmux peer B received the A2A message' MAESTRO_CONTROL_HOST='127.0.0.1' MAESTRO_WEB_REQUIRE_KEY='0' PORT='$PORT_B' cargo run --quiet -p maestro-runtime-gateway --bin maestro-runtime-gateway 2>&1 | tee '$LOG_DIR/peer-b.log'"
 
 wait_for_health peer-a "$BASE_A"
 wait_for_health peer-b "$BASE_B"

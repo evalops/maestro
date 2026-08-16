@@ -62,11 +62,11 @@ pub(crate) use a2a::{
     persist_a2a_tasks, publish_a2a_task_update, release_a2a_task_ledger_file_lock,
     spawn_a2a_task_ledger_lock_heartbeat, store_a2a_task_unless_canceled, A2ACancelReceiver,
     A2ACancelSender, A2AMessageBody, A2APartBody, A2ASendMessageRequest, A2ATaskEventHistory,
-    A2ATaskUpdateEvent, A2A_CONTROL_PLANE_LEDGER_DISPLAY_NAME, A2A_CONTROL_PLANE_LEDGER_PEER,
-    A2A_DEFAULT_LIST_PAGE_SIZE, A2A_DEFAULT_TURN_TIMEOUT_MS, A2A_LEDGER_LOCK_HEARTBEAT_FILE,
-    A2A_LEDGER_LOCK_RETRY_MS, A2A_MAX_LIST_PAGE_SIZE, A2A_PROTOCOL_VERSION,
-    A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY, A2A_TERMINAL_TASK_STORE_LIMIT,
-    EVALOPS_A2A_EXTENSION_URI,
+    A2ATaskUpdateEvent, A2A_DEFAULT_LIST_PAGE_SIZE, A2A_DEFAULT_TURN_TIMEOUT_MS,
+    A2A_LEDGER_LOCK_HEARTBEAT_FILE, A2A_LEDGER_LOCK_RETRY_MS, A2A_MAX_LIST_PAGE_SIZE,
+    A2A_PROTOCOL_VERSION, A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY,
+    A2A_RUNTIME_GATEWAY_LEDGER_DISPLAY_NAME, A2A_RUNTIME_GATEWAY_LEDGER_PEER,
+    A2A_TERMINAL_TASK_STORE_LIMIT, EVALOPS_A2A_EXTENSION_URI,
 };
 use a2a_platform_registration::maybe_spawn_a2a_platform_registration_loop;
 #[cfg(test)]
@@ -153,14 +153,14 @@ where
 
 pub fn print_cli_help() {
     println!(
-        "Maestro Rust control plane\n\n\
-Usage:\n  maestro-control-plane [--help] [--version]\n\n\
+        "Maestro Runtime Gateway\n\n\
+Usage:\n  maestro-runtime-gateway [--help] [--version]\n\n\
 Environment:\n  MAESTRO_CONTROL_HOST  bind host (default: 127.0.0.1)\n  PORT                  bind port (default: 8080)\n  MAESTRO_HOME          state directory for sessions, usage, and preferences\n  MAESTRO_WEB_API_KEY   API key accepted via Bearer or x-maestro-api-key\n  MAESTRO_WEB_REQUIRE_KEY=0 disables API-key auth for local development; only honored when the bind host is loopback\n  MAESTRO_WEB_ALLOWED_HOSTS  extra comma-separated Host header values accepted on a loopback bind\n"
     );
 }
 
 pub fn print_cli_version() {
-    println!("maestro-control-plane {}", env!("CARGO_PKG_VERSION"));
+    println!("maestro-runtime-gateway {}", env!("CARGO_PKG_VERSION"));
 }
 
 /// A bind host counts as loopback when it is `localhost` or resolves to a
@@ -182,7 +182,7 @@ pub(crate) fn host_is_loopback(host: &str) -> bool {
 }
 
 /// Extra `Host` values accepted on a loopback bind, for operators who front the
-/// control plane with a tunnel or port-forward that rewrites `Host`.
+/// runtime gateway with a tunnel or port-forward that rewrites `Host`.
 pub(crate) fn parse_allowed_hosts(value: Option<String>) -> Vec<String> {
     value
         .unwrap_or_default()
@@ -212,7 +212,7 @@ fn host_header_hostname(value: &str) -> &str {
 /// `evil.example` with a short TTL, re-resolves it to `127.0.0.1`, and the
 /// browser then treats `http://evil.example:8080/` as same-origin. No `Origin`
 /// header is sent on a same-origin navigation, so every origin check in the
-/// control plane passes, and the default local posture needs no credential.
+/// runtime gateway passes, and the default local posture needs no credential.
 ///
 /// Only the hostname is checked, never the port: a legitimate `ssh -L` forward
 /// or container port mapping changes the port but not the host, while rebinding
@@ -261,7 +261,7 @@ pub(crate) fn host_header_allowed(head: &RequestHead, config: &Config) -> bool {
 }
 
 #[derive(Debug, Clone)]
-pub struct ControlPlaneConfig {
+pub struct RuntimeGatewayConfig {
     listen_host: String,
     listen_port: u16,
     api_key: Option<String>,
@@ -283,9 +283,9 @@ pub struct ControlPlaneConfig {
     llm_gateway_timeout_ms: u64,
 }
 
-pub(crate) type Config = ControlPlaneConfig;
+pub(crate) type Config = RuntimeGatewayConfig;
 
-impl ControlPlaneConfig {
+impl RuntimeGatewayConfig {
     pub fn from_env() -> Self {
         let listen_port = env_u16("PORT", 8080);
         let listen_host = env::var("MAESTRO_CONTROL_HOST").unwrap_or_else(|_| "127.0.0.1".into());
@@ -361,8 +361,10 @@ impl ControlPlaneConfig {
 
     pub fn test_default() -> Self {
         let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let state_root =
-            env::temp_dir().join(format!("maestro-control-plane-test-{}", std::process::id()));
+        let state_root = env::temp_dir().join(format!(
+            "maestro-runtime-gateway-test-{}",
+            std::process::id()
+        ));
         Self {
             listen_host: "127.0.0.1".into(),
             listen_port: 0,
@@ -407,7 +409,7 @@ impl ControlPlaneConfig {
     fn validate_startup(&self) -> anyhow::Result<()> {
         if self.require_key_explicitly_disabled && !self.listen_host_is_loopback() {
             anyhow::bail!(
-                "MAESTRO_WEB_REQUIRE_KEY=0 is only honored for loopback binds, but MAESTRO_CONTROL_HOST={} exposes the control plane beyond localhost; remove MAESTRO_WEB_REQUIRE_KEY=0 and configure auth (MAESTRO_WEB_API_KEY, MAESTRO_AUTH_SHARED_SECRET, MAESTRO_JWT_SECRET, MAESTRO_JWT_JWKS_URL, or MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN), or bind to 127.0.0.1",
+                "MAESTRO_WEB_REQUIRE_KEY=0 is only honored for loopback binds, but MAESTRO_CONTROL_HOST={} exposes the runtime gateway beyond localhost; remove MAESTRO_WEB_REQUIRE_KEY=0 and configure auth (MAESTRO_WEB_API_KEY, MAESTRO_AUTH_SHARED_SECRET, MAESTRO_JWT_SECRET, MAESTRO_JWT_JWKS_URL, or MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN), or bind to 127.0.0.1",
                 self.listen_host
             );
         }
@@ -565,7 +567,7 @@ struct HookConcurrencySnapshot {
     queued: u8,
 }
 
-pub async fn serve(config: ControlPlaneConfig) -> anyhow::Result<()> {
+pub async fn serve(config: RuntimeGatewayConfig) -> anyhow::Result<()> {
     config.validate_startup()?;
     let listen_addr = config.listen_addr();
     let listener = TcpListener::bind(&listen_addr).await?;
@@ -575,7 +577,7 @@ pub async fn serve(config: ControlPlaneConfig) -> anyhow::Result<()> {
 
 pub async fn serve_listener(
     listener: TcpListener,
-    config: ControlPlaneConfig,
+    config: RuntimeGatewayConfig,
 ) -> anyhow::Result<()> {
     config.validate_startup()?;
     let config = Arc::new(config);
@@ -616,7 +618,7 @@ pub async fn serve_listener(
         let (stream, _) = match listener.accept().await {
             Ok(connection) => connection,
             Err(error) => {
-                eprintln!("control-plane accept failed: {error}");
+                eprintln!("runtime-gateway accept failed: {error}");
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
@@ -624,7 +626,7 @@ pub async fn serve_listener(
         let state = state.clone();
         tokio::spawn(async move {
             if let Err(error) = handle_connection(stream, state).await {
-                eprintln!("control-plane request failed: {error:#}");
+                eprintln!("runtime-gateway request failed: {error:#}");
             }
         });
     }

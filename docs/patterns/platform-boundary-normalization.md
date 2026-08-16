@@ -1,6 +1,6 @@
 # Platform Boundary Normalization
 
-> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. Platform service clients now live in `packages/control-plane-rs`; individual TS paths were not re-verified. The pattern itself remains valid guidance. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
+> **Status:** This document predates the Rust-only runtime migration (#3016, #3017, merged 2026-07-22), which deleted Maestro's TypeScript agent runtime and SDK. Platform service clients now live in `packages/runtime-gateway-rs`; individual TS paths were not re-verified. The pattern itself remains valid guidance. Some file paths below may be stale; they are kept for design context and updated only where a corresponding Rust module was confirmed.
 
 
 Use this pattern when Maestro calls a Platform service whose wire response may

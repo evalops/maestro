@@ -10,8 +10,8 @@ use crate::{now_rfc3339, AppState, ATTACHMENT_TEMP_COUNTER};
 use super::tasks::{
     a2a_agent_message, a2a_task_is_terminal, a2a_task_status_state, a2a_task_status_timestamp,
     a2a_task_value, canonical_a2a_task_state, generate_a2a_id,
-    A2A_CONTROL_PLANE_LEDGER_DISPLAY_NAME, A2A_CONTROL_PLANE_LEDGER_PEER,
-    A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY,
+    A2A_LEGACY_CONTROL_PLANE_LEDGER_PEER, A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY,
+    A2A_RUNTIME_GATEWAY_LEDGER_DISPLAY_NAME, A2A_RUNTIME_GATEWAY_LEDGER_PEER,
 };
 
 pub(crate) const A2A_LEDGER_LOCK_RETRY_MS: u64 = 25;
@@ -66,7 +66,7 @@ fn a2a_task_ledger_entries(ledger: &Value) -> Vec<Value> {
 
 fn a2a_task_from_ledger_entry(entry: &Value) -> Option<Value> {
     let peer = entry.get("peer").and_then(Value::as_str);
-    if peer.is_some_and(|peer| peer != A2A_CONTROL_PLANE_LEDGER_PEER) {
+    if peer.is_some_and(|peer| !a2a_ledger_peer_is_runtime_gateway(peer)) {
         return None;
     }
     if let Some(task) = entry.get("a2aTask").and_then(Value::as_object) {
@@ -80,14 +80,14 @@ fn a2a_task_from_ledger_entry(entry: &Value) -> Option<Value> {
     {
         return Some(entry.clone());
     }
-    if peer != Some(A2A_CONTROL_PLANE_LEDGER_PEER) {
+    if !peer.is_some_and(a2a_ledger_peer_is_runtime_gateway) {
         return None;
     }
     let task_id = entry.get("taskId").and_then(Value::as_str)?;
     let context_id = entry
         .get("contextId")
         .and_then(Value::as_str)
-        .unwrap_or("maestro-control-plane");
+        .unwrap_or("maestro-runtime-gateway");
     let state = entry
         .get("state")
         .and_then(Value::as_str)
@@ -142,7 +142,7 @@ fn a2a_task_with_ledger_evidence(mut task: Value, entry: &Value) -> Value {
         .get("contextId")
         .and_then(Value::as_str)
         .or_else(|| entry.get("contextId").and_then(Value::as_str))
-        .unwrap_or("maestro-control-plane")
+        .unwrap_or("maestro-runtime-gateway")
         .to_string();
     let Some(task_object) = task.as_object_mut() else {
         return task;
@@ -513,7 +513,7 @@ async fn persist_a2a_tasks_locked(state: &AppState) -> Result<(), String> {
             if a2a_ledger_entry_is_raw_a2a_task(entry) {
                 return false;
             }
-            if a2a_ledger_entry_is_control_plane(entry) {
+            if a2a_ledger_entry_is_runtime_gateway(entry) {
                 let task_id = ledger_entry_task_id(entry);
                 if task_id.is_empty() {
                     return true;
@@ -524,25 +524,25 @@ async fn persist_a2a_tasks_locked(state: &AppState) -> Result<(), String> {
         })
         .cloned()
         .collect::<Vec<_>>();
-    let existing_control_plane_entries = existing_entries
+    let existing_runtime_gateway_entries = existing_entries
         .into_iter()
-        .filter(a2a_ledger_entry_is_control_plane)
+        .filter(a2a_ledger_entry_is_runtime_gateway)
         .filter_map(|entry| {
             let task_id = entry.get("taskId").and_then(Value::as_str)?.to_string();
             Some((task_id, entry))
         })
         .collect::<HashMap<_, _>>();
-    let mut control_plane_entries = tasks
+    let mut runtime_gateway_entries = tasks
         .values()
         .cloned()
         .filter_map(|task| {
             let task_id = task.get("id").and_then(Value::as_str)?;
-            let existing = existing_control_plane_entries.get(task_id);
+            let existing = existing_runtime_gateway_entries.get(task_id);
             Some(a2a_ledger_entry_from_task(&task, existing))
         })
         .collect::<Vec<_>>();
     drop(tasks);
-    retained_entries.append(&mut control_plane_entries);
+    retained_entries.append(&mut runtime_gateway_entries);
     retained_entries.sort_by(|left, right| {
         ledger_entry_updated_at(left)
             .cmp(ledger_entry_updated_at(right))
@@ -751,8 +751,18 @@ fn unix_millis_now() -> u128 {
         .unwrap_or(0)
 }
 
-fn a2a_ledger_entry_is_control_plane(entry: &Value) -> bool {
-    entry.get("peer").and_then(Value::as_str) == Some(A2A_CONTROL_PLANE_LEDGER_PEER)
+fn a2a_ledger_peer_is_runtime_gateway(peer: &str) -> bool {
+    matches!(
+        peer,
+        A2A_RUNTIME_GATEWAY_LEDGER_PEER | A2A_LEGACY_CONTROL_PLANE_LEDGER_PEER
+    )
+}
+
+fn a2a_ledger_entry_is_runtime_gateway(entry: &Value) -> bool {
+    entry
+        .get("peer")
+        .and_then(Value::as_str)
+        .is_some_and(a2a_ledger_peer_is_runtime_gateway)
         || (entry.get("peer").is_none()
             && entry.get("id").and_then(Value::as_str).is_some()
             && entry.get("status").and_then(Value::as_object).is_some())
@@ -808,10 +818,10 @@ fn a2a_ledger_entry_from_task(task: &Value, existing: Option<&Value>) -> Value {
         "id": existing
             .and_then(|entry| entry.get("id").and_then(Value::as_str))
             .map(str::to_string)
-            .unwrap_or_else(|| format!("maestro-control-plane-{task_id}")),
+            .unwrap_or_else(|| format!("maestro-runtime-gateway-{task_id}")),
         "kind": "delegation",
-        "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
-        "peerDisplayName": A2A_CONTROL_PLANE_LEDGER_DISPLAY_NAME,
+        "peer": A2A_RUNTIME_GATEWAY_LEDGER_PEER,
+        "peerDisplayName": A2A_RUNTIME_GATEWAY_LEDGER_DISPLAY_NAME,
         "taskId": task_id,
         "text": text,
         "state": state,

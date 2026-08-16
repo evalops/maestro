@@ -1,7 +1,7 @@
 # Maestro Threat Model
 
 > **Status:** Current Rust runtime. This document is checked against the
-> implementation in `packages/tui-rs/`, `packages/control-plane-rs/`, and
+> implementation in `packages/tui-rs/`, `packages/runtime-gateway-rs/`, and
 > `packages/execpolicy-rs/`. It describes the controls that exist today; it
 > does not claim that prompt injection, secret exposure, or arbitrary code
 > execution is solved.
@@ -13,7 +13,7 @@ Nav: [Docs index](README.md) · [Safety](SAFETY.md) · [Enterprise](ENTERPRISE.m
 
 ## Scope and trust boundaries
 
-Maestro runs a local Rust agent and tool executor. The web/control-plane
+Maestro runs a local Rust agent and tool executor. The web/runtime-gateway
 process exposes a separate HTTP boundary. Model providers, MCP servers,
 websites, files, and tool results are untrusted inputs unless the operator has
 chosen to trust them.
@@ -22,7 +22,7 @@ chosen to trust them.
  User / web client
         │ terminal or authenticated HTTP
         ▼
- Rust agent and control plane
+ Rust agent and runtime gateway
         │
         ├── model/provider APIs (external)
         ├── MCP servers and web tools (external)
@@ -36,7 +36,7 @@ chosen to trust them.
 ```
 
 The protected assets are source trees, credentials, model context, provider
-tokens, control-plane sessions, and the host account. A user approval is an
+tokens, runtime-gateway sessions, and the host account. A user approval is an
 authorization decision; text found in a file, web page, MCP response, or model
 output is not authorization by itself.
 
@@ -166,7 +166,7 @@ consume host or provider resources.
 
 - Enterprise policy supports maximum tokens per session, session duration, and
   concurrent sessions through `LimitsPolicy`.
-- The control plane and provider bridges use bounded request timeouts in their
+- The runtime gateway and provider bridges use bounded request timeouts in their
   integration paths, and child-process cleanup is exercised by regression
   tests.
 - Safe mode can require a plan before mutation and run validators after writes.
@@ -195,10 +195,10 @@ execution or data access.
 **Residual risk:** Medium. A valid signature authenticates the publisher, not
 the safety of every feature, dependency, or MCP server.
 
-## Control-plane authentication
+## Runtime-gateway authentication
 
-The HTTP control plane is authenticated by
-`packages/control-plane-rs/src/auth.rs`:
+The HTTP runtime gateway is authenticated by
+`packages/runtime-gateway-rs/src/auth.rs`:
 
 - API keys are accepted as `Authorization: Bearer` or
   `x-maestro-api-key` (the legacy `x-composer-api-key` is also accepted).
@@ -232,7 +232,7 @@ The managed policy boundary is separate from identity and authorization:
   a tamper-evident audit log.
 
 This repository does not claim a general RBAC, SSO, or tamper-evident audit
-implementation in the Rust control plane. The publish and audit endpoints are
+implementation in the Rust runtime gateway. The publish and audit endpoints are
 authenticated, but organization-level authorization and identity scoping must
 be enforced by the caller or a reviewed reverse proxy. An operator who can
 modify the configured policy or audit files can still alter local state; use
@@ -242,7 +242,7 @@ owner-restricted paths and retain KMS/HSM, proxy, and centralized log records.
 
 For a local or shared deployment:
 
-- Bind the control plane to loopback unless remote access is required.
+- Bind the runtime gateway to loopback unless remote access is required.
 - For a remote bind, configure `MAESTRO_WEB_API_KEY`, a supported JWT/shared
   secret, or trusted-proxy authentication; use `MAESTRO_PROFILE=prod` and
   configure CSRF for browser clients.
@@ -262,7 +262,7 @@ If a session may have executed an unsafe action:
 
 1. Stop the Maestro process and the affected child processes.
 2. Revoke or rotate provider, API, proxy, and MCP credentials.
-3. Preserve the session, command, policy, and control-plane logs available to
+3. Preserve the session, command, policy, and runtime-gateway logs available to
    the deployment without copying secrets into an issue.
 4. Review filesystem, network, and provider-side audit records.
 5. Report security vulnerabilities to `security@evalops.dev` with a minimal

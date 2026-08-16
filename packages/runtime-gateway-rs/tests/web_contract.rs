@@ -1,4 +1,4 @@
-use maestro_control_plane::{serve_listener, ControlPlaneConfig};
+use maestro_runtime_gateway::{serve_listener, RuntimeGatewayConfig};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -24,7 +24,7 @@ async fn every_frozen_web_route_is_owned_by_the_native_control_plane() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
-        serve_listener(listener, ControlPlaneConfig::test_default())
+        serve_listener(listener, RuntimeGatewayConfig::test_default())
             .await
             .unwrap();
     });
