@@ -69,6 +69,11 @@
 			"aliases": [],
 			"authEnv": ["OPENROUTER_API_KEY"]
 		},
+		{
+			"provider": "llamacpp",
+			"aliases": ["llama.cpp", "llama-cpp"],
+			"authEnv": []
+		},
 		{ "provider": "zai", "aliases": [], "authEnv": ["ZAI_API_KEY"] },
 		{ "provider": "mistral", "aliases": [], "authEnv": ["MISTRAL_API_KEY"] },
 		{ "provider": "deepseek", "aliases": [], "authEnv": ["DEEPSEEK_API_KEY"] },

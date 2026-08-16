@@ -264,18 +264,25 @@ pub(crate) fn native_server_capabilities() -> messages::ServerCapabilities {
             messages::ConnectionRole::Controller,
         ],
         native_tools,
+        governed_tool_grant_algorithms: crate::headless_server::governed_grant_verifier_algorithms(
+        )
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
     }
 }
 
 // Core message types
+pub use maestro_runtime::{TaggedMessageDecode, TaggedMessageDecodeError, UnknownWireMessage};
 pub use messages::{
-    ActiveTool, AgentEvent, AgentState, ApprovalMode, ClientCapabilities, ClientInfo,
-    ClientToolExecutionOwner, ClientToolResultContent, CodeMode, ConnectionRole,
-    ExternalToolDefinition, FromAgentMessage, GovernedToolGrant, HeadlessErrorType, HistoryMessage,
-    HistoryRole, InitConfig, NativeToolCapability, PendingApproval, ServerCapabilities,
-    ServerRequestResolutionStatus, ServerRequestResolvedBy, ServerRequestType, StreamingResponse,
-    ThinkingLevel, ToAgentMessage, TokenUsage, ToolResult, UtilityCommandShellMode,
-    UtilityCommandStream, UtilityOperation, HEADLESS_PROTOCOL_VERSION,
+    decode_from_agent_message, ActiveTool, AgentEvent, AgentState, ApprovalMode,
+    ClientCapabilities, ClientInfo, ClientToolExecutionOwner, ClientToolResultContent, CodeMode,
+    ConnectionGrantBinding, ConnectionRole, ExternalToolDefinition, FromAgentMessage,
+    GovernedToolGrant, HeadlessErrorType, HistoryMessage, HistoryRole, InitConfig,
+    NativeToolCapability, PendingApproval, ServerCapabilities, ServerRequestResolutionStatus,
+    ServerRequestResolvedBy, ServerRequestType, StreamingResponse, ThinkingLevel, ToAgentMessage,
+    TokenUsage, ToolResult, UtilityCommandShellMode, UtilityCommandStream, UtilityOperation,
+    HEADLESS_PROTOCOL_VERSION,
 };
 pub use proto::maestro::v1 as proto_types;
 

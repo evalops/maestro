@@ -5,7 +5,7 @@
     "canonicalization": "rfc8785",
     "encoding": "utf-8"
   },
-  "compatibilityDigest": "sha256:c7e9cd6e164a13692d279b1d2fda35e61faabe15bfeedaa4f511f1e917f67a84",
+  "compatibilityDigest": "sha256:833ce5e941752907cb9db162d951b91e5deeb7ddd8fdbcf81774625b459120da",
   "buildIdentity": {
     "sourceSha": null,
     "buildDigest": null,
@@ -19,8 +19,14 @@
     "proto/maestro/v1/headless.proto",
     "packages/tui-rs/src/headless/generated_protocol.rs",
     "packages/tui-rs/src/headless/messages.rs",
+    "packages/runtime-rs/src/protocol.rs",
+    "packages/runtime-rs/fixtures/headless-protocol-v1.json",
+    "packages/runtime-rs/src/receipts.rs",
+    "packages/runtime-rs/fixtures/runtime-receipt-v1.json",
+    "packages/runtime-rs/fixtures/runtime-receipt-contract-v1.json",
     "packages/tui-rs/src/transcript.rs",
     "packages/tui-rs/src/hosted_runner/thread_protocol.rs",
+    "proto/maestro/v1/hosted-thread-compatibility-matrix.json",
     "packages/tui-rs/src/hosted_runner_cli.rs",
     "packages/tui-rs/src/hosted_runner.rs",
     "packages/tui-rs/src/hosted_runner/rendezvous_protocol.rs"
@@ -31,8 +37,8 @@
         "2026-08-08"
       ],
       "schemaDeclaredVersion": "2026-08-08",
-      "schemaContractDigest": "sha256:cfb0160bb55cb01a05f9b0871da7dba2be3d1fca58b35ebda27fec68f6ec94bf",
-      "runtimeContractDigest": "sha256:b9940c3451a609bfe827a56a6002b716b5842bcff490fdd48f1129c358a83f60",
+      "schemaContractDigest": "sha256:26c9dc2942b6d14e62e62977dc7664ca8c9b27f82b6ee74a5cea5add34375912",
+      "runtimeContractDigest": "sha256:fcbf7e9fb6564d6cbadbc07074b3ea9a0215302be489e640c0fa8c631eade8dd",
       "messages": {
         "toRuntime": [
           "hello",
@@ -160,7 +166,7 @@
       }
     },
     "thread": {
-      "contractDigest": "sha256:3be37dcaa27d081f309553109eed24e149af6eae37f050e72812b183b30c6511",
+      "contractDigest": "sha256:7dfa8484ba8253855f34181d9f6057fe2d46b1a4d331e02befda31bd76c3f864",
       "supportedVersions": [
         {
           "version": "evalops.maestro.thread.v1",
@@ -182,6 +188,15 @@
       "identityProtocolVersion": "evalops.remote-runner.identity.v1",
       "identityBindingProtocolVersion": "evalops.maestro.hosted-runner-identity-binding.v1",
       "rendezvousProtocolVersion": "evalops.maestro.hosted-runner-rendezvous.v1"
+    },
+    "runtime": {
+      "schemaVersion": "evalops.maestro.headless-protocol.v1",
+      "contractDigest": "sha256:a8b61e700bb628cbdef3393e35d653ed518f02aa79f8b7a468d550bfbbb83fb8",
+      "receipt": {
+        "schemaVersion": "evalops.maestro.runtime-receipt.v1",
+        "sourceDigest": "sha256:8fbcb58770dccabaf0d87b2532121addafd35e04f5a09f9dffdd2dea8897b921",
+        "contractDigest": "sha256:8fbcb58770dccabaf0d87b2532121addafd35e04f5a09f9dffdd2dea8897b921"
+      }
     },
     "governedCode": {
       "codeModes": [

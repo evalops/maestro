@@ -54,6 +54,8 @@ struct PluginComponentPaths {
     hooks: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mcp: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connections: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -125,7 +127,7 @@ pub fn run_plugins(args: &[String]) -> Result<i32> {
         }
         "capability" => {
             let name = parsed.positionals.first().context(
-                "Usage: maestro plugins capability <name> <skills|agents|commands|hooks|mcp> <on|off>",
+                "Usage: maestro plugins capability <name> <skills|agents|commands|hooks|mcp|connections> <on|off>",
             )?;
             let capability = parsed
                 .positionals
@@ -213,7 +215,7 @@ Commands:\n\
   marketplace [list]     List curated catalog (id, tier, source)\n\
   marketplace install <id>  Install catalog entry; non-official needs --trust\n\
   enable|disable <name>  Toggle the whole plugin\n\
-  capability <name> <skills|agents|commands|hooks|mcp> <on|off>\n\
+  capability <name> <skills|agents|commands|hooks|mcp|connections> <on|off>\n\
   <name>                 Alias for info <name>\n\n\
 Options:\n\
   --json                 Emit machine-readable JSON\n\
@@ -352,7 +354,7 @@ fn run_list(registry: &PluginRegistry, json: bool) -> Result<i32> {
         println!("  ~/.maestro/plugins/<name>/ (user)");
         println!();
         println!(
-            "Each plugin may include plugin.json, skills/, agents/, commands/, hooks, and MCP configs."
+            "Each plugin may include plugin.json, skills/, agents/, commands/, hooks, MCP configs, and declarative connection types."
         );
         return Ok(0);
     }
@@ -446,6 +448,11 @@ fn info_report(plugin: &DiscoveredPlugin) -> PluginInfoReport {
                 .mcp_path
                 .as_ref()
                 .map(|p| p.display().to_string()),
+            connections: plugin
+                .components
+                .connections_path
+                .as_ref()
+                .map(|p| p.display().to_string()),
         },
     }
 }
@@ -463,6 +470,9 @@ fn component_labels(plugin: &DiscoveredPlugin) -> Vec<&'static str> {
     }
     if plugin.components.mcp_path.is_some() {
         parts.push("mcp");
+    }
+    if plugin.components.connections_path.is_some() {
+        parts.push("connections");
     }
     parts
 }
@@ -576,6 +586,7 @@ mod tests {
                 commands_dir: None,
                 hooks_config: None,
                 mcp_path: Some(PathBuf::from("/p/x/mcp.json")),
+                connections_path: None,
             },
         };
         let entry = list_entry(&plugin);

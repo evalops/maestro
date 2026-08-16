@@ -25,6 +25,7 @@ pub enum PluginCapability {
     Commands,
     Hooks,
     Mcp,
+    Connections,
 }
 
 impl PluginCapability {
@@ -35,6 +36,7 @@ impl PluginCapability {
             "commands" => Ok(Self::Commands),
             "hooks" => Ok(Self::Hooks),
             "mcp" => Ok(Self::Mcp),
+            "connections" => Ok(Self::Connections),
             _ => bail!("unknown plugin capability: {value}"),
         }
     }
@@ -46,7 +48,7 @@ impl PluginCapability {
     /// prior behavior. Capabilities introduced after those files were written
     /// default off until an explicit grant is recorded.
     fn defaults_enabled_when_absent(self) -> bool {
-        !matches!(self, Self::Agents)
+        !matches!(self, Self::Agents | Self::Connections)
     }
 }
 
@@ -94,9 +96,12 @@ impl PluginState {
     }
 
     pub fn capability_enabled(&self, plugin: &str, capability: PluginCapability) -> bool {
-        self.plugins
-            .get(&plugin.to_lowercase())
-            .is_none_or(|state| {
+        self.plugins.get(&plugin.to_lowercase()).map_or_else(
+            // Preserve convention-based discovery for existing components.
+            // Connection types are the first component that always requires
+            // a plugin-state grant, including for manually placed plugins.
+            || !matches!(capability, PluginCapability::Connections),
+            |state| {
                 state.enabled
                     && state
                         .capabilities
@@ -107,7 +112,8 @@ impl PluginState {
                         // introduced capabilities (Agents) default off so an
                         // upgrade does not activate them without a grant.
                         .unwrap_or_else(|| capability.defaults_enabled_when_absent())
-            })
+            },
+        )
     }
 }
 
@@ -186,7 +192,10 @@ pub fn install_with_provenance(
         PluginTrustState {
             trusted_source: source.to_string(),
             enabled: true,
-            capabilities: capabilities.iter().map(|value| (*value, true)).collect(),
+            capabilities: capabilities
+                .iter()
+                .map(|value| (*value, !matches!(value, PluginCapability::Connections)))
+                .collect(),
             marketplace_id: provenance.marketplace_id,
             marketplace_tier: provenance.marketplace_tier,
             installed_at_unix: Some(now),
@@ -366,6 +375,9 @@ fn capabilities_for(components: &super::PluginComponents) -> BTreeSet<PluginCapa
     if components.mcp_path.is_some() {
         values.insert(PluginCapability::Mcp);
     }
+    if components.connections_path.is_some() {
+        values.insert(PluginCapability::Connections);
+    }
     values
 }
 
@@ -442,6 +454,11 @@ mod tests {
             r#"{"name":"demo-plugin"}"#,
         )
         .unwrap();
+        fs::write(
+            source.path().join("connections.json"),
+            r#"{"schemaVersion":1,"connectionTypes":[]}"#,
+        )
+        .unwrap();
         let home = TempDir::new().unwrap();
         let state_path = home.path().join("plugin-state.json");
         let preview = install(
@@ -452,6 +469,11 @@ mod tests {
         )
         .unwrap();
         assert!(preview.capabilities.contains(&PluginCapability::Skills));
+        assert!(preview
+            .capabilities
+            .contains(&PluginCapability::Connections));
+        let initial_state = PluginState::load(&state_path).unwrap();
+        assert!(!initial_state.capability_enabled("demo-plugin", PluginCapability::Connections));
         set_capability(&state_path, "demo-plugin", PluginCapability::Skills, false).unwrap();
         let state = PluginState::load(&state_path).unwrap();
         assert!(!state.capability_enabled("demo-plugin", PluginCapability::Skills));
@@ -663,9 +685,21 @@ mod tests {
             "legacy state without an Agents grant must not activate agents/"
         );
         assert!(
+            !state.capability_enabled("legacy", PluginCapability::Connections),
+            "legacy state without a Connections grant must not activate connection types"
+        );
+        assert!(
             state.capability_enabled("legacy", PluginCapability::Commands),
             "pre-existing capabilities without an entry stay enabled"
         );
+    }
+
+    #[test]
+    fn connection_capability_defaults_off_without_any_plugin_state() {
+        let state = PluginState::default();
+        assert!(state.capability_enabled("manual", PluginCapability::Skills));
+        assert!(state.capability_enabled("manual", PluginCapability::Agents));
+        assert!(!state.capability_enabled("manual", PluginCapability::Connections));
     }
 
     #[test]

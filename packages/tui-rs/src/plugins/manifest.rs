@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// Optional `plugin.json` metadata for a Maestro plugin package.
 ///
 /// All fields are optional so partial manifests remain valid. Relative path
-/// fields (`skills`, `agents`, `commands`, `hooks`, `mcp`) are resolved against the
+/// fields (`skills`, `agents`, `commands`, `hooks`, `mcp`, `connections`) are resolved against the
 /// plugin root; when omitted, convention paths are used instead.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -29,6 +29,8 @@ pub struct PluginManifest {
     pub hooks: Option<String>,
     /// Relative path to an MCP config file (default: `mcp.json` / `.mcp.json`).
     pub mcp: Option<String>,
+    /// Relative path to declarative connection types (default: `connections.json`).
+    pub connections: Option<String>,
 }
 
 impl PluginManifest {
@@ -52,7 +54,8 @@ mod tests {
             "agents": "agents",
             "commands": "commands",
             "hooks": "hooks/hooks.toml",
-            "mcp": "mcp.json"
+            "mcp": "mcp.json",
+            "connections": "connections.json"
         }"#;
         let manifest = PluginManifest::from_json(json).unwrap();
         assert_eq!(manifest.name.as_deref(), Some("team-tools"));
@@ -60,6 +63,7 @@ mod tests {
         assert_eq!(manifest.skills.as_deref(), Some("skills"));
         assert_eq!(manifest.agents.as_deref(), Some("agents"));
         assert_eq!(manifest.hooks.as_deref(), Some("hooks/hooks.toml"));
+        assert_eq!(manifest.connections.as_deref(), Some("connections.json"));
     }
 
     #[test]

@@ -1084,10 +1084,58 @@ fn new_test_app() -> App {
         crate::history::PromptHistory::default(),
         None,
         None,
+        false,
     );
     app.state.steering_mode = QueueMode::default();
     app.state.follow_up_mode = QueueMode::default();
     app
+}
+
+#[tokio::test]
+async fn startup_prompt_waits_for_initial_local_discovery() {
+    let mut app = new_test_app();
+    let route = "llamacpp/startup-budget-model";
+    app.current_model = route.to_owned();
+    app.initial_prompt = Some("use the live budget".to_owned());
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.local_model_discovery_rx = rx;
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(25));
+        tx.send(crate::local_models::LocalDiscoveryBatch {
+            generation: 99,
+            models: vec![crate::model_catalog::ModelInfo {
+                id: "startup-budget-model".to_owned(),
+                name: "startup-budget-model".to_owned(),
+                provider: "llamacpp".to_owned(),
+                description: "test runtime model".to_owned(),
+                capabilities: crate::model_catalog::ModelCapabilities {
+                    protocol: crate::model_catalog::ModelProtocol::OpenAiChat,
+                    tools: false,
+                    vision: false,
+                    reasoning: false,
+                    streaming: true,
+                    context_tokens: 8_192,
+                    output_tokens: None,
+                },
+                verification: crate::model_catalog::ModelVerification {
+                    state: crate::model_catalog::VerificationState::Verified,
+                    source: "local-runtime".to_owned(),
+                    detail: None,
+                },
+            }],
+        })
+        .expect("send discovery batch");
+    });
+
+    let prompt = app.take_initial_prompt_after_discovery().await;
+
+    assert_eq!(prompt.as_deref(), Some("use the live budget"));
+    assert_eq!(
+        crate::local_models::find_discovered_model(route)
+            .map(|model| model.capabilities.context_tokens),
+        Some(8_192)
+    );
 }
 
 #[tokio::test]

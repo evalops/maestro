@@ -598,6 +598,14 @@ fn uses_responses_api(provider: Option<&str>, model: &str) -> bool {
     let model = strip_managed_model_prefix(model).trim();
     let inferred_provider = model.split_once('/').map(|(provider, _)| provider.trim());
     let provider = provider.or(inferred_provider);
+    let is_native_local = provider.is_some_and(|provider| {
+        ["llamacpp", "lmstudio", "ollama"]
+            .iter()
+            .any(|local| provider.eq_ignore_ascii_case(local))
+    });
+    if is_native_local {
+        return false;
+    }
     let is_openrouter =
         provider.is_some_and(|provider| provider.eq_ignore_ascii_case("openrouter"));
     let normalized = provider_model_name(model);
@@ -719,9 +727,15 @@ pub struct OpenAiClient {
     extra_headers: HeaderMap,
     request_extensions: serde_json::Map<String, serde_json::Value>,
     managed_gateway: bool,
+    managed_request_lineage: Option<ManagedRequestLineage>,
     route_provider: Option<String>,
     #[cfg(test)]
     response_open_timeout_override: Option<std::time::Duration>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ManagedRequestLineage {
+    pub(crate) lineage_id: String,
 }
 
 impl OpenAiClient {
@@ -740,6 +754,7 @@ impl OpenAiClient {
             extra_headers: HeaderMap::new(),
             request_extensions: serde_json::Map::new(),
             managed_gateway: false,
+            managed_request_lineage: None,
             route_provider: None,
             #[cfg(test)]
             response_open_timeout_override: None,
@@ -761,6 +776,7 @@ impl OpenAiClient {
             extra_headers: HeaderMap::new(),
             request_extensions: serde_json::Map::new(),
             managed_gateway: false,
+            managed_request_lineage: None,
             route_provider: None,
             #[cfg(test)]
             response_open_timeout_override: None,
@@ -778,6 +794,11 @@ impl OpenAiClient {
 
     pub(crate) fn is_managed_gateway(&self) -> bool {
         self.managed_gateway
+    }
+
+    pub(crate) fn set_managed_request_lineage(&mut self, lineage_id: Option<String>) {
+        self.managed_request_lineage =
+            lineage_id.map(|lineage_id| ManagedRequestLineage { lineage_id });
     }
 
     fn response_open_timeout(&self) -> Option<std::time::Duration> {
@@ -901,13 +922,33 @@ impl OpenAiClient {
     pub(crate) fn headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", self.api_key))
-                .unwrap_or_else(|_| HeaderValue::from_static("")),
-        );
+        if !self.api_key.is_empty() {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {}", self.api_key))
+                    .unwrap_or_else(|_| HeaderValue::from_static("")),
+            );
+        }
         headers.extend(self.extra_headers.clone());
         headers
+    }
+
+    fn managed_request(&self, mut body: serde_json::Value) -> Result<serde_json::Value> {
+        let Some(lineage) = self.managed_request_lineage.as_ref() else {
+            return Ok(body);
+        };
+        if !self.managed_gateway {
+            return Ok(body);
+        }
+
+        let object = body
+            .as_object_mut()
+            .context("managed gateway request body must be an object")?;
+        object.insert(
+            "lineage_id".to_string(),
+            serde_json::Value::String(lineage.lineage_id.clone()),
+        );
+        Ok(body)
     }
 
     /// Convert internal messages to `OpenAI` format
@@ -1237,11 +1278,26 @@ impl OpenAiClient {
             body["tools"] = serde_json::json!(self.convert_tools(&config.tools));
         }
 
+        // llama.cpp supports request-level prompt caching. Keeping this
+        // provider-scoped avoids sending an extension field to hosted APIs.
+        if self.route_provider.as_deref() == Some("llamacpp") {
+            body["cache_prompt"] = serde_json::json!(true);
+        }
+
         // GPT-5.1 supports reasoning_effort for adaptive thinking
         if let Some(thinking) = &config.thinking {
             // Map thinking budget to reasoning effort
             let effort = if thinking.budget_tokens > 10000 {
-                "high"
+                if self.route_provider.as_deref() == Some("llamacpp")
+                    && model
+                        .rsplit('/')
+                        .next()
+                        .is_some_and(|name| name.to_ascii_lowercase().starts_with("qwen3.8"))
+                {
+                    "xhigh"
+                } else {
+                    "high"
+                }
             } else if thinking.budget_tokens > 3000 {
                 "medium"
             } else {
@@ -1493,7 +1549,7 @@ impl AiClient for OpenAiClient {
         let (tx, rx) = mpsc::unbounded_channel();
 
         // Build request body
-        let body = self.build_request_body(messages, config);
+        let body = self.managed_request(self.build_request_body(messages, config))?;
 
         // Get the appropriate API URL for this model, honoring any custom
         // provider base URL (Mistral/Groq/DeepSeek/Moonshot/DashScope/etc.).
@@ -2401,6 +2457,21 @@ mod tests {
     }
 
     #[test]
+    fn native_local_providers_always_use_chat_completions() {
+        for provider in ["llamacpp", "lmstudio", "ollama"] {
+            for model in ["gpt-5-local", "o3-local"] {
+                assert!(
+                    !uses_responses_api(Some(provider), model),
+                    "native local provider must use Chat Completions: {provider}/{model}"
+                );
+            }
+        }
+
+        assert!(uses_responses_api(Some("openai"), "gpt-5-local"));
+        assert!(uses_responses_api(Some("openai"), "o3-local"));
+    }
+
+    #[test]
     fn openrouter_models_use_stable_chat_completions_except_plain_gpt_5_6() {
         for model in [
             "openrouter/anthropic/claude-sonnet-4.5",
@@ -2558,6 +2629,13 @@ mod tests {
     }
 
     #[test]
+    fn anonymous_compatible_client_omits_authorization_header() {
+        let client = OpenAiClient::with_base_url("", "http://127.0.0.1:8080/v1").unwrap();
+
+        assert!(!client.headers().contains_key(AUTHORIZATION));
+    }
+
+    #[test]
     fn strips_provider_prefix_from_request_body_model() {
         let client = OpenAiClient::new("test-key").unwrap();
         let messages = vec![Message {
@@ -2582,6 +2660,85 @@ mod tests {
             },
         );
         assert_eq!(chat_body["model"], "gpt-4o");
+    }
+
+    #[test]
+    fn llama_cpp_requests_enable_prompt_cache_without_leaking_to_other_providers() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("Hello".to_string()),
+        }];
+        let config = RequestConfig {
+            model: "llamacpp/Qwen3.8-27B".to_string(),
+            ..Default::default()
+        };
+        let llama = OpenAiClient::with_base_url("", "http://127.0.0.1:8080/v1")
+            .unwrap()
+            .with_route_provider("llamacpp");
+        let openai = OpenAiClient::new("test-key").unwrap();
+
+        assert_eq!(
+            llama.build_request_body(&messages, &config)["cache_prompt"],
+            true
+        );
+        assert!(openai
+            .build_request_body(&messages, &config)
+            .get("cache_prompt")
+            .is_none());
+    }
+
+    #[test]
+    fn qwen38_maps_high_thinking_to_supported_xhigh_effort() {
+        let client = OpenAiClient::with_base_url("", "http://127.0.0.1:8080/v1")
+            .unwrap()
+            .with_route_provider("llamacpp");
+        let messages = vec![];
+        let config = RequestConfig {
+            model: "llamacpp/Qwen3.8-27B".to_string(),
+            thinking: Some(crate::types::ThinkingConfig::enabled(12_000)),
+            ..Default::default()
+        };
+        let other = RequestConfig {
+            model: "llamacpp/another-reasoning-model".to_string(),
+            ..config.clone()
+        };
+
+        assert_eq!(
+            client.build_request_body(&messages, &config)["reasoning_effort"],
+            "xhigh"
+        );
+        assert_eq!(
+            client.build_request_body(&messages, &other)["reasoning_effort"],
+            "high"
+        );
+
+        for provider in ["lmstudio", "ollama", "openai"] {
+            let other_provider =
+                OpenAiClient::with_base_url("test-key", "http://127.0.0.1:1234/v1")
+                    .unwrap()
+                    .with_route_provider(provider);
+            assert_eq!(
+                other_provider.build_request_body(&messages, &config)["reasoning_effort"],
+                "high",
+                "{provider} must retain the standard reasoning-effort contract"
+            );
+        }
+    }
+
+    #[test]
+    fn namespaced_qwen38_maps_high_thinking_to_supported_xhigh_effort() {
+        let client = OpenAiClient::with_base_url("", "http://127.0.0.1:8080/v1")
+            .unwrap()
+            .with_route_provider("llamacpp");
+        let config = RequestConfig {
+            model: "llamacpp/Qwen/Qwen3.8-27B".to_owned(),
+            thinking: Some(crate::types::ThinkingConfig::enabled(12_000)),
+            ..Default::default()
+        };
+
+        let body = client.build_request_body(&[], &config);
+
+        assert_eq!(body["reasoning_effort"], "xhigh");
     }
 
     #[test]
@@ -2940,6 +3097,50 @@ mod tests {
         );
         assert_eq!(body["provider_ref"]["provider"], "anthropic");
         assert_eq!(body["provider_ref"]["credential_name"], "team-shared");
+    }
+
+    #[test]
+    fn managed_gateway_turn_lineage_is_stable_and_body_scoped() {
+        let mut client =
+            OpenAiClient::with_base_url("delegated-token", "https://llm-gateway.evalops.dev/v1")
+                .unwrap()
+                .with_managed_gateway_scope(
+                    "org_123",
+                    "workspace_456",
+                    serde_json::json!({
+                        "provider": "openrouter",
+                        "environment": "production",
+                        "credential_name": "default"
+                    }),
+                )
+                .unwrap();
+        client.set_managed_request_lineage(Some("maestro-turn-v2:digest".to_string()));
+
+        let request = |content: &str| {
+            client
+                .managed_request(client.build_request_body(
+                    &[Message {
+                        role: Role::User,
+                        content: MessageContent::Text(content.to_string()),
+                    }],
+                    &RequestConfig {
+                        model: "evalops/openrouter/auto".to_string(),
+                        ..Default::default()
+                    },
+                ))
+                .expect("managed request")
+        };
+        let first_body = request("first");
+        let replay_body = request("first");
+        let next_body = request("second");
+
+        assert_eq!(first_body["lineage_id"], replay_body["lineage_id"]);
+        assert_eq!(first_body["lineage_id"], next_body["lineage_id"]);
+        assert!(first_body["lineage_id"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("maestro-turn-v2:")));
+        assert_eq!(first_body, replay_body);
+        assert_ne!(first_body, next_body);
     }
 
     #[tokio::test]

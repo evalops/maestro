@@ -169,6 +169,8 @@ pub struct PendingApproval {
 pub struct GovernedClientToolBinding {
     pub tool_execution_id: String,
     pub client_instance_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_binding_id: Option<String>,
     pub grant_id: String,
     pub grant_version: u64,
     pub grant_hash: String,
@@ -1238,6 +1240,7 @@ impl AgentState {
                 tool,
                 args,
                 client_instance_id,
+                connection_binding_id,
                 grant_id,
                 grant_version,
                 grant_hash,
@@ -1253,6 +1256,7 @@ impl AgentState {
                     GovernedClientToolBinding {
                         tool_execution_id: tool_execution_id.clone(),
                         client_instance_id,
+                        connection_binding_id,
                         grant_id,
                         grant_version,
                         grant_hash,

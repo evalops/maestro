@@ -101,12 +101,16 @@ impl PaletteResourceKind {
 
 impl From<&crate::model_catalog::ModelInfo> for PaletteResource {
     fn from(model: &crate::model_catalog::ModelInfo) -> Self {
-        Self::new(PaletteResourceKind::Model, &model.id, &model.name)
-            .description(&model.description)
-            .search_terms([
-                model.provider.clone(),
-                format!("{:?}", model.capabilities.protocol),
-            ])
+        Self::new(
+            PaletteResourceKind::Model,
+            crate::model_catalog::model_route(model),
+            &model.name,
+        )
+        .description(&model.description)
+        .search_terms([
+            model.provider.clone(),
+            format!("{:?}", model.capabilities.protocol),
+        ])
     }
 }
 
@@ -128,5 +132,13 @@ mod tests {
             .search_terms(["rust".to_owned()]);
         assert!(resource.matches("rust"));
         assert_eq!(resource.stable_id(), "@:src/main.rs");
+    }
+
+    #[test]
+    fn local_model_resource_uses_qualified_route() {
+        let model = crate::model_catalog::find_model("llamacpp/Qwen3.8-27B")
+            .expect("local Qwen catalog row");
+
+        assert_eq!(PaletteResource::from(&model).id, "llamacpp/Qwen3.8-27B");
     }
 }

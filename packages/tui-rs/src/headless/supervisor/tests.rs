@@ -1390,19 +1390,31 @@ fn agent_event_to_message_preserves_headless_metadata() {
         } if message == "output exhausted"
     ));
 
+    let receipt = crate::agent::protocol::ToolExecution::from_legacy(
+        "call_1",
+        "codex_file_change",
+        crate::agent::protocol::ExecutionSource::Native,
+        crate::agent::protocol::ToolResult::success("completed"),
+    )
+    .receipt;
     let tool_end = agent_event_to_message(&AgentEvent::ToolEnd {
         call_id: "call_1".to_string(),
         tool_execution_id: Some("tool-execution-1".to_string()),
         success: true,
         duration: None,
-        receipt: None,
+        receipt: Some(receipt),
     });
     assert!(matches!(
         tool_end,
         super::super::messages::FromAgentMessage::ToolEnd {
+            call_id,
             tool_execution_id: Some(ref tool_execution_id),
+            tool: Some(ref tool),
+            success: true,
             ..
-        } if tool_execution_id == "tool-execution-1"
+        } if call_id == "call_1"
+            && tool_execution_id == "tool-execution-1"
+            && tool == "codex_file_change"
     ));
 
     let error = agent_event_to_message(&AgentEvent::Error {

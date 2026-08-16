@@ -26,8 +26,14 @@ path = "src/lib.rs"
 
 [dependencies]
 # Terminal handling
-crossterm = { version = "0.28", features = ["bracketed-paste", "event-stream"] }
-ratatui = { version = "0.29", features = ["unstable-widget-ref"] }
+crossterm = { version = "0.29", features = ["bracketed-paste", "event-stream"] }
+ratatui = { version = "0.30.2", default-features = false, features = [
+    "crossterm_0_29",
+    "layout-cache",
+    "macros",
+    "underline-color",
+    "unstable-widget-ref",
+] }
 uncurses = "0.0.1"
 
 # Async runtime
@@ -40,6 +46,7 @@ futures.workspace = true
 # AI provider client layer (packages/ai-rs); re-exported at crate::ai
 maestro-ai.workspace = true
 maestro-execpolicy.workspace = true
+maestro-runtime.workspace = true
 
 # HTTP client for AI APIs
 reqwest = { workspace = true, features = ["blocking", "json", "stream", "rustls-tls"] }
@@ -52,6 +59,7 @@ wait-timeout.workspace = true
 
 # Serialization for IPC
 ring.workspace = true
+ed25519-dalek = { version = "2", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 prost = "0.14"
@@ -118,6 +126,7 @@ supports-color = "3"
 # Date/time handling
 chrono.workspace = true
 keyring = "4.1.5"
+rpassword = "7.4"
 
 # YAML parsing for skill files
 serde_yaml.workspace = true

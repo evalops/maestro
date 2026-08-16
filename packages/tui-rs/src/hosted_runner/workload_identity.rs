@@ -369,16 +369,18 @@ impl WorkloadIdentityExchanger {
             .send()
             .await
             .map_err(|_| WorkloadIdentityError::Unavailable)?;
-        require_exchange_created(response.status())?;
-        let mut body = Vec::new();
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|_| WorkloadIdentityError::Unavailable)?;
-            if body.len().saturating_add(chunk.len()) > MAX_EXCHANGE_RESPONSE_BYTES {
-                return Err(WorkloadIdentityError::Unavailable);
-            }
-            body.extend_from_slice(&chunk);
+        let status = response.status();
+        if status != reqwest::StatusCode::CREATED && status != reqwest::StatusCode::CONFLICT {
+            require_exchange_created(status, None)?;
         }
+        let body = match read_bounded_response_body(response).await {
+            Ok(body) => body,
+            Err(_) if status == reqwest::StatusCode::CONFLICT => {
+                return Err(WorkloadIdentityError::Rejected);
+            }
+            Err(error) => return Err(error),
+        };
+        require_exchange_created(status, Some(&body))?;
         let response: IdentityExchangeResponse =
             serde_json::from_slice(&body).map_err(|_| WorkloadIdentityError::Unavailable)?;
         build_server_identity(response, key, &self.binding, pod_uid, now)
@@ -409,16 +411,18 @@ impl WorkloadIdentityExchanger {
             .send()
             .await
             .map_err(|_| WorkloadIdentityError::Unavailable)?;
-        require_exchange_created(response.status())?;
-        let mut body = Vec::new();
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|_| WorkloadIdentityError::Unavailable)?;
-            if body.len().saturating_add(chunk.len()) > MAX_EXCHANGE_RESPONSE_BYTES {
-                return Err(WorkloadIdentityError::Unavailable);
-            }
-            body.extend_from_slice(&chunk);
+        let status = response.status();
+        if status != reqwest::StatusCode::CREATED && status != reqwest::StatusCode::CONFLICT {
+            require_exchange_created(status, None)?;
         }
+        let body = match read_bounded_response_body(response).await {
+            Ok(body) => body,
+            Err(_) if status == reqwest::StatusCode::CONFLICT => {
+                return Err(WorkloadIdentityError::Rejected);
+            }
+            Err(error) => return Err(error),
+        };
+        require_exchange_created(status, Some(&body))?;
         let response: IdentityExchangeResponse =
             serde_json::from_slice(&body).map_err(|_| WorkloadIdentityError::Unavailable)?;
         build_client_identity(response, key, &self.binding, pod_uid, now)
@@ -561,10 +565,44 @@ pub(super) async fn rotate_client_identity(
     state.clear().await;
 }
 
-fn require_exchange_created(status: reqwest::StatusCode) -> Result<(), WorkloadIdentityError> {
+#[derive(Deserialize)]
+struct IdentityExchangeErrorEnvelope<'a> {
+    ok: bool,
+    #[serde(borrow)]
+    code: &'a str,
+}
+
+async fn read_bounded_response_body(
+    response: reqwest::Response,
+) -> Result<Vec<u8>, WorkloadIdentityError> {
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| WorkloadIdentityError::Unavailable)?;
+        if body.len().saturating_add(chunk.len()) > MAX_EXCHANGE_RESPONSE_BYTES {
+            return Err(WorkloadIdentityError::Unavailable);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+fn require_exchange_created(
+    status: reqwest::StatusCode,
+    body: Option<&[u8]>,
+) -> Result<(), WorkloadIdentityError> {
+    // Sandboxwich uses this stable conflict code while placement moves toward
+    // a live attestation. Only that typed state joins the bounded initial retry;
+    // every other conflict remains a terminal rejection.
+    let transient_attestation_conflict = status == reqwest::StatusCode::CONFLICT
+        && body.is_some_and(|body| {
+            serde_json::from_slice::<IdentityExchangeErrorEnvelope<'_>>(body)
+                .is_ok_and(|error| !error.ok && error.code == "placement_attestation_not_live")
+        });
     if status == reqwest::StatusCode::CREATED {
         Ok(())
-    } else if status.is_server_error()
+    } else if transient_attestation_conflict
+        || status.is_server_error()
         || status == reqwest::StatusCode::REQUEST_TIMEOUT
         || status == reqwest::StatusCode::TOO_MANY_REQUESTS
     {
@@ -1222,19 +1260,33 @@ mod tests {
     #[test]
     fn initial_exchange_retries_only_transient_statuses_with_bounded_jitter() {
         assert_eq!(
-            require_exchange_created(reqwest::StatusCode::CREATED),
+            require_exchange_created(reqwest::StatusCode::CREATED, None),
             Ok(())
         );
         assert_eq!(
-            require_exchange_created(reqwest::StatusCode::SERVICE_UNAVAILABLE),
+            require_exchange_created(reqwest::StatusCode::SERVICE_UNAVAILABLE, None),
             Err(WorkloadIdentityError::Unavailable)
         );
         assert_eq!(
-            require_exchange_created(reqwest::StatusCode::TOO_MANY_REQUESTS),
+            require_exchange_created(reqwest::StatusCode::TOO_MANY_REQUESTS, None),
             Err(WorkloadIdentityError::Unavailable)
         );
         assert_eq!(
-            require_exchange_created(reqwest::StatusCode::FORBIDDEN),
+            require_exchange_created(reqwest::StatusCode::FORBIDDEN, None),
+            Err(WorkloadIdentityError::Rejected)
+        );
+        assert_eq!(
+            require_exchange_created(
+                reqwest::StatusCode::CONFLICT,
+                Some(&br#"{"ok":false,"code":"placement_attestation_not_live","message":"Maestro hosted runner is not running"}"#[..]),
+            ),
+            Err(WorkloadIdentityError::Unavailable)
+        );
+        assert_eq!(
+            require_exchange_created(
+                reqwest::StatusCode::CONFLICT,
+                Some(&br#"{"ok":false,"code":"identity_binding_mismatch","message":"binding rejected"}"#[..]),
+            ),
             Err(WorkloadIdentityError::Rejected)
         );
 
@@ -1629,6 +1681,22 @@ mod tests {
         expected_exchanges: usize,
         unavailable_exchanges: usize,
     ) -> IdentityHarness {
+        start_identity_harness_with_failures(expected_exchanges, unavailable_exchanges, 0).await
+    }
+
+    async fn start_identity_harness_with_transient_conflicts(
+        expected_exchanges: usize,
+        transient_conflict_exchanges: usize,
+    ) -> IdentityHarness {
+        start_identity_harness_with_failures(expected_exchanges, 0, transient_conflict_exchanges)
+            .await
+    }
+
+    async fn start_identity_harness_with_failures(
+        expected_exchanges: usize,
+        unavailable_exchanges: usize,
+        transient_conflict_exchanges: usize,
+    ) -> IdentityHarness {
         let directory = tempfile::tempdir().unwrap();
         let token_file = directory.path().join("token");
         let ca_file = directory.path().join("identity-ca.pem");
@@ -1728,6 +1796,16 @@ mod tests {
                         )
                         .await
                         .unwrap();
+                    continue;
+                }
+                if exchange_index < unavailable_exchanges + transient_conflict_exchanges {
+                    let response = br#"{"ok":false,"code":"placement_attestation_not_live","message":"Maestro hosted runner is not running"}"#;
+                    let head = format!(
+                        "HTTP/1.1 409 Conflict\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        response.len()
+                    );
+                    socket.write_all(head.as_bytes()).await.unwrap();
+                    socket.write_all(response).await.unwrap();
                     continue;
                 }
                 let csr = request["csr_pem"].as_str().unwrap();
@@ -1919,6 +1997,33 @@ mod tests {
         handle.shutdown().await;
         harness.task.await.unwrap();
         assert_eq!(harness.requests.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn hosted_runner_retries_typed_transient_identity_conflict() {
+        let harness = start_identity_harness_with_transient_conflicts(2, 1).await;
+        let workspace = tempfile::tempdir().unwrap();
+        let mut config =
+            crate::hosted_runner::HostedRunnerConfig::new("session/with spaces", workspace.path())
+                .unwrap()
+                .with_bind_addr("127.0.0.1:0".parse().unwrap());
+        config.workload_identity = Some(HostedRunnerWorkloadIdentityConfig {
+            kubernetes_token_file: harness.token_file.clone(),
+            identity_tls_ca_file: harness.ca_file.clone(),
+            identity_exchange_url: harness.exchange_url.clone(),
+            organization_id: "org-123".into(),
+            workspace_id: "workspace-123".into(),
+            sandbox_id: Uuid::parse_str("01234567-89ab-cdef-0123-456789abcdef").unwrap(),
+            placement_generation: 7,
+        });
+
+        let handle = crate::hosted_runner::start_hosted_runner(config)
+            .await
+            .expect("typed transient identity conflict must recover during startup");
+
+        handle.shutdown().await;
+        harness.task.await.unwrap();
+        assert_eq!(harness.requests.lock().unwrap().len(), 2);
     }
 
     fn server_identity_expiring_at(

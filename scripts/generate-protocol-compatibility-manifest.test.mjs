@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
 	mkdirSync,
 	mkdtempSync,
+	existsSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
@@ -30,6 +31,12 @@ const SCRIPT = resolve(ROOT, "scripts/generate-protocol-compatibility-manifest.m
 const CHECKED_IN_MANIFEST = resolve(
 	ROOT,
 	"proto/maestro/v1/protocol-compatibility-manifest.json",
+);
+const REPOSITORY_GUIDANCE = existsSync(resolve(ROOT, "AGENTS.md"))
+	? readFileSync(resolve(ROOT, "AGENTS.md"), "utf8")
+	: "";
+const IS_PUBLIC_PROJECTION = REPOSITORY_GUIDANCE.includes(
+	"This repository is a generated public mirror.",
 );
 
 test("checked-in compatibility manifest matches canonical protocol sources", () => {
@@ -118,6 +125,36 @@ test("serde wire renames and thread validation changes alter compatibility", () 
 	);
 });
 
+test("hosted thread compatibility matrix changes alter the thread digest", () => {
+	const sources = readCanonicalSources();
+	const baseline = buildCompatibilityManifest({ sources });
+	const changedMatrix = sources.threadCompatibilityMatrix.replace(
+		'"current": "evalops.maestro.thread.v2"',
+		'"current": "evalops.maestro.thread.v3"',
+	);
+	assert.notEqual(changedMatrix, sources.threadCompatibilityMatrix);
+	const changed = buildCompatibilityManifest({
+		sources: { ...sources, threadCompatibilityMatrix: changedMatrix },
+	});
+
+	assert.notEqual(
+		changed.compatibility.thread.contractDigest,
+		baseline.compatibility.thread.contractDigest,
+	);
+	assert.notEqual(changed.compatibilityDigest, baseline.compatibilityDigest);
+});
+
+test("governed thread sources require the compatibility matrix", () => {
+	const sources = readCanonicalSources();
+	const withoutMatrix = { ...sources };
+	delete withoutMatrix.threadCompatibilityMatrix;
+
+	assert.throws(
+		() => buildCompatibilityManifest({ sources: withoutMatrix }),
+		/governed thread sources require hosted-thread-compatibility-matrix\.json/,
+	);
+});
+
 test("protobuf field changes alter the compatibility digest", () => {
 	const sources = readCanonicalSources();
 	const baseline = buildCompatibilityManifest({ sources });
@@ -151,6 +188,202 @@ test("resident validation changes alter the compatibility digest", () => {
 		},
 	});
 	assert.notEqual(changed.compatibilityDigest, baseline.compatibilityDigest);
+});
+
+test("runtime-owned protocol semantics are bound into the compatibility digest", () => {
+	const sources = readCanonicalSources();
+	const baseline = buildCompatibilityManifest({ sources });
+	const changed = buildCompatibilityManifest({
+		sources: {
+			...sources,
+			runtimeFixture: sources.runtimeFixture.replace(
+				'"responseEndTerminal": false',
+				'"responseEndTerminal": true',
+			),
+		},
+	});
+
+	assert.notEqual(changed.compatibilityDigest, baseline.compatibilityDigest);
+	assert.equal(
+		baseline.compatibility.runtime.schemaVersion,
+		"evalops.maestro.headless-protocol.v1",
+	);
+	assert.equal(
+		baseline.compatibility.runtime.receipt.schemaVersion,
+		"evalops.maestro.runtime-receipt.v1",
+	);
+	assert.match(
+		baseline.compatibility.runtime.receipt.sourceDigest,
+		/^sha256:[0-9a-f]{64}$/,
+	);
+	assert.match(
+		baseline.compatibility.runtime.receipt.contractDigest,
+		/^sha256:[0-9a-f]{64}$/,
+	);
+});
+
+test("runtime contract digest is bound to the serialized runtime fixture", () => {
+	const sources = readCanonicalSources();
+	const baseline = buildCompatibilityManifest({ sources });
+	const changed = buildCompatibilityManifest({
+		sources: {
+			...sources,
+			runtimeFixture: sources.runtimeFixture.replace(
+				'"responseEndTerminal": false',
+				'"responseEndTerminal": true',
+			),
+		},
+	});
+
+	assert.notEqual(
+		changed.compatibility.runtime.contractDigest,
+		baseline.compatibility.runtime.contractDigest,
+	);
+	assert.notEqual(changed.compatibilityDigest, baseline.compatibilityDigest);
+
+	const testOnlySourceChange = buildCompatibilityManifest({
+		sources: {
+			...sources,
+			runtimeProtocol: sources.runtimeProtocol.replace(
+				"checked_in_fixture_matches_typed_contract",
+				"changed_test_only_fixture_name",
+			),
+		},
+	});
+	assert.equal(
+		testOnlySourceChange.compatibility.runtime.contractDigest,
+		baseline.compatibility.runtime.contractDigest,
+	);
+	assert.equal(testOnlySourceChange.compatibilityDigest, baseline.compatibilityDigest);
+});
+
+test("runtime contract digest is independent of JSON object key order", () => {
+	const sources = readCanonicalSources();
+	const baseline = buildCompatibilityManifest({ sources });
+	const reverseObjectKeys = (value) => {
+		if (Array.isArray(value)) return value.map(reverseObjectKeys);
+		if (value !== null && typeof value === "object") {
+			return Object.fromEntries(
+				Object.entries(value)
+					.reverse()
+					.map(([key, child]) => [key, reverseObjectKeys(child)]),
+			);
+		}
+		return value;
+	};
+	const reorderedFixture = JSON.stringify(
+		reverseObjectKeys(JSON.parse(sources.runtimeFixture)),
+	);
+	const reordered = buildCompatibilityManifest({
+		sources: { ...sources, runtimeFixture: reorderedFixture },
+	});
+
+	assert.equal(
+		reordered.compatibility.runtime.contractDigest,
+		baseline.compatibility.runtime.contractDigest,
+	);
+	assert.equal(reordered.compatibilityDigest, baseline.compatibilityDigest);
+});
+
+test("runtime receipt fixture is the normalized compatibility projection", () => {
+	const sources = readCanonicalSources();
+	const baseline = buildCompatibilityManifest({ sources });
+	const changedSource = buildCompatibilityManifest({
+		sources: {
+			...sources,
+			runtimeReceipts: sources.runtimeReceipts.replace(
+				"evalops.maestro.runtime-receipt.v1",
+				"evalops.maestro.runtime-receipt.v2",
+			),
+		},
+	});
+	const changedFixture = buildCompatibilityManifest({
+		sources: {
+			...sources,
+			runtimeReceiptFixture: sources.runtimeReceiptFixture.replace(
+				'"flushWatermark": 5',
+				'"flushWatermark": 6',
+			),
+		},
+	});
+	const testOnlySourceChange = buildCompatibilityManifest({
+		sources: {
+			...sources,
+			runtimeReceipts: sources.runtimeReceipts.replace(
+				"checked_in_fixture_matches_typed_receipt_contract",
+				"renamed_test_only_receipt_fixture",
+			),
+		},
+	});
+
+	assert.notEqual(
+		changedSource.compatibility.runtime.receipt.schemaVersion,
+		baseline.compatibility.runtime.receipt.schemaVersion,
+	);
+	assert.notEqual(changedSource.compatibilityDigest, baseline.compatibilityDigest);
+	assert.equal(
+		changedSource.compatibility.runtime.receipt.sourceDigest,
+		baseline.compatibility.runtime.receipt.sourceDigest,
+	);
+	assert.equal(
+		testOnlySourceChange.compatibility.runtime.receipt.sourceDigest,
+		baseline.compatibility.runtime.receipt.sourceDigest,
+	);
+	assert.equal(testOnlySourceChange.compatibilityDigest, baseline.compatibilityDigest);
+	assert.notEqual(
+		changedFixture.compatibility.runtime.receipt.contractDigest,
+		baseline.compatibility.runtime.receipt.contractDigest,
+	);
+	assert.notEqual(
+		changedFixture.compatibility.runtime.receipt.sourceDigest,
+		baseline.compatibility.runtime.receipt.sourceDigest,
+	);
+	assert.notEqual(changedFixture.compatibilityDigest, baseline.compatibilityDigest);
+	assert.equal(
+		baseline.compatibility.runtime.receipt.sourceDigest,
+		baseline.compatibility.runtime.receipt.contractDigest,
+	);
+	const changedTerminalVariant = buildCompatibilityManifest({
+		sources: {
+			...sources,
+			runtimeReceiptContractFixture: sources.runtimeReceiptContractFixture.replace(
+				'"non_fatal"',
+				'"nonfatal"',
+			),
+		},
+	});
+	assert.notEqual(
+		changedTerminalVariant.compatibility.runtime.receipt.contractDigest,
+		baseline.compatibility.runtime.receipt.contractDigest,
+	);
+	assert.notEqual(changedTerminalVariant.compatibilityDigest, baseline.compatibilityDigest);
+	const changedValidationLimit = buildCompatibilityManifest({
+		sources: {
+			...sources,
+			runtimeReceiptContractFixture: sources.runtimeReceiptContractFixture.replace(
+				'"maxStringBytes": 256',
+				'"maxStringBytes": 128',
+			),
+		},
+	});
+	assert.notEqual(
+		changedValidationLimit.compatibility.runtime.receipt.contractDigest,
+		baseline.compatibility.runtime.receipt.contractDigest,
+	);
+	const changedKindLifecycle = buildCompatibilityManifest({
+		sources: {
+			...sources,
+			runtimeReceiptContractFixture: sources.runtimeReceiptContractFixture.replace(
+				'"terminal": ["active"]',
+				'"terminal": ["drained"]',
+			),
+		},
+	});
+	assert.notEqual(
+		changedKindLifecycle.compatibility.runtime.receipt.contractDigest,
+		baseline.compatibility.runtime.receipt.contractDigest,
+	);
+	assert.notEqual(changedKindLifecycle.compatibilityDigest, baseline.compatibilityDigest);
 });
 
 test("check mode rejects a stale manifest", () => {
@@ -203,6 +436,10 @@ test("source-root receipt generation supports the legacy v1-only recovery source
 		headlessSchema: "proto/maestro/v1/headless.proto",
 		headlessGenerated: "packages/tui-rs/src/headless/generated_protocol.rs",
 		headlessRuntime: "packages/tui-rs/src/headless/messages.rs",
+		runtimeProtocol: "packages/runtime-rs/src/protocol.rs",
+		runtimeFixture: "packages/runtime-rs/fixtures/headless-protocol-v1.json",
+		runtimeReceipts: "packages/runtime-rs/src/receipts.rs",
+		runtimeReceiptFixture: "packages/runtime-rs/fixtures/runtime-receipt-v1.json",
 		transcript: "packages/tui-rs/src/transcript.rs",
 		thread: "packages/tui-rs/src/hosted_runner/thread_protocol.rs",
 		resident: "packages/tui-rs/src/hosted_runner_cli.rs",
@@ -260,6 +497,20 @@ pub(super) const GOVERNED_THREAD_REQUIRED_FIELDS: &[&str] = &["codeMode", "toolG
 		assert.equal(receipt.compatibility.governedCode, null);
 		assert.equal(receipt.buildIdentity.sourceSha, sourceSha);
 		assert.equal(receipt.buildIdentity.buildDigest, buildDigest);
+		assert(
+			!receipt.generatedFrom.includes(
+				"proto/maestro/v1/hosted-thread-compatibility-matrix.json",
+			),
+		);
+		const withoutMatrix = { ...legacySources };
+		delete withoutMatrix.threadCompatibilityMatrix;
+		delete withoutMatrix.runtimeReceiptContractFixture;
+		const expectedLegacy = buildCompatibilityManifest({ sources: withoutMatrix });
+		assert.equal(receipt.compatibilityDigest, expectedLegacy.compatibilityDigest);
+		assert.equal(
+			receipt.compatibility.thread.contractDigest,
+			expectedLegacy.compatibility.thread.contractDigest,
+		);
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}
@@ -272,7 +523,10 @@ test("release receipt rejects a partial artifact identity", () => {
 	);
 });
 
-test("GHCR publish attaches the receipt to the immutable image digest", () => {
+test(
+	"internal GHCR publish attaches the receipt to the immutable image digest",
+	{ skip: IS_PUBLIC_PROJECTION && "internal publisher workflow is excluded from the public projection" },
+	() => {
 	const workflow = readFileSync(
 		resolve(ROOT, ".github/workflows/ghcr-publish.yml"),
 		"utf8",
@@ -283,7 +537,7 @@ test("GHCR publish attaches the receipt to the immutable image digest", () => {
 	);
 	assert.match(
 		workflow,
-		/MAESTRO_BUILD_DIGEST: \$\{\{ steps\.image\.outputs\.digest \}\}/,
+		/MAESTRO_BUILD_DIGEST: \$\{\{ steps\.conformance-image\.outputs\.digest \|\| steps\.image\.outputs\.digest \}\}/,
 	);
 	assert.match(workflow, /cosign attest --yes --timeout 120s/);
 	assert.match(workflow, /cosign verify-attestation --timeout 120s/);
@@ -294,14 +548,36 @@ test("GHCR publish attaches the receipt to the immutable image digest", () => {
 	assert.match(workflow, /client_payload\[protocol_receipt_digest\]/);
 	assert.match(workflow, /\.payload \| @base64d \| fromjson/);
 	assert.match(workflow, /index\(\$expected\[0\]\) != null/);
-});
+	},
+);
 
-test("GHCR recovery dispatch is locked to the reviewed v2 recovery source", () => {
+test(
+	"GHCR manual and recovery dispatches are source-locked",
+	{ skip: IS_PUBLIC_PROJECTION && "internal publisher workflow is excluded from the public projection" },
+	() => {
 	const workflow = readFileSync(
 		resolve(ROOT, ".github/workflows/ghcr-publish.yml"),
 		"utf8",
 	);
-	assert.match(workflow, /^  workflow_dispatch:$/m);
+	assert.match(workflow, /^  workflow_dispatch:\n    inputs:/m);
+	assert.match(workflow, /publish_source_sha:[\s\S]*?required: true[\s\S]*?type: string/);
+	assert.match(
+		workflow,
+		/refs\/heads\/main' && inputs\.publish_source_sha == github\.sha/,
+	);
+	assert.match(workflow, /ref: \$\{\{ inputs\.publish_source_sha \}\}/);
+	assert.match(workflow, /path: manual-source/);
+	assert.match(workflow, /node_version_file="manual-source\/\.node-version"/);
+	assert.match(workflow, /node_version_file="recovery-source\/\.node-version"/);
+	assert.match(workflow, /node_version_file="\.node-version"/);
+	assert.match(
+		workflow,
+		/node-version-file: \$\{\{ steps\.source\.outputs\.node_version_file \}\}/,
+	);
+	assert.doesNotMatch(
+		workflow,
+		/node-version-file: \$\{\{ steps\.source\.outputs\.root \}\}\/\.node-version/,
+	);
 	assert.match(
 		workflow,
 		/paths-ignore:\n      - \.github\/workflows\/ghcr-publish\.yml\n      - scripts\/build-profile-contract\.test\.mjs\n      - scripts\/generate-protocol-compatibility-manifest\.mjs\n      - scripts\/generate-protocol-compatibility-manifest\.test\.mjs\n      - scripts\/measure-ci-build-latency\.mjs\n      - scripts\/recovery-publisher-once\.mjs/,
@@ -314,7 +590,7 @@ test("GHCR recovery dispatch is locked to the reviewed v2 recovery source", () =
 		workflow,
 		/RECOVERY_SOURCE_SHA: e0c1a2daf9ce23ce7f02639e4b5f834837f34b27/,
 	);
-	assert.match(workflow, /'recovery-e0c1a2d-v2'/);
+	assert.match(workflow, /recovery-publisher-e0c1a2d-v2/);
 	assert.match(workflow, /RECOVERY_PUBLISHER_TAG: recovery-publisher-e0c1a2d-v2/);
 	assert.match(
 		workflow,
@@ -326,7 +602,7 @@ test("GHCR recovery dispatch is locked to the reviewed v2 recovery source", () =
 	);
 	assert.match(
 		workflow,
-		/if: github\.event_name == 'push' \|\| \(github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/tags\/recovery-publisher-e0c1a2d-v2'\)/,
+		/if: github\.event_name == 'push' \|\| \(github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/main' && inputs\.publish_source_sha == github\.sha\) \|\| \(github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/tags\/recovery-publisher-e0c1a2d-v2'\)/,
 	);
 	assert.match(workflow, /ref: \$\{\{ env\.RECOVERY_SOURCE_SHA \}\}/);
 	assert.match(workflow, /path: recovery-source/);
@@ -342,10 +618,15 @@ test("GHCR recovery dispatch is locked to the reviewed v2 recovery source", () =
 	assert.match(workflow, /node scripts\/recovery-publisher-once\.mjs preflight/);
 	assert.match(
 		workflow,
-		/if: github\.event_name == 'push' \|\| steps\.recovery-state\.outputs\.image_exists != 'true'/,
+		/if: env\.PUBLISH_MAIN == 'true' \|\| steps\.recovery-state\.outputs\.image_exists != 'true'/,
 	);
 	assert.match(workflow, /RESUMED_DIGEST: \$\{\{ steps\.recovery-state\.outputs\.image_digest \}\}/);
-	assert.match(workflow, /image-digest: \$\{\{ steps\.image\.outputs\.digest \}\}/);
+	assert.match(
+		workflow,
+		/image-digest: \$\{\{ steps\.conformance-image\.outputs\.digest \|\| steps\.image\.outputs\.digest \}\}/,
+	);
+	assert.doesNotMatch(workflow, /isolated conformance push digest differs from the BuildKit digest/);
+	assert.match(workflow, /verified image tag \$\{tag\} resolved to \$\{pushed_digest\}, expected \$\{EXPECTED_DIGEST\}/);
 	assert.match(workflow, /Verify resumable recovery image provenance/);
 	assert.match(
 		workflow,
@@ -360,8 +641,10 @@ test("GHCR recovery dispatch is locked to the reviewed v2 recovery source", () =
 	assert.match(workflow, /--source-root \"\$\{SOURCE_ROOT\}\"/);
 	assert.match(
 		workflow,
-		/type=raw,value=sha-\$\{\{ env\.RECOVERY_SOURCE_SHA \}\},enable=\$\{\{ github\.event_name == 'workflow_dispatch' \}\}/,
+		/type=raw,value=sha-\$\{\{ env\.RECOVERY_SOURCE_SHA \}\},enable=\$\{\{ github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/tags\/recovery-publisher-e0c1a2d-v2' \}\}/,
 	);
+	assert.match(workflow, /PUBLISH_MAIN: \$\{\{ github\.event_name == 'push'/);
+	assert.match(workflow, /push: \$\{\{ github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/tags\/recovery-publisher-e0c1a2d-v2' \}\}/);
 	const reservationIndex = workflow.indexOf(
 		"node scripts/recovery-publisher-once.mjs reserve-and-dispatch",
 	);
@@ -373,7 +656,24 @@ test("GHCR recovery dispatch is locked to the reviewed v2 recovery source", () =
 	assert(helper.indexOf("await reserve();") < helper.indexOf("await dispatch();"));
 	assert.match(helper, /client_payload\[image_tag\]=sha-\$\{sourceSha\}/);
 	assert.match(helper, /timeout: 120_000/);
-});
+	},
+);
+
+test(
+	"public projection retains the public-owned GHCR release workflow contract",
+	{ skip: !IS_PUBLIC_PROJECTION && "public workflow contract is only evaluated in the public projection" },
+	() => {
+		const workflow = readFileSync(
+			resolve(ROOT, ".github/workflows/ghcr-publish.yml"),
+			"utf8",
+		);
+		assert.match(workflow, /^  push:\n    branches:\n      - main/m);
+		assert.match(workflow, /^  pull_request:\s*$/m);
+		assert.doesNotMatch(workflow, /^  workflow_dispatch:/m);
+		assert.match(workflow, /type=sha,prefix=sha-/);
+		assert.match(workflow, /push: true/);
+	},
+);
 
 test("recovery publisher fails closed on ambiguity and resumes an exact partial digest", async () => {
 	const missing = () => Promise.reject(new CommandFailure("probe", "HTTP 404 Not Found"));

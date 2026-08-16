@@ -116,7 +116,8 @@ pub use message_queue::{
     MessageQueue, PendingMessage, PromptKind, QueuePlacement, QueueStats, MAX_PENDING_MESSAGES,
 };
 pub use native::{
-    NativeAgent, NativeAgentConfig, ToolDefinition, ToolResponseConsumption, ToolResponseMessage,
+    MaxTokensSource, NativeAgent, NativeAgentConfig, ToolDefinition, ToolResponseConsumption,
+    ToolResponseMessage,
 };
 pub use protocol::{
     ensure_untrusted_content_policy, DenialReason, ExecutionPhase, ExecutionReceipt,

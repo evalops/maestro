@@ -22,13 +22,10 @@ const FOCUSED_SLICE_LIMIT: usize = 8;
 /// other providers retain the historical bare-id behavior.
 #[must_use]
 pub(crate) fn selection_model_id(model: &ModelInfo) -> String {
-    match model.provider.as_str() {
-        "google" | "vertex-ai" => format!("{}/{}", model.provider, model.id),
-        _ => model.id.clone(),
-    }
+    crate::model_catalog::model_route(model)
 }
 
-fn canonical_current_route(model_id: &str, models: &[ModelInfo]) -> Option<String> {
+pub(crate) fn canonical_current_route(model_id: &str, models: &[ModelInfo]) -> Option<String> {
     let (provider, bare_id) = model_id
         .split_once('/')
         .map_or((None, model_id), |(provider, model)| {
@@ -70,8 +67,12 @@ fn model_matches_current(
 
 /// Model selector modal state
 pub struct ModelSelector {
+    /// Stable catalog snapshot used as the base for replacing discovery batches.
+    catalog_models: Vec<ModelInfo>,
     /// Available models
     models: Vec<ModelInfo>,
+    /// Latest applied local discovery generation.
+    discovery_generation: u64,
     /// Current search query
     query: String,
     /// Cursor position in query
@@ -105,7 +106,9 @@ impl ModelSelector {
         let models = available_models();
         let filtered: Vec<usize> = (0..models.len()).collect();
         Self {
+            catalog_models: models.clone(),
             models,
+            discovery_generation: 0,
             query: String::new(),
             cursor: 0,
             filtered,
@@ -121,6 +124,7 @@ impl ModelSelector {
     #[cfg(test)]
     fn with_models(models: Vec<ModelInfo>) -> Self {
         let mut selector = Self::new();
+        selector.catalog_models = models.clone();
         selector.models = models;
         selector.filter();
         selector
@@ -135,7 +139,11 @@ impl ModelSelector {
     }
 
     /// Apply verification to the matching catalog entry.
-    pub fn set_verification(&mut self, model_id: &str, verification: ModelVerification) -> bool {
+    pub fn set_verification(
+        &mut self,
+        model_id: &str,
+        mut verification: ModelVerification,
+    ) -> bool {
         let Some(catalog_model) = crate::model_catalog::find_model(model_id) else {
             return false;
         };
@@ -146,10 +154,121 @@ impl ModelSelector {
         else {
             return false;
         };
+        // A registry-only auth check is weaker than a successful live local
+        // discovery. Preserve the live source so the ready badge and active
+        // row retention continue to reflect the strongest evidence.
+        if model.verification.source == "local-runtime"
+            && verification.state == crate::model_catalog::VerificationState::Verified
+            && verification.source == "provider-registry"
+        {
+            if model.verification.state != crate::model_catalog::VerificationState::Verified {
+                return false;
+            }
+            verification.source.clone_from(&model.verification.source);
+            if verification.detail.is_none() {
+                verification.detail.clone_from(&model.verification.detail);
+            }
+        }
         if model.verification == verification {
             return false;
         }
         model.verification = verification;
+        if let Some(base) = self
+            .catalog_models
+            .iter_mut()
+            .find(|model| model.id == catalog_model.id && model.provider == catalog_model.provider)
+        {
+            base.verification = model.verification.clone();
+        }
+        true
+    }
+
+    /// Replace the complete discovered-model snapshot. Older batches are
+    /// ignored, catalog duplicates are replaced in place, and the selected
+    /// route remains stable when it still exists.
+    pub fn replace_discovered_models(
+        &mut self,
+        generation: u64,
+        discovered: Vec<ModelInfo>,
+    ) -> bool {
+        if generation <= self.discovery_generation {
+            return false;
+        }
+        let selected_show_all = self.selected_show_all();
+        let selected_route = self.selected_model_id();
+        let active_discovered_model = self.current_model.as_deref().and_then(|current| {
+            let current_route = canonical_current_route(current, &self.models)?;
+            self.models
+                .iter()
+                .find(|model| {
+                    model.verification.source == "local-runtime"
+                        && selection_model_id(model) == current_route
+                })
+                .cloned()
+        });
+        self.discovery_generation = generation;
+        self.models = self.catalog_models.clone();
+        for discovered_model in discovered {
+            if let Some(existing) = self.models.iter_mut().find(|model| {
+                model.provider == discovered_model.provider && model.id == discovered_model.id
+            }) {
+                *existing = discovered_model;
+            } else {
+                self.models.push(discovered_model);
+            }
+        }
+        if let Some(mut active_model) = active_discovered_model {
+            let active_is_still_discovered = self.models.iter().any(|model| {
+                model.provider == active_model.provider
+                    && model.id == active_model.id
+                    && model.verification.source == "local-runtime"
+            });
+            if !active_is_still_discovered {
+                active_model.verification.state =
+                    crate::model_catalog::VerificationState::Unavailable;
+                let unavailable_detail = "Not reported by the local runtime on the latest refresh";
+                match active_model.verification.detail.as_mut() {
+                    Some(detail) if !detail.contains(unavailable_detail) => {
+                        detail.push_str("; ");
+                        detail.push_str(unavailable_detail);
+                    }
+                    Some(_) => {}
+                    None => {
+                        active_model.verification.detail = Some(unavailable_detail.to_owned());
+                    }
+                }
+                if let Some(catalog_row) = self.models.iter_mut().find(|model| {
+                    model.provider == active_model.provider && model.id == active_model.id
+                }) {
+                    *catalog_row = active_model;
+                } else {
+                    self.models.push(active_model);
+                }
+            }
+        }
+        self.filter();
+        if selected_show_all {
+            self.selected = if self.show_all_affordance {
+                self.filtered.len()
+            } else {
+                0
+            };
+            self.list_state
+                .select((!self.filtered.is_empty()).then_some(self.selected));
+        } else if let Some(route) = selected_route {
+            if let Some(position) = self.filtered.iter().position(|&idx| {
+                self.models
+                    .get(idx)
+                    .is_some_and(|model| selection_model_id(model) == route)
+            }) {
+                self.selected = position;
+                self.list_state.select(Some(position));
+            } else {
+                self.selected = 0;
+                self.list_state
+                    .select((!self.filtered.is_empty()).then_some(0));
+            }
+        }
         true
     }
 
@@ -293,6 +412,7 @@ impl ModelSelector {
                 m.id.to_lowercase().contains(&query)
                     || m.name.to_lowercase().contains(&query)
                     || m.provider.to_lowercase().contains(&query)
+                    || model_status_summary(m).to_lowercase().contains(&query)
                     || crate::palette_resource::PaletteResource::from(*m).matches(&query)
             })
             .map(|(i, _)| i)
@@ -321,9 +441,9 @@ impl ModelSelector {
         }
     }
 
-    /// Current model plus each catalog provider's default, deduplicated and
-    /// capped at [`FOCUSED_SLICE_LIMIT`], so the freshly opened selector
-    /// stays short now that the catalog spans dozens of models.
+    /// Current model, discovered local models, and each catalog provider's
+    /// default, deduplicated and normally capped at [`FOCUSED_SLICE_LIMIT`].
+    /// The active row and every discovered row remain visible above that cap.
     fn focused_slice(&self) -> Vec<usize> {
         let mut slice: Vec<usize> = Vec::new();
         if let Some(current) = &self.current_model {
@@ -331,6 +451,11 @@ impl ModelSelector {
             if let Some(idx) = self.models.iter().position(|model| {
                 model_matches_current(model, current, canonical_current.as_deref())
             }) {
+                slice.push(idx);
+            }
+        }
+        for (idx, model) in self.models.iter().enumerate() {
+            if model.verification.source == "local-runtime" && !slice.contains(&idx) {
                 slice.push(idx);
             }
         }
@@ -349,7 +474,18 @@ impl ModelSelector {
                 }
             }
         }
-        slice.truncate(FOCUSED_SLICE_LIMIT);
+        if slice.len() > FOCUSED_SLICE_LIMIT {
+            let detected = slice
+                .iter()
+                .filter(|&&idx| self.models[idx].verification.source == "local-runtime")
+                .count();
+            let active_catalog_row = usize::from(
+                slice
+                    .first()
+                    .is_some_and(|&idx| self.models[idx].verification.source != "local-runtime"),
+            );
+            slice.truncate(FOCUSED_SLICE_LIMIT.max(detected + active_catalog_row));
+        }
         slice
     }
 
@@ -438,16 +574,7 @@ impl ModelSelector {
                 }
 
                 spans.push(Span::styled(
-                    format!(
-                        " {:?} T{} V{} R{} S{} {}k | {:?}",
-                        model.capabilities.protocol,
-                        u8::from(model.capabilities.tools),
-                        u8::from(model.capabilities.vision),
-                        u8::from(model.capabilities.reasoning),
-                        u8::from(model.capabilities.streaming),
-                        model.capabilities.context_tokens / 1000,
-                        model.verification.state,
-                    ),
+                    format!(" {}", model_status_summary(model)),
                     Style::default().fg(Color::DarkGray),
                 ));
 
@@ -502,11 +629,40 @@ fn description_summary(model: &ModelInfo) -> String {
 /// Compact context window label: `1M ctx` for exact millions, `200k ctx`
 /// otherwise.
 fn format_context_window(context_tokens: u32) -> String {
-    if context_tokens >= 1_000_000 && context_tokens.is_multiple_of(1_000_000) {
+    if context_tokens == 0 {
+        "unknown ctx".to_owned()
+    } else if context_tokens >= 1_000_000 && context_tokens.is_multiple_of(1_000_000) {
         format!("{}M ctx", context_tokens / 1_000_000)
     } else {
         format!("{}k ctx", context_tokens / 1000)
     }
+}
+
+fn model_status_summary(model: &ModelInfo) -> String {
+    let local = model.verification.source == "local-runtime";
+    let unknown = model
+        .verification
+        .detail
+        .as_deref()
+        .is_some_and(|detail| detail.contains("not in the catalog"));
+    let prefix = if local {
+        match model.verification.state {
+            crate::model_catalog::VerificationState::Verified => "Local · ready",
+            crate::model_catalog::VerificationState::Unavailable => "Local · unavailable",
+            crate::model_catalog::VerificationState::Catalog
+            | crate::model_catalog::VerificationState::Unknown => "Local · unknown",
+        }
+    } else {
+        "Catalog"
+    };
+    let mark = if unknown { "?" } else { "" };
+    format!(
+        "{prefix} · {mark}T{} {mark}V{} {mark}R{} · {}",
+        u8::from(model.capabilities.tools),
+        u8::from(model.capabilities.vision),
+        u8::from(model.capabilities.reasoning),
+        format_context_window(model.capabilities.context_tokens),
+    )
 }
 
 #[cfg(test)]
@@ -626,6 +782,25 @@ mod tests {
     }
 
     #[test]
+    fn selection_route_preserves_llamacpp_provider() {
+        let model = crate::model_catalog::find_model("llamacpp/Qwen3.8-27B")
+            .expect("local Qwen catalog row");
+
+        assert_eq!(selection_model_id(&model), "llamacpp/Qwen3.8-27B");
+    }
+
+    #[test]
+    fn selection_routes_preserve_every_local_provider() {
+        for provider in ["llamacpp", "lmstudio", "ollama"] {
+            let model = test_model("local-model", provider);
+            assert_eq!(
+                selection_model_id(&model),
+                format!("{provider}/local-model")
+            );
+        }
+    }
+
+    #[test]
     fn focused_slice_canonicalizes_current_google_and_vertex_aliases() {
         for (current, expected_provider) in [
             ("vertex-ai/gemini-2.5-pro", "vertex-ai"),
@@ -697,6 +872,71 @@ mod tests {
         );
     }
 
+    #[test]
+    fn offline_registry_verification_does_not_replace_live_local_evidence() {
+        let mut selector = ModelSelector::with_models(slice_catalog());
+        let mut discovered = test_model("active-local", "llamacpp");
+        discovered.verification = ModelVerification {
+            state: crate::model_catalog::VerificationState::Verified,
+            source: "local-runtime".to_owned(),
+            detail: Some("live discovery".to_owned()),
+        };
+        assert!(selector.replace_discovered_models(1, vec![discovered]));
+
+        let changed = selector.set_verification(
+            "llamacpp/active-local",
+            ModelVerification {
+                state: crate::model_catalog::VerificationState::Verified,
+                source: "provider-registry".to_owned(),
+                detail: None,
+            },
+        );
+
+        assert!(!changed);
+        let model = selector
+            .models
+            .iter()
+            .find(|model| selection_model_id(model) == "llamacpp/active-local")
+            .expect("discovered model");
+        assert_eq!(model.verification.source, "local-runtime");
+        assert_eq!(model.verification.detail.as_deref(), Some("live discovery"));
+    }
+
+    #[test]
+    fn offline_registry_verification_does_not_revive_unavailable_local_evidence() {
+        let mut selector = ModelSelector::new();
+        let mut active = crate::model_catalog::find_model("llamacpp/Qwen3.8-27B")
+            .expect("built-in local Qwen row");
+        active.verification = ModelVerification {
+            state: crate::model_catalog::VerificationState::Verified,
+            source: "local-runtime".to_owned(),
+            detail: Some("live discovery".to_owned()),
+        };
+        assert!(selector.replace_discovered_models(1, vec![active]));
+        selector.set_current_model(Some("llamacpp/Qwen3.8-27B".to_owned()));
+        assert!(selector.replace_discovered_models(2, vec![]));
+
+        assert!(!selector.set_verification(
+            "llamacpp/Qwen3.8-27B",
+            ModelVerification {
+                state: crate::model_catalog::VerificationState::Verified,
+                source: "provider-registry".to_owned(),
+                detail: None,
+            },
+        ));
+
+        let retained = selector
+            .models
+            .iter()
+            .find(|model| model.provider == "llamacpp" && model.id == "Qwen3.8-27B")
+            .expect("retained local Qwen row");
+        assert_eq!(
+            retained.verification.state,
+            crate::model_catalog::VerificationState::Unavailable
+        );
+        assert_eq!(retained.verification.source, "local-runtime");
+    }
+
     fn test_model(id: &str, provider: &str) -> ModelInfo {
         ModelInfo {
             id: id.to_owned(),
@@ -759,6 +999,32 @@ mod tests {
     }
 
     #[test]
+    fn focused_slice_keeps_current_model_ahead_of_discovered_models() {
+        let mut selector = ModelSelector::with_models(slice_catalog());
+        let discovered = (0..10)
+            .map(|index| {
+                let mut model = test_model(&format!("local-{index}"), "ollama");
+                model.verification = ModelVerification {
+                    state: crate::model_catalog::VerificationState::Verified,
+                    source: "local-runtime".to_owned(),
+                    detail: None,
+                };
+                model
+            })
+            .collect();
+        assert!(selector.replace_discovered_models(1, discovered));
+        selector.set_current_model(Some("grok-4.5".to_owned()));
+        selector.show();
+
+        assert_eq!(
+            selector.selected_model_id().as_deref(),
+            Some("grok-4.5"),
+            "opening and confirming the selector must preserve the active route"
+        );
+        assert_eq!(selector.filtered.len(), 11);
+    }
+
+    #[test]
     fn show_all_toggle_expands_and_collapses_full_catalog() {
         let mut selector = ModelSelector::with_models(slice_catalog());
         selector.show();
@@ -802,6 +1068,44 @@ mod tests {
     }
 
     #[test]
+    fn search_matches_rendered_local_verification_status() {
+        for (state, query, expected) in [
+            (
+                crate::model_catalog::VerificationState::Verified,
+                "ready",
+                "ready-local",
+            ),
+            (
+                crate::model_catalog::VerificationState::Unavailable,
+                "unavailable",
+                "unavailable-local",
+            ),
+        ] {
+            let mut matching = test_model(expected, "llamacpp");
+            matching.verification = ModelVerification {
+                state,
+                source: "local-runtime".to_owned(),
+                detail: None,
+            };
+            let mut other = test_model("other-local", "ollama");
+            other.verification = ModelVerification {
+                state: crate::model_catalog::VerificationState::Unknown,
+                source: "local-runtime".to_owned(),
+                detail: None,
+            };
+            let mut selector = ModelSelector::with_models(vec![matching, other]);
+            selector.show();
+            selector.insert_str(query);
+
+            assert_eq!(selector.filtered.len(), 1, "status query {query}");
+            assert_eq!(
+                selector.selected_model_id().as_deref(),
+                Some(format!("llamacpp/{expected}").as_str())
+            );
+        }
+    }
+
+    #[test]
     fn description_summary_shows_description_and_context_window() {
         let mut model = test_model("gpt-5.5", "openai");
         model.description = "Flagship general-purpose model".to_owned();
@@ -815,6 +1119,171 @@ mod tests {
         assert!(description_summary(&model).ends_with("1M ctx"));
         model.capabilities.context_tokens = 131_072;
         assert!(description_summary(&model).ends_with("131k ctx"));
+        model.capabilities.context_tokens = 0;
+        assert!(description_summary(&model).ends_with("unknown ctx"));
+    }
+
+    #[test]
+    fn discovered_models_are_deduplicated_and_lead_the_focused_slice() {
+        let mut selector = ModelSelector::with_models(slice_catalog());
+        let mut first = test_model("Qwen3.8-27B", "llamacpp");
+        first.verification = ModelVerification {
+            state: crate::model_catalog::VerificationState::Verified,
+            source: "local-runtime".to_owned(),
+            detail: None,
+        };
+        selector.models.push(test_model("Qwen3.8-27B", "llamacpp"));
+        let mut second = test_model("qwen3.6:27b", "ollama");
+        second.verification = first.verification.clone();
+
+        assert!(selector.replace_discovered_models(1, vec![first, second]));
+        selector.show();
+
+        let focused = selector
+            .filtered
+            .iter()
+            .map(|&idx| (&selector.models[idx].provider, &selector.models[idx].id))
+            .collect::<Vec<_>>();
+        assert_eq!(focused[0].0, "llamacpp");
+        assert_eq!(focused[1].0, "ollama");
+        assert_eq!(
+            selector
+                .models
+                .iter()
+                .filter(|model| model.provider == "llamacpp" && model.id == "Qwen3.8-27B")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn stale_discovery_batches_do_not_reorder_the_active_selection() {
+        let mut selector = ModelSelector::with_models(slice_catalog());
+        selector.show();
+        selector.move_down();
+        let selected = selector.selected_model_id();
+
+        assert!(selector.replace_discovered_models(2, vec![]));
+        assert!(!selector.replace_discovered_models(1, vec![test_model("stale", "ollama")]));
+        assert_eq!(selector.selected_model_id(), selected);
+    }
+
+    #[test]
+    fn discovery_refresh_resets_selection_when_the_selected_route_disappears() {
+        let mut selector = ModelSelector::with_models(slice_catalog());
+        let mut first = test_model("first-local", "llamacpp");
+        first.verification.source = "local-runtime".to_owned();
+        let mut second = test_model("second-local", "ollama");
+        second.verification.source = "local-runtime".to_owned();
+        assert!(selector.replace_discovered_models(1, vec![first.clone(), second]));
+        selector.show();
+        selector.move_down();
+        assert_eq!(
+            selector.selected_model_id().as_deref(),
+            Some("ollama/second-local")
+        );
+
+        assert!(selector.replace_discovered_models(2, vec![first]));
+
+        assert_eq!(
+            selector.selected_model_id().as_deref(),
+            Some("llamacpp/first-local")
+        );
+        assert_eq!(selector.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn discovery_refresh_preserves_show_all_affordance_selection() {
+        let mut selector = ModelSelector::with_models(slice_catalog());
+        selector.show();
+        while !selector.selected_show_all() {
+            selector.move_down();
+        }
+        let previous_index = selector.selected;
+
+        let mut discovered = test_model("new-local", "ollama");
+        discovered.verification.source = "local-runtime".to_owned();
+        assert!(selector.replace_discovered_models(1, vec![discovered]));
+
+        assert!(selector.selected_show_all());
+        assert_ne!(selector.selected, previous_index);
+        assert!(selector.selected_model_id().is_none());
+    }
+
+    #[test]
+    fn discovery_refresh_retains_an_active_missing_local_route_as_unavailable() {
+        let mut selector = ModelSelector::with_models(slice_catalog());
+        let mut active = test_model("active-local", "llamacpp");
+        active.verification = ModelVerification {
+            state: crate::model_catalog::VerificationState::Verified,
+            source: "local-runtime".to_owned(),
+            detail: Some("Capabilities are not in the catalog".to_owned()),
+        };
+        assert!(selector.replace_discovered_models(1, vec![active]));
+        selector.set_current_model(Some("llamacpp/active-local".to_owned()));
+        selector.show();
+
+        assert!(selector.replace_discovered_models(2, vec![]));
+
+        let retained = selector
+            .models
+            .iter()
+            .find(|model| selection_model_id(model) == "llamacpp/active-local")
+            .expect("active local model remains visible");
+        assert_eq!(
+            retained.verification.state,
+            crate::model_catalog::VerificationState::Unavailable
+        );
+        let status = model_status_summary(retained);
+        assert!(status.starts_with("Local · unavailable"));
+        assert!(!status.contains("Local · ready"));
+        assert!(status.contains("· ?T"));
+        assert!(status.contains(" ?V"));
+        assert!(status.contains(" ?R"));
+        let detail = retained.verification.detail.as_deref().expect("detail");
+        assert!(detail.contains("Capabilities are not in the catalog"));
+        assert!(detail.contains("Not reported by the local runtime"));
+        assert_eq!(
+            selector.selected_model_id().as_deref(),
+            Some("llamacpp/active-local")
+        );
+    }
+
+    #[test]
+    fn discovery_refresh_replaces_matching_catalog_row_with_unavailable_active_model() {
+        let mut selector = ModelSelector::new();
+        let mut active = crate::model_catalog::find_model("llamacpp/Qwen3.8-27B")
+            .expect("built-in local Qwen row");
+        active.verification = ModelVerification {
+            state: crate::model_catalog::VerificationState::Verified,
+            source: "local-runtime".to_owned(),
+            detail: Some("Capabilities from the built-in catalog".to_owned()),
+        };
+        assert!(selector.replace_discovered_models(1, vec![active]));
+        selector.set_current_model(Some("llamacpp/Qwen3.8-27B".to_owned()));
+        selector.show();
+
+        assert!(selector.replace_discovered_models(2, vec![]));
+
+        let matching = selector
+            .models
+            .iter()
+            .filter(|model| model.provider == "llamacpp" && model.id == "Qwen3.8-27B")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            matching.len(),
+            1,
+            "retention must not duplicate the catalog row"
+        );
+        assert_eq!(
+            matching[0].verification.state,
+            crate::model_catalog::VerificationState::Unavailable
+        );
+        assert_eq!(matching[0].verification.source, "local-runtime");
+        assert_eq!(
+            selector.selected_model_id().as_deref(),
+            Some("llamacpp/Qwen3.8-27B")
+        );
     }
 
     #[test]

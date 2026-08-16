@@ -11,6 +11,15 @@ if (!existsSync(dockerfilePath)) {
 }
 
 const dockerfile = readFileSync(dockerfilePath, "utf8");
+const stageContents = (stageName) => {
+	const match = dockerfile.match(
+		new RegExp(
+			`(?:^|\\n)FROM\\s+[^\\n]+\\s+AS\\s+${stageName}\\b([\\s\\S]*?)(?=\\nFROM\\s|$)`,
+			"i",
+		),
+	);
+	return match?.[1] ?? "";
+};
 const nativeStageHasRustToolchain =
 	/FROM\s+rust:[^\s]+\s+AS\s+native/.test(dockerfile) ||
 	(/FROM\s+\S*cargo-chef:[^\s]+\s+AS\s+chef/.test(dockerfile) &&
@@ -28,11 +37,21 @@ const required = [
 	[/CMD\s+\["web"\]/, "Rust web command"],
 ];
 
+const runtimeBoundaryCopy = /COPY\s+packages\/runtime-rs\s+\.\/packages\/runtime-rs/;
+const plannerStage = stageContents("planner");
+const nativeStage = stageContents("native");
+
 const missing = required
 	.filter(([pattern]) => !pattern.test(dockerfile))
 	.map(([, label]) => label);
 if (!nativeStageHasRustToolchain) {
 	missing.unshift("Rust native build stage");
+}
+if (!runtimeBoundaryCopy.test(plannerStage)) {
+	missing.push("native runtime boundary crate in planner Docker stage");
+}
+if (!runtimeBoundaryCopy.test(nativeStage)) {
+	missing.push("native runtime boundary crate in native Docker stage");
 }
 if (missing.length > 0) {
 	console.error(`Dockerfile is missing native runtime contracts: ${missing.join(", ")}`);

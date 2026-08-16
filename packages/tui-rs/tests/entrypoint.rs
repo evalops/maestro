@@ -29,8 +29,8 @@ fn argv(words: &[&str]) -> Vec<OsString> {
 fn every_native_utility_command_routes_to_the_utility_handler() {
     assert_eq!(
         NATIVE_UTILITY_COMMANDS.len(),
-        36,
-        "this test's evidence baseline is 36 utility commands; update it deliberately \
+        37,
+        "this test's evidence baseline is 37 utility commands; update it deliberately \
          if the canonical table changes size"
     );
 

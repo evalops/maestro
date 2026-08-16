@@ -324,6 +324,10 @@ fn resolve_native_client(
         crate::codex_auth::read_codex_auth(),
         false,
     );
+    // Managed credentials are resolved into this caller-owned map only. The
+    // process environment and plugin code never receive the secret value.
+    let _managed_connection =
+        crate::service_connections::ConnectionBroker::merge_default_for_model(model, &mut env)?;
     let client = UnifiedClient::from_model_with_env(model, &env)?;
     let provider_name = client.provider_name().to_string();
     Ok((
@@ -399,6 +403,16 @@ fn emit_compaction_event(
     });
 }
 
+/// Provenance for the per-request output limit.
+///
+/// Catalog-derived limits follow model switches. Explicit limits are stable
+/// across switches, even when their numeric value equals a catalog default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaxTokensSource {
+    Catalog,
+    Explicit,
+}
+
 /// Configuration for the native agent
 ///
 /// Defines the AI model settings, system prompt, thinking capabilities, and execution
@@ -418,6 +432,7 @@ fn emit_compaction_event(
 /// let config = NativeAgentConfig {
 ///     model: "claude-opus-4-5-20251101".to_string(),
 ///     max_tokens: 32768,
+///     max_tokens_source: maestro_tui::agent::MaxTokensSource::Explicit,
 ///     system_prompt: Some("You are a helpful coding assistant.".to_string()),
 ///     thinking_enabled: true,
 ///     thinking_budget: 20000,
@@ -440,6 +455,9 @@ pub struct NativeAgentConfig {
     /// Limits the length of generated responses. Different models support different
     /// max token values (check provider documentation).
     pub max_tokens: u32,
+
+    /// Whether `max_tokens` came from model metadata or explicit configuration.
+    pub max_tokens_source: MaxTokensSource,
 
     /// System prompt
     ///
@@ -505,6 +523,7 @@ impl Default for NativeAgentConfig {
         Self {
             model,
             max_tokens,
+            max_tokens_source: MaxTokensSource::Catalog,
             system_prompt: None,
             thinking_enabled: false,
             thinking_budget: 10000,
@@ -784,6 +803,8 @@ enum AgentCommand {
         kind: PromptKind,
         /// Optional queue id for correlating queued prompts with UI state.
         queue_id: Option<u64>,
+        /// Correlation identity bound to this exact governed runtime turn.
+        managed_request_lineage: Option<String>,
     },
 
     /// Reinsert a follow-up at the front of the follow-up subsection.
@@ -810,6 +831,9 @@ enum AgentCommand {
     /// Switches to a different AI model (e.g., from Claude to GPT-5).
     /// The conversation history is preserved.
     SetModel { model: String },
+
+    /// Re-resolve catalog/runtime limits for the already active model.
+    RefreshModelBudgets,
 
     /// Update thinking configuration
     ///
@@ -1129,6 +1153,7 @@ impl NativeAgent {
     /// let config = NativeAgentConfig {
     ///     model: "claude-opus-4-5-20251101".to_string(),
     ///     max_tokens: 16384,
+    ///     max_tokens_source: maestro_tui::agent::MaxTokensSource::Explicit,
     ///     system_prompt: Some("You are a Rust expert.".to_string()),
     ///     thinking_enabled: true,
     ///     thinking_budget: 10000,
@@ -1486,6 +1511,8 @@ impl NativeAgent {
             runtime_prompt_revision: 0,
             runtime_audit: Arc::clone(&runtime_audit),
             codex_file_change_paths_by_item: HashMap::new(),
+            codex_native_tools_by_item: HashMap::new(),
+            codex_native_pending_completions: HashMap::new(),
         };
 
         // Spawn the background task
@@ -1570,12 +1597,26 @@ impl NativeAgent {
         kind: PromptKind,
         queue_id: Option<u64>,
     ) -> Result<()> {
+        self.prompt_with_kind_and_lineage(content, attachments, kind, queue_id, None)
+            .await
+    }
+
+    /// Send a prompt with correlation bound to the prompt rather than session state.
+    pub async fn prompt_with_kind_and_lineage(
+        &self,
+        content: String,
+        attachments: Vec<String>,
+        kind: PromptKind,
+        queue_id: Option<u64>,
+        managed_request_lineage: Option<String>,
+    ) -> Result<()> {
         self.command_tx
             .send(AgentCommand::Prompt {
                 content,
                 attachments,
                 kind,
                 queue_id,
+                managed_request_lineage,
             })
             .map_err(|e| anyhow::anyhow!("Failed to send prompt: {e}"))?;
         Ok(())
@@ -1696,6 +1737,13 @@ impl NativeAgent {
             .send(AgentCommand::SetModel { model })
             .map_err(|e| anyhow::anyhow!("Failed to set model: {e}"))?;
         Ok(())
+    }
+
+    /// Refresh context and catalog-derived output limits for the active model.
+    pub fn refresh_model_budgets(&self) -> Result<()> {
+        self.command_tx
+            .send(AgentCommand::RefreshModelBudgets)
+            .map_err(|e| anyhow::anyhow!("Failed to refresh model budgets: {e}"))
     }
 
     /// Set thinking level
@@ -2299,10 +2347,24 @@ struct NativeAgentRunner {
     /// item notifications; this map correlates them so the action firewall and
     /// path-sensitive policy hooks see the same full change set.
     codex_file_change_paths_by_item: CodexFileChangeItemCache,
+
+    /// Approved Codex-native operations awaiting their authoritative
+    /// `item/completed` notification, keyed by Codex item id.
+    codex_native_tools_by_item: HashMap<String, CodexNativeToolCorrelation>,
+
+    /// Native operation completions that arrived before their approval could
+    /// record an item correlation, keyed by Codex item id.
+    codex_native_pending_completions: HashMap<String, bool>,
 }
 
 /// itemId → path → per-path patch metadata (may be an empty object).
 type CodexFileChangeItemCache = HashMap<String, Map<String, Value>>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CodexNativeToolCorrelation {
+    call_id: String,
+    tool_name: String,
+}
 
 /// One finished Codex tool call, ready to be turned into a wire response.
 struct CodexToolOutcome<'a> {
@@ -2539,6 +2601,22 @@ fn codex_native_denied_by_active_tools(
     }
 }
 
+/// Whether a Codex `item/tool/call` names a tool absent from the live
+/// governed allowlist.
+fn codex_tool_call_denied_by_active_tools(
+    tool_name: &str,
+    active_tool_names: &HashSet<String>,
+) -> Option<String> {
+    if active_tool_names
+        .iter()
+        .any(|active| active.eq_ignore_ascii_case(tool_name))
+    {
+        None
+    } else {
+        Some(format!("active tool allowlist excludes `{tool_name}`"))
+    }
+}
+
 /// Merge patch metadata objects.
 ///
 /// Keys present in `from` overwrite `into` (later notifications win). Keys
@@ -2756,6 +2834,179 @@ fn remember_codex_file_change_item_paths(
     let entry = known_item_paths.entry(item_id).or_default();
     for (path, meta) in entries {
         insert_file_change_entry(entry, &path, meta);
+    }
+}
+
+/// Preserve file-change paths carried by an `item/completed` notification.
+///
+/// The completion stream has a separate lifecycle owner from the ordinary
+/// file-change notification stream, but a later item-id-only approval still
+/// needs the completed item's paths for policy and firewall evaluation.
+fn remember_codex_file_change_completion_paths(
+    notification: &crate::codex_app_server::Notification,
+    known_item_paths: &mut CodexFileChangeItemCache,
+) {
+    let Some(params) = notification.params.as_ref() else {
+        return;
+    };
+    let is_file_change = params
+        .pointer("/item/type")
+        .or_else(|| params.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("fileChange"));
+    if is_file_change {
+        remember_codex_file_change_item_paths(params, known_item_paths);
+    }
+}
+
+fn codex_native_item_id(params: Option<&Value>) -> Option<&str> {
+    let params = params?;
+    params
+        .get("itemId")
+        .or_else(|| params.get("item_id"))
+        .or_else(|| params.pointer("/item/id"))
+        .and_then(Value::as_str)
+        .filter(|item_id| !item_id.trim().is_empty())
+}
+
+fn remember_approved_codex_native_operation(
+    params: Option<&Value>,
+    call_id: &str,
+    tool_name: &str,
+    correlations: &mut HashMap<String, CodexNativeToolCorrelation>,
+) {
+    let Some(item_id) = codex_native_item_id(params) else {
+        return;
+    };
+    correlations.insert(
+        item_id.to_owned(),
+        CodexNativeToolCorrelation {
+            call_id: call_id.to_owned(),
+            tool_name: tool_name.to_owned(),
+        },
+    );
+}
+
+fn codex_native_completion(
+    notification: &crate::codex_app_server::Notification,
+) -> Option<(String, bool)> {
+    if notification.method != "item/completed" {
+        return None;
+    }
+    let params = notification.params.as_ref()?;
+    let item = params.get("item")?;
+    if !matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("fileChange" | "commandExecution")
+    ) {
+        return None;
+    }
+    let item_id = item
+        .get("id")
+        .or_else(|| params.get("itemId"))
+        .and_then(Value::as_str)?
+        .trim();
+    if item_id.is_empty() {
+        return None;
+    }
+    let failed_status = item
+        .get("status")
+        .or_else(|| params.get("status"))
+        .and_then(Value::as_str)
+        .is_some_and(|status| matches!(status, "failed" | "cancelled" | "canceled"));
+    let is_error = item
+        .get("isError")
+        .or_else(|| item.get("is_error"))
+        .or_else(|| params.get("isError"))
+        .or_else(|| params.get("is_error"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let nonzero_exit = matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("commandExecution")
+    ) && item
+        .get("exitCode")
+        .or_else(|| item.get("exit_code"))
+        .or_else(|| params.get("exitCode"))
+        .or_else(|| params.get("exit_code"))
+        .and_then(Value::as_i64)
+        .is_some_and(|exit_code| exit_code != 0);
+    Some((
+        item_id.to_owned(),
+        !failed_status && !is_error && !nonzero_exit,
+    ))
+}
+
+#[cfg(test)]
+fn project_codex_native_completion(
+    notification: &crate::codex_app_server::Notification,
+    correlations: &mut HashMap<String, CodexNativeToolCorrelation>,
+) -> Option<FromAgent> {
+    let (item_id, success) = codex_native_completion(notification)?;
+    project_codex_native_completion_parts(item_id, success, correlations)
+}
+
+fn project_codex_native_completion_parts(
+    item_id: String,
+    success: bool,
+    correlations: &mut HashMap<String, CodexNativeToolCorrelation>,
+) -> Option<FromAgent> {
+    let correlation = correlations.remove(&item_id)?;
+    let result = if success {
+        ToolResult::success(format!("{} completed", correlation.tool_name))
+    } else {
+        ToolResult::failure(format!("{} failed", correlation.tool_name))
+    };
+    let execution = ToolExecution::from_legacy(
+        &correlation.call_id,
+        &correlation.tool_name,
+        ExecutionSource::Native,
+        result.clone(),
+    );
+    Some(FromAgent::ToolEnd {
+        call_id: correlation.call_id,
+        success,
+        result: Some(result),
+        receipt: Some(execution.receipt),
+    })
+}
+
+/// Project a completion immediately when its approval correlation already
+/// exists, or retain the authoritative outcome until that correlation is
+/// recorded. The app-server may deliver `item/completed` before the approval
+/// request, so dropping an unmatched completion would lose the terminal tool
+/// receipt permanently.
+fn project_or_defer_codex_native_completion(
+    notification: &crate::codex_app_server::Notification,
+    correlations: &mut HashMap<String, CodexNativeToolCorrelation>,
+    pending: &mut HashMap<String, bool>,
+) -> Option<FromAgent> {
+    let (item_id, success) = codex_native_completion(notification)?;
+    if let Some(event) =
+        project_codex_native_completion_parts(item_id.clone(), success, correlations)
+    {
+        return Some(event);
+    }
+    pending.insert(item_id, success);
+    None
+}
+
+fn project_deferred_codex_native_completion(
+    params: Option<&Value>,
+    pending: &mut HashMap<String, bool>,
+    correlations: &mut HashMap<String, CodexNativeToolCorrelation>,
+) -> Option<FromAgent> {
+    let item_id = codex_native_item_id(params)?;
+    let success = pending.remove(item_id)?;
+    project_codex_native_completion_parts(item_id.to_owned(), success, correlations)
+}
+
+fn discard_deferred_codex_native_completion(
+    params: Option<&Value>,
+    pending: &mut HashMap<String, bool>,
+) {
+    if let Some(item_id) = codex_native_item_id(params) {
+        pending.remove(item_id);
     }
 }
 
@@ -3044,6 +3295,18 @@ fn output_token_allowance(configured: u32, budget: Option<u32>, spent: u64) -> u
     }
 }
 
+fn clamp_output_to_remaining_context(
+    configured: u32,
+    context_tokens: u32,
+    estimated_input_tokens: u64,
+) -> Option<u32> {
+    const REQUEST_CONTEXT_SAFETY_TOKENS: u64 = 64;
+    let remaining = u64::from(context_tokens)
+        .saturating_sub(estimated_input_tokens)
+        .saturating_sub(REQUEST_CONTEXT_SAFETY_TOKENS);
+    (remaining > 0).then(|| configured.min(u32::try_from(remaining).unwrap_or(u32::MAX)))
+}
+
 async fn recv_command_or_shutdown(
     shutdown_token: &CancellationToken,
     command_rx: &mut mpsc::UnboundedReceiver<AgentCommand>,
@@ -3173,6 +3436,24 @@ fn codex_app_server_user_text(
             .unwrap_or_default();
     }
     parts.join("\n\n")
+}
+
+fn refresh_model_budgets(
+    config: &mut NativeAgentConfig,
+    compactor: &mut super::compaction::ContextCompactor,
+    model: &str,
+) {
+    if config.max_tokens_source == MaxTokensSource::Catalog {
+        config.max_tokens = crate::model_catalog::default_max_output_tokens(model);
+    }
+    *compactor = super::compaction::ContextCompactor::new(
+        super::compaction::CompactionConfig::for_model(model, config.context_window),
+    );
+}
+
+fn set_explicit_max_tokens(config: &mut NativeAgentConfig, max_tokens: u32) {
+    config.max_tokens = max_tokens;
+    config.max_tokens_source = MaxTokensSource::Explicit;
 }
 
 impl NativeAgentRunner {
@@ -3542,13 +3823,15 @@ impl NativeAgentRunner {
         attachments: Vec<String>,
         kind: PromptKind,
         queue_id: Option<u64>,
+        managed_request_lineage: Option<String>,
     ) {
         let id = queue_id.unwrap_or_else(|| self.pending_messages.reserve_id());
         let pending = if kind == PromptKind::Steer {
             PendingMessage::urgent_with_kind_and_id_and_attachments(content, kind, id, attachments)
         } else {
             PendingMessage::with_kind_and_id_and_attachments(content, kind, id, attachments)
-        };
+        }
+        .with_managed_request_lineage(managed_request_lineage);
         let dropped = self.pending_messages.push_message(pending);
         if let Some(dropped) = dropped {
             let _ = self.event_tx.send(FromAgent::Status {
@@ -3603,6 +3886,7 @@ impl NativeAgentRunner {
                     attachments,
                     kind,
                     queue_id,
+                    managed_request_lineage,
                 } => {
                     if should_defer_prompt_command(kind, cancelled) {
                         self.deferred_commands.push_back(AgentCommand::Prompt {
@@ -3610,9 +3894,16 @@ impl NativeAgentRunner {
                             attachments,
                             kind,
                             queue_id,
+                            managed_request_lineage,
                         });
                     } else {
-                        self.enqueue_pending_prompt(content, attachments, kind, queue_id);
+                        self.enqueue_pending_prompt(
+                            content,
+                            attachments,
+                            kind,
+                            queue_id,
+                            managed_request_lineage,
+                        );
                     }
                 }
                 AgentCommand::Cancel { clear_pending } => {
@@ -3666,8 +3957,12 @@ impl NativeAgentRunner {
                     self.config.thinking_enabled = enabled;
                     self.config.thinking_budget = budget;
                 }
+                AgentCommand::RefreshModelBudgets => {
+                    let model = self.config.model.clone();
+                    refresh_model_budgets(&mut self.config, &mut self.compactor, &model);
+                }
                 AgentCommand::SetMaxTokens { max_tokens } => {
-                    self.config.max_tokens = max_tokens;
+                    set_explicit_max_tokens(&mut self.config, max_tokens);
                 }
                 AgentCommand::SetOutputTokenBudget {
                     max_total_output_tokens,
@@ -3838,7 +4133,8 @@ impl NativeAgentRunner {
             QueueMode::All => usize::MAX,
             QueueMode::One => 1,
         };
-        self.pending_messages.drain_leading_kind(kind, max_count)
+        self.pending_messages
+            .drain_leading_kind_and_lineage(kind, max_count)
     }
 
     fn dequeue_next_turn_messages(&mut self, allow_follow_ups: bool) -> Vec<PendingMessage> {
@@ -3978,6 +4274,9 @@ impl NativeAgentRunner {
         &mut self,
         pending: Vec<PendingMessage>,
     ) -> Result<bool> {
+        let managed_request_lineage = pending
+            .first()
+            .and_then(|message| message.managed_request_lineage.clone());
         let mut next_prompt_context: Option<String> = None;
         let mut appended = false;
         for pending_message in pending {
@@ -3995,6 +4294,11 @@ impl NativeAgentRunner {
             }
         }
         self.prompt_context = next_prompt_context;
+        if appended {
+            if let Some(client) = self.client.as_mut() {
+                client.set_managed_request_lineage(managed_request_lineage);
+            }
+        }
         Ok(appended)
     }
 
@@ -4200,10 +4504,21 @@ impl NativeAgentRunner {
                     attachments,
                     kind,
                     queue_id,
+                    managed_request_lineage,
                 } => {
                     if self.busy {
-                        self.enqueue_pending_prompt(content, attachments, kind, queue_id);
+                        self.enqueue_pending_prompt(
+                            content,
+                            attachments,
+                            kind,
+                            queue_id,
+                            managed_request_lineage,
+                        );
                         continue;
+                    }
+
+                    if let Some(client) = self.client.as_mut() {
+                        client.set_managed_request_lineage(managed_request_lineage);
                     }
 
                     if kind == PromptKind::SideQuestion {
@@ -4389,9 +4704,20 @@ impl NativeAgentRunner {
                                     && matches!(error_kind, super::retry::ErrorKind::AuthFailure)
                                 {
                                     waited_for_codex_login = true;
-                                    let requested_profile = std::env::var("MAESTRO_CODEX_PROFILE")
-                                        .ok()
-                                        .filter(|value| !value.trim().is_empty());
+                                    let requested_profile = match crate::service_connections::selected_delegated_profile_from_env("openai-codex") {
+                                        Ok(profile) => profile,
+                                        Err(error) => {
+                                            terminal_failure_event = Some(FromAgent::Error {
+                                                message: format!(
+                                                    "Codex managed connection selection failed: {error:#}"
+                                                ),
+                                                fatal: false,
+                                                terminal: true,
+                                            });
+                                            terminal_request_failure = true;
+                                            break;
+                                        }
+                                    };
                                     let identity =
                                         match crate::codex_identity::resolve_codex_identity(
                                             requested_profile.as_deref(),
@@ -4712,6 +5038,7 @@ impl NativeAgentRunner {
                         Ok((client, provider, model_route)) => {
                             self.client = client;
                             self.model_route = model_route;
+                            refresh_model_budgets(&mut self.config, &mut self.compactor, &model);
                             self.config.model = model.clone();
                             self.hooks.set_model(&model);
                             let _ = self
@@ -4736,8 +5063,12 @@ impl NativeAgentRunner {
                     self.config.thinking_enabled = enabled;
                     self.config.thinking_budget = budget;
                 }
+                AgentCommand::RefreshModelBudgets => {
+                    let model = self.config.model.clone();
+                    refresh_model_budgets(&mut self.config, &mut self.compactor, &model);
+                }
                 AgentCommand::SetMaxTokens { max_tokens } => {
-                    self.config.max_tokens = max_tokens;
+                    set_explicit_max_tokens(&mut self.config, max_tokens);
                 }
                 AgentCommand::SetOutputTokenBudget {
                     max_total_output_tokens,
@@ -4975,7 +5306,11 @@ impl NativeAgentRunner {
     }
 
     /// Build request configuration
-    fn build_config(&mut self) -> RequestConfig {
+    fn build_config(
+        &mut self,
+        request_messages: &[Message],
+        include_tools: bool,
+    ) -> Result<RequestConfig> {
         // These values are cached for the runner lifetime and updated through
         // explicit commands when app-owned goal state changes.
         let goal_tools_visible = self.goal_tools_visible;
@@ -4989,7 +5324,9 @@ impl NativeAgentRunner {
                     && cache.active_tool_names == self.active_tool_names
             })
             .map(|cache| Arc::clone(&cache.tools));
-        let tools = if let Some(tools) = cached_tools {
+        let tools = if !include_tools {
+            Arc::new(Vec::new())
+        } else if let Some(tools) = cached_tools {
             tools
         } else {
             let definitions = effective_tool_definitions(
@@ -5049,9 +5386,37 @@ impl NativeAgentRunner {
             provider_model_name(configured_model)
         };
 
-        RequestConfig {
+        let mut max_tokens = self.remaining_output_token_allowance();
+        if let Some(context_tokens) = crate::local_models::find_discovered_model(&self.config.model)
+            .map(|model| model.capabilities.context_tokens)
+            .filter(|tokens| *tokens > 0)
+        {
+            let estimated_input_tokens = self
+                .compactor
+                .estimate_tokens(request_messages)
+                .saturating_add(
+                    system
+                        .as_deref()
+                        .map_or(0, super::token_estimation::estimate_tokens),
+                )
+                .saturating_add(super::token_estimation::estimate_tokens_from_json(
+                    tools.as_ref(),
+                ));
+            max_tokens = clamp_output_to_remaining_context(
+                max_tokens,
+                context_tokens,
+                estimated_input_tokens,
+            )
+            .with_context(|| {
+                format!(
+                    "Local model request input estimate ({estimated_input_tokens} tokens) fills the live {context_tokens}-token context; reduce the prompt/history/tools or increase the runtime context"
+                )
+            })?;
+        }
+
+        Ok(RequestConfig {
             model,
-            max_tokens: self.remaining_output_token_allowance(),
+            max_tokens,
             temperature: if self.config.thinking_enabled {
                 None // Temperature must be 1 or omitted for thinking
             } else {
@@ -5065,7 +5430,7 @@ impl NativeAgentRunner {
                 .client
                 .as_ref()
                 .is_some_and(|client| client.provider() == AiProvider::Anthropic),
-        }
+        })
     }
 
     async fn run_side_question(&mut self, question: String, standalone: bool) {
@@ -5099,8 +5464,7 @@ impl NativeAgentRunner {
                 role: Role::User,
                 content: MessageContent::text(question.clone()),
             });
-            let mut config = self.build_config();
-            config.tools = Arc::new(Vec::new());
+            let config = self.build_config(&messages, false)?;
             let client = self
                 .client
                 .as_ref()
@@ -5395,6 +5759,13 @@ impl NativeAgentRunner {
             bail!("No user message available for Codex app-server turn");
         }
 
+        // `tool_search` may activate schemas while this turn is in flight,
+        // but those tools are not part of the model's turn-start contract.
+        // Keep policy decisions on the same immutable snapshot so a later
+        // same-turn item/tool/call cannot widen the governed execution set.
+        let turn_start_active_tool_names = self.active_tool_names.clone();
+        self.codex_native_pending_completions.clear();
+
         let response_id = Uuid::new_v4().to_string();
         let _ = self.event_tx.send(FromAgent::ResponseStart {
             response_id: response_id.clone(),
@@ -5423,6 +5794,7 @@ impl NativeAgentRunner {
         let mut streamed_assistant = String::new();
 
         loop {
+            self.drain_codex_native_operation_completions().await;
             if self.drain_pending_commands() {
                 return Err(anyhow::anyhow!("Request cancelled"));
             }
@@ -5445,6 +5817,7 @@ impl NativeAgentRunner {
             match event {
                 TurnWaitEvent::Pending => continue,
                 TurnWaitEvent::Completed(result) => {
+                    self.drain_codex_native_operation_completions().await;
                     self.codex_active_turn_id = None;
                     let (completion_delta, full_text) = Self::reconcile_codex_completion_text(
                         &streamed_assistant,
@@ -5525,7 +5898,14 @@ impl NativeAgentRunner {
                     self.reconcile_codex_completed_segment(&mut streamed_assistant)
                         .await?;
                     self.flush_codex_streamed_assistant(&mut streamed_assistant);
-                    self.handle_codex_server_request(request).await?;
+                    // Native completion notifications share the ordered
+                    // server-request prefix but have a separate drain. Pull
+                    // them in before policy evaluates an item-id-only
+                    // approval, otherwise a queued item/completed path is
+                    // invisible and the action firewall fails closed.
+                    self.drain_codex_native_operation_completions().await;
+                    self.handle_codex_server_request(request, &turn_start_active_tool_names)
+                        .await?;
                 }
             }
         }
@@ -5728,9 +6108,32 @@ impl NativeAgentRunner {
         }
     }
 
+    async fn drain_codex_native_operation_completions(&mut self) {
+        let Some(session) = self.codex_session.as_ref() else {
+            return;
+        };
+        let notes = session
+            .take_native_operation_completion_notifications()
+            .await;
+        for note in notes {
+            remember_codex_file_change_completion_paths(
+                &note,
+                &mut self.codex_file_change_paths_by_item,
+            );
+            if let Some(event) = project_or_defer_codex_native_completion(
+                &note,
+                &mut self.codex_native_tools_by_item,
+                &mut self.codex_native_pending_completions,
+            ) {
+                let _ = self.event_tx.send(event);
+            }
+        }
+    }
+
     async fn handle_codex_server_request(
         &mut self,
         request: crate::codex_app_server::IncomingServerRequest,
+        turn_start_active_tool_names: &HashSet<String>,
     ) -> Result<()> {
         use super::codex_app_server_turns::{
             approval_decision, parse_tool_call_params, tool_call_error_result,
@@ -5767,6 +6170,15 @@ impl NativeAgentRunner {
 
                 let tool_key = registry_name.to_lowercase();
                 self.record_codex_tool_use(&call_id, &registry_name, &args);
+
+                if let Some(reason) =
+                    codex_tool_call_denied_by_active_tools(&tool_key, turn_start_active_tool_names)
+                {
+                    let error = format!("Tool denied by governed allowlist: {reason}");
+                    self.record_codex_tool_result(&call_id, error.clone(), true);
+                    request.respond(tool_call_error_result(error));
+                    return Ok(());
+                }
 
                 // This handler is the second place that decides whether a tool
                 // executes. The HTTP tool loop runs `PreToolUse` before the
@@ -6042,8 +6454,10 @@ impl NativeAgentRunner {
                 };
 
                 let denies_mutation = config_denies_mutation(self.config.sandbox_policy.as_ref());
-                let profile_denial =
-                    codex_native_denied_by_active_tools(&request.method, &self.active_tool_names);
+                let profile_denial = codex_native_denied_by_active_tools(
+                    &request.method,
+                    turn_start_active_tool_names,
+                );
                 let firewall_decision = codex_native_firewall_decision(
                     &self.config.cwd,
                     &request.method,
@@ -6067,6 +6481,10 @@ impl NativeAgentRunner {
                     None
                 };
                 if let Some(reason) = denial_reason {
+                    discard_deferred_codex_native_completion(
+                        request.params.as_ref(),
+                        &mut self.codex_native_pending_completions,
+                    );
                     let _ = self.event_tx.send(FromAgent::Status {
                         message: format!("Declined Codex-native {} ({reason})", request.method),
                     });
@@ -6082,6 +6500,19 @@ impl NativeAgentRunner {
                         method: request.method.clone(),
                         decision: "approved_policy".to_owned(),
                     });
+                    remember_approved_codex_native_operation(
+                        request.params.as_ref(),
+                        &policy_call_id,
+                        policy_tool,
+                        &mut self.codex_native_tools_by_item,
+                    );
+                    if let Some(event) = project_deferred_codex_native_completion(
+                        request.params.as_ref(),
+                        &mut self.codex_native_pending_completions,
+                        &mut self.codex_native_tools_by_item,
+                    ) {
+                        let _ = self.event_tx.send(event);
+                    }
                     request.respond(approval_decision(true));
                     return Ok(());
                 }
@@ -6106,6 +6537,10 @@ impl NativeAgentRunner {
                 let (approved, _, _) = match response {
                     ToolResponseWait::Response(response) => response,
                     ToolResponseWait::Cancelled => {
+                        discard_deferred_codex_native_completion(
+                            request.params.as_ref(),
+                            &mut self.codex_native_pending_completions,
+                        );
                         let cancelled_ids = HashSet::from([policy_call_id.clone()]);
                         discard_cancelled_tool_responses(
                             &cancelled_ids,
@@ -6121,6 +6556,10 @@ impl NativeAgentRunner {
                         return Ok(());
                     }
                     ToolResponseWait::Closed => {
+                        discard_deferred_codex_native_completion(
+                            request.params.as_ref(),
+                            &mut self.codex_native_pending_completions,
+                        );
                         let _ = self.event_tx.send(FromAgent::CodexNativeDecision {
                             method: request.method.clone(),
                             decision: "channel_closed".to_owned(),
@@ -6143,6 +6582,26 @@ impl NativeAgentRunner {
                     }
                     .to_owned(),
                 });
+                if approved {
+                    remember_approved_codex_native_operation(
+                        request.params.as_ref(),
+                        &policy_call_id,
+                        policy_tool,
+                        &mut self.codex_native_tools_by_item,
+                    );
+                    if let Some(event) = project_deferred_codex_native_completion(
+                        request.params.as_ref(),
+                        &mut self.codex_native_pending_completions,
+                        &mut self.codex_native_tools_by_item,
+                    ) {
+                        let _ = self.event_tx.send(event);
+                    }
+                } else {
+                    discard_deferred_codex_native_completion(
+                        request.params.as_ref(),
+                        &mut self.codex_native_pending_completions,
+                    );
+                }
                 request.respond(approval_decision(approved));
                 Ok(())
             }
@@ -6180,9 +6639,10 @@ impl NativeAgentRunner {
             self.repair_orphaned_tool_calls();
 
             // Make the API call
-            let config = self.build_config();
+            let request_messages = Arc::clone(&self.messages);
             let provider_messages =
-                resolve_provider_history_shared(&self.messages, &self.credential_vault)?;
+                resolve_provider_history_shared(&request_messages, &self.credential_vault)?;
+            let config = self.build_config(&provider_messages, true)?;
             let client = self
                 .client
                 .as_ref()
@@ -10235,6 +10695,181 @@ mod tests {
         agent.shutdown().await;
     }
 
+    #[tokio::test]
+    async fn codex_file_change_completion_before_approval_fixture() {
+        let Ok(output_path) = std::env::var("MAESTRO_CODEX_FILE_CHANGE_EVENTS") else {
+            return;
+        };
+        let workspace = std::path::PathBuf::from(
+            std::env::var("MAESTRO_CODEX_FIXTURE_WORKSPACE").expect("fixture workspace"),
+        );
+        let config = NativeAgentConfig {
+            model: "openai-codex/gpt-5.5".to_owned(),
+            cwd: workspace.display().to_string(),
+            approval_mode: ApprovalMode::Yolo,
+            ..NativeAgentConfig::default()
+        };
+        let (agent, mut events) =
+            NativeAgent::new(config).expect("Codex file-change fixture agent");
+        agent
+            .prompt(
+                "use the file-change tool and then finish".to_owned(),
+                vec![],
+            )
+            .await
+            .expect("fixture prompt");
+
+        let mut captured = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let event = events.recv().await.expect("fixture event");
+                let done = matches!(event, FromAgent::ResponseEnd { .. });
+                captured.push(serde_json::to_value(&event).expect("event json"));
+                if done {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("file-change fixture timeout");
+        std::fs::write(
+            &output_path,
+            serde_json::to_vec(&captured).expect("events json"),
+        )
+        .expect("write file-change fixture events");
+        agent.shutdown().await;
+    }
+
+    #[test]
+    fn queued_file_change_completion_is_drained_before_item_id_only_approval() {
+        let root = tempfile::tempdir().expect("fixture root");
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let changed_path = workspace.join("src.rs");
+        std::fs::write(&changed_path, "before").expect("fixture source");
+        let events_path = root.path().join("events.json");
+        let script_log = root.path().join("app-server.log");
+        let script = root.path().join("app-server.js");
+        let changed_path_literal = serde_json::to_string(&changed_path.display().to_string())
+            .expect("changed path literal");
+        let script_log_literal =
+            serde_json::to_string(&script_log.display().to_string()).expect("script log literal");
+        let script_source = r"const rl = require('readline').createInterface({input: process.stdin});
+const fs = require('fs');
+const changedPath = __CHANGED_PATH__;
+const log = __SCRIPT_LOG__;
+function send(value) {
+  fs.appendFileSync(log, `OUT ${JSON.stringify(value)}\n`);
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+function completedFileChange() {
+  return {
+    method: 'item/completed',
+    params: {
+      turnId: 'turn-causal',
+      item: {
+        id: 'item-write',
+        type: 'fileChange',
+        status: 'completed',
+        changes: [{path: changedPath, kind: {type: 'update'}, content: 'patched'}]
+      }
+    }
+  };
+}
+rl.on('line', line => {
+  fs.appendFileSync(log, `IN ${line}\n`);
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    send({id: message.id, result: {protocolVersion: '2025-01-01', capabilities: {}}});
+  } else if (message.method === 'thread/start') {
+    send({id: message.id, result: {thread: {id: 'thread-causal'}}});
+  } else if (message.method === 'turn/start') {
+    send({id: message.id, result: {turn: {id: 'turn-causal'}}});
+    setTimeout(() => {
+      send({method: 'item/agentMessage/delta', params: {turnId: 'turn-causal', delta: 'before tool '}});
+      // This notification is deliberately adjacent to the approval request.
+      // The runtime must drain it before the item-id-only policy check.
+      send(completedFileChange());
+      send({
+        id: 'approval-1',
+        method: 'item/fileChange/requestApproval',
+        params: {threadId: 'thread-causal', turnId: 'turn-causal', itemId: 'item-write'}
+      });
+    }, 10);
+  } else if (message.id === 'approval-1' && message.result) {
+    fs.appendFileSync(log, `DECISION ${JSON.stringify(message.result)}\n`);
+    setTimeout(() => {
+      send({method: 'item/agentMessage/delta', params: {turnId: 'turn-causal', delta: 'after tool'}});
+      send({method: 'turn/completed', params: {turnId: 'turn-causal'}});
+    }, 10);
+  }
+});
+"
+            .replace("__CHANGED_PATH__", &changed_path_literal)
+            .replace("__SCRIPT_LOG__", &script_log_literal);
+        std::fs::write(&script, script_source).expect("app-server script");
+
+        let output =
+            std::process::Command::new(std::env::current_exe().expect("current test binary"))
+                .arg("agent::native::tests::codex_file_change_completion_before_approval_fixture")
+                .arg("--exact")
+                .arg("--nocapture")
+                .env("MAESTRO_CODEX_FILE_CHANGE_EVENTS", &events_path)
+                .env("MAESTRO_CODEX_FIXTURE_WORKSPACE", &workspace)
+                .env("MAESTRO_HOME", root.path().join("maestro-home"))
+                .env("MAESTRO_CODEX_APP_SERVER_COMMAND", "node")
+                .env("MAESTRO_TOOL_PROFILE", "all")
+                .env("OPENAI_CODEX_TOKEN", "fixture-token")
+                .env("RUST_BACKTRACE", "1")
+                .env("RUST_MIN_STACK", "16777216")
+                .env(
+                    "MAESTRO_CODEX_APP_SERVER_ARGS_JSON",
+                    serde_json::to_string(&vec![script.display().to_string()])
+                        .expect("script args"),
+                )
+                .output()
+                .expect("spawn fixture child");
+        assert!(
+            output.status.success(),
+            "file-change fixture failed: {}; stdout: {}; stderr: {}; app-server log: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+            std::fs::read_to_string(&script_log).unwrap_or_default(),
+        );
+        let events: Vec<Value> =
+            serde_json::from_slice(&std::fs::read(&events_path).expect("file-change events file"))
+                .expect("file-change events json");
+        let decision = events
+            .iter()
+            .find(|event| event["type"] == "codex_native_decision")
+            .expect("native approval decision");
+        assert_eq!(decision["method"], "item/fileChange/requestApproval");
+        assert_eq!(
+            decision["decision"], "approved_policy",
+            "the queued completion path must make the item-id-only approval firewall-safe: {events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "tool_end")
+                .count(),
+            1,
+            "the approved completion must project one terminal tool receipt: {events:?}"
+        );
+        assert!(events.iter().any(|event| {
+            event["type"] == "response_chunk" && event["content"] == "before tool "
+        }));
+        assert!(events.iter().any(|event| {
+            event["type"] == "response_chunk" && event["content"] == "after tool"
+        }));
+        let log = std::fs::read_to_string(&script_log).expect("app-server log");
+        assert!(
+            log.contains(r#"DECISION {"decision":"accept"}"#),
+            "Codex must receive an accepted approval after the causal completion drain: {log}"
+        );
+    }
+
     #[test]
     fn codex_terminal_empty_response_fails_closed() {
         let root = tempfile::tempdir().expect("fixture root");
@@ -11447,6 +12082,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
                 attachments: vec!["must-not-be-read.txt".to_string()],
                 kind: PromptKind::Prompt,
                 queue_id: None,
+                managed_request_lineage: None,
             })
             .expect("buffer prompt");
 
@@ -11887,6 +12523,160 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
         );
     }
 
+    #[test]
+    fn model_switch_refreshes_output_and_compaction_budgets() {
+        let mut config = NativeAgentConfig {
+            model: "uncataloged/startup-model".to_owned(),
+            ..NativeAgentConfig::default()
+        };
+        let mut compactor = super::super::compaction::ContextCompactor::new(
+            super::super::compaction::CompactionConfig::for_model(
+                &config.model,
+                config.context_window,
+            ),
+        );
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("x".repeat(400_000)),
+        }];
+
+        assert_eq!(config.max_tokens, 16_384);
+        assert!(compactor.should_auto_compact(&messages));
+
+        refresh_model_budgets(&mut config, &mut compactor, "llamacpp/Qwen3.8-27B");
+
+        assert_eq!(config.max_tokens, 32_768);
+        assert!(!compactor.should_auto_compact(&messages));
+    }
+
+    #[test]
+    fn model_switch_preserves_explicit_context_window_override() {
+        let mut config = NativeAgentConfig {
+            model: "uncataloged/startup-model".to_owned(),
+            context_window: Some(96_000),
+            ..NativeAgentConfig::default()
+        };
+        let mut compactor = super::super::compaction::ContextCompactor::new(
+            super::super::compaction::CompactionConfig::for_model(
+                &config.model,
+                config.context_window,
+            ),
+        );
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("x".repeat(400_000)),
+        }];
+
+        refresh_model_budgets(&mut config, &mut compactor, "llamacpp/Qwen3.8-27B");
+
+        assert_eq!(config.context_window, Some(96_000));
+        assert!(compactor.should_auto_compact(&messages));
+    }
+
+    #[test]
+    fn model_switch_preserves_explicit_output_token_override() {
+        let mut config = NativeAgentConfig {
+            model: "uncataloged/startup-model".to_owned(),
+            max_tokens: 7_777,
+            max_tokens_source: MaxTokensSource::Explicit,
+            ..NativeAgentConfig::default()
+        };
+        let mut compactor = super::super::compaction::ContextCompactor::new(
+            super::super::compaction::CompactionConfig::for_model(
+                &config.model,
+                config.context_window,
+            ),
+        );
+
+        refresh_model_budgets(&mut config, &mut compactor, "llamacpp/Qwen3.8-27B");
+
+        assert_eq!(config.max_tokens, 7_777);
+    }
+
+    #[test]
+    fn model_switch_preserves_explicit_output_limit_equal_to_previous_default() {
+        let mut config = NativeAgentConfig {
+            model: "uncataloged/startup-model".to_owned(),
+            max_tokens: crate::model_catalog::DEFAULT_MAX_OUTPUT_TOKENS,
+            max_tokens_source: MaxTokensSource::Explicit,
+            ..NativeAgentConfig::default()
+        };
+        let mut compactor = super::super::compaction::ContextCompactor::new(
+            super::super::compaction::CompactionConfig::for_model(
+                &config.model,
+                config.context_window,
+            ),
+        );
+
+        refresh_model_budgets(&mut config, &mut compactor, "llamacpp/Qwen3.8-27B");
+
+        assert_eq!(
+            config.max_tokens,
+            crate::model_catalog::DEFAULT_MAX_OUTPUT_TOKENS
+        );
+    }
+
+    #[test]
+    fn set_max_tokens_marks_the_limit_explicit() {
+        let mut config = NativeAgentConfig::default();
+        assert_eq!(config.max_tokens_source, MaxTokensSource::Catalog);
+        let max_tokens = config.max_tokens;
+        let mut compactor = super::super::compaction::ContextCompactor::new(
+            super::super::compaction::CompactionConfig::for_model(
+                &config.model,
+                config.context_window,
+            ),
+        );
+
+        set_explicit_max_tokens(&mut config, max_tokens);
+        refresh_model_budgets(&mut config, &mut compactor, "llamacpp/Qwen3.8-27B");
+
+        assert_eq!(config.max_tokens_source, MaxTokensSource::Explicit);
+        assert_eq!(config.max_tokens, max_tokens);
+    }
+
+    #[test]
+    fn discovered_context_limit_reaches_compaction_for_uncataloged_model() {
+        let model = crate::model_catalog::ModelInfo {
+            id: "small-runtime-model".to_owned(),
+            name: "small-runtime-model".to_owned(),
+            provider: "llamacpp".to_owned(),
+            description: "test runtime model".to_owned(),
+            capabilities: crate::model_catalog::ModelCapabilities {
+                protocol: crate::model_catalog::ModelProtocol::OpenAiChat,
+                tools: false,
+                vision: false,
+                reasoning: false,
+                streaming: true,
+                context_tokens: 8_192,
+                output_tokens: None,
+            },
+            verification: crate::model_catalog::ModelVerification {
+                state: crate::model_catalog::VerificationState::Verified,
+                source: "test-runtime".to_owned(),
+                detail: None,
+            },
+        };
+        crate::local_models::replace_discovered_models(9_001, &[model], None);
+        assert_eq!(
+            crate::model_catalog::default_max_output_tokens("llamacpp/small-runtime-model"),
+            4_096
+        );
+
+        let compactor = super::super::compaction::ContextCompactor::new(
+            super::super::compaction::CompactionConfig::for_model(
+                "llamacpp/small-runtime-model",
+                None,
+            ),
+        );
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("x".repeat(200_000)),
+        }];
+
+        assert!(compactor.should_auto_compact(&messages));
+    }
+
     #[tokio::test]
     async fn agent_cancel_interrupts_a_blocked_runner_before_queue_processing() {
         let request_token = CancellationToken::new();
@@ -11955,6 +12745,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
                 attachments: Vec::new(),
                 kind: PromptKind::Prompt,
                 queue_id: Some(41),
+                managed_request_lineage: None,
             })
             .expect("queue prompt");
         let (tool_response_tx, _tool_response_rx) = mpsc::unbounded_channel();
@@ -12588,6 +13379,330 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
     }
 
     #[test]
+    fn approved_codex_native_completion_emits_one_receipt_bearing_tool_end() {
+        let mut correlations = HashMap::from([(
+            "item-write-1".to_owned(),
+            CodexNativeToolCorrelation {
+                call_id: "call-write-1".to_owned(),
+                tool_name: "codex_file_change".to_owned(),
+            },
+        )]);
+        let notification = crate::codex_app_server::Notification {
+            method: "item/completed".to_owned(),
+            params: Some(json!({
+                "turnId": "turn-1",
+                "item": {
+                    "id": "item-write-1",
+                    "type": "fileChange",
+                    "status": "completed"
+                }
+            })),
+        };
+
+        let event = project_codex_native_completion(&notification, &mut correlations)
+            .expect("approved native write completion must project");
+        assert!(
+            correlations.is_empty(),
+            "completion has one idempotency owner"
+        );
+        assert!(matches!(
+            event,
+            FromAgent::ToolEnd {
+                call_id,
+                success: true,
+                result: Some(ToolResult { success: true, .. }),
+                receipt: Some(receipt),
+            } if call_id == "call-write-1"
+                && receipt.call_id == "call-write-1"
+                && receipt.tool_name == "codex_file_change"
+        ));
+        assert!(
+            project_codex_native_completion(&notification, &mut correlations).is_none(),
+            "replayed item/completed must not emit a duplicate ToolEnd"
+        );
+    }
+
+    #[test]
+    fn completed_file_change_preserves_paths_for_item_id_only_approval() {
+        let notification = crate::codex_app_server::Notification {
+            method: "item/completed".to_owned(),
+            params: Some(json!({
+                "item": {
+                    "id": "item-completed-write",
+                    "type": "fileChange",
+                    "status": "completed",
+                    "changes": [{
+                        "path": "/tmp/workspace/src.rs",
+                        "kind": {"type": "update", "content": "patched"}
+                    }]
+                }
+            })),
+        };
+        let mut known = HashMap::new();
+
+        remember_codex_file_change_completion_paths(&notification, &mut known);
+
+        let approval_paths = codex_native_file_change_paths(
+            &json!({"itemId": "item-completed-write"}),
+            Some(&known),
+        );
+        assert_eq!(approval_paths, ["/tmp/workspace/src.rs"]);
+    }
+
+    #[test]
+    fn yolo_policy_approval_correlates_one_named_native_completion() {
+        assert!(
+            !codex_native_approval_requires_user(crate::state::ApprovalMode::Yolo),
+            "Yolo follows the approved_policy branch without a ToolCall prompt"
+        );
+        let params = json!({"itemId": "item-yolo-write"});
+        let mut correlations = HashMap::new();
+        remember_approved_codex_native_operation(
+            Some(&params),
+            "call-yolo-write",
+            "codex_file_change",
+            &mut correlations,
+        );
+        let notification = crate::codex_app_server::Notification {
+            method: "item/completed".to_owned(),
+            params: Some(json!({
+                "item": {
+                    "id": "item-yolo-write",
+                    "type": "fileChange",
+                    "status": "completed"
+                }
+            })),
+        };
+
+        let terminals = [notification.clone(), notification]
+            .into_iter()
+            .filter_map(|notification| {
+                project_codex_native_completion(&notification, &mut correlations)
+            })
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            terminals.as_slice(),
+            [FromAgent::ToolEnd {
+                call_id,
+                success: true,
+                receipt: Some(receipt),
+                ..
+            }] if call_id == "call-yolo-write"
+                && receipt.call_id == "call-yolo-write"
+                && receipt.tool_name == "codex_file_change"
+                && receipt.status == crate::agent::ExecutionStatus::Succeeded
+        ));
+        assert!(correlations.is_empty());
+    }
+
+    #[test]
+    fn replayed_native_completion_emits_exactly_one_named_success_wire_terminal() {
+        let mut correlations = HashMap::from([(
+            "item-write-wire".to_owned(),
+            CodexNativeToolCorrelation {
+                call_id: "call-write-wire".to_owned(),
+                tool_name: "codex_file_change".to_owned(),
+            },
+        )]);
+        let notification = crate::codex_app_server::Notification {
+            method: "item/completed".to_owned(),
+            params: Some(json!({
+                "item": {
+                    "id": "item-write-wire",
+                    "type": "fileChange",
+                    "status": "completed"
+                }
+            })),
+        };
+
+        let terminals = [notification.clone(), notification]
+            .into_iter()
+            .filter_map(|notification| {
+                project_codex_native_completion(&notification, &mut correlations)
+            })
+            .filter_map(crate::headless_server::tool_end_message_from_agent)
+            .collect::<Vec<_>>();
+
+        assert!(matches!(
+            terminals.as_slice(),
+            [crate::headless::FromAgentMessage::ToolEnd {
+                call_id,
+                tool_execution_id: None,
+                success: true,
+                tool: Some(tool),
+                receipt: Some(receipt),
+                ..
+            }] if call_id == "call-write-wire"
+                && tool == "codex_file_change"
+                && receipt.call_id == "call-write-wire"
+                && receipt.tool_name == "codex_file_change"
+        ));
+    }
+
+    #[tokio::test]
+    async fn approved_dynamic_write_emits_one_named_receipt_bearing_wire_terminal() {
+        let dir = tempfile::tempdir().expect("temporary workspace");
+        let executor = ToolExecutor::new(dir.path().to_string_lossy().into_owned());
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let call_id = "call_production_shaped_write";
+        let args = json!({
+            "file_path": "approved.txt",
+            "content": "approved write"
+        });
+
+        // `item/tool/call` performs approval before this exact executor boundary.
+        // ToolExecutor remains the sole producer of its typed terminal; the
+        // headless adapter must preserve the receipt's canonical tool identity.
+        let execution = executor
+            .execute_with_receipt("write", &args, Some(&event_tx), call_id)
+            .await;
+        assert!(matches!(
+            execution.outcome,
+            crate::agent::ToolOutcome::Succeeded { .. }
+        ));
+
+        let terminals = std::iter::from_fn(|| event_rx.try_recv().ok())
+            .filter_map(crate::headless_server::tool_end_message_from_agent)
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            terminals.as_slice(),
+            [crate::headless::FromAgentMessage::ToolEnd {
+                call_id: wire_call_id,
+                tool_execution_id: None,
+                success: true,
+                tool: Some(tool),
+                receipt: Some(receipt),
+                ..
+            }] if wire_call_id == call_id
+                && tool == "write"
+                && receipt.call_id == call_id
+                && receipt.tool_name == "write"
+                && receipt.status == crate::agent::ExecutionStatus::Succeeded
+        ));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("approved.txt"))
+                .expect("approved write output"),
+            "approved write"
+        );
+    }
+
+    #[test]
+    fn uncorrelated_codex_native_completion_cannot_claim_tool_success() {
+        let notification = crate::codex_app_server::Notification {
+            method: "item/completed".to_owned(),
+            params: Some(json!({
+                "item": {
+                    "id": "different-item",
+                    "type": "fileChange",
+                    "status": "completed"
+                }
+            })),
+        };
+        let mut correlations = HashMap::from([(
+            "approved-item".to_owned(),
+            CodexNativeToolCorrelation {
+                call_id: "approved-call".to_owned(),
+                tool_name: "codex_file_change".to_owned(),
+            },
+        )]);
+
+        assert!(project_codex_native_completion(&notification, &mut correlations).is_none());
+        assert!(correlations.contains_key("approved-item"));
+    }
+
+    #[test]
+    fn preapproval_codex_native_completion_is_deferred_until_approval() {
+        let notification = crate::codex_app_server::Notification {
+            method: "item/completed".to_owned(),
+            params: Some(json!({
+                "item": {
+                    "id": "item-before-approval",
+                    "type": "fileChange",
+                    "status": "completed"
+                }
+            })),
+        };
+        let mut pending = HashMap::new();
+        let mut correlations = HashMap::new();
+
+        assert!(project_or_defer_codex_native_completion(
+            &notification,
+            &mut correlations,
+            &mut pending,
+        )
+        .is_none());
+        assert_eq!(pending.get("item-before-approval"), Some(&true));
+
+        let approval = json!({"itemId": "item-before-approval"});
+        remember_approved_codex_native_operation(
+            Some(&approval),
+            "call-before-approval",
+            "codex_file_change",
+            &mut correlations,
+        );
+        let terminal = project_deferred_codex_native_completion(
+            Some(&approval),
+            &mut pending,
+            &mut correlations,
+        )
+        .expect("the deferred completion must emit after approval correlation");
+
+        assert!(matches!(
+            terminal,
+            FromAgent::ToolEnd {
+                call_id,
+                success: true,
+                receipt: Some(receipt),
+                ..
+            } if call_id == "call-before-approval"
+                && receipt.call_id == "call-before-approval"
+                && receipt.tool_name == "codex_file_change"
+        ));
+        assert!(pending.is_empty());
+        assert!(correlations.is_empty());
+        assert!(project_deferred_codex_native_completion(
+            Some(&approval),
+            &mut pending,
+            &mut correlations,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn nonzero_codex_command_completion_projects_failure() {
+        let mut correlations = HashMap::from([(
+            "item-command-1".to_owned(),
+            CodexNativeToolCorrelation {
+                call_id: "call-command-1".to_owned(),
+                tool_name: "codex_command_execution".to_owned(),
+            },
+        )]);
+        let notification = crate::codex_app_server::Notification {
+            method: "item/completed".to_owned(),
+            params: Some(json!({
+                "item": {
+                    "id": "item-command-1",
+                    "type": "commandExecution",
+                    "exitCode": 17
+                }
+            })),
+        };
+
+        assert!(matches!(
+            project_codex_native_completion(&notification, &mut correlations),
+            Some(FromAgent::ToolEnd {
+                call_id,
+                success: false,
+                result: Some(ToolResult { success: false, .. }),
+                receipt: Some(receipt),
+            }) if call_id == "call-command-1"
+                && receipt.call_id == "call-command-1"
+                && receipt.tool_name == "codex_command_execution"
+        ));
+        assert!(correlations.is_empty());
+    }
+
+    #[test]
     fn a_policy_hook_blocks_a_codex_native_mutation() {
         // Round 4 routed `item/tool/call` through the hook pipeline. A
         // Codex-native mutation is approved on a different branch, so a hook
@@ -13139,6 +14254,32 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
     }
 
     #[test]
+    fn stale_codex_tool_calls_are_denied_by_the_current_active_allowlist() {
+        let empty = HashSet::new();
+        let allowed = HashSet::from([String::from("read"), String::from("write")]);
+
+        assert!(codex_tool_call_denied_by_active_tools("write", &empty).is_some());
+        assert!(codex_tool_call_denied_by_active_tools("write", &allowed).is_none());
+        assert!(codex_tool_call_denied_by_active_tools("READ", &allowed).is_none());
+    }
+
+    #[test]
+    fn tool_search_activation_does_not_expand_the_current_codex_turn_allowlist() {
+        let turn_start = HashSet::from([String::from("tool_search"), String::from("read")]);
+        let mut live_after_tool_search = turn_start.clone();
+        live_after_tool_search.insert("write".to_owned());
+
+        assert!(
+            codex_tool_call_denied_by_active_tools("write", &turn_start).is_some(),
+            "same-turn calls must use the turn-start snapshot"
+        );
+        assert!(
+            codex_tool_call_denied_by_active_tools("write", &live_after_tool_search).is_none(),
+            "the live set may contain a tool activated for the next turn"
+        );
+    }
+
+    #[test]
     fn output_allowance_is_unchanged_without_a_cumulative_budget() {
         assert_eq!(output_token_allowance(16_384, None, 0), 16_384);
         assert_eq!(
@@ -13172,6 +14313,24 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
     }
 
     #[test]
+    fn local_output_allowance_fits_the_estimated_request_in_live_context() {
+        assert_eq!(
+            clamp_output_to_remaining_context(4_096, 8_192, 5_000),
+            Some(3_128)
+        );
+        assert_eq!(
+            clamp_output_to_remaining_context(2_048, 8_192, 1_000),
+            Some(2_048),
+            "remaining context must not raise the configured output cap"
+        );
+        assert_eq!(
+            clamp_output_to_remaining_context(4_096, 8_192, 9_000),
+            None,
+            "an input-filled context must fail before provider dispatch"
+        );
+    }
+
+    #[test]
     fn clear_pending_cancel_drops_only_prompts_stashed_before_boundary() {
         let mut deferred_commands = VecDeque::from([
             AgentCommand::SetThinking {
@@ -13183,24 +14342,28 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
                 attachments: Vec::new(),
                 kind: PromptKind::Prompt,
                 queue_id: Some(1),
+                managed_request_lineage: None,
             },
             AgentCommand::Prompt {
                 content: "steer before cancel".to_string(),
                 attachments: Vec::new(),
                 kind: PromptKind::Steer,
                 queue_id: Some(2),
+                managed_request_lineage: None,
             },
             AgentCommand::Prompt {
                 content: "follow-up before cancel".to_string(),
                 attachments: Vec::new(),
                 kind: PromptKind::FollowUp,
                 queue_id: Some(3),
+                managed_request_lineage: None,
             },
             AgentCommand::Prompt {
                 content: "side question before cancel".to_string(),
                 attachments: Vec::new(),
                 kind: PromptKind::SideQuestion,
                 queue_id: Some(4),
+                managed_request_lineage: None,
             },
         ]);
 
@@ -13211,6 +14374,7 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
             attachments: Vec::new(),
             kind: PromptKind::Prompt,
             queue_id: Some(5),
+            managed_request_lineage: None,
         });
         assert!(matches!(
             deferred_commands.pop_front(),

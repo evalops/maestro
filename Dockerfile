@@ -8,6 +8,7 @@ COPY packages/tui-rs ./packages/tui-rs
 COPY packages/scenario-rs ./packages/scenario-rs
 COPY packages/control-plane-rs ./packages/control-plane-rs
 COPY packages/maestro-rs ./packages/maestro-rs
+COPY packages/runtime-rs ./packages/runtime-rs
 COPY packages/ambient-agent-rs ./packages/ambient-agent-rs
 COPY packages/ai-rs ./packages/ai-rs
 RUN cargo chef prepare --recipe-path recipe.json
@@ -21,6 +22,7 @@ COPY packages/tui-rs ./packages/tui-rs
 COPY packages/scenario-rs ./packages/scenario-rs
 COPY packages/control-plane-rs ./packages/control-plane-rs
 COPY packages/maestro-rs ./packages/maestro-rs
+COPY packages/runtime-rs ./packages/runtime-rs
 COPY packages/ambient-agent-rs ./packages/ambient-agent-rs
 COPY packages/ai-rs ./packages/ai-rs
 COPY proto ./proto

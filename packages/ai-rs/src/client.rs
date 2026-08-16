@@ -168,7 +168,8 @@ pub fn provider_model_name(model: &str) -> String {
         | "google" | "gemini" | "google-gemini-cli" | "google-antigravity" | "mistral" | "groq"
         | "vertex-ai" | "vertex" | "deepseek" | "moonshot" | "kimi" | "dashscope" | "qwen"
         | "minimax" | "zai" | "zhipu" | "evalops" | "maestro-managed" | "bedrock"
-        | "aws-bedrock" | "writer" | "xai" | "grok" | "cerebras" => {
+        | "aws-bedrock" | "writer" | "xai" | "grok" | "cerebras" | "llamacpp" | "llama.cpp"
+        | "llama-cpp" | "lmstudio" | "lm-studio" | "ollama" => {
             // OpenRouter model ids are opaque and may themselves begin with
             // `openrouter/`; the OpenAI-compatible transport strips the
             // outer routing prefix exactly once at its boundary.
@@ -297,6 +298,14 @@ pub enum UnifiedClient {
 }
 
 impl UnifiedClient {
+    /// Bind managed-gateway requests to the authenticated runtime turn.
+    /// Direct provider clients ignore this correlation-only context.
+    pub fn set_managed_request_lineage(&mut self, lineage_id: Option<String>) {
+        if let Self::OpenAI(client) = self {
+            client.set_managed_request_lineage(lineage_id);
+        }
+    }
+
     fn stream_idle_policy(&self) -> (std::time::Duration, u32) {
         match self {
             Self::OpenAI(client) if client.is_managed_gateway() => (
@@ -407,7 +416,9 @@ impl UnifiedClient {
         // a profile file without any credential environment variable. Keep
         // the registry's strict `require` contract for every other provider.
         let resolved = ProviderRegistry::resolve(model, env)?;
-        if resolved.provider.protocol != ProviderProtocol::Bedrock && resolved.credential.is_none()
+        if resolved.provider.protocol != ProviderProtocol::Bedrock
+            && resolved.provider.requires_auth()
+            && resolved.credential.is_none()
         {
             anyhow::bail!(
                 "provider {} requires one of: {}",
@@ -544,10 +555,7 @@ impl UnifiedClient {
             | ProviderProtocol::OpenAiCompatible
             | ProviderProtocol::Codex
             | ProviderProtocol::AzureOpenAi => {
-                let credential = resolved
-                    .credential
-                    .as_deref()
-                    .context("provider credential unexpectedly missing")?;
+                let credential = resolved.credential.as_deref().unwrap_or_default();
                 let base_url = resolved
                     .base_url
                     .as_deref()
@@ -1088,6 +1096,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unauthenticated_llamacpp_uses_local_openai_compatible_endpoint() {
+        let client = UnifiedClient::from_model_with_env("llamacpp/Qwen3.8-27B", &HashMap::new())
+            .expect("local llama.cpp must not require an API key");
+
+        let UnifiedClient::OpenAI(client) = client else {
+            panic!("llama.cpp must use the OpenAI-compatible client");
+        };
+        assert_eq!(client.routed_provider(), Some("llamacpp"));
+    }
+
+    #[test]
     fn test_provider_from_model_anthropic() {
         assert_eq!(
             AiProvider::from_model("claude-opus-4-5-20251101"),
@@ -1315,6 +1334,9 @@ mod tests {
             provider_model_name(" google/gemini-2.5-pro\n"),
             "gemini-2.5-pro"
         );
+        assert_eq!(provider_model_name("llamacpp/Qwen3.8-27B"), "Qwen3.8-27B");
+        assert_eq!(provider_model_name("lmstudio/local-model"), "local-model");
+        assert_eq!(provider_model_name("ollama/qwen3.6:27b"), "qwen3.6:27b");
         assert_eq!(
             provider_model_name("unknown-provider/model/name"),
             "unknown-provider/model/name"

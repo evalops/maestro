@@ -12,6 +12,7 @@ pub struct PluginComponents {
     pub commands_dir: Option<PathBuf>,
     pub hooks_config: Option<PathBuf>,
     pub mcp_path: Option<PathBuf>,
+    pub connections_path: Option<PathBuf>,
 }
 
 /// Load an optional `plugin.json` from a plugin root.
@@ -59,6 +60,11 @@ pub fn resolve_components(
         manifest.and_then(|m| m.mcp.as_deref()),
         &["mcp.json", ".mcp.json"],
     );
+    let connections_path = resolve_file(
+        plugin_root,
+        manifest.and_then(|m| m.connections.as_deref()),
+        &["connections.json"],
+    );
 
     PluginComponents {
         skills_dir,
@@ -66,6 +72,7 @@ pub fn resolve_components(
         commands_dir,
         hooks_config,
         mcp_path,
+        connections_path,
     }
 }
 
@@ -142,6 +149,10 @@ mod tests {
         fs::create_dir_all(root.join("commands")).unwrap();
         write_file(&root.join("hooks/hooks.toml"), "enabled = true\n");
         write_file(&root.join("mcp.json"), "{}\n");
+        write_file(
+            &root.join("connections.json"),
+            "{\"schemaVersion\":1,\"connectionTypes\":[]}\n",
+        );
 
         let components = resolve_components(root, None);
         assert_eq!(components.skills_dir, Some(root.join("skills")));
@@ -149,6 +160,10 @@ mod tests {
         assert_eq!(components.commands_dir, Some(root.join("commands")));
         assert_eq!(components.hooks_config, Some(root.join("hooks/hooks.toml")));
         assert_eq!(components.mcp_path, Some(root.join("mcp.json")));
+        assert_eq!(
+            components.connections_path,
+            Some(root.join("connections.json"))
+        );
     }
 
     #[test]

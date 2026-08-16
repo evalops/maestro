@@ -33,6 +33,13 @@ pub struct ProviderDescriptor {
     pub protocol: ProviderProtocol,
 }
 
+impl ProviderDescriptor {
+    #[must_use]
+    pub fn requires_auth(&self) -> bool {
+        !self.auth_env.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedProvider {
     pub provider: &'static ProviderDescriptor,
@@ -57,19 +64,25 @@ impl ProviderRegistry {
         })
     }
 
+    /// Resolve only provider identity from a provider name or model route.
+    /// This deliberately does not inspect or materialize credential sources.
+    pub fn resolve_descriptor(model_or_provider: &str) -> Result<&'static ProviderDescriptor> {
+        let requested = model_or_provider.trim();
+        if let Some((prefix, _)) = requested.split_once('/') {
+            Self::descriptor(prefix)
+                .ok_or_else(|| anyhow::anyhow!("unknown provider prefix: {prefix}"))
+        } else if let Some(provider) = Self::descriptor(requested) {
+            Ok(provider)
+        } else {
+            Ok(descriptor_for_bare_model(requested))
+        }
+    }
+
     pub fn resolve(
         model_or_provider: &str,
         env: &HashMap<String, String>,
     ) -> Result<ResolvedProvider> {
-        let requested = model_or_provider.trim();
-        let descriptor = if let Some((prefix, _)) = requested.split_once('/') {
-            Self::descriptor(prefix)
-                .ok_or_else(|| anyhow::anyhow!("unknown provider prefix: {prefix}"))?
-        } else if let Some(provider) = Self::descriptor(requested) {
-            provider
-        } else {
-            descriptor_for_bare_model(requested)
-        };
+        let descriptor = Self::resolve_descriptor(model_or_provider)?;
         let (auth_source, credential) = match first_env_or_file(env, descriptor.auth_env)? {
             Some((name, value)) => {
                 let credential = op_secret::resolve_credential(&name, &value)?;
@@ -93,7 +106,7 @@ impl ProviderRegistry {
         env: &HashMap<String, String>,
     ) -> Result<ResolvedProvider> {
         let resolved = Self::resolve(model_or_provider, env)?;
-        if resolved.credential.is_none() {
+        if resolved.provider.requires_auth() && resolved.credential.is_none() {
             bail!(
                 "provider {} requires one of: {} (or the matching *_FILE path)",
                 resolved.provider.id,
@@ -321,6 +334,30 @@ const PROVIDERS: &[ProviderDescriptor] = &[
         protocol: ProviderProtocol::OpenAiCompatible,
     },
     ProviderDescriptor {
+        id: "llamacpp",
+        aliases: &["llama.cpp", "llama-cpp"],
+        auth_env: &[],
+        base_url_env: &["LLAMA_CPP_BASE_URL"],
+        default_base_url: Some("http://127.0.0.1:8080/v1"),
+        protocol: ProviderProtocol::OpenAiCompatible,
+    },
+    ProviderDescriptor {
+        id: "lmstudio",
+        aliases: &["lm-studio"],
+        auth_env: &[],
+        base_url_env: &["LM_STUDIO_BASE_URL"],
+        default_base_url: Some("http://127.0.0.1:1234/v1"),
+        protocol: ProviderProtocol::OpenAiCompatible,
+    },
+    ProviderDescriptor {
+        id: "ollama",
+        aliases: &[],
+        auth_env: &[],
+        base_url_env: &["OLLAMA_BASE_URL"],
+        default_base_url: Some("http://127.0.0.1:11434/v1"),
+        protocol: ProviderProtocol::OpenAiCompatible,
+    },
+    ProviderDescriptor {
         id: "zai",
         aliases: &[],
         auth_env: &["ZAI_API_KEY"],
@@ -373,6 +410,60 @@ const PROVIDERS: &[ProviderDescriptor] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn llamacpp_resolves_to_the_local_openai_compatible_server() {
+        let resolved = ProviderRegistry::resolve("llamacpp/Qwen3.8-27B", &HashMap::new())
+            .expect("llama.cpp provider must resolve without credentials");
+
+        assert_eq!(
+            resolved.provider.protocol,
+            ProviderProtocol::OpenAiCompatible
+        );
+        assert_eq!(
+            resolved.base_url.as_deref(),
+            Some("http://127.0.0.1:8080/v1")
+        );
+        assert_eq!(resolved.credential, None);
+    }
+
+    #[test]
+    fn local_openai_compatible_providers_are_authless_and_overridable() {
+        for (route, provider, default_url, env_name) in [
+            (
+                "lmstudio/model-a",
+                "lmstudio",
+                "http://127.0.0.1:1234/v1",
+                "LM_STUDIO_BASE_URL",
+            ),
+            (
+                "ollama/model-b",
+                "ollama",
+                "http://127.0.0.1:11434/v1",
+                "OLLAMA_BASE_URL",
+            ),
+        ] {
+            let resolved = ProviderRegistry::resolve(route, &HashMap::new())
+                .expect("local provider must resolve without credentials");
+            assert_eq!(resolved.provider.id, provider);
+            assert_eq!(
+                resolved.provider.protocol,
+                ProviderProtocol::OpenAiCompatible
+            );
+            assert_eq!(resolved.base_url.as_deref(), Some(default_url));
+            assert_eq!(resolved.credential, None);
+
+            let env =
+                HashMap::from([(env_name.to_owned(), "http://127.0.0.1:9999/v1/".to_owned())]);
+            assert_eq!(
+                ProviderRegistry::resolve(route, &env)
+                    .expect("local provider override must resolve")
+                    .base_url
+                    .as_deref(),
+                Some("http://127.0.0.1:9999/v1")
+            );
+        }
+    }
 
     #[test]
     fn bedrock_sso_session_marker_is_not_allowlisted() {
