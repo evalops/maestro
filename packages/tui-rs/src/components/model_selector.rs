@@ -32,27 +32,42 @@ pub(crate) fn canonical_current_route(model_id: &str, models: &[ModelInfo]) -> O
             (Some(provider), model)
         });
     if let Some(provider) = provider {
-        let descriptor = crate::ai::ProviderRegistry::descriptor(provider)?;
-        if let Some(model) = models
-            .iter()
-            .find(|model| model.id == bare_id && model.provider == descriptor.id)
-        {
-            return Some(selection_model_id(model));
-        }
-        if descriptor.id == "openai-codex" {
+        if let Some(descriptor) = crate::ai::ProviderRegistry::descriptor(provider) {
             if let Some(model) = models
                 .iter()
-                .find(|model| model.id == bare_id && model.provider == "openai")
+                .find(|model| model.id == bare_id && model.provider == descriptor.id)
             {
                 return Some(selection_model_id(model));
             }
+            if descriptor.id == "openai-codex" {
+                if let Some(model) = models
+                    .iter()
+                    .find(|model| model.id == bare_id && model.provider == "openai")
+                {
+                    return Some(selection_model_id(model));
+                }
+            }
+            if descriptor.id != "openrouter" {
+                if let Some(model) = models
+                    .iter()
+                    .find(|model| model.provider == "openrouter" && model.id == model_id)
+                {
+                    return Some(selection_model_id(model));
+                }
+            }
+            return Some(format!("{}/{}", descriptor.id, bare_id));
         }
+        if let Some(model) = models
+            .iter()
+            .find(|model| model.provider == "openrouter" && model.id == model_id)
+        {
+            return Some(selection_model_id(model));
+        }
+        return None;
     } else if let Some(model) = models.iter().find(|model| model.id == bare_id) {
         return Some(selection_model_id(model));
     }
-    let provider = provider?;
-    let descriptor = crate::ai::ProviderRegistry::descriptor(provider)?;
-    Some(format!("{}/{}", descriptor.id, bare_id))
+    None
 }
 
 fn model_matches_current(
@@ -91,6 +106,8 @@ pub struct ModelSelector {
     show_all_affordance: bool,
     /// List state for scrolling
     list_state: ListState,
+    /// When false, `show` keeps an injected fixture catalog (tests).
+    reload_live_catalog: bool,
 }
 
 impl Default for ModelSelector {
@@ -118,6 +135,7 @@ impl ModelSelector {
             show_all: false,
             show_all_affordance: false,
             list_state: ListState::default(),
+            reload_live_catalog: true,
         }
     }
 
@@ -126,6 +144,7 @@ impl ModelSelector {
         let mut selector = Self::new();
         selector.catalog_models = models.clone();
         selector.models = models;
+        selector.reload_live_catalog = false;
         selector.filter();
         selector
     }
@@ -274,12 +293,42 @@ impl ModelSelector {
 
     /// Show the modal
     pub fn show(&mut self) {
+        self.reload_catalog_from_cache();
         self.visible = true;
         self.query.clear();
         self.cursor = 0;
         self.selected = 0;
         self.show_all = false;
         self.filter();
+    }
+
+    /// Pick up a completed background catalog refresh without dropping local
+    /// discovery rows. `available_models` also schedules the next refresh.
+    fn reload_catalog_from_cache(&mut self) {
+        if !self.reload_live_catalog {
+            return;
+        }
+        let catalog = available_models();
+        if catalog == self.catalog_models {
+            return;
+        }
+        let discovered: Vec<ModelInfo> = self
+            .models
+            .iter()
+            .filter(|model| model.verification.source == "local-runtime")
+            .cloned()
+            .collect();
+        self.catalog_models = catalog;
+        self.models = self.catalog_models.clone();
+        for discovered_model in discovered {
+            if let Some(existing) = self.models.iter_mut().find(|model| {
+                model.provider == discovered_model.provider && model.id == discovered_model.id
+            }) {
+                *existing = discovered_model;
+            } else {
+                self.models.push(discovered_model);
+            }
+        }
     }
 
     /// Hide the modal
@@ -710,10 +759,27 @@ mod tests {
         selector.insert_char('d');
         selector.insert_char('e');
 
-        // Should only have Claude models
+        // Matches any catalog field the filter searches, including OpenRouter
+        // vendor ids such as `anthropic/claude-sonnet-4.5`.
         assert!(!selector.filtered.is_empty());
         for &idx in &selector.filtered {
-            assert!(selector.models[idx].name.to_lowercase().contains("claude"));
+            let model = &selector.models[idx];
+            let haystack = format!(
+                "{} {} {}",
+                model.id.to_lowercase(),
+                model.name.to_lowercase(),
+                model.provider.to_lowercase()
+            );
+            assert!(
+                haystack.contains("claude")
+                    || model_status_summary(model)
+                        .to_lowercase()
+                        .contains("claude")
+                    || crate::palette_resource::PaletteResource::from(model).matches("claude"),
+                "filtered model {} / {} must match query claude",
+                model.provider,
+                model.id
+            );
         }
     }
 

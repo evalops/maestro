@@ -3,7 +3,8 @@
 //! The catalog follows the "always-fresh snapshot" approach:
 //!
 //! 1. A bundled snapshot (`model_catalog_data.json`, embedded via
-//!    `include_str!`) is regenerated from <https://models.dev/api.json> by
+//!    `include_str!`) is regenerated from <https://models.dev/api.json> and
+//!    OpenRouter's public <https://openrouter.ai/api/v1/models> catalog by
 //!    `scripts/fetch-model-catalog.mjs` and committed, so offline builds and
 //!    fresh installs always have current data with zero build-time network.
 //! 2. At runtime a non-blocking background task refreshes a cached copy at
@@ -12,11 +13,12 @@
 //!    fresh as the bundled `generated_at`; stale or malformed caches lose to
 //!    the bundled snapshot, so fresh installs always win.
 //! 3. Unknown model ids are not in the catalog at all and keep passing
-//!    through to the provider registry unchanged.
+//!    through to the provider registry unchanged. OpenRouter routes remain
+//!    valid without a catalog row.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::LazyLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -111,15 +113,20 @@ pub struct ModelInspection {
     pub sources: BTreeMap<String, String>,
 }
 
-/// Upstream community catalog (MIT-licensed) that feeds both the bundled
-/// snapshot and the runtime refresh.
+/// Upstream community catalog (MIT-licensed) that feeds native-provider rows
+/// in both the bundled snapshot and the runtime refresh.
 const MODELS_DEV_API_URL: &str = "https://models.dev/api.json";
+/// Official OpenRouter catalog. This is the source of truth for current
+/// OpenRouter model ids; models.dev is a lagging subset.
+const OPENROUTER_MODELS_API_URL: &str = "https://openrouter.ai/api/v1/models";
 /// How long a cached refresh check stays valid before another background
-/// refresh is spawned.
-const REFRESH_TTL_SECS: u64 = 4 * 60 * 60;
+/// refresh is spawned. OpenRouter publishes new routes daily; keep this
+/// shorter than the models.dev-only era so a long-lived TUI picks them up.
+const REFRESH_TTL_SECS: u64 = 60 * 60;
 /// Hard timeout for the background refresh request; must never stall startup.
 const REFRESH_TIMEOUT_SECS: u64 = 15;
-/// Providers mirrored into the catalog, in the order they are merged.
+/// Providers mirrored from models.dev into the catalog, in the order they
+/// are merged. OpenRouter is fetched from its own official catalog.
 pub(crate) const CATALOG_PROVIDERS: &[&str] = &["anthropic", "google", "openai", "xai"];
 /// Providers whose defaults are shown in the model selector. Vertex AI uses
 /// the Google catalog rows mirrored by [`available_models`], but is kept out
@@ -130,6 +137,7 @@ pub(crate) const MODEL_SELECTOR_PROVIDERS: &[&str] = &[
     "vertex-ai",
     "openai",
     "xai",
+    "openrouter",
     "llamacpp",
 ];
 
@@ -179,6 +187,7 @@ pub fn default_model_for_provider(provider: &str) -> Option<&'static str> {
         "openai-codex" | "codex" => Some("gpt-5.5"),
         "google" | "gemini" | "vertex-ai" | "vertex" => Some("gemini-2.5-pro"),
         "xai" | "grok" => Some("grok-4.5"),
+        "openrouter" => Some("openai/gpt-4o-mini"),
         "llamacpp" | "llama.cpp" | "llama-cpp" => Some("Qwen3.8-27B"),
         _ => None,
     }
@@ -201,7 +210,7 @@ pub fn available_models() -> Vec<ModelInfo> {
 #[must_use]
 pub fn model_route(model: &ModelInfo) -> String {
     match model.provider.as_str() {
-        "google" | "vertex-ai" | "llamacpp" | "lmstudio" | "ollama" => {
+        "google" | "vertex-ai" | "llamacpp" | "lmstudio" | "ollama" | "openrouter" => {
             format!("{}/{}", model.provider, model.id)
         }
         _ => model.id.clone(),
@@ -388,16 +397,21 @@ fn load_cache(path: &Path) -> Option<CachedCatalog> {
     serde_json::from_str(&contents).ok()
 }
 
-/// Spawn a one-shot background refresh when the cache is missing or its last
-/// check is older than the TTL. No-ops without a tokio runtime and never runs
-/// more than once per process; startup paths never block or fail on it.
+/// Spawn a background refresh when the cache is missing or its last check is
+/// older than the TTL. No-ops without a tokio runtime. A long-lived process
+/// may refresh again after the TTL; startup paths never block or fail on it.
 fn maybe_spawn_background_refresh() {
-    static REFRESH_STARTED: AtomicBool = AtomicBool::new(false);
+    static LAST_REFRESH_STARTED: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
 
+    let now = now_epoch_secs();
+    let last = LAST_REFRESH_STARTED.load(Ordering::SeqCst);
+    if last != 0 && now.saturating_sub(last) <= REFRESH_TTL_SECS {
+        return;
+    }
     let stale = catalog_cache_path().is_none_or(|path| {
-        load_cache(&path).is_none_or(|cache| {
-            now_epoch_secs().saturating_sub(cache.checked_at) > REFRESH_TTL_SECS
-        })
+        load_cache(&path)
+            .is_none_or(|cache| now.saturating_sub(cache.checked_at) > REFRESH_TTL_SECS)
     });
     if !stale {
         return;
@@ -405,7 +419,10 @@ fn maybe_spawn_background_refresh() {
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
         return;
     };
-    if REFRESH_STARTED.swap(true, Ordering::SeqCst) {
+    if LAST_REFRESH_STARTED
+        .compare_exchange(last, now, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return;
     }
     handle.spawn(async {
@@ -449,6 +466,36 @@ async fn refresh_catalog_cache() -> anyhow::Result<()> {
 async fn fetch_remote_catalog(
     client: &reqwest::Client,
 ) -> anyhow::Result<(Vec<ModelInfo>, Option<String>)> {
+    let native = fetch_models_dev_catalog(client).await;
+    let openrouter = fetch_openrouter_catalog(client).await;
+    match (native, openrouter) {
+        (Err(native_error), Err(openrouter_error)) => {
+            anyhow::bail!(
+                "catalog refresh failed: models.dev: {native_error}; openrouter: {openrouter_error}"
+            )
+        }
+        (native, openrouter) => {
+            let (mut models, last_modified) = match native {
+                Ok(result) => result,
+                Err(_) => (bundled_native_models(), None),
+            };
+            let openrouter_models = match openrouter {
+                Ok(models) => models,
+                Err(_) => bundled_openrouter_models(),
+            };
+            models.extend(openrouter_models);
+            sort_catalog_models(&mut models);
+            if models.is_empty() {
+                anyhow::bail!("catalog refresh produced an empty catalog");
+            }
+            Ok((models, last_modified))
+        }
+    }
+}
+
+async fn fetch_models_dev_catalog(
+    client: &reqwest::Client,
+) -> anyhow::Result<(Vec<ModelInfo>, Option<String>)> {
     let response = client.get(MODELS_DEV_API_URL).send().await?;
     let response = response.error_for_status()?;
     let last_modified = response
@@ -462,6 +509,41 @@ async fn fetch_remote_catalog(
         anyhow::bail!("models.dev payload produced an empty catalog");
     }
     Ok((models, last_modified))
+}
+
+fn bundled_native_models() -> Vec<ModelInfo> {
+    bundled_models()
+        .iter()
+        .filter(|model| model.provider != "openrouter")
+        .cloned()
+        .collect()
+}
+
+fn bundled_openrouter_models() -> Vec<ModelInfo> {
+    bundled_models()
+        .iter()
+        .filter(|model| model.provider == "openrouter")
+        .cloned()
+        .collect()
+}
+
+fn sort_catalog_models(models: &mut [ModelInfo]) {
+    models.sort_by(|left, right| {
+        left.provider
+            .cmp(&right.provider)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+}
+
+async fn fetch_openrouter_catalog(client: &reqwest::Client) -> anyhow::Result<Vec<ModelInfo>> {
+    let response = client.get(OPENROUTER_MODELS_API_URL).send().await?;
+    let response = response.error_for_status()?;
+    let payload: serde_json::Value = response.json().await?;
+    let models = map_openrouter_catalog(&payload)?;
+    if models.is_empty() {
+        anyhow::bail!("OpenRouter payload produced an empty catalog");
+    }
+    Ok(models)
 }
 
 /// Write the cache via a sibling temp file + rename so readers never observe
@@ -570,11 +652,116 @@ fn catalog_protocol(provider: &str, model_id: &str) -> ModelProtocol {
     match provider {
         "anthropic" => ModelProtocol::Anthropic,
         "google" => ModelProtocol::Google,
+        // OpenRouter's stable surface is Chat Completions. Nested vendor ids
+        // such as `openai/gpt-5.4` must not inherit OpenAI's Responses
+        // heuristic.
+        "openrouter" => ModelProtocol::OpenAiChat,
         // Mirror of `uses_responses_api` in `ai::openai`: Codex and gpt-5.x/o3
         // models use the Responses API, everything else chat completions.
         "openai" if uses_responses_api(model_id) => ModelProtocol::OpenAiResponses,
         _ => ModelProtocol::OpenAiChat,
     }
+}
+
+/// Map OpenRouter's `GET /api/v1/models` payload. Interactive routes are kept;
+/// `:batch` variants belong to OpenRouter's async Batch API and cannot drive
+/// Maestro's streaming agent loop.
+fn map_openrouter_catalog(payload: &serde_json::Value) -> anyhow::Result<Vec<ModelInfo>> {
+    let models = payload
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("OpenRouter payload is missing a data array"))?;
+    let mut mapped = Vec::new();
+    for model in models {
+        if let Some(info) = map_openrouter_model(model) {
+            mapped.push(info);
+        }
+    }
+    Ok(mapped)
+}
+
+fn map_openrouter_model(model: &serde_json::Value) -> Option<ModelInfo> {
+    let id = model
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())?;
+    if id.ends_with(":batch") {
+        return None;
+    }
+    let top_provider = model.get("top_provider");
+    let context_tokens = model
+        .get("context_length")
+        .or_else(|| top_provider.and_then(|provider| provider.get("context_length")))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|context| u32::try_from(context).ok())
+        .filter(|context| *context > 0)?;
+    let output_tokens = top_provider
+        .and_then(|provider| provider.get("max_completion_tokens"))
+        .or_else(|| model.get("max_completion_tokens"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|output| u32::try_from(output).ok())
+        .filter(|output| *output > 0);
+    let name = model
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(id)
+        .to_owned();
+    let description = model
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+        .filter(|description| !description.is_empty())
+        .unwrap_or(&name)
+        .to_owned();
+    let vision = model
+        .get("architecture")
+        .and_then(|architecture| architecture.get("input_modalities"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|inputs| inputs.iter().any(|input| input.as_str() == Some("image")));
+    let reasoning = openrouter_supported_parameter(model, "reasoning")
+        || openrouter_supported_parameter(model, "include_reasoning")
+        || model
+            .get("reasoning")
+            .is_some_and(serde_json::Value::is_object);
+    Some(ModelInfo {
+        id: id.to_owned(),
+        name,
+        provider: "openrouter".to_owned(),
+        description,
+        capabilities: ModelCapabilities {
+            protocol: ModelProtocol::OpenAiChat,
+            tools: openrouter_supported_parameter(model, "tools")
+                || openrouter_supported_parameter(model, "tool_choice"),
+            vision,
+            reasoning,
+            streaming: true,
+            context_tokens,
+            output_tokens,
+        },
+        verification: ModelVerification {
+            state: VerificationState::Catalog,
+            source: "openrouter".to_owned(),
+            detail: None,
+        },
+    })
+}
+
+fn openrouter_supported_parameter(model: &serde_json::Value, parameter: &str) -> bool {
+    model
+        .get("supported_parameters")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|parameters| {
+            parameters
+                .iter()
+                .any(|entry| entry.as_str() == Some(parameter))
+        })
+}
+
+fn find_openrouter_model<'a>(models: &'a [ModelInfo], id: &str) -> Option<&'a ModelInfo> {
+    models
+        .iter()
+        .find(|model| model.provider == "openrouter" && model.id == id)
 }
 
 fn uses_responses_api(model_id: &str) -> bool {
@@ -591,22 +778,32 @@ pub fn find_model(id: &str) -> Option<ModelInfo> {
         .map_or((None, id), |(provider, model)| (Some(provider), model));
     let models = available_models();
     if let Some(provider) = provider {
-        let descriptor = ProviderRegistry::descriptor(provider)?;
-        // Exact provider match first.
-        if let Some(model) = models
-            .iter()
-            .find(|model| model.id == bare_id && model.provider == descriptor.id)
-        {
-            return Some(model.clone());
+        if let Some(descriptor) = ProviderRegistry::descriptor(provider) {
+            // Exact provider match first.
+            if let Some(model) = models
+                .iter()
+                .find(|model| model.id == bare_id && model.provider == descriptor.id)
+            {
+                return Some(model.clone());
+            }
+            // openai-codex is a ChatGPT-subscription transport for OpenAI frontier
+            // models; catalog rows are stored under provider "openai".
+            if descriptor.id == "openai-codex" {
+                return models
+                    .into_iter()
+                    .find(|model| model.id == bare_id && model.provider == "openai");
+            }
+            // `anthropic/claude-sonnet-4.5` is an OpenRouter model id, not a
+            // native Anthropic catalog row. Prefer the native hit above.
+            if descriptor.id != "openrouter" {
+                if let Some(model) = find_openrouter_model(&models, id) {
+                    return Some(model.clone());
+                }
+            }
+            return None;
         }
-        // openai-codex is a ChatGPT-subscription transport for OpenAI frontier
-        // models; catalog rows are stored under provider "openai".
-        if descriptor.id == "openai-codex" {
-            return models
-                .into_iter()
-                .find(|model| model.id == bare_id && model.provider == "openai");
-        }
-        return None;
+        // Unknown first segment (`qwen/...`) is still a valid OpenRouter id.
+        return find_openrouter_model(&models, id).cloned();
     }
     models.into_iter().find(|model| model.id == bare_id)
 }
@@ -763,18 +960,58 @@ mod tests {
     }
 
     #[test]
+    fn bundled_catalog_splits_native_and_openrouter_rows() {
+        let native = bundled_native_models();
+        let openrouter = bundled_openrouter_models();
+        assert!(!native.is_empty());
+        assert!(!openrouter.is_empty());
+        assert!(native.iter().all(|model| model.provider != "openrouter"));
+        assert!(openrouter
+            .iter()
+            .all(|model| model.provider == "openrouter"));
+        assert_eq!(
+            native.len() + openrouter.len(),
+            bundled_models().len(),
+            "native + OpenRouter rows must cover the bundled snapshot"
+        );
+    }
+
+    #[test]
     fn bundled_snapshot_parses_and_is_healthy() {
         assert!(BUNDLED_CATALOG.generated_at > 0);
         assert!(bundled_models().len() >= 50);
+        let openrouter_count = bundled_models()
+            .iter()
+            .filter(|model| model.provider == "openrouter")
+            .count();
+        assert!(
+            openrouter_count >= 200,
+            "bundled snapshot must include current OpenRouter models, found {openrouter_count}"
+        );
         for model in bundled_models() {
-            assert!(
-                model.capabilities.tools,
-                "{} must be tool-capable",
-                model.id
-            );
             assert!(
                 model.capabilities.context_tokens > 0,
                 "{} must declare a context window",
+                model.id
+            );
+            if model.provider == "openrouter" {
+                assert!(
+                    model.id.contains('/'),
+                    "OpenRouter catalog id {} must keep its vendor namespace",
+                    model.id
+                );
+                assert!(
+                    !model.id.ends_with(":batch"),
+                    "OpenRouter batch route {} is not an interactive catalog row",
+                    model.id
+                );
+                assert_eq!(model.capabilities.protocol, ModelProtocol::OpenAiChat);
+                assert_eq!(model.verification.source, "openrouter");
+                continue;
+            }
+            assert!(
+                model.capabilities.tools,
+                "{} must be tool-capable",
                 model.id
             );
             assert!(
@@ -829,9 +1066,12 @@ mod tests {
 
     #[test]
     fn default_models_exist_in_catalog() {
-        for provider in ["anthropic", "openai", "google", "xai"] {
+        for provider in ["anthropic", "openai", "google", "xai", "openrouter"] {
             let default = default_model_for_provider(provider).expect("default model");
-            let model = catalog_model(default);
+            let model = bundled_models()
+                .iter()
+                .find(|model| model.id == default && model.provider == provider)
+                .unwrap_or_else(|| panic!("{provider}/{default} must be in the bundled catalog"));
             assert_eq!(model.provider, provider);
         }
         assert_eq!(default_model_for_provider("nope"), None);
@@ -1093,6 +1333,73 @@ mod tests {
         // openai-codex is subscription transport over OpenAI catalog ids.
         assert!(find_model("openai-codex/gpt-5.5").is_some());
         assert!(!has_provider_mismatch("openai-codex/gpt-5.5"));
+    }
+
+    #[test]
+    fn openrouter_catalog_routes_keep_the_vendor_namespace() {
+        let model = find_model("openrouter/anthropic/claude-sonnet-4.5")
+            .expect("OpenRouter Claude route must be cataloged");
+        assert_eq!(model.provider, "openrouter");
+        assert_eq!(model.id, "anthropic/claude-sonnet-4.5");
+        assert_eq!(
+            model_route(&model),
+            "openrouter/anthropic/claude-sonnet-4.5"
+        );
+        assert_eq!(model.capabilities.protocol, ModelProtocol::OpenAiChat);
+        assert!(model.capabilities.tools);
+        assert!(!has_provider_mismatch(
+            "openrouter/anthropic/claude-sonnet-4.5"
+        ));
+        assert_eq!(
+            find_model("anthropic/claude-sonnet-4.5").map(|model| model.provider),
+            Some("openrouter".to_owned()),
+            "an OpenRouter vendor id without the transport prefix still resolves"
+        );
+    }
+
+    #[test]
+    fn openrouter_mapping_skips_batch_and_keeps_chat_protocol() {
+        let payload = serde_json::json!({
+            "data": [
+                {
+                    "id": "anthropic/claude-sonnet-4.5",
+                    "name": "Claude Sonnet 4.5",
+                    "description": "Frontier Sonnet",
+                    "context_length": 200_000,
+                    "architecture": {"input_modalities": ["text", "image"]},
+                    "supported_parameters": ["tools", "tool_choice", "reasoning"],
+                    "reasoning": {"default_enabled": true},
+                    "top_provider": {"max_completion_tokens": 64_000}
+                },
+                {
+                    "id": "openai/gpt-5.4",
+                    "name": "GPT-5.4",
+                    "context_length": 400_000,
+                    "supported_parameters": ["tools"]
+                },
+                {
+                    "id": "anthropic/claude-sonnet-4.5:batch",
+                    "name": "Claude Sonnet 4.5 Batch",
+                    "context_length": 200_000,
+                    "supported_parameters": ["tools"]
+                },
+                {
+                    "id": "vendor/no-context",
+                    "name": "Broken",
+                    "supported_parameters": ["tools"]
+                }
+            ]
+        });
+        let models = map_openrouter_catalog(&payload).expect("mapping");
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "anthropic/claude-sonnet-4.5");
+        assert!(models[0].capabilities.tools);
+        assert!(models[0].capabilities.vision);
+        assert!(models[0].capabilities.reasoning);
+        assert_eq!(models[0].capabilities.output_tokens, Some(64_000));
+        assert_eq!(models[1].id, "openai/gpt-5.4");
+        assert_eq!(models[1].capabilities.protocol, ModelProtocol::OpenAiChat);
+        assert!(!models.iter().any(|model| model.id.ends_with(":batch")));
     }
 
     #[test]

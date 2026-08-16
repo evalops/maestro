@@ -71,7 +71,9 @@ function compareDrift(freshPath) {
 	const added = freshModels.filter((entry) => !committedModels.includes(entry));
 	const removed = committedModels.filter((entry) => !freshModels.includes(entry));
 	if (added.length === 0 && removed.length === 0) {
-		console.log(`no drift: committed snapshot matches models.dev (${committed.models.length} models)`);
+		console.log(
+			`no drift: committed snapshot matches models.dev + OpenRouter (${committed.models.length} models)`,
+		);
 		return;
 	}
 	const idOf = (entry) => JSON.parse(entry).id;
