@@ -58,8 +58,8 @@ esac
 
 if [[ -n "${MAESTRO_RELEASE_BASE_URL:-}" ]]; then
   release_url="${MAESTRO_RELEASE_BASE_URL%/}"
-elif [[ -n "${MAESTRO_VERSION:-}" ]]; then
-  release_url="https://github.com/${REPO}/releases/download/v${MAESTRO_VERSION#v}"
+elif [[ -n "${MAESTRO_INSTALL_VERSION:-}" ]]; then
+  release_url="https://github.com/${REPO}/releases/download/v${MAESTRO_INSTALL_VERSION#v}"
 else
   release_url="https://github.com/${REPO}/releases/latest/download"
 fi
@@ -247,8 +247,8 @@ mkdir -p "$tmpdir/maestro-web"
 tar -xzf "$tmpdir/$web_asset" -C "$tmpdir/maestro-web"
 [[ -f "$tmpdir/maestro-web/index.html" ]] || fail "$web_asset does not contain index.html"
 
-if [[ -n "${MAESTRO_VERSION:-}" ]]; then
-  release_version="${MAESTRO_VERSION#v}"
+if [[ -n "${MAESTRO_INSTALL_VERSION:-}" ]]; then
+  release_version="${MAESTRO_INSTALL_VERSION#v}"
 else
   version_output="$("$tmpdir/$asset" --version 2>/dev/null)" ||
     fail "Downloaded Maestro binary could not report its version"
@@ -280,12 +280,23 @@ stage=""
 
 launcher_stage="$install_dir/.maestro.install.$$"
 release_dir_quoted="$(shell_quote "$release_dir")"
+install_dir_quoted="$(shell_quote "$install_dir")"
+data_dir_quoted="$(shell_quote "$data_dir")"
+release_version_quoted="$(shell_quote "$release_version")"
 {
   printf '%s\n' '#!/usr/bin/env bash' 'set -eu'
   printf 'release_dir=%s\n' "$release_dir_quoted"
+	printf 'install_dir=%s\n' "$install_dir_quoted"
+	printf 'data_dir=%s\n' "$data_dir_quoted"
+	printf 'release_version=%s\n' "$release_version_quoted"
 	# These lines are intentionally literal: they are the generated launcher.
 	# shellcheck disable=SC2016
-	printf '%s\n' 'export MAESTRO_WEB_STATIC_ROOT="${MAESTRO_WEB_STATIC_ROOT:-$release_dir/web}"'
+	printf '%s\n' \
+		'export MAESTRO_WEB_STATIC_ROOT="${MAESTRO_WEB_STATIC_ROOT:-$release_dir/web}"' \
+		'export MAESTRO_INSTALL_METHOD=release' \
+		'export MAESTRO_INSTALL_DIR="$install_dir"' \
+		'export MAESTRO_DATA_DIR="$data_dir"' \
+		'export MAESTRO_VERSION="$release_version"'
 	# shellcheck disable=SC2016
 	printf '%s\n' 'exec "$release_dir/bin/maestro" "$@"'
 } > "$launcher_stage"

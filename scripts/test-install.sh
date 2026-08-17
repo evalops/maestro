@@ -115,7 +115,7 @@ run_install() {
   HOME="$fixture/home" \
   MAESTRO_INSTALL_DIR="$install_dir" \
   MAESTRO_DATA_DIR="$data_dir" \
-  MAESTRO_VERSION="0.0.1" \
+  MAESTRO_INSTALL_VERSION="0.0.1" \
   MAESTRO_RELEASE_BASE_URL="$release_url" \
   MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
   "$ROOT/scripts/install.sh"
@@ -124,6 +124,14 @@ run_install() {
 run_install > "$fixture/first-install.log" 2>&1 ||
   fail "first install failed: $(cat "$fixture/first-install.log")"
 [[ -x "$install_dir/maestro" ]] || fail "launcher was not installed"
+grep -q '^export MAESTRO_INSTALL_METHOD=release$' "$install_dir/maestro" ||
+  fail "launcher did not identify the signed release install method"
+grep -q '^export MAESTRO_INSTALL_DIR=' "$install_dir/maestro" ||
+  fail "launcher did not retain its install directory"
+grep -q '^export MAESTRO_DATA_DIR=' "$install_dir/maestro" ||
+  fail "launcher did not retain its data directory"
+grep -q '^export MAESTRO_VERSION=' "$install_dir/maestro" ||
+  fail "launcher did not retain its installed version"
 [[ "$("$install_dir/maestro" --version)" == "maestro 0.0.1" ]] ||
   fail "launcher did not execute the first release"
 release_binary="$(find "$data_dir/releases" -type f -path '*/bin/maestro' -print -quit)"
@@ -147,6 +155,23 @@ expected_default_web_root="$(cd "$release_root/web" && pwd -P)"
 [[ "$default_web_root" == "$expected_default_web_root" ]] ||
   fail "launcher did not provide the bundled default web root"
 
+runtime_version_install_dir="$fixture/runtime-version-bin"
+runtime_version_data_dir="$fixture/runtime-version-data"
+HOME="$fixture/home" \
+MAESTRO_INSTALL_DIR="$runtime_version_install_dir" \
+MAESTRO_DATA_DIR="$runtime_version_data_dir" \
+MAESTRO_VERSION="9.9.9" \
+MAESTRO_RELEASE_BASE_URL="$release_url" \
+MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
+"$ROOT/scripts/install.sh" > "$fixture/runtime-version-install.log" 2>&1 ||
+  fail "runtime version metadata affected install: $(cat "$fixture/runtime-version-install.log")"
+[[ "$("$runtime_version_install_dir/maestro" --version)" == "maestro 0.0.1" ]] ||
+  fail "runtime version metadata pinned the installed binary"
+[[ -d "$runtime_version_data_dir/releases/0.0.1" ]] ||
+  fail "runtime version metadata changed the staged release version"
+[[ ! -e "$runtime_version_data_dir/releases/9.9.9" ]] ||
+  fail "runtime version metadata was interpreted as an installer pin"
+
 relative_install_dir="$fixture/relative-bin"
 mkdir -p "$fixture/invocation"
 (
@@ -154,7 +179,7 @@ mkdir -p "$fixture/invocation"
   HOME="$fixture/home" \
   MAESTRO_INSTALL_DIR="$relative_install_dir" \
   MAESTRO_DATA_DIR="relative-data" \
-  MAESTRO_VERSION="0.0.1" \
+  MAESTRO_INSTALL_VERSION="0.0.1" \
   MAESTRO_RELEASE_BASE_URL="$release_url" \
   MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
   "$ROOT/scripts/install.sh" > "$fixture/relative-install.log" 2>&1
@@ -169,7 +194,7 @@ relative_version="$(
 if HOME="$fixture/home" \
   MAESTRO_INSTALL_DIR="$install_dir" \
   MAESTRO_DATA_DIR="$data_dir" \
-  MAESTRO_VERSION="0.0.2" \
+  MAESTRO_INSTALL_VERSION="0.0.2" \
   MAESTRO_RELEASE_BASE_URL="http://127.0.0.1:$port/v0.0.2" \
   MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
   "$ROOT/scripts/install.sh" > "$fixture/manifest-failure.log" 2>&1; then
@@ -184,7 +209,7 @@ release_binary_count="$(find "$data_dir/releases" -type f -path '*/bin/maestro' 
 if HOME="$fixture/home" \
   MAESTRO_INSTALL_DIR="$install_dir" \
   MAESTRO_DATA_DIR="$data_dir" \
-  MAESTRO_VERSION="0.0.1" \
+  MAESTRO_INSTALL_VERSION="0.0.1" \
   MAESTRO_RELEASE_BASE_URL="$release_url" \
   MAESTRO_REQUIRE_SIGNED_INSTALL=1 \
   MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
@@ -197,7 +222,7 @@ fi
 if HOME="$fixture/home" \
   MAESTRO_INSTALL_DIR="$install_dir" \
   MAESTRO_DATA_DIR="$data_dir" \
-  MAESTRO_VERSION="0.0.1" \
+  MAESTRO_INSTALL_VERSION="0.0.1" \
   MAESTRO_RELEASE_BASE_URL="$release_url" \
   MAESTRO_REQUIRE_SIGNED_INSTALL=1 \
   "$ROOT/scripts/install.sh" > "$fixture/strict-install.log" 2>&1; then

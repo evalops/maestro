@@ -1982,6 +1982,9 @@ mod stream_idle_policy_tests {
             {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        stream
+                            .set_nonblocking(false)
+                            .expect("set mock gateway request blocking");
                         let mut request = [0_u8; 4096];
                         let _ = stream.read(&mut request).expect("read gateway request");
                         server_requests.fetch_add(1, Ordering::SeqCst);

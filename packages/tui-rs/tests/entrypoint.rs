@@ -154,6 +154,13 @@ fn clap_flags_route_to_the_expected_agent_dispatch() {
         ClapDispatch::Interactive,
         "an unrecognized first word with no leading `-` is a prompt, not an error"
     );
+    for flag in ["--help", "-h", "--version", "-V"] {
+        assert_eq!(
+            classify_clap_dispatch(&argv(&[flag])),
+            ClapDispatch::DisplayHelpOrVersion,
+            "{flag} should let clap display output without starting the interactive updater"
+        );
+    }
 
     // `--mode=headless`/`--mode headless` were only ever recognized by the
     // old `maestro-rs` classify() (see `packages/maestro-rs/src/cli.rs`),

@@ -11,6 +11,8 @@ maestro --version
 
 The installer verifies the release checksum manifest and Cosign signatures when the release provides them, stages binaries and web assets under a versioned data directory, and swaps only the launcher. Set `MAESTRO_REQUIRE_SIGNED_INSTALL=1` to refuse legacy releases without signed metadata.
 
+Installed interactive sessions check for updates on startup and apply newer releases before opening the TUI. The check is bounded and failures never block startup. Set `MAESTRO_AUTO_UPDATE=0` to opt out, `MAESTRO_AUTO_UPDATE=check` to show availability without installing, or use `maestro update --check` for an explicit check. Signed-release installs require Cosign verification during automatic updates; global npm and Bun installs update through their original package manager.
+
 Release assets are named `maestro-darwin-arm64`, `maestro-darwin-x64`, `maestro-linux-arm64`, and `maestro-linux-x64`. The npm package contains the same native binaries and a POSIX launcher; it does not execute JavaScript at runtime.
 
 ## Use
