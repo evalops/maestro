@@ -7,7 +7,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "packages/control-plane-rs/**"
+      - "packages/runtime-gateway-rs/**"
       - "packages/tui-rs/**"
       - "packages/web/dist/**"
       - "docker-compose.yml"
@@ -59,7 +59,7 @@ jobs:
           changed="false"
           while IFS= read -r path; do
             case "$path" in
-              packages/control-plane-rs/* | packages/tui-rs/* | packages/web/dist/* | docker-compose.yml | .github/workflows/integration.yml)
+              packages/runtime-gateway-rs/* | packages/tui-rs/* | packages/web/dist/* | docker-compose.yml | .github/workflows/integration.yml)
                 changed="true"
                 break
                 ;;
@@ -118,7 +118,7 @@ jobs:
           MAESTRO_DATABASE_URL: postgresql://maestro@localhost:${{ job.services.postgres.ports['5432'] }}/maestro
           PGPASSWORD: maestro
         run: |
-          cargo test --locked -p maestro-control-plane
+          cargo test --locked -p maestro-runtime-gateway
 
   integration-tests:
     needs: [pull-request-path-check, integration-suite]

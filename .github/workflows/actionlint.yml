@@ -95,7 +95,9 @@ jobs:
           const suite = jobBlock(integration, "integration-suite");
           const integrationGate = jobBlock(integration, "integration-tests");
           assert.match(suite, /integration_paths_changed == 'true'/);
-          assert.match(suite, /cargo test --locked -p maestro-control-plane/);
+          assert.match(integration, /packages\/runtime-gateway-rs\/\*\*/);
+          assert.match(integration, /packages\/runtime-gateway-rs\/\*/);
+          assert.match(suite, /cargo test --locked -p maestro-runtime-gateway/);
           assert.match(integrationGate, /needs: \[pull-request-path-check, integration-suite\]/);
           assert.match(integrationGate, /if: \$\{\{ always\(\) \}\}/);
           assert.match(integrationGate, /run: node scripts\/check-integration-required-gate\.mjs/);
