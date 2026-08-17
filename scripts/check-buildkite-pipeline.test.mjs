@@ -74,12 +74,19 @@ test("workflow tooling installs pinned binaries without requiring Go", () => {
 
 test("JetBrains validation fails fast and retries only its stuck-JVM exit", () => {
   assert.match(pipeline, /key: "jetbrains-plugin"[\s\S]*exit_status: 137[\s\S]*limit: 1/);
-  assert.match(jetbrains, /10m \.\/gradlew check buildPlugin --no-daemon/);
+  assert.match(jetbrains, /10m \\\n\s+\.\/gradlew check buildPlugin --no-daemon -Dorg\.gradle\.jvmargs=/);
 });
 
 test("internal-only contracts are conditional in the shared public pipeline", () => {
   assert.match(pipeline, /if \[\[ -d test\/internal \]\]; then\n\s+npm run test:internal\n\s+fi/);
   assert.match(pipeline, /if \[\[ -f scripts\/measure-ci-build-latency\.test\.mjs \]\]; then/);
+});
+
+test("public projections skip the internal mirror workflow contract", () => {
+  assert.match(
+    tooling,
+    /check-sync-public-release-mirror-workflow\.test\.mjs[\s\S]*?\.github\/workflows\/sync-public-release-mirror\.yml/,
+  );
 });
 
 test("Rust validation uses the pinned canonical nextest split", () => {

@@ -51,6 +51,7 @@ pub mod policy;
 pub mod pr_creator;
 pub mod prompt;
 pub mod runtime_config;
+pub mod shadow_routing;
 mod task_run;
 mod text;
 pub mod types;
@@ -76,6 +77,7 @@ pub use policy::{PolicyGate, PolicyGateConfig, PolicyGateResult};
 pub use pr_creator::PrCreator;
 pub use prompt::{PromptBuilder, PromptBundle, PromptFileContext};
 pub use runtime_config::EffectiveRuntimeConfig;
+pub use shadow_routing::{ShadowCandidate, ShadowObservation, ShadowRouter, ShadowRoutingConfig};
 pub use types::*;
 
 /// Prelude for convenient imports
@@ -101,5 +103,8 @@ pub mod prelude {
     pub use crate::pr_creator::{PrCreator, PrCreatorConfig};
     pub use crate::prompt::{PromptBuilder, PromptBundle, PromptFileContext};
     pub use crate::runtime_config::EffectiveRuntimeConfig;
+    pub use crate::shadow_routing::{
+        ShadowCandidate, ShadowObservation, ShadowRouter, ShadowRoutingConfig,
+    };
     pub use crate::types::*;
 }

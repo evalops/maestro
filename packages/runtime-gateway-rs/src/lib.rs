@@ -35,6 +35,7 @@ mod a2a;
 mod a2a_platform_registration;
 mod a2a_skill_catalog;
 mod auth;
+mod automations;
 mod chat;
 mod codex_bridge;
 mod codex_compat;
@@ -106,7 +107,7 @@ use http::{
 use http::{response_with_cache_and_length, response_with_no_store_and_length};
 use local::*;
 use markitdown::{extract_with_markitdown, should_prefer_markitdown, should_try_markitdown};
-use model_catalog::{available_models, default_model, resolve_model, ModelInfo};
+pub(crate) use model_catalog::{available_models, default_model, resolve_model, ModelInfo};
 #[cfg(test)]
 use model_catalog::{
     builtin_models, default_model_from_registry, emergency_default_model, merge_configured_models,
@@ -275,6 +276,7 @@ pub struct RuntimeGatewayConfig {
     command_prefs_path: PathBuf,
     usage_file_path: PathBuf,
     a2a_tasks_file_path: PathBuf,
+    automation_file_path: PathBuf,
     static_root: PathBuf,
     static_cache_max_age: u64,
     llm_gateway_models_url: Option<String>,
@@ -328,6 +330,7 @@ impl RuntimeGatewayConfig {
             command_prefs_path: command_prefs_path(),
             usage_file_path: usage_file_path(),
             a2a_tasks_file_path: a2a_tasks_file_path(),
+            automation_file_path: automation_file_path(),
             static_root: env::var("MAESTRO_WEB_STATIC_ROOT")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("packages/web/dist")),
@@ -379,6 +382,7 @@ impl RuntimeGatewayConfig {
             command_prefs_path: state_root.join("command-preferences.json"),
             usage_file_path: state_root.join("usage.jsonl"),
             a2a_tasks_file_path: state_root.join("a2a-tasks.json"),
+            automation_file_path: state_root.join("automations.json"),
             static_root: PathBuf::from("packages/web/dist"),
             static_cache_max_age: 0,
             llm_gateway_models_url: None,
@@ -587,6 +591,11 @@ pub async fn serve_listener(
     let command_prefs = load_command_prefs(&config.command_prefs_path).await;
     let a2a_tasks = load_a2a_tasks(&config.a2a_tasks_file_path).await;
     let (a2a_task_events, _) = broadcast::channel(256);
+    let mut extended_api = ExtendedApiState::default();
+    extended_api.automations = Some(
+        automations::AutomationStore::load(config.automation_file_path.clone())
+            .map_err(|error| anyhow::anyhow!("load automation state: {error}"))?,
+    );
 
     let state = AppState {
         config: config.clone(),
@@ -610,8 +619,13 @@ pub async fn serve_listener(
         a2a_task_events,
         a2a_task_event_history: Arc::new(Mutex::new(HashMap::new())),
         a2a_cancel_senders: Arc::new(Mutex::new(HashMap::new())),
-        extended_api: Arc::new(Mutex::new(ExtendedApiState::default())),
+        extended_api: Arc::new(Mutex::new(extended_api)),
     };
+    automations::spawn_scheduler(
+        state.extended_api.clone(),
+        state.config.cwd.clone(),
+        state.selected_model.clone(),
+    );
     maybe_spawn_a2a_platform_registration_loop(config.clone());
 
     loop {

@@ -1,5 +1,5 @@
 {
-  "generated_at": 1786856313,
+  "generated_at": 1786952236,
   "source": "https://models.dev/api.json+https://openrouter.ai/api/v1/models",
   "models": [
     {
@@ -1305,8 +1305,8 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 1048576,
-        "output_tokens": 384000
+        "context_tokens": 1310720,
+        "output_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -1363,7 +1363,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1048576,
-        "output_tokens": 1048576
+        "output_tokens": 974842
       },
       "verification": {
         "state": "catalog",
@@ -2500,7 +2500,7 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 1048576,
+        "context_tokens": 1310720,
         "output_tokens": 393216
       },
       "verification": {
@@ -2510,7 +2510,7 @@
     },
     {
       "id": "deepseek/deepseek-v4-pro",
-      "name": "DeepSeek: DeepSeek V4 Pro",
+      "name": "DeepSeek: DeepSeek V4 Pro 0423",
       "provider": "openrouter",
       "description": "DeepSeek V4 Pro is a large-scale Mixture-of-Experts model from DeepSeek with 1.6T total parameters and 49B activated…",
       "capabilities": {
@@ -2520,7 +2520,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1048576,
-        "output_tokens": 393216
+        "output_tokens": 384000
       },
       "verification": {
         "state": "catalog",
@@ -3051,7 +3051,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 262144,
-        "output_tokens": 262144
+        "output_tokens": 16384
       },
       "verification": {
         "state": "catalog",
@@ -4437,7 +4437,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 262144,
-        "output_tokens": 228000
+        "output_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -4587,7 +4587,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1000000,
-        "output_tokens": 262144
+        "output_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -6191,7 +6191,8 @@
         "vision": true,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 128000
+        "context_tokens": 128000,
+        "output_tokens": 128000
       },
       "verification": {
         "state": "catalog",
@@ -6836,7 +6837,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 262144,
-        "output_tokens": 262144
+        "output_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -7836,6 +7837,25 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1048576,
+        "output_tokens": 262144
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
+      "id": "z-ai/glm-5.2:free",
+      "name": "Z.ai: GLM 5.2 (free)",
+      "provider": "openrouter",
+      "description": "GLM 5.2 is a large-scale reasoning model from Z.ai. It supports text input and output with a 1M-token context window,…",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": false,
+        "vision": false,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 128000,
         "output_tokens": 128000
       },
       "verification": {

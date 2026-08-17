@@ -43,6 +43,53 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.66] - 2026-08-17
+
+### Added
+
+- Add native startup auto-update (#3455). <!-- maestro-release-note:df79db8e37db -->
+- Add Maestro connections dashboard (#3452). <!-- maestro-release-note:8bde3b51277a -->
+- Execute shell only through Platform ToolExecution (#3450). <!-- maestro-release-note:250b0a5375bd -->
+- Catalog current OpenRouter models and auto-refresh (#3447). <!-- maestro-release-note:f7db1167a332 -->
+- Add native Kimi K3 support (#3445). <!-- maestro-release-note:96cdaffed81e -->
+- Add managed connections and scoped grants (#3442). <!-- maestro-release-note:f9d609a4b2b9 -->
+- Auto-detect and optimize local model runtimes (#3440). <!-- maestro-release-note:271b6c37c71c -->
+- Bind runtime passports to exact artifacts. <!-- maestro-release-note:0b1fd53a7215 -->
+- Publish generation-bound lifecycle receipts (#3425). <!-- maestro-release-note:38e8479edf62 -->
+- Add executable hosted launch spec. <!-- maestro-release-note:dd2bbf77781d -->
+- Publish typed headless protocol semantics (#3423). <!-- maestro-release-note:7e9227fb85f9 -->
+- Add hosted runtime boundary. <!-- maestro-release-note:1f75aca7827f -->
+
+### Changed
+
+- Refresh bundled model catalog (#3460). <!-- maestro-release-note:6ab1259145a5 -->
+- [maestro] Add durable update lifecycle (#3459). <!-- maestro-release-note:f3ae79d172d4 -->
+- Isolate JetBrains worker concurrency. <!-- maestro-release-note:d6a3cc7e08b1 -->
+- Route JetBrains validation to heavy workers. <!-- maestro-release-note:9ed4c2fc8bb9 -->
+- Keep existing policy findings blocking. <!-- maestro-release-note:5350d2241138 -->
+- Make tooling lane image-independent. <!-- maestro-release-note:c68eabe9a325 -->
+- Honor activation inputs in policy scans. <!-- maestro-release-note:787d68353c04 -->
+- Isolate Maestro worker concurrency. <!-- maestro-release-note:e7a55c8ece02 -->
+- Close supply-chain activation gaps. <!-- maestro-release-note:ca2f215aeede -->
+- Bind policy approval to PR timeline. <!-- maestro-release-note:f226e1c0bb02 -->
+- Route Maestro to current heavy image. <!-- maestro-release-note:27a67b6af611 -->
+- Prioritize current Buildkite validation. <!-- maestro-release-note:2cf58515561f -->
+
+### Fixed
+
+- Include installer in native image build (#3457). <!-- maestro-release-note:a8529580546d -->
+- Preserve governed execution replay safety (#3454). <!-- maestro-release-note:15f18d1d3bc4 -->
+- Tighten managed connection authority (#3444). <!-- maestro-release-note:1f39f3940a12 -->
+- Discover local limits in headless mode (#3446). <!-- maestro-release-note:e30b0b0d5177 -->
+- Address public mirror review feedback (#3443). <!-- maestro-release-note:f16d6c1df70c -->
+- Use the available heavy self-hosted pool. <!-- maestro-release-note:eb7ee3e635c6 -->
+- Skip viewport clears on fallback terminals. <!-- maestro-release-note:c5b047d5a660 -->
+- Run serial session tests before Nextest. <!-- maestro-release-note:923f11965f5a -->
+- Respect protected self-hosted homes. <!-- maestro-release-note:d2175aa67541 -->
+- Serialize the Maestro session cohort. <!-- maestro-release-note:ba09efa2d58f -->
+- Run shared session tests under serial libtest. <!-- maestro-release-note:56c48e4e8b8f -->
+- Isolate restored session scope test. <!-- maestro-release-note:40beed0efa16 -->
+
 ## [0.10.65] - 2026-08-06
 
 ### Added
