@@ -76,6 +76,8 @@ git diff --name-only "$base_sha" HEAD \
   | awk '
       /(^|\/)Cargo\.toml$/ ||
       /^package\.json$/ ||
+      /^Dockerfile$/ ||
+      /^\.github\/workflows\/ghcr-publish\.yml$/ ||
       /^\.github\/workflows\/release\.yml$/ ||
       /^scripts\/build-release-binary\.mjs$/ { print }
     ' > /tmp/changed-dependency-inputs
@@ -91,6 +93,10 @@ fi
 if [[ "$deny_status" -ne 0 ]]; then
   node scripts/check-new-deps-supply-chain.mjs \
     --validate-report /tmp/deny-report.jsonl || exit "$deny_status"
+  if [[ "$policy_changed" == true ]]; then
+    echo "deny.toml changes must leave the current dependency tree compliant" >&2
+    exit "$deny_status"
+  fi
 fi
 
 if [[ "$policy_changed" == true ]]; then

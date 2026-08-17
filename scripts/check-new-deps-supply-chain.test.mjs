@@ -53,6 +53,12 @@ test("Buildkite supply-chain validation is strict and shared with the public pro
 	assert.match(SUPPLY_CHAIN_SCRIPT, /gh api --paginate --slurp/);
 	assert.match(SUPPLY_CHAIN_SCRIPT, /--base-lockfile \/tmp\/base-Cargo\.lock/);
 	assert.match(SUPPLY_CHAIN_SCRIPT, /--fail-on-preexisting/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /\^Dockerfile\$/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /\^\\\.github\\\/workflows\\\/ghcr-publish\\\.yml\$/);
+	assert.match(
+		SUPPLY_CHAIN_SCRIPT,
+		/deny\.toml changes must leave the current dependency tree compliant/,
+	);
 });
 
 test("lockfilePackageSet parses [[package]] stanzas into source-qualified identities", () => {
