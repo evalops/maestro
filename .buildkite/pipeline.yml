@@ -270,7 +270,7 @@ steps:
         if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
         timeout_in_minutes: 45
         concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
+        concurrency_group: "${MAESTRO_CI_JETBRAINS_CONCURRENCY_GROUP:-maestro-jetbrains-heavy-workloads}"
         retry:
           automatic:
             - exit_status: -1

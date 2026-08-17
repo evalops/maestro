@@ -22,7 +22,8 @@ test("Buildkite bounds shared worker concurrency and infrastructure retries", ()
 		"all repository validation lanes should outrank stale default-priority work",
 	);
   assert.equal((pipeline.match(/concurrency: 3/g) ?? []).length, 11);
-  assert.equal((pipeline.match(/MAESTRO_CI_CONCURRENCY_GROUP/g) ?? []).length, 11);
+  assert.equal((pipeline.match(/MAESTRO_CI_CONCURRENCY_GROUP/g) ?? []).length, 10);
+  assert.equal((pipeline.match(/MAESTRO_CI_JETBRAINS_CONCURRENCY_GROUP/g) ?? []).length, 1);
   assert.equal((pipeline.match(/exit_status: -1/g) ?? []).length, 11);
   assert.equal((pipeline.match(/signal_reason: none/g) ?? []).length, 11);
   assert.equal((pipeline.match(/signal_reason: agent_stop/g) ?? []).length, 11);
