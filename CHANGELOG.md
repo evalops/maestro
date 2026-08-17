@@ -43,6 +43,12 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.67-beta.2] - 2026-08-17
+
+### Fixed
+
+- Skip missing files during preview channel version bump (#1034). <!-- maestro-release-note:9876a0364702 -->
+
 ## [0.10.66] - 2026-08-17
 
 ### Added
