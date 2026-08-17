@@ -4,6 +4,7 @@ import {
 	copyFileSync,
 	existsSync,
 	mkdirSync,
+	readFileSync,
 	readdirSync,
 	writeFileSync,
 } from "node:fs";
@@ -15,6 +16,9 @@ const supported = new Set([
 	"linux-arm64",
 	"linux-x64",
 ]);
+const packageMetadata = JSON.parse(
+	readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+);
 
 function currentPlatform() {
 	const arch = process.arch === "x64" ? "x64" : process.arch;
@@ -81,7 +85,11 @@ while [ -L "$script" ]; do
     *) script=$(dirname -- "$script")/$link ;;
   esac
 done
-root=$(CDPATH='' cd -- "$(dirname -- "$script")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname -- "$script")/.." && pwd -P)
+MAESTRO_INSTALL_METHOD=package \
+MAESTRO_PACKAGE_NAME='${packageMetadata.name}' \
+MAESTRO_PACKAGE_ROOT="$root" \
+MAESTRO_VERSION='${packageMetadata.version}' \
 MAESTRO_WEB_STATIC_ROOT="\${MAESTRO_WEB_STATIC_ROOT:-$root/packages/web/dist}" \
   exec "$root/vendor/maestro/$os-$arch/maestro" "$@"
 `;

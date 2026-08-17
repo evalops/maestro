@@ -3,6 +3,7 @@
 //! Subcommands:
 //! - `init` → delegates to [`crate::init_cli::run_init`]
 //! - `login` / `logout` / `status` → best-effort parity with the former TypeScript handlers
+//! - `platform-tools` → Platform-owned ToolExecution MCP server and approval controls
 //!
 //! Desktop device-identity enroll + refresh proofs are handled via
 //! [`crate::device_identity`] (soft-fail without the native helper).
@@ -22,6 +23,8 @@ use crate::init_cli::{
     has_evalops_credentials, load_evalops_snapshot, perform_evalops_login, perform_evalops_logout,
     EvalOpsCredentialSnapshot,
 };
+
+mod platform_tools;
 
 const EVALOPS_ACCESS_TOKEN_ENV_VARS: &[&str] = &["MAESTRO_EVALOPS_ACCESS_TOKEN", "EVALOPS_TOKEN"];
 const EVALOPS_ORGANIZATION_ID_ENV_VARS: &[&str] = &[
@@ -99,6 +102,7 @@ struct ManagedContext {
 pub async fn run_evalops(args: &[String]) -> Result<i32> {
     match args.first().map(String::as_str) {
         Some("init") => crate::init_cli::run_init(&args[1..]).await,
+        Some("platform-tools") => platform_tools::run(&args[1..]).await,
         Some("login" | "logout" | "status") if args.get(1).is_some_and(|arg| is_help(arg)) => {
             println!("{}", evalops_help());
             Ok(0)
@@ -112,7 +116,7 @@ pub async fn run_evalops(args: &[String]) -> Result<i32> {
         }
         _ => {
             eprintln!(
-                "Unknown evalops subcommand. Try \"maestro init\" for setup, or \"maestro evalops login\", \"logout\", or \"status\"."
+                "Unknown evalops subcommand. Try \"maestro init\" for setup, \"maestro evalops platform-tools\" for governed execution, or \"maestro evalops login\", \"logout\", or \"status\"."
             );
             Ok(1)
         }
@@ -124,7 +128,7 @@ fn is_help(arg: &str) -> bool {
 }
 
 fn evalops_help() -> &'static str {
-    "maestro evalops\n  maestro evalops login     Authenticate with EvalOps (browser OAuth)\n  maestro evalops logout    Remove stored EvalOps credentials\n  maestro evalops status    Show managed EvalOps session status\n  maestro evalops init ...  Alias for `maestro init` (agent bootstrap)\n\nNotes:\n  - Desktop device-identity enroll/refresh proofs soft-fail without MAESTRO_DEVICE_IDENTITY_HELPER.\n  - Login uses the same PKCE client-registration flow as `maestro init`."
+    "maestro evalops\n  maestro evalops login               Authenticate with EvalOps (browser OAuth)\n  maestro evalops logout              Remove stored EvalOps credentials\n  maestro evalops status              Show managed EvalOps session status\n  maestro evalops init ...            Alias for `maestro init` (agent bootstrap)\n  maestro evalops platform-tools ...  Install and operate Platform-governed tools\n\nNotes:\n  - Desktop device-identity enroll/refresh proofs soft-fail without MAESTRO_DEVICE_IDENTITY_HELPER.\n  - Login uses the same PKCE client-registration flow as `maestro init`."
 }
 
 async fn login() -> Result<i32> {
@@ -380,6 +384,7 @@ mod tests {
         assert!(help.contains("MAESTRO_DEVICE_IDENTITY_HELPER"));
         assert!(help.contains("login"));
         assert!(help.contains("status"));
+        assert!(help.contains("platform-tools"));
         assert!(!help.contains("is not ported"));
     }
 

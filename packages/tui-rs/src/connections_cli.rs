@@ -2,11 +2,25 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, OpenOptions};
-use std::io::{self, IsTerminal, Read};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
 use fd_lock::RwLock as FileLock;
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::{Constraint, Layout},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    Frame, Terminal,
+};
 use serde::Serialize;
 
 use crate::plugins::{ConnectionTypeDefinition, ConnectionTypeManifest, PluginRegistry};
@@ -46,10 +60,36 @@ pub fn run_connections(args: &[String]) -> Result<i32> {
         print_help();
         return Ok(0);
     }
+    if parsed.command.is_none()
+        && !parsed.json
+        && parsed.workspace.is_none()
+        && io::stdin().is_terminal()
+        && io::stdout().is_terminal()
+    {
+        return run_dashboard(None);
+    }
     let command = parsed.command.as_deref().unwrap_or("list");
     match command {
+        "ui" | "dashboard" => {
+            if parsed.json {
+                bail!("maestro connections ui does not support --json")
+            }
+            if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+                bail!("maestro connections ui requires an interactive terminal")
+            }
+            run_dashboard(parsed.workspace.as_deref())
+        }
         "types" => run_types(&parsed),
         "list" | "ls" => run_list(parsed.json),
+        "add"
+            if parsed.positionals.is_empty()
+                && !parsed.json
+                && !has_explicit_add_options(&parsed)
+                && io::stdin().is_terminal()
+                && io::stdout().is_terminal() =>
+        {
+            run_add_wizard(parsed.workspace.as_deref()).map(|()| 0)
+        }
         "add" => run_add(&parsed),
         "status" | "check" => run_status(&parsed),
         "use" | "default" => run_use(&parsed),
@@ -57,6 +97,16 @@ pub fn run_connections(args: &[String]) -> Result<i32> {
         "remove" | "rm" | "revoke" => run_remove(&parsed),
         other => bail!("unknown connections subcommand: {other}"),
     }
+}
+
+fn has_explicit_add_options(args: &Args) -> bool {
+    args.label.is_some()
+        || args.default
+        || args.from_env.is_some()
+        || args.from_file.is_some()
+        || args.from_one_password.is_some()
+        || args.delegated_profile.is_some()
+        || args.secret_stdin
 }
 
 fn run_types(args: &Args) -> Result<i32> {
@@ -581,9 +631,10 @@ fn print_help() {
     println!(
         "maestro connections <command> [options]\n\n\
 Commands:\n\
+  ui                              Open the interactive connection manager\n\
   types [--json]                 List built-in and trusted-plugin connection types\n\
   list [--json]                  List non-secret connection metadata\n\
-  add <type> <id> [source]       Add an API key or delegated account\n\
+  add [<type> <id>] [source]     Add an API key or delegated account\n\
   status <id> [--json]           Validate that the credential source is available\n\
   use <id>                       Select the provider's default connection\n\
   rotate <id> [--secret-stdin]   Replace a keyring credential and revoke old leases\n\
@@ -596,6 +647,589 @@ Credential sources for add:\n\
   --delegated-profile NAME       Name a vendor-owned subscription/OAuth profile\n\n\
 Literal keys are never accepted as command-line arguments or written to connections.json."
     );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectionHealth {
+    Unknown,
+    Ready,
+    ReadyDelegated,
+    Unavailable,
+    Revoked,
+}
+
+impl ConnectionHealth {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "Not checked",
+            Self::Ready => "Ready",
+            Self::ReadyDelegated => "Ready via sign-in",
+            Self::Unavailable => "Unavailable",
+            Self::Revoked => "Revoked",
+        }
+    }
+
+    const fn color(self) -> Color {
+        match self {
+            Self::Unknown => Color::DarkGray,
+            Self::Ready | Self::ReadyDelegated => Color::Green,
+            Self::Unavailable | Self::Revoked => Color::Red,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DashboardState {
+    store: ConnectionStore,
+    selected: usize,
+    list_state: ListState,
+    health: BTreeMap<String, ConnectionHealth>,
+    message: Option<String>,
+    remove_confirmation: bool,
+}
+
+impl DashboardState {
+    fn load() -> Result<Self> {
+        let store = load_store()?;
+        let mut state = Self {
+            store,
+            selected: 0,
+            list_state: ListState::default(),
+            health: BTreeMap::new(),
+            message: None,
+            remove_confirmation: false,
+        };
+        state.sync_selection();
+        Ok(state)
+    }
+
+    fn selected_connection(&self) -> Option<&ServiceConnection> {
+        self.store.connections.get(self.selected)
+    }
+
+    fn selected_id(&self) -> Option<String> {
+        self.selected_connection()
+            .map(|connection| connection.id.clone())
+    }
+
+    fn sync_selection(&mut self) {
+        if self.store.connections.is_empty() {
+            self.selected = 0;
+            self.list_state.select(None);
+        } else {
+            self.selected = self.selected.min(self.store.connections.len() - 1);
+            self.list_state.select(Some(self.selected));
+        }
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let len = self.store.connections.len();
+        if len == 0 {
+            return;
+        }
+        self.selected = (self.selected as isize + delta).rem_euclid(len as isize) as usize;
+        self.sync_selection();
+        self.remove_confirmation = false;
+    }
+
+    fn refresh(&mut self) -> Result<()> {
+        let selected_id = self.selected_id();
+        self.store = load_store()?;
+        self.selected = selected_id
+            .as_deref()
+            .and_then(|id| {
+                self.store
+                    .connections
+                    .iter()
+                    .position(|connection| connection.id == id)
+            })
+            .unwrap_or(0);
+        self.health.retain(|id, _| self.store.get(id).is_some());
+        self.remove_confirmation = false;
+        self.sync_selection();
+        self.message = Some("Connection list refreshed.".to_owned());
+        Ok(())
+    }
+
+    fn make_selected_default(&mut self) -> Result<()> {
+        let Some(id) = self.selected_id() else {
+            self.message = Some("Select a connection before setting a default.".to_owned());
+            return Ok(());
+        };
+        let path = ConnectionStore::default_path()?;
+        with_locked_store(&path, |store| {
+            store.set_default(&id)?;
+            store.save(&path)
+        })?;
+        self.refresh()?;
+        self.message = Some(format!("{id} is now the default for its provider."));
+        Ok(())
+    }
+
+    fn remove_selected(&mut self) -> Result<()> {
+        let Some(id) = self.selected_id() else {
+            return Ok(());
+        };
+        self.remove_confirmation = false;
+        let path = ConnectionStore::default_path()?;
+        remove_connection(&path, &id, &KeyringSecretBackend)?;
+        self.refresh()?;
+        self.message = Some(format!("{id} was removed."));
+        Ok(())
+    }
+}
+
+fn check_connection_health(store: &ConnectionStore, id: &str) -> ConnectionHealth {
+    let Some(connection) = store.get(id) else {
+        return ConnectionHealth::Unavailable;
+    };
+    if connection.state == ConnectionState::Revoked {
+        return ConnectionHealth::Revoked;
+    }
+    let broker = ConnectionBroker::new(store.clone(), KeyringSecretBackend);
+    let env = std::env::vars().collect::<HashMap<_, _>>();
+    if broker.check(id, &env).is_err() {
+        ConnectionHealth::Unavailable
+    } else if matches!(connection.secret_ref, ConnectionSecretRef::Delegated { .. }) {
+        ConnectionHealth::ReadyDelegated
+    } else {
+        ConnectionHealth::Ready
+    }
+}
+
+fn credential_source_label(connection: &ServiceConnection) -> String {
+    match &connection.secret_ref {
+        ConnectionSecretRef::Keyring { .. } => "OS credential store".to_owned(),
+        ConnectionSecretRef::Environment { name } => format!("Environment variable: {name}"),
+        ConnectionSecretRef::File { .. } => "Credential file".to_owned(),
+        ConnectionSecretRef::OnePassword { .. } => "1Password reference".to_owned(),
+        ConnectionSecretRef::Delegated { profile, .. } => profile.as_deref().map_or_else(
+            || "Provider sign-in".to_owned(),
+            |profile| format!("Provider sign-in: {profile}"),
+        ),
+    }
+}
+
+const fn placement_label(placement: ConnectionPlacement) -> &'static str {
+    match placement {
+        ConnectionPlacement::Local => "Local",
+        ConnectionPlacement::Platform => "Platform",
+        ConnectionPlacement::Either => "Local or Platform",
+    }
+}
+
+const fn auth_kind_label(auth_kind: ConnectionAuthKind) -> &'static str {
+    match auth_kind {
+        ConnectionAuthKind::ApiKey => "API key",
+        ConnectionAuthKind::Subscription => "Subscription",
+        ConnectionAuthKind::OAuth => "OAuth",
+        ConnectionAuthKind::WorkloadIdentity => "Workload identity",
+    }
+}
+
+fn run_dashboard(workspace: Option<&Path>) -> Result<i32> {
+    let mut state = DashboardState::load()?;
+    let mut terminal = DashboardTerminal::enter()?;
+    let result = dashboard_loop(&mut terminal, &mut state, workspace);
+    let restore_result = terminal.restore();
+    result?;
+    restore_result?;
+    Ok(0)
+}
+
+fn dashboard_loop(
+    terminal: &mut DashboardTerminal,
+    state: &mut DashboardState,
+    workspace: Option<&Path>,
+) -> Result<()> {
+    loop {
+        terminal.draw(state)?;
+        if !event::poll(Duration::from_millis(250))? {
+            continue;
+        }
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
+            KeyCode::Char('q') => return Ok(()),
+            KeyCode::Esc if state.remove_confirmation => state.remove_confirmation = false,
+            KeyCode::Esc => return Ok(()),
+            KeyCode::Up | KeyCode::Char('p') => state.move_selection(-1),
+            KeyCode::Down | KeyCode::Char('n') => state.move_selection(1),
+            KeyCode::Char('r') => {
+                if let Err(error) = state.refresh() {
+                    state.message = Some(format!("Could not refresh connections: {error}"));
+                }
+            }
+            KeyCode::Char('t') => {
+                run_dashboard_check(terminal, state)?;
+            }
+            KeyCode::Char('d') => {
+                if let Err(error) = state.make_selected_default() {
+                    state.message = Some(format!("Could not set the default: {error}"));
+                }
+            }
+            KeyCode::Char('x') if state.selected_connection().is_some() => {
+                state.remove_confirmation = true;
+            }
+            KeyCode::Char('y') if state.remove_confirmation => {
+                if let Err(error) = state.remove_selected() {
+                    state.message = Some(format!("Could not remove the connection: {error}"));
+                }
+            }
+            KeyCode::Char('a') => {
+                let workspace = workspace.map(Path::to_path_buf);
+                run_dashboard_prompt(
+                    terminal,
+                    state,
+                    || run_add_wizard(workspace.as_deref()),
+                    "Connection added.",
+                )?;
+            }
+            KeyCode::Char('k') => {
+                let Some(id) = state.selected_id() else {
+                    state.message = Some("Select a connection before rotating a key.".to_owned());
+                    continue;
+                };
+                if !matches!(
+                    state
+                        .selected_connection()
+                        .map(|connection| &connection.secret_ref),
+                    Some(ConnectionSecretRef::Keyring { .. })
+                ) {
+                    state.message =
+                        Some("Only OS credential store connections can be rotated.".to_owned());
+                    continue;
+                }
+                run_dashboard_prompt(
+                    terminal,
+                    state,
+                    || {
+                        run_rotate(&Args {
+                            command: Some("rotate".to_owned()),
+                            positionals: vec![id.clone()],
+                            ..Args::default()
+                        })
+                        .map(|_| ())
+                    },
+                    "Key rotated.",
+                )?;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn run_dashboard_check(terminal: &mut DashboardTerminal, state: &mut DashboardState) -> Result<()> {
+    let Some(id) = state.selected_id() else {
+        state.message = Some("Add a connection before checking its credential source.".to_owned());
+        return Ok(());
+    };
+    let store = state.store.clone();
+    terminal.suspend()?;
+    let health = check_connection_health(&store, &id);
+    terminal.resume()?;
+    state.health.insert(id.clone(), health);
+    state.message = Some(format!("{id}: {}.", health.label()));
+    Ok(())
+}
+
+fn run_dashboard_prompt(
+    terminal: &mut DashboardTerminal,
+    state: &mut DashboardState,
+    operation: impl FnOnce() -> Result<()>,
+    success_message: &str,
+) -> Result<()> {
+    let result = terminal.suspend().and_then(|()| operation());
+    let resume_result = terminal.resume();
+    resume_result?;
+    match result {
+        Ok(()) => match state.refresh() {
+            Ok(()) => state.message = Some(success_message.to_owned()),
+            Err(error) => {
+                state.message = Some(format!("{success_message} Refresh failed: {error}"));
+            }
+        },
+        Err(error) => state.message = Some(format!("{error}")),
+    }
+    Ok(())
+}
+
+struct DashboardTerminal {
+    terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    active: bool,
+}
+
+impl DashboardTerminal {
+    fn enter() -> Result<Self> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        if let Err(error) = execute!(stdout, EnterAlternateScreen) {
+            let _ = disable_raw_mode();
+            return Err(error.into());
+        }
+        let backend = CrosstermBackend::new(io::stdout());
+        let mut terminal = Terminal::new(backend)?;
+        terminal.clear()?;
+        Ok(Self {
+            terminal,
+            active: true,
+        })
+    }
+
+    fn draw(&mut self, state: &mut DashboardState) -> Result<()> {
+        self.terminal.draw(|frame| render_dashboard(frame, state))?;
+        Ok(())
+    }
+
+    fn suspend(&mut self) -> Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+        self.terminal.show_cursor()?;
+        disable_raw_mode()?;
+        execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
+        self.active = false;
+        Ok(())
+    }
+
+    fn resume(&mut self) -> Result<()> {
+        if self.active {
+            return Ok(());
+        }
+        enable_raw_mode()?;
+        if let Err(error) = execute!(self.terminal.backend_mut(), EnterAlternateScreen) {
+            let _ = disable_raw_mode();
+            return Err(error.into());
+        }
+        self.terminal.clear()?;
+        self.active = true;
+        Ok(())
+    }
+
+    fn restore(&mut self) -> Result<()> {
+        self.suspend()
+    }
+}
+
+impl Drop for DashboardTerminal {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
+}
+
+fn render_dashboard(frame: &mut Frame, state: &mut DashboardState) {
+    let area = frame.area();
+    let layout = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(8),
+        Constraint::Length(2),
+    ])
+    .split(area);
+    let header = Paragraph::new(vec![
+        Line::from(Span::styled(
+            "Connections & access",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from("Provider credentials and sign-ins used by Maestro."),
+    ]);
+    frame.render_widget(header, layout[0]);
+
+    let panes = Layout::horizontal([Constraint::Percentage(44), Constraint::Percentage(56)])
+        .split(layout[1]);
+    let items = if state.store.connections.is_empty() {
+        vec![ListItem::new(vec![
+            Line::styled(
+                "No managed connections",
+                Style::default().fg(Color::DarkGray),
+            ),
+            Line::styled(
+                "Press a to add a connection.",
+                Style::default().fg(Color::Cyan),
+            ),
+        ])]
+    } else {
+        state
+            .store
+            .connections
+            .iter()
+            .map(|connection| {
+                let health = state
+                    .health
+                    .get(&connection.id)
+                    .copied()
+                    .unwrap_or(ConnectionHealth::Unknown);
+                let default = if connection.is_default {
+                    "  default"
+                } else {
+                    ""
+                };
+                ListItem::new(vec![
+                    Line::from(vec![
+                        Span::styled(connection.label.clone(), Style::default().fg(Color::White)),
+                        Span::styled(default, Style::default().fg(Color::Yellow)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled(
+                            format!("{}  ", connection.provider_id),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                        Span::styled(health.label(), Style::default().fg(health.color())),
+                    ]),
+                ])
+            })
+            .collect()
+    };
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title("Connections"))
+        .highlight_symbol("› ")
+        .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    frame.render_stateful_widget(list, panes[0], &mut state.list_state);
+
+    let detail = state.selected_connection().map_or_else(
+        || {
+            vec![
+                Line::from("No connection selected."),
+                Line::from("Press a to add a provider connection."),
+            ]
+        },
+        |connection| {
+            let health = state
+                .health
+                .get(&connection.id)
+                .copied()
+                .unwrap_or(ConnectionHealth::Unknown);
+            vec![
+                detail_line("Name", &connection.label),
+                detail_line("Provider", &connection.provider_id),
+                detail_line("Authentication", auth_kind_label(connection.auth_kind)),
+                detail_line("Access", &connection.capabilities.join(", ")),
+                detail_line("Runs in", placement_label(connection.placement)),
+                detail_line("Credential source", &credential_source_label(connection)),
+                detail_line("Generation", &connection.generation.to_string()),
+                detail_line("Default", if connection.is_default { "Yes" } else { "No" }),
+                Line::from(vec![
+                    Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(health.label(), Style::default().fg(health.color())),
+                ]),
+            ]
+        },
+    );
+    let detail = Paragraph::new(detail)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Connection details"),
+        )
+        .wrap(Wrap { trim: true });
+    frame.render_widget(detail, panes[1]);
+
+    let footer = if state.remove_confirmation {
+        Paragraph::new("Remove this connection? Press y to remove it, or Esc to cancel.")
+            .style(Style::default().fg(Color::Red))
+    } else {
+        Paragraph::new(state.message.as_deref().unwrap_or(
+                "a Add   t Check source   d Set default   k Rotate key   x Remove   r Refresh   q Close",
+        ))
+        .style(Style::default().fg(Color::DarkGray))
+    };
+    frame.render_widget(footer, layout[2]);
+}
+
+fn detail_line(label: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label}: "), Style::default().fg(Color::DarkGray)),
+        Span::raw(value.to_owned()),
+    ])
+}
+
+fn run_add_wizard(workspace: Option<&Path>) -> Result<()> {
+    let types = connection_types(workspace)?;
+    println!("Add connection");
+    for (index, report) in types.iter().enumerate() {
+        println!(
+            "  {}. {} ({})",
+            index + 1,
+            report.definition.display_name,
+            report.source
+        );
+    }
+    let selection = prompt_required("Connection type number")?;
+    let selection = selection
+        .parse::<usize>()
+        .context("connection type number must be an integer")?;
+    let definition = connection_type_by_number(&types, selection)?;
+    let id = prompt_required("Connection ID")?;
+    let label = prompt_optional("Connection label")?;
+    let default = prompt_yes_no("Make this the default for this provider", true)?;
+    let mut args = Args {
+        command: Some("add".to_owned()),
+        positionals: vec![definition.definition.id.clone(), id],
+        label,
+        default,
+        workspace: workspace.map(Path::to_path_buf),
+        ..Args::default()
+    };
+    if definition.definition.auth_kind == ConnectionAuthKind::ApiKey {
+        println!("Credential source");
+        println!("  1. OS credential store");
+        println!("  2. Environment variable");
+        println!("  3. Credential file");
+        println!("  4. 1Password reference");
+        match prompt_required("Credential source number")?.as_str() {
+            "1" => {}
+            "2" => args.from_env = Some(prompt_required("Environment variable")?),
+            "3" => args.from_file = Some(PathBuf::from(prompt_required("Credential file path")?)),
+            "4" => args.from_one_password = Some(prompt_required("1Password reference")?),
+            _ => bail!("credential source number must be 1, 2, 3, or 4"),
+        }
+    } else {
+        args.delegated_profile = prompt_optional("Provider profile")?;
+    }
+    run_add(&args)?;
+    Ok(())
+}
+
+fn connection_type_by_number(
+    types: &[ConnectionTypeReport],
+    selection: usize,
+) -> Result<&ConnectionTypeReport> {
+    selection
+        .checked_sub(1)
+        .and_then(|index| types.get(index))
+        .context("connection type number is out of range")
+}
+
+fn prompt_required(label: &str) -> Result<String> {
+    prompt_optional(label)?
+        .filter(|value| !value.is_empty())
+        .context(format!("{label} is required"))
+}
+
+fn prompt_optional(label: &str) -> Result<Option<String>> {
+    print!("{label}: ");
+    io::stdout().flush()?;
+    let mut value = String::new();
+    io::stdin().read_line(&mut value)?;
+    let value = value.trim().to_owned();
+    Ok((!value.is_empty()).then_some(value))
+}
+
+fn prompt_yes_no(label: &str, default: bool) -> Result<bool> {
+    let suffix = if default { "Y/n" } else { "y/N" };
+    let response = prompt_optional(&format!("{label} [{suffix}]"))?;
+    match response.as_deref().map(str::to_ascii_lowercase).as_deref() {
+        None => Ok(default),
+        Some("y" | "yes") => Ok(true),
+        Some("n" | "no") => Ok(false),
+        _ => bail!("enter y or n"),
+    }
 }
 
 #[cfg(test)]
@@ -653,6 +1287,61 @@ mod tests {
         assert_eq!(parsed.from_env.as_deref(), Some("WORK_OPENAI_KEY"));
         assert!(parsed.default);
         assert!(parse_args(&["add".into(), "--api-key".into(), "secret".into()]).is_err());
+    }
+
+    #[test]
+    fn guided_add_does_not_discard_explicit_options() {
+        let options = [
+            Args {
+                label: Some("work".into()),
+                ..Args::default()
+            },
+            Args {
+                default: true,
+                ..Args::default()
+            },
+            Args {
+                from_env: Some("OPENAI_API_KEY".into()),
+                ..Args::default()
+            },
+            Args {
+                from_file: Some(PathBuf::from("credential.txt")),
+                ..Args::default()
+            },
+            Args {
+                from_one_password: Some("op://vault/item".into()),
+                ..Args::default()
+            },
+            Args {
+                delegated_profile: Some("work".into()),
+                ..Args::default()
+            },
+            Args {
+                secret_stdin: true,
+                ..Args::default()
+            },
+        ];
+
+        assert!(options.iter().all(has_explicit_add_options));
+        assert!(!has_explicit_add_options(&Args::default()));
+    }
+
+    #[test]
+    fn guided_add_rejects_zero_connection_type_number() {
+        let types = vec![ConnectionTypeReport {
+            definition: builtin_connection_types().into_iter().next().unwrap(),
+            source: "built-in".into(),
+        }];
+
+        assert!(connection_type_by_number(&types, 0).is_err());
+        assert_eq!(
+            connection_type_by_number(&types, 1)
+                .unwrap()
+                .definition
+                .id
+                .as_str(),
+            types[0].definition.id.as_str()
+        );
     }
 
     #[test]
@@ -811,5 +1500,46 @@ mod tests {
             .unwrap()
             .get("obsolete")
             .is_none());
+    }
+
+    #[test]
+    fn dashboard_shows_connection_metadata_without_secret_references() {
+        let mut connection = test_connection("work");
+        connection.label = "OpenAI work".into();
+        connection.is_default = true;
+        connection.secret_ref = ConnectionSecretRef::OnePassword {
+            reference: "op://engineering/openai/credential".into(),
+        };
+        let mut state = DashboardState {
+            store: ConnectionStore {
+                schema_version: 1,
+                connections: vec![connection],
+            },
+            selected: 0,
+            list_state: ListState::default(),
+            health: BTreeMap::from([("work".into(), ConnectionHealth::Ready)]),
+            message: None,
+            remove_confirmation: false,
+        };
+        state.sync_selection();
+
+        let backend = ratatui::backend::TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_dashboard(frame, &mut state))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("Connections & access"));
+        assert!(rendered.contains("OpenAI work"));
+        assert!(rendered.contains("1Password reference"));
+        assert!(rendered.contains("models.invoke"));
+        assert!(!rendered.contains("op://engineering/openai/credential"));
     }
 }

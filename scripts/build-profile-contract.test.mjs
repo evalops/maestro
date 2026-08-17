@@ -70,6 +70,15 @@ test("native materialization honors CARGO_TARGET_DIR", () => {
 			"native-binary",
 		);
 		assert(existsSync(join(directory, "bin", "maestro")));
+		const launcher = readFileSync(join(directory, "bin", "maestro"), "utf8");
+		assert.match(
+			launcher,
+			/root=\$\(CDPATH='' cd -- "\$\(dirname -- "\$script"\)\/\.\." && pwd -P\)/,
+		);
+		assert.match(launcher, /MAESTRO_INSTALL_METHOD=package/);
+		assert(launcher.includes(`MAESTRO_PACKAGE_NAME='${packageJson.name}'`));
+		assert.match(launcher, /MAESTRO_PACKAGE_ROOT="\$root"/);
+		assert(launcher.includes(`MAESTRO_VERSION='${packageJson.version}'`));
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}

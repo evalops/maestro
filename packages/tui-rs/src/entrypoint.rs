@@ -818,6 +818,14 @@ pub async fn run_cli(raw_args: Vec<std::ffi::OsString>) -> Result<()> {
         }
     }
 
+    if classify_agent_entry(&raw_args) == AgentEntry::ClapParsed
+        && classify_clap_dispatch(&raw_args) == ClapDispatch::Interactive
+    {
+        if let Some(exit_code) = crate::update_cli::run_startup_update(&raw_args).await {
+            std::process::exit(exit_code);
+        }
+    }
+
     // Droid-style session worktree (`-w` / `--worktree`): set up before any
     // agent surface so the interactive TUI, `exec`, and print mode all run
     // with the worktree as their working directory. Utility commands above
@@ -917,6 +925,8 @@ pub enum ClapDispatch {
     Print,
     /// Continues into the interactive agent path.
     Interactive,
+    /// Lets clap print help or version information and exit successfully.
+    DisplayHelpOrVersion,
     /// Rejects argv that the real clap parser does not accept.
     ParseError,
 }
@@ -940,7 +950,7 @@ pub fn classify_clap_dispatch(raw_args: &[std::ffi::OsString]) -> ClapDispatch {
                 ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
             ) =>
         {
-            ClapDispatch::Interactive
+            ClapDispatch::DisplayHelpOrVersion
         }
         Err(_) => ClapDispatch::ParseError,
     }
