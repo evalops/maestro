@@ -63,4 +63,5 @@ test("release workflows require a channel and publish the signed manifest", () =
 	}
 	assert.match(read("docs/protocols/release-channels.json"), /stable-2026-08-0c3df2ac/);
 	assert.match(read("docs/protocols/release-channels.json"), /preview-2026-08-912a0dab/);
+	assert.match(read("scripts/sync-package-metadata.js"), /if \(!existsSync\(target\.path\)\)/);
 });

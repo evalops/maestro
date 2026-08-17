@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @ts-check
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { getGlobalInstallCommand, getPackageMetadata } from "./package-metadata.js";
 
 const checkOnly = process.argv.includes("--check");
@@ -102,6 +102,9 @@ const targets = [
 const changedFiles = [];
 
 for (const target of targets) {
+	if (!existsSync(target.path)) {
+		continue;
+	}
 	const current = readFileSync(target.path, "utf-8");
 	const next = target.transform(current);
 

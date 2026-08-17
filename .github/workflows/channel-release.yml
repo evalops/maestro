@@ -56,6 +56,7 @@ jobs:
           git fetch --no-tags origin main
           stable_version="$(git show origin/main:package.json | jq -r .version)"
           cp scripts/channel-version.mjs "$RUNNER_TEMP/channel-version.mjs"
+          cp scripts/sync-package-metadata.js "$RUNNER_TEMP/sync-package-metadata.js"
           cp .github/workflows/release.yml "$RUNNER_TEMP/release.yml"
           release="$(node "$RUNNER_TEMP/channel-version.mjs" "$stable_version" "$channel" "$GITHUB_RUN_NUMBER")"
           source_offset="$(jq -r .sourceOffset <<<"$release")"
@@ -67,6 +68,7 @@ jobs:
 
           git checkout --detach "$source_ref"
           cp "$RUNNER_TEMP/channel-version.mjs" scripts/channel-version.mjs
+          cp "$RUNNER_TEMP/sync-package-metadata.js" scripts/sync-package-metadata.js
           cp "$RUNNER_TEMP/release.yml" .github/workflows/release.yml
           npm ci
           node scripts/version.js set "$version" --release-notes-ref "$source_ref"
