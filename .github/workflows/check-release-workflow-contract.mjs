@@ -661,14 +661,17 @@ export function validateReleaseWorkflow(source) {
 	if (
 		releaseStep?.with.tag_name !==
 			"${{ needs.prepare.outputs.release_tag }}" ||
-		releaseStep?.with.target_commitish !==
-			"${{ needs.prepare.outputs.release_sha }}" ||
 		releaseStep?.with.name !==
 			"Maestro ${{ needs.prepare.outputs.release_version }}" ||
 		releaseStep?.with.files !== "release-assets/*"
 	) {
 		failures.push(
 			"GitHub release metadata and files must bind to immutable prepare outputs",
+		);
+	}
+	if (releaseStep?.with.target_commitish) {
+		failures.push(
+			"GitHub release creation must use the verified tag and must not retarget a detached commit",
 		);
 	}
 	const publishUploads = publish.steps.filter((step) =>

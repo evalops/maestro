@@ -224,7 +224,6 @@ jobs:
       - uses: softprops/action-gh-release@sha
         with:
           tag_name: \${{ needs.prepare.outputs.release_tag }}
-          target_commitish: \${{ needs.prepare.outputs.release_sha }}
           name: Maestro \${{ needs.prepare.outputs.release_version }}
           files: release-assets/*
   post-publish-canary:
@@ -806,7 +805,6 @@ test("rejects a non-retryable or incomplete GitHub release job", () => {
 			`      - uses: softprops/action-gh-release@sha
         with:
           tag_name: \${{ needs.prepare.outputs.release_tag }}
-          target_commitish: \${{ needs.prepare.outputs.release_sha }}
           name: Maestro \${{ needs.prepare.outputs.release_version }}
           files: release-assets/*
 `,
@@ -817,7 +815,6 @@ test("rejects a non-retryable or incomplete GitHub release job", () => {
 			`      - uses: softprops/action-gh-release@sha
         with:
           tag_name: \${{ needs.prepare.outputs.release_tag }}
-          target_commitish: \${{ needs.prepare.outputs.release_sha }}
           name: Maestro \${{ needs.prepare.outputs.release_version }}
           files: release-assets/*
       - name: Publish to npm
@@ -881,6 +878,29 @@ test("rejects GitHub release creation after a moved tag", () => {
 	assert.ok(
 		validateReleaseWorkflow(unboundTagCheck).some((failure) =>
 			failure.includes("verify the current tag immediately"),
+		),
+	);
+});
+
+test("rejects GitHub release retargeting of a detached commit", () => {
+	const retargeted = completeWorkflow.replace(
+		`      - uses: softprops/action-gh-release@sha
+        with:
+          tag_name: \${{ needs.prepare.outputs.release_tag }}
+          name: Maestro \${{ needs.prepare.outputs.release_version }}
+          files: release-assets/*
+`,
+		`      - uses: softprops/action-gh-release@sha
+        with:
+          tag_name: \${{ needs.prepare.outputs.release_tag }}
+          target_commitish: \${{ needs.prepare.outputs.release_sha }}
+          name: Maestro \${{ needs.prepare.outputs.release_version }}
+          files: release-assets/*
+`,
+	);
+	assert.ok(
+		validateReleaseWorkflow(retargeted).some((failure) =>
+			failure.includes("must not retarget a detached commit"),
 		),
 	);
 });

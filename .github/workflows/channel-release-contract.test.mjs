@@ -33,6 +33,7 @@ test("channel pointers carry the signed native release contract", () => {
 	assert.match(releaseWorkflow, /cosign sign-blob --yes --bundle SHA256SUMS\.cosign\.bundle/);
 	assert.match(releaseWorkflow, /cosign sign-blob --yes --bundle "\$\{binary\}\.cosign\.bundle"/);
 	assert.match(releaseWorkflow, /files: release-assets\/\*/);
+	assert.doesNotMatch(releaseWorkflow, /target_commitish/);
 	assert.doesNotMatch(releaseWorkflow, /maestro-\$\{RELEASE_CHANNEL\}-channel/);
 	assert.doesNotMatch(releaseWorkflow, /gh release upload "\$channel_tag"/);
 });
