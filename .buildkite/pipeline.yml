@@ -1,6 +1,6 @@
 agents:
   queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
-  image: "evalops-platform-ci-v3"
+  image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
 
 env:
   CI: "true"
@@ -62,7 +62,7 @@ steps:
               limit: 1
         agents:
           queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
-          image: "evalops-platform-ci-v3"
+          image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
         cache:
           name: "maestro-tests-${BUILDKITE_PULL_REQUEST}"
           size: "50g"
@@ -106,7 +106,7 @@ steps:
               limit: 1
         agents:
           queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
-          image: "evalops-platform-ci-v3"
+          image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
         cache:
           name: "maestro-release-${BUILDKITE_PULL_REQUEST}"
           size: "50g"
@@ -136,7 +136,7 @@ steps:
               limit: 1
         agents:
           queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
-          image: "evalops-platform-ci-v3"
+          image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
         cache:
           name: "maestro-integration-${BUILDKITE_PULL_REQUEST}"
           size: "50g"

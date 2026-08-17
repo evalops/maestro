@@ -8,7 +8,7 @@ const nextest = await readFile(new URL(".config/nextest.toml", root), "utf8");
 
 test("Buildkite routes jobs through the configured Maestro worker pool", () => {
   assert.match(pipeline, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-heavy\}"/);
-  assert.match(pipeline, /image: "evalops-platform-ci-v3"/);
+  assert.match(pipeline, /image: "\$\{MAESTRO_CI_IMAGE:-evalops-platform-ci-v6\}"/);
   assert.doesNotMatch(pipeline, /hetzner-linux-medium/);
 });
 
