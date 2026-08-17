@@ -69,6 +69,7 @@ test("workflow tooling installs pinned binaries without requiring Go", () => {
   assert.match(tooling, /233b280d05e100837f4af1433c7b40a5dcb306e3aa68fb4f17f8a7f45a7df7b4/);
   assert.match(tooling, /sha256sum --check --status/);
   assert.match(tooling, /shasum -a 256 --check --status/);
+  assert.match(tooling, /! -f \.github\/workflows\/sync-public-release-mirror\.yml/);
 });
 
 test("internal-only contracts are conditional in the shared public pipeline", () => {

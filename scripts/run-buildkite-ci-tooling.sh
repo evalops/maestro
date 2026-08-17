@@ -90,6 +90,10 @@ for test_file in \
   scripts/check-review-thread-guard-workflow.test.mjs \
   scripts/check-sync-public-release-mirror-workflow.test.mjs \
   scripts/update-behind-auto-merge-prs.test.mjs; do
+  if [[ "$test_file" == scripts/check-sync-public-release-mirror-workflow.test.mjs ]] &&
+    [[ ! -f .github/workflows/sync-public-release-mirror.yml ]]; then
+    continue
+  fi
   if [[ -f "$test_file" ]]; then
     node --test "$test_file"
   fi
