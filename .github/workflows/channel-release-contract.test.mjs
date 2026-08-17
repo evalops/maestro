@@ -15,6 +15,8 @@ test("preview schedules keep beta behind alpha", () => {
 test("preview publication uses immutable tags and the protected release workflow", () => {
 	assert.match(workflow, /git push origin "refs\/tags\/\$\{tag\}"/);
 	assert.match(workflow, /gh workflow run release\.yml --ref "\$tag"/);
+	assert.match(workflow, /cp scripts\/sync-package-metadata\.js "\$RUNNER_TEMP\/sync-package-metadata\.js"/);
+	assert.match(workflow, /cp "\$RUNNER_TEMP\/sync-package-metadata\.js" scripts\/sync-package-metadata\.js/);
 	assert.doesNotMatch(workflow, /--force/);
 	assert.doesNotMatch(workflow, /cancel-in-progress: true/);
 });
