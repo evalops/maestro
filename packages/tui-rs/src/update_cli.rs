@@ -16,6 +16,10 @@ use wait_timeout::ChildExt;
 
 const DEFAULT_GCS_URL: &str =
     "https://storage.googleapis.com/evalops-prod-maestro-releases/maestro/version.json";
+const ALPHA_RELEASE_URL: &str =
+    "https://github.com/evalops/maestro/releases/download/maestro-alpha-channel/version.json";
+const BETA_RELEASE_URL: &str =
+    "https://github.com/evalops/maestro/releases/download/maestro-beta-channel/version.json";
 const DEFAULT_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_STARTUP_CHECK_TIMEOUT: Duration = Duration::from_millis(350);
 const DEFAULT_STARTUP_RETRY: Duration = Duration::from_hours(24);
@@ -25,18 +29,57 @@ const INSTALL_CLEANUP_GRACE: Duration = Duration::from_secs(2);
 const EMBEDDED_INSTALLER: &str = include_str!("../../../scripts/install.sh");
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct VersionMetadata {
     version: String,
+    #[serde(default)]
+    release_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateCheck {
     status: &'static str,
+    channel: UpdateChannel,
     current_version: String,
     latest_version: Option<String>,
     source_url: String,
     error: Option<String>,
+    release_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum UpdateChannel {
+    #[default]
+    Stable,
+    Beta,
+    Alpha,
+}
+
+impl UpdateChannel {
+    fn parse(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "stable" => Ok(Self::Stable),
+            "beta" => Ok(Self::Beta),
+            "alpha" => Ok(Self::Alpha),
+            other => {
+                bail!("Unknown Maestro update channel: {other}; expected stable, beta, or alpha")
+            }
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Beta => "beta",
+            Self::Alpha => "alpha",
+        }
+    }
+
+    fn from_environment() -> Result<Self> {
+        env::var("MAESTRO_UPDATE_CHANNEL").map_or(Ok(Self::Stable), |value| Self::parse(&value))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -67,17 +110,32 @@ struct UpdateArgs {
     check_only: bool,
     json: bool,
     help: bool,
+    channel: UpdateChannel,
 }
 
 fn parse_args(args: &[String]) -> Result<UpdateArgs> {
     let mut parsed = UpdateArgs::default();
-    for arg in args {
+    let mut channel_explicit = false;
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
         match arg.as_str() {
             "--check" => parsed.check_only = true,
             "--json" => parsed.json = true,
             "--help" | "-h" => parsed.help = true,
+            "--channel" => {
+                index += 1;
+                let value = args
+                    .get(index)
+                    .context("--channel requires stable, beta, or alpha")?;
+                parsed.channel = UpdateChannel::parse(value)?;
+                channel_explicit = true;
+            }
             other => bail!("Unknown maestro update option: {other}"),
         }
+        index += 1;
+    }
+    if !channel_explicit {
+        parsed.channel = UpdateChannel::from_environment()?;
     }
     Ok(parsed)
 }
@@ -103,50 +161,73 @@ fn configured_update_urls() -> Option<Vec<String>> {
     None
 }
 
-fn update_urls(package: &str) -> Vec<String> {
-    configured_update_urls().unwrap_or_else(|| {
-        vec![
-            DEFAULT_GCS_URL.to_owned(),
-            format!(
-                "https://registry.npmjs.org/{}/latest",
-                urlencoding::encode(package)
-            ),
-        ]
-    })
-}
-
-fn trusted_startup_update_urls(context: &InstallContext) -> Vec<String> {
-    match context {
-        InstallContext::Package { package, .. } => vec![
-            DEFAULT_GCS_URL.to_owned(),
-            format!(
-                "https://registry.npmjs.org/{}/latest",
-                urlencoding::encode(package)
-            ),
-        ],
-        InstallContext::Release { .. } => vec![DEFAULT_GCS_URL.to_owned()],
+fn channel_release_url(channel: UpdateChannel) -> Option<&'static str> {
+    match channel {
+        UpdateChannel::Stable => None,
+        UpdateChannel::Beta => Some(BETA_RELEASE_URL),
+        UpdateChannel::Alpha => Some(ALPHA_RELEASE_URL),
     }
 }
 
-async fn check_for_update(current: &str, context: &InstallContext) -> UpdateCheck {
-    let urls = match context {
-        InstallContext::Package { package, .. } => update_urls(package),
-        InstallContext::Release { .. } => {
-            configured_update_urls().unwrap_or_else(|| vec![DEFAULT_GCS_URL.to_owned()])
+fn update_urls(package: &str, channel: UpdateChannel) -> Vec<String> {
+    configured_update_urls().unwrap_or_else(|| {
+        if let Some(url) = channel_release_url(channel) {
+            vec![
+                url.to_owned(),
+                format!(
+                    "https://registry.npmjs.org/{}/{}",
+                    urlencoding::encode(package),
+                    channel.as_str()
+                ),
+            ]
+        } else {
+            vec![
+                DEFAULT_GCS_URL.to_owned(),
+                format!(
+                    "https://registry.npmjs.org/{}/latest",
+                    urlencoding::encode(package)
+                ),
+            ]
         }
+    })
+}
+
+fn trusted_startup_update_urls(context: &InstallContext, channel: UpdateChannel) -> Vec<String> {
+    match context {
+        InstallContext::Package { package, .. } => update_urls(package, channel),
+        InstallContext::Release { .. } => channel_release_url(channel)
+            .map(|url| vec![url.to_owned()])
+            .unwrap_or_else(|| vec![DEFAULT_GCS_URL.to_owned()]),
+    }
+}
+
+async fn check_for_update(
+    current: &str,
+    context: &InstallContext,
+    channel: UpdateChannel,
+) -> UpdateCheck {
+    let urls = match context {
+        InstallContext::Package { package, .. } => update_urls(package, channel),
+        InstallContext::Release { .. } => configured_update_urls().unwrap_or_else(|| {
+            channel_release_url(channel)
+                .map(|url| vec![url.to_owned()])
+                .unwrap_or_else(|| vec![DEFAULT_GCS_URL.to_owned()])
+        }),
     };
-    check_for_update_urls_with_timeout(current, urls, DEFAULT_CHECK_TIMEOUT).await
+    check_for_update_urls_with_timeout(current, urls, DEFAULT_CHECK_TIMEOUT, channel).await
 }
 
 #[cfg(test)]
 async fn check_for_update_urls(current: &str, urls: Vec<String>) -> UpdateCheck {
-    check_for_update_urls_with_timeout(current, urls, DEFAULT_CHECK_TIMEOUT).await
+    check_for_update_urls_with_timeout(current, urls, DEFAULT_CHECK_TIMEOUT, UpdateChannel::Stable)
+        .await
 }
 
 async fn check_for_update_urls_with_timeout(
     current: &str,
     urls: Vec<String>,
     timeout: Duration,
+    channel: UpdateChannel,
 ) -> UpdateCheck {
     let current_version = Version::parse(current.trim());
     let client = reqwest::Client::builder().timeout(timeout).build();
@@ -155,10 +236,15 @@ async fn check_for_update_urls_with_timeout(
     let mut last_url = String::new();
 
     let Ok(client) = client else {
-        return failed_check(current, "", "Failed to create update client");
+        return failed_check(current, "", "Failed to create update client", channel);
     };
     let Ok(current_semver) = current_version else {
-        return failed_check(current, "", "Current Maestro version is not valid semver");
+        return failed_check(
+            current,
+            "",
+            "Current Maestro version is not valid semver",
+            channel,
+        );
     };
 
     for url in urls {
@@ -200,10 +286,12 @@ async fn check_for_update_urls_with_timeout(
         };
         let check = UpdateCheck {
             status,
+            channel,
             current_version: current.to_owned(),
             latest_version: Some(latest.to_string()),
             source_url: url,
             error: None,
+            release_url: metadata.release_url,
         };
         if best.as_ref().is_none_or(|(version, _)| latest > *version) {
             best = Some((latest, check));
@@ -218,19 +306,27 @@ async fn check_for_update_urls_with_timeout(
                 last_error
                     .as_deref()
                     .unwrap_or("No update metadata sources configured"),
+                channel,
             )
         },
         |(_, check)| check,
     )
 }
 
-fn failed_check(current: &str, source_url: &str, error: &str) -> UpdateCheck {
+fn failed_check(
+    current: &str,
+    source_url: &str,
+    error: &str,
+    channel: UpdateChannel,
+) -> UpdateCheck {
     UpdateCheck {
         status: "failed",
+        channel,
         current_version: current.to_owned(),
         latest_version: None,
         source_url: source_url.to_owned(),
         error: Some(error.to_owned()),
+        release_url: None,
     }
 }
 
@@ -416,7 +512,13 @@ fn install_package(
     run_with_timeout(&mut command, manager)
 }
 
-fn install_release(install_dir: &Path, data_dir: &Path, version: &str) -> Result<()> {
+fn install_release(
+    install_dir: &Path,
+    data_dir: &Path,
+    version: &str,
+    release_url: Option<&str>,
+    channel: UpdateChannel,
+) -> Result<()> {
     let temporary = tempfile::tempdir().context("Failed to create updater directory")?;
     let installer = temporary.path().join("install.sh");
     fs::write(&installer, EMBEDDED_INSTALLER).context("Failed to stage embedded installer")?;
@@ -425,14 +527,23 @@ fn install_release(install_dir: &Path, data_dir: &Path, version: &str) -> Result
     sanitize_release_installer_env(&mut command);
     command
         .env("MAESTRO_INSTALL_VERSION", version)
+        .env("MAESTRO_INSTALL_CHANNEL", channel.as_str())
         .env("MAESTRO_INSTALL_DIR", install_dir)
         .env("MAESTRO_DATA_DIR", data_dir)
         .env("MAESTRO_REQUIRE_SIGNED_INSTALL", "1")
         .env("MAESTRO_SKIP_STARTUP_UPDATE", "1");
+    if let Some(release_url) = release_url {
+        command.env("MAESTRO_RELEASE_BASE_URL", release_url);
+    }
     run_with_timeout(&mut command, "signed Maestro installer")
 }
 
-fn install(context: &InstallContext, version: &str) -> Result<()> {
+fn install(
+    context: &InstallContext,
+    version: &str,
+    release_url: Option<&str>,
+    channel: UpdateChannel,
+) -> Result<()> {
     match context {
         InstallContext::Package {
             manager,
@@ -444,7 +555,7 @@ fn install(context: &InstallContext, version: &str) -> Result<()> {
             install_dir,
             data_dir,
             ..
-        } => install_release(install_dir, data_dir, version),
+        } => install_release(install_dir, data_dir, version, release_url, channel),
     }
 }
 
@@ -473,6 +584,8 @@ fn sanitize_release_installer_env(command: &mut Command) {
         "MAESTRO_RELEASE_REPO",
         "MAESTRO_REQUIRE_SIGNED_INSTALL",
         "MAESTRO_INSTALL_VERSION",
+        "MAESTRO_INSTALL_CHANNEL",
+        "MAESTRO_UPDATE_CHANNEL",
         "MAESTRO_VERSION",
     ] {
         command.env_remove(key);
@@ -494,6 +607,7 @@ fn should_remove_package_manager_env(key: &str) -> bool {
             | "NODE_AUTH_TOKEN"
             | "MAESTRO_UPDATE_URL"
             | "MAESTRO_UPDATE_URLS"
+            | "MAESTRO_UPDATE_CHANNEL"
             | "MAESTRO_STARTUP_UPDATE_STATE"
             | "MAESTRO_SKIP_STARTUP_UPDATE"
             | "MAESTRO_STARTUP_UPDATE"
@@ -610,8 +724,9 @@ pub async fn run_startup_update(raw_args: &[std::ffi::OsString]) -> Option<i32> 
         return None;
     }
     let context = install_context()?;
+    let channel = UpdateChannel::from_environment().ok()?;
     let current = env::var("MAESTRO_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").into());
-    let urls = trusted_startup_update_urls(&context);
+    let urls = trusted_startup_update_urls(&context, channel);
     let total_timeout = env_duration(
         "MAESTRO_STARTUP_UPDATE_TIMEOUT_MS",
         DEFAULT_STARTUP_CHECK_TIMEOUT,
@@ -623,7 +738,7 @@ pub async fn run_startup_update(raw_args: &[std::ffi::OsString]) -> Option<i32> 
     );
     let check = match tokio::time::timeout(
         total_timeout,
-        check_for_update_urls_with_timeout(&current, urls, source_timeout),
+        check_for_update_urls_with_timeout(&current, urls, source_timeout, channel),
     )
     .await
     {
@@ -667,7 +782,7 @@ pub async fn run_startup_update(raw_args: &[std::ffi::OsString]) -> Option<i32> 
         return None;
     }
     eprintln!("Updating Maestro from {current} to {latest}...");
-    if let Err(error) = install(&context, latest) {
+    if let Err(error) = install(&context, latest, check.release_url.as_deref(), channel) {
         eprintln!("Maestro auto-update failed; continuing with {current}: {error:#}");
         return None;
     }
@@ -694,7 +809,7 @@ pub async fn run_startup_update(raw_args: &[std::ffi::OsString]) -> Option<i32> 
 }
 
 fn print_help() {
-    println!("Usage: maestro update [--check] [--json]\n\nOptions:\n  --check   Check for the newest Maestro version without installing it\n  --json    Print machine-readable update status\n  --help    Show this help");
+    println!("Usage: maestro update [--channel stable|beta|alpha] [--check] [--json]\n\nOptions:\n  --channel Select stable, beta, or alpha for this update (default: stable)\n  --check   Check for the newest Maestro version without installing it\n  --json    Print machine-readable update status\n  --help    Show this help");
 }
 
 pub async fn run_update(args: &[String]) -> Result<i32> {
@@ -715,7 +830,7 @@ pub async fn run_update(args: &[String]) -> Result<i32> {
     let context = install_context().context(
         "maestro update is available for signed release and global npm/Bun installations",
     )?;
-    let check = check_for_update(&current, &context).await;
+    let check = check_for_update(&current, &context, parsed.channel).await;
     if parsed.check_only {
         if parsed.json {
             println!("{}", serde_json::to_string_pretty(&check)?);
@@ -758,7 +873,12 @@ pub async fn run_update(args: &[String]) -> Result<i32> {
         .latest_version
         .as_deref()
         .context("Update metadata missing latest version")?;
-    match install(&context, latest) {
+    match install(
+        &context,
+        latest,
+        check.release_url.as_deref(),
+        parsed.channel,
+    ) {
         Ok(()) => {
             if parsed.json {
                 let mut outcome = check.clone();
@@ -792,16 +912,23 @@ mod tests {
 
     #[test]
     fn parses_update_options() {
-        let args = vec!["--check".to_owned(), "--json".to_owned()];
+        let args = vec![
+            "--check".to_owned(),
+            "--json".to_owned(),
+            "--channel".to_owned(),
+            "beta".to_owned(),
+        ];
         let parsed = parse_args(&args).expect("parse update args");
         assert!(parsed.check_only);
         assert!(parsed.json);
+        assert_eq!(parsed.channel, UpdateChannel::Beta);
     }
 
     #[test]
     fn rejects_unknown_update_options() {
         let error = parse_args(&["--wat".to_owned()]).expect_err("unknown option");
         assert!(error.to_string().contains("Unknown maestro update option"));
+        assert!(parse_args(&["--channel".to_owned(), "nightly".to_owned()]).is_err());
     }
 
     #[test]
@@ -877,15 +1004,19 @@ mod tests {
     }
 
     #[test]
-    fn startup_sources_are_built_in_and_release_updates_use_only_gcs() {
+    fn startup_sources_follow_the_selected_channel() {
         let release = InstallContext::Release {
             install_dir: PathBuf::from("/opt/bin"),
             data_dir: PathBuf::from("/opt/share/maestro"),
             launcher: PathBuf::from("/opt/bin/maestro"),
         };
         assert_eq!(
-            trusted_startup_update_urls(&release),
+            trusted_startup_update_urls(&release, UpdateChannel::Stable),
             vec![DEFAULT_GCS_URL.to_owned()]
+        );
+        assert_eq!(
+            trusted_startup_update_urls(&release, UpdateChannel::Beta),
+            vec![BETA_RELEASE_URL.to_owned()]
         );
 
         let package = InstallContext::Package {
@@ -895,10 +1026,17 @@ mod tests {
             launcher: PathBuf::from("/opt/bin/maestro"),
         };
         assert_eq!(
-            trusted_startup_update_urls(&package),
+            trusted_startup_update_urls(&package, UpdateChannel::Stable),
             vec![
                 DEFAULT_GCS_URL.to_owned(),
                 "https://registry.npmjs.org/%40evalops%2Fmaestro/latest".to_owned(),
+            ]
+        );
+        assert_eq!(
+            trusted_startup_update_urls(&package, UpdateChannel::Alpha),
+            vec![
+                ALPHA_RELEASE_URL.to_owned(),
+                "https://registry.npmjs.org/%40evalops%2Fmaestro/alpha".to_owned(),
             ]
         );
     }
@@ -959,6 +1097,7 @@ mod tests {
         assert!(EMBEDDED_INSTALLER.contains("verify_blob_signature"));
         assert!(EMBEDDED_INSTALLER.contains("SHA256SUMS.cosign.bundle"));
         assert!(EMBEDDED_INSTALLER.contains("${asset}.cosign.bundle"));
+        assert!(EMBEDDED_INSTALLER.contains("(maestro-internal|maestro)"));
     }
 
     #[tokio::test]

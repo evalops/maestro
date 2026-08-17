@@ -28,6 +28,8 @@ jobs:
       release_sha: ${{ steps.release.outputs.release_sha }}
       release_tag: ${{ steps.release.outputs.release_tag }}
       release_version: ${{ steps.release.outputs.release_version }}
+      release_channel: ${{ steps.release.outputs.release_channel }}
+      npm_tag: ${{ steps.release.outputs.npm_tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -47,6 +49,19 @@ jobs:
           fi
 
           release_tag="v${release_version}"
+          case "$release_version" in
+            *-alpha.*) release_channel=alpha ;;
+            *-beta.*) release_channel=beta ;;
+            *-*)
+              echo "::error::Unsupported prerelease channel in ${release_version}."
+              exit 1
+              ;;
+            *) release_channel=stable ;;
+          esac
+          npm_tag="${release_channel}"
+          if [[ "$release_channel" == "stable" ]]; then
+            npm_tag=latest
+          fi
           release_sha="$TRIGGER_SHA"
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             for attempt in 1 2 3; do
@@ -85,6 +100,8 @@ jobs:
             echo "release_sha=$release_sha"
             echo "release_tag=$release_tag"
             echo "release_version=$release_version"
+            echo "release_channel=$release_channel"
+            echo "npm_tag=$npm_tag"
           } >> "$GITHUB_OUTPUT"
 
   binaries:
@@ -204,6 +221,7 @@ jobs:
           PACKAGE_NAME: ${{ needs.prepare.outputs.package_name }}
           PACKED_INTEGRITY: ${{ steps.pack.outputs.integrity }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+          NPM_TAG: ${{ needs.prepare.outputs.npm_tag }}
           TARBALL: ${{ steps.pack.outputs.tarball }}
           NPM_CONFIG_FETCH_RETRIES: "1"
           NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "2000"
@@ -217,7 +235,7 @@ jobs:
           # Classic NPM_TOKEN is fallback only; a dead token returns E404 on PUT.
           publish_with_oidc() {
             # npm ≥ 11.5.1 required for OIDC; pin via npx for stable behavior.
-            npx --yes npm@11.10.0 publish "$TARBALL" --access public --registry "$NPM_CONFIG_REGISTRY"
+            npx --yes npm@11.10.0 publish "$TARBALL" --access public --tag "$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"
           }
 
           publish_with_token() {
@@ -229,7 +247,7 @@ jobs:
             printf "//registry.npmjs.org/:_authToken=%s\n" "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/npmrc"
             NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/npmrc" \
               NODE_AUTH_TOKEN="$NODE_AUTH_TOKEN" \
-              npx --yes npm@11.10.0 publish "$TARBALL" --access public --registry "$NPM_CONFIG_REGISTRY"
+              npx --yes npm@11.10.0 publish "$TARBALL" --access public --tag "$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"
           }
 
           verify_published_tarball() {
@@ -292,6 +310,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -309,6 +328,34 @@ jobs:
         with:
           name: release-web-dist-${{ needs.prepare.outputs.release_tag }}
           path: release-assets
+      - name: Install cosign
+        run: |
+          set -euo pipefail
+          cosign_version="2.6.1"
+          cosign_sha256="064954c5d8c7e3b28188eee5b1727b31c411550bc5fefd41aa672d3c761d103a"
+          mkdir -p "$RUNNER_TEMP/cosignbin"
+          curl -fsSL --max-time 180 --retry 2 --retry-delay 5 \
+            -o "$RUNNER_TEMP/cosignbin/cosign" \
+            "https://github.com/sigstore/cosign/releases/download/v${cosign_version}/cosign-linux-amd64"
+          echo "${cosign_sha256}  $RUNNER_TEMP/cosignbin/cosign" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/cosignbin/cosign"
+          echo "$RUNNER_TEMP/cosignbin" >> "$GITHUB_PATH"
+      - name: Sign native release assets
+        working-directory: release-assets
+        run: |
+          set -euo pipefail
+          files=(
+            maestro-darwin-arm64
+            maestro-darwin-x64
+            maestro-linux-arm64
+            maestro-linux-x64
+            maestro-web-dist.tar.gz
+          )
+          sha256sum "${files[@]}" > SHA256SUMS
+          cosign sign-blob --yes --bundle SHA256SUMS.cosign.bundle SHA256SUMS
+          for binary in maestro-darwin-arm64 maestro-darwin-x64 maestro-linux-arm64 maestro-linux-x64; do
+            cosign sign-blob --yes --bundle "${binary}.cosign.bundle" "$binary"
+          done
       - name: Verify release tag has not moved
         env:
           EXPECTED_RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
@@ -339,7 +386,42 @@ jobs:
           target_commitish: ${{ needs.prepare.outputs.release_sha }}
           name: Maestro ${{ needs.prepare.outputs.release_version }}
           generate_release_notes: true
+          prerelease: ${{ needs.prepare.outputs.release_channel != 'stable' }}
+          make_latest: ${{ needs.prepare.outputs.release_channel == 'stable' }}
           files: release-assets/*
+      - name: Refresh preview channel alias
+        if: ${{ needs.prepare.outputs.release_channel != 'stable' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_CHANNEL: ${{ needs.prepare.outputs.release_channel }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          channel_tag="maestro-${RELEASE_CHANNEL}-channel"
+          release_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          jq -n \
+            --arg version "$RELEASE_VERSION" \
+            --arg channel "$RELEASE_CHANNEL" \
+            --arg releaseTag "$RELEASE_TAG" \
+            --arg releaseUrl "$release_url" \
+            '{version: $version, channel: $channel, releaseTag: $releaseTag, releaseUrl: $releaseUrl}' \
+            > release-assets/version.json
+
+          if ! gh release view "$channel_tag" >/dev/null 2>&1; then
+            gh release create "$channel_tag" \
+              --target "$RELEASE_SHA" \
+              --prerelease \
+              --title "Maestro ${RELEASE_CHANNEL} channel" \
+              --notes "Mutable ${RELEASE_CHANNEL} channel alias. Use the immutable release tag for provenance."
+          fi
+          gh release upload "$channel_tag" \
+            release-assets/maestro-* \
+            release-assets/SHA256SUMS \
+            release-assets/SHA256SUMS.cosign.bundle \
+            release-assets/version.json \
+            --clobber
 
   post-publish-canary:
     needs:

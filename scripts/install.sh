@@ -2,8 +2,9 @@
 set -euo pipefail
 
 REPO="${MAESTRO_RELEASE_REPO:-evalops/maestro}"
+install_channel="${MAESTRO_INSTALL_CHANNEL:-stable}"
 COSIGN_VERSION="2.6.1"
-COSIGN_IDENTITY_REGEXP='^https://github.com/evalops/maestro-internal/\.github/workflows/release\.yml@'
+COSIGN_IDENTITY_REGEXP='^https://github.com/evalops/(maestro-internal|maestro)/\.github/workflows/release\.yml@'
 COSIGN_OIDC_ISSUER="https://token.actions.githubusercontent.com"
 
 fail() {
@@ -56,10 +57,17 @@ case "$platform" in
     ;;
 esac
 
+case "$install_channel" in
+  stable|beta|alpha) ;;
+  *) fail "MAESTRO_INSTALL_CHANNEL must be stable, beta, or alpha" ;;
+esac
+
 if [[ -n "${MAESTRO_RELEASE_BASE_URL:-}" ]]; then
   release_url="${MAESTRO_RELEASE_BASE_URL%/}"
 elif [[ -n "${MAESTRO_INSTALL_VERSION:-}" ]]; then
   release_url="https://github.com/${REPO}/releases/download/v${MAESTRO_INSTALL_VERSION#v}"
+elif [[ "$install_channel" == "alpha" || "$install_channel" == "beta" ]]; then
+  release_url="https://github.com/${REPO}/releases/download/maestro-${install_channel}-channel"
 else
   release_url="https://github.com/${REPO}/releases/latest/download"
 fi
@@ -283,12 +291,14 @@ release_dir_quoted="$(shell_quote "$release_dir")"
 install_dir_quoted="$(shell_quote "$install_dir")"
 data_dir_quoted="$(shell_quote "$data_dir")"
 release_version_quoted="$(shell_quote "$release_version")"
+install_channel_quoted="$(shell_quote "$install_channel")"
 {
   printf '%s\n' '#!/usr/bin/env bash' 'set -eu'
   printf 'release_dir=%s\n' "$release_dir_quoted"
 	printf 'install_dir=%s\n' "$install_dir_quoted"
 	printf 'data_dir=%s\n' "$data_dir_quoted"
 	printf 'release_version=%s\n' "$release_version_quoted"
+	printf 'install_channel=%s\n' "$install_channel_quoted"
 	# These lines are intentionally literal: they are the generated launcher.
 	# shellcheck disable=SC2016
 	printf '%s\n' \
@@ -296,6 +306,7 @@ release_version_quoted="$(shell_quote "$release_version")"
 		'export MAESTRO_INSTALL_METHOD=release' \
 		'export MAESTRO_INSTALL_DIR="$install_dir"' \
 		'export MAESTRO_DATA_DIR="$data_dir"' \
+		'export MAESTRO_UPDATE_CHANNEL="${MAESTRO_UPDATE_CHANNEL:-$install_channel}"' \
 		'export MAESTRO_VERSION="$release_version"'
 	# shellcheck disable=SC2016
 	printf '%s\n' 'exec "$release_dir/bin/maestro" "$@"'

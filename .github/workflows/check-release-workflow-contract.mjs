@@ -274,8 +274,15 @@ export function validateReleaseWorkflow(source) {
 			"publish permissions must be exactly contents: read and id-token: write",
 		);
 	}
-	if (!hasExactPermissions(release.permissions, { contents: "write" })) {
-		failures.push("github-release permissions must be exactly contents: write");
+	if (
+		!hasExactPermissions(release.permissions, {
+			contents: "write",
+			"id-token": "write",
+		})
+	) {
+		failures.push(
+			"github-release permissions must be exactly contents: write and id-token: write",
+		);
 	}
 	for (const [name, job] of [
 		["prepare", prepare],
@@ -324,6 +331,8 @@ export function validateReleaseWorkflow(source) {
 			release_sha: "${{ steps.release.outputs.release_sha }}",
 			release_tag: "${{ steps.release.outputs.release_tag }}",
 			release_version: "${{ steps.release.outputs.release_version }}",
+			release_channel: "${{ steps.release.outputs.release_channel }}",
+			npm_tag: "${{ steps.release.outputs.npm_tag }}",
 		})
 	) {
 		failures.push("prepare outputs must bind exactly to the immutable resolver");
@@ -386,6 +395,8 @@ export function validateReleaseWorkflow(source) {
 		"release_sha",
 		"release_tag",
 		"release_version",
+		"release_channel",
+		"npm_tag",
 	]) {
 		if (
 			resolveLines.filter((line) => line.startsWith(`echo "${output}=`))
@@ -504,7 +515,7 @@ export function validateReleaseWorkflow(source) {
 		line.startsWith("npx --yes npm@11.10.0 publish "),
 	);
 	const expectedPublishLines = new Set([
-		'npx --yes npm@11.10.0 publish "$TARBALL" --access public --registry "$NPM_CONFIG_REGISTRY"',
+		'npx --yes npm@11.10.0 publish "$TARBALL" --access public --tag "$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"',
 	]);
 	if (
 		oidcCalls !== 1 ||
@@ -549,6 +560,7 @@ export function validateReleaseWorkflow(source) {
 	if (
 		!hasExactRecord(publishStep?.env ?? {}, {
 			NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}",
+			NPM_TAG: "${{ needs.prepare.outputs.npm_tag }}",
 			PACKAGE_NAME: "${{ needs.prepare.outputs.package_name }}",
 			PACKED_INTEGRITY: "${{ steps.pack.outputs.integrity }}",
 			RELEASE_VERSION: "${{ needs.prepare.outputs.release_version }}",

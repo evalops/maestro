@@ -116,6 +116,7 @@ run_install() {
   MAESTRO_INSTALL_DIR="$install_dir" \
   MAESTRO_DATA_DIR="$data_dir" \
   MAESTRO_INSTALL_VERSION="0.0.1" \
+  MAESTRO_INSTALL_CHANNEL="beta" \
   MAESTRO_RELEASE_BASE_URL="$release_url" \
   MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
   "$ROOT/scripts/install.sh"
@@ -130,6 +131,8 @@ grep -q '^export MAESTRO_INSTALL_DIR=' "$install_dir/maestro" ||
   fail "launcher did not retain its install directory"
 grep -q '^export MAESTRO_DATA_DIR=' "$install_dir/maestro" ||
   fail "launcher did not retain its data directory"
+grep -q '^export MAESTRO_UPDATE_CHANNEL=' "$install_dir/maestro" ||
+  fail "launcher did not retain its update channel"
 grep -q '^export MAESTRO_VERSION=' "$install_dir/maestro" ||
   fail "launcher did not retain its installed version"
 [[ "$("$install_dir/maestro" --version)" == "maestro 0.0.1" ]] ||
@@ -171,6 +174,14 @@ MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
   fail "runtime version metadata changed the staged release version"
 [[ ! -e "$runtime_version_data_dir/releases/9.9.9" ]] ||
   fail "runtime version metadata was interpreted as an installer pin"
+
+if HOME="$fixture/home" \
+  MAESTRO_INSTALL_CHANNEL="nightly" \
+  "$ROOT/scripts/install.sh" > "$fixture/invalid-channel.log" 2>&1; then
+  fail "installer accepted an unknown update channel"
+fi
+grep -q 'MAESTRO_INSTALL_CHANNEL must be stable, beta, or alpha' "$fixture/invalid-channel.log" ||
+  fail "installer did not explain the invalid channel"
 
 relative_install_dir="$fixture/relative-bin"
 mkdir -p "$fixture/invocation"

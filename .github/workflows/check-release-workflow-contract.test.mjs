@@ -23,6 +23,8 @@ jobs:
       release_sha: \${{ steps.release.outputs.release_sha }}
       release_tag: \${{ steps.release.outputs.release_tag }}
       release_version: \${{ steps.release.outputs.release_version }}
+      release_channel: \${{ steps.release.outputs.release_channel }}
+      npm_tag: \${{ steps.release.outputs.npm_tag }}
     steps:
       - uses: actions/checkout@sha
         with:
@@ -58,6 +60,8 @@ jobs:
             echo "release_sha=$release_sha"
             echo "release_tag=$release_tag"
             echo "release_version=$release_version"
+            echo "release_channel=$release_channel"
+            echo "npm_tag=$npm_tag"
           } >> "$GITHUB_OUTPUT"
   binaries:
     needs: prepare
@@ -92,6 +96,7 @@ jobs:
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}
+          NPM_TAG: \${{ needs.prepare.outputs.npm_tag }}
           PACKAGE_NAME: \${{ needs.prepare.outputs.package_name }}
           PACKED_INTEGRITY: \${{ steps.pack.outputs.integrity }}
           RELEASE_VERSION: \${{ needs.prepare.outputs.release_version }}
@@ -104,7 +109,7 @@ jobs:
         run: |
           set -euo pipefail
           publish_with_oidc() {
-            npx --yes npm@11.10.0 publish "\$TARBALL" --access public --registry "$NPM_CONFIG_REGISTRY"
+            npx --yes npm@11.10.0 publish "\$TARBALL" --access public --tag "\$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"
           }
           publish_with_token() {
             if [[ -z "\${NODE_AUTH_TOKEN:-}" ]]; then
@@ -112,7 +117,7 @@ jobs:
             fi
             NPM_CONFIG_USERCONFIG="\$RUNNER_TEMP/npmrc" \\
               NODE_AUTH_TOKEN="\$NODE_AUTH_TOKEN" \\
-              npx --yes npm@11.10.0 publish "\$TARBALL" --access public --registry "$NPM_CONFIG_REGISTRY"
+              npx --yes npm@11.10.0 publish "\$TARBALL" --access public --tag "\$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"
           }
           verify_published_tarball() {
             registry_integrity="\$(
@@ -177,6 +182,7 @@ jobs:
     runs-on: \${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@sha
         with:
@@ -616,8 +622,8 @@ test("rejects unauthorized early success or a shell function that shadows npm", 
 	);
 
 	const swallowedTokenFailure = completeWorkflow.replace(
-		'            npx --yes npm@11.10.0 publish "$TARBALL" --access public --registry "$NPM_CONFIG_REGISTRY"\n',
-		'            npx --yes npm@11.10.0 publish "$TARBALL" --access public --registry "$NPM_CONFIG_REGISTRY"\n            return 0\n',
+		'            npx --yes npm@11.10.0 publish "$TARBALL" --access public --tag "$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"\n',
+		'            npx --yes npm@11.10.0 publish "$TARBALL" --access public --tag "$NPM_TAG" --registry "$NPM_CONFIG_REGISTRY"\n            return 0\n',
 	);
 	assert.ok(
 		validateReleaseWorkflow(swallowedTokenFailure).some((failure) =>
