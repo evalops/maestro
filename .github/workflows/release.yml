@@ -111,10 +111,14 @@ jobs:
           targets: ${{ matrix.target }}
           workspaces: . -> target
       - name: Build canonical native binary
-        run: node scripts/build-release-binary.mjs --platform "${{ matrix.platform }}"
+        env:
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+        run: node scripts/build-release-binary.mjs --platform "$RELEASE_PLATFORM"
       - name: Smoke host binary
         if: ${{ matrix.platform == 'linux-x64' }}
-        run: node scripts/smoke-release-native-only.mjs "dist/release/maestro-${{ matrix.platform }}"
+        env:
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+        run: node scripts/smoke-release-native-only.mjs "dist/release/maestro-${RELEASE_PLATFORM}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: maestro-${{ matrix.platform }}
@@ -186,7 +190,8 @@ jobs:
           NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
           NPM_CONFIG_FETCH_TIMEOUT: "30000"
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org
-        run: node scripts/smoke-packed-cli.js "${{ steps.pack.outputs.tarball }}"
+          PACKED_TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: node scripts/smoke-packed-cli.js "$PACKED_TARBALL"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           retention-days: 14
