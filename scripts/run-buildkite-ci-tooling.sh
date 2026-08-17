@@ -6,8 +6,27 @@ mkdir -p "$tool_root/bin"
 export PATH="$tool_root/bin:$PATH"
 
 if ! command -v actionlint >/dev/null 2>&1; then
-  GOBIN="$tool_root/bin" timeout --signal=TERM --kill-after=10s 5m \
-    go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.9
+  case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64) actionlint_platform="linux_amd64"; actionlint_sha256="233b280d05e100837f4af1433c7b40a5dcb306e3aa68fb4f17f8a7f45a7df7b4" ;;
+    Linux-aarch64 | Linux-arm64) actionlint_platform="linux_arm64"; actionlint_sha256="6b82a3b8c808bf1bcd39a95aced22fc1a026eef08ede410f81e274af8deadbbc" ;;
+    Darwin-x86_64) actionlint_platform="darwin_amd64"; actionlint_sha256="f89a910e90e536f60df7c504160247db01dd67cab6f08c064c1c397b76c91a79" ;;
+    Darwin-arm64 | Darwin-aarch64) actionlint_platform="darwin_arm64"; actionlint_sha256="855e49e823fc68c6371fd6967e359cde11912d8d44fed343283c8e6e943bd789" ;;
+    *) echo "unsupported actionlint platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+  esac
+  actionlint_archive="$(mktemp)"
+  actionlint_unpack="$(mktemp -d)"
+  curl --fail --location --silent --show-error --max-time 120 --retry 2 \
+    "https://github.com/rhysd/actionlint/releases/download/v1.7.9/actionlint_1.7.9_${actionlint_platform}.tar.gz" \
+    --output "$actionlint_archive"
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s  %s\n' "$actionlint_sha256" "$actionlint_archive" | sha256sum --check --status
+  else
+    printf '%s  %s\n' "$actionlint_sha256" "$actionlint_archive" | shasum -a 256 --check --status
+  fi
+  tar -xzf "$actionlint_archive" -C "$actionlint_unpack" actionlint
+  cp "$actionlint_unpack/actionlint" "$tool_root/bin/actionlint"
+  rm -f "$actionlint_archive"
+  rm -rf "$actionlint_unpack"
 fi
 
 if ! command -v shellcheck >/dev/null 2>&1; then
