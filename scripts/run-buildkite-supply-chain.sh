@@ -42,42 +42,32 @@ if ! git diff --quiet "$base_sha" HEAD -- deny.toml; then
   timeout --signal=TERM --kill-after=10s 60s gh api \
     "repos/$repo_slug/pulls/$pull_request" > /tmp/supply-chain-pr.json
   timeout --signal=TERM --kill-after=10s 60s gh api --paginate --slurp \
-    "repos/$repo_slug/issues/$pull_request/events?per_page=100" \
-    > /tmp/supply-chain-events.json
-  timeout --signal=TERM --kill-after=10s 60s gh api --paginate --slurp \
-    "repos/$repo_slug/commits/${BUILDKITE_COMMIT:?}/statuses?per_page=100" \
-    > /tmp/supply-chain-statuses.json
+    -H "Accept: application/vnd.github+json" \
+    "repos/$repo_slug/issues/$pull_request/timeline?per_page=100" \
+    > /tmp/supply-chain-timeline.json
   node --input-type=module <<'NODE'
     import { readFileSync } from "node:fs";
 
     const pr = JSON.parse(readFileSync("/tmp/supply-chain-pr.json", "utf8"));
-    const events = JSON.parse(
-      readFileSync("/tmp/supply-chain-events.json", "utf8"),
-    ).flat();
-    const statuses = JSON.parse(
-      readFileSync("/tmp/supply-chain-statuses.json", "utf8"),
+    const timeline = JSON.parse(
+      readFileSync("/tmp/supply-chain-timeline.json", "utf8"),
     ).flat();
     const label = "supply-chain-policy-approved";
-    const expectedContext = `buildkite/${process.env.BUILDKITE_PIPELINE_SLUG}`;
     if (pr.head?.sha !== process.env.BUILDKITE_COMMIT) {
       throw new Error("Buildkite commit is not the current pull-request head");
     }
     if (!pr.labels?.some((entry) => entry.name === label)) {
       throw new Error(`${label} is not currently applied`);
     }
-    const buildStatus = statuses.find(
-      (status) =>
-        status.context === expectedContext &&
-        status.target_url === process.env.BUILDKITE_BUILD_URL,
+    const headCommitIndex = timeline.findLastIndex(
+      (event) =>
+        event.event === "committed" && event.sha === process.env.BUILDKITE_COMMIT,
     );
-    if (!buildStatus) {
-      throw new Error("could not bind approval to the current Buildkite build");
-    }
-    const approval = events
-      .filter((event) => event.event === "labeled" && event.label?.name === label)
-      .at(-1);
-    if (!approval || Date.parse(approval.created_at) < Date.parse(buildStatus.created_at)) {
-      throw new Error(`${label} must be applied after the exact-head build starts`);
+    const approvalIndex = timeline.findLastIndex(
+      (event) => event.event === "labeled" && event.label?.name === label,
+    );
+    if (headCommitIndex < 0 || approvalIndex <= headCommitIndex) {
+      throw new Error(`${label} must be applied after the exact PR head commit`);
     }
 NODE
 fi
