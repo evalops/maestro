@@ -95,6 +95,8 @@ jobs:
           private-key: ${{ secrets.RELEASE_PR_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
 
       - id: release-pr-token
         env:
