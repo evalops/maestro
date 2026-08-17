@@ -1,0 +1,98 @@
+name: preview-channel-release
+
+on:
+  schedule:
+    - cron: "0 5 * * *" # alpha
+    - cron: "30 5 * * *" # beta, after alpha but from one commit earlier
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Preview channel to publish
+        required: true
+        type: choice
+        options:
+          - alpha
+          - beta
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-channel-${{ github.event.inputs.channel || github.event.schedule }}
+  cancel-in-progress: false
+
+jobs:
+  publish-channel-source:
+    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Create immutable preview source
+        id: preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_CHANNEL: ${{ github.event.inputs.channel }}
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          set -euo pipefail
+          channel="$REQUESTED_CHANNEL"
+          if [[ -z "$channel" ]]; then
+            case "$SCHEDULE" in
+              "0 5 * * *") channel=alpha ;;
+              "30 5 * * *") channel=beta ;;
+              *) echo "::error::Unknown channel schedule: ${SCHEDULE}"; exit 1 ;;
+            esac
+          fi
+
+          git fetch --no-tags origin main
+          stable_version="$(git show origin/main:package.json | jq -r .version)"
+          cp scripts/channel-version.mjs "$RUNNER_TEMP/channel-version.mjs"
+          cp .github/workflows/release.yml "$RUNNER_TEMP/release.yml"
+          release="$(node "$RUNNER_TEMP/channel-version.mjs" "$stable_version" "$channel" "$GITHUB_RUN_NUMBER")"
+          source_offset="$(jq -r .sourceOffset <<<"$release")"
+          version="$(jq -r .version <<<"$release")"
+          source_ref=origin/main
+          if [[ "$source_offset" == "1" ]]; then
+            source_ref=origin/main^
+          fi
+
+          git checkout --detach "$source_ref"
+          cp "$RUNNER_TEMP/channel-version.mjs" scripts/channel-version.mjs
+          cp "$RUNNER_TEMP/release.yml" .github/workflows/release.yml
+          npm ci
+          node scripts/version.js set "$version" --release-notes-ref "$source_ref"
+          git config user.name "evalops-release-bot"
+          git config user.email "release-bot@evalops.dev"
+          git add -A
+          git commit -m "Release Maestro ${version}"
+          tag="v${version}"
+          git tag "$tag"
+          git push origin "refs/tags/${tag}"
+
+          gh workflow run release.yml --ref "$tag" --field "version=${version}"
+          {
+            echo "channel=$channel"
+            echo "source_ref=$source_ref"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+      - name: Summarize dispatched release
+        env:
+          CHANNEL: ${{ steps.preview.outputs.channel }}
+          SOURCE_REF: ${{ steps.preview.outputs.source_ref }}
+          TAG: ${{ steps.preview.outputs.tag }}
+        run: |
+          {
+            echo "### Preview release dispatched"
+            echo "- Channel: ${CHANNEL}"
+            echo "- Product source: ${SOURCE_REF}"
+            echo "- Immutable tag: ${TAG}"
+          } >> "$GITHUB_STEP_SUMMARY"
