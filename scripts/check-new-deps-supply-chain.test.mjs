@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
+	basePolicyBlocksPreexisting,
 	isCompleteErrorDenyReport,
 	lockfilePackageSet,
 	newDependencyEdgeTargets,
@@ -254,4 +255,9 @@ test("dependency activation inputs fail closed for feature-only changes", () => 
 	];
 	assert.equal(scopedDependencyFindings(findings, new Set(), false).length, 0);
 	assert.equal(scopedDependencyFindings(findings, new Set(), true).length, 1);
+});
+
+test("approved base-policy scans honor dependency activation inputs", () => {
+	assert.equal(basePolicyBlocksPreexisting(1, false), true);
+	assert.equal(basePolicyBlocksPreexisting(1, true), false);
 });

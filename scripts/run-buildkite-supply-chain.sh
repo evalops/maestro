@@ -82,6 +82,11 @@ git diff --name-only "$base_sha" HEAD \
       /^scripts\/build-release-binary\.mjs$/ { print }
     ' > /tmp/changed-dependency-inputs
 
+dependency_input_args=()
+if [[ -s /tmp/changed-dependency-inputs ]]; then
+  dependency_input_args+=(--dependency-input-changed)
+fi
+
 set +e
 timeout --signal=TERM --kill-after=10s 2m cargo deny -f json check --disable-fetch \
   2> /tmp/deny-report.jsonl >/dev/null
@@ -116,14 +121,11 @@ if [[ "$policy_changed" == true ]]; then
       --report /tmp/base-deny-report.jsonl \
       --base-lockfile /tmp/base-Cargo.lock \
       --head-lockfile Cargo.lock \
+      "${dependency_input_args[@]}" \
       --fail-on-preexisting
   fi
 fi
 
-dependency_input_args=()
-if [[ -s /tmp/changed-dependency-inputs ]]; then
-  dependency_input_args+=(--dependency-input-changed)
-fi
 node scripts/check-new-deps-supply-chain.mjs \
   --report /tmp/deny-report.jsonl \
   --base-lockfile /tmp/base-Cargo.lock \

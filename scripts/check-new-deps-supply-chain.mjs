@@ -248,6 +248,13 @@ export function scopedDependencyFindings(
 		: newDependencyFindings(findings, changedSet);
 }
 
+export function basePolicyBlocksPreexisting(
+	preexistingCount,
+	dependencyInputChanged,
+) {
+	return preexistingCount > 0 && !dependencyInputChanged;
+}
+
 function main() {
 	const args = parseArgs(process.argv.slice(2));
 
@@ -288,7 +295,7 @@ function main() {
 	}
 
 	if (args.failOnPreexisting) {
-		if (preexisting > 0) {
+		if (basePolicyBlocksPreexisting(preexisting, args.dependencyInputChanged)) {
 			console.error(
 				`${preexisting} cargo-deny error(s) affect dependencies this PR did not add or change; the policy change would suppress an existing finding.`,
 			);
