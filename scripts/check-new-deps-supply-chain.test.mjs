@@ -257,7 +257,7 @@ test("dependency activation inputs fail closed for feature-only changes", () => 
 	assert.equal(scopedDependencyFindings(findings, new Set(), true).length, 1);
 });
 
-test("approved base-policy scans honor dependency activation inputs", () => {
-	assert.equal(basePolicyBlocksPreexisting(1, false), true);
-	assert.equal(basePolicyBlocksPreexisting(1, true), false);
+test("approved base-policy scans keep unrelated existing findings blocking", () => {
+	assert.equal(basePolicyBlocksPreexisting(1), true);
+	assert.equal(basePolicyBlocksPreexisting(0), false);
 });
