@@ -1,7 +1,7 @@
 name: public-source-provenance
 
 on:
-  pull_request_target:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] this job never checks out or executes pull-request code
     types:
       - opened
       - edited
@@ -115,21 +115,9 @@ jobs:
             file_list="$(printf "%s\n- ... %d more" "$file_list" "$((${#mirrored_files[@]} - 25))")"
           fi
 
-          comment_body="$(cat <<EOF
-          ${marker}
-          This PR changes mirrored Maestro source files in the public repo, but it does not link the matching private source-of-truth PR.
-
-          Add one of these to the PR body, then re-run the check:
-
-          - \`https://github.com/evalops/maestro-internal/pull/<number>\`
-          - \`evalops/maestro-internal#<number>\`
-          - \`maestro-internal#<number>\`
-
-          Mirrored files touched:
-
-          ${file_list}
-          EOF
-          )"
+          # shellcheck disable=SC2016 # Backticks are literal Markdown delimiters in the printf format.
+          printf -v comment_body '%s\nThis PR changes mirrored Maestro source files in the public repo, but it does not link the matching private source-of-truth PR.\n\nAdd one of these to the PR body, then re-run the check:\n\n- `https://github.com/evalops/maestro-internal/pull/<number>`\n- `evalops/maestro-internal#<number>`\n- `maestro-internal#<number>`\n\nMirrored files touched:\n\n%s' \
+            "$marker" "$file_list"
 
           existing_comment_id="$(
             gh api "/repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \

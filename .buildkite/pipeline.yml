@@ -1,6 +1,6 @@
 agents:
   queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
-  image: "evalops-platform-ci-v3"
+  image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
 
 env:
   CI: "true"
@@ -13,12 +13,14 @@ env:
 
 steps:
   - group: ":rust: Native validation"
+    if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
     steps:
       - label: ":lint-roller: Contracts, format, and Clippy"
         key: "lint"
+        priority: 50
         timeout_in_minutes: 90
         concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
         retry:
           automatic:
             - exit_status: -1
@@ -47,9 +49,10 @@ steps:
 
       - label: ":test_tube: Full Rust workspace"
         key: "rust-tests"
+        priority: 50
         timeout_in_minutes: 90
         concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
         retry:
           automatic:
             - exit_status: -1
@@ -59,7 +62,7 @@ steps:
               limit: 1
         agents:
           queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
-          image: "evalops-platform-ci-v3"
+          image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
         cache:
           name: "maestro-tests-${BUILDKITE_PULL_REQUEST}"
           size: "50g"
@@ -90,9 +93,10 @@ steps:
 
       - label: ":package: Native build and conformance"
         key: "native-release"
+        priority: 50
         timeout_in_minutes: 90
         concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
         retry:
           automatic:
             - exit_status: -1
@@ -102,7 +106,7 @@ steps:
               limit: 1
         agents:
           queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
-          image: "evalops-platform-ci-v3"
+          image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
         cache:
           name: "maestro-release-${BUILDKITE_PULL_REQUEST}"
           size: "50g"
@@ -115,12 +119,14 @@ steps:
           node scripts/run-runtime-conformance.mjs --binary "$$CARGO_TARGET_DIR/fast-validation/maestro"
 
   - group: ":repeat: Integration and replay"
+    if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
     steps:
       - label: ":docker: Control-plane integration"
         key: "integration"
+        priority: 50
         timeout_in_minutes: 60
         concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
         retry:
           automatic:
             - exit_status: -1
@@ -130,7 +136,7 @@ steps:
               limit: 1
         agents:
           queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
-          image: "evalops-platform-ci-v3"
+          image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v6}"
         cache:
           name: "maestro-integration-${BUILDKITE_PULL_REQUEST}"
           size: "50g"
@@ -163,9 +169,10 @@ steps:
 
       - label: ":repeat: Deterministic scenario replay"
         key: "scenario-replay"
+        priority: 50
         timeout_in_minutes: 45
         concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
         retry:
           automatic:
             - exit_status: -1
@@ -186,9 +193,11 @@ steps:
 
   - label: ":pipeline: CI configuration contracts"
     key: "ci-contracts"
+    priority: 50
+    if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
     timeout_in_minutes: 30
     concurrency: 3
-    concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
+    concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
     retry:
       automatic:
         - exit_status: -1
@@ -215,9 +224,11 @@ steps:
     steps:
       - label: ":github: Workflow and shell tooling"
         key: "workflow-tooling"
+        priority: 50
+        if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
         timeout_in_minutes: 30
         concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
         retry:
           automatic:
             - exit_status: -1
@@ -233,9 +244,10 @@ steps:
 
       - label: ":lock: Supply chain"
         key: "supply-chain"
+        priority: 50
         timeout_in_minutes: 45
         concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
         retry:
           automatic:
             - exit_status: -1
@@ -251,13 +263,20 @@ steps:
 
       - label: ":idea: JetBrains plugin"
         key: "jetbrains-plugin"
+        priority: 50
+        agents:
+          queue: "${MAESTRO_CI_JETBRAINS_QUEUE:-hetzner-linux-heavy}"
+          image: "${MAESTRO_CI_JETBRAINS_IMAGE:-evalops-platform-ci-v6}"
+        if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
         timeout_in_minutes: 45
         concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
+        concurrency_group: "${MAESTRO_CI_JETBRAINS_CONCURRENCY_GROUP:-maestro-jetbrains-heavy-workloads}"
         retry:
           automatic:
             - exit_status: -1
               signal_reason: none
+              limit: 1
+            - exit_status: 137
               limit: 1
             - signal_reason: agent_stop
               limit: 1
@@ -269,11 +288,12 @@ steps:
 
       - label: ":bar_chart: Coverage (advisory)"
         key: "coverage"
-        if: build.branch == "main"
+        priority: 50
+        if: build.branch == "main" && build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
         soft_fail: true
         timeout_in_minutes: 90
         concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
         retry:
           automatic:
             - exit_status: -1
@@ -289,11 +309,12 @@ steps:
 
       - label: ":stopwatch: Performance baseline (advisory)"
         key: "perf-baseline"
-        if: build.branch == "main"
+        priority: 50
+        if: build.branch == "main" && build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
         soft_fail: true
         timeout_in_minutes: 60
         concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
         retry:
           automatic:
             - exit_status: -1

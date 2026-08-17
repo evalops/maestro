@@ -111,11 +111,15 @@ jobs:
           targets: ${{ matrix.target }}
           workspaces: . -> target
       - name: Build canonical native binary
-        run: node scripts/build-release-binary.mjs --platform "${{ matrix.platform }}"
+        env:
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+        run: node scripts/build-release-binary.mjs --platform "$RELEASE_PLATFORM"
       - name: Smoke host binary
         if: ${{ matrix.platform == 'linux-x64' }}
-        run: node scripts/smoke-release-native-only.mjs "dist/release/maestro-${{ matrix.platform }}"
-      - uses: actions/upload-artifact@v7
+        env:
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+        run: node scripts/smoke-release-native-only.mjs "dist/release/maestro-${RELEASE_PLATFORM}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: maestro-${{ matrix.platform }}
           path: dist/release/maestro-${{ matrix.platform }}
@@ -145,8 +149,9 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24
+          package-manager-cache: false
           registry-url: https://registry.npmjs.org
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
         with:
           pattern: maestro-*
           path: release-binaries
@@ -185,7 +190,8 @@ jobs:
           NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
           NPM_CONFIG_FETCH_TIMEOUT: "30000"
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org
-        run: node scripts/smoke-packed-cli.js "${{ steps.pack.outputs.tarball }}"
+          PACKED_TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: node scripts/smoke-packed-cli.js "$PACKED_TARBALL"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           retention-days: 14
@@ -290,16 +296,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.prepare.outputs.release_sha }}
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
         with:
           name: npm-tarball-${{ needs.prepare.outputs.release_tag }}
           path: release-assets
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
         with:
           pattern: maestro-*
           path: release-assets
           merge-multiple: true
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.0
         with:
           name: release-web-dist-${{ needs.prepare.outputs.release_tag }}
           path: release-assets
@@ -350,6 +356,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24
+          package-manager-cache: false
           registry-url: https://registry.npmjs.org
       - name: Verify published package from npm
         env:

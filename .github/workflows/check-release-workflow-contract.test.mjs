@@ -912,14 +912,18 @@ test("current release workflow satisfies the parsed contract", async () => {
 	assert.deepEqual(await checkReleaseWorkflow(), []);
 });
 
-test("required actionlint lane runs the version workflow regression suite", async () => {
-	const actionlintWorkflow = await readFile(
-		new URL("./actionlint.yml", import.meta.url),
+test("required Buildkite tooling lane runs the release workflow contracts", async () => {
+	const buildkiteTooling = await readFile(
+		new URL("../../scripts/run-buildkite-ci-tooling.sh", import.meta.url),
 		"utf8",
 	);
 	assert.match(
-		actionlintWorkflow,
-		/name: Run release workflow contract tests[\s\S]*?node --test scripts\/version\.test\.mjs/u,
+		buildkiteTooling,
+		/node --test \.github\/workflows\/check-release-workflow-contract\.test\.mjs/u,
+	);
+	assert.match(
+		buildkiteTooling,
+		/node \.github\/workflows\/check-release-workflow-contract\.mjs/u,
 	);
 });
 

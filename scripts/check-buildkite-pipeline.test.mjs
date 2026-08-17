@@ -5,16 +5,26 @@ import test from "node:test";
 const root = new URL("../", import.meta.url);
 const pipeline = await readFile(new URL(".buildkite/pipeline.yml", root), "utf8");
 const nextest = await readFile(new URL(".config/nextest.toml", root), "utf8");
+const tooling = await readFile(new URL("scripts/run-buildkite-ci-tooling.sh", root), "utf8");
+const jetbrains = await readFile(new URL("scripts/run-buildkite-jetbrains.sh", root), "utf8");
 
 test("Buildkite routes jobs through the configured Maestro worker pool", () => {
   assert.match(pipeline, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-heavy\}"/);
-  assert.match(pipeline, /image: "evalops-platform-ci-v3"/);
+  assert.match(pipeline, /image: "\$\{MAESTRO_CI_IMAGE:-evalops-platform-ci-v6\}"/);
+  assert.match(pipeline, /queue: "\$\{MAESTRO_CI_JETBRAINS_QUEUE:-hetzner-linux-heavy\}"/);
+  assert.match(pipeline, /image: "\$\{MAESTRO_CI_JETBRAINS_IMAGE:-evalops-platform-ci-v6\}"/);
   assert.doesNotMatch(pipeline, /hetzner-linux-medium/);
 });
 
 test("Buildkite bounds shared worker concurrency and infrastructure retries", () => {
+	assert.equal(
+		pipeline.match(/priority: 50/gu)?.length,
+		11,
+		"all repository validation lanes should outrank stale default-priority work",
+	);
   assert.equal((pipeline.match(/concurrency: 3/g) ?? []).length, 11);
-  assert.equal((pipeline.match(/MAESTRO_CI_CONCURRENCY_GROUP/g) ?? []).length, 11);
+  assert.equal((pipeline.match(/MAESTRO_CI_CONCURRENCY_GROUP/g) ?? []).length, 10);
+  assert.equal((pipeline.match(/MAESTRO_CI_JETBRAINS_CONCURRENCY_GROUP/g) ?? []).length, 1);
   assert.equal((pipeline.match(/exit_status: -1/g) ?? []).length, 11);
   assert.equal((pipeline.match(/signal_reason: none/g) ?? []).length, 11);
   assert.equal((pipeline.match(/signal_reason: agent_stop/g) ?? []).length, 11);
@@ -52,6 +62,20 @@ test("Buildkite covers every migrated validation family", () => {
   for (const script of ["ci-tooling", "supply-chain", "jetbrains", "coverage", "perf"]) {
     assert.match(pipeline, new RegExp(`scripts/run-buildkite-${script}\\.sh`));
   }
+});
+
+test("workflow tooling installs pinned binaries without requiring Go", () => {
+  assert.doesNotMatch(tooling, /go install/);
+  assert.match(tooling, /actionlint_1\.7\.9_\$\{actionlint_platform\}\.tar\.gz/);
+  assert.match(tooling, /233b280d05e100837f4af1433c7b40a5dcb306e3aa68fb4f17f8a7f45a7df7b4/);
+  assert.match(tooling, /sha256sum --check --status/);
+  assert.match(tooling, /shasum -a 256 --check --status/);
+  assert.match(tooling, /! -f \.github\/workflows\/sync-public-release-mirror\.yml/);
+});
+
+test("JetBrains validation fails fast and retries only its stuck-JVM exit", () => {
+  assert.match(pipeline, /key: "jetbrains-plugin"[\s\S]*exit_status: 137[\s\S]*limit: 1/);
+  assert.match(jetbrains, /10m \.\/gradlew check buildPlugin --no-daemon/);
 });
 
 test("internal-only contracts are conditional in the shared public pipeline", () => {

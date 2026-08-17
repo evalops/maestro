@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
+	basePolicyBlocksPreexisting,
 	isCompleteErrorDenyReport,
 	lockfilePackageSet,
 	newDependencyEdgeTargets,
@@ -45,6 +46,20 @@ test("Buildkite supply-chain validation is strict and shared with the public pro
 	assert.match(SUPPLY_CHAIN_SCRIPT, /cargo deny fetch db/);
 	assert.match(SUPPLY_CHAIN_SCRIPT, /cargo deny check --disable-fetch/);
 	assert.match(SUPPLY_CHAIN_SCRIPT, /check-new-deps-supply-chain\.test\.mjs/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /BUILDKITE_PULL_REQUEST_BASE_BRANCH/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /supply-chain-policy-approved/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /pr\.head\?\.sha !== process\.env\.BUILDKITE_COMMIT/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /event\.event === "committed"/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /approvalIndex <= headCommitIndex/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /gh api --paginate --slurp/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /--base-lockfile \/tmp\/base-Cargo\.lock/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /--fail-on-preexisting/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /\^Dockerfile\$/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /\^\\\.github\\\/workflows\\\/ghcr-publish\\\.yml\$/);
+	assert.match(
+		SUPPLY_CHAIN_SCRIPT,
+		/deny\.toml changes must leave the current dependency tree compliant/,
+	);
 });
 
 test("lockfilePackageSet parses [[package]] stanzas into source-qualified identities", () => {
@@ -240,4 +255,9 @@ test("dependency activation inputs fail closed for feature-only changes", () => 
 	];
 	assert.equal(scopedDependencyFindings(findings, new Set(), false).length, 0);
 	assert.equal(scopedDependencyFindings(findings, new Set(), true).length, 1);
+});
+
+test("approved base-policy scans keep unrelated existing findings blocking", () => {
+	assert.equal(basePolicyBlocksPreexisting(1), true);
+	assert.equal(basePolicyBlocksPreexisting(0), false);
 });
