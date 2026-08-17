@@ -39,16 +39,47 @@ if ! git diff --quiet "$base_sha" HEAD -- deny.toml; then
     echo "could not derive GitHub repository from BUILDKITE_REPO" >&2
     exit 1
   }
-  latest_commit_at="$(timeout --signal=TERM --kill-after=10s 60s gh api \
-    "repos/$repo_slug/pulls/$pull_request/commits?per_page=100" \
-    --jq '.[-1].commit.committer.date')"
-  latest_approval_at="$(timeout --signal=TERM --kill-after=10s 60s gh api \
+  timeout --signal=TERM --kill-after=10s 60s gh api \
+    "repos/$repo_slug/pulls/$pull_request" > /tmp/supply-chain-pr.json
+  timeout --signal=TERM --kill-after=10s 60s gh api --paginate --slurp \
     "repos/$repo_slug/issues/$pull_request/events?per_page=100" \
-    --jq '[.[] | select(.event == "labeled" and .label.name == "supply-chain-policy-approved")][-1].created_at // empty')"
-  if [[ -z "$latest_approval_at" || "$latest_approval_at" < "$latest_commit_at" ]]; then
-    echo "deny.toml changes require supply-chain-policy-approved after the latest PR commit" >&2
-    exit 1
-  fi
+    > /tmp/supply-chain-events.json
+  timeout --signal=TERM --kill-after=10s 60s gh api --paginate --slurp \
+    "repos/$repo_slug/commits/${BUILDKITE_COMMIT:?}/statuses?per_page=100" \
+    > /tmp/supply-chain-statuses.json
+  node --input-type=module <<'NODE'
+    import { readFileSync } from "node:fs";
+
+    const pr = JSON.parse(readFileSync("/tmp/supply-chain-pr.json", "utf8"));
+    const events = JSON.parse(
+      readFileSync("/tmp/supply-chain-events.json", "utf8"),
+    ).flat();
+    const statuses = JSON.parse(
+      readFileSync("/tmp/supply-chain-statuses.json", "utf8"),
+    ).flat();
+    const label = "supply-chain-policy-approved";
+    const expectedContext = `buildkite/${process.env.BUILDKITE_PIPELINE_SLUG}`;
+    if (pr.head?.sha !== process.env.BUILDKITE_COMMIT) {
+      throw new Error("Buildkite commit is not the current pull-request head");
+    }
+    if (!pr.labels?.some((entry) => entry.name === label)) {
+      throw new Error(`${label} is not currently applied`);
+    }
+    const buildStatus = statuses.find(
+      (status) =>
+        status.context === expectedContext &&
+        status.target_url === process.env.BUILDKITE_BUILD_URL,
+    );
+    if (!buildStatus) {
+      throw new Error("could not bind approval to the current Buildkite build");
+    }
+    const approval = events
+      .filter((event) => event.event === "labeled" && event.label?.name === label)
+      .at(-1);
+    if (!approval || Date.parse(approval.created_at) < Date.parse(buildStatus.created_at)) {
+      throw new Error(`${label} must be applied after the exact-head build starts`);
+    }
+NODE
 fi
 
 git diff --name-only "$base_sha" HEAD \
