@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+supply_chain_tmp="$(mktemp -d)"
+trap 'rm -rf "$supply_chain_tmp"' EXIT
+base_lockfile="$supply_chain_tmp/base-Cargo.lock"
+base_deny="$supply_chain_tmp/base-deny.toml"
+pr_json="$supply_chain_tmp/supply-chain-pr.json"
+timeline_json="$supply_chain_tmp/supply-chain-timeline.json"
+changed_inputs="$supply_chain_tmp/changed-dependency-inputs"
+deny_report="$supply_chain_tmp/deny-report.jsonl"
+base_deny_report="$supply_chain_tmp/base-deny-report.jsonl"
+
 tool_root="${BUILDKITE_BUILD_CHECKOUT_PATH:-$(pwd)}/.buildkite/cache/cargo-tools"
 mkdir -p "$tool_root"
 export CARGO_INSTALL_ROOT="$tool_root"
@@ -22,10 +32,10 @@ fi
 base_branch="${BUILDKITE_PULL_REQUEST_BASE_BRANCH:-main}"
 timeout --signal=TERM --kill-after=10s 2m git fetch --no-tags origin "+refs/heads/$base_branch:refs/remotes/origin/$base_branch"
 base_sha="$(git merge-base HEAD "origin/$base_branch")"
-git show "$base_sha:Cargo.lock" > /tmp/base-Cargo.lock
-git show "$base_sha:deny.toml" > /tmp/base-deny.toml
-test -s /tmp/base-Cargo.lock
-test -s /tmp/base-deny.toml
+git show "$base_sha:Cargo.lock" > "$base_lockfile"
+git show "$base_sha:deny.toml" > "$base_deny"
+test -s "$base_lockfile"
+test -s "$base_deny"
 
 policy_changed=false
 if ! git diff --quiet "$base_sha" HEAD -- deny.toml; then
@@ -40,17 +50,19 @@ if ! git diff --quiet "$base_sha" HEAD -- deny.toml; then
     exit 1
   }
   timeout --signal=TERM --kill-after=10s 60s gh api \
-    "repos/$repo_slug/pulls/$pull_request" > /tmp/supply-chain-pr.json
+    "repos/$repo_slug/pulls/$pull_request" > "$pr_json"
   timeout --signal=TERM --kill-after=10s 60s gh api --paginate --slurp \
     -H "Accept: application/vnd.github+json" \
     "repos/$repo_slug/issues/$pull_request/timeline?per_page=100" \
-    > /tmp/supply-chain-timeline.json
+    > "$timeline_json"
+  export SUPPLY_CHAIN_PR_JSON="$pr_json"
+  export SUPPLY_CHAIN_TIMELINE_JSON="$timeline_json"
   node --input-type=module <<'NODE'
     import { readFileSync } from "node:fs";
 
-    const pr = JSON.parse(readFileSync("/tmp/supply-chain-pr.json", "utf8"));
+    const pr = JSON.parse(readFileSync(process.env.SUPPLY_CHAIN_PR_JSON, "utf8"));
     const timeline = JSON.parse(
-      readFileSync("/tmp/supply-chain-timeline.json", "utf8"),
+      readFileSync(process.env.SUPPLY_CHAIN_TIMELINE_JSON, "utf8"),
     ).flat();
     const label = "supply-chain-policy-approved";
     if (pr.head?.sha !== process.env.BUILDKITE_COMMIT) {
@@ -80,16 +92,16 @@ git diff --name-only "$base_sha" HEAD \
       /^\.github\/workflows\/ghcr-publish\.yml$/ ||
       /^\.github\/workflows\/release\.yml$/ ||
       /^scripts\/build-release-binary\.mjs$/ { print }
-    ' > /tmp/changed-dependency-inputs
+    ' > "$changed_inputs"
 
 dependency_input_args=()
-if [[ -s /tmp/changed-dependency-inputs ]]; then
+if [[ -s "$changed_inputs" ]]; then
   dependency_input_args+=(--dependency-input-changed)
 fi
 
 set +e
 timeout --signal=TERM --kill-after=10s 2m cargo deny -f json check --disable-fetch \
-  2> /tmp/deny-report.jsonl >/dev/null
+  2> "$deny_report" >/dev/null
 deny_status=$?
 set -e
 if [[ "$deny_status" -ne 0 && ( "$deny_status" -lt 1 || "$deny_status" -gt 15 ) ]]; then
@@ -97,7 +109,7 @@ if [[ "$deny_status" -ne 0 && ( "$deny_status" -lt 1 || "$deny_status" -gt 15 ) 
 fi
 if [[ "$deny_status" -ne 0 ]]; then
   node scripts/check-new-deps-supply-chain.mjs \
-    --validate-report /tmp/deny-report.jsonl || exit "$deny_status"
+    --validate-report "$deny_report" || exit "$deny_status"
   if [[ "$policy_changed" == true ]]; then
     echo "deny.toml changes must leave the current dependency tree compliant" >&2
     exit "$deny_status"
@@ -107,8 +119,8 @@ fi
 if [[ "$policy_changed" == true ]]; then
   set +e
   timeout --signal=TERM --kill-after=10s 2m cargo deny -f json check \
-    --config /tmp/base-deny.toml --disable-fetch \
-    2> /tmp/base-deny-report.jsonl >/dev/null
+    --config "$base_deny" --disable-fetch \
+    2> "$base_deny_report" >/dev/null
   base_status=$?
   set -e
   if [[ "$base_status" -ne 0 && ( "$base_status" -lt 1 || "$base_status" -gt 15 ) ]]; then
@@ -116,10 +128,10 @@ if [[ "$policy_changed" == true ]]; then
   fi
   if [[ "$base_status" -ne 0 ]]; then
     node scripts/check-new-deps-supply-chain.mjs \
-      --validate-report /tmp/base-deny-report.jsonl || exit "$base_status"
+      --validate-report "$base_deny_report" || exit "$base_status"
     node scripts/check-new-deps-supply-chain.mjs \
-      --report /tmp/base-deny-report.jsonl \
-      --base-lockfile /tmp/base-Cargo.lock \
+      --report "$base_deny_report" \
+      --base-lockfile "$base_lockfile" \
       --head-lockfile Cargo.lock \
       "${dependency_input_args[@]}" \
       --fail-on-preexisting
@@ -127,7 +139,7 @@ if [[ "$policy_changed" == true ]]; then
 fi
 
 node scripts/check-new-deps-supply-chain.mjs \
-  --report /tmp/deny-report.jsonl \
-  --base-lockfile /tmp/base-Cargo.lock \
+  --report "$deny_report" \
+  --base-lockfile "$base_lockfile" \
   --head-lockfile Cargo.lock \
   "${dependency_input_args[@]}"

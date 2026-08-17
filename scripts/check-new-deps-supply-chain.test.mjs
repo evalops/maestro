@@ -52,7 +52,8 @@ test("Buildkite supply-chain validation is strict and shared with the public pro
 	assert.match(SUPPLY_CHAIN_SCRIPT, /event\.event === "committed"/);
 	assert.match(SUPPLY_CHAIN_SCRIPT, /approvalIndex <= headCommitIndex/);
 	assert.match(SUPPLY_CHAIN_SCRIPT, /gh api --paginate --slurp/);
-	assert.match(SUPPLY_CHAIN_SCRIPT, /--base-lockfile \/tmp\/base-Cargo\.lock/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /supply_chain_tmp="\$\(mktemp -d\)"/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /--base-lockfile "\$base_lockfile"/);
 	assert.match(SUPPLY_CHAIN_SCRIPT, /--fail-on-preexisting/);
 	assert.match(SUPPLY_CHAIN_SCRIPT, /\^Dockerfile\$/);
 	assert.match(SUPPLY_CHAIN_SCRIPT, /\^\\\.github\\\/workflows\\\/ghcr-publish\\\.yml\$/);
