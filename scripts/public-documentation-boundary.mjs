@@ -65,7 +65,9 @@ const publicDocumentationPaths = [
 	"docs/protocols/hosted-runner-retention.md",
 	"docs/protocols/pending-requests.md",
 	"docs/protocols/rpc-protocol-conformance.md",
+	"docs/protocols/release-channels.json",
 	"docs/protocols/run-timeline.md",
+	"docs/protocols/update-lifecycle.json",
 	"docs/system-paths.json",
 ];
 

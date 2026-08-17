@@ -4,7 +4,7 @@ use super::*;
 
 #[derive(Debug, Default)]
 pub(crate) struct ExtendedApiState {
-    automations: HashMap<String, Value>,
+    pub(crate) automations: Option<crate::automations::AutomationStore>,
     workspaces: HashMap<String, Value>,
     traces: HashMap<String, Value>,
     headless_sessions: HashMap<String, Value>,
@@ -287,49 +287,172 @@ pub(crate) async fn handle_extended_endpoint(
         ("POST", "/api/guardian/run" | "/api/guardian/config") => {
             json_response(200, &serde_json::json!({ "success": true, "result": body }))
         }
-        ("GET", "/api/automations") => json_response(
-            200,
-            &serde_json::json!({ "automations": api.automations.values().cloned().collect::<Vec<_>>() }),
-        ),
-        ("POST", "/api/automations") => {
-            let id = body
-                .get("id")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("automation-{}", now_millis()));
-            let value = merge_object(
-                body,
-                serde_json::json!({ "id": id, "enabled": true, "createdAt": now_rfc3339() }),
-            );
-            api.automations.insert(id, value.clone());
-            json_response(200, &value)
+        ("GET", "/api/automations") => {
+            let Some(store) = api.automations.as_mut() else {
+                return json_response(
+                    503,
+                    &serde_json::json!({ "error": "automation store unavailable" }),
+                );
+            };
+            match store.list_definitions() {
+                Ok(automations) => {
+                    json_response(200, &serde_json::json!({ "automations": automations }))
+                }
+                Err(error) => {
+                    json_response(500, &serde_json::json!({ "error": error.to_string() }))
+                }
+            }
         }
-        ("POST", "/api/automations/preview") => json_response(
+        ("POST", "/api/automations") => {
+            let Some(store) = api.automations.as_mut() else {
+                return json_response(
+                    503,
+                    &serde_json::json!({ "error": "automation store unavailable" }),
+                );
+            };
+            match store.upsert(None, &body, now_millis()) {
+                Ok(value) => json_response(200, &value),
+                Err(error) => {
+                    json_response(400, &serde_json::json!({ "error": error.to_string() }))
+                }
+            }
+        }
+        ("POST", "/api/automations/preview") => {
+            let Some(store) = api.automations.as_ref() else {
+                return json_response(
+                    503,
+                    &serde_json::json!({ "error": "automation store unavailable" }),
+                );
+            };
+            match store.preview(&body, now_millis()) {
+                Ok(value) => json_response(200, &value),
+                Err(error) => {
+                    json_response(400, &serde_json::json!({ "error": error.to_string() }))
+                }
+            }
+        }
+        ("GET", "/api/automations/magic-docs") => json_response(
             200,
-            &serde_json::json!({ "valid": true, "preview": body, "nextRuns": [] }),
+            &serde_json::json!({
+                "schema": crate::automations::AUTOMATION_SCHEMA,
+                "documents": [{
+                    "schedule": "intervalSeconds (1..86400); cron and remote endpoints are not accepted",
+                    "execution": "native_tool_free_turn",
+                    "durability": ["atomic_state", "lease", "idempotency", "retry", "signed_receipt"]
+                }]
+            }),
         ),
-        ("GET", "/api/automations/magic-docs") => {
-            json_response(200, &serde_json::json!({ "documents": [] }))
+        ("GET", path) if automation_runs_path(path).is_some() => {
+            let id = automation_runs_path(path).expect("matched automation runs path");
+            let Some(store) = api.automations.as_mut() else {
+                return json_response(
+                    503,
+                    &serde_json::json!({ "error": "automation store unavailable" }),
+                );
+            };
+            match store.list_runs(id) {
+                Ok(runs) => json_response(
+                    200,
+                    &serde_json::json!({ "automationId": id, "runs": runs }),
+                ),
+                Err(error) => {
+                    json_response(500, &serde_json::json!({ "error": error.to_string() }))
+                }
+            }
+        }
+        ("GET", path) if automation_id_path(path).is_some() => {
+            let id = automation_id_path(path).expect("matched automation path");
+            let Some(store) = api.automations.as_mut() else {
+                return json_response(
+                    503,
+                    &serde_json::json!({ "error": "automation store unavailable" }),
+                );
+            };
+            match store.get_definition(id) {
+                Ok(Some(definition)) => json_response(200, &definition),
+                Ok(None) => {
+                    json_response(404, &serde_json::json!({ "error": "automation not found" }))
+                }
+                Err(error) => {
+                    json_response(500, &serde_json::json!({ "error": error.to_string() }))
+                }
+            }
         }
         (method @ ("PATCH" | "DELETE" | "POST"), path) if automation_path(path).is_some() => {
             let (id, action) = automation_path(path).expect("matched automation path");
+            let Some(store) = api.automations.as_mut() else {
+                return json_response(
+                    503,
+                    &serde_json::json!({ "error": "automation store unavailable" }),
+                );
+            };
             if method == "DELETE" {
-                let removed = api.automations.remove(id).is_some();
-                return json_response(200, &serde_json::json!({ "success": removed }));
+                return match store.delete(id) {
+                    Ok(removed) => json_response(200, &serde_json::json!({ "success": removed })),
+                    Err(error) => {
+                        json_response(500, &serde_json::json!({ "error": error.to_string() }))
+                    }
+                };
             }
             if action == Some("run") {
-                return json_response(
-                    200,
-                    &serde_json::json!({ "success": true, "automationId": id, "runId": format!("run-{}", now_millis()) }),
-                );
+                let fallback_model = {
+                    let model = state.selected_model.lock().await;
+                    format!("{}/{}", model.provider, model.id)
+                };
+                let idempotency_key = body.get("idempotencyKey").and_then(Value::as_str);
+                let owner = format!("manual-{}", now_millis());
+                return match store.claim_manual(
+                    id,
+                    idempotency_key,
+                    &owner,
+                    &fallback_model,
+                    now_millis(),
+                ) {
+                    Ok(crate::automations::RunClaim::Claimed(claim)) => {
+                        let run_id = claim.run_id.clone();
+                        crate::automations::spawn_claimed(
+                            state.extended_api.clone(),
+                            state.config.cwd.clone(),
+                            claim,
+                        );
+                        json_response(
+                            202,
+                            &serde_json::json!({
+                                "accepted": true,
+                                "idempotent": false,
+                                "automationId": id,
+                                "runId": run_id,
+                                "status": "running"
+                            }),
+                        )
+                    }
+                    Ok(crate::automations::RunClaim::Existing(run)) => json_response(
+                        200,
+                        &serde_json::json!({
+                            "accepted": true,
+                            "idempotent": true,
+                            "automationId": id,
+                            "runId": run.run_id,
+                            "status": run.status,
+                            "run": run
+                        }),
+                    ),
+                    Err(error) => {
+                        let status = if error.to_string().contains("not found") {
+                            404
+                        } else {
+                            400
+                        };
+                        json_response(status, &serde_json::json!({ "error": error.to_string() }))
+                    }
+                };
             }
-            let existing = api
-                .automations
-                .remove(id)
-                .unwrap_or_else(|| serde_json::json!({ "id": id }));
-            let updated = merge_object(existing, body);
-            api.automations.insert(id.to_string(), updated.clone());
-            json_response(200, &updated)
+            match store.upsert(Some(id), &body, now_millis()) {
+                Ok(updated) => json_response(200, &updated),
+                Err(error) => {
+                    json_response(400, &serde_json::json!({ "error": error.to_string() }))
+                }
+            }
         }
         ("GET", "/api/workspace-configs") => json_response(
             200,
@@ -870,9 +993,21 @@ async fn write_mcp_config_document(path: &Path, document: &Value) -> Result<(), 
 
 fn automation_path(path: &str) -> Option<(&str, Option<&str>)> {
     let tail = path.strip_prefix("/api/automations/")?;
-    tail.strip_suffix("/run")
-        .map(|id| (id, Some("run")))
-        .or(Some((tail, None)))
+    if let Some(id) = tail.strip_suffix("/run") {
+        return (!id.is_empty() && !id.contains('/')).then_some((id, Some("run")));
+    }
+    (!tail.is_empty() && !tail.contains('/')).then_some((tail, None))
+}
+
+fn automation_runs_path(path: &str) -> Option<&str> {
+    let tail = path.strip_prefix("/api/automations/")?;
+    let id = tail.strip_suffix("/runs")?;
+    (!id.is_empty() && !id.contains('/')).then_some(id)
+}
+
+fn automation_id_path(path: &str) -> Option<&str> {
+    let tail = path.strip_prefix("/api/automations/")?;
+    (!tail.is_empty() && !tail.contains('/')).then_some(tail)
 }
 
 fn merge_object(mut primary: Value, fallback: Value) -> Value {
@@ -1039,5 +1174,19 @@ mod mcp_mutation_tests {
         tokio::fs::remove_dir_all(root)
             .await
             .expect("remove temp root");
+    }
+
+    #[test]
+    fn automation_paths_keep_definition_mutations_and_run_distinct() {
+        assert_eq!(
+            automation_path("/api/automations/nightly"),
+            Some(("nightly", None))
+        );
+        assert_eq!(
+            automation_path("/api/automations/nightly/run"),
+            Some(("nightly", Some("run")))
+        );
+        assert_eq!(automation_path("/api/automations/nightly/runs"), None);
+        assert_eq!(automation_path("/api/automations/a/b"), None);
     }
 }

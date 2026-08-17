@@ -81,6 +81,9 @@ pub struct RoutingResult {
     pub tier: ModelTier,
     pub reason: String,
     pub estimated_cost: f64,
+    /// Populated when the shadow-routing evidence gate explicitly selected a
+    /// candidate. `None` preserves the legacy routing contract.
+    pub shadow_decision_id: Option<String>,
 }
 
 /// Statistics about routing
@@ -245,6 +248,7 @@ impl Cascader {
             tier: selected,
             reason,
             estimated_cost,
+            shadow_decision_id: None,
         }
     }
 

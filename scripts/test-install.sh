@@ -116,6 +116,7 @@ run_install() {
   MAESTRO_INSTALL_DIR="$install_dir" \
   MAESTRO_DATA_DIR="$data_dir" \
   MAESTRO_INSTALL_VERSION="0.0.1" \
+  MAESTRO_INSTALL_CHANNEL="beta" \
   MAESTRO_RELEASE_BASE_URL="$release_url" \
   MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
   "$ROOT/scripts/install.sh"
@@ -130,6 +131,12 @@ grep -q '^export MAESTRO_INSTALL_DIR=' "$install_dir/maestro" ||
   fail "launcher did not retain its install directory"
 grep -q '^export MAESTRO_DATA_DIR=' "$install_dir/maestro" ||
   fail "launcher did not retain its data directory"
+grep -q '^export MAESTRO_UPDATE_CHANNEL=' "$install_dir/maestro" ||
+  fail "launcher did not retain its update channel"
+[[ "$(MAESTRO_UPDATE_CHANNEL='' "$install_dir/maestro" --version)" == "maestro 0.0.1" ]] ||
+  fail "launcher with a persisted beta channel did not execute"
+grep -q '^export MAESTRO_STARTUP_UPDATE_STATE=' "$install_dir/maestro" ||
+  fail "launcher did not retain startup update metadata"
 grep -q '^export MAESTRO_VERSION=' "$install_dir/maestro" ||
   fail "launcher did not retain its installed version"
 [[ "$("$install_dir/maestro" --version)" == "maestro 0.0.1" ]] ||
@@ -138,6 +145,21 @@ release_binary="$(find "$data_dir/releases" -type f -path '*/bin/maestro' -print
 [[ -n "$release_binary" ]] || fail "versioned release binary was not staged"
 release_root="$(dirname "$(dirname "$release_binary")")"
 [[ -f "$release_root/web/index.html" ]] || fail "web assets were not staged beside the binary"
+[[ -f "$release_root/$web_asset" ]] || fail "verified web archive was not retained beside the binary"
+[[ -f "$release_root/install-receipt.json" ]] || fail "install receipt was not staged beside the binary"
+python3 - "$release_root/install-receipt.json" <<'PY'
+import json
+import sys
+
+receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+assert receipt["schemaVersion"] == "evalops.maestro.install-receipt.v1"
+assert receipt["version"] == "0.0.1"
+assert receipt["verified"] is False
+assert receipt["verification"]["artifactSha256"].startswith("sha256:")
+assert receipt["verification"]["webSha256"].startswith("sha256:")
+assert receipt["verification"]["metadataSha256"] is None
+assert receipt["releaseMetadataAsset"] is None
+PY
 release_dir_name="${release_root##*/}"
 case "$release_dir_name" in
   "$platform".??????) ;;
@@ -171,6 +193,14 @@ MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
   fail "runtime version metadata changed the staged release version"
 [[ ! -e "$runtime_version_data_dir/releases/9.9.9" ]] ||
   fail "runtime version metadata was interpreted as an installer pin"
+
+if HOME="$fixture/home" \
+  MAESTRO_INSTALL_CHANNEL="nightly" \
+  "$ROOT/scripts/install.sh" > "$fixture/invalid-channel.log" 2>&1; then
+  fail "installer accepted an unknown update channel"
+fi
+grep -q 'MAESTRO_INSTALL_CHANNEL must be stable, beta, or alpha' "$fixture/invalid-channel.log" ||
+  fail "installer did not explain the invalid channel"
 
 relative_install_dir="$fixture/relative-bin"
 mkdir -p "$fixture/invocation"

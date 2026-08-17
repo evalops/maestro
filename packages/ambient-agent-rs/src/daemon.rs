@@ -26,13 +26,14 @@ use crate::{
     },
     pr_creator::{PrCreator, PrCreatorConfig},
     runtime_config::EffectiveRuntimeConfig,
+    shadow_routing::ShadowRouter,
     task_run::{CostAccounting, PlanRunContext, PlanRunOutcome},
     types::*,
 };
 use chrono::Utc;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
 struct FinishedPlanExecution<'a> {
@@ -90,6 +91,7 @@ pub struct AmbientDaemon {
     decider: Arc<RwLock<Decider>>,
     critic: Arc<Critic>,
     cascader: Arc<RwLock<Cascader>>,
+    shadow_router: Arc<Mutex<ShadowRouter>>,
     executor: Arc<Executor>,
     goal_evaluator: Option<GoalEvaluator>,
     checkpoint_mgr: Arc<RwLock<CheckpointManager>>,
@@ -145,6 +147,14 @@ impl AmbientDaemon {
 
         let cascader = Cascader::new(None);
 
+        let shadow_router = match ShadowRouter::from_data_dir(&data_dir) {
+            Ok(router) => router,
+            Err(error) => {
+                warn!("Shadow routing state unavailable; keeping selection disabled: {error}");
+                ShadowRouter::disabled(&data_dir)
+            }
+        };
+
         // Executor for real LLM calls
         let executor_config = ExecutorConfig::from_env(data_dir.to_string_lossy().to_string());
         let executor = Arc::new(Executor::new(executor_config));
@@ -177,6 +187,7 @@ impl AmbientDaemon {
             decider: Arc::new(RwLock::new(decider)),
             critic: Arc::new(critic),
             cascader: Arc::new(RwLock::new(cascader)),
+            shadow_router: Arc::new(Mutex::new(shadow_router)),
             executor,
             goal_evaluator,
             checkpoint_mgr: Arc::new(RwLock::new(checkpoint_mgr)),
@@ -549,7 +560,20 @@ impl AmbientDaemon {
 
         let task = run_context.route_task(&event, &plan);
         let context = run_context.task_context();
-        let routing = self.cascader.write().await.route(&task, &context);
+        let primary_routing = self.cascader.write().await.route(&task, &context);
+        let routing =
+            match self
+                .shadow_router
+                .lock()
+                .await
+                .decide(&task, &context, &primary_routing)
+            {
+                Ok(decision) => decision.routing,
+                Err(error) => {
+                    warn!("Shadow routing decision failed; preserving primary route: {error}");
+                    primary_routing
+                }
+            };
 
         info!(
             "Routed to {} ({}) - estimated cost: ${:.4}",
@@ -584,6 +608,8 @@ impl AmbientDaemon {
                 Some(&outcome),
             )
             .await;
+            self.record_shadow_outcome(&routing, &outcome, start_time)
+                .await;
             self.record_plan_outcome(&run_context, &routing.model, start_time, &outcome)
                 .await;
             return;
@@ -660,6 +686,8 @@ impl AmbientDaemon {
                         Some(&outcome),
                     )
                     .await;
+                    self.record_shadow_outcome(&routing, &outcome, start_time)
+                        .await;
                     self.record_plan_outcome(&run_context, &routing.model, start_time, &outcome)
                         .await;
                     self.rollback_checkpoint(&checkpoint_id, "goal-evaluator-rejected")
@@ -690,6 +718,8 @@ impl AmbientDaemon {
             Some(&outcome),
         )
         .await;
+        self.record_shadow_outcome(&routing, &outcome, start_time)
+            .await;
         self.record_plan_outcome(&run_context, &routing.model, start_time, &outcome)
             .await;
         self.finish_plan_execution(FinishedPlanExecution {
@@ -759,6 +789,10 @@ impl AmbientDaemon {
             }
         }
 
+        if let Some(decision_id) = &routing.shadow_decision_id {
+            event = event.metadata("shadow_decision_id", decision_id.clone());
+        }
+
         self.platform_event_bus.publish_plan_event(event).await;
     }
 
@@ -766,6 +800,28 @@ impl AmbientDaemon {
         match std::env::var("MAESTRO_AMBIENT_LLM_API").ok().as_deref() {
             Some("anthropic") | Some("anthropic-messages") => "anthropic",
             _ => crate::cascader::DEFAULT_FRONTIER_PROVIDER,
+        }
+    }
+
+    async fn record_shadow_outcome(
+        &self,
+        routing: &crate::cascader::RoutingResult,
+        outcome: &PlanRunOutcome,
+        start_time: chrono::DateTime<Utc>,
+    ) {
+        let Some(decision_id) = routing.shadow_decision_id.as_deref() else {
+            return;
+        };
+        let latency_ms = (Utc::now() - start_time).num_milliseconds().max(0) as u64;
+        if let Err(error) = self.shadow_router.lock().await.record_outcome(
+            decision_id,
+            outcome.confidence_predicted,
+            outcome.success,
+            outcome.costs.actual_cost_usd,
+            latency_ms,
+            outcome.costs.tokens_used,
+        ) {
+            warn!("Failed to persist shadow routing outcome: {error}");
         }
     }
 

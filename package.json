@@ -1,7 +1,7 @@
 {
   "name": "@evalops/maestro",
   "description": "Maestro by EvalOps — native Rust coding agent, CLI, TUI, and web runtime gateway",
-  "version": "0.10.65",
+  "version": "0.10.66",
   "private": false,
   "type": "module",
   "bin": {
@@ -36,6 +36,7 @@
     "check:hook-dispatch": "node scripts/check-hook-dispatch-coverage.mjs",
     "check:protocol-manifest": "node scripts/generate-protocol-compatibility-manifest.mjs --check && node --test scripts/generate-protocol-compatibility-manifest.test.mjs",
     "check:runtime-passport": "node --check scripts/run-runtime-conformance.mjs && node --test scripts/generate-runtime-passport.test.mjs scripts/run-runtime-conformance.test.mjs",
+    "check:update-lifecycle": "node --check scripts/create-release-metadata.mjs && node --test scripts/update-lifecycle-contract.test.mjs",
     "protocol:manifest:generate": "node scripts/generate-protocol-compatibility-manifest.mjs",
     "check:scenario-replay-gate": "node scripts/run-scenario-replay-gate.mjs",
     "check:docker-runtime-workspaces": "node scripts/check-docker-runtime-workspaces.mjs && node --test scripts/check-docker-runtime-workspaces.test.mjs",

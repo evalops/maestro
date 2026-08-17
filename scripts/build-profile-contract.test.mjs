@@ -9,7 +9,7 @@ import {
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
@@ -19,6 +19,7 @@ const cargo = read("Cargo.toml");
 const materialize = read("scripts/materialize-native-package.mjs");
 const releaseBuilder = read("scripts/build-release-binary.mjs");
 const dockerfile = read("Dockerfile");
+const updateCli = read("packages/tui-rs/src/update_cli.rs");
 const ci = read(".buildkite/pipeline.yml");
 const release = read(".github/workflows/release.yml");
 const ghcr = read(".github/workflows/ghcr-publish.yml");
@@ -94,6 +95,27 @@ test("release and container entrypoints select optimized release", () => {
 	assert.match(releaseBuilder, /target\/\$\{target\}\/\$\{options\.profile\}/);
 	assert.match(dockerfile, /cargo chef prepare --recipe-path recipe\.json/);
 	assert.match(dockerfile, /cargo chef cook --release --locked -p maestro/);
+	const embeddedInstallerReference = updateCli.match(
+		/const EMBEDDED_INSTALLER: &str = include_str!\("([^"]+)"\);/,
+	)?.[1];
+	assert.ok(embeddedInstallerReference, "updater must declare an embedded installer source");
+	const embeddedInstallerPath = posix.normalize(
+		posix.join("packages/tui-rs/src", embeddedInstallerReference),
+	);
+	const nativeStage = dockerfile.match(/^FROM chef AS native\n([\s\S]*?)(?=^FROM )/m)?.[1];
+	assert.ok(nativeStage, "native Docker stage must exist");
+	const installerCopy = "COPY " + embeddedInstallerPath + " ./" + embeddedInstallerPath;
+	const buildCommand = "RUN cargo build --release --locked -p maestro";
+	const installerCopyIndex = nativeStage.indexOf(installerCopy);
+	const buildCommandIndex = nativeStage.indexOf(buildCommand);
+	assert.ok(
+		existsSync(new URL("../" + embeddedInstallerPath, import.meta.url)),
+		"updater's embedded installer source must exist in the Docker build context",
+	);
+	assert.ok(
+		installerCopyIndex >= 0 && installerCopyIndex < buildCommandIndex,
+		"native image must copy the updater's embedded installer input before compilation",
+	);
 	assert.match(dockerfile, /cargo build --release --locked -p maestro/);
 	assert.match(dockerfile, /target\/release\/maestro/);
 	if (isPublicProjection) {
