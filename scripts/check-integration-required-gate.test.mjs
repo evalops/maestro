@@ -93,23 +93,12 @@ test("requires the integration suite to succeed for relevant paths", () => {
   );
 });
 
-test("workflow retains the full suite and an always-reporting required gate", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/integration.yml", import.meta.url), "utf8");
-  const requiredGate = workflow.match(
-    /^  integration-tests:\n([\s\S]*?)(?=^  [a-z][a-z0-9-]+:\n)/m,
-  )?.[0];
-
-  assert.match(workflow, /integration-suite:\n[\s\S]*cargo test --locked -p maestro-runtime-gateway/);
-  assert.ok(requiredGate, "integration-tests job must exist");
-  assert.match(requiredGate, /if: \$\{\{ always\(\) \}\}/);
-  assert.match(requiredGate, /needs: \[pull-request-path-check, integration-suite\]/);
-  assert.match(requiredGate, /timeout-minutes: 5/);
-  assert.ok(hasApprovedSetupNodeGate(workflow), "required gate must use one approved setup-node step");
-  assert.match(
-    requiredGate,
-    /github\.event\.pull_request\.head\.repo\.id != github\.event\.repository\.id[\s\S]*vars\.PR_CHECKS_RUNNER/,
-  );
-  assert.match(requiredGate, /run: node scripts\/check-integration-required-gate\.mjs/);
+test("Buildkite retains the complete integration suite", () => {
+  const pipeline = readFileSync(new URL("../.buildkite/pipeline.yml", import.meta.url), "utf8");
+  assert.match(pipeline, /key: "integration"/);
+  assert.match(pipeline, /cargo test --locked -p maestro-runtime-gateway/);
+  assert.match(pipeline, /cargo test --locked -p maestro-tui --test tools_integration/);
+  assert.match(pipeline, /trap 'docker rm -f "\$\$redis" "\$\$postgres"/);
 });
 
 test("accepts only one structurally valid approved setup-node step", () => {

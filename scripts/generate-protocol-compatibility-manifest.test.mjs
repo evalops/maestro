@@ -668,8 +668,9 @@ test(
 			"utf8",
 		);
 		assert.match(workflow, /^  push:\n    branches:\n      - main/m);
-		assert.match(workflow, /^  pull_request:\s*$/m);
+		assert.doesNotMatch(workflow, /^  pull_request:\s*$/m);
 		assert.doesNotMatch(workflow, /^  workflow_dispatch:/m);
+		assert.doesNotMatch(workflow, /^  build-and-publish:/m);
 		assert.match(workflow, /type=sha,prefix=sha-/);
 		assert.match(workflow, /push: true/);
 	},
@@ -758,8 +759,10 @@ test("cosign DSSE verification selects the exact decoded predicate", () => {
 });
 
 test("required Rust validation rejects compatibility manifest drift", () => {
-	const workflow = readFileSync(resolve(ROOT, ".github/workflows/ci.yml"), "utf8");
-	assert.match(workflow, /run: npm run check:protocol-manifest/);
+	const pipeline = readFileSync(resolve(ROOT, ".buildkite/pipeline.yml"), "utf8");
+	assert.match(pipeline, /npm run check/);
+	const packageJson = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf8"));
+	assert.match(packageJson.scripts.check, /check:protocol-manifest/);
 });
 
 test("npm package includes the checked compatibility template", () => {

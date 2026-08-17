@@ -4,22 +4,20 @@ on:
   push:
     branches:
       - main
-  pull_request:
 
 # Main image publishes rewrite the shared `main`/`latest` tags. Cancelling an
 # in-flight push when the next mirror lands leaves incomplete blobs and produces
-# intermittent GHCR 403 / "blob not found" failures. Only cancel PR dry-runs.
+# intermittent GHCR 403 / "blob not found" failures.
 concurrency:
   group: ghcr-publish-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 env:
   IMAGE_NAME: ghcr.io/evalops/maestro
 
 jobs:
   publish-image:
-    if: github.event_name == 'push'
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.id != github.event.repository.id && 'ubuntu-latest' || (github.event_name == 'pull_request' && (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest')) }}
+    runs-on: ${{ vars.PUBLIC_RELEASE_RUNNER || 'ubuntu-latest' }}
     # Internal main-push image builds can take longer than the public mirror on
     # the private runner because the Rust control-plane layer compiles there.
     timeout-minutes: 45
@@ -118,38 +116,3 @@ jobs:
             -f event_type=maestro_runtime_image_published \
             -f "client_payload[source_sha]=${SOURCE_SHA}" \
             -f "client_payload[image_tag]=${image_tag}"
-
-  # Branch protection requires this context on pull requests. Keep the
-  # mutating publisher above push-only and expose its result through a
-  # read-only, always-reporting gate.
-  build-and-publish:
-    needs: publish-image
-    if: ${{ always() }}
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.id != github.event.repository.id && 'ubuntu-latest' || (vars.PUBLIC_PR_VALIDATION_RUNNER || 'ubuntu-latest') }}
-    timeout-minutes: 5
-    permissions: {}
-    steps:
-      - name: Validate required publication gate
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PUBLISH_RESULT: ${{ needs.publish-image.result }}
-        run: |
-          set -euo pipefail
-          case "$EVENT_NAME" in
-            push)
-              if [[ "$PUBLISH_RESULT" != "success" ]]; then
-                echo "publish-image did not succeed on a main push: $PUBLISH_RESULT" >&2
-                exit 1
-              fi
-              ;;
-            pull_request)
-              if [[ "$PUBLISH_RESULT" != "skipped" ]]; then
-                echo "publish-image must remain skipped on pull requests: $PUBLISH_RESULT" >&2
-                exit 1
-              fi
-              ;;
-            *)
-              echo "unsupported GHCR publication event: $EVENT_NAME" >&2
-              exit 1
-              ;;
-          esac
