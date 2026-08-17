@@ -264,6 +264,9 @@ steps:
       - label: ":idea: JetBrains plugin"
         key: "jetbrains-plugin"
         priority: 50
+        agents:
+          queue: "${MAESTRO_CI_JETBRAINS_QUEUE:-hetzner-linux-heavy}"
+          image: "${MAESTRO_CI_JETBRAINS_IMAGE:-evalops-platform-ci-v6}"
         if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
         timeout_in_minutes: 45
         concurrency: 3

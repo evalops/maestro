@@ -10,6 +10,8 @@ const tooling = await readFile(new URL("scripts/run-buildkite-ci-tooling.sh", ro
 test("Buildkite routes jobs through the configured Maestro worker pool", () => {
   assert.match(pipeline, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-heavy\}"/);
   assert.match(pipeline, /image: "\$\{MAESTRO_CI_IMAGE:-evalops-platform-ci-v6\}"/);
+  assert.match(pipeline, /queue: "\$\{MAESTRO_CI_JETBRAINS_QUEUE:-hetzner-linux-heavy\}"/);
+  assert.match(pipeline, /image: "\$\{MAESTRO_CI_JETBRAINS_IMAGE:-evalops-platform-ci-v6\}"/);
   assert.doesNotMatch(pipeline, /hetzner-linux-medium/);
 });
 
