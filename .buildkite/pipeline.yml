@@ -276,6 +276,8 @@ steps:
             - exit_status: -1
               signal_reason: none
               limit: 1
+            - exit_status: 137
+              limit: 1
             - signal_reason: agent_stop
               limit: 1
         cache:

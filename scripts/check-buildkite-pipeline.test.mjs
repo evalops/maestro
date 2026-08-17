@@ -6,6 +6,7 @@ const root = new URL("../", import.meta.url);
 const pipeline = await readFile(new URL(".buildkite/pipeline.yml", root), "utf8");
 const nextest = await readFile(new URL(".config/nextest.toml", root), "utf8");
 const tooling = await readFile(new URL("scripts/run-buildkite-ci-tooling.sh", root), "utf8");
+const jetbrains = await readFile(new URL("scripts/run-buildkite-jetbrains.sh", root), "utf8");
 
 test("Buildkite routes jobs through the configured Maestro worker pool", () => {
   assert.match(pipeline, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-heavy\}"/);
@@ -70,6 +71,11 @@ test("workflow tooling installs pinned binaries without requiring Go", () => {
   assert.match(tooling, /sha256sum --check --status/);
   assert.match(tooling, /shasum -a 256 --check --status/);
   assert.match(tooling, /! -f \.github\/workflows\/sync-public-release-mirror\.yml/);
+});
+
+test("JetBrains validation fails fast and retries only its stuck-JVM exit", () => {
+  assert.match(pipeline, /key: "jetbrains-plugin"[\s\S]*exit_status: 137[\s\S]*limit: 1/);
+  assert.match(jetbrains, /10m \.\/gradlew check buildPlugin --no-daemon/);
 });
 
 test("internal-only contracts are conditional in the shared public pipeline", () => {
