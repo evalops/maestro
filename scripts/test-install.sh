@@ -77,9 +77,23 @@ write_manifest
 cp "$release_dir/$asset" "$manifest_failure_release_dir/$asset"
 cp "$release_dir/$web_asset" "$manifest_failure_release_dir/$web_asset"
 
+preview_release_dir="$fixture/v0.0.3-beta.1"
+mkdir -p "$preview_release_dir"
+write_fixture_binary "0.0.3-beta.1"
+write_manifest
+cp "$release_dir/$asset" "$preview_release_dir/$asset"
+cp "$release_dir/$web_asset" "$preview_release_dir/$web_asset"
+{
+  printf '%s  %s\n' "$(hash_file "$preview_release_dir/$asset")" "$asset"
+  printf '%s  %s\n' "$(hash_file "$preview_release_dir/$web_asset")" "$web_asset"
+} > "$preview_release_dir/SHA256SUMS"
+write_fixture_binary "0.0.1"
+write_manifest
+
 port_file="$fixture/port"
 python3 - "$fixture" > "$port_file" 2>"$fixture/server.log" <<'PY' &
 import http.server
+import json
 import os
 import sys
 
@@ -90,6 +104,48 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_response(500)
             self.end_headers()
             self.wfile.write(b"simulated manifest failure")
+            return
+        if self.path == "/channels/beta/manifest.json":
+            port = self.server.server_address[1]
+            body = json.dumps({
+                "channel": "beta",
+                "releaseUrl": f"http://127.0.0.1:{port}/v0.0.3-beta.1",
+                "version": "0.0.3-beta.1",
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path == "/github/releases":
+            port = self.server.server_address[1]
+            body = json.dumps([
+                {
+                    "tag_name": "v0.0.3-beta.1",
+                    "draft": False,
+                    "prerelease": True,
+                    "html_url": f"http://127.0.0.1:{port}/v0.0.3-beta.1",
+                }
+            ]).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path == "/github/empty":
+            body = b"[]"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if "maestro-beta-channel" in self.path or "maestro-alpha-channel" in self.path:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"deleted channel alias")
             return
         super().do_GET()
 
@@ -272,5 +328,52 @@ fi
 release_binary_count="$(find "$data_dir/releases" -type f -path '*/bin/maestro' | wc -l | tr -d ' ')"
 [[ "$release_binary_count" == "1" ]] ||
   fail "checksum failure published an extra release: $release_binary_count"
+
+pointer_install_dir="$fixture/pointer-bin"
+pointer_data_dir="$fixture/pointer-data"
+HOME="$fixture/home" \
+MAESTRO_INSTALL_DIR="$pointer_install_dir" \
+MAESTRO_DATA_DIR="$pointer_data_dir" \
+MAESTRO_INSTALL_CHANNEL="beta" \
+MAESTRO_CHANNEL_MANIFEST_URL="http://127.0.0.1:$port/channels/beta/manifest.json" \
+MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
+"$ROOT/scripts/install.sh" > "$fixture/pointer-install.log" 2>&1 ||
+  fail "channel pointer install failed: $(cat "$fixture/pointer-install.log")"
+[[ "$("$pointer_install_dir/maestro" --version)" == "maestro 0.0.3-beta.1" ]] ||
+  fail "channel pointer install did not select the preview release"
+grep -q 'Using beta channel pointer' "$fixture/pointer-install.log" ||
+  fail "channel pointer install did not report the signed pointer"
+grep -q 'maestro-beta-channel' "$fixture/pointer-install.log" &&
+  fail "channel pointer install requested the deleted GitHub channel alias"
+
+api_install_dir="$fixture/api-bin"
+api_data_dir="$fixture/api-data"
+HOME="$fixture/home" \
+MAESTRO_INSTALL_DIR="$api_install_dir" \
+MAESTRO_DATA_DIR="$api_data_dir" \
+MAESTRO_INSTALL_CHANNEL="beta" \
+MAESTRO_CHANNEL_MANIFEST_URL="http://127.0.0.1:$port/missing-channel-pointer" \
+MAESTRO_RELEASE_API_URL="http://127.0.0.1:$port/github/releases" \
+MAESTRO_RELEASE_DOWNLOAD_BASE="http://127.0.0.1:$port" \
+MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
+"$ROOT/scripts/install.sh" > "$fixture/api-install.log" 2>&1 ||
+  fail "GitHub channel fallback install failed: $(cat "$fixture/api-install.log")"
+[[ "$("$api_install_dir/maestro" --version)" == "maestro 0.0.3-beta.1" ]] ||
+  fail "GitHub channel fallback did not select the preview release"
+grep -q 'Using GitHub beta release v0.0.3-beta.1' "$fixture/api-install.log" ||
+  fail "GitHub channel fallback did not report the immutable tag"
+
+if HOME="$fixture/home" \
+  MAESTRO_INSTALL_DIR="$fixture/empty-bin" \
+  MAESTRO_DATA_DIR="$fixture/empty-data" \
+  MAESTRO_INSTALL_CHANNEL="beta" \
+  MAESTRO_CHANNEL_MANIFEST_URL="http://127.0.0.1:$port/missing-channel-pointer" \
+  MAESTRO_RELEASE_API_URL="http://127.0.0.1:$port/github/empty" \
+  MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
+  "$ROOT/scripts/install.sh" > "$fixture/empty-channel.log" 2>&1; then
+  fail "installer accepted a preview channel with no published release"
+fi
+grep -q 'No published beta release' "$fixture/empty-channel.log" ||
+  fail "installer did not explain a missing preview release"
 
 printf 'installer fixture passed: checksum failure preserved %s\n' "$install_dir/maestro"
