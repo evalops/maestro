@@ -43,6 +43,12 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.67-beta.1] - 2026-08-17
+
+### Added
+
+- Publish alpha and beta channels (#1032). <!-- maestro-release-note:788579e44699 -->
+
 ## [0.10.66] - 2026-08-17
 
 ### Added
