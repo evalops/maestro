@@ -17,6 +17,7 @@ steps:
     steps:
       - label: ":lint-roller: Contracts, format, and Clippy"
         key: "lint"
+        priority: 50
         timeout_in_minutes: 90
         concurrency: 3
         concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
@@ -48,6 +49,7 @@ steps:
 
       - label: ":test_tube: Full Rust workspace"
         key: "rust-tests"
+        priority: 50
         timeout_in_minutes: 90
         concurrency: 3
         concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
@@ -91,6 +93,7 @@ steps:
 
       - label: ":package: Native build and conformance"
         key: "native-release"
+        priority: 50
         timeout_in_minutes: 90
         concurrency: 3
         concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
@@ -120,6 +123,7 @@ steps:
     steps:
       - label: ":docker: Control-plane integration"
         key: "integration"
+        priority: 50
         timeout_in_minutes: 60
         concurrency: 3
         concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
@@ -165,6 +169,7 @@ steps:
 
       - label: ":repeat: Deterministic scenario replay"
         key: "scenario-replay"
+        priority: 50
         timeout_in_minutes: 45
         concurrency: 3
         concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
@@ -188,6 +193,7 @@ steps:
 
   - label: ":pipeline: CI configuration contracts"
     key: "ci-contracts"
+    priority: 50
     if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
     timeout_in_minutes: 30
     concurrency: 3
@@ -218,6 +224,7 @@ steps:
     steps:
       - label: ":github: Workflow and shell tooling"
         key: "workflow-tooling"
+        priority: 50
         if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
         timeout_in_minutes: 30
         concurrency: 3
@@ -237,6 +244,7 @@ steps:
 
       - label: ":lock: Supply chain"
         key: "supply-chain"
+        priority: 50
         timeout_in_minutes: 45
         concurrency: 3
         concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
@@ -255,6 +263,7 @@ steps:
 
       - label: ":idea: JetBrains plugin"
         key: "jetbrains-plugin"
+        priority: 50
         if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
         timeout_in_minutes: 45
         concurrency: 3
@@ -274,6 +283,7 @@ steps:
 
       - label: ":bar_chart: Coverage (advisory)"
         key: "coverage"
+        priority: 50
         if: build.branch == "main" && build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
         soft_fail: true
         timeout_in_minutes: 90
@@ -294,6 +304,7 @@ steps:
 
       - label: ":stopwatch: Performance baseline (advisory)"
         key: "perf-baseline"
+        priority: 50
         if: build.branch == "main" && build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
         soft_fail: true
         timeout_in_minutes: 60
