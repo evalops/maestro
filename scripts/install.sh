@@ -8,7 +8,7 @@ COSIGN_IDENTITY_REGEXP='^https://github.com/evalops/(maestro-internal|maestro)/\
 COSIGN_OIDC_ISSUER="https://token.actions.githubusercontent.com"
 
 fail() {
-  printf 'Error: %s\n' "$*"
+  printf 'Error: %s\n' "$*" >&2
   exit 1
 }
 
@@ -67,10 +67,13 @@ if [[ -n "${MAESTRO_RELEASE_BASE_URL:-}" ]]; then
   release_url="${MAESTRO_RELEASE_BASE_URL%/}"
 elif [[ -n "${MAESTRO_INSTALL_VERSION:-}" ]]; then
   release_url="https://github.com/${REPO}/releases/download/v${MAESTRO_INSTALL_VERSION#v}"
-elif [[ "$install_channel" == "alpha" || "$install_channel" == "beta" ]]; then
-  release_url="https://github.com/${REPO}/releases/download/maestro-${install_channel}-channel"
-else
+elif [[ "$install_channel" == "stable" ]]; then
   release_url="https://github.com/${REPO}/releases/latest/download"
+else
+  # Preview channels publish immutable vX.Y.Z-<channel>.N tags. The signed
+  # pointer lives in GCS; GitHub Releases is the public fallback. The deleted
+  # maestro-<channel>-channel alias is not a valid download source.
+  release_url=""
 fi
 
 install_dir="${MAESTRO_INSTALL_DIR:-$HOME/.local/bin}"
@@ -160,6 +163,108 @@ fetch_manifest() {
   esac
 }
 
+fetch_optional() {
+  local destination="$1"
+  local url="$2"
+  local status
+  local -a options=(
+    --silent
+    --show-error
+    --location
+    --max-time 180
+    --retry 2
+    --retry-delay 2
+    --write-out '%{http_code}'
+  )
+  case "$url" in
+    http://127.0.0.1:*|http://localhost:*) ;;
+    *) options+=(--proto '=https' --tlsv1.2) ;;
+  esac
+  if ! status="$(curl "${options[@]}" -o "$destination" "$url")"; then
+    rm -f "$destination"
+    return 1
+  fi
+  case "$status" in
+    2??) return 0 ;;
+    *)
+      rm -f "$destination"
+      return 1
+      ;;
+  esac
+}
+
+json_field() {
+  local file="$1"
+  local field="$2"
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 -c 'import json,sys; value=json.load(open(sys.argv[1])).get(sys.argv[2]); print("" if value is None else value)' \
+    "$file" "$field"
+}
+
+latest_channel_tag() {
+  local file="$1"
+  local channel="$2"
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 -c '
+import json, sys
+channel = sys.argv[2]
+suffix = "-" + channel + "."
+releases = json.load(open(sys.argv[1]))
+if not isinstance(releases, list):
+    raise SystemExit(1)
+for release in releases:
+    if release.get("draft"):
+        continue
+    tag = str(release.get("tag_name") or "")
+    if suffix in tag:
+        print(tag)
+        break
+' "$file" "$channel"
+}
+
+release_url_allowed() {
+  case "$1" in
+    https://*) return 0 ;;
+    http://127.0.0.1:*|http://localhost:*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+resolve_preview_release_url() {
+  local channel="$1"
+  local pointer="${MAESTRO_CHANNEL_MANIFEST_URL:-}"
+  local pointer_base="${MAESTRO_CHANNEL_POINTER_BASE:-https://storage.googleapis.com/evalops-prod-maestro-releases/maestro}"
+  local api="${MAESTRO_RELEASE_API_URL:-https://api.github.com/repos/${REPO}/releases}"
+  local dest tag url
+
+  if [[ -z "$pointer" ]]; then
+    pointer="${pointer_base%/}/channels/${channel}/manifest.json"
+  fi
+  dest="$tmpdir/channel-manifest.json"
+  if fetch_optional "$dest" "$pointer"; then
+    url="$(json_field "$dest" releaseUrl || true)"
+    url="${url%/}"
+    if release_url_allowed "$url"; then
+      printf 'Using %s channel pointer %s\n' "$channel" "$pointer" >&2
+      printf '%s' "$url"
+      return 0
+    fi
+  fi
+
+  dest="$tmpdir/github-releases.json"
+  if ! fetch_optional "$dest" "$api"; then
+    fail "No published ${channel} release pointer at ${pointer}, and GitHub release listing failed: ${api}"
+  fi
+  command -v python3 >/dev/null 2>&1 ||
+    fail "Resolving ${channel} requires python3 to read the GitHub Releases list"
+  tag="$(latest_channel_tag "$dest" "$channel" || true)"
+  if [[ -z "$tag" ]]; then
+    fail "No published ${channel} release. Omit MAESTRO_INSTALL_CHANNEL for stable, or set MAESTRO_INSTALL_VERSION to a published tag."
+  fi
+  printf 'Using GitHub %s release %s\n' "$channel" "$tag" >&2
+  printf '%s/%s' "${MAESTRO_RELEASE_DOWNLOAD_BASE:-https://github.com/${REPO}/releases/download}" "$tag"
+}
+
 download() {
   local url="$1"
   local destination="$2"
@@ -211,6 +316,10 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+if [[ -z "$release_url" ]]; then
+  release_url="$(resolve_preview_release_url "$install_channel")"
+fi
 
 manifest="$tmpdir/SHA256SUMS"
 manifest_available=0
