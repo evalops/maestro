@@ -8,7 +8,7 @@
  * fresh RUSTSEC advisory landing against a dependency this PR never touched
  * should not spuriously red an unrelated PR — that's the same "gate that
  * fails for the wrong reason" problem this repo is trying to get away from.
- * The scheduled lane (.github/workflows/supply-chain.yml, `scheduled` job)
+ * The Buildkite supply-chain lane (`scripts/run-buildkite-supply-chain.sh`)
  * is where advisories against the existing tree get enforced unconditionally.
  *
  * This script narrows PR-time enforcement to findings whose *own* flagged
@@ -283,7 +283,7 @@ function main() {
 	if (preexisting > 0) {
 		console.log(
 			`${preexisting} finding(s) are against dependencies this PR did not add or change — not failing this PR lane. ` +
-				"They are enforced by the scheduled full check (.github/workflows/supply-chain.yml) and visible in this job's summary.",
+				"They are enforced by the full Buildkite supply-chain check and visible in this job's output.",
 		);
 	}
 

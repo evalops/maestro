@@ -45,9 +45,6 @@ import {
  */
 export const COVERAGE_OPT_OUT = {
 	"evalops/maestro-internal": [
-		// zizmor (actionlint.yml): advisory security audit follow-up lane; gating
-		// on workflow YAML is the sibling required `actionlint` job.
-		"zizmor",
 		// label (agent-authorship-labels.yml): advisory labeling; advisory
 		// automation fails open by design (AGENTS.md) and must not gate PRs.
 		"label",
@@ -58,68 +55,14 @@ export const COVERAGE_OPT_OUT = {
 		// label-run-evals (eval-label.yml): opt-in eval lane triggered by a PR
 		// label; requiring it would force eval spend on every PR.
 		"label-run-evals",
-		// supply-chain (ci.yml caller): feeds the required `native` aggregate via
-		// needs:; the aggregate is the gate, the caller context is intermediate.
-		"supply-chain",
-		// rust-validation / native-release (ci.yml): intermediate jobs aggregated
-		// by the required `native` gate. rust-validation-lane's matrix name
-		// ("rust-validation (${{ matrix.lane }})") matches via matrix-base
-		// stripping in matchesOptOut.
-		"rust-validation",
-		"native-release",
 		// validate (codex-rails-check.yml): AGENTS.md/skills template lint,
 		// paths-filtered to template files; required on the public repo only.
 		"validate",
-		// integration-suite (integration.yml): conditional middle job gated by
-		// pull-request-path-check and aggregated by required `integration-tests`.
-		"integration-suite",
-		// capability-gated-tests (integration.yml): label-gated capability lane,
-		// skipped unless a PR opts in via label.
-		"capability-gated-tests",
-		// check (jetbrains-plugin.yml): paths-filtered plugin lane, independent
-		// of the native gates.
-		"check",
-		// required-checks-invariant (required-checks-invariant.yml): soft gate
-		// pending the Administration-read token grant
-		// (vars.REQUIRE_PROTECTION_INVARIANT); cannot be required until it can
-		// fail closed on its own credential problem.
-		"required-checks-invariant",
 	],
 	"evalops/maestro": [
-		// native-quality / native-tests (ci.yml): intermediate lanes aggregated
-		// by the required `native` gate via needs:.
-		"native-quality",
-		"native-tests",
-		// native-release (ci.yml): intermediate lane aggregated by `native`.
-		"native-release",
-		// publish-image (ghcr-publish.yml): push-only mutating publisher; the
-		// required, always-reporting gate on PRs is the read-only
-		// `build-and-publish` aggregate (see the workflow's own comment).
-		"publish-image",
-		// detect-pr-evals / run-evals (evals.yml): opt-in eval lane; run-evals
-		// is gated on detection output so most PRs never execute it.
-		"detect-pr-evals",
-		"run-evals",
 		// dispatch (evalopsbot-review-request.yml): advisory review-request bot;
 		// fails open by design and must not gate PRs.
 		"dispatch",
-		// integration-suite (integration.yml): conditional middle job aggregated
-		// by the required `integration-tests` gate.
-		"integration-suite",
-		// capability-gated-tests (integration.yml): label-gated capability lane.
-		"capability-gated-tests",
-		// check (jetbrains-plugin.yml): paths-filtered plugin lane, independent
-		// of the native gates.
-		"check",
-		// Rust-only Source Guard / Rust Hook Tests (hooks.yml) and shellcheck:
-		// required on evalops/maestro-internal, where the guarded source is
-		// authored. The public tree is a generated mirror of an already-gated
-		// internal SHA, so these duplicate a gate that ran at the source of
-		// truth. If ops would rather require them publicly, remove these
-		// entries and add the contexts to public branch protection instead.
-		"Rust-only Source Guard",
-		"Rust Hook Tests",
-		"shellcheck",
 	],
 };
 

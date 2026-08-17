@@ -1,5 +1,5 @@
 agents:
-  queue: "hetzner-linux-heavy"
+  queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
   image: "evalops-platform-ci-v3"
 
 env:
@@ -18,7 +18,7 @@ steps:
         key: "lint"
         timeout_in_minutes: 90
         concurrency: 3
-        concurrency_group: "hetzner-linux-heavy-workloads"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
         retry:
           automatic:
             - exit_status: -1
@@ -38,7 +38,9 @@ steps:
           if [[ -f scripts/measure-ci-build-latency.test.mjs ]]; then
             node --test scripts/measure-ci-build-latency.test.mjs
           fi
-          npm run test:internal
+          if [[ -d test/internal ]]; then
+            npm run test:internal
+          fi
           timeout --signal=TERM --kill-after=30s 30m npm run lint
           node --test scripts/check-advisory-expiry.test.mjs
           node scripts/check-advisory-expiry.mjs
@@ -47,7 +49,7 @@ steps:
         key: "rust-tests"
         timeout_in_minutes: 90
         concurrency: 3
-        concurrency_group: "hetzner-linux-heavy-workloads"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
         retry:
           automatic:
             - exit_status: -1
@@ -56,7 +58,7 @@ steps:
             - signal_reason: agent_stop
               limit: 1
         agents:
-          queue: "hetzner-linux-heavy"
+          queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
           image: "evalops-platform-ci-v3"
         cache:
           name: "maestro-tests-${BUILDKITE_PULL_REQUEST}"
@@ -90,7 +92,7 @@ steps:
         key: "native-release"
         timeout_in_minutes: 90
         concurrency: 3
-        concurrency_group: "hetzner-linux-heavy-workloads"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
         retry:
           automatic:
             - exit_status: -1
@@ -99,7 +101,7 @@ steps:
             - signal_reason: agent_stop
               limit: 1
         agents:
-          queue: "hetzner-linux-heavy"
+          queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
           image: "evalops-platform-ci-v3"
         cache:
           name: "maestro-release-${BUILDKITE_PULL_REQUEST}"
@@ -118,7 +120,7 @@ steps:
         key: "integration"
         timeout_in_minutes: 60
         concurrency: 3
-        concurrency_group: "hetzner-linux-heavy-workloads"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
         retry:
           automatic:
             - exit_status: -1
@@ -127,7 +129,7 @@ steps:
             - signal_reason: agent_stop
               limit: 1
         agents:
-          queue: "hetzner-linux-heavy"
+          queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-heavy}"
           image: "evalops-platform-ci-v3"
         cache:
           name: "maestro-integration-${BUILDKITE_PULL_REQUEST}"
@@ -151,12 +153,19 @@ steps:
           MAESTRO_REDIS_URL="redis://127.0.0.1:$$redis_port" \
             MAESTRO_DATABASE_URL="postgresql://maestro:maestro@127.0.0.1:$$postgres_port/maestro" \
             PGPASSWORD=maestro timeout --signal=TERM --kill-after=30s 30m cargo test --locked -p maestro-runtime-gateway
+          POSTGRES_DB=maestro \
+            POSTGRES_HOST=127.0.0.1 \
+            POSTGRES_PASSWORD=maestro \
+            POSTGRES_PORT="$$postgres_port" \
+            POSTGRES_USER=maestro \
+            PGPASSWORD=maestro \
+            timeout --signal=TERM --kill-after=30s 30m cargo test --locked -p maestro-tui --test tools_integration
 
       - label: ":repeat: Deterministic scenario replay"
         key: "scenario-replay"
         timeout_in_minutes: 45
         concurrency: 3
-        concurrency_group: "hetzner-linux-heavy-workloads"
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
         retry:
           automatic:
             - exit_status: -1
@@ -179,7 +188,7 @@ steps:
     key: "ci-contracts"
     timeout_in_minutes: 30
     concurrency: 3
-    concurrency_group: "hetzner-linux-heavy-workloads"
+    concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
     retry:
       automatic:
         - exit_status: -1
@@ -201,3 +210,99 @@ steps:
       if [[ -f scripts/workflow-contracts.test.mjs ]]; then
         node --test scripts/workflow-contracts.test.mjs
       fi
+
+  - group: ":shield: Auxiliary validation"
+    steps:
+      - label: ":github: Workflow and shell tooling"
+        key: "workflow-tooling"
+        timeout_in_minutes: 30
+        concurrency: 3
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
+        retry:
+          automatic:
+            - exit_status: -1
+              signal_reason: none
+              limit: 1
+            - signal_reason: agent_stop
+              limit: 1
+        cache:
+          name: "maestro-ci-tools-${BUILDKITE_PULL_REQUEST}"
+          size: "20g"
+          paths: [".buildkite/cache"]
+        command: scripts/run-buildkite-ci-tooling.sh
+
+      - label: ":lock: Supply chain"
+        key: "supply-chain"
+        timeout_in_minutes: 45
+        concurrency: 3
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
+        retry:
+          automatic:
+            - exit_status: -1
+              signal_reason: none
+              limit: 1
+            - signal_reason: agent_stop
+              limit: 1
+        cache:
+          name: "maestro-supply-chain-${BUILDKITE_PULL_REQUEST}"
+          size: "20g"
+          paths: [".buildkite/cache"]
+        command: scripts/run-buildkite-supply-chain.sh
+
+      - label: ":idea: JetBrains plugin"
+        key: "jetbrains-plugin"
+        timeout_in_minutes: 45
+        concurrency: 3
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
+        retry:
+          automatic:
+            - exit_status: -1
+              signal_reason: none
+              limit: 1
+            - signal_reason: agent_stop
+              limit: 1
+        cache:
+          name: "maestro-jetbrains-${BUILDKITE_PULL_REQUEST}"
+          size: "20g"
+          paths: [".buildkite/cache"]
+        command: scripts/run-buildkite-jetbrains.sh
+
+      - label: ":bar_chart: Coverage (advisory)"
+        key: "coverage"
+        if: build.branch == "main"
+        soft_fail: true
+        timeout_in_minutes: 90
+        concurrency: 3
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
+        retry:
+          automatic:
+            - exit_status: -1
+              signal_reason: none
+              limit: 1
+            - signal_reason: agent_stop
+              limit: 1
+        cache:
+          name: "maestro-coverage-main"
+          size: "50g"
+          paths: [".buildkite/cache"]
+        command: scripts/run-buildkite-coverage.sh
+
+      - label: ":stopwatch: Performance baseline (advisory)"
+        key: "perf-baseline"
+        if: build.branch == "main"
+        soft_fail: true
+        timeout_in_minutes: 60
+        concurrency: 3
+        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
+        retry:
+          automatic:
+            - exit_status: -1
+              signal_reason: none
+              limit: 1
+            - signal_reason: agent_stop
+              limit: 1
+        cache:
+          name: "maestro-perf-main"
+          size: "30g"
+          paths: [".buildkite/cache"]
+        command: scripts/run-buildkite-perf.sh

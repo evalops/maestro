@@ -9,8 +9,9 @@ originate in `evalops/maestro-internal` and arrive through the protected mirror
 workflow; do not edit mirrored source directly here.
 
 For contribution setup and checks, use `CONTRIBUTING.md` and
-`docs/CONTRIBUTOR_RUNBOOK.md`. Public CI and release workflows remain owned by
-this repository.
+`docs/CONTRIBUTOR_RUNBOOK.md`. Validation is defined in the mirrored
+`.buildkite/pipeline.yml`; public GitHub workflows are limited to review policy,
+source provenance, release publishing, and repository automation.
 
 Do not add private repository documentation, credentials, internal agent
 instructions, operational plans, or unpublished research to the public tree.

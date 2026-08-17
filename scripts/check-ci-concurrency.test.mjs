@@ -2,21 +2,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const workflow = readFileSync(
-	new URL("../.github/workflows/ci.yml", import.meta.url),
+const pipeline = readFileSync(
+	new URL("../.buildkite/pipeline.yml", import.meta.url),
 	"utf8",
 );
 
-test("CI uses the current concurrency generation", () => {
-	assert.match(
-		workflow,
-		/^\s*group: \$\{\{ github\.workflow \}\}-arc-v4-\$\{\{ github\.event\.pull_request\.number \|\| github\.sha \}\}$/m,
-	);
+test("CI uses one configurable Buildkite concurrency group", () => {
+	assert.match(pipeline, /MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads/);
 });
 
-test("CI cancels superseded pull request runs", () => {
-	assert.match(
-		workflow,
-		/^\s*cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}$/m,
-	);
+test("CI bounds each Buildkite lane to available worker capacity", () => {
+	assert.equal((pipeline.match(/concurrency: 3/g) ?? []).length, 11);
 });
