@@ -31,4 +31,5 @@ fi
 
 java -version
 cd packages/jetbrains-plugin
-timeout --signal=TERM --kill-after=30s 10m ./gradlew check buildPlugin --no-daemon
+timeout --signal=TERM --kill-after=30s 10m \
+  ./gradlew check buildPlugin --no-daemon -Dorg.gradle.jvmargs=

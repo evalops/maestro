@@ -90,7 +90,10 @@ for test_file in \
   scripts/check-review-thread-guard-workflow.test.mjs \
   scripts/check-sync-public-release-mirror-workflow.test.mjs \
   scripts/update-behind-auto-merge-prs.test.mjs; do
-  if [[ "$test_file" == scripts/check-sync-public-release-mirror-workflow.test.mjs ]] &&
+  # The public projection intentionally restores public-owned workflows and
+  # excludes the internal mirror workflow. Keep the shared tooling lane
+  # green there while still running this contract in the internal repository.
+  if [[ "$test_file" == "scripts/check-sync-public-release-mirror-workflow.test.mjs" ]] &&
     [[ ! -f .github/workflows/sync-public-release-mirror.yml ]]; then
     continue
   fi

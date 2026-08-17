@@ -49,15 +49,7 @@ jobs:
           fi
 
           release_tag="v${release_version}"
-          case "$release_version" in
-            *-alpha.*) release_channel=alpha ;;
-            *-beta.*) release_channel=beta ;;
-            *-*)
-              echo "::error::Unsupported prerelease channel in ${release_version}."
-              exit 1
-              ;;
-            *) release_channel=stable ;;
-          esac
+          release_channel="$(node scripts/resolve-release-channel.mjs --version "$release_version")"
           npm_tag="${release_channel}"
           if [[ "$release_channel" == "stable" ]]; then
             npm_tag=latest
@@ -136,10 +128,16 @@ jobs:
         env:
           RELEASE_PLATFORM: ${{ matrix.platform }}
         run: node scripts/smoke-release-native-only.mjs "dist/release/maestro-${RELEASE_PLATFORM}"
+      - name: Record release toolchain
+        env:
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+        run: rustc -Vv > "dist/release/rustc-${RELEASE_PLATFORM}.txt"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: maestro-${{ matrix.platform }}
-          path: dist/release/maestro-${{ matrix.platform }}
+          path: |
+            dist/release/maestro-${{ matrix.platform }}
+            dist/release/rustc-${{ matrix.platform }}.txt
 
   publish:
     needs:
@@ -340,6 +338,57 @@ jobs:
           echo "${cosign_sha256}  $RUNNER_TEMP/cosignbin/cosign" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/cosignbin/cosign"
           echo "$RUNNER_TEMP/cosignbin" >> "$GITHUB_PATH"
+      - name: Create signed channel metadata
+        env:
+          CHANNEL_KEY_ID: ${{ needs.prepare.outputs.release_channel == 'stable' && 'stable-2026-08-0c3df2ac' || 'preview-2026-08-912a0dab' }}
+          MAESTRO_CHANNEL_PRIVATE_KEY: ${{ needs.prepare.outputs.release_channel == 'stable' && secrets.MAESTRO_STABLE_CHANNEL_PRIVATE_KEY || secrets.MAESTRO_PREVIEW_CHANNEL_PRIVATE_KEY }}
+          RELEASE_CHANNEL: ${{ needs.prepare.outputs.release_channel }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          compatibility_digest="$(jq -r '.compatibilityDigest' proto/maestro/v1/protocol-compatibility-manifest.json)"
+          for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
+            case "$platform" in
+              linux-x64) target=x86_64-unknown-linux-gnu ;;
+              linux-arm64) target=aarch64-unknown-linux-gnu ;;
+              darwin-x64) target=x86_64-apple-darwin ;;
+              darwin-arm64) target=aarch64-apple-darwin ;;
+            esac
+            digest="sha256:$(sha256sum "release-assets/maestro-${platform}" | awk '{print $1}')"
+            rustc_identity="$(cat "release-assets/rustc-${platform}.txt")"
+            node scripts/generate-runtime-passport.mjs \
+              --artifact-kind native_binary \
+              --artifact-name "maestro-${platform}" \
+              --artifact-digest "$digest" \
+              --source-sha "$RELEASE_SHA" \
+              --compatibility-digest "$compatibility_digest" \
+              --launch-spec-version evalops.maestro.hosted-launch-spec.v1 \
+              --receipt-version evalops.maestro.runtime-receipt.v1 \
+              --rustc "$rustc_identity" \
+              --target "$target" \
+              --behavior-profile hosted-http-sse-v1 \
+              --out "runtime-passport-maestro-${platform}.json"
+          done
+
+          node scripts/create-release-metadata.mjs \
+            --version "$RELEASE_VERSION" \
+            --release-tag "$RELEASE_TAG" \
+            --source-sha "$RELEASE_SHA" \
+            --out release-assets/release-metadata.json
+          cp release-assets/release-metadata.json release-assets/version.json
+          node scripts/create-release-channel-manifest.mjs \
+            --version "$RELEASE_VERSION" \
+            --channel "$RELEASE_CHANNEL" \
+            --key-id "$CHANNEL_KEY_ID" \
+            --release-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}" \
+            --metadata-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/release-metadata.json" \
+            --metadata-file release-assets/release-metadata.json \
+            --source-sha "$RELEASE_SHA" \
+            --out release-assets/channel-manifest.json
+          cp release-assets/channel-manifest.json release-assets/manifest.json
+          mv runtime-passport-maestro-*.json release-assets/
       - name: Sign native release assets
         working-directory: release-assets
         run: |
@@ -351,10 +400,15 @@ jobs:
             maestro-linux-x64
             maestro-web-dist.tar.gz
           )
+          files+=(release-metadata.json version.json channel-manifest.json manifest.json)
+          files+=(runtime-passport-maestro-*.json)
           sha256sum "${files[@]}" > SHA256SUMS
           cosign sign-blob --yes --bundle SHA256SUMS.cosign.bundle SHA256SUMS
           for binary in maestro-darwin-arm64 maestro-darwin-x64 maestro-linux-arm64 maestro-linux-x64; do
             cosign sign-blob --yes --bundle "${binary}.cosign.bundle" "$binary"
+          done
+          for passport in runtime-passport-maestro-*.json; do
+            cosign sign-blob --yes --bundle "${passport}.cosign.bundle" "$passport"
           done
       - name: Verify release tag has not moved
         env:
@@ -389,39 +443,29 @@ jobs:
           prerelease: ${{ needs.prepare.outputs.release_channel != 'stable' }}
           make_latest: ${{ needs.prepare.outputs.release_channel == 'stable' }}
           files: release-assets/*
-      - name: Refresh preview channel alias
-        if: ${{ needs.prepare.outputs.release_channel != 'stable' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_CHANNEL: ${{ needs.prepare.outputs.release_channel }}
-          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
-          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
-          RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
-        run: |
-          set -euo pipefail
-          channel_tag="maestro-${RELEASE_CHANNEL}-channel"
-          release_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
-          jq -n \
-            --arg version "$RELEASE_VERSION" \
-            --arg channel "$RELEASE_CHANNEL" \
-            --arg releaseTag "$RELEASE_TAG" \
-            --arg releaseUrl "$release_url" \
-            '{version: $version, channel: $channel, releaseTag: $releaseTag, releaseUrl: $releaseUrl}' \
-            > release-assets/version.json
-
-          if ! gh release view "$channel_tag" >/dev/null 2>&1; then
-            gh release create "$channel_tag" \
-              --target "$RELEASE_SHA" \
-              --prerelease \
-              --title "Maestro ${RELEASE_CHANNEL} channel" \
-              --notes "Mutable ${RELEASE_CHANNEL} channel alias. Use the immutable release tag for provenance."
-          fi
-          gh release upload "$channel_tag" \
-            release-assets/maestro-* \
-            release-assets/SHA256SUMS \
-            release-assets/SHA256SUMS.cosign.bundle \
-            release-assets/version.json \
-            --clobber
+      - name: Publish signed channel pointer
+        uses: ./.github/actions/gcs-artifacts
+        with:
+          mode: upload
+          if-missing: error
+          bucket: gs://${{ vars.MAESTRO_RELEASES_BUCKET }}
+          service-account: ${{ vars.MAESTRO_RELEASE_GCP_SERVICE_ACCOUNT }}
+          workload-identity-provider: ${{ vars.MAESTRO_RELEASE_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          prefix: ${{ vars.MAESTRO_RELEASES_PREFIX }}/channels/${{ needs.prepare.outputs.release_channel }}
+          paths: |
+            release-assets/version.json
+            release-assets/manifest.json
+      - name: Publish stable legacy pointer
+        if: ${{ needs.prepare.outputs.release_channel == 'stable' }}
+        uses: ./.github/actions/gcs-artifacts
+        with:
+          mode: upload
+          if-missing: error
+          bucket: gs://${{ vars.MAESTRO_RELEASES_BUCKET }}
+          service-account: ${{ vars.MAESTRO_RELEASE_GCP_SERVICE_ACCOUNT }}
+          workload-identity-provider: ${{ vars.MAESTRO_RELEASE_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          prefix: ${{ vars.MAESTRO_RELEASES_PREFIX }}
+          paths: release-assets/version.json
 
   post-publish-canary:
     needs:

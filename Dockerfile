@@ -26,6 +26,7 @@ COPY packages/runtime-rs ./packages/runtime-rs
 COPY packages/ambient-agent-rs ./packages/ambient-agent-rs
 COPY packages/ai-rs ./packages/ai-rs
 COPY proto ./proto
+COPY scripts/install.sh ./scripts/install.sh
 COPY test/fixtures/codex/coding-tools-doctor-v1.json ./test/fixtures/codex/coding-tools-doctor-v1.json
 RUN cargo build --release --locked -p maestro
 

@@ -184,6 +184,12 @@ pub(super) fn a2a_tasks_file_path() -> PathBuf {
         .unwrap_or_else(|_| maestro_home().join("a2a/tasks.json"))
 }
 
+pub(super) fn automation_file_path() -> PathBuf {
+    env::var("MAESTRO_AUTOMATIONS_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| maestro_home().join("automations.json"))
+}
+
 pub(super) async fn read_json_value(path: &str) -> Option<Value> {
     let raw = tokio::fs::read_to_string(path).await.ok()?;
     serde_json::from_str(&raw).ok()

@@ -12,7 +12,7 @@ fail() {
   exit 1
 }
 
-for cmd in uname curl mktemp chmod mkdir tar rm cp mv awk dirname basename; do
+for cmd in uname curl mktemp chmod mkdir tar rm cp mv awk dirname basename date; do
   command -v "$cmd" >/dev/null || fail "Required command not found: $cmd"
 done
 if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
@@ -38,6 +38,7 @@ esac
 
 asset="maestro-${platform}"
 web_asset="maestro-web-dist.tar.gz"
+metadata_asset="release-metadata.json"
 case "$platform" in
   darwin-x64)
     cosign_asset="cosign-darwin-amd64"
@@ -100,6 +101,10 @@ hash_file() {
   else
     shasum -a 256 "$1" | awk '{print $1}'
   fi
+}
+
+receipt_hash_file() {
+  printf 'sha256:%s' "$(hash_file "$1")"
 }
 
 curl_to() {
@@ -209,8 +214,15 @@ trap cleanup EXIT
 
 manifest="$tmpdir/SHA256SUMS"
 manifest_available=0
+manifest_sha256=""
+signature_verified=0
+metadata_checksum_verified=0
+metadata_available=0
+binary_checksum_verified=0
+web_checksum_verified=0
 if fetch_manifest "$manifest" "${release_url}/SHA256SUMS"; then
   manifest_available=1
+  manifest_sha256="$(receipt_hash_file "$manifest")"
 else
   if [[ "$require_signed" == "1" || "$require_signed" == "true" || "$require_signed" == "yes" ]]; then
     fail "Release has no SHA256SUMS manifest; refusing unsigned installation"
@@ -232,10 +244,31 @@ if [[ "$manifest_available" == "1" && "$allow_unsigned" != "1" && "$allow_unsign
   download "${release_url}/${asset}.cosign.bundle" \
     "$tmpdir/${asset}.cosign.bundle" "${asset} signature"
   verify_blob_signature "$tmpdir/cosign" "$manifest" "$tmpdir/SHA256SUMS.cosign.bundle"
+  signature_verified=1
 else
   if [[ "$manifest_available" == "1" ]]; then
     printf 'Warning: MAESTRO_ALLOW_UNSIGNED_INSTALL is enabled; skipping Cosign signature verification.\n' >&2
   fi
+fi
+
+metadata_manifest_entry=0
+if [[ "$manifest_available" == "1" ]] &&
+  awk -v name="$metadata_asset" '$2 == name { found=1 } END { exit !found }' "$manifest"; then
+  metadata_manifest_entry=1
+fi
+if [[ "$metadata_manifest_entry" == "1" ]]; then
+  download "${release_url}/${metadata_asset}" "$tmpdir/$metadata_asset" "$metadata_asset"
+  verify_manifest_checksum "$manifest" "$tmpdir/$metadata_asset" "$metadata_asset"
+  metadata_checksum_verified=1
+  metadata_available=1
+fi
+
+if [[ "$manifest_available" == "1" && "$metadata_manifest_entry" == "0" ]]; then
+  case "$require_signed" in
+    1|true|yes)
+      printf 'Warning: signed release has no %s; continuing with artifact verification and omitting optional release metadata.\n' "$metadata_asset" >&2
+      ;;
+  esac
 fi
 
 download "${release_url}/${asset}" "$tmpdir/$asset" "$asset"
@@ -243,6 +276,8 @@ download "${release_url}/${web_asset}" "$tmpdir/$web_asset" "$web_asset"
 if [[ "$manifest_available" == "1" ]]; then
   verify_manifest_checksum "$manifest" "$tmpdir/$asset" "$asset"
   verify_manifest_checksum "$manifest" "$tmpdir/$web_asset" "$web_asset"
+  binary_checksum_verified=1
+  web_checksum_verified=1
   if [[ "$allow_unsigned" == "1" || "$allow_unsigned" == "true" || "$allow_unsigned" == "yes" ]]; then
     printf 'Checksum manifest verified; signature verification was explicitly bypassed.\n' >&2
   else
@@ -283,6 +318,51 @@ release_dir="$(mktemp -d "$release_version_root/${platform}.XXXXXX")" ||
   fail "Could not create release directory"
 mv "$stage/bin" "$release_dir/bin"
 mv "$stage/web" "$release_dir/web"
+cp "$tmpdir/$web_asset" "$release_dir/$web_asset"
+if [[ "$metadata_available" == "1" ]]; then
+  cp "$tmpdir/$metadata_asset" "$release_dir/$metadata_asset"
+fi
+binary_receipt_sha256="$(receipt_hash_file "$release_dir/bin/maestro")"
+web_receipt_sha256="$(receipt_hash_file "$tmpdir/$web_asset")"
+metadata_receipt_sha256=""
+if [[ "$metadata_available" == "1" ]]; then
+  metadata_receipt_sha256="$(receipt_hash_file "$tmpdir/$metadata_asset")"
+fi
+installed_at_ms="$(( $(date +%s) * 1000 ))"
+verified=0
+if [[ "$signature_verified" == "1" && "$binary_checksum_verified" == "1" &&
+  "$web_checksum_verified" == "1" ]]; then
+  verified=1
+fi
+{
+  printf '{\n'
+  printf '  "schemaVersion": "evalops.maestro.install-receipt.v1",\n'
+  printf '  "version": "%s",\n' "$release_version"
+  printf '  "platform": "%s",\n' "$platform"
+  printf '  "installedAtMs": %s,\n' "$installed_at_ms"
+  printf '  "verified": %s,\n' "$([[ "$verified" == "1" ]] && printf true || printf false)"
+  printf '  "verification": {\n'
+  printf '    "manifestSha256": "%s",\n' "$manifest_sha256"
+  printf '    "manifestChecksumVerified": %s,\n' "$([[ "$manifest_available" == "1" ]] && printf true || printf false)"
+  printf '    "signatureVerified": %s,\n' "$([[ "$signature_verified" == "1" ]] && printf true || printf false)"
+  printf '    "artifactSha256": "%s",\n' "$binary_receipt_sha256"
+  printf '    "webSha256": "%s",\n' "$web_receipt_sha256"
+  printf '    "metadataSha256": '
+  if [[ "$metadata_available" == "1" ]]; then
+    printf '"%s",\n' "$metadata_receipt_sha256"
+  else
+    printf 'null,\n'
+  fi
+  printf '    "metadataChecksumVerified": %s\n' "$([[ "$metadata_checksum_verified" == "1" ]] && printf true || printf false)"
+  printf '  },\n'
+  printf '  "releaseMetadataAsset": '
+  if [[ "$metadata_available" == "1" ]]; then
+    printf '"%s"\n' "$metadata_asset"
+  else
+    printf 'null\n'
+  fi
+  printf '}\n'
+} > "$release_dir/install-receipt.json"
 rm -rf "$stage"
 stage=""
 
@@ -307,6 +387,7 @@ install_channel_quoted="$(shell_quote "$install_channel")"
 		'export MAESTRO_INSTALL_DIR="$install_dir"' \
 		'export MAESTRO_DATA_DIR="$data_dir"' \
 		'export MAESTRO_UPDATE_CHANNEL="${MAESTRO_UPDATE_CHANNEL:-$install_channel}"' \
+		'export MAESTRO_STARTUP_UPDATE_STATE="${MAESTRO_STARTUP_UPDATE_STATE:-$data_dir/startup-update-state.json}"' \
 		'export MAESTRO_VERSION="$release_version"'
 	# shellcheck disable=SC2016
 	printf '%s\n' 'exec "$release_dir/bin/maestro" "$@"'
