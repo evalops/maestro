@@ -45,6 +45,10 @@ test("Buildkite supply-chain validation is strict and shared with the public pro
 	assert.match(SUPPLY_CHAIN_SCRIPT, /cargo deny fetch db/);
 	assert.match(SUPPLY_CHAIN_SCRIPT, /cargo deny check --disable-fetch/);
 	assert.match(SUPPLY_CHAIN_SCRIPT, /check-new-deps-supply-chain\.test\.mjs/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /BUILDKITE_PULL_REQUEST_BASE_BRANCH/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /supply-chain-policy-approved/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /--base-lockfile \/tmp\/base-Cargo\.lock/);
+	assert.match(SUPPLY_CHAIN_SCRIPT, /--fail-on-preexisting/);
 });
 
 test("lockfilePackageSet parses [[package]] stanzas into source-qualified identities", () => {

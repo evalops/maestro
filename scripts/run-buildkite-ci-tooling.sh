@@ -6,7 +6,8 @@ mkdir -p "$tool_root/bin"
 export PATH="$tool_root/bin:$PATH"
 
 if ! command -v actionlint >/dev/null 2>&1; then
-  GOBIN="$tool_root/bin" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.9
+  GOBIN="$tool_root/bin" timeout --signal=TERM --kill-after=10s 5m \
+    go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.9
 fi
 
 if ! command -v shellcheck >/dev/null 2>&1; then
@@ -60,6 +61,10 @@ done < "$shell_files"
 timeout --signal=TERM --kill-after=10s 5m npm ci --ignore-scripts
 node scripts/check-workflow-footguns.mjs
 node --test scripts/check-ci-concurrency.test.mjs
+if [[ -f .github/workflows/check-release-workflow-contract.test.mjs ]]; then
+  node --test .github/workflows/check-release-workflow-contract.test.mjs
+  node .github/workflows/check-release-workflow-contract.mjs
+fi
 for test_file in \
   scripts/check-required-status-checks.test.mjs \
   scripts/check-integration-required-gate.test.mjs \

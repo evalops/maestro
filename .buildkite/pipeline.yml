@@ -13,6 +13,7 @@ env:
 
 steps:
   - group: ":rust: Native validation"
+    if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
     steps:
       - label: ":lint-roller: Contracts, format, and Clippy"
         key: "lint"
@@ -115,6 +116,7 @@ steps:
           node scripts/run-runtime-conformance.mjs --binary "$$CARGO_TARGET_DIR/fast-validation/maestro"
 
   - group: ":repeat: Integration and replay"
+    if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
     steps:
       - label: ":docker: Control-plane integration"
         key: "integration"
@@ -186,6 +188,7 @@ steps:
 
   - label: ":pipeline: CI configuration contracts"
     key: "ci-contracts"
+    if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
     timeout_in_minutes: 30
     concurrency: 3
     concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
@@ -215,6 +218,7 @@ steps:
     steps:
       - label: ":github: Workflow and shell tooling"
         key: "workflow-tooling"
+        if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
         timeout_in_minutes: 30
         concurrency: 3
         concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
@@ -251,6 +255,7 @@ steps:
 
       - label: ":idea: JetBrains plugin"
         key: "jetbrains-plugin"
+        if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
         timeout_in_minutes: 45
         concurrency: 3
         concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-hetzner-linux-heavy-workloads}"
@@ -269,7 +274,7 @@ steps:
 
       - label: ":bar_chart: Coverage (advisory)"
         key: "coverage"
-        if: build.branch == "main"
+        if: build.branch == "main" && build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
         soft_fail: true
         timeout_in_minutes: 90
         concurrency: 3
@@ -289,7 +294,7 @@ steps:
 
       - label: ":stopwatch: Performance baseline (advisory)"
         key: "perf-baseline"
-        if: build.branch == "main"
+        if: build.branch == "main" && build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
         soft_fail: true
         timeout_in_minutes: 60
         concurrency: 3
