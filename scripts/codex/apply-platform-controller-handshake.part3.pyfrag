@@ -1,0 +1,220 @@
+    write_canonical_json(&value, &mut canonical)?;
+    let digest = Sha256::digest(canonical.as_bytes());
+    let mut encoded = String::with_capacity("sha256:".len() + digest.len() * 2);
+    encoded.push_str("sha256:");
+    for byte in digest {
+        write!(&mut encoded, "{byte:02x}").map_err(|_| ControllerBindingError::DigestEncoding)?;
+    }
+    Ok(encoded)
+}
+
+fn write_canonical_json(
+    value: &Value,
+    output: &mut String,
+) -> Result<(), ControllerBindingError> {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+            output.push_str(
+                &serde_json::to_string(value)
+                    .map_err(|_| ControllerBindingError::DigestEncoding)?,
+            );
+        }
+        Value::Array(items) => {
+            output.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                write_canonical_json(item, output)?;
+            }
+            output.push(']');
+        }
+        Value::Object(object) => {
+            output.push('{');
+            let mut keys = object.keys().collect::<Vec<_>>();
+            keys.sort_unstable();
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                output.push_str(
+                    &serde_json::to_string(key)
+                        .map_err(|_| ControllerBindingError::DigestEncoding)?,
+                );
+                output.push(':');
+                write_canonical_json(&object[key], output)?;
+            }
+            output.push('}');
+        }
+    }
+    Ok(())
+}
+'''
+
+DOC_CONTENT = r'''# Platform controller binding for headless Maestro
+
+Status: implemented
+Protocol: `evalops.maestro.controller-binding.v1`
+Context schema: `evalops.maestro.controller-context.v1`
+
+Platform may attach a secret-free controller extension to the normal headless
+`hello` message. The extension binds organization, workspace, thread, channel,
+request, lifetime profile, and runtime generation to the exact capability
+manifest used for the connection.
+
+This binding is correlation and compatibility evidence. It is not an
+authorization mechanism. It grants no native tools, external tools,
+connections, credentials, or side effects. Governed effects continue to require
+a signed `GovernedToolGrant` and Platform-owned policy admission.
+
+## Hello extension
+
+```json
+{
+  "type": "hello",
+  "protocol_version": "2026-08-08",
+  "controller_binding_version": "evalops.maestro.controller-binding.v1",
+  "controller_context": {
+    "schema_version": "evalops.maestro.controller-context.v1",
+    "controller_id": "evalops.platform",
+    "organization_id": "org-1",
+    "workspace_id": "workspace-1",
+    "thread_id": "thread-1",
+    "channel_id": "channel-1",
+    "request_id": "request-1",
+    "lifetime_profile": "ephemeral"
+  },
+  "capability_manifest": {
+    "schema_version": "evalops.maestro.capability-manifest.v1",
+    "engine_kind": "maestro",
+    "protocol_version": "2026-08-08"
+  }
+}
+```
+
+All three controller fields are optional for ordinary clients, but they must be
+supplied together. Managed Platform identity environment variables, when
+present, must match the context exactly. `ephemeral` forbids a runtime
+generation; `resident` requires a positive generation.
+
+## Acknowledgement
+
+`hello_ok` returns the accepted binding version and a canonical SHA-256 digest:
+
+```json
+{
+  "type": "hello_ok",
+  "controller_binding_version": "evalops.maestro.controller-binding.v1",
+  "controller_binding_sha256": "sha256:..."
+}
+```
+
+The digest input is the object
+`{binding_version, capability_manifest, controller_context}` serialized as
+UTF-8 JSON with object keys recursively sorted, arrays preserved in order, and
+no insignificant whitespace. Platform computes the same value and rejects a
+missing or mismatched acknowledgement before sending `init`.
+
+Repeated identical bindings are idempotent. A different binding cannot replace
+an accepted binding, and a first binding cannot be introduced after init.
+'''
+
+
+def apply_tests_only() -> None:
+    if TEST_FILE.exists():
+        raise SystemExit(f"test file already exists: {TEST_FILE}")
+    replace_once(
+        MOD_FILE,
+        "mod async_transport;\n",
+        "mod async_transport;\n#[cfg(test)]\nmod controller_binding_test;\n",
+        "controller binding test module",
+    )
+    TEST_FILE.write_text(TEST_CONTENT)
+
+
+def add_hello_ok_fields_to_literals() -> None:
+    # Add None defaults to every explicit HelloOk literal, then specialize the
+    # native server acknowledgement below.
+    for path in (ROOT / 'packages/tui-rs/src').rglob('*.rs'):
+        text = path.read_text()
+        pattern = re.compile(
+            r'(FromAgentMessage::HelloOk\s*\{\s*\n(?P<indent>\s*)protocol_version:\s*[^\n]+,\n)'
+        )
+        def repl(match: re.Match[str]) -> str:
+            indent = match.group('indent')
+            return (
+                match.group(1)
+                + f"{indent}controller_binding_version: None,\n"
+                + f"{indent}controller_binding_sha256: None,\n"
+            )
+        updated, count = pattern.subn(repl, text)
+        if count:
+            path.write_text(updated)
+
+
+
+def add_server_capability_fields_to_literals() -> None:
+    for path in (ROOT / 'packages/tui-rs/src').rglob('*.rs'):
+        text = path.read_text()
+        pattern = re.compile(
+            r'(?<!struct )(?<!enum )(?<!impl )((?:[A-Za-z0-9_]+::)*ServerCapabilities\s*\{\s*\n)(?P<indent>\s*)'
+        )
+        def repl(match: re.Match[str]) -> str:
+            indent = match.group('indent')
+            return (
+                match.group(1)
+                + f"{indent}controller_binding_versions: Vec::new(),\n"
+                + indent
+            )
+        updated, count = pattern.subn(repl, text)
+        if count:
+            path.write_text(updated)
+
+def add_hello_ok_pattern_fields() -> None:
+    path = ROOT / 'packages/tui-rs/src/headless/messages/state.rs'
+    text = path.read_text()
+    pattern = re.compile(
+        r'(FromAgentMessage::HelloOk\s*\{\s*\n(?P<indent>\s*)protocol_version,\n)'
+    )
+    def repl(match: re.Match[str]) -> str:
+        indent = match.group('indent')
+        return (
+            match.group(1)
+            + f"{indent}controller_binding_version,\n"
+            + f"{indent}controller_binding_sha256,\n"
+        )
+    updated, count = pattern.subn(repl, text)
+    if count != 1:
+        raise SystemExit(f"HelloOk state pattern: expected one match, found {count}")
+    updated = updated.replace(
+        "    pub client_protocol_version: Option<String>,\n",
+        "    pub client_protocol_version: Option<String>,\n"
+        "    pub controller_binding_version: Option<String>,\n"
+        "    pub controller_binding_sha256: Option<String>,\n",
+        1,
+    )
+    updated = updated.replace(
+        "                self.protocol_version = Some(protocol_version);\n"
+        "                self.client_protocol_version = client_protocol_version;\n",
+        "                self.protocol_version = Some(protocol_version);\n"
+        "                self.controller_binding_version = controller_binding_version;\n"
+        "                self.controller_binding_sha256 = controller_binding_sha256;\n"
+        "                self.client_protocol_version = client_protocol_version;\n",
+        1,
+    )
+    path.write_text(updated)
+
+
+def apply_implementation() -> None:
+    controller_path = ROOT / 'packages/tui-rs/src/headless/controller_binding.rs'
+    if controller_path.exists():
+        raise SystemExit(f"implementation file already exists: {controller_path}")
+    controller_path.write_text(IMPLEMENTATION_CONTENT)
+
+    replace_once(
+        MOD_FILE,
+        "mod async_transport;\n#[cfg(test)]\nmod controller_binding_test;\n",
+        "mod async_transport;\npub(crate) mod controller_binding;\n#[cfg(test)]\nmod controller_binding_test;\n",
+        "controller binding implementation module",
+    )
+
