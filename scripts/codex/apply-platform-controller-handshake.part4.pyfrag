@@ -1,0 +1,215 @@
+    messages = ROOT / 'packages/tui-rs/src/headless/messages.rs'
+    replace_once(
+        messages,
+        "    HelloOk {\n        protocol_version: String,\n",
+        "    HelloOk {\n        protocol_version: String,\n"
+        "        #[serde(default, skip_serializing_if = \"Option::is_none\")]\n"
+        "        controller_binding_version: Option<String>,\n"
+        "        #[serde(default, skip_serializing_if = \"Option::is_none\")]\n"
+        "        controller_binding_sha256: Option<String>,\n",
+        "HelloOk controller acknowledgement fields",
+    )
+    replace_once(
+        messages,
+        "    #[serde(default)]\n    pub governed_tool_grant_algorithms: Vec<String>,\n",
+        "    #[serde(default)]\n    pub governed_tool_grant_algorithms: Vec<String>,\n"
+        "    /// Optional controller-binding protocol versions understood by this runtime.\n"
+        "    #[serde(default)]\n"
+        "    pub controller_binding_versions: Vec<String>,\n",
+        "server capability controller binding versions",
+    )
+
+    add_hello_ok_fields_to_literals()
+    add_server_capability_fields_to_literals()
+    add_hello_ok_pattern_fields()
+    replace_once(
+        MOD_FILE,
+        "    messages::ServerCapabilities {\n        controller_binding_versions: Vec::new(),\n",
+        "    messages::ServerCapabilities {\n"
+        "        controller_binding_versions: vec![\n"
+        "            controller_binding::CONTROLLER_BINDING_VERSION.to_string(),\n"
+        "        ],\n",
+        "native controller binding capability",
+    )
+
+    server = ROOT / 'packages/tui-rs/src/headless_server.rs'
+    replace_once(
+        server,
+        "use crate::headless::{native_server_capabilities, HEADLESS_PROTOCOL_VERSION};\n",
+        "use crate::headless::controller_binding::{\n"
+        "    controller_binding_from_hello_json, ControllerBindingReceipt,\n"
+        "    ControllerScopeExpectation,\n"
+        "};\n"
+        "use crate::headless::{native_server_capabilities, HEADLESS_PROTOCOL_VERSION};\n",
+        "headless server controller binding imports",
+    )
+    replace_once(
+        server,
+        "    governed_grant: Option<GovernedToolGrant>,\n    ready_emitted: bool,\n",
+        "    governed_grant: Option<GovernedToolGrant>,\n"
+        "    controller_binding_sha256: Option<String>,\n"
+        "    ready_emitted: bool,\n",
+        "headless state controller binding",
+    )
+    replace_once(
+        server,
+        "            governed_grant: None,\n            ready_emitted: false,\n",
+        "            governed_grant: None,\n"
+        "            controller_binding_sha256: None,\n"
+        "            ready_emitted: false,\n",
+        "headless state binding initialization",
+    )
+    replace_once(
+        server,
+        "    fn ensure_agent(&mut self) -> Result<&NativeAgent> {\n",
+        r'''    fn accept_controller_binding(
+        &mut self,
+        binding: Option<&ControllerBindingReceipt>,
+    ) -> Result<()> {
+        let next = binding.map(|binding| binding.binding_sha256.as_str());
+        match (self.controller_binding_sha256.as_deref(), next) {
+            (None, None) => Ok(()),
+            (Some(existing), Some(next)) if existing == next => Ok(()),
+            (Some(_), _) => anyhow::bail!("controller binding cannot be removed or replaced"),
+            (None, Some(_)) if self.init_applied => {
+                anyhow::bail!("controller binding must be accepted before init")
+            }
+            (None, Some(next)) => {
+                self.controller_binding_sha256 = Some(next.to_string());
+                Ok(())
+            }
+        }
+    }
+
+    fn ensure_agent(&mut self) -> Result<&NativeAgent> {
+''',
+        "accept controller binding method",
+    )
+    replace_once(
+        server,
+        "                let client_capabilities = capabilities.clone();\n",
+        r'''                let controller_binding = match controller_binding_from_hello_json(
+                    line,
+                    HEADLESS_PROTOCOL_VERSION,
+                    &ControllerScopeExpectation::from_evalops_environment(),
+                ) {
+                    Ok(binding) => binding,
+                    Err(error) => {
+                        emit(&FromAgentMessage::Error {
+                            request_id: None,
+                            message: format!("Invalid controller binding: {error}"),
+                            fatal: true,
+                            terminal: true,
+                            error_type: Some(HeadlessErrorType::Protocol),
+                        })?;
+                        break;
+                    }
+                };
+                if let Err(error) = state.accept_controller_binding(controller_binding.as_ref()) {
+                    emit(&FromAgentMessage::Error {
+                        request_id: None,
+                        message: format!("Invalid controller binding: {error}"),
+                        fatal: true,
+                        terminal: true,
+                        error_type: Some(HeadlessErrorType::Protocol),
+                    })?;
+                    break;
+                }
+                let client_capabilities = capabilities.clone();
+''',
+        "controller binding validation before hello acknowledgement",
+    )
+    replace_once(
+        server,
+        "                    controller_binding_version: None,\n"
+        "                    controller_binding_sha256: None,\n"
+        "                    connection_id: Some(\"native-local\".to_string()),\n",
+        "                    controller_binding_version: controller_binding\n"
+        "                        .as_ref()\n"
+        "                        .map(|binding| binding.binding_version.clone()),\n"
+        "                    controller_binding_sha256: controller_binding\n"
+        "                        .as_ref()\n"
+        "                        .map(|binding| binding.binding_sha256.clone()),\n"
+        "                    connection_id: Some(\"native-local\".to_string()),\n",
+        "native hello acknowledgement binding echo",
+    )
+
+    proto = ROOT / 'proto/maestro/v1/headless.proto'
+    replace_once(
+        proto,
+        "enum ExecutorType {\n",
+        r'''enum ControllerLifetimeProfile {
+  CONTROLLER_LIFETIME_PROFILE_UNSPECIFIED = 0;
+  CONTROLLER_LIFETIME_PROFILE_EPHEMERAL = 1;
+  CONTROLLER_LIFETIME_PROFILE_RESIDENT = 2;
+}
+
+message ControllerContext {
+  string schema_version = 1;
+  string controller_id = 2;
+  string organization_id = 3;
+  string workspace_id = 4;
+  string thread_id = 5;
+  optional string channel_id = 6;
+  optional string request_id = 7;
+  ControllerLifetimeProfile lifetime_profile = 8;
+  optional uint64 runtime_generation = 9;
+}
+
+enum ExecutorType {
+''',
+        "controller context protobuf schema",
+    )
+    replace_once(
+        proto,
+        "  repeated string governed_tool_grant_algorithms = 6;\n}\n",
+        "  repeated string governed_tool_grant_algorithms = 6;\n"
+        "  repeated string controller_binding_versions = 7;\n"
+        "}\n",
+        "server controller binding capability protobuf field",
+    )
+    replace_once(
+        proto,
+        "message HelloMessage {\n"
+        "  optional string protocol_version = 1;\n"
+        "  ClientInfo client_info = 2;\n"
+        "  ClientCapabilities capabilities = 3;\n"
+        "  optional ConnectionRole role = 4;\n"
+        "  repeated NotificationType opt_out_notifications = 5;\n"
+        "}\n",
+        "message HelloMessage {\n"
+        "  optional string protocol_version = 1;\n"
+        "  ClientInfo client_info = 2;\n"
+        "  ClientCapabilities capabilities = 3;\n"
+        "  optional ConnectionRole role = 4;\n"
+        "  repeated NotificationType opt_out_notifications = 5;\n"
+        "  optional string controller_binding_version = 6;\n"
+        "  ControllerContext controller_context = 7;\n"
+        "  google.protobuf.Value capability_manifest = 8;\n"
+        "}\n",
+        "Hello controller binding protobuf fields",
+    )
+    replace_once(
+        proto,
+        "  ServerCapabilities server_capabilities = 10;\n}\n\nmessage ConnectionInfoMessage",
+        "  ServerCapabilities server_capabilities = 10;\n"
+        "  optional string controller_binding_version = 11;\n"
+        "  optional string controller_binding_sha256 = 12;\n"
+        "}\n\nmessage ConnectionInfoMessage",
+        "HelloOk controller binding protobuf fields",
+    )
+
+    doc = ROOT / 'docs/protocols/platform-controller-binding.md'
+    if doc.exists():
+        raise SystemExit(f"documentation already exists: {doc}")
+    doc.write_text(DOC_CONTENT)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--phase', choices=['tests', 'implementation'], required=True)
+    args = parser.parse_args()
+    if args.phase == 'tests':
+        apply_tests_only()
+    else:
+        apply_implementation()
