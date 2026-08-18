@@ -1,0 +1,220 @@
+from __future__ import annotations
+
+import argparse
+import re
+from pathlib import Path
+
+ROOT = Path('.')
+
+
+def replace_once(path: Path, old: str, new: str, label: str) -> None:
+    text = path.read_text()
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f"{label}: expected one match in {path}, found {count}")
+    path.write_text(text.replace(old, new, 1))
+
+
+def regex_replace_all(path: Path, pattern: str, repl, label: str) -> int:
+    text = path.read_text()
+    updated, count = re.subn(pattern, repl, text, flags=re.MULTILINE)
+    if count == 0:
+        raise SystemExit(f"{label}: no matches in {path}")
+    path.write_text(updated)
+    return count
+
+
+TEST_FILE = ROOT / 'packages/tui-rs/src/headless/controller_binding_test.rs'
+MOD_FILE = ROOT / 'packages/tui-rs/src/headless/mod.rs'
+
+TEST_CONTENT = r'''use serde_json::json;
+
+use super::controller_binding::{
+    controller_binding_from_hello_json, controller_binding_sha256,
+    ControllerContext, ControllerLifetimeProfile, ControllerScopeExpectation,
+    CONTROLLER_BINDING_VERSION, CONTROLLER_CONTEXT_SCHEMA_VERSION,
+};
+
+fn context() -> ControllerContext {
+    ControllerContext {
+        schema_version: CONTROLLER_CONTEXT_SCHEMA_VERSION.to_string(),
+        controller_id: "evalops.platform".to_string(),
+        organization_id: "org-1".to_string(),
+        workspace_id: "workspace-1".to_string(),
+        thread_id: "thread-1".to_string(),
+        channel_id: Some("channel-1".to_string()),
+        request_id: Some("request-1".to_string()),
+        lifetime_profile: ControllerLifetimeProfile::Ephemeral,
+        runtime_generation: None,
+    }
+}
+
+fn manifest() -> serde_json::Value {
+    json!({
+        "schema_version": "evalops.maestro.capability-manifest.v1",
+        "engine_kind": "maestro",
+        "protocol_version": "2026-08-08",
+        "tool_protocol_version": "evalops.maestro.tool-bridge.v1",
+        "supported_tools": ["artifact.create_document", "artifact.create_presentation"],
+        "native_tool_calls": true,
+        "approvals": true,
+        "continuation": false,
+        "cancellation": true,
+        "idempotent_replay": true,
+        "streaming": true
+    })
+}
+
+#[test]
+fn controller_binding_matches_the_cross_repository_digest_vector() {
+    assert_eq!(
+        controller_binding_sha256(CONTROLLER_BINDING_VERSION, &context(), &manifest())
+            .expect("binding digest"),
+        "sha256:bd127868ecacc1994952c5fb6ca60b989b91c05defb70016d826a2ee97136375"
+    );
+}
+
+#[test]
+fn native_capabilities_advertise_the_controller_binding_version() {
+    assert_eq!(
+        super::native_server_capabilities().controller_binding_versions,
+        vec![CONTROLLER_BINDING_VERSION.to_string()]
+    );
+}
+
+#[test]
+fn controller_binding_requires_complete_scope_and_matching_runtime_identity() {
+    let raw = json!({
+        "type": "hello",
+        "protocol_version": "2026-08-08",
+        "controller_binding_version": CONTROLLER_BINDING_VERSION,
+        "controller_context": context(),
+        "capability_manifest": manifest()
+    })
+    .to_string();
+    let expected = ControllerScopeExpectation {
+        organization_id: Some("org-1".to_string()),
+        workspace_id: Some("workspace-1".to_string()),
+        thread_id: Some("thread-1".to_string()),
+        channel_id: Some("channel-1".to_string()),
+        request_id: Some("request-1".to_string()),
+    };
+    let receipt = controller_binding_from_hello_json(&raw, "2026-08-08", &expected)
+        .expect("valid binding")
+        .expect("binding present");
+    assert_eq!(receipt.binding_version, CONTROLLER_BINDING_VERSION);
+    assert_eq!(
+        receipt.binding_sha256,
+        "sha256:bd127868ecacc1994952c5fb6ca60b989b91c05defb70016d826a2ee97136375"
+    );
+
+    let wrong_scope = ControllerScopeExpectation {
+        organization_id: Some("org-2".to_string()),
+        ..expected
+    };
+    assert!(
+        controller_binding_from_hello_json(&raw, "2026-08-08", &wrong_scope).is_err()
+    );
+}
+
+#[test]
+fn controller_binding_is_optional_but_partial_or_late_generation_shapes_fail_closed() {
+    assert!(
+        controller_binding_from_hello_json(
+            r#"{"type":"hello","protocol_version":"2026-08-08"}"#,
+            "2026-08-08",
+            &ControllerScopeExpectation::default(),
+        )
+        .expect("legacy hello")
+        .is_none()
+    );
+
+    let partial = json!({
+        "type": "hello",
+        "controller_binding_version": CONTROLLER_BINDING_VERSION,
+        "controller_context": context()
+    })
+    .to_string();
+    assert!(
+        controller_binding_from_hello_json(
+            &partial,
+            "2026-08-08",
+            &ControllerScopeExpectation::default(),
+        )
+        .is_err()
+    );
+
+    let mut resident = context();
+    resident.lifetime_profile = ControllerLifetimeProfile::Resident;
+    resident.runtime_generation = Some(0);
+    let invalid_generation = json!({
+        "type": "hello",
+        "controller_binding_version": CONTROLLER_BINDING_VERSION,
+        "controller_context": resident,
+        "capability_manifest": manifest()
+    })
+    .to_string();
+    assert!(
+        controller_binding_from_hello_json(
+            &invalid_generation,
+            "2026-08-08",
+            &ControllerScopeExpectation::default(),
+        )
+        .is_err()
+    );
+}
+'''
+
+IMPLEMENTATION_CONTENT = r'''//! Typed, non-authoritative Platform controller identity bound during headless hello.
+//!
+//! This contract is correlation and compatibility evidence only. It does not
+//! grant tools, connections, credentials, or execution authority; governed
+//! effects continue to require the signed [`super::messages::GovernedToolGrant`].
+
+use std::fmt::Write as _;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use thiserror::Error;
+
+/// Version of the optional Platform-to-Maestro controller binding handshake.
+pub(crate) const CONTROLLER_BINDING_VERSION: &str = "evalops.maestro.controller-binding.v1";
+/// Schema version for the secret-free controller context inside the binding.
+pub(crate) const CONTROLLER_CONTEXT_SCHEMA_VERSION: &str =
+    "evalops.maestro.controller-context.v1";
+const PLATFORM_CONTROLLER_ID: &str = "evalops.platform";
+
+/// Lifetime selected by Platform before the Maestro process is admitted.
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ControllerLifetimeProfile {
+    /// One bounded operating turn.
+    Ephemeral,
+    /// One durable hosted thread generation.
+    Resident,
+}
+
+/// Secret-free Platform scope and request correlation for one headless child.
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ControllerContext {
+    pub(crate) schema_version: String,
+    pub(crate) controller_id: String,
+    pub(crate) organization_id: String,
+    pub(crate) workspace_id: String,
+    pub(crate) thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) channel_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) request_id: Option<String>,
+    pub(crate) lifetime_profile: ControllerLifetimeProfile,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) runtime_generation: Option<u64>,
+}
+
+/// Runtime identity values that a managed process may require the hello to match.
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub(crate) struct ControllerScopeExpectation {
+    pub(crate) organization_id: Option<String>,
+    pub(crate) workspace_id: Option<String>,
