@@ -1,0 +1,78 @@
+name: Apply Platform controller handshake
+
+on:
+  push:
+    branches:
+      - codex/platform-controller-handshake
+    paths:
+      - scripts/codex/apply-platform-controller-handshake.part1.pyfrag
+      - scripts/codex/apply-platform-controller-handshake.part2.pyfrag
+      - scripts/codex/apply-platform-controller-handshake.part3.pyfrag
+      - scripts/codex/apply-platform-controller-handshake.part4.pyfrag
+      - .github/workflows/apply-platform-controller-handshake.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-platform-controller-handshake
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+
+      - name: Verify reviewed source boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object packages/tui-rs/src/headless/messages.rs)" = "106cdbfb055179ae7fce517e54b564d80a696bee"
+          test "$(git hash-object packages/tui-rs/src/headless_server.rs)" = "ddd9b75c8f1b5262aab14bb17c0937ad41783e29"
+          test "$(git hash-object packages/tui-rs/src/headless/mod.rs)" = "db4b869830759f70bc13ce27884671846a3c92c6"
+          test "$(git hash-object packages/tui-rs/src/headless/messages/state.rs)" = "809a71d0671ce19572b9a114f48cc0c4010f910a"
+          test "$(git hash-object proto/maestro/v1/headless.proto)" = "ac6e042aa382f68fd0d30fb2f938177e1417e2ef"
+          cat scripts/codex/apply-platform-controller-handshake.part*.pyfrag > /tmp/apply-platform-controller-handshake.py
+          python3 -m py_compile /tmp/apply-platform-controller-handshake.py
+
+      - name: Prove controller-binding tests fail before implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 /tmp/apply-platform-controller-handshake.py --phase tests
+          set +e
+          cargo test -p maestro-tui controller_binding --lib > /tmp/controller-binding-red.log 2>&1
+          red_status=$?
+          set -e
+          cat /tmp/controller-binding-red.log
+          test "$red_status" -ne 0
+          grep -q "controller_binding" /tmp/controller-binding-red.log
+
+      - name: Implement and verify typed Platform handshake
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 /tmp/apply-platform-controller-handshake.py --phase implementation
+          cargo fmt --all
+          cargo test -p maestro-tui controller_binding --lib
+          cargo test -p maestro-tui generated_headless_proto_types_compile --lib
+          cargo check -p maestro-tui --lib
+          git diff --check
+
+      - name: Commit clean product diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f scripts/codex/apply-platform-controller-handshake.part*.pyfrag
+          rm -f .github/workflows/apply-platform-controller-handshake.yml
+          rmdir --ignore-fail-on-non-empty scripts/codex 2>/dev/null || true
+          git diff --check
+          git config user.name "OpenAI Codex"
+          git config user.email "noreply@openai.com"
+          git add -A
+          git commit -m "feat(headless): bind Platform controller context"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
