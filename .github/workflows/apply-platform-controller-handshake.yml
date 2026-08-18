@@ -76,3 +76,5 @@ jobs:
           git add -A
           git commit -m "feat(headless): bind Platform controller context"
           git push origin "HEAD:${GITHUB_REF_NAME}"
+
+# Trigger after the workflow exists on the branch.
