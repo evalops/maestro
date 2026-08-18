@@ -52,6 +52,8 @@ pub struct AgentState {
     /// Model information
     pub protocol_version: Option<String>,
     pub client_protocol_version: Option<String>,
+    pub controller_binding_version: Option<String>,
+    pub controller_binding_sha256: Option<String>,
     pub client_info: Option<ClientInfo>,
     pub capabilities: Option<ClientCapabilities>,
     pub server_capabilities: Option<ServerCapabilities>,
@@ -800,6 +802,8 @@ impl AgentState {
             FromAgentMessage::ResponseAccepted { .. } => None,
             FromAgentMessage::HelloOk {
                 protocol_version,
+                controller_binding_version,
+                controller_binding_sha256,
                 connection_id: _connection_id,
                 client_protocol_version,
                 client_info,
@@ -811,6 +815,8 @@ impl AgentState {
                 lease_expires_at: _lease_expires_at,
             } => {
                 self.protocol_version = Some(protocol_version);
+                self.controller_binding_version = controller_binding_version;
+                self.controller_binding_sha256 = controller_binding_sha256;
                 self.client_protocol_version = client_protocol_version;
                 self.client_info = client_info;
                 self.capabilities = capabilities;

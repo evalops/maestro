@@ -291,6 +291,24 @@ pub fn persist_user_model_default(model_id: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Persist the selected model and provider in user-scope `config.toml`.
+pub fn persist_user_model_and_provider(model_id: &str, provider: &str) -> Result<PathBuf> {
+    let path = settings_path(Scope::User)?;
+    let mut root = load_toml(&path).unwrap_or_else(|| TomlValue::Table(toml::map::Map::new()));
+    set_dotted(&mut root, "model", TomlValue::String(model_id.to_owned()))?;
+    set_dotted(
+        &mut root,
+        "model_provider",
+        TomlValue::String(provider.to_owned()),
+    )?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let rendered = toml::to_string_pretty(&root).context("failed to serialize config.toml")?;
+    write_atomic(&path, &rendered)?;
+    Ok(path)
+}
+
 fn persist_model_default_to(path: &Path, model_id: &str) -> Result<()> {
     let mut root = load_toml(path).unwrap_or_else(|| TomlValue::Table(toml::map::Map::new()));
     set_dotted(&mut root, "model", TomlValue::String(model_id.to_owned()))?;
@@ -2086,6 +2104,54 @@ mod tests {
         );
 
         restore_env("MAESTRO_HOME", previous);
+    }
+
+    #[test]
+    fn persist_user_model_and_provider_writes_both_keys() {
+        let _guard = env_lock();
+        let temp = TempDir::new().unwrap();
+        let previous = env::var("MAESTRO_HOME").ok();
+        env::set_var("MAESTRO_HOME", temp.path());
+        persist_user_model_and_provider("openai/o4-mini", "openrouter").unwrap();
+        let root = load_toml(&temp.path().join("config.toml")).unwrap();
+        assert_eq!(
+            get_dotted(&root, "model"),
+            Some(TomlValue::String("openai/o4-mini".into()))
+        );
+        assert_eq!(
+            get_dotted(&root, "model_provider"),
+            Some(TomlValue::String("openrouter".into()))
+        );
+        restore_env("MAESTRO_HOME", previous);
+    }
+
+    #[test]
+    fn effective_settings_summary_uses_maestro_home_not_builtin_defaults() {
+        let _guard = env_lock();
+        let maestro_home = TempDir::new().unwrap();
+        let user_home = TempDir::new().unwrap();
+        let workspace = TempDir::new().unwrap();
+        let previous_maestro_home = env::var("MAESTRO_HOME").ok();
+        let previous_home = env::var("HOME").ok();
+        let previous_cwd = env::current_dir().ok();
+        env::set_var("MAESTRO_HOME", maestro_home.path());
+        env::set_var("HOME", user_home.path());
+        env::set_current_dir(workspace.path()).unwrap();
+        fs::write(
+            maestro_home.path().join("config.toml"),
+            "model = \"openai/o4-mini\"\nmodel_provider = \"openrouter\"\n",
+        )
+        .unwrap();
+        crate::config::clear_config_cache();
+        let settings = effective_settings_summary();
+        crate::config::clear_config_cache();
+        restore_env("MAESTRO_HOME", previous_maestro_home);
+        restore_env("HOME", previous_home);
+        if let Some(cwd) = previous_cwd {
+            let _ = env::set_current_dir(cwd);
+        }
+        assert_eq!(settings["model"], "openai/o4-mini");
+        assert_eq!(settings["model_provider"], "openrouter");
     }
 
     #[test]

@@ -782,6 +782,39 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
         persist_executor_response_ledger(workspace_root, session_id, &ledger)
     }
 
+    /// Drop in-memory ownership first, then best-effort the ledger write.
+    /// A transient persist failure must not replace a protocol rejection or
+    /// transport error with `Internal`, and must not keep the key counted
+    /// against queued-response capacity. Admission only dedups dispatched
+    /// entries, so a leftover pending row does not block a same-key retry.
+    /// Distinct stale pending rows still occupy ledger slots until a
+    /// dispatched row can be evicted or the key is retried.
+    fn release_undispatched_response_ownership(
+        &self,
+        workspace_root: &Path,
+        session_id: &str,
+        key: &str,
+        event: &'static str,
+    ) {
+        self.queued_responses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(key);
+        self.memory_completed_responses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(key);
+        if let Err(error) = self.remove_pending_response_key(workspace_root, session_id, key) {
+            tracing::warn!(
+                target: "maestro.hosted",
+                event,
+                causal_receipt_id = self.causal_receipt_id(),
+                error = %error,
+                "response ledger cleanup failed; in-memory ownership released and the stale pending entry clears on retry",
+            );
+        }
+    }
+
     fn persist_consumed_response(
         &self,
         key: &str,
@@ -864,31 +897,12 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
                 Ok(result)
             }
             ResponseAcknowledgement::Rejected => {
-                // Release the in-memory ownership before the fallible ledger
-                // write: a transient persistence failure must not leave the
-                // key counted against the queued-response capacity. A stale
-                // pending ledger entry is benign — admission only dedups on
-                // dispatched entries — and is removed when the key is retried.
-                self.queued_responses
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(key);
-                self.memory_completed_responses
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(key);
-                if let Err(error) = self.remove_pending_response_key(
+                self.release_undispatched_response_ownership(
                     &context.workspace_root,
                     &context.session_id,
                     key,
-                ) {
-                    tracing::warn!(
-                        event = "queued_response_rejection_ledger_stale",
-                        causal_receipt_id = self.causal_receipt_id(),
-                        error = %error,
-                        "rejected response ledger cleanup failed; in-memory ownership released and the stale pending entry clears on retry",
-                    );
-                }
+                    "queued_response_rejection_ledger_stale",
+                );
                 let rejection = result.messages.iter().find_map(|message| match message {
                     FromAgentMessage::Error {
                         request_id: Some(rejected_id),
@@ -1262,11 +1276,12 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
                 Ok(result) => result,
                 Err(error) => {
                     if let Some(key) = response_key {
-                        self.remove_pending_response_key(
+                        self.release_undispatched_response_ownership(
                             &context.workspace_root,
                             &context.session_id,
                             key,
-                        )?;
+                            "response_dispatch_ledger_stale",
+                        );
                     }
                     tracing::warn!(
                         target: "maestro.hosted",
@@ -1287,11 +1302,12 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
         if response_key.is_some() && matches!(acknowledgement, ResponseAcknowledgement::NotExpected)
         {
             if let Some(key) = response_key {
-                self.remove_pending_response_key(
+                self.release_undispatched_response_ownership(
                     &context.workspace_root,
                     &context.session_id,
                     key,
-                )?;
+                    "response_not_expected_ledger_stale",
+                );
             }
             tracing::warn!(
                 target: "maestro.hosted",
@@ -1313,15 +1329,12 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
         }
         if response_key.is_some() && matches!(acknowledgement, ResponseAcknowledgement::Rejected) {
             if let Some(key) = response_key {
-                self.remove_pending_response_key(
+                self.release_undispatched_response_ownership(
                     &context.workspace_root,
                     &context.session_id,
                     key,
-                )?;
-                self.queued_responses
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(key);
+                    "queued_response_rejection_ledger_stale",
+                );
             }
             let rejection = messages.iter().find_map(|message| match message {
                 FromAgentMessage::Error {
@@ -1543,6 +1556,8 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
     ) -> FromAgentMessage {
         FromAgentMessage::HelloOk {
             protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
+            controller_binding_version: None,
+            controller_binding_sha256: None,
             connection_id: Some(context.connection_id.clone()),
             client_protocol_version: context.client_protocol_version.clone(),
             client_info: context.client_info.clone(),
@@ -4188,6 +4203,8 @@ async fn handle_message_inner(
                     &mut state,
                     FromAgentMessage::HelloOk {
                         protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
+                        controller_binding_version: None,
+                        controller_binding_sha256: None,
                         connection_id: Some(resolved_connection_id.clone()),
                         client_protocol_version: protocol_version.clone(),
                         client_info: client_info.clone(),

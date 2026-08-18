@@ -269,6 +269,10 @@ pub struct AgentStateCheckpoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_protocol_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller_binding_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller_binding_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_info: Option<super::messages::ClientInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<super::messages::ClientCapabilities>,
@@ -344,6 +348,8 @@ impl AgentStateCheckpoint {
         Self {
             protocol_version: state.protocol_version.clone(),
             client_protocol_version: state.client_protocol_version.clone(),
+            controller_binding_version: state.controller_binding_version.clone(),
+            controller_binding_sha256: state.controller_binding_sha256.clone(),
             client_info: state.client_info.clone(),
             capabilities: state.capabilities.clone(),
             server_capabilities: state.server_capabilities.clone(),
@@ -421,6 +427,8 @@ impl AgentStateCheckpoint {
         AgentState {
             protocol_version: self.protocol_version,
             client_protocol_version: self.client_protocol_version,
+            controller_binding_version: self.controller_binding_version,
+            controller_binding_sha256: self.controller_binding_sha256,
             client_info: self.client_info,
             capabilities: self.capabilities,
             server_capabilities: self.server_capabilities,

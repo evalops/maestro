@@ -181,9 +181,29 @@ fn running_task_count() -> usize {
 }
 
 fn persist_path() -> PathBuf {
+    // Tests that start a background task used to write `~/.maestro/background_tasks.json`
+    // whenever they forgot `MAESTRO_HOME`. The next TUI launch then warned about a
+    // dead leftover such as `head -c 60000 /dev/zero; sleep 0.2`.
+    #[cfg(test)]
+    if std::env::var_os("MAESTRO_HOME").is_none() {
+        return std::env::temp_dir()
+            .join(format!("maestro-test-bg-tasks-{}.json", std::process::id()));
+    }
+
     crate::path_utils::maestro_home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("background_tasks.json")
+}
+
+fn write_running_snapshot(running: &[PersistedRunningTask]) {
+    let path = persist_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let payload = serde_json::json!({ "running": running });
+    if let Ok(raw) = serde_json::to_string_pretty(&payload) {
+        let _ = crate::fs_atomic::write_atomic(&path, raw.as_bytes());
+    }
 }
 
 fn persist_running_snapshot() {
@@ -207,18 +227,36 @@ fn persist_running_snapshot() {
                 .collect()
         })
         .unwrap_or_default();
-    let path = persist_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+    write_running_snapshot(&running);
+}
+
+fn process_is_live(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
     }
-    let payload = serde_json::json!({ "running": running });
-    if let Ok(raw) = serde_json::to_string_pretty(&payload) {
-        let _ = crate::fs_atomic::write_atomic(&path, raw.as_bytes());
+    #[cfg(unix)]
+    {
+        // SAFETY: signal 0 delivers no signal; `kill` only checks whether a
+        // process with this pid exists. PID reuse can produce a false live
+        // result, so this is a liveness hint, not a security check.
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true
     }
 }
 
-/// Tasks marked running when the previous Maestro process wrote its snapshot.
-pub fn load_persisted_running_snapshot() -> Vec<PersistedRunningTask> {
+fn persisted_task_is_live(task: &PersistedRunningTask) -> bool {
+    task.pid.is_some_and(process_is_live)
+}
+
+fn reap_dead_persisted_tasks(tasks: Vec<PersistedRunningTask>) -> Vec<PersistedRunningTask> {
+    tasks.into_iter().filter(persisted_task_is_live).collect()
+}
+
+fn read_persisted_running_snapshot() -> Vec<PersistedRunningTask> {
     let path = persist_path();
     let Ok(raw) = fs::read_to_string(path) else {
         return Vec::new();
@@ -230,6 +268,20 @@ pub fn load_persisted_running_snapshot() -> Vec<PersistedRunningTask> {
         .get("running")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default()
+}
+
+/// Tasks marked running when the previous Maestro process wrote its snapshot.
+///
+/// Dead PIDs are dropped and the snapshot is rewritten so a finished leftover
+/// does not warn on every subsequent launch.
+pub fn load_persisted_running_snapshot() -> Vec<PersistedRunningTask> {
+    let loaded = read_persisted_running_snapshot();
+    let original_len = loaded.len();
+    let live = reap_dead_persisted_tasks(loaded);
+    if live.len() != original_len {
+        write_running_snapshot(&live);
+    }
+    live
 }
 
 fn emit_task_lifecycle(task_id: &str, command: &str, status: &str, exit_code: Option<i32>) {
@@ -1701,5 +1753,53 @@ mod tests {
             .iter()
             .any(|event| event.monitor_id == monitor.id && event.output.contains("final-match")));
         TASKS.write().unwrap().remove(&task.id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reap_dead_persisted_tasks_keeps_live_pids() {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn short-lived process");
+        let dead_pid = child.id();
+        let _ = child.wait();
+
+        let kept = reap_dead_persisted_tasks(vec![
+            PersistedRunningTask {
+                id: "dead".to_string(),
+                command: "sh -c \"head -c 60000 /dev/zero; sleep 0.2\"".to_string(),
+                pid: Some(dead_pid),
+                log_path: "/tmp/dead.log".to_string(),
+                started_at_unix: 1,
+            },
+            PersistedRunningTask {
+                id: "live".to_string(),
+                command: "sleep 999".to_string(),
+                pid: Some(std::process::id()),
+                log_path: "/tmp/live.log".to_string(),
+                started_at_unix: 2,
+            },
+        ]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].id, "live");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reap_dead_persisted_tasks_drops_every_dead_entry() {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn short-lived process");
+        let dead_pid = child.id();
+        let _ = child.wait();
+
+        let kept = reap_dead_persisted_tasks(vec![PersistedRunningTask {
+            id: "dead".to_string(),
+            command: "sleep 0.2".to_string(),
+            pid: Some(dead_pid),
+            log_path: "/tmp/dead.log".to_string(),
+            started_at_unix: 1,
+        }]);
+        assert!(kept.is_empty());
     }
 }

@@ -67,6 +67,8 @@ const publicDocumentationPaths = [
 	"docs/protocols/rpc-protocol-conformance.md",
 	"docs/protocols/release-channels.json",
 	"docs/protocols/run-timeline.md",
+	"docs/protocols/secure-session-transfer.json",
+	"docs/protocols/secure-session-transfer.md",
 	"docs/protocols/update-lifecycle.json",
 	"docs/system-paths.json",
 ];

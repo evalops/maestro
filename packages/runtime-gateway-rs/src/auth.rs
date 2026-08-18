@@ -9,10 +9,55 @@ use std::time::Duration;
 use crate::http::{json_response, RequestHead};
 use crate::{now_millis, trimmed_env, Config};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum AuthSource {
+    IdentityJwt,
+    SessionCookie,
+    StaticGatewayKey,
+    TrustedProxy,
+    #[default]
+    LoopbackDev,
+}
+
+#[derive(Debug, Clone, Default)]
 pub(crate) struct AuthContext {
     pub(crate) subject: Option<String>,
+    pub(crate) organization_id: Option<String>,
+    pub(crate) workspace_id: Option<String>,
+    pub(crate) scopes: Vec<String>,
+    pub(crate) source: AuthSource,
     pub(crate) unrestricted: bool,
+}
+
+impl AuthContext {
+    pub(crate) fn actor_label(&self) -> String {
+        let source = match self.source {
+            AuthSource::IdentityJwt => "identity-jwt",
+            AuthSource::SessionCookie => "session-cookie",
+            AuthSource::StaticGatewayKey => "api-key",
+            AuthSource::TrustedProxy => "trusted-proxy",
+            AuthSource::LoopbackDev => "loopback-dev",
+        };
+        match (
+            self.subject.as_deref(),
+            self.organization_id.as_deref(),
+            self.workspace_id.as_deref(),
+        ) {
+            (Some(subject), Some(org), Some(workspace)) => format!(
+                "{source}:{subject}:org={org}:ws={workspace}:scopes={}",
+                self.scopes.join("+")
+            ),
+            (Some(subject), Some(org), None) => format!(
+                "{source}:{subject}:org={org}:scopes={}",
+                self.scopes.join("+")
+            ),
+            (Some(subject), None, _) => {
+                format!("{source}:{subject}:scopes={}", self.scopes.join("+"))
+            }
+            (None, _, _) if self.unrestricted => source.to_owned(),
+            (None, _, _) => source.to_owned(),
+        }
+    }
 }
 
 enum RuntimeSessionAuth {
@@ -49,42 +94,54 @@ pub(crate) fn auth_context(head: &RequestHead, config: &Config) -> Option<AuthCo
 
     if header_auth_matches(config, bearer, header_key) {
         return Some(AuthContext {
-            subject: None,
+            source: AuthSource::StaticGatewayKey,
             unrestricted: true,
+            ..AuthContext::default()
         });
     }
 
-    if let Some(subject) = bearer.and_then(bearer_token_subject) {
-        return Some(AuthContext {
-            subject: Some(subject),
-            unrestricted: false,
-        });
+    if let Some(principal) = bearer.and_then(bearer_token_principal) {
+        return Some(principal);
     }
 
     if let Some(subject) = trusted_proxy_auth_subject(head) {
         return Some(AuthContext {
             subject: Some(subject),
+            organization_id: head
+                .headers
+                .get("x-organization-id")
+                .and_then(|value| nonempty_str(value).map(str::to_string)),
+            workspace_id: head
+                .headers
+                .get("x-evalops-workspace-id")
+                .and_then(|value| nonempty_str(value).map(str::to_string)),
+            source: AuthSource::TrustedProxy,
             unrestricted: false,
+            ..AuthContext::default()
         });
     }
 
     if let Some(session_auth) = runtime_session_cookie_auth(head, config) {
         return Some(match session_auth {
             RuntimeSessionAuth::ApiKey => AuthContext {
-                subject: None,
+                source: AuthSource::StaticGatewayKey,
                 unrestricted: true,
+                ..AuthContext::default()
             },
             RuntimeSessionAuth::Scoped(subject) => AuthContext {
                 subject: Some(subject),
+                source: AuthSource::SessionCookie,
                 unrestricted: false,
+                ..AuthContext::default()
             },
         });
     }
 
     if !config.require_key && !auth_is_configured(config) {
         return Some(AuthContext {
-            subject: None,
+            source: AuthSource::LoopbackDev,
             unrestricted: true,
+            ..AuthContext::default()
         });
     }
 
@@ -241,9 +298,6 @@ pub(crate) fn auth_is_configured(config: &Config) -> bool {
         || env::var("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN")
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false)
-        || env::var("MAESTRO_AUTH_SHARED_SECRET")
-            .map(|value| !value.trim().is_empty())
-            .unwrap_or(false)
         || env::var("MAESTRO_JWT_SECRET")
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false)
@@ -264,37 +318,11 @@ pub(crate) fn prod_profile() -> bool {
     )
 }
 
-pub(crate) fn bearer_token_subject(token: &str) -> Option<String> {
-    shared_bearer_subject(token).or_else(|| jwt_subject(token))
+pub(crate) fn bearer_token_principal(token: &str) -> Option<AuthContext> {
+    jwt_principal(token)
 }
 
-pub(crate) fn shared_bearer_subject(token: &str) -> Option<String> {
-    let Ok(secret) = env::var("MAESTRO_AUTH_SHARED_SECRET") else {
-        return None;
-    };
-    let secret = secret.trim();
-    if secret.is_empty() {
-        return None;
-    }
-    let (encoded_user, provided_signature) = token.split_once('.')?;
-    if provided_signature.contains('.') {
-        return None;
-    }
-    let Ok(user_bytes) = URL_SAFE_NO_PAD.decode(encoded_user) else {
-        return None;
-    };
-    let Ok(user_id) = String::from_utf8(user_bytes) else {
-        return None;
-    };
-    let expected = hmac_sha256_hex(secret.as_bytes(), user_id.as_bytes());
-    if constant_time_eq(provided_signature.as_bytes(), expected.as_bytes()) {
-        Some(user_id)
-    } else {
-        None
-    }
-}
-
-pub(crate) fn jwt_subject(token: &str) -> Option<String> {
+pub(crate) fn jwt_principal(token: &str) -> Option<AuthContext> {
     match env::var("MAESTRO_JWT_ALG")
         .ok()
         .map(|alg| alg.trim().to_string())
@@ -302,15 +330,15 @@ pub(crate) fn jwt_subject(token: &str) -> Option<String> {
         .unwrap_or_else(|| "HS256".to_string())
         .as_str()
     {
-        "HS256" => hs256_jwt_subject(token),
-        "RS256" => jwks_jwt_subject(token, Algorithm::RS256),
-        "RS384" => jwks_jwt_subject(token, Algorithm::RS384),
-        "RS512" => jwks_jwt_subject(token, Algorithm::RS512),
+        "HS256" => hs256_jwt_principal(token),
+        "RS256" => jwks_jwt_principal(token, Algorithm::RS256),
+        "RS384" => jwks_jwt_principal(token, Algorithm::RS384),
+        "RS512" => jwks_jwt_principal(token, Algorithm::RS512),
         _ => None,
     }
 }
 
-pub(crate) fn hs256_jwt_subject(token: &str) -> Option<String> {
+pub(crate) fn hs256_jwt_principal(token: &str) -> Option<AuthContext> {
     if env::var("MAESTRO_JWT_ALG")
         .ok()
         .map(|alg| alg != "HS256")
@@ -388,10 +416,10 @@ pub(crate) fn hs256_jwt_subject(token: &str) -> Option<String> {
             return None;
         }
     }
-    Some(subject)
+    Some(principal_from_claims(payload_value, subject))
 }
 
-pub(crate) fn jwks_jwt_subject(token: &str, algorithm: Algorithm) -> Option<String> {
+pub(crate) fn jwks_jwt_principal(token: &str, algorithm: Algorithm) -> Option<AuthContext> {
     let Ok(header) = decode_header(token) else {
         return None;
     };
@@ -431,12 +459,59 @@ pub(crate) fn jwks_jwt_subject(token: &str, algorithm: Algorithm) -> Option<Stri
     let Ok(data) = decode::<Value>(token, &key, &validation) else {
         return None;
     };
-    data.claims
+    let subject = data
+        .claims
         .get("sub")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|sub| !sub.is_empty())
-        .map(str::to_string)
+        .map(str::to_string)?;
+    Some(principal_from_claims(data.claims, subject))
+}
+
+fn principal_from_claims(claims: Value, subject: String) -> AuthContext {
+    let organization_id = claims
+        .get("organization_id")
+        .or_else(|| claims.get("org_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let workspace_id = claims
+        .get("workspace_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let scopes = claims
+        .get("scopes")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .or_else(|| {
+            claims.get("scope").and_then(Value::as_str).map(|scope| {
+                scope
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+        })
+        .unwrap_or_default();
+    AuthContext {
+        subject: Some(subject),
+        organization_id,
+        workspace_id,
+        scopes,
+        source: AuthSource::IdentityJwt,
+        unrestricted: false,
+    }
 }
 
 pub(crate) fn load_jwks() -> Option<jsonwebtoken::jwk::JwkSet> {
@@ -489,16 +564,6 @@ pub(crate) fn hmac_sha256_base64url(secret: &[u8], payload: &[u8]) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts arbitrary key sizes");
     mac.update(payload);
     URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
-}
-
-pub(crate) fn hmac_sha256_hex(secret: &[u8], payload: &[u8]) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts arbitrary key sizes");
-    mac.update(payload);
-    mac.finalize()
-        .into_bytes()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }
 
 pub(crate) fn runtime_session_cookie_value(config: &Config, subject: &str) -> Option<String> {

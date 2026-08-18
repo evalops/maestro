@@ -103,11 +103,7 @@ fn managed_policy_response(status: maestro_tui::safety::ManagedPolicyStatus) -> 
 
 fn managed_policy_actor(head: &RequestHead, config: &Config) -> Option<String> {
     let auth = auth_context(head, config)?;
-    if auth.unrestricted {
-        Some("api-key".to_string())
-    } else {
-        auth.subject
-    }
+    Some(auth.actor_label())
 }
 
 fn managed_policy_audit_event(

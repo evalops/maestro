@@ -24,7 +24,7 @@
 		{
 			"provider": "evalops",
 			"aliases": ["maestro-managed"],
-			"authEnv": ["MAESTRO_EVALOPS_ACCESS_TOKEN", "EVALOPS_TOKEN"]
+			"authEnv": ["MAESTRO_EVALOPS_ACCESS_TOKEN"]
 		},
 		{ "provider": "openai", "aliases": [], "authEnv": ["OPENAI_API_KEY"] },
 		{

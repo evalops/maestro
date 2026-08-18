@@ -22,6 +22,26 @@ const AGENT_MCP_MANIFEST_PATH: &str = "/.well-known/evalops/agent-mcp.json";
 const AGENT_MCP_PATH: &str = "/mcp";
 const CALLBACK_PORT: u16 = 1460;
 const CALLBACK_PATH: &str = "/auth/callback/evalops";
+
+fn callback_port() -> u16 {
+    std::env::var("MAESTRO_OAUTH_CALLBACK_PORT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|port| *port > 0)
+        .unwrap_or(CALLBACK_PORT)
+}
+
+fn open_browser_disabled() -> bool {
+    matches!(
+        std::env::var("MAESTRO_OAUTH_OPEN_BROWSER")
+            .ok()
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("0" | "false" | "off" | "no")
+    )
+}
 const REQUIRED_SCOPE: &str = "llm_gateway:invoke";
 const DEFAULT_API_KEY_SCOPES: &[&str] = &[
     "agent:register",
@@ -617,10 +637,11 @@ async fn ensure_login(options: &InitOptions, client: &Client) -> Result<OAuthCre
 
 async fn login(options: &InitOptions, client: &Client) -> Result<OAuthCredentials> {
     let identity = identity_base_from_env();
-    let listener = TcpListener::bind(("127.0.0.1", CALLBACK_PORT))
+    let callback_port = callback_port();
+    let listener = TcpListener::bind(("127.0.0.1", callback_port))
         .await
-        .with_context(|| format!("Port {CALLBACK_PORT} is already in use"))?;
-    let callback_uri = format!("http://127.0.0.1:{CALLBACK_PORT}{CALLBACK_PATH}");
+        .with_context(|| format!("Port {callback_port} is already in use"))?;
+    let callback_uri = format!("http://127.0.0.1:{callback_port}{CALLBACK_PATH}");
     let registration_response = client
         .post(format!("{identity}/register"))
         .json(&json!({
@@ -757,11 +778,17 @@ async fn read_callback(
         })
         .unwrap_or_default()
         .trim();
-    if !matches!(host, "127.0.0.1:1460" | "localhost:1460" | "[::1]:1460") {
+    let callback_port = callback_port();
+    let expected_hosts = [
+        format!("127.0.0.1:{callback_port}"),
+        format!("localhost:{callback_port}"),
+        format!("[::1]:{callback_port}"),
+    ];
+    if !expected_hosts.iter().any(|expected| host == expected) {
         write_http(stream, 403, "Invalid callback host.").await?;
         return Ok(None);
     }
-    let url = Url::parse(&format!("http://127.0.0.1:{CALLBACK_PORT}{target}"))?;
+    let url = Url::parse(&format!("http://127.0.0.1:{callback_port}{target}"))?;
     if url.path() != CALLBACK_PATH {
         write_http(stream, 404, "Not found").await?;
         return Ok(None);
@@ -1837,6 +1864,17 @@ fn response_detail(body: &str) -> String {
 }
 
 fn open_browser(url: &str) {
+    if open_browser_disabled() {
+        let url = url.to_owned();
+        std::thread::spawn(move || {
+            let _ = reqwest::blocking::Client::builder()
+                .redirect(reqwest::redirect::Policy::limited(5))
+                .timeout(Duration::from_secs(5))
+                .build()
+                .and_then(|client| client.get(url).send());
+        });
+        return;
+    }
     #[cfg(target_os = "macos")]
     let command = ("open", vec![url]);
     #[cfg(target_os = "linux")]
@@ -1981,6 +2019,17 @@ pub fn load_evalops_snapshot() -> Result<Option<EvalOpsCredentialSnapshot>> {
         return Ok(None);
     };
     Ok(Some(snapshot_from_credentials(&credentials)))
+}
+
+/// Persist the selected org `provider_ref` on the stored EvalOps session.
+pub fn store_evalops_provider_ref(provider_ref: Value) -> Result<()> {
+    let Some(mut credentials) = load_credentials()? else {
+        bail!("no EvalOps session; run `maestro evalops login`");
+    };
+    credentials
+        .metadata
+        .insert("providerRef".to_owned(), provider_ref);
+    save_credentials(&credentials)
 }
 
 /// Browser OAuth login for EvalOps; persists credentials on success.
@@ -2353,5 +2402,241 @@ mod tests {
             "redirect rejected"
         );
         assert_eq!(response_detail(""), "no response body");
+    }
+
+    static LOGIN_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    struct IdentityStub {
+        challenge: Option<String>,
+        mismatch_state: bool,
+    }
+
+    async fn spawn_identity_stub(mismatch_state: bool) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("identity bind");
+        let addr = listener.local_addr().expect("identity addr");
+        let stub = std::sync::Arc::new(std::sync::Mutex::new(IdentityStub {
+            challenge: None,
+            mismatch_state,
+        }));
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buffer = vec![0_u8; 16 * 1024];
+                let Ok(size) = stream.read(&mut buffer).await else {
+                    continue;
+                };
+                let request = String::from_utf8_lossy(&buffer[..size]);
+                let first = request.lines().next().unwrap_or_default();
+                let mut parts = first.split_whitespace();
+                let method = parts.next().unwrap_or_default();
+                let target = parts.next().unwrap_or("/");
+                let (path, _query) = target.split_once('?').unwrap_or((target, ""));
+                let (status, headers, body) = match (method, path) {
+                    ("POST", "/register") => (
+                        201,
+                        String::new(),
+                        r#"{"client_id":"maestro-test-client"}"#.to_owned(),
+                    ),
+                    ("GET", "/authorize") => {
+                        let parsed = Url::parse(&format!("http://identity.example{target}"))
+                            .expect("authorize url");
+                        let query = parsed
+                            .query_pairs()
+                            .into_owned()
+                            .collect::<BTreeMap<_, _>>();
+                        let challenge = query.get("code_challenge").cloned();
+                        let state = query.get("state").cloned().unwrap_or_default();
+                        let redirect = query.get("redirect_uri").cloned().unwrap_or_default();
+                        if let Ok(mut stub) = stub.lock() {
+                            stub.challenge = challenge;
+                        }
+                        let callback_state = if stub
+                            .lock()
+                            .map(|value| value.mismatch_state)
+                            .unwrap_or(false)
+                        {
+                            "mismatched-state".to_owned()
+                        } else {
+                            state
+                        };
+                        let location =
+                            format!("{redirect}?code=auth-code-1&state={callback_state}");
+                        (302, format!("Location: {location}\r\n"), String::new())
+                    }
+                    ("POST", "/token") => {
+                        let body = request
+                            .split("\r\n\r\n")
+                            .nth(1)
+                            .unwrap_or_default()
+                            .to_owned();
+                        let form = url::form_urlencoded::parse(body.as_bytes())
+                            .into_owned()
+                            .collect::<BTreeMap<_, _>>();
+                        let verifier = form.get("code_verifier").cloned().unwrap_or_default();
+                        let expected = stub
+                            .lock()
+                            .ok()
+                            .and_then(|value| value.challenge.clone())
+                            .unwrap_or_default();
+                        let provided = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+                        if expected.is_empty() || provided != expected {
+                            (
+                                400,
+                                String::new(),
+                                r#"{"error":"invalid_grant","error_description":"pkce mismatch"}"#
+                                    .to_owned(),
+                            )
+                        } else {
+                            (
+                                200,
+                                String::new(),
+                                r#"{"access_token":"access-from-stub","expires_in":3600,"refresh_token":"refresh-from-stub","scope":"llm_gateway:invoke","organization_id":"org_from_stub"}"#.to_owned(),
+                            )
+                        }
+                    }
+                    _ => (404, String::new(), r#"{"error":"not_found"}"#.to_owned()),
+                };
+                let reason = match status {
+                    200 => "OK",
+                    201 => "Created",
+                    302 => "Found",
+                    400 => "Bad Request",
+                    _ => "Not Found",
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\n{headers}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    fn restore_env(name: &str, previous: Option<String>) {
+        if let Some(previous) = previous {
+            std::env::set_var(name, previous);
+        } else {
+            std::env::remove_var(name);
+        }
+    }
+
+    #[tokio::test]
+    async fn evalops_pkce_login_persists_a_platform_session() {
+        let _guard = LOGIN_TEST_LOCK.lock().await;
+        let home = tempfile::tempdir().expect("maestro home");
+        let callback = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("callback probe")
+            .local_addr()
+            .expect("callback addr")
+            .port();
+        let (identity, identity_task) = spawn_identity_stub(false).await;
+        let previous_home = std::env::var("MAESTRO_HOME").ok();
+        let previous_storage = std::env::var("MAESTRO_OAUTH_STORAGE_MODE").ok();
+        let previous_keychain = std::env::var("MAESTRO_DISABLE_KEYCHAIN").ok();
+        let previous_identity = std::env::var("MAESTRO_IDENTITY_URL").ok();
+        let previous_browser = std::env::var("MAESTRO_OAUTH_OPEN_BROWSER").ok();
+        let previous_port = std::env::var("MAESTRO_OAUTH_CALLBACK_PORT").ok();
+        let previous_token = std::env::var("MAESTRO_EVALOPS_ACCESS_TOKEN").ok();
+        let previous_org = std::env::var("MAESTRO_EVALOPS_ORG_ID").ok();
+        std::env::set_var("MAESTRO_HOME", home.path());
+        std::env::set_var("MAESTRO_OAUTH_STORAGE_MODE", "file");
+        std::env::set_var("MAESTRO_DISABLE_KEYCHAIN", "1");
+        std::env::set_var("MAESTRO_IDENTITY_URL", &identity);
+        std::env::set_var("MAESTRO_OAUTH_OPEN_BROWSER", "0");
+        std::env::set_var("MAESTRO_OAUTH_CALLBACK_PORT", callback.to_string());
+        std::env::remove_var("MAESTRO_EVALOPS_ACCESS_TOKEN");
+        std::env::remove_var("MAESTRO_EVALOPS_ORG_ID");
+
+        let result = perform_evalops_login().await;
+        identity_task.abort();
+        let snapshot = match result {
+            Ok(()) => load_evalops_snapshot()
+                .expect("load snapshot")
+                .expect("stored session"),
+            Err(error) => {
+                restore_env("MAESTRO_HOME", previous_home);
+                restore_env("MAESTRO_OAUTH_STORAGE_MODE", previous_storage);
+                restore_env("MAESTRO_DISABLE_KEYCHAIN", previous_keychain);
+                restore_env("MAESTRO_IDENTITY_URL", previous_identity);
+                restore_env("MAESTRO_OAUTH_OPEN_BROWSER", previous_browser);
+                restore_env("MAESTRO_OAUTH_CALLBACK_PORT", previous_port);
+                restore_env("MAESTRO_EVALOPS_ACCESS_TOKEN", previous_token);
+                restore_env("MAESTRO_EVALOPS_ORG_ID", previous_org);
+                panic!("PKCE login should succeed against the identity stub: {error:#}");
+            }
+        };
+        restore_env("MAESTRO_HOME", previous_home);
+        restore_env("MAESTRO_OAUTH_STORAGE_MODE", previous_storage);
+        restore_env("MAESTRO_DISABLE_KEYCHAIN", previous_keychain);
+        restore_env("MAESTRO_IDENTITY_URL", previous_identity);
+        restore_env("MAESTRO_OAUTH_OPEN_BROWSER", previous_browser);
+        restore_env("MAESTRO_OAUTH_CALLBACK_PORT", previous_port);
+        restore_env("MAESTRO_EVALOPS_ACCESS_TOKEN", previous_token);
+        restore_env("MAESTRO_EVALOPS_ORG_ID", previous_org);
+
+        assert_eq!(snapshot.access, "access-from-stub");
+        assert_eq!(snapshot.refresh, "refresh-from-stub");
+        assert_eq!(snapshot.organization_id.as_deref(), Some("org_from_stub"));
+        let mode =
+            crate::credential_mode::detect_from(Some(&snapshot), &std::collections::HashMap::new())
+                .expect("mode");
+        assert!(mode.is_platform());
+        let crate::credential_mode::DetectedMode::Platform(session) = mode else {
+            panic!("expected platform session");
+        };
+        let env = session
+            .managed_env("anthropic/claude-opus-4-6")
+            .expect("managed env");
+        crate::ai::UnifiedClient::from_model_with_env(
+            &session.managed_model_route("anthropic/claude-opus-4-6"),
+            &env,
+        )
+        .expect("platform session must construct the llm-gateway client");
+    }
+
+    #[tokio::test]
+    async fn evalops_login_rejects_callback_state_mismatch() {
+        let _guard = LOGIN_TEST_LOCK.lock().await;
+        let home = tempfile::tempdir().expect("maestro home");
+        let callback = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("callback probe")
+            .local_addr()
+            .expect("callback addr")
+            .port();
+        let (identity, identity_task) = spawn_identity_stub(true).await;
+        let previous_home = std::env::var("MAESTRO_HOME").ok();
+        let previous_storage = std::env::var("MAESTRO_OAUTH_STORAGE_MODE").ok();
+        let previous_keychain = std::env::var("MAESTRO_DISABLE_KEYCHAIN").ok();
+        let previous_identity = std::env::var("MAESTRO_IDENTITY_URL").ok();
+        let previous_browser = std::env::var("MAESTRO_OAUTH_OPEN_BROWSER").ok();
+        let previous_port = std::env::var("MAESTRO_OAUTH_CALLBACK_PORT").ok();
+        std::env::set_var("MAESTRO_HOME", home.path());
+        std::env::set_var("MAESTRO_OAUTH_STORAGE_MODE", "file");
+        std::env::set_var("MAESTRO_DISABLE_KEYCHAIN", "1");
+        std::env::set_var("MAESTRO_IDENTITY_URL", &identity);
+        std::env::set_var("MAESTRO_OAUTH_OPEN_BROWSER", "0");
+        std::env::set_var("MAESTRO_OAUTH_CALLBACK_PORT", callback.to_string());
+
+        let result = perform_evalops_login().await;
+        restore_env("MAESTRO_HOME", previous_home);
+        restore_env("MAESTRO_OAUTH_STORAGE_MODE", previous_storage);
+        restore_env("MAESTRO_DISABLE_KEYCHAIN", previous_keychain);
+        restore_env("MAESTRO_IDENTITY_URL", previous_identity);
+        restore_env("MAESTRO_OAUTH_OPEN_BROWSER", previous_browser);
+        restore_env("MAESTRO_OAUTH_CALLBACK_PORT", previous_port);
+        identity_task.abort();
+        assert!(result.is_err(), "mismatched callback state must fail login");
+        assert!(
+            result.unwrap_err().to_string().contains("state"),
+            "error should mention state"
+        );
     }
 }

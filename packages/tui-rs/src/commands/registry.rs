@@ -2034,6 +2034,16 @@ pub fn build_command_registry() -> CommandRegistry {
         .usage("/git [status|diff <path>|review]"),
     );
 
+    registry.register(
+        Command::new(
+            "setup",
+            "Sign in to EvalOps or add a local API key",
+            CommandCategory::Config,
+            Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::Setup))),
+        )
+        .usage("/setup"),
+    );
+
     // Status command
     registry.register(
         Command::new(

@@ -1314,7 +1314,7 @@ fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
 /// A stateless widget for rendering the chat input box.
 ///
 /// Displays a bordered input area with:
-/// - Placeholder text when empty
+/// - In-box `>` prompt (no placeholder copy)
 /// - Text wrapping for multi-line input
 /// - Busy indicator with shimmer animation
 /// - Elapsed time display during agent processing
@@ -1333,10 +1333,10 @@ fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
 /// ```rust,ignore
 /// let widget = ChatInputWidget::new(
 ///     &state.textarea,
-///     "Describe what you want to build...",
 ///     ChatInputWidgetOptions {
 ///         busy,
 ///         pending_input_preview,
+///         ghost_text: None,
 ///     },
 /// );
 /// frame.render_widget(widget, area);
@@ -1347,7 +1347,6 @@ fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
 /// ```
 pub struct ChatInputWidget<'a> {
     textarea: &'a TextArea,
-    placeholder: &'a str,
     busy: bool,
     pending_input_preview: Option<PendingInputPreview>,
     ghost_text: Option<String>,
@@ -1390,6 +1389,50 @@ pub struct PendingInputPreview {
 const PREVIEW_LINE_LIMIT: usize = 3;
 const INTERRUPT_STEERING_DESCRIPTION: &str = "Ctrl+C interrupt and apply now";
 const EDIT_LAST_QUEUED_FOLLOW_UP_DESCRIPTION: &str = "edit queued follow-ups";
+
+/// In-box prompt painted on the composer textarea row (`"> "`).
+///
+/// Kept off the border title so it cannot render as a detached `>` above the
+/// rounded box. When the editor is empty, the terminal cursor sits on the
+/// trailing space. There is no placeholder copy.
+const COMPOSER_PROMPT: &str = "> ";
+pub(crate) const COMPOSER_PROMPT_WIDTH: u16 = 2;
+
+/// Usable editor width inside the composer (borders + in-box prompt).
+#[must_use]
+pub(crate) fn composer_editor_width(area_width: u16) -> u16 {
+    area_width
+        .saturating_sub(2)
+        .saturating_sub(COMPOSER_PROMPT_WIDTH)
+        .max(1)
+}
+
+/// Short label for composer/status chrome.
+///
+/// Uses the catalog `name` for the current model (`openai-codex/gpt-5.5` →
+/// `GPT-5.5`). Unknown ids fall back to the last path segment so the footer
+/// is never `openai-codex/gpt-5.5 via openai-codex`.
+#[must_use]
+fn chrome_model_label(model: &str) -> String {
+    if let Some(info) = crate::model_catalog::find_model(model) {
+        if !info.name.is_empty() {
+            return info.name;
+        }
+    }
+    match model.rsplit_once('/') {
+        Some((_, rest)) if !rest.is_empty() => rest.to_string(),
+        _ => model.to_string(),
+    }
+}
+
+fn composer_editor_area(textarea_area: Rect) -> Rect {
+    Rect {
+        x: textarea_area.x.saturating_add(COMPOSER_PROMPT_WIDTH),
+        y: textarea_area.y,
+        width: textarea_area.width.saturating_sub(COMPOSER_PROMPT_WIDTH),
+        height: textarea_area.height,
+    }
+}
 
 impl PendingInputPreview {
     #[must_use]
@@ -1547,14 +1590,9 @@ impl PendingInputPreview {
 }
 
 impl<'a> ChatInputWidget<'a> {
-    pub fn new(
-        textarea: &'a TextArea,
-        placeholder: &'a str,
-        options: ChatInputWidgetOptions,
-    ) -> Self {
+    pub fn new(textarea: &'a TextArea, options: ChatInputWidgetOptions) -> Self {
         Self {
             textarea,
-            placeholder,
             busy: options.busy,
             pending_input_preview: options.pending_input_preview,
             ghost_text: options.ghost_text,
@@ -1570,7 +1608,9 @@ impl<'a> ChatInputWidget<'a> {
         thinking_level: ThinkingLevel,
         interaction_mode: InteractionMode,
     ) -> Self {
-        let mut context = model.unwrap_or("Maestro").to_string();
+        let mut context = model
+            .map(chrome_model_label)
+            .unwrap_or_else(|| "Maestro".to_string());
         if thinking_level != ThinkingLevel::Off {
             context.push_str(&format!(
                 " ({})",
@@ -1620,7 +1660,19 @@ impl<'a> ChatInputWidget<'a> {
             return None;
         }
 
-        self.textarea.cursor_pos(textarea_area)
+        // Empty editor: sit on the prompt's trailing space.
+        if self.textarea.is_empty() {
+            let cursor_x = textarea_area
+                .x
+                .saturating_add(COMPOSER_PROMPT_WIDTH.saturating_sub(1));
+            return Some((cursor_x, textarea_area.y));
+        }
+
+        let editor_area = composer_editor_area(textarea_area);
+        if editor_area.width == 0 {
+            return None;
+        }
+        self.textarea.cursor_pos(editor_area)
     }
 }
 
@@ -1643,8 +1695,7 @@ impl Widget for ChatInputWidget<'_> {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(border_style)
-            .style(Style::default().bg(brand_surface()))
-            .title(Line::from(" > ").style(Style::default().fg(brand_violet())));
+            .style(Style::default().bg(brand_surface()));
         if let Some(runtime_footer) = self.runtime_footer {
             block = block.title_bottom(
                 Line::from(format!(" {runtime_footer} "))
@@ -1680,21 +1731,32 @@ impl Widget for ChatInputWidget<'_> {
             return;
         }
 
+        if textarea_area.width > 0 {
+            buf.set_stringn(
+                textarea_area.x,
+                textarea_area.y,
+                COMPOSER_PROMPT,
+                usize::from(textarea_area.width),
+                Style::default().fg(brand_violet()),
+            );
+        }
+
+        let editor_area = composer_editor_area(textarea_area);
+        if editor_area.width == 0 {
+            return;
+        }
+
         let text_style = Style::default().fg(brand_text());
-        let placeholder_style = Style::default().fg(brand_muted());
-
-        let textarea_widget = TextAreaWidget::new(self.textarea)
+        TextAreaWidget::new(self.textarea)
             .style(text_style)
-            .placeholder(self.placeholder, placeholder_style);
-
-        textarea_widget.render(textarea_area, buf);
+            .render(editor_area, buf);
 
         // Render ghost-text completion dimmed right after the cursor.
         // The caller only passes `ghost_text` when the cursor is at end of
         // input, so the cursor position is exactly where the suffix belongs.
         if let Some(ghost) = &self.ghost_text {
-            if let Some((cursor_x, cursor_y)) = self.textarea.cursor_pos(textarea_area) {
-                let remaining = usize::from(textarea_area.right().saturating_sub(cursor_x));
+            if let Some((cursor_x, cursor_y)) = self.textarea.cursor_pos(editor_area) {
+                let remaining = usize::from(editor_area.right().saturating_sub(cursor_x));
                 if remaining > 0 {
                     let ghost_style = Style::default()
                         .fg(brand_muted())
@@ -1724,11 +1786,12 @@ pub(crate) fn calculate_input_height(state: &crate::state::AppState, area: Rect)
     }
 
     let inner_width = area.width.saturating_sub(2).max(1);
+    let editor_width = composer_editor_width(area.width);
     let preview_height = PendingInputPreview::from_state(state)
         .map_or(0, |preview| preview.desired_height(inner_width));
     let desired_inner_lines = state
         .textarea
-        .desired_height(inner_width)
+        .desired_height(editor_width)
         .max(1)
         .saturating_add(preview_height);
 
@@ -2212,7 +2275,10 @@ impl Widget for StatusBarWidget<'_> {
                 if !spans.is_empty() {
                     spans.push(Span::styled("  ·  ", Style::default().fg(brand_border())));
                 }
-                spans.push(Span::styled(model, Style::default().fg(brand_violet())));
+                spans.push(Span::styled(
+                    chrome_model_label(model),
+                    Style::default().fg(brand_violet()),
+                ));
                 if let Some(provider) = self.provider {
                     if show_chrome {
                         spans.push(Span::raw(" via "));
@@ -2620,7 +2686,6 @@ impl Widget for ChatView<'_> {
         // Render input
         let input_widget = ChatInputWidget::new(
             &self.state.textarea,
-            "Describe what you want to build...",
             ChatInputWidgetOptions {
                 busy: self.state.busy,
                 pending_input_preview: PendingInputPreview::from_state(self.state),
@@ -2661,9 +2726,11 @@ impl Widget for ChatView<'_> {
                 .folded_paste_lines()
                 .map(|lines| format!("pasted {lines} lines (folded)"));
 
+            // Model + mode already sit on the composer border. Passing them
+            // here reprints `GPT-5.5 via openai-codex` on the next row.
             let status_widget = StatusBarWidget::new(
-                self.state.model.as_deref(),
-                self.state.provider.as_deref(),
+                None,
+                None,
                 self.state.cwd.as_deref(),
                 self.state.git_branch.as_deref(),
             )
@@ -2952,7 +3019,6 @@ mod tests {
         let textarea = TextArea::new();
         let widget = ChatInputWidget::new(
             &textarea,
-            "",
             ChatInputWidgetOptions {
                 busy: false,
                 pending_input_preview: None,
@@ -2971,15 +3037,75 @@ mod tests {
         widget.render(Rect::new(0, 0, width, height), &mut buf);
 
         let rendered = buffer_lines(&buf, width, height).join("\n");
-        assert!(rendered.contains("gpt-5.4 (high) · always-approve"));
+        assert!(rendered.contains("GPT-5.4 (high) · always-approve"));
     }
 
     #[test]
-    fn composer_uses_rounded_deixic_surface() {
+    fn input_footer_uses_catalog_name_for_qualified_model_id() {
         let textarea = TextArea::new();
         let widget = ChatInputWidget::new(
             &textarea,
-            "Describe what you want to build...",
+            ChatInputWidgetOptions {
+                busy: false,
+                pending_input_preview: None,
+                ghost_text: None,
+            },
+        )
+        .with_runtime_footer(
+            Some("openai-codex/gpt-5.5"),
+            ThinkingLevel::Off,
+            InteractionMode::Normal,
+        );
+        let width = 96;
+        let height = 4;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+
+        widget.render(Rect::new(0, 0, width, height), &mut buf);
+
+        let rendered = buffer_lines(&buf, width, height).join("\n");
+        assert!(rendered.contains("GPT-5.5 · normal"));
+        assert!(!rendered.contains("openai-codex/gpt-5.5"));
+    }
+
+    #[test]
+    fn chat_view_shows_model_once_on_the_composer() {
+        let mut state = crate::state::AppState::default();
+        state.model = Some("openai-codex/gpt-5.5".to_string());
+        state.provider = Some("openai-codex".to_string());
+        let width = 100;
+        let height = 16;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+
+        ChatView::new(&state).render(Rect::new(0, 0, width, height), &mut buf);
+
+        let rendered = buffer_lines(&buf, width, height).join("\n");
+        let catalog_hits = rendered.matches("GPT-5.5").count();
+        assert_eq!(catalog_hits, 1, "model must appear once:\n{rendered}");
+        assert!(rendered.contains("GPT-5.5 · normal"));
+        assert!(!rendered.contains("via openai-codex"));
+        assert!(!rendered.contains("openai-codex/gpt-5.5"));
+        assert!(!rendered.contains("Describe what you want to build..."));
+    }
+
+    #[test]
+    fn chrome_model_label_inherits_catalog_name() {
+        assert_eq!(chrome_model_label("openai-codex/gpt-5.5"), "GPT-5.5");
+        assert_eq!(chrome_model_label("gpt-5.5"), "GPT-5.5");
+        assert_eq!(
+            chrome_model_label("openrouter/openai/gpt-4o-mini"),
+            "OpenAI: GPT-4o-mini"
+        );
+        assert_eq!(
+            chrome_model_label("unknown-provider/custom-id"),
+            "custom-id"
+        );
+    }
+
+    #[test]
+    fn composer_prompt_is_inside_the_box_with_no_placeholder() {
+        let textarea = TextArea::new();
+        let widget = ChatInputWidget::new(
+            &textarea,
             ChatInputWidgetOptions {
                 busy: false,
                 pending_input_preview: None,
@@ -2995,7 +3121,35 @@ mod tests {
         let rendered = buffer_lines(&buf, width, height).join("\n");
         assert!(rendered.starts_with("╭"));
         assert!(rendered.contains("╰"));
-        assert!(rendered.contains("Describe what you want to build..."));
+        assert!(!rendered.contains("Describe what you want to build..."));
+        let lines = buffer_lines(&buf, width, height);
+        assert!(
+            lines[0].starts_with("╭─"),
+            "prompt must not sit on the top border: {}",
+            lines[0]
+        );
+        assert!(
+            lines[1].contains("> "),
+            "in-box prompt must sit on the inner row: {}",
+            lines[1]
+        );
+    }
+
+    #[test]
+    fn empty_composer_cursor_sits_on_prompt_space() {
+        let textarea = TextArea::new();
+        let widget = ChatInputWidget::new(
+            &textarea,
+            ChatInputWidgetOptions {
+                busy: false,
+                pending_input_preview: None,
+                ghost_text: None,
+            },
+        );
+        let area = Rect::new(0, 0, 48, 4);
+        let pos = widget.cursor_pos(area).expect("cursor");
+        // inner.x = 1, prompt "> " occupies cols 1..3, cursor on the space (col 2)
+        assert_eq!(pos, (2, 1));
     }
 
     #[test]
@@ -3005,7 +3159,6 @@ mod tests {
         textarea.set_cursor(4);
         let widget = ChatInputWidget::new(
             &textarea,
-            "",
             ChatInputWidgetOptions {
                 busy: false,
                 pending_input_preview: None,
@@ -3029,7 +3182,6 @@ mod tests {
         textarea.set_cursor(4);
         let widget = ChatInputWidget::new(
             &textarea,
-            "",
             ChatInputWidgetOptions {
                 busy: false,
                 pending_input_preview: None,

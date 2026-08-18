@@ -801,6 +801,10 @@ pub enum FromAgentMessage {
     HelloOk {
         protocol_version: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        controller_binding_version: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        controller_binding_sha256: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         connection_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client_protocol_version: Option<String>,

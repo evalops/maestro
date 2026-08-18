@@ -201,6 +201,9 @@
 use tokio::sync::{mpsc, Notify};
 
 mod async_transport;
+pub(crate) mod controller_binding;
+#[cfg(test)]
+mod controller_binding_test;
 mod framing;
 mod generated_protocol;
 pub(crate) mod messages;

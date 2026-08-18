@@ -22,6 +22,7 @@ const DEFAULT_GCS_URL: &str =
     "https://storage.googleapis.com/evalops-prod-maestro-releases/maestro/version.json";
 const CHANNEL_MANIFEST_BASE_URL: &str =
     "https://storage.googleapis.com/evalops-prod-maestro-releases/maestro/channels";
+const GITHUB_RELEASES_API_URL: &str = "https://api.github.com/repos/evalops/maestro/releases";
 const CHANNEL_MANIFEST_SCHEMA: &str = "evalops.maestro.release-channel.v1";
 const STABLE_CHANNEL_KEY_ID: &str = "stable-2026-08-0c3df2ac";
 const PRERELEASE_CHANNEL_KEY_ID: &str = "preview-2026-08-912a0dab";
@@ -438,6 +439,55 @@ fn channel_manifest_url(channel: UpdateChannel) -> String {
     )
 }
 
+fn github_channel_manifest_url(tag: &str) -> String {
+    format!("https://github.com/evalops/maestro/releases/download/{tag}/channel-manifest.json")
+}
+
+fn tag_matches_channel(tag: &str, channel: UpdateChannel) -> bool {
+    let tag = tag.trim().trim_start_matches('v');
+    match channel {
+        UpdateChannel::Stable => !tag.contains('-'),
+        UpdateChannel::Beta => tag.contains("-beta."),
+        UpdateChannel::Alpha => tag.contains("-alpha."),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubReleaseListItem {
+    tag_name: String,
+    #[serde(default)]
+    draft: bool,
+}
+
+async fn resolve_github_channel_manifest_url(
+    client: &reqwest::Client,
+    channel: UpdateChannel,
+) -> Result<String, String> {
+    let response = client
+        .get(GITHUB_RELEASES_API_URL)
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .header(reqwest::header::USER_AGENT, "maestro-updater")
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "GitHub releases list failed ({})",
+            response.status()
+        ));
+    }
+    let releases = response
+        .json::<Vec<GithubReleaseListItem>>()
+        .await
+        .map_err(|error| format!("Invalid GitHub releases list: {error}"))?;
+    let tag = releases.into_iter().find_map(|release| {
+        (!release.draft && tag_matches_channel(&release.tag_name, channel))
+            .then_some(release.tag_name)
+    });
+    tag.map(|tag| github_channel_manifest_url(&tag))
+        .ok_or_else(|| format!("No published {} GitHub release", channel.as_str()))
+}
+
 fn channel_from_manifest_url(url: &str) -> Option<UpdateChannel> {
     [
         UpdateChannel::Stable,
@@ -446,6 +496,11 @@ fn channel_from_manifest_url(url: &str) -> Option<UpdateChannel> {
     ]
     .into_iter()
     .find(|channel| url == channel_manifest_url(*channel))
+}
+
+fn channel_from_update_url(url: &str, requested: UpdateChannel) -> Option<UpdateChannel> {
+    channel_from_manifest_url(url)
+        .or_else(|| url.ends_with("/channel-manifest.json").then_some(requested))
 }
 
 fn canonical_channel_value(value: serde_json::Value) -> serde_json::Value {
@@ -610,7 +665,10 @@ fn trusted_startup_update_urls(context: &InstallContext, channel: UpdateChannel)
     match context {
         InstallContext::Package { package, .. } => update_urls(package, channel),
         InstallContext::Release { .. } => {
-            let mut urls = vec![channel_manifest_url(channel)];
+            let mut urls = vec![
+                channel_manifest_url(channel),
+                GITHUB_RELEASES_API_URL.to_owned(),
+            ];
             if channel == UpdateChannel::Stable {
                 urls.push(DEFAULT_GCS_URL.to_owned());
             } else if env::var("MAESTRO_UPDATE_PREVIEW_FALLBACK")
@@ -672,6 +730,20 @@ async fn check_for_update_urls_with_timeout(
 
     for url in urls {
         last_url.clone_from(&url);
+        let url = if url == GITHUB_RELEASES_API_URL {
+            match resolve_github_channel_manifest_url(&client, channel).await {
+                Ok(manifest_url) => {
+                    last_url.clone_from(&manifest_url);
+                    manifest_url
+                }
+                Err(error) => {
+                    last_error = Some(error);
+                    continue;
+                }
+            }
+        } else {
+            url
+        };
         let response = match client
             .get(&url)
             .header(reqwest::header::ACCEPT, "application/json")
@@ -680,7 +752,7 @@ async fn check_for_update_urls_with_timeout(
         {
             Ok(response) => response,
             Err(error) => {
-                if let Some(channel) = channel_from_manifest_url(&url) {
+                if let Some(channel) = channel_from_update_url(&url, channel) {
                     last_channel_verification = Some(channel_verification_failure(
                         channel,
                         &url,
@@ -693,14 +765,15 @@ async fn check_for_update_urls_with_timeout(
         };
         if !response.status().is_success() {
             let error = format!("Update check failed ({})", response.status());
-            if let Some(channel) = channel_from_manifest_url(&url) {
+            if let Some(channel) = channel_from_update_url(&url, channel) {
                 last_channel_verification =
                     Some(channel_verification_failure(channel, &url, &error));
             }
             last_error = Some(error);
             continue;
         }
-        if let Some(manifest_channel) = channel_from_manifest_url(&url) {
+        let manifest_channel = channel_from_update_url(&url, channel);
+        if let Some(manifest_channel) = manifest_channel {
             let manifest = match response.json::<ChannelManifest>().await {
                 Ok(manifest) => manifest,
                 Err(error) => {
@@ -2347,7 +2420,9 @@ async fn run_rollback(requested: Option<String>, json: bool) -> Result<i32> {
 }
 
 fn print_help() {
-    println!("Usage: maestro update [status|history|rollback [version]] [--channel stable|beta|alpha] [--json]\n\nCommands:\n  status    Show current/latest versions, receipt, retry, and last attempt\n  history   Show the bounded persisted update-attempt history\n  rollback  Repoint a native release launcher to a retained verified release\n\nOptions:\n  --channel Select stable, beta, or alpha for this update (default: stable)\n  --check   Check for the newest version without installing it (legacy apply mode)\n  --json    Print the machine-readable lifecycle contract\n  --help    Show this help");
+    println!(
+        "Usage: maestro update [status|history|rollback [version]] [--channel stable|beta|alpha] [--json]\n\nCommands:\n  status    Show current/latest versions, receipt, retry, and last attempt\n  history   Show the bounded persisted update-attempt history\n  rollback  Repoint a native release launcher to a retained verified release\n\nOptions:\n  --channel Select stable, beta, or alpha for this update (default: stable)\n  --check   Check for the newest version without installing it (legacy apply mode)\n  --json    Print the machine-readable lifecycle contract\n  --help    Show this help"
+    );
 }
 
 pub async fn run_update(args: &[String]) -> Result<i32> {
@@ -2877,6 +2952,28 @@ mod tests {
     }
 
     #[test]
+    fn github_release_tags_bind_to_channels() {
+        assert!(tag_matches_channel("v0.10.68", UpdateChannel::Stable));
+        assert!(!tag_matches_channel(
+            "v0.10.67-beta.2",
+            UpdateChannel::Stable
+        ));
+        assert!(tag_matches_channel("v0.10.67-beta.2", UpdateChannel::Beta));
+        assert!(!tag_matches_channel(
+            "v0.10.67-alpha.1",
+            UpdateChannel::Beta
+        ));
+        assert!(tag_matches_channel(
+            "v0.10.68-alpha.3",
+            UpdateChannel::Alpha
+        ));
+        assert_eq!(
+            github_channel_manifest_url("v0.10.67-beta.2"),
+            "https://github.com/evalops/maestro/releases/download/v0.10.67-beta.2/channel-manifest.json"
+        );
+    }
+
+    #[test]
     fn startup_sources_prefer_signed_release_channels() {
         let release = InstallContext::Release {
             install_dir: PathBuf::from("/opt/bin"),
@@ -2887,16 +2984,23 @@ mod tests {
             trusted_startup_update_urls(&release, UpdateChannel::Stable),
             vec![
                 channel_manifest_url(UpdateChannel::Stable),
+                GITHUB_RELEASES_API_URL.to_owned(),
                 DEFAULT_GCS_URL.to_owned(),
             ]
         );
         assert_eq!(
             trusted_startup_update_urls(&release, UpdateChannel::Beta),
-            vec![channel_manifest_url(UpdateChannel::Beta)]
+            vec![
+                channel_manifest_url(UpdateChannel::Beta),
+                GITHUB_RELEASES_API_URL.to_owned(),
+            ]
         );
         assert_eq!(
             trusted_startup_update_urls(&release, UpdateChannel::Alpha),
-            vec![channel_manifest_url(UpdateChannel::Alpha)]
+            vec![
+                channel_manifest_url(UpdateChannel::Alpha),
+                GITHUB_RELEASES_API_URL.to_owned(),
+            ]
         );
 
         let package = InstallContext::Package {

@@ -10909,6 +10909,118 @@ async fn rejected_response_releases_ownership_when_ledger_cleanup_fails() {
     supervisor.lock().expect("supervisor").shutdown();
 }
 
+fn executor_context_with_response_key(
+    workspace: &Path,
+    key: &str,
+) -> HostedRunnerHeadlessMessageContext {
+    HostedRunnerHeadlessMessageContext {
+        session_id: "sess_test".to_string(),
+        connection_id: "conn_exec".to_string(),
+        subscription_id: Some("sub_exec".to_string()),
+        role: ConnectionRole::Controller,
+        controller_connection_id: Some("conn_exec".to_string()),
+        client_protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
+        client_info: None,
+        capabilities: None,
+        opt_out_notifications: None,
+        lease_expires_at: Utc::now().to_rfc3339(),
+        workspace_root: workspace.to_path_buf(),
+        response_idempotency_key: Some(key.to_string()),
+    }
+}
+
+#[test]
+fn transport_error_releases_ownership_when_ledger_cleanup_fails() {
+    let workspace = tempdir().expect("workspace");
+    let supervisor = Arc::new(Mutex::new(AgentSupervisor::new(
+        crate::headless::SupervisorConfig::default(),
+    )));
+    let executor = AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(&supervisor));
+    let context = executor_context_with_response_key(workspace.path(), "transport-ledger-key");
+    let response = ToAgentMessage::ToolResponse {
+        call_id: "transport-call".to_string(),
+        tool_execution_id: Some("transport-execution".to_string()),
+        approved: true,
+        result: None,
+    };
+
+    executor.fail_next_ledger_persistences(1);
+    let error = executor
+        .execute(&context, response.clone())
+        .expect_err("disconnected supervisor must fail the dispatch");
+    assert_eq!(error.code, HostedRunnerErrorCode::RuntimeNotReady);
+    assert_ne!(error.code, HostedRunnerErrorCode::Internal);
+    assert!(!executor
+        .queued_responses
+        .lock()
+        .expect("queued responses")
+        .contains_key("transport-ledger-key"));
+    assert!(load_executor_response_ledger(workspace.path(), "sess_test")
+        .expect("response ledger")
+        .iter()
+        .any(|(key, dispatched)| key == "transport-ledger-key" && !dispatched));
+
+    let retry = executor
+        .execute(&context, response)
+        .expect_err("retry is admitted and still fails on the disconnected supervisor");
+    assert_eq!(retry.code, HostedRunnerErrorCode::RuntimeNotReady);
+    assert_ne!(retry.code, HostedRunnerErrorCode::Internal);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unacknowledged_response_releases_ownership_when_ledger_cleanup_fails() {
+    let workspace = tempdir().expect("workspace");
+    let fixtures = tempdir().expect("fixtures");
+    let log_path = fixtures.path().join("not-expected-ledger.log");
+    let script = create_reject_then_accept_script(fixtures.path(), &log_path, None);
+    let supervisor = connected_supervisor_for_script(&script).await;
+    let executor = AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(&supervisor));
+    let context = executor_context_with_response_key(workspace.path(), "not-expected-key");
+    let response = ToAgentMessage::GovernedClientToolResult {
+        call_id: "governed-call".to_string(),
+        content: Vec::new(),
+        is_error: false,
+        tool_execution_id: "governed-execution".to_string(),
+        client_instance_id: "conn_exec".to_string(),
+        grant_id: "grant-1".to_string(),
+        grant_version: 1,
+        grant_hash: "hash".to_string(),
+        turn_digest: "turn-digest".to_string(),
+        definition_digest: "definition-digest".to_string(),
+        args_digest: "args-digest".to_string(),
+        owner_lease_epoch: 1,
+        idempotency_key: "not-expected-key".to_string(),
+    };
+
+    executor.fail_next_ledger_persistences(1);
+    let error = executor
+        .execute(&context, response.clone())
+        .expect_err("governed result has no ack id, so the consumer cannot acknowledge it");
+    assert_eq!(error.code, HostedRunnerErrorCode::RuntimeFailed);
+    assert!(error
+        .message
+        .contains("response consumer did not acknowledge the control response"));
+    assert!(!executor
+        .queued_responses
+        .lock()
+        .expect("queued responses")
+        .contains_key("not-expected-key"));
+    assert!(load_executor_response_ledger(workspace.path(), "sess_test")
+        .expect("response ledger")
+        .iter()
+        .any(|(key, dispatched)| key == "not-expected-key" && !dispatched));
+
+    let retry = executor
+        .execute(&context, response)
+        .expect_err("same-key retry is admitted and re-dispatches");
+    assert_eq!(retry.code, HostedRunnerErrorCode::RuntimeFailed);
+    assert!(retry
+        .message
+        .contains("response consumer did not acknowledge the control response"));
+    supervisor.lock().expect("supervisor").shutdown();
+}
+
 #[cfg(unix)]
 async fn assert_unique_protocol_request_owner_across_restart(
     message: ToAgentMessage,

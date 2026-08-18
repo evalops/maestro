@@ -26,26 +26,10 @@ use crate::init_cli::{
 
 mod platform_tools;
 
-const EVALOPS_ACCESS_TOKEN_ENV_VARS: &[&str] = &["MAESTRO_EVALOPS_ACCESS_TOKEN", "EVALOPS_TOKEN"];
-const EVALOPS_ORGANIZATION_ID_ENV_VARS: &[&str] = &[
-    "MAESTRO_EVALOPS_ORG_ID",
-    "EVALOPS_ORGANIZATION_ID",
-    "EVALOPS_ORG_ID",
-    "MAESTRO_ENTERPRISE_ORG_ID",
-    "MAESTRO_LLM_GATEWAY_ORG_ID",
-    "MAESTRO_REMOTE_RUNNER_ORG_ID",
-];
-const EVALOPS_WORKSPACE_ID_ENV_VARS: &[&str] = &[
-    "MAESTRO_EVALOPS_WORKSPACE_ID",
-    "EVALOPS_WORKSPACE_ID",
-    "MAESTRO_WORKSPACE_ID",
-    "MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
-];
-const EVALOPS_USER_ID_ENV_VARS: &[&str] = &[
-    "MAESTRO_EVALOPS_USER_ID",
-    "EVALOPS_USER_ID",
-    "MAESTRO_USER_ID",
-];
+const EVALOPS_ACCESS_TOKEN_ENV_VARS: &[&str] = &["MAESTRO_EVALOPS_ACCESS_TOKEN"];
+const EVALOPS_ORGANIZATION_ID_ENV_VARS: &[&str] = &["MAESTRO_EVALOPS_ORG_ID"];
+const EVALOPS_WORKSPACE_ID_ENV_VARS: &[&str] = &["MAESTRO_EVALOPS_WORKSPACE_ID"];
+const EVALOPS_USER_ID_ENV_VARS: &[&str] = &["MAESTRO_EVALOPS_USER_ID"];
 const EVALOPS_INTEGRATION_PROFILE_ENV_VARS: &[&str] = &[
     "MAESTRO_EVALOPS_INTEGRATION_PROFILE",
     "EVALOPS_INTEGRATION_PROFILE",
@@ -202,13 +186,14 @@ fn resolve_managed_context(
         .is_some_and(|key| !key.trim().is_empty())
         || (env_from_map(env, EVALOPS_ACCESS_TOKEN_ENV_VARS).is_some()
             && (agent_id.is_some() || run_id.is_some()));
-    let managed = organization_id.is_some() && managed_agent_session;
+    let platform = organization_id.is_some() && authenticated;
+    let managed = platform && managed_agent_session;
     let mode = if managed {
         "EvalOps managed"
-    } else if authenticated {
-        "EvalOps authenticated"
+    } else if platform {
+        "EvalOps platform"
     } else {
-        "local"
+        "byok"
     };
     let trace_ingestion = if managed && run_id.is_some() {
         "live"
@@ -225,7 +210,11 @@ fn resolve_managed_context(
         control_plane_url: agent_mcp.and_then(|meta| meta.endpoint.clone()),
         evidence_publisher: if managed { "EvalOps" } else { "none" },
         expires_at: snapshot.map(|value| value.expires),
-        inference: if managed { "managed" } else { "local" },
+        inference: if platform {
+            "llm-gateway"
+        } else {
+            "local-provider"
+        },
         integration_profile: env_from_map(env, EVALOPS_INTEGRATION_PROFILE_ENV_VARS)
             .or_else(|| agent_mcp.and_then(|meta| meta.integration_profile.clone())),
         key_prefix: agent_mcp.and_then(|meta| meta.key_prefix.clone()),
@@ -426,11 +415,11 @@ mod tests {
             agent_mcp: None,
         };
         let context = resolve_managed_context(Some(&snapshot), &HashMap::new());
-        assert_eq!(context.mode, "EvalOps authenticated");
+        assert_eq!(context.mode, "EvalOps platform");
         assert!(!context.managed);
-        assert_eq!(context.inference, "local");
+        assert_eq!(context.inference, "llm-gateway");
         let output = format_managed_status(&context);
-        assert!(output.contains("Mode: EvalOps authenticated"));
+        assert!(output.contains("Mode: EvalOps platform"));
         assert!(output.contains("Organization: org_123"));
         assert!(output.contains("Authenticated as: user@evalops.dev"));
         assert!(output.contains("Provider ref: openai/prod"));
@@ -473,7 +462,7 @@ mod tests {
         );
         assert_eq!(context.trace_ingestion, "live");
         assert_eq!(context.evidence_publisher, "EvalOps");
-        assert_eq!(context.inference, "managed");
+        assert_eq!(context.inference, "llm-gateway");
         let output = format_managed_status(&context);
         assert!(output.contains("Mode: EvalOps managed"));
         assert!(output.contains("Agent: agent_1"));

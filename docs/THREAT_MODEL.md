@@ -202,8 +202,10 @@ The HTTP runtime gateway is authenticated by
 
 - API keys are accepted as `Authorization: Bearer` or
   `x-maestro-api-key` (the legacy `x-composer-api-key` is also accepted).
-- Shared bearer secrets, JWT HMAC/RS-family validation, and JWKS validation
-  are supported through the corresponding `MAESTRO_*` settings.
+- Identity JWTs are accepted through `MAESTRO_JWT_SECRET` (HS256) or
+  `MAESTRO_JWT_JWKS_URL` / `MAESTRO_JWT_JWKS` (RS-family). Claims populate
+  `subject`, `organization_id`, `workspace_id`, and `scopes` on `AuthContext`.
+  The custom HMAC `MAESTRO_AUTH_SHARED_SECRET` authenticator is gone.
 - A trusted proxy can authenticate a subject with
   `MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN` and an identity header.
 - Runtime session cookies are HMAC-bound to the configured API key.

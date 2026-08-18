@@ -413,7 +413,7 @@ impl RuntimeGatewayConfig {
     fn validate_startup(&self) -> anyhow::Result<()> {
         if self.require_key_explicitly_disabled && !self.listen_host_is_loopback() {
             anyhow::bail!(
-                "MAESTRO_WEB_REQUIRE_KEY=0 is only honored for loopback binds, but MAESTRO_CONTROL_HOST={} exposes the runtime gateway beyond localhost; remove MAESTRO_WEB_REQUIRE_KEY=0 and configure auth (MAESTRO_WEB_API_KEY, MAESTRO_AUTH_SHARED_SECRET, MAESTRO_JWT_SECRET, MAESTRO_JWT_JWKS_URL, or MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN), or bind to 127.0.0.1",
+                "MAESTRO_WEB_REQUIRE_KEY=0 is only honored for loopback binds, but MAESTRO_CONTROL_HOST={} exposes the runtime gateway beyond localhost; remove MAESTRO_WEB_REQUIRE_KEY=0 and configure auth (MAESTRO_WEB_API_KEY, MAESTRO_JWT_SECRET, MAESTRO_JWT_JWKS_URL, or MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN), or bind to 127.0.0.1",
                 self.listen_host
             );
         }
@@ -426,7 +426,7 @@ impl RuntimeGatewayConfig {
                     self.listen_host
                 )
             };
-            anyhow::bail!("web auth is required because {reason}; set MAESTRO_WEB_API_KEY, MAESTRO_AUTH_SHARED_SECRET, MAESTRO_JWT_SECRET, MAESTRO_JWT_JWKS_URL, or MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN");
+            anyhow::bail!("web auth is required because {reason}; set MAESTRO_WEB_API_KEY, MAESTRO_JWT_SECRET, MAESTRO_JWT_JWKS_URL, or MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN");
         }
         Ok(())
     }

@@ -286,44 +286,16 @@ steps:
           paths: [".buildkite/cache"]
         command: scripts/run-buildkite-jetbrains.sh
 
-      - label: ":bar_chart: Coverage (advisory)"
-        key: "coverage"
-        priority: 50
-        if: build.branch == "main" && build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
+      # Do not list coverage/perf here. A step with `if:` is still created
+      # and shows as broken on push and PR. Upload them only on the daily
+      # 05:17 UTC schedule (BUILDKITE_SOURCE=schedule).
+      - label: ":pipeline: Upload scheduled advisory steps"
+        key: "advisory-upload"
+        priority: 60
+        timeout_in_minutes: 5
         soft_fail: true
-        timeout_in_minutes: 90
-        concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
-        retry:
-          automatic:
-            - exit_status: -1
-              signal_reason: none
-              limit: 1
-            - signal_reason: agent_stop
-              limit: 1
-        cache:
-          name: "maestro-coverage-main"
-          size: "50g"
-          paths: [".buildkite/cache"]
-        command: scripts/run-buildkite-coverage.sh
-
-      - label: ":stopwatch: Performance baseline (advisory)"
-        key: "perf-baseline"
-        priority: 50
-        if: build.branch == "main" && build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
-        soft_fail: true
-        timeout_in_minutes: 60
-        concurrency: 3
-        concurrency_group: "${MAESTRO_CI_CONCURRENCY_GROUP:-maestro-heavy-workloads}"
-        retry:
-          automatic:
-            - exit_status: -1
-              signal_reason: none
-              limit: 1
-            - signal_reason: agent_stop
-              limit: 1
-        cache:
-          name: "maestro-perf-main"
-          size: "30g"
-          paths: [".buildkite/cache"]
-        command: scripts/run-buildkite-perf.sh
+        command: |
+          set -euo pipefail
+          if [[ "$${BUILDKITE_BRANCH}" == "main" && "$${BUILDKITE_SOURCE}" == "schedule" && -f .buildkite/advisory.yml ]]; then
+            buildkite-agent pipeline upload .buildkite/advisory.yml
+          fi

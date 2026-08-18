@@ -23,9 +23,11 @@
 //! 1. CLI flags (--model, --config key=value)
 //! 2. Environment variables (MAESTRO_*)
 //! 3. Active profile settings
-//! 4. Project config.toml (.composer/config.toml)
-//! 5. Global config.toml (~/.composer/config.toml)
-//! 6. Built-in defaults (DEFAULT_CONFIG)
+//! 4. Project local config (`.maestro/config.local.toml`)
+//! 5. Project config (`.maestro/config.toml`, then legacy `.composer/config.toml`)
+//! 6. User config (`$MAESTRO_HOME/config.toml` or `~/.maestro/config.toml`)
+//! 7. Legacy global config (`~/.composer/config.toml`)
+//! 8. Built-in defaults (DEFAULT_CONFIG)
 //!
 //! ## Example config.toml
 //!
@@ -1192,6 +1194,181 @@ fn apply_profile(config: &mut ComposerConfig, profile_name: &str) {
     }
 }
 
+fn merge_config_files(config: &mut ComposerConfig, workspace_dir: &Path) {
+    if let Some(home) = dirs::home_dir() {
+        merge_optional_file(config, &home.join(".composer").join("config.toml"));
+    }
+    if let Some(home) = crate::path_utils::maestro_home_dir() {
+        merge_optional_file(config, &home.join("config.toml"));
+    }
+    merge_optional_project_file(
+        config,
+        workspace_dir,
+        &workspace_dir.join(".composer").join("config.toml"),
+    );
+    merge_optional_project_file(
+        config,
+        workspace_dir,
+        &workspace_dir.join(".maestro").join("config.toml"),
+    );
+    // User-owned local overlay written by `maestro config set --scope local`.
+    merge_optional_file(
+        config,
+        &workspace_dir.join(".maestro").join("config.local.toml"),
+    );
+}
+
+fn merge_optional_file(config: &mut ComposerConfig, path: &Path) {
+    if let Some(source) = parse_config_file(path) {
+        deep_merge(config, &source);
+    }
+}
+
+fn merge_optional_project_file(config: &mut ComposerConfig, workspace_dir: &Path, path: &Path) {
+    let Some(mut project_config) = parse_config_file(path) else {
+        return;
+    };
+    // The shell environment policy is applied verbatim to every spawned
+    // command, so a repository-controlled config must not weaken secret
+    // filtering or inject code-execution env vars. Only honor it when the
+    // workspace is trusted (trust is read from global config above, so a
+    // project cannot grant itself trust), and sanitize it even then.
+    if workspace_trusted(config, workspace_dir) {
+        if let Some(policy) = project_config.shell_environment_policy.as_mut() {
+            sanitize_project_shell_environment_policy(policy);
+        }
+    } else {
+        strip_untrusted_project_overrides(&mut project_config, config);
+    }
+    deep_merge(config, &project_config);
+}
+
+fn strip_untrusted_project_overrides(
+    project_config: &mut ComposerConfig,
+    inherited: &ComposerConfig,
+) {
+    if project_config
+        .subagent_inbound_control
+        .is_some_and(|project_policy| {
+            let inherited = inherited.subagent_inbound_control.unwrap_or_default();
+            project_policy.restrictiveness() < inherited.restrictiveness()
+        })
+    {
+        project_config.subagent_inbound_control = None;
+    }
+    project_config.shell_environment_policy = None;
+    // Sandbox settings decide how much of the host a session can
+    // touch, so they are security-sensitive in the same way: an
+    // untrusted repository must not be able to check in
+    // `sandbox_mode = "danger-full-access"` (disabling the sandbox
+    // for everyone who opens it) or widen `sandbox_workspace_write`
+    // with sensitive absolute paths. Strip them — and any
+    // project-defined profile that could smuggle the same override
+    // back in — unless the workspace is trusted; the global config
+    // and env overrides remain authoritative.
+    project_config.sandbox_mode = None;
+    project_config.sandbox_workspace_write = None;
+    if let Some(profiles) = project_config.profiles.as_mut() {
+        for profile in profiles.values_mut() {
+            profile.sandbox_mode = None;
+        }
+    }
+    // Stripping a project-defined profile's own `sandbox_mode`
+    // (above) only stops an untrusted repo from smuggling a
+    // dangerous profile IN. It does nothing to stop the repo from
+    // smuggling a dangerous profile SELECTION: `active_profile`
+    // below resolves from `config.profile` after this project
+    // config is merged in, and `apply_profile` looks that name up
+    // in the *merged* `profiles` map, which still includes every
+    // profile the user's own trusted global config defines. A repo
+    // checking in `profile = "unsandboxed"` in its
+    // `.composer/config.toml` could silently activate a profile the
+    // user only ever intended to opt into manually (e.g. via
+    // `maestro --profile unsandboxed`), bypassing the sandbox
+    // default without the user typing anything.
+    //
+    // Selecting a profile the *project itself* defines is fine: its
+    // `sandbox_mode` was just stripped above, so activating it
+    // can't touch the sandbox, and legitimate repo-local profiles
+    // (picking a project's preferred model, for instance) still
+    // work. Only a selector that resolves outside the project's own
+    // `profiles` table -- i.e. into the trusted global config's
+    // profiles -- is security-sensitive, so only that case is
+    // cleared.
+    let selects_only_a_project_owned_profile =
+        project_config.profile.as_deref().is_some_and(|name| {
+            project_config
+                .profiles
+                .as_ref()
+                .is_some_and(|profiles| profiles.contains_key(name))
+        });
+    if !selects_only_a_project_owned_profile {
+        project_config.profile = None;
+    }
+}
+
+/// Compose a runtime model route from optional `model_provider` + `model`.
+///
+/// `openrouter` + `openai/o4-mini` becomes `openrouter/openai/o4-mini`.
+/// A model that already starts with the same provider is left unchanged.
+#[must_use]
+pub fn compose_model_route(provider: Option<&str>, model: Option<&str>) -> Option<String> {
+    let provider = provider.map(str::trim).filter(|value| !value.is_empty());
+    let model = model.map(str::trim).filter(|value| !value.is_empty());
+    match (provider, model) {
+        (None, None) => None,
+        (None, Some(model)) => Some(model.to_owned()),
+        (Some(provider), Some(model)) if model_already_qualified_for(provider, model) => {
+            Some(model.to_owned())
+        }
+        (Some(provider), Some(model)) => Some(format!("{provider}/{model}")),
+        (Some(provider), None) => {
+            let model_provider = if matches!(provider, "evalops" | "maestro-managed") {
+                env::var("MAESTRO_EVALOPS_PROVIDER")
+                    .ok()
+                    .map(|value| value.trim().to_owned())
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| "openai".to_owned())
+            } else {
+                provider.to_owned()
+            };
+            let default_model = crate::model_catalog::default_model_for_provider(&model_provider)
+                .unwrap_or("gpt-5.5");
+            Some(format!("{provider}/{default_model}"))
+        }
+    }
+}
+
+fn model_already_qualified_for(provider: &str, model: &str) -> bool {
+    let Some((prefix, _)) = model.split_once('/') else {
+        return false;
+    };
+    let requested = crate::ai::ProviderRegistry::descriptor(provider)
+        .map_or(provider, |descriptor| descriptor.id);
+    let qualified =
+        crate::ai::ProviderRegistry::descriptor(prefix).map_or(prefix, |descriptor| descriptor.id);
+    requested == qualified
+}
+
+/// Model route from user/project config and env, with no built-in default.
+///
+/// Returns `None` when no file or `MAESTRO_MODEL*` value set a model. Callers
+/// such as [`crate::codex_auth::resolve_default_model`] then fall through to
+/// Codex auth or the platform default.
+#[must_use]
+pub fn configured_model_route(workspace_dir: &Path, profile_name: Option<&str>) -> Option<String> {
+    let mut config = ComposerConfig::default();
+    merge_config_files(&mut config, workspace_dir);
+    apply_env_overrides(&mut config);
+    let active_profile = profile_name
+        .map(String::from)
+        .or_else(|| config.profile.clone());
+    if let Some(ref profile) = active_profile {
+        apply_profile(&mut config, profile);
+    }
+    compose_model_route(config.model_provider.as_deref(), config.model.as_deref())
+}
+
 /// Load configuration from files and environment.
 ///
 /// This is the main entry point for loading configuration. It implements
@@ -1297,89 +1474,7 @@ pub fn load_config(workspace_dir: &Path, profile_name: Option<&str>) -> Composer
 
     // Start with defaults
     let mut config = DEFAULT_CONFIG.clone();
-
-    // Load global config
-    if let Some(home) = dirs::home_dir() {
-        let global_path = home.join(".composer").join("config.toml");
-        if let Some(global_config) = parse_config_file(&global_path) {
-            deep_merge(&mut config, &global_config);
-        }
-    }
-
-    // Load project config
-    let project_path = workspace_dir.join(".composer").join("config.toml");
-    if let Some(mut project_config) = parse_config_file(&project_path) {
-        // The shell environment policy is applied verbatim to every spawned
-        // command, so a repository-controlled config must not weaken secret
-        // filtering or inject code-execution env vars. Only honor it when the
-        // workspace is trusted (trust is read from global config above, so a
-        // project cannot grant itself trust), and sanitize it even then.
-        if workspace_trusted(&config, workspace_dir) {
-            if let Some(policy) = project_config.shell_environment_policy.as_mut() {
-                sanitize_project_shell_environment_policy(policy);
-            }
-        } else {
-            if project_config
-                .subagent_inbound_control
-                .is_some_and(|project_policy| {
-                    let inherited = config.subagent_inbound_control.unwrap_or_default();
-                    project_policy.restrictiveness() < inherited.restrictiveness()
-                })
-            {
-                project_config.subagent_inbound_control = None;
-            }
-            project_config.shell_environment_policy = None;
-            // Sandbox settings decide how much of the host a session can
-            // touch, so they are security-sensitive in the same way: an
-            // untrusted repository must not be able to check in
-            // `sandbox_mode = "danger-full-access"` (disabling the sandbox
-            // for everyone who opens it) or widen `sandbox_workspace_write`
-            // with sensitive absolute paths. Strip them — and any
-            // project-defined profile that could smuggle the same override
-            // back in — unless the workspace is trusted; the global config
-            // and env overrides remain authoritative.
-            project_config.sandbox_mode = None;
-            project_config.sandbox_workspace_write = None;
-            if let Some(profiles) = project_config.profiles.as_mut() {
-                for profile in profiles.values_mut() {
-                    profile.sandbox_mode = None;
-                }
-            }
-            // Stripping a project-defined profile's own `sandbox_mode`
-            // (above) only stops an untrusted repo from smuggling a
-            // dangerous profile IN. It does nothing to stop the repo from
-            // smuggling a dangerous profile SELECTION: `active_profile`
-            // below resolves from `config.profile` after this project
-            // config is merged in, and `apply_profile` looks that name up
-            // in the *merged* `profiles` map, which still includes every
-            // profile the user's own trusted global config defines. A repo
-            // checking in `profile = "unsandboxed"` in its
-            // `.composer/config.toml` could silently activate a profile the
-            // user only ever intended to opt into manually (e.g. via
-            // `maestro --profile unsandboxed`), bypassing the sandbox
-            // default without the user typing anything.
-            //
-            // Selecting a profile the *project itself* defines is fine: its
-            // `sandbox_mode` was just stripped above, so activating it
-            // can't touch the sandbox, and legitimate repo-local profiles
-            // (picking a project's preferred model, for instance) still
-            // work. Only a selector that resolves outside the project's own
-            // `profiles` table -- i.e. into the trusted global config's
-            // profiles -- is security-sensitive, so only that case is
-            // cleared.
-            let selects_only_a_project_owned_profile =
-                project_config.profile.as_deref().is_some_and(|name| {
-                    project_config
-                        .profiles
-                        .as_ref()
-                        .is_some_and(|profiles| profiles.contains_key(name))
-                });
-            if !selects_only_a_project_owned_profile {
-                project_config.profile = None;
-            }
-        }
-        deep_merge(&mut config, &project_config);
-    }
+    merge_config_files(&mut config, workspace_dir);
 
     // Apply environment overrides
     apply_env_overrides(&mut config);
@@ -2233,5 +2328,105 @@ sandbox_mode = "danger-full-access"
         // Benign knobs survive sanitization.
         assert_eq!(policy.inherit, Some(ShellInherit::Core));
         assert_eq!(policy.exclude, Some(vec!["SECRET_KEY".to_string()]));
+    }
+
+    fn restore_os_env(name: &str, previous: Option<std::ffi::OsString>) {
+        match previous {
+            Some(value) => unsafe { std::env::set_var(name, value) },
+            None => unsafe { std::env::remove_var(name) },
+        }
+    }
+
+    #[test]
+    fn compose_model_route_prefixes_openrouter_vendor_ids() {
+        assert_eq!(
+            compose_model_route(Some("openrouter"), Some("openai/o4-mini")).as_deref(),
+            Some("openrouter/openai/o4-mini")
+        );
+        assert_eq!(
+            compose_model_route(Some("openrouter"), Some("openrouter/openai/o4-mini")).as_deref(),
+            Some("openrouter/openai/o4-mini")
+        );
+        assert_eq!(
+            compose_model_route(None, Some("openai/o4-mini")).as_deref(),
+            Some("openai/o4-mini")
+        );
+        assert_eq!(compose_model_route(None, None), None);
+    }
+
+    #[test]
+    fn load_config_reads_maestro_home_model_settings() {
+        let maestro_home = TempDir::new().unwrap();
+        let user_home = TempDir::new().unwrap();
+        let workspace = TempDir::new().unwrap();
+        let previous_maestro_home = std::env::var_os("MAESTRO_HOME");
+        let previous_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("MAESTRO_HOME", maestro_home.path());
+            std::env::set_var("HOME", user_home.path());
+        }
+        fs::write(
+            maestro_home.path().join("config.toml"),
+            "model = \"openai/o4-mini\"\nmodel_provider = \"openrouter\"\n",
+        )
+        .unwrap();
+        clear_config_cache();
+        let config = load_config(workspace.path(), None);
+        restore_os_env("MAESTRO_HOME", previous_maestro_home);
+        restore_os_env("HOME", previous_home);
+        clear_config_cache();
+        assert_eq!(config.model.as_deref(), Some("openai/o4-mini"));
+        assert_eq!(config.model_provider.as_deref(), Some("openrouter"));
+    }
+
+    #[test]
+    fn configured_model_route_composes_maestro_home_settings() {
+        let maestro_home = TempDir::new().unwrap();
+        let user_home = TempDir::new().unwrap();
+        let workspace = TempDir::new().unwrap();
+        let previous_maestro_home = std::env::var_os("MAESTRO_HOME");
+        let previous_home = std::env::var_os("HOME");
+        let previous_model = std::env::var_os("MAESTRO_MODEL");
+        let previous_provider = std::env::var_os("MAESTRO_MODEL_PROVIDER");
+        unsafe {
+            std::env::set_var("MAESTRO_HOME", maestro_home.path());
+            std::env::set_var("HOME", user_home.path());
+            std::env::remove_var("MAESTRO_MODEL");
+            std::env::remove_var("MAESTRO_MODEL_PROVIDER");
+        }
+        fs::write(
+            maestro_home.path().join("config.toml"),
+            "model = \"openai/o4-mini\"\nmodel_provider = \"openrouter\"\n",
+        )
+        .unwrap();
+        let route = configured_model_route(workspace.path(), None);
+        restore_os_env("MAESTRO_HOME", previous_maestro_home);
+        restore_os_env("HOME", previous_home);
+        restore_os_env("MAESTRO_MODEL", previous_model);
+        restore_os_env("MAESTRO_MODEL_PROVIDER", previous_provider);
+        assert_eq!(route.as_deref(), Some("openrouter/openai/o4-mini"));
+    }
+
+    #[test]
+    fn configured_model_route_is_none_without_user_settings() {
+        let maestro_home = TempDir::new().unwrap();
+        let user_home = TempDir::new().unwrap();
+        let workspace = TempDir::new().unwrap();
+        let previous_maestro_home = std::env::var_os("MAESTRO_HOME");
+        let previous_home = std::env::var_os("HOME");
+        let previous_model = std::env::var_os("MAESTRO_MODEL");
+        let previous_provider = std::env::var_os("MAESTRO_MODEL_PROVIDER");
+        unsafe {
+            std::env::set_var("MAESTRO_HOME", maestro_home.path());
+            std::env::set_var("HOME", user_home.path());
+            std::env::remove_var("MAESTRO_MODEL");
+            std::env::remove_var("MAESTRO_MODEL_PROVIDER");
+        }
+        let route = configured_model_route(workspace.path(), None);
+        restore_os_env("MAESTRO_HOME", previous_maestro_home);
+        restore_os_env("HOME", previous_home);
+        restore_os_env("MAESTRO_MODEL", previous_model);
+        restore_os_env("MAESTRO_MODEL_PROVIDER", previous_provider);
+        assert_eq!(route, None);
     }
 }

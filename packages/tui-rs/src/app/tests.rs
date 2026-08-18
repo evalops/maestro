@@ -161,8 +161,9 @@ fn test_active_modal_variants_exist() {
         ActiveModal::Approval,
         ActiveModal::ModelSelector,
         ActiveModal::ThemeSelector,
+        ActiveModal::Setup,
     ];
-    assert_eq!(modals.len(), 8);
+    assert_eq!(modals.len(), 9);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1249,6 +1250,7 @@ fn test_handle_paste_routes_to_modal_or_main_input() {
         ActiveModal::CommandPalette,
         ActiveModal::ModelSelector,
         ActiveModal::ThemeSelector,
+        ActiveModal::Setup,
     ] {
         app.active_modal = modal;
         app.handle_paste("query text");

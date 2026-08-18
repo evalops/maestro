@@ -233,6 +233,8 @@ mod tests {
         vec![
             FromAgentMessage::HelloOk {
                 protocol_version: "2026-08-08".into(),
+                controller_binding_version: None,
+                controller_binding_sha256: None,
                 connection_id: None,
                 client_protocol_version: None,
                 client_info: None,

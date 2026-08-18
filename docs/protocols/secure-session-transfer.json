@@ -1,0 +1,73 @@
+{
+  "schemaVersion": "evalops.maestro.secure-session-transfer.v1",
+  "envelope": {
+    "format": "evalops.maestro.secure-session.v1",
+    "required": [
+      "format",
+      "bundleId",
+      "issuedAt",
+      "recipient",
+      "encryption",
+      "signer"
+    ],
+    "recipient": {
+      "kind": "symmetric-key",
+      "keyId": "operator-selected recipient key identifier"
+    },
+    "encryption": {
+      "algorithm": "AES-256-GCM",
+      "keyId": "must equal recipient.keyId",
+      "nonce": "base64url without padding; 12 decoded bytes",
+      "ciphertext": "base64url without padding; redacted maestro-session-export.v1 JSON plus GCM tag"
+    },
+    "signer": {
+      "algorithm": "Ed25519",
+      "keyId": "operator-selected signing key identifier",
+      "signature": "base64url without padding; 64 decoded bytes"
+    },
+    "signature": {
+      "domain": "evalops.maestro.secure-session.signature.v1",
+      "payload": "canonical JSON of the envelope with signer.signature omitted",
+      "verificationOrder": [
+        "validate bounded envelope metadata",
+        "verify Ed25519 signature",
+        "decrypt and authenticate AES-256-GCM payload",
+        "validate maestro-session-export.v1 payload",
+        "write imported session files"
+      ]
+    }
+  },
+  "keys": {
+    "encryptionKeyFile": "exactly 32 raw bytes; local file must not be group- or world-readable on Unix; shared out of band with the intended recipient",
+    "signingKeyFile": "Ed25519 PKCS#8 private key; local file must not be group- or world-readable",
+    "verifyKeyFile": "exactly 32 raw Ed25519 public-key bytes",
+    "custody": "Maestro does not generate, persist, upload, or escrow operator keys"
+  },
+  "redaction": {
+    "policy": "credential redaction is mandatory before secure serialization and encryption",
+    "plaintextFormat": "maestro-session-export.v1",
+    "rawCredentials": "never included in a secure bundle"
+  },
+  "replay": {
+    "bundleId": "UUID identifying the signed export",
+    "issuedAt": "RFC3339 timestamp",
+    "importMarker": "portableBundleId is written into each imported session header",
+    "policy": "replaying a verified bundle is safe and creates collision-resistant new session IDs; no tools execute during import"
+  },
+  "limits": {
+    "maximumEnvelopeBytes": 16777216,
+    "maximumKeyIdBytes": 128,
+    "nonceBytes": 12,
+    "signatureBytes": 64
+  },
+  "cli": {
+    "export": "maestro sessions export <session-id> [output-path] --format secure-json --encryption-key-file <path> --signing-key-file <path> --recipient-key-id <id> --signing-key-id <id>",
+    "import": "maestro sessions import <bundle.secure.json> --encryption-key-file <path> --verify-key-file <path> [--recipient-key-id <id>]"
+  },
+  "compatibility": {
+    "legacyV1": "existing json and jsonl imports remain supported without keys",
+    "secureV1": "secure envelopes are never downgraded to plaintext imports",
+    "unknownFields": "rejected",
+    "malformedOrUnauthenticated": "rejected before session writes"
+  }
+}

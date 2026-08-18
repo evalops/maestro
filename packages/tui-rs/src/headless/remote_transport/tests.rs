@@ -340,6 +340,8 @@ fn remote_runtime_state_snapshot_maps_into_agent_state() {
     let snapshot = RemoteRuntimeStateSnapshot {
         protocol_version: Some("2026-03-30".to_string()),
         client_protocol_version: Some("2026-03-30".to_string()),
+        controller_binding_version: None,
+        controller_binding_sha256: None,
         client_info: Some(ClientInfo {
             name: "maestro-tui-rs".to_string(),
             version: Some("0.1.0".to_string()),

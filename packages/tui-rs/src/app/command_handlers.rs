@@ -103,6 +103,10 @@ impl App {
                         self.theme_selector.show();
                         self.active_modal = ActiveModal::ThemeSelector;
                     }
+                    ModalType::Setup => {
+                        self.setup_modal.show();
+                        self.active_modal = ActiveModal::Setup;
+                    }
                     ModalType::ModelSelector => {
                         self.local_model_discovery
                             .refresh_if_stale(std::time::Duration::from_secs(5));

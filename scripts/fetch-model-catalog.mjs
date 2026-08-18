@@ -59,7 +59,69 @@ function supportedParameter(model, parameter) {
 	return Array.isArray(model?.supported_parameters) && model.supported_parameters.includes(parameter);
 }
 
-function mapOpenRouterModel(model) {
+function distinctOutputTokens(context, output) {
+	if (!Number.isInteger(output) || output <= 0) {
+		return undefined;
+	}
+	if (Number.isInteger(context) && context > 0 && output >= context) {
+		return undefined;
+	}
+	return output;
+}
+
+function limitTokens(model, field) {
+	const value = model?.limit?.[field];
+	return Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+function indexModelsDevTokenLimits(modelsDevCatalog) {
+	const entries = new Map();
+	const push = (key, context, output) => {
+		if (!entries.has(key)) {
+			entries.set(key, []);
+		}
+		entries.get(key).push({ context, output });
+	};
+	const indexProvider = (providerId, providerModels) => {
+		if (!providerModels || typeof providerModels !== "object") {
+			return;
+		}
+		for (const [modelId, model] of Object.entries(providerModels)) {
+			const context = limitTokens(model, "context");
+			const output = limitTokens(model, "output");
+			if (providerId === "openrouter") {
+				push(modelId, context, output);
+			} else {
+				push(`${providerId}/${modelId}`, context, output);
+			}
+		}
+	};
+	for (const [providerId, provider] of Object.entries(modelsDevCatalog)) {
+		if (providerId === "openrouter") {
+			continue;
+		}
+		indexProvider(providerId, provider?.models);
+	}
+	indexProvider("openrouter", modelsDevCatalog.openrouter?.models);
+	return entries;
+}
+
+function resolveOpenRouterOutput(entries, id, context, advertised) {
+	const distinct = distinctOutputTokens(context, advertised);
+	if (distinct !== undefined) {
+		return distinct;
+	}
+	const candidates = entries.get(id) ?? [];
+	for (const candidate of candidates) {
+		const resolved = distinctOutputTokens(context, candidate.output);
+		if (resolved !== undefined) {
+			return resolved;
+		}
+	}
+	return undefined;
+}
+
+function mapOpenRouterModel(model, tokenLimits) {
 	const id = typeof model?.id === "string" ? model.id.trim() : "";
 	if (id === "" || id.endsWith(":batch")) {
 		return null;
@@ -73,7 +135,7 @@ function mapOpenRouterModel(model) {
 	if (context <= 0) {
 		return null;
 	}
-	const output = model.top_provider?.max_completion_tokens ?? model.max_completion_tokens;
+	const advertised = model.top_provider?.max_completion_tokens ?? model.max_completion_tokens;
 	const inputs = Array.isArray(model.architecture?.input_modalities)
 		? model.architecture.input_modalities
 		: [];
@@ -99,7 +161,7 @@ function mapOpenRouterModel(model) {
 				(model.reasoning != null && typeof model.reasoning === "object"),
 			streaming: true,
 			context_tokens: context,
-			output_tokens: Number.isInteger(output) && output > 0 ? output : undefined,
+			output_tokens: resolveOpenRouterOutput(tokenLimits, id, context, advertised),
 		},
 		verification: {
 			state: "catalog",
@@ -129,11 +191,9 @@ function mapModel(providerId, modelId, model) {
 			streaming: true,
 			context_tokens: model.limit.context,
 			// Per-response output ceiling (reasoning included) from
-			// models.dev `limit.output`; omitted when the source lacks it.
-			output_tokens:
-				Number.isInteger(model.limit?.output) && model.limit.output > 0
-					? model.limit.output
-					: undefined,
+			// models.dev `limit.output`. Omitted when the source lacks it or
+			// copies the context window into output.
+			output_tokens: distinctOutputTokens(model.limit?.context, model.limit?.output),
 		},
 		verification: {
 			state: "catalog",
@@ -192,8 +252,9 @@ async function main() {
 	if (!openrouterModels) {
 		throw new Error("OpenRouter payload is missing a data array");
 	}
+	const tokenLimits = indexModelsDevTokenLimits(modelsDevCatalog);
 	for (const model of openrouterModels) {
-		const mapped = mapOpenRouterModel(model);
+		const mapped = mapOpenRouterModel(model, tokenLimits);
 		if (mapped) {
 			models.push(mapped);
 		}

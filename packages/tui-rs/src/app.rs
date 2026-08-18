@@ -83,7 +83,8 @@ use crate::components::{
     approval_modal_kind, calculate_input_height, ApprovalController, ApprovalDecision,
     ApprovalModal, ApprovalModalKind, ApprovalRequest, BatchedApprovalModal, ChatInputWidget,
     ChatInputWidgetOptions, ChatView, CommandPalette, DetailView, FileSearchModal, ModelSelector,
-    OperationsModal, RewindPicker, SessionSwitcher, ShortcutsHelp, ThemeSelector,
+    OperationsModal, RewindPicker, SessionSwitcher, SetupAdvance, SetupModal, ShortcutsHelp,
+    ThemeSelector,
 };
 use crate::config_watcher::{ConfigEvent, ConfigWatcher, ConfigWatcherBuilder};
 use crate::files::{get_workspace_files, WorkspaceFile};
@@ -150,6 +151,8 @@ pub enum ActiveModal {
     ModelSelector,
     /// Color theme selector
     ThemeSelector,
+    /// First-run EvalOps or local API key setup
+    Setup,
     /// Keyboard shortcuts help overlay
     ShortcutsHelp,
     /// File checkpoint restore picker (double-Esc on empty input)
@@ -665,6 +668,11 @@ pub struct App {
 
     /// Color theme selection modal.
     theme_selector: ThemeSelector,
+
+    /// `/setup` EvalOps or local API key modal.
+    setup_modal: SetupModal,
+    setup_login_rx: Option<tokio::sync::oneshot::Receiver<Result<(), String>>>,
+    pending_agent_spawn: bool,
 
     /// Keyboard shortcuts help overlay.
     shortcuts_help: ShortcutsHelp,
@@ -1387,6 +1395,9 @@ impl App {
             clipboard: ClipboardManager::new(),
             model_selector: ModelSelector::new(),
             theme_selector: ThemeSelector::new(),
+            setup_modal: SetupModal::new(),
+            setup_login_rx: None,
+            pending_agent_spawn: false,
             shortcuts_help: ShortcutsHelp::new_with_binding_labels(keybinding_labels),
             rewind_picker: RewindPicker::new(),
             usage_tracker: crate::usage::UsageTracker::new(),
@@ -1706,11 +1717,16 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         // Spawn the agent (async operation).
         // This creates the channels and starts the agent task.
         self.spawn_agent().await?;
+        if self.maybe_open_first_run_setup() {
+            self.render()?;
+        }
 
         // Grok-style trailing prompt: submit after the agent is ready and any
         // initial local-runtime metadata has refreshed its request budgets.
-        if let Some(prompt) = self.take_initial_prompt_after_discovery().await {
-            let _ = self.submit_prompt(prompt).await;
+        if self.active_modal != ActiveModal::Setup {
+            if let Some(prompt) = self.take_initial_prompt_after_discovery().await {
+                let _ = self.submit_prompt(prompt).await;
+            }
         }
 
         // Main event loop - runs until should_quit is set to true.
@@ -1734,6 +1750,19 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             let mut agent_activity = self.poll_agent().await?;
             if agent_activity {
                 needs_redraw = true;
+            }
+            if self.poll_setup_login() {
+                needs_redraw = true;
+            }
+            if self.pending_agent_spawn {
+                self.pending_agent_spawn = false;
+                self.spawn_agent().await?;
+                needs_redraw = true;
+                if self.native_agent.is_some() {
+                    if let Some(prompt) = self.take_initial_prompt_after_discovery().await {
+                        let _ = self.submit_prompt(prompt).await;
+                    }
+                }
             }
 
             // Empty chat runs the Deixic welcome sheen; advance paint only when
@@ -2111,7 +2140,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     /// PageDown step size) and resize the inline viewport itself.
     fn handle_resize(&mut self, width: u16, height: u16) -> Result<()> {
         self.terminal_size = Some((width, height));
-        self.state.set_input_width(width.saturating_sub(2).max(1));
+        self.state
+            .set_input_width(crate::components::composer_editor_width(width));
         if self.update_viewport_capabilities(height) {
             // ratatui's inline viewport height is fixed at construction, so
             // growing/shrinking it requires rebuilding the Terminal around
@@ -2186,8 +2216,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         let git_branch = git::current_branch(&cwd_path);
         self.current_git_branch = git_branch.clone();
 
-        // Codex ChatGPT login (CODEX_HOME/auth.json) wins when present and no
-        // explicit MAESTRO_MODEL is set — see codex_auth::resolve_default_model.
+        // MAESTRO_MODEL, then ~/.maestro (and project) model settings, then
+        // Codex ChatGPT login, then the platform default.
         let model = crate::codex_auth::resolve_default_model();
 
         let (history, session_id, thinking_level) = self.agent_context_for_spawn();
@@ -2270,15 +2300,18 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 self.flush_pending_agent_tool_notes();
             }
             Err(e) => {
-                let mut message = format!("Failed to create agent: {e}");
-                if crate::codex_auth::read_codex_auth().is_none()
-                    && std::env::var_os("OPENAI_API_KEY").is_none()
-                    && std::env::var_os("OPENAI_CODEX_TOKEN").is_none()
-                {
-                    message
-                        .push_str(" — run `maestro codex login` (ChatGPT) or set OPENAI_API_KEY.");
+                if should_open_first_run_setup(false, default_model_credentials_ready()) {
+                    self.state.status = Some("Complete setup to start.".to_string());
+                } else {
+                    let mut message = format!("Failed to create agent: {e}");
+                    if crate::codex_auth::read_codex_auth().is_none()
+                        && std::env::var_os("OPENAI_API_KEY").is_none()
+                        && std::env::var_os("OPENAI_CODEX_TOKEN").is_none()
+                    {
+                        message.push_str(" — run `maestro setup` or set a provider API key.");
+                    }
+                    self.state.error = Some(message);
                 }
-                self.state.error = Some(message);
             }
         }
 
@@ -2601,6 +2634,55 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             self.handle_agent_message(msg).await?;
         }
         Ok(had_messages)
+    }
+
+    fn maybe_open_first_run_setup(&mut self) -> bool {
+        if !should_open_first_run_setup(
+            self.native_agent.is_some(),
+            default_model_credentials_ready(),
+        ) {
+            return false;
+        }
+        if self.active_modal != ActiveModal::None {
+            return false;
+        }
+        self.setup_modal.show();
+        self.active_modal = ActiveModal::Setup;
+        true
+    }
+
+    fn poll_setup_login(&mut self) -> bool {
+        let Some(rx) = self.setup_login_rx.as_mut() else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(Ok(())) => {
+                self.setup_login_rx = None;
+                self.setup_modal.hide();
+                if self.active_modal == ActiveModal::Setup {
+                    self.active_modal = ActiveModal::None;
+                }
+                self.state.add_system_message(
+                    "EvalOps login saved. This session uses managed inference.".to_string(),
+                );
+                if self.native_agent.is_none() {
+                    self.pending_agent_spawn = true;
+                }
+                true
+            }
+            Ok(Err(error)) => {
+                self.setup_login_rx = None;
+                self.setup_modal.set_status(error);
+                true
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => false,
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                self.setup_login_rx = None;
+                self.setup_modal
+                    .set_status("EvalOps login ended without a result.");
+                true
+            }
+        }
     }
 
     fn poll_model_verification(&mut self) -> bool {
@@ -3883,6 +3965,7 @@ Slash Commands:
   /alerts       List recorded alerts
   /copy         Copy last response
   /theme        Change theme
+  /setup        Sign in or add a local API key
   /queue        Manage queued prompts (list/cancel/modes)
   /steer        Send a steering message
   /sessions     Browse sessions
@@ -3913,8 +3996,8 @@ Slash Commands:
                 .map(|area| (area.width, area.height));
         }
         if let Some((width, _height)) = self.terminal_size {
-            let inner_width = width.saturating_sub(2).max(1);
-            self.state.set_input_width(inner_width);
+            self.state
+                .set_input_width(crate::components::composer_editor_width(width));
         }
 
         // Extract needed data to avoid borrow conflicts
@@ -3932,6 +4015,7 @@ Slash Commands:
             .map(crate::sandbox::SandboxPolicy::mode_label);
         let model_selector = &mut self.model_selector;
         let theme_selector = &mut self.theme_selector;
+        let setup_modal = &self.setup_modal;
         let shortcuts_help = &self.shortcuts_help;
         let rewind_picker = &mut self.rewind_picker;
         let detail_view = &self.detail_view;
@@ -4044,6 +4128,9 @@ Slash Commands:
                     ActiveModal::ThemeSelector => {
                         theme_selector.render(frame, area);
                     }
+                    ActiveModal::Setup => {
+                        setup_modal.render(frame, area);
+                    }
                     ActiveModal::ShortcutsHelp => {
                         frame.render_widget(shortcuts_help.clone(), area);
                     }
@@ -4076,7 +4163,6 @@ Slash Commands:
                     // Create widget just to calculate cursor position
                     let input_widget = ChatInputWidget::new(
                         &state.textarea,
-                        "",
                         ChatInputWidgetOptions {
                             busy: state.busy,
                             pending_input_preview: None,
@@ -4346,6 +4432,15 @@ fn lifecycle_notification_insert_position(messages: &[Message], visible_index: u
     messages.len()
 }
 
+fn default_model_credentials_ready() -> bool {
+    let model = crate::codex_auth::resolve_default_model();
+    crate::credential_mode::require_ready(&model).is_ok()
+}
+
+fn should_open_first_run_setup(agent_ready: bool, credentials_ready: bool) -> bool {
+    !agent_ready && !credentials_ready
+}
+
 /// Host-generated note injected into agent history for background task exits.
 /// Trusted host signal (not untrusted tool output).
 fn format_background_task_tool_note(
@@ -4390,6 +4485,19 @@ mod background_task_note_tests {
         assert!(note.contains("status: exited"));
         assert!(note.contains("exit_code: 0"));
         assert!(note.contains("npm run dev"));
+    }
+}
+
+#[cfg(test)]
+mod first_run_setup_tests {
+    use super::should_open_first_run_setup;
+
+    #[test]
+    fn first_run_setup_opens_only_when_agent_and_credentials_are_missing() {
+        assert!(should_open_first_run_setup(false, false));
+        assert!(!should_open_first_run_setup(true, false));
+        assert!(!should_open_first_run_setup(false, true));
+        assert!(!should_open_first_run_setup(true, true));
     }
 }
 

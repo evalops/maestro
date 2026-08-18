@@ -263,6 +263,8 @@ impl SnapshotManifest {
             state: AgentState {
                 protocol_version: state.protocol_version.clone(),
                 client_protocol_version: state.client_protocol_version.clone(),
+                controller_binding_version: None,
+                controller_binding_sha256: None,
                 client_info: state.client_info.clone(),
                 capabilities: state.capabilities.clone(),
                 server_capabilities: state.server_capabilities.clone(),

@@ -80,7 +80,12 @@ pub fn run_connections(args: &[String]) -> Result<i32> {
             run_dashboard(parsed.workspace.as_deref())
         }
         "types" => run_types(&parsed),
-        "list" | "ls" => run_list(parsed.json),
+        "list" | "ls" => {
+            if let Some(session) = current_platform_session() {
+                return run_list_platform(&session, parsed.json);
+            }
+            run_list(parsed.json)
+        }
         "add"
             if parsed.positionals.is_empty()
                 && !parsed.json
@@ -90,11 +95,31 @@ pub fn run_connections(args: &[String]) -> Result<i32> {
         {
             run_add_wizard(parsed.workspace.as_deref()).map(|()| 0)
         }
-        "add" => run_add(&parsed),
-        "status" | "check" => run_status(&parsed),
-        "use" | "default" => run_use(&parsed),
+        "add" => {
+            if current_platform_session().is_some() {
+                return run_add_platform(&parsed);
+            }
+            run_add(&parsed)
+        }
+        "status" | "check" => {
+            if let Some(session) = current_platform_session() {
+                return run_status_platform(&session, &parsed);
+            }
+            run_status(&parsed)
+        }
+        "use" | "default" => {
+            if current_platform_session().is_some() {
+                return run_use_platform(&parsed);
+            }
+            run_use(&parsed)
+        }
         "rotate" => run_rotate(&parsed),
-        "remove" | "rm" | "revoke" => run_remove(&parsed),
+        "remove" | "rm" | "revoke" => {
+            if let Some(session) = current_platform_session() {
+                return run_remove_platform(&session, &parsed);
+            }
+            run_remove(&parsed)
+        }
         other => bail!("unknown connections subcommand: {other}"),
     }
 }
@@ -627,6 +652,158 @@ fn parse_args(args: &[String]) -> Result<Args> {
     Ok(parsed)
 }
 
+fn current_platform_session() -> Option<crate::credential_mode::PlatformSession> {
+    let snapshot = crate::init_cli::load_evalops_snapshot().ok().flatten();
+    let env = std::env::vars().collect();
+    crate::credential_mode::platform_session_from(snapshot.as_ref(), &env)
+}
+
+fn run_list_platform(
+    _session: &crate::credential_mode::PlatformSession,
+    json: bool,
+) -> Result<i32> {
+    let store = crate::platform_provider_refs::load_default_store().unwrap_or_default();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&store.refs)?);
+    } else if store.refs.is_empty() {
+        println!("No org provider refs stored. Run `maestro connections add` to upload a key.");
+    } else {
+        println!("Org provider refs (secrets live in EvalOps keys)");
+        for item in store.refs {
+            println!(
+                "- {} — {}/{}/{}{}",
+                item.id,
+                item.provider,
+                item.environment,
+                item.credential_name,
+                if item.is_default { " [default]" } else { "" }
+            );
+        }
+    }
+    Ok(0)
+}
+
+fn run_add_platform(args: &Args) -> Result<i32> {
+    let session =
+        current_platform_session().context("EvalOps session expired; run maestro evalops login")?;
+    let type_id = required_position(
+        args,
+        0,
+        "Usage: maestro connections add <type> <id> [source]",
+    )?;
+    let id = required_position(
+        args,
+        1,
+        "Usage: maestro connections add <type> <id> [source]",
+    )?;
+    let definitions = connection_types(args.workspace.as_deref())?;
+    let definition = definitions
+        .into_iter()
+        .find(|report| report.definition.id == type_id)
+        .map(|report| report.definition)
+        .with_context(|| format!("unknown or untrusted connection type: {type_id}"))?;
+    if definition.auth_kind != crate::service_connections::ConnectionAuthKind::ApiKey {
+        bail!("Platform mode only uploads API-key connections to EvalOps keys");
+    }
+    let secret = read_secret(args.secret_stdin)?;
+    let stored = crate::platform_provider_refs::upsert_org_provider_ref(
+        &session,
+        crate::platform_provider_refs::UpsertRequest {
+            id: id.to_owned(),
+            provider: definition.provider_id.clone(),
+            environment: crate::platform_provider_refs::default_environment(),
+            credential_name: crate::platform_provider_refs::default_credential_name(id),
+            team_id: None,
+            api_key: secret.to_string(),
+            make_default: args.default
+                || crate::platform_provider_refs::load_default_store()
+                    .ok()
+                    .is_none_or(|store| {
+                        !store
+                            .refs
+                            .iter()
+                            .any(|item| item.provider == definition.provider_id && item.is_default)
+                    }),
+        },
+    )?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&stored)?);
+    } else {
+        println!(
+            "{}: uploaded {} provider ref to EvalOps keys (secret not stored locally)",
+            stored.id, stored.provider
+        );
+    }
+    Ok(0)
+}
+
+fn run_status_platform(
+    session: &crate::credential_mode::PlatformSession,
+    args: &Args,
+) -> Result<i32> {
+    let id = required_position(args, 0, "Usage: maestro connections status <id>")?;
+    let store = crate::platform_provider_refs::load_default_store()?;
+    let stored = store
+        .get(id)
+        .cloned()
+        .with_context(|| format!("provider ref not found: {id}"))?;
+    match crate::platform_provider_refs::check_org_provider_ref(session, &stored) {
+        Ok(_) => {
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::json!({ "id": id, "status": "ready", "placement": "platform" })
+                );
+            } else {
+                println!("{id}: ready (org provider ref)");
+            }
+            Ok(0)
+        }
+        Err(error) => {
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "id": id,
+                        "status": "unavailable",
+                        "placement": "platform",
+                        "detail": error.to_string()
+                    })
+                );
+            } else {
+                println!("{id}: unavailable");
+                eprintln!("{error:#}");
+            }
+            Ok(1)
+        }
+    }
+}
+
+fn run_use_platform(args: &Args) -> Result<i32> {
+    let id = required_position(args, 0, "Usage: maestro connections use <id>")?;
+    let selected = crate::platform_provider_refs::select_default(id)?;
+    println!(
+        "{}: default org provider ref for {}",
+        selected.id, selected.provider
+    );
+    Ok(0)
+}
+
+fn run_remove_platform(
+    session: &crate::credential_mode::PlatformSession,
+    args: &Args,
+) -> Result<i32> {
+    let id = required_position(args, 0, "Usage: maestro connections remove <id>")?;
+    let store = crate::platform_provider_refs::load_default_store()?;
+    let stored = store
+        .get(id)
+        .cloned()
+        .with_context(|| format!("provider ref not found: {id}"))?;
+    crate::platform_provider_refs::delete_org_provider_ref(session, &stored)?;
+    println!("{id}: revoked in EvalOps keys");
+    Ok(0)
+}
+
 fn print_help() {
     println!(
         "maestro connections <command> [options]\n\n\
@@ -1149,7 +1326,81 @@ fn detail_line(label: &str, value: &str) -> Line<'static> {
     ])
 }
 
-fn run_add_wizard(workspace: Option<&Path>) -> Result<()> {
+/// Store a local API key in the connections keyring and mark it default.
+pub(crate) fn save_local_api_key(provider_id: &str, secret: &str) -> Result<String> {
+    let secret = secret.trim();
+    if secret.is_empty() {
+        bail!("credential value must not be empty");
+    }
+    let definition = connection_types(None)?
+        .into_iter()
+        .find(|report| {
+            report.definition.provider_id == provider_id
+                && report.definition.auth_kind == ConnectionAuthKind::ApiKey
+        })
+        .map(|report| report.definition)
+        .with_context(|| format!("no API key connection type for {provider_id}"))?;
+    let path = ConnectionStore::default_path()?;
+    let backend = KeyringSecretBackend;
+    let id = format!("{provider_id}-local");
+    with_locked_store(&path, |store| {
+        if store.get(&id).is_some() {
+            let replacement = zeroize::Zeroizing::new(secret.to_owned());
+            let connection = store
+                .get(&id)
+                .with_context(|| format!("connection not found: {id}"))?;
+            let next = connection.generation.saturating_add(1);
+            let next_ref = keyring_secret_ref(&id, next);
+            let ConnectionSecretRef::Keyring { service, account } = &next_ref else {
+                bail!("expected keyring secret");
+            };
+            backend.set(service, account, &replacement)?;
+            let old_ref = connection.secret_ref.clone();
+            let mut updated = connection.clone();
+            updated.generation = next;
+            updated.secret_ref = next_ref;
+            updated.is_default = true;
+            updated.updated_at_ms = now_ms();
+            store.upsert(updated)?;
+            store.set_default(&id)?;
+            store.save(&path)?;
+            if let ConnectionSecretRef::Keyring { service, account } = old_ref {
+                let _ = backend.delete(&service, &account);
+            }
+            return Ok(id);
+        }
+        let secret_ref = keyring_secret_ref(&id, 1);
+        let (service, account) = match &secret_ref {
+            ConnectionSecretRef::Keyring { service, account } => (service.clone(), account.clone()),
+            _ => bail!("expected keyring secret"),
+        };
+        backend.set(&service, &account, secret)?;
+        let timestamp = now_ms();
+        let connection = ServiceConnection {
+            id: id.clone(),
+            type_id: definition.id.clone(),
+            provider_id: definition.provider_id.clone(),
+            label: format!("{} local", definition.display_name),
+            auth_kind: definition.auth_kind,
+            env_var: definition.env_var.clone(),
+            secret_ref,
+            placement: definition.placement,
+            state: ConnectionState::Active,
+            capabilities: definition.capabilities.clone(),
+            generation: 1,
+            is_default: true,
+            created_at_ms: timestamp,
+            updated_at_ms: timestamp,
+        };
+        if let Err(error) = store.upsert(connection).and_then(|()| store.save(&path)) {
+            let _ = backend.delete(&service, &account);
+            return Err(error);
+        }
+        Ok(id)
+    })
+}
+
+pub(crate) fn run_add_wizard(workspace: Option<&Path>) -> Result<()> {
     let types = connection_types(workspace)?;
     println!("Add connection");
     for (index, report) in types.iter().enumerate() {

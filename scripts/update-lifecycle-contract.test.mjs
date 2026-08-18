@@ -53,6 +53,9 @@ test("installer and signed release workflow publish receipt metadata", () => {
 	assert.match(installer, /MAESTRO_STARTUP_UPDATE_STATE/);
 	assert.match(installer, /MAESTRO_INSTALL_CHANNEL/);
 	assert.match(installer, /MAESTRO_UPDATE_CHANNEL/);
+	assert.match(installer, /MAESTRO_CHANNEL_MANIFEST_URL/);
+	assert.match(installer, /resolve_preview_release_url/);
+	assert.doesNotMatch(installer, /maestro-\$\{install_channel\}-channel/);
 	assert.match(installer, /receipt_hash_file/);
 	assert.doesNotMatch(installer, /refusing installation without release receipt metadata/);
 	assert.match(updater, /restore_verified_web_tree/);
@@ -60,6 +63,8 @@ test("installer and signed release workflow publish receipt metadata", () => {
 	assert.match(updater, /Command::new\("tar"\)/);
 	assert.match(updater, /durability_warning/);
 	assert.match(updater, /channel_manifest_url/);
+	assert.match(updater, /GITHUB_RELEASES_API_URL/);
+	assert.match(updater, /resolve_github_channel_manifest_url/);
 	assert.match(release, /create-release-metadata\.mjs/);
 	assert.match(release, /release-metadata\.json/);
 	assert.match(release, /files\+=\([^\n]*release-metadata\.json/);
