@@ -89,6 +89,7 @@ for test_file in \
   scripts/check-integration-required-gate.test.mjs \
   scripts/check-review-thread-guard-workflow.test.mjs \
   scripts/check-sync-public-release-mirror-workflow.test.mjs \
+  scripts/tag-release-contract.test.mjs \
   scripts/update-behind-auto-merge-prs.test.mjs; do
   # The public projection intentionally restores public-owned workflows and
   # excludes the internal mirror workflow. Keep the shared tooling lane

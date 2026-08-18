@@ -297,6 +297,10 @@ struct RemoteRuntimeStateSnapshot {
     #[serde(default)]
     protocol_version: Option<String>,
     #[serde(default)]
+    controller_binding_version: Option<String>,
+    #[serde(default)]
+    controller_binding_sha256: Option<String>,
+    #[serde(default)]
     client_protocol_version: Option<String>,
     #[serde(default)]
     client_info: Option<ClientInfo>,
@@ -373,6 +377,8 @@ impl RemoteRuntimeStateSnapshot {
         AgentState {
             protocol_version: self.protocol_version,
             client_protocol_version: self.client_protocol_version,
+            controller_binding_version: self.controller_binding_version,
+            controller_binding_sha256: self.controller_binding_sha256,
             client_info: self.client_info,
             capabilities: self.capabilities,
             server_capabilities: self.server_capabilities,

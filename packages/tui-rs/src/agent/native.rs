@@ -336,27 +336,43 @@ fn resolve_native_client(
         ));
     }
 
-    if route.uses_app_server() {
-        return Ok((None, "openai-codex".to_owned(), route));
+    match crate::credential_mode::require_ready(model)? {
+        crate::credential_mode::DetectedMode::Platform(session) => {
+            let env = session.managed_env(model)?;
+            let routed = session.managed_model_route(model);
+            let client = UnifiedClient::from_model_with_env(&routed, &env)?;
+            let provider_name = client.provider_name().to_string();
+            Ok((
+                Some(client),
+                provider_name,
+                crate::codex_auth::CodexModelRoute::DirectProvider,
+            ))
+        }
+        crate::credential_mode::DetectedMode::Byok => {
+            if route.uses_app_server() {
+                return Ok((None, "openai-codex".to_owned(), route));
+            }
+            let mut env = std::env::vars().collect::<HashMap<String, String>>();
+            let _ = crate::codex_auth::merge_codex_auth_snapshot_into_env(
+                &mut env,
+                crate::codex_auth::read_codex_auth(),
+                false,
+            );
+            // Managed credentials are resolved into this caller-owned map only. The
+            // process environment and plugin code never receive the secret value.
+            let _managed_connection =
+                crate::service_connections::ConnectionBroker::merge_default_for_model(
+                    model, &mut env,
+                )?;
+            let client = UnifiedClient::from_model_with_env(model, &env)?;
+            let provider_name = client.provider_name().to_string();
+            Ok((
+                Some(client),
+                provider_name,
+                crate::codex_auth::CodexModelRoute::DirectProvider,
+            ))
+        }
     }
-
-    let mut env = std::env::vars().collect::<HashMap<String, String>>();
-    let _ = crate::codex_auth::merge_codex_auth_snapshot_into_env(
-        &mut env,
-        crate::codex_auth::read_codex_auth(),
-        false,
-    );
-    // Managed credentials are resolved into this caller-owned map only. The
-    // process environment and plugin code never receive the secret value.
-    let _managed_connection =
-        crate::service_connections::ConnectionBroker::merge_default_for_model(model, &mut env)?;
-    let client = UnifiedClient::from_model_with_env(model, &env)?;
-    let provider_name = client.provider_name().to_string();
-    Ok((
-        Some(client),
-        provider_name,
-        crate::codex_auth::CodexModelRoute::DirectProvider,
-    ))
 }
 
 fn is_tool_result_only_user_message(message: &Message) -> bool {
@@ -11716,7 +11732,8 @@ else if(x.method==='turn/start'){{send({{id:x.id,result:{{turn:{{id:'turn'}}}}}}
 
     #[test]
     fn test_config_default_output_budget_follows_catalog() {
-        // Catalog-known models get their full output ceiling by default...
+        // Catalog-known models keep a distinct output ceiling (smaller than
+        // context). Output equal to the context window is treated as unset.
         assert_eq!(
             crate::model_catalog::default_max_output_tokens("gpt-5.6"),
             128_000

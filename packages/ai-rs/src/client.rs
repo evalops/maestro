@@ -476,21 +476,19 @@ impl UnifiedClient {
                     .base_url
                     .as_deref()
                     .context("managed provider requires an explicit base URL")?;
-                let organization_id = ["MAESTRO_EVALOPS_ORG_ID", "EVALOPS_ORGANIZATION_ID"]
+                let organization_id = ["MAESTRO_EVALOPS_ORG_ID"]
                     .iter()
                     .find_map(|name| env.get(*name))
                     .map(String::as_str)
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                     .context("EvalOps managed provider requires MAESTRO_EVALOPS_ORG_ID")?;
-                let workspace_id = ["MAESTRO_EVALOPS_WORKSPACE_ID", "EVALOPS_WORKSPACE_ID"]
-                    .iter()
-                    .find_map(|name| {
-                        env.get(*name)
-                            .map(String::as_str)
-                            .map(str::trim)
-                            .filter(|value| !value.is_empty())
-                    });
+                let workspace_id = ["MAESTRO_EVALOPS_WORKSPACE_ID"].iter().find_map(|name| {
+                    env.get(*name)
+                        .map(String::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                });
                 let provider = env
                     .get("MAESTRO_EVALOPS_PROVIDER")
                     .map(String::as_str)
@@ -1404,6 +1402,14 @@ mod tests {
         let client = UnifiedClient::from_resolved_provider(&resolved, &env).unwrap();
         assert!(matches!(client, UnifiedClient::OpenAI(_)));
 
+        let UnifiedClient::OpenAI(scoped_client) = &client else {
+            panic!("managed provider should use the OpenAI-compatible client");
+        };
+        assert_eq!(
+            scoped_client.headers().get("x-workspace-id").unwrap(),
+            "workspace_456"
+        );
+
         let mut alias_env = env.clone();
         alias_env.insert(
             "MAESTRO_EVALOPS_WORKSPACE_ID".to_string(),
@@ -1417,9 +1423,9 @@ mod tests {
         let UnifiedClient::OpenAI(alias_client) = alias_client else {
             panic!("managed provider should use the OpenAI-compatible client");
         };
-        assert_eq!(
-            alias_client.headers().get("x-workspace-id").unwrap(),
-            "workspace_alias"
+        assert!(
+            alias_client.headers().get("x-workspace-id").is_none(),
+            "EVALOPS_WORKSPACE_ID is not a fallback when MAESTRO_EVALOPS_WORKSPACE_ID is blank"
         );
 
         let missing_org = HashMap::from([(

@@ -598,64 +598,16 @@ fn native_exec_model(
 ) -> std::result::Result<Option<String>, String> {
     let provider = provider.map(str::trim).filter(|value| !value.is_empty());
     let model = model.map(str::trim).filter(|value| !value.is_empty());
-    match (provider, model) {
-        (None, None) => Ok(None),
-        (None, Some(model)) => Ok(Some(model.to_string())),
-        (Some(provider), Some(model))
-            if model.split_once('/').is_some_and(|(model_provider, _)| {
-                let requested = crate::ai::ProviderRegistry::descriptor(provider)
-                    .map_or(provider, |descriptor| descriptor.id);
-                let qualified = crate::ai::ProviderRegistry::descriptor(model_provider)
-                    .map_or(model_provider, |descriptor| descriptor.id);
-                requested == qualified
-            }) =>
-        {
-            Ok(Some(model.to_string()))
-        }
-        (Some(provider), Some(model)) => Ok(Some(format!("{provider}/{model}"))),
-        (Some(provider), None) => {
-            let canonical_provider = crate::ai::ProviderRegistry::descriptor(provider)
-                .map_or(provider, |descriptor| descriptor.id);
-            if matches!(canonical_provider, "lmstudio" | "ollama") {
-                return Err(format!(
-                    "--provider {provider} requires --model because the loaded local model cannot be inferred"
-                ));
-            }
-            let model_provider = if matches!(provider, "evalops" | "maestro-managed") {
-                std::env::var("MAESTRO_EVALOPS_PROVIDER")
-                    .ok()
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or_else(|| "openai".to_string())
-            } else {
-                provider.to_string()
-            };
-            Ok(Some(format!(
-                "{provider}/{}",
-                default_model_for_provider(&model_provider)
-            )))
+    if let (Some(provider), None) = (provider, model) {
+        let canonical_provider = crate::ai::ProviderRegistry::descriptor(provider)
+            .map_or(provider, |descriptor| descriptor.id);
+        if matches!(canonical_provider, "lmstudio" | "ollama") {
+            return Err(format!(
+                "--provider {provider} requires --model because the loaded local model cannot be inferred"
+            ));
         }
     }
-}
-
-fn default_model_for_provider(provider: &str) -> &'static str {
-    if let Some(default) = crate::model_catalog::default_model_for_provider(provider) {
-        return default;
-    }
-    match provider.to_ascii_lowercase().as_str() {
-        "bedrock" | "aws-bedrock" => "claude-sonnet-4-6",
-        "vertex-ai" | "vertex" => "gemini-2.5-pro",
-        "google-gemini-cli" | "google-antigravity" => "gemini-2.5-pro",
-        "groq" => "llama-3.3-70b-versatile",
-        "deepseek" => "deepseek-chat",
-        "moonshot" | "kimi" => "kimi-k2.6",
-        "dashscope" | "qwen" => "qwen3-max",
-        "minimax" => "MiniMax-M2",
-        "zai" | "zhipu" => "glm-4.6",
-        "mistral" => "mistral-large-latest",
-        "openrouter" => "openai/gpt-4o-mini",
-        "evalops" | "maestro-managed" => "gpt-4o-mini",
-        _ => "gpt-5.5",
-    }
+    Ok(crate::config::compose_model_route(provider, model))
 }
 
 fn set_provider_api_key(provider: &str, api_key: &str) {

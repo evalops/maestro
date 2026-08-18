@@ -40,6 +40,9 @@ use crate::agent::{
     PromptKind, ToolDefinition, ToolResponseConsumption, ToolResponseMessage, ToolResult,
 };
 use crate::git;
+use crate::headless::controller_binding::{
+    controller_binding_from_hello_json, ControllerBindingReceipt, ControllerScopeExpectation,
+};
 use crate::headless::messages::{
     ApprovalMode, ClientToolExecutionOwner, ClientToolResultContent, CodeMode,
     ExternalToolDefinition, FromAgentMessage, GovernedToolGrant, HeadlessErrorType,
@@ -135,6 +138,7 @@ struct HeadlessState {
     /// Semantic provider history is meaningful only after an Init boundary.
     init_applied: bool,
     governed_grant: Option<GovernedToolGrant>,
+    controller_binding_sha256: Option<String>,
     ready_emitted: bool,
     meta: Arc<Mutex<RuntimeMeta>>,
     agent: Option<NativeAgent>,
@@ -181,6 +185,7 @@ impl HeadlessState {
             history: None,
             init_applied: false,
             governed_grant: None,
+            controller_binding_sha256: None,
             ready_emitted: false,
             meta: Arc::new(Mutex::new(RuntimeMeta {
                 session_id,
@@ -231,6 +236,25 @@ impl HeadlessState {
         let id = uuid::Uuid::new_v4().to_string();
         meta.session_id = Some(id.clone());
         id
+    }
+
+    fn accept_controller_binding(
+        &mut self,
+        binding: Option<&ControllerBindingReceipt>,
+    ) -> Result<()> {
+        let next = binding.map(|binding| binding.binding_sha256.as_str());
+        match (self.controller_binding_sha256.as_deref(), next) {
+            (None, None) => Ok(()),
+            (Some(existing), Some(next)) if existing == next => Ok(()),
+            (Some(_), _) => anyhow::bail!("controller binding cannot be removed or replaced"),
+            (None, Some(_)) if self.init_applied => {
+                anyhow::bail!("controller binding must be accepted before init")
+            }
+            (None, Some(next)) => {
+                self.controller_binding_sha256 = Some(next.to_string());
+                Ok(())
+            }
+        }
     }
 
     fn ensure_agent(&mut self) -> Result<&NativeAgent> {
@@ -1111,6 +1135,33 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                     })?;
                     break;
                 }
+                let controller_binding = match controller_binding_from_hello_json(
+                    line,
+                    HEADLESS_PROTOCOL_VERSION,
+                    &ControllerScopeExpectation::from_evalops_environment(),
+                ) {
+                    Ok(binding) => binding,
+                    Err(error) => {
+                        emit(&FromAgentMessage::Error {
+                            request_id: None,
+                            message: format!("Invalid controller binding: {error}"),
+                            fatal: true,
+                            terminal: true,
+                            error_type: Some(HeadlessErrorType::Protocol),
+                        })?;
+                        break;
+                    }
+                };
+                if let Err(error) = state.accept_controller_binding(controller_binding.as_ref()) {
+                    emit(&FromAgentMessage::Error {
+                        request_id: None,
+                        message: format!("Invalid controller binding: {error}"),
+                        fatal: true,
+                        terminal: true,
+                        error_type: Some(HeadlessErrorType::Protocol),
+                    })?;
+                    break;
+                }
                 let client_capabilities = capabilities.clone();
                 if let Some(grade) = capabilities.and_then(|value| value.transcript_grade) {
                     state
@@ -1121,6 +1172,12 @@ pub async fn run_headless_server(model_override: Option<String>) -> Result<i32> 
                 }
                 emit(&FromAgentMessage::HelloOk {
                     protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
+                    controller_binding_version: controller_binding
+                        .as_ref()
+                        .map(|binding| binding.binding_version.clone()),
+                    controller_binding_sha256: controller_binding
+                        .as_ref()
+                        .map(|binding| binding.binding_sha256.clone()),
                     connection_id: Some("native-local".to_string()),
                     client_protocol_version: protocol_version,
                     client_info,

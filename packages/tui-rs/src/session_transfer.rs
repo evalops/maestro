@@ -12,6 +12,14 @@ use serde_json::Value;
 use crate::agent::credential_store::redact_credentials_in_json;
 use crate::session::SessionManager;
 
+#[path = "session_transfer_secure.rs"]
+mod secure;
+
+pub use secure::{
+    export_secure_portable_session, import_secure_portable_session, SecureSessionExportOptions,
+    SecureSessionImportOptions, SECURE_PORTABLE_FORMAT,
+};
+
 const PORTABLE_FORMAT: &str = "maestro-session-export.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,13 +78,7 @@ pub fn export_portable_session(
         || default_export_path(&selected.path, format),
         Path::to_path_buf,
     );
-    if let Some(parent) = output
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create export directory {}", parent.display()))?;
-    }
+    ensure_output_parent(&output)?;
 
     match format {
         PortableFormat::Jsonl if !redact_secrets => {
@@ -89,30 +91,7 @@ pub fn export_portable_session(
             write_jsonl(&output, &entries)?;
         }
         PortableFormat::Json => {
-            let records = session_records(
-                selected
-                    .path
-                    .parent()
-                    .context("selected session has no parent directory")?,
-            )?;
-            let ordered = related_sessions(&records, &selected.session_id);
-            let sessions = ordered
-                .iter()
-                .map(|record| {
-                    Ok(PortableSession {
-                        session_id: record.session_id.clone(),
-                        parent_session_id: record.parent_session_id.clone(),
-                        entries: portable_entries(&record.path, redact_secrets)?,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
-            let bundle = PortableBundle {
-                format: PORTABLE_FORMAT.to_string(),
-                exported_at: chrono::Utc::now().to_rfc3339(),
-                session_id: Some(selected.session_id.clone()),
-                entries: Some(portable_entries(&selected.path, redact_secrets)?),
-                sessions,
-            };
+            let bundle = build_portable_bundle(&selected, redact_secrets)?;
             write_private_file(&output, &serde_json::to_vec(&bundle)?)?;
         }
     }
@@ -120,6 +99,19 @@ pub fn export_portable_session(
 }
 
 pub fn import_portable_session(manager: &SessionManager, source: &Path) -> Result<ImportResult> {
+    import_portable_session_with_options(manager, source, None)
+}
+
+/// Import either the legacy v1 portable format or a secure envelope.
+///
+/// Legacy JSON/JSONL remains readable without keys. A secure envelope is
+/// rejected unless both key files are explicitly supplied through
+/// [`SecureSessionImportOptions`].
+pub fn import_portable_session_with_options(
+    manager: &SessionManager,
+    source: &Path,
+    secure_options: Option<&SecureSessionImportOptions>,
+) -> Result<ImportResult> {
     if !source.exists() {
         bail!("Import file not found: {}", source.display());
     }
@@ -129,15 +121,39 @@ pub fn import_portable_session(manager: &SessionManager, source: &Path) -> Resul
         .unwrap_or("")
         .to_ascii_lowercase();
     if extension == "json" {
-        let raw = fs::read(source).with_context(|| format!("read {}", source.display()))?;
-        let bundle: PortableBundle = serde_json::from_slice(&raw).with_context(|| {
+        let secure_candidate = secure_options.is_some()
+            || source
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".secure.json"));
+        let raw = if secure_candidate {
+            secure::read_bounded_secure_bundle(source)?
+        } else {
+            fs::read(source).with_context(|| format!("read {}", source.display()))?
+        };
+        let value: Value = serde_json::from_slice(&raw).with_context(|| {
             format!(
                 "Portable session export is not valid JSON: {}",
                 source.display()
             )
         })?;
+        if value.get("format").and_then(Value::as_str) == Some(SECURE_PORTABLE_FORMAT) {
+            let options = secure_options.context(
+                "secure session import requires --encryption-key-file and --verify-key-file",
+            )?;
+            return secure::import_secure_bundle_bytes(manager, &raw, options);
+        }
+        let bundle: PortableBundle = serde_json::from_value(value).with_context(|| {
+            format!(
+                "Portable session export is not a supported bundle: {}",
+                source.display()
+            )
+        })?;
         if bundle.format != PORTABLE_FORMAT {
             bail!("Unsupported portable session format: {}", bundle.format);
+        }
+        if secure_options.is_some() {
+            bail!("secure session key options require a secure session envelope");
         }
         if !bundle.sessions.is_empty() {
             return import_bundle(manager, bundle);
@@ -148,7 +164,48 @@ pub fn import_portable_session(manager: &SessionManager, source: &Path) -> Resul
         bail!("Portable session export is missing both entries and sessions");
     }
 
+    if secure_options.is_some() {
+        bail!("secure session key options require a .secure.json envelope");
+    }
     import_entries(manager, portable_entries(source, false)?)
+}
+
+fn build_portable_bundle(selected: &SessionRecord, redact_secrets: bool) -> Result<PortableBundle> {
+    let records = session_records(
+        selected
+            .path
+            .parent()
+            .context("selected session has no parent directory")?,
+    )?;
+    let ordered = related_sessions(&records, &selected.session_id);
+    let sessions = ordered
+        .iter()
+        .map(|record| {
+            Ok(PortableSession {
+                session_id: record.session_id.clone(),
+                parent_session_id: record.parent_session_id.clone(),
+                entries: portable_entries(&record.path, redact_secrets)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(PortableBundle {
+        format: PORTABLE_FORMAT.to_string(),
+        exported_at: chrono::Utc::now().to_rfc3339(),
+        session_id: Some(selected.session_id.clone()),
+        entries: Some(portable_entries(&selected.path, redact_secrets)?),
+        sessions,
+    })
+}
+
+fn ensure_output_parent(output: &Path) -> Result<()> {
+    if let Some(parent) = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create export directory {}", parent.display()))?;
+    }
+    Ok(())
 }
 
 fn default_export_path(source: &Path, format: PortableFormat) -> PathBuf {
@@ -311,6 +368,14 @@ fn portable_entries(path: &Path, redact: bool) -> Result<Vec<Value>> {
 }
 
 fn import_bundle(manager: &SessionManager, bundle: PortableBundle) -> Result<ImportResult> {
+    import_bundle_with_source(manager, bundle, None)
+}
+
+fn import_bundle_with_source(
+    manager: &SessionManager,
+    bundle: PortableBundle,
+    source_bundle_id: Option<&str>,
+) -> Result<ImportResult> {
     let selected_source = bundle.session_id.clone();
     let first_source = bundle
         .sessions
@@ -357,12 +422,13 @@ fn import_bundle(manager: &SessionManager, bundle: PortableBundle) -> Result<Imp
             .parent_session_id
             .as_ref()
             .and_then(|parent| imported_files.get(parent).cloned());
-        let (id, file) = write_imported_entries(
+        let (id, file) = write_imported_entries_with_source(
             manager.sessions_dir(),
             session.entries,
             &mut existing,
             parent_id.as_deref(),
             parent_file.as_deref(),
+            source_bundle_id,
         )?;
         imported_ids.insert(source_id.clone(), id);
         imported_files.insert(source_id, file);
@@ -379,9 +445,23 @@ fn import_bundle(manager: &SessionManager, bundle: PortableBundle) -> Result<Imp
 }
 
 fn import_entries(manager: &SessionManager, entries: Vec<Value>) -> Result<ImportResult> {
+    import_entries_with_source(manager, entries, None)
+}
+
+fn import_entries_with_source(
+    manager: &SessionManager,
+    entries: Vec<Value>,
+    source_bundle_id: Option<&str>,
+) -> Result<ImportResult> {
     let mut existing = existing_ids(manager);
-    let (session_id, session_file) =
-        write_imported_entries(manager.sessions_dir(), entries, &mut existing, None, None)?;
+    let (session_id, session_file) = write_imported_entries_with_source(
+        manager.sessions_dir(),
+        entries,
+        &mut existing,
+        None,
+        None,
+        source_bundle_id,
+    )?;
     Ok(ImportResult {
         session_file,
         session_id,
@@ -398,12 +478,13 @@ fn existing_ids(manager: &SessionManager) -> HashSet<String> {
         .collect()
 }
 
-fn write_imported_entries(
+fn write_imported_entries_with_source(
     directory: &Path,
     mut entries: Vec<Value>,
     existing: &mut HashSet<String>,
     parent_session_id: Option<&str>,
     parent_session_file: Option<&Path>,
+    source_bundle_id: Option<&str>,
 ) -> Result<(String, PathBuf)> {
     let header_index = entries
         .iter()
@@ -436,6 +517,12 @@ fn write_imported_entries(
         header.insert(
             "branchedFrom".to_string(),
             Value::String(parent.display().to_string()),
+        );
+    }
+    if let Some(bundle_id) = source_bundle_id {
+        header.insert(
+            "portableBundleId".to_string(),
+            Value::String(bundle_id.to_string()),
         );
     }
     fs::create_dir_all(directory)
@@ -556,21 +643,23 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let manager = SessionManager::new(root.path().to_string_lossy());
         let mut existing = HashSet::from(["parent".to_string()]);
-        let (parent_id, parent_file) = write_imported_entries(
+        let (parent_id, parent_file) = write_imported_entries_with_source(
             root.path(),
             entry("parent", None, "root"),
             &mut existing,
             None,
             None,
+            None,
         )
         .unwrap();
         assert_ne!(parent_id, "parent");
-        let (child_id, child_file) = write_imported_entries(
+        let (child_id, child_file) = write_imported_entries_with_source(
             root.path(),
             entry("child", Some("parent"), "branch"),
             &mut existing,
             Some(&parent_id),
             Some(&parent_file),
+            None,
         )
         .unwrap();
         let child_entries = portable_entries(&child_file, false).unwrap();

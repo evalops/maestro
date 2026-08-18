@@ -49,6 +49,30 @@ Important types:
 | `--session path`| Use a specific JSONL file (absolute or relative) |
 | `--no-session`  | Disable persistence entirely for this run    |
 
+## Secure Transfer
+
+For moving a session family between trusted installations, use the explicit
+signed/encrypted `secure-json` format. It redacts credentials before encryption
+and requires operator-supplied key files; Maestro never stores or uploads those
+keys:
+
+```sh
+maestro sessions export <session-id> session.secure.json \
+  --format secure-json \
+  --encryption-key-file /secure/path/recipient.key \
+  --signing-key-file /secure/path/signer.pk8 \
+  --recipient-key-id workstation-a \
+  --signing-key-id operator-2026-08
+
+maestro sessions import session.secure.json \
+  --encryption-key-file /secure/path/recipient.key \
+  --verify-key-file /secure/path/signer.pub \
+  --recipient-key-id workstation-a
+```
+
+The full envelope, key, redaction, replay, and migration contract is in
+[`secure-session-transfer.md`](protocols/secure-session-transfer.md).
+
 The TUI also offers `/sessions` to list + load by index. When loading, the agent
 replays the stored messages into its state and restores model/thinking settings.
 

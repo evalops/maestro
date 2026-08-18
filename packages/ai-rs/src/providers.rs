@@ -235,8 +235,8 @@ const PROVIDERS: &[ProviderDescriptor] = &[
     ProviderDescriptor {
         id: "evalops",
         aliases: &["maestro-managed"],
-        auth_env: &["MAESTRO_EVALOPS_ACCESS_TOKEN", "EVALOPS_TOKEN"],
-        base_url_env: &["MAESTRO_EVALOPS_BASE_URL", "EVALOPS_API_URL"],
+        auth_env: &["MAESTRO_EVALOPS_ACCESS_TOKEN"],
+        base_url_env: &["MAESTRO_EVALOPS_BASE_URL"],
         default_base_url: Some("https://llm-gateway.evalops.dev/v1"),
         protocol: ProviderProtocol::Managed,
     },

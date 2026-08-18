@@ -43,6 +43,86 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.69] - 2026-08-17
+
+### Added
+
+- Add TUI `/setup` modal and open it on first launch when no credentials exist (#3485). <!-- maestro-release-note:6ad3f9cf7c46 -->
+
+## [0.10.68] - 2026-08-17
+
+### Added
+
+- Require Platform identity or local BYOK (#3475). <!-- maestro-release-note:c51bf6266981 -->
+- Add secure portable session transfer (#3470). <!-- maestro-release-note:de96c85fccc1 -->
+- Add signed stable and preview release channels (#3467). <!-- maestro-release-note:762e8a3684e3 -->
+- Add alpha and beta update channels (#3468). <!-- maestro-release-note:c7df8d56fec5 -->
+- Add evaluation-backed shadow routing (#3464). <!-- maestro-release-note:c4a12d164ac9 -->
+- Make runtime automations durable (#3465). <!-- maestro-release-note:c5cc93b211fd -->
+
+### Changed
+
+- Refresh models.dev and OpenRouter snapshot (#3480). <!-- maestro-release-note:a4a1c90582ac -->
+- Drive EvalOps PKCE login against a local identity stub (#3478). <!-- maestro-release-note:440d7a2fa537 -->
+- Bind fixture to rotated key. <!-- maestro-release-note:663e5f7e0c42 -->
+- Guard public-only mirror workflow checks (#3463). <!-- maestro-release-note:cc9ef74102a1 -->
+- Isolate supply-chain temporary files. <!-- maestro-release-note:38efa0eeaf7f -->
+- Route Buildkite jobs to provisioned images. <!-- maestro-release-note:9c7ef3a85cc5 -->
+- Bound and retry stuck JetBrains workers. <!-- maestro-release-note:e27f9a60c164 -->
+- Scope mirror workflow test to its owner. <!-- maestro-release-note:64da324f9b7f -->
+
+### Fixed
+
+- Keep OpenRouter BYOK local and honor config.json maxTokens (#3483). <!-- maestro-release-note:b513482dc059 -->
+- Honor ~/.maestro model settings and cap max_tokens (#3479). <!-- maestro-release-note:2b5fada5617a -->
+- Import CheckStatus used by setup readiness (#3477). <!-- maestro-release-note:739208ce6881 -->
+- Keep composer cursor off the placeholder (#3474). <!-- maestro-release-note:e0b6f1ce5f52 -->
+- Keep setup ready unless credential_mode failed (#3476). <!-- maestro-release-note:6f5e51701c76 -->
+- Skip missing files during preview channel version bump (#3473). <!-- maestro-release-note:d3a374d6a2b9 -->
+- Resolve preview installs from signed channel pointers (#3472). <!-- maestro-release-note:ce3638ff3b1b -->
+- Correct empty update-channel assignment (#3471). <!-- maestro-release-note:d6822228ccf5 -->
+- Let JetBrains validation exit cleanly. <!-- maestro-release-note:eab5854e41c4 -->
+- Satisfy installer shellcheck. <!-- maestro-release-note:7bb56ee5aca5 -->
+- Rotate shared channel signing keys. <!-- maestro-release-note:2b646c7ffb53 -->
+- Use bounded https sources for arm64 release tools (#3466). <!-- maestro-release-note:2987b8cfbce4 -->
+
+## [0.10.67] - 2026-08-17
+
+### Added
+
+- Require Platform identity or local BYOK (#3475). <!-- maestro-release-note:c51bf6266981 -->
+- Add secure portable session transfer (#3470). <!-- maestro-release-note:de96c85fccc1 -->
+- Add signed stable and preview release channels (#3467). <!-- maestro-release-note:762e8a3684e3 -->
+- Add alpha and beta update channels (#3468). <!-- maestro-release-note:c7df8d56fec5 -->
+- Add evaluation-backed shadow routing (#3464). <!-- maestro-release-note:c4a12d164ac9 -->
+- Make runtime automations durable (#3465). <!-- maestro-release-note:c5cc93b211fd -->
+
+### Changed
+
+- Refresh models.dev and OpenRouter snapshot (#3480). <!-- maestro-release-note:a4a1c90582ac -->
+- Drive EvalOps PKCE login against a local identity stub (#3478). <!-- maestro-release-note:440d7a2fa537 -->
+- Bind fixture to rotated key. <!-- maestro-release-note:663e5f7e0c42 -->
+- Guard public-only mirror workflow checks (#3463). <!-- maestro-release-note:cc9ef74102a1 -->
+- Isolate supply-chain temporary files. <!-- maestro-release-note:38efa0eeaf7f -->
+- Route Buildkite jobs to provisioned images. <!-- maestro-release-note:9c7ef3a85cc5 -->
+- Bound and retry stuck JetBrains workers. <!-- maestro-release-note:e27f9a60c164 -->
+- Scope mirror workflow test to its owner. <!-- maestro-release-note:64da324f9b7f -->
+
+### Fixed
+
+- Store only distinct output token limits. <!-- maestro-release-note:4572e6043520 -->
+- Honor ~/.maestro model settings and cap max_tokens (#3479). <!-- maestro-release-note:2b5fada5617a -->
+- Import CheckStatus used by setup readiness (#3477). <!-- maestro-release-note:739208ce6881 -->
+- Keep composer cursor off the placeholder (#3474). <!-- maestro-release-note:e0b6f1ce5f52 -->
+- Keep setup ready unless credential_mode failed (#3476). <!-- maestro-release-note:6f5e51701c76 -->
+- Skip missing files during preview channel version bump (#3473). <!-- maestro-release-note:d3a374d6a2b9 -->
+- Resolve preview installs from signed channel pointers (#3472). <!-- maestro-release-note:ce3638ff3b1b -->
+- Correct empty update-channel assignment (#3471). <!-- maestro-release-note:d6822228ccf5 -->
+- Let JetBrains validation exit cleanly. <!-- maestro-release-note:eab5854e41c4 -->
+- Satisfy installer shellcheck. <!-- maestro-release-note:7bb56ee5aca5 -->
+- Rotate shared channel signing keys. <!-- maestro-release-note:2b646c7ffb53 -->
+- Use bounded https sources for arm64 release tools (#3466). <!-- maestro-release-note:2987b8cfbce4 -->
+
 ## [0.10.66] - 2026-08-17
 
 ### Added

@@ -370,7 +370,11 @@ fn parse_hello_ok_message() {
             role,
             controller_connection_id,
             lease_expires_at,
+            controller_binding_version,
+            controller_binding_sha256,
         } => {
+            assert_eq!(controller_binding_version, None);
+            assert_eq!(controller_binding_sha256, None);
             assert_eq!(protocol_version, "2026-08-01");
             assert_eq!(connection_id.as_deref(), Some("conn_remote"));
             assert_eq!(client_protocol_version.as_deref(), Some("2026-03-30"));
@@ -399,6 +403,8 @@ fn parse_hello_ok_message() {
 fn hello_ok_keeps_client_and_server_capabilities_separate() {
     let message = FromAgentMessage::HelloOk {
         protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
+        controller_binding_version: None,
+        controller_binding_sha256: None,
         connection_id: Some("conn_native".to_string()),
         client_protocol_version: Some("2026-08-08".to_string()),
         client_info: None,
@@ -1262,6 +1268,8 @@ fn state_tracks_protocol_version_from_hello_ok() {
 
     let event = state.handle_message(FromAgentMessage::HelloOk {
         protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
+        controller_binding_version: None,
+        controller_binding_sha256: None,
         connection_id: Some("conn_remote".to_string()),
         client_protocol_version: Some("2026-08-01".to_string()),
         client_info: Some(ClientInfo {

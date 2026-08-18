@@ -41,6 +41,7 @@ impl App {
             ActiveModal::Approval => return self.handle_approval_key(code, modifiers).await,
             ActiveModal::ModelSelector => return self.handle_model_selector_key(code, ctrl).await,
             ActiveModal::ThemeSelector => return self.handle_theme_selector_key(code, ctrl).await,
+            ActiveModal::Setup => return self.handle_setup_modal_key(code, ctrl).await,
             ActiveModal::ShortcutsHelp => return self.handle_shortcuts_help_key(code).await,
             ActiveModal::RewindPicker => return self.handle_rewind_picker_key(code),
             ActiveModal::DetailView => return self.handle_detail_view_key(code),
@@ -465,6 +466,7 @@ impl App {
             ActiveModal::CommandPalette => self.command_palette.insert_str(&text),
             ActiveModal::ModelSelector => self.model_selector.insert_str(&text),
             ActiveModal::ThemeSelector => self.theme_selector.insert_str(&text),
+            ActiveModal::Setup => self.setup_modal.insert_str(&text),
             ActiveModal::None => {
                 self.state.insert_paste(raw);
                 self.update_slash_state();
@@ -1080,6 +1082,77 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    pub(super) async fn handle_setup_modal_key(&mut self, code: KeyCode, ctrl: bool) -> Result<()> {
+        match code {
+            KeyCode::Esc if self.setup_modal.back() => {
+                self.setup_login_rx = None;
+                self.setup_modal.hide();
+                self.active_modal = ActiveModal::None;
+            }
+            KeyCode::Enter => match self.setup_modal.confirm() {
+                Some(SetupAdvance::StartEvalops) => self.start_setup_evalops_login(),
+                Some(SetupAdvance::SaveKey {
+                    provider_id,
+                    secret,
+                }) => self.finish_setup_api_key(provider_id, &secret),
+                None => {}
+            },
+            KeyCode::Up => self.setup_modal.move_up(),
+            KeyCode::Down => self.setup_modal.move_down(),
+            KeyCode::Char(c) if !ctrl => self.setup_modal.insert_char(c),
+            KeyCode::Backspace => self.setup_modal.backspace(),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn start_setup_evalops_login(&mut self) {
+        if self.setup_login_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let result = crate::init_cli::perform_evalops_login()
+                .await
+                .map_err(|error| format!("{error:#}"));
+            let _ = tx.send(result);
+        });
+        self.setup_login_rx = Some(rx);
+        self.setup_modal.set_waiting_evalops();
+        self.state
+            .add_system_message("Opening EvalOps login in the browser.".to_string());
+    }
+
+    fn finish_setup_api_key(&mut self, provider_id: &str, secret: &str) {
+        match crate::connections_cli::save_local_api_key(provider_id, secret) {
+            Ok(connection_id) => {
+                let default_model = crate::model_catalog::default_model_for_provider(provider_id)
+                    .unwrap_or("gpt-5.5");
+                let route =
+                    crate::config::compose_model_route(Some(provider_id), Some(default_model))
+                        .unwrap_or_else(|| format!("{provider_id}/{default_model}"));
+                if let Err(error) =
+                    crate::config_cli::persist_user_model_and_provider(default_model, provider_id)
+                {
+                    self.setup_modal.set_status(format!(
+                        "Saved key, but could not write config.toml: {error}"
+                    ));
+                    return;
+                }
+                self.switch_model(&route, false);
+                self.setup_modal.hide();
+                self.active_modal = ActiveModal::None;
+                if self.native_agent.is_none() {
+                    self.pending_agent_spawn = true;
+                }
+                self.state.add_system_message(format!(
+                    "Saved {provider_id} key as {connection_id}. Model set to {route}."
+                ));
+            }
+            Err(error) => self.setup_modal.set_status(error.to_string()),
+        }
     }
 
     /// Handle keyboard shortcuts help key events

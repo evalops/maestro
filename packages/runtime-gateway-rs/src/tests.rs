@@ -224,7 +224,7 @@ fn control_plane_requires_api_key_when_auth_required() {
 
     assert_eq!(
         config.validate_startup().unwrap_err().to_string(),
-        "web auth is required because MAESTRO_WEB_REQUIRE_KEY is enabled; set MAESTRO_WEB_API_KEY, MAESTRO_AUTH_SHARED_SECRET, MAESTRO_JWT_SECRET, MAESTRO_JWT_JWKS_URL, or MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN"
+        "web auth is required because MAESTRO_WEB_REQUIRE_KEY is enabled; set MAESTRO_WEB_API_KEY, MAESTRO_JWT_SECRET, MAESTRO_JWT_JWKS_URL, or MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN"
     );
 
     env::set_var("MAESTRO_WEB_API_KEY", "secret");
@@ -2385,9 +2385,19 @@ fn bearer_head(token: &str) -> RequestHead {
     }
 }
 
-fn shared_secret_bearer_token(secret: &[u8], user_id: &str) -> String {
-    let signature = hmac_sha256_hex(secret, user_id.as_bytes());
-    format!("{}.{}", URL_SAFE_NO_PAD.encode(user_id), signature)
+fn identity_jwt_bearer_token(secret: &[u8], user_id: &str) -> String {
+    let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256","typ":"JWT"}"#);
+    let expires_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+        .saturating_add(60);
+    let payload = URL_SAFE_NO_PAD.encode(format!(
+        r#"{{"sub":"{user_id}","organization_id":"org_test","workspace_id":"ws_test","scope":"llm_gateway:invoke agent:register","exp":{expires_at}}}"#
+    ));
+    let signing_input = format!("{header}.{payload}");
+    let signature = hmac_sha256_base64url(secret, signing_input.as_bytes());
+    format!("{signing_input}.{signature}")
 }
 
 fn csrf_head(method: &str, token: Option<&str>) -> RequestHead {
@@ -2910,26 +2920,32 @@ fn query_flag_treats_present_valueless_param_as_true() {
 }
 
 #[test]
-fn authorizes_shared_secret_bearer_token() {
+fn authorizes_identity_jwt_bearer_token() {
     let _guard = ENV_LOCK.blocking_lock();
-    let previous = env::var_os("MAESTRO_AUTH_SHARED_SECRET");
-    env::set_var("MAESTRO_AUTH_SHARED_SECRET", "shared-secret");
+    let previous = env::var_os("MAESTRO_JWT_SECRET");
+    env::set_var("MAESTRO_JWT_SECRET", "shared-secret");
 
-    let user_id = "user-123";
-    let signature = hmac_sha256_hex(b"shared-secret", user_id.as_bytes());
-    let token = format!("{}.{}", URL_SAFE_NO_PAD.encode(user_id), signature);
+    let token = identity_jwt_bearer_token(b"shared-secret", "user-123");
 
     assert!(authorize(&bearer_head(&token), &auth_test_config()).is_ok());
+    let context = auth_context(&bearer_head(&token), &auth_test_config()).expect("jwt");
+    assert_eq!(context.subject.as_deref(), Some("user-123"));
+    assert_eq!(context.organization_id.as_deref(), Some("org_test"));
+    assert_eq!(context.workspace_id.as_deref(), Some("ws_test"));
     assert_eq!(
-        auth_context(&bearer_head(&token), &auth_test_config()).and_then(|auth| auth.subject),
-        Some("user-123".to_string())
+        context.scopes,
+        vec![
+            "llm_gateway:invoke".to_string(),
+            "agent:register".to_string()
+        ]
     );
+    assert_eq!(context.source, crate::auth::AuthSource::IdentityJwt);
     assert!(authorize(&bearer_head("bad-token"), &auth_test_config()).is_err());
 
     if let Some(previous) = previous {
-        env::set_var("MAESTRO_AUTH_SHARED_SECRET", previous);
+        env::set_var("MAESTRO_JWT_SECRET", previous);
     } else {
-        env::remove_var("MAESTRO_AUTH_SHARED_SECRET");
+        env::remove_var("MAESTRO_JWT_SECRET");
     }
 }
 
@@ -3150,13 +3166,13 @@ fn jwks_rs256_accepts_valid_token() {
     let token = rs256_signed_token("test-key-1", "user-123", now_secs() + 3600);
 
     assert_eq!(
-        jwks_jwt_subject(&token, jsonwebtoken::Algorithm::RS256).as_deref(),
-        Some("user-123")
+        jwks_jwt_principal(&token, jsonwebtoken::Algorithm::RS256).and_then(|auth| auth.subject),
+        Some("user-123".to_string())
     );
     assert_eq!(
-        jwt_subject(&token).as_deref(),
-        Some("user-123"),
-        "jwt_subject should route RS256 tokens through the JWKS path"
+        jwt_principal(&token).and_then(|auth| auth.subject),
+        Some("user-123".to_string()),
+        "jwt_principal should route RS256 tokens through the JWKS path"
     );
     assert!(authorize(&bearer_head(&token), &auth_test_config()).is_ok());
 
@@ -3172,7 +3188,7 @@ fn jwks_rs256_rejects_unknown_kid() {
     // Valid signature, but the kid does not match any key in the JWKS.
     let token = rs256_signed_token("unknown-key", "user-123", now_secs() + 3600);
 
-    assert!(jwks_jwt_subject(&token, jsonwebtoken::Algorithm::RS256).is_none());
+    assert!(jwks_jwt_principal(&token, jsonwebtoken::Algorithm::RS256).is_none());
     assert!(authorize(&bearer_head(&token), &auth_test_config()).is_err());
 
     restore_env(snapshot);
@@ -3186,7 +3202,7 @@ fn jwks_rs256_rejects_expired_token() {
 
     let token = rs256_signed_token("test-key-1", "user-123", now_secs() - 3600);
 
-    assert!(jwks_jwt_subject(&token, jsonwebtoken::Algorithm::RS256).is_none());
+    assert!(jwks_jwt_principal(&token, jsonwebtoken::Algorithm::RS256).is_none());
 
     restore_env(snapshot);
 }
@@ -3208,8 +3224,8 @@ fn jwks_rs256_rejects_hs256_alg_confusion_token() {
     let signature = hmac_sha256_base64url(TEST_JWKS_JSON.as_bytes(), signing_input.as_bytes());
     let token = format!("{signing_input}.{signature}");
 
-    assert!(jwks_jwt_subject(&token, jsonwebtoken::Algorithm::RS256).is_none());
-    assert!(jwt_subject(&token).is_none());
+    assert!(jwks_jwt_principal(&token, jsonwebtoken::Algorithm::RS256).is_none());
+    assert!(jwt_principal(&token).is_none());
     assert!(authorize(&bearer_head(&token), &auth_test_config()).is_err());
 
     restore_env(snapshot);
@@ -5451,8 +5467,8 @@ async fn a2a_message_send_rejects_incompatible_protocol_version() {
 #[tokio::test(flavor = "current_thread")]
 async fn a2a_tasks_list_only_returns_tasks_owned_by_subject() {
     let _guard = ENV_LOCK.lock().await;
-    let previous_secret = env::var_os("MAESTRO_AUTH_SHARED_SECRET");
-    env::set_var("MAESTRO_AUTH_SHARED_SECRET", "shared-secret");
+    let previous_secret = env::var_os("MAESTRO_JWT_SECRET");
+    env::set_var("MAESTRO_JWT_SECRET", "shared-secret");
     let state = test_app_state_with_sessions(HashMap::new());
     for (task_id, owner) in [
         ("owned-task", Some("user-123")),
@@ -5478,7 +5494,7 @@ async fn a2a_tasks_list_only_returns_tasks_owned_by_subject() {
             .await
             .insert(task_id.to_string(), task);
     }
-    let token = shared_secret_bearer_token(b"shared-secret", "user-123");
+    let token = identity_jwt_bearer_token(b"shared-secret", "user-123");
     let request =
         format!("GET /tasks HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n");
     let mut initial = request.into_bytes();
@@ -5495,9 +5511,9 @@ async fn a2a_tasks_list_only_returns_tasks_owned_by_subject() {
     assert_eq!(tasks[0]["id"], "owned-task");
 
     if let Some(previous_secret) = previous_secret {
-        env::set_var("MAESTRO_AUTH_SHARED_SECRET", previous_secret);
+        env::set_var("MAESTRO_JWT_SECRET", previous_secret);
     } else {
-        env::remove_var("MAESTRO_AUTH_SHARED_SECRET");
+        env::remove_var("MAESTRO_JWT_SECRET");
     }
 }
 
@@ -7927,9 +7943,9 @@ async fn a2a_task_subscribe_reconciles_current_task_after_broadcast_lag() {
 #[tokio::test(flavor = "current_thread")]
 async fn a2a_message_send_rejects_task_follow_up_from_other_subject() {
     let _guard = ENV_LOCK.lock().await;
-    let previous_secret = env::var_os("MAESTRO_AUTH_SHARED_SECRET");
+    let previous_secret = env::var_os("MAESTRO_JWT_SECRET");
     let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
-    env::set_var("MAESTRO_AUTH_SHARED_SECRET", "shared-secret");
+    env::set_var("MAESTRO_JWT_SECRET", "shared-secret");
     env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "should not run");
     let state = test_app_state_with_sessions(HashMap::new());
     let existing_message = a2a_agent_message("ctx-1", "Need more input");
@@ -7947,7 +7963,7 @@ async fn a2a_message_send_rejects_task_follow_up_from_other_subject() {
         .lock()
         .await
         .insert("owned-task".to_string(), task);
-    let token = shared_secret_bearer_token(b"shared-secret", "user-456");
+    let token = identity_jwt_bearer_token(b"shared-secret", "user-456");
     let body = r#"{"message":{"messageId":"msg-2","contextId":"ctx-1","taskId":"owned-task","role":"ROLE_USER","parts":[{"text":"follow up","mediaType":"text/plain"}]}}"#;
     let request = format!(
             "POST /message:send HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
@@ -7967,9 +7983,9 @@ async fn a2a_message_send_rejects_task_follow_up_from_other_subject() {
     );
 
     if let Some(previous_secret) = previous_secret {
-        env::set_var("MAESTRO_AUTH_SHARED_SECRET", previous_secret);
+        env::set_var("MAESTRO_JWT_SECRET", previous_secret);
     } else {
-        env::remove_var("MAESTRO_AUTH_SHARED_SECRET");
+        env::remove_var("MAESTRO_JWT_SECRET");
     }
     if let Some(previous_fake) = previous_fake {
         env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
@@ -8232,6 +8248,7 @@ async fn a2a_claims_input_task_before_launch() {
     let auth = AuthContext {
         subject: None,
         unrestricted: true,
+        ..AuthContext::default()
     };
 
     let claimed = claim_a2a_send_task(
@@ -8675,6 +8692,7 @@ async fn expired_claimed_capsule_still_gets_server_owned_completion_and_cancel_d
     let auth = AuthContext {
         subject: None,
         unrestricted: true,
+        ..AuthContext::default()
     };
     let canceled = crate::a2a::cancel_a2a_task(&state, "expired-canceled", &auth)
         .await
@@ -9510,14 +9528,17 @@ fn subject_auth_only_sees_owned_sessions() {
     let owner = AuthContext {
         subject: Some("user-123".to_string()),
         unrestricted: false,
+        ..AuthContext::default()
     };
     let other_user = AuthContext {
         subject: Some("user-456".to_string()),
         unrestricted: false,
+        ..AuthContext::default()
     };
     let admin = AuthContext {
         subject: None,
         unrestricted: true,
+        ..AuthContext::default()
     };
 
     assert!(session_visible_to_auth(&session, &owner));
@@ -9624,6 +9645,7 @@ async fn chat_user_message_rejects_unowned_existing_session() {
     let auth = AuthContext {
         subject: Some("user-123".to_string()),
         unrestricted: false,
+        ..AuthContext::default()
     };
     let chat = ChatRequest {
         model: None,
@@ -9651,6 +9673,7 @@ async fn chat_user_message_preserves_requested_id_when_creating_session() {
     let auth = AuthContext {
         subject: Some("user-123".to_string()),
         unrestricted: false,
+        ..AuthContext::default()
     };
     let chat = ChatRequest {
         model: None,
@@ -10454,14 +10477,13 @@ fn runtime_session_cookie_authorizes_same_origin_browser_requests() {
 #[test]
 fn bearer_token_identity_wins_over_runtime_session_cookie() {
     let _guard = ENV_LOCK.blocking_lock();
-    let previous = env::var_os("MAESTRO_AUTH_SHARED_SECRET");
-    env::set_var("MAESTRO_AUTH_SHARED_SECRET", "shared-secret");
+    let previous = env::var_os("MAESTRO_JWT_SECRET");
+    env::set_var("MAESTRO_JWT_SECRET", "shared-secret");
     let config = auth_test_config();
     let cookie =
         runtime_session_cookie_value(&config, "cookie-user").expect("cookie should be available");
     let bearer_user = "bearer-user";
-    let signature = hmac_sha256_hex(b"shared-secret", bearer_user.as_bytes());
-    let token = format!("{}.{}", URL_SAFE_NO_PAD.encode(bearer_user), signature);
+    let token = identity_jwt_bearer_token(b"shared-secret", bearer_user);
     let head = RequestHead {
         method: "GET".to_string(),
         path: "/api/status".to_string(),
@@ -10481,9 +10503,9 @@ fn bearer_token_identity_wins_over_runtime_session_cookie() {
     assert!(!context.unrestricted);
 
     if let Some(previous) = previous {
-        env::set_var("MAESTRO_AUTH_SHARED_SECRET", previous);
+        env::set_var("MAESTRO_JWT_SECRET", previous);
     } else {
-        env::remove_var("MAESTRO_AUTH_SHARED_SECRET");
+        env::remove_var("MAESTRO_JWT_SECRET");
     }
 }
 
@@ -10601,7 +10623,7 @@ fn web_auth_mode_matrix_pins_control_plane_access() {
     let _guard = ENV_LOCK.blocking_lock();
     let preserved_env: Vec<_> = [
         "MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN",
-        "MAESTRO_AUTH_SHARED_SECRET",
+        "MAESTRO_JWT_SECRET",
         "MAESTRO_JWT_SECRET",
         "MAESTRO_JWT_JWKS_URL",
     ]
@@ -10709,10 +10731,9 @@ fn web_auth_mode_matrix_pins_control_plane_access() {
         }
     }
 
-    env::set_var("MAESTRO_AUTH_SHARED_SECRET", "shared-secret");
+    env::set_var("MAESTRO_JWT_SECRET", "shared-secret");
     let bearer_user = "bearer-user";
-    let signature = hmac_sha256_hex(b"shared-secret", bearer_user.as_bytes());
-    let bearer = format!("{}.{}", URL_SAFE_NO_PAD.encode(bearer_user), signature);
+    let bearer = identity_jwt_bearer_token(b"shared-secret", bearer_user);
     let bearer_head = RequestHead {
         method: "GET".to_string(),
         path: "/api/status".to_string(),
@@ -10724,7 +10745,7 @@ fn web_auth_mode_matrix_pins_control_plane_access() {
     assert_eq!(bearer_context.subject.as_deref(), Some(bearer_user));
     assert!(!bearer_context.unrestricted);
 
-    env::remove_var("MAESTRO_AUTH_SHARED_SECRET");
+    env::remove_var("MAESTRO_JWT_SECRET");
     env::set_var("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN", "proxy-secret");
     let proxy_head = RequestHead {
         method: "GET".to_string(),

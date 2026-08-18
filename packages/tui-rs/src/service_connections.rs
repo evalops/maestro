@@ -267,7 +267,7 @@ impl ConnectionStore {
         Ok(())
     }
 
-    fn selected(
+    pub fn selected(
         &self,
         provider: &str,
         explicit_id: Option<&str>,
@@ -284,11 +284,20 @@ impl ConnectionStore {
             }
             return Ok(Some(connection));
         }
-        Ok(self.connections.iter().find(|connection| {
+        if let Some(connection) = self.connections.iter().find(|connection| {
             connection.provider_id == provider
                 && connection.is_default
                 && connection.state == ConnectionState::Active
-        }))
+        }) {
+            return Ok(Some(connection));
+        }
+        Ok(self
+            .connections
+            .iter()
+            .filter(|connection| {
+                connection.provider_id == provider && connection.state == ConnectionState::Active
+            })
+            .max_by_key(|connection| connection.updated_at_ms))
     }
 
     pub fn delegated_profile(
@@ -1020,6 +1029,45 @@ mod tests {
         let mut env = HashMap::from([("OPENAI_API_KEY".into(), "existing".into())]);
         assert_eq!(broker.merge_for_model("gpt-4o", &mut env).unwrap(), None);
         assert_eq!(env["OPENAI_API_KEY"], "existing");
+    }
+
+    #[test]
+    fn selected_falls_back_to_the_sole_active_connection() {
+        let mut only = connection();
+        only.is_default = false;
+        let store = ConnectionStore {
+            schema_version: 1,
+            connections: vec![only],
+        };
+        assert_eq!(
+            store
+                .selected("openai", None)
+                .unwrap()
+                .map(|connection| connection.id.as_str()),
+            Some("openai-personal")
+        );
+    }
+
+    #[test]
+    fn selected_uses_the_newest_active_connection_when_no_default() {
+        let mut older = connection();
+        older.is_default = false;
+        older.updated_at_ms = 10;
+        let mut newer = connection();
+        newer.id = "openai-work".into();
+        newer.is_default = false;
+        newer.updated_at_ms = 20;
+        let store = ConnectionStore {
+            schema_version: 1,
+            connections: vec![older, newer],
+        };
+        assert_eq!(
+            store
+                .selected("openai", None)
+                .unwrap()
+                .map(|connection| connection.id.as_str()),
+            Some("openai-work")
+        );
     }
 
     #[test]

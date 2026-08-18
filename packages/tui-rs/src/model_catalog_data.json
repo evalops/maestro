@@ -1,5 +1,5 @@
 {
-  "generated_at": 1786952236,
+  "generated_at": 1787038123,
   "source": "https://models.dev/api.json+https://openrouter.ai/api/v1/models",
   "models": [
     {
@@ -412,8 +412,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 65536,
-        "output_tokens": 65536
+        "context_tokens": 65536
       },
       "verification": {
         "state": "catalog",
@@ -1306,7 +1305,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1310720,
-        "output_tokens": 262144
+        "output_tokens": 384000
       },
       "verification": {
         "state": "catalog",
@@ -1513,8 +1512,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 32768,
-        "output_tokens": 32768
+        "context_tokens": 32768
       },
       "verification": {
         "state": "catalog",
@@ -1532,8 +1530,7 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 65536,
-        "output_tokens": 65536
+        "context_tokens": 65536
       },
       "verification": {
         "state": "catalog",
@@ -1988,8 +1985,7 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 262144,
-        "output_tokens": 262144
+        "context_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -2083,8 +2079,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 262144,
-        "output_tokens": 262144
+        "context_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -2405,8 +2400,7 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 8192,
-        "output_tokens": 8192
+        "context_tokens": 8192
       },
       "verification": {
         "state": "catalog",
@@ -2424,8 +2418,7 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 163840,
-        "output_tokens": 32768
+        "context_tokens": 163840
       },
       "verification": {
         "state": "catalog",
@@ -2557,8 +2550,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 512000,
-        "output_tokens": 512000
+        "context_tokens": 512000
       },
       "verification": {
         "state": "catalog",
@@ -2766,8 +2758,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 65536,
-        "output_tokens": 65536
+        "context_tokens": 65536
       },
       "verification": {
         "state": "catalog",
@@ -2804,8 +2795,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 65536,
-        "output_tokens": 66000
+        "context_tokens": 65536
       },
       "verification": {
         "state": "catalog",
@@ -3089,7 +3079,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 262144,
-        "output_tokens": 262144
+        "output_tokens": 32768
       },
       "verification": {
         "state": "catalog",
@@ -3183,8 +3173,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 131000,
-        "output_tokens": 131000
+        "context_tokens": 131000
       },
       "verification": {
         "state": "catalog",
@@ -3202,8 +3191,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 131072,
-        "output_tokens": 131072
+        "context_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -3449,8 +3437,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 131072,
-        "output_tokens": 131072
+        "context_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -3468,8 +3455,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 60000,
-        "output_tokens": 60000
+        "context_tokens": 60000
       },
       "verification": {
         "state": "catalog",
@@ -3487,8 +3473,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 131072,
-        "output_tokens": 131072
+        "context_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -3600,7 +3585,8 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 1048576
+        "context_tokens": 1048576,
+        "output_tokens": 32000
       },
       "verification": {
         "state": "catalog",
@@ -3618,7 +3604,8 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 1048576
+        "context_tokens": 1048576,
+        "output_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -3636,8 +3623,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 16384,
-        "output_tokens": 16384
+        "context_tokens": 16384
       },
       "verification": {
         "state": "catalog",
@@ -3674,8 +3660,7 @@
         "vision": true,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 1000192,
-        "output_tokens": 1000192
+        "context_tokens": 1000192
       },
       "verification": {
         "state": "catalog",
@@ -4080,8 +4065,7 @@
         "vision": true,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 128000,
-        "output_tokens": 128000
+        "context_tokens": 128000
       },
       "verification": {
         "state": "catalog",
@@ -4211,8 +4195,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 262144,
-        "output_tokens": 262144
+        "context_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -4230,8 +4213,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 262144,
-        "output_tokens": 262144
+        "context_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -4249,8 +4231,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 262144,
-        "output_tokens": 262144
+        "context_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -4268,7 +4249,8 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 1048576
+        "context_tokens": 1048576,
+        "output_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -4324,8 +4306,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 262144,
-        "output_tokens": 262144
+        "context_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -4343,8 +4324,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 262144,
-        "output_tokens": 262144
+        "context_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -4436,8 +4416,7 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 262144,
-        "output_tokens": 262144
+        "context_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -4511,8 +4490,7 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 262144,
-        "output_tokens": 262144
+        "context_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -4530,7 +4508,8 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 512288
+        "context_tokens": 512288,
+        "output_tokens": 16384
       },
       "verification": {
         "state": "catalog",
@@ -4624,8 +4603,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 128000,
-        "output_tokens": 128000
+        "context_tokens": 128000
       },
       "verification": {
         "state": "catalog",
@@ -4680,8 +4658,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 4095,
-        "output_tokens": 4096
+        "context_tokens": 4095
       },
       "verification": {
         "state": "catalog",
@@ -4718,8 +4695,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 4095,
-        "output_tokens": 4096
+        "context_tokens": 4095
       },
       "verification": {
         "state": "catalog",
@@ -5554,8 +5530,7 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 131072,
-        "output_tokens": 131072
+        "context_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -5573,8 +5548,7 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 131072,
-        "output_tokens": 131072
+        "context_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -5836,7 +5810,8 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 200000
+        "context_tokens": 200000,
+        "output_tokens": 8000
       },
       "verification": {
         "state": "catalog",
@@ -5854,7 +5829,8 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 1000000
+        "context_tokens": 1000000,
+        "output_tokens": 128000
       },
       "verification": {
         "state": "catalog",
@@ -5872,7 +5848,8 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 2000000
+        "context_tokens": 2000000,
+        "output_tokens": 200000
       },
       "verification": {
         "state": "catalog",
@@ -5909,7 +5886,8 @@
         "vision": true,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 127072
+        "context_tokens": 127072,
+        "output_tokens": 4096
       },
       "verification": {
         "state": "catalog",
@@ -5927,7 +5905,8 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 128000
+        "context_tokens": 128000,
+        "output_tokens": 32768
       },
       "verification": {
         "state": "catalog",
@@ -5983,7 +5962,8 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 128000
+        "context_tokens": 128000,
+        "output_tokens": 4096
       },
       "verification": {
         "state": "catalog",
@@ -6096,8 +6076,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 32768,
-        "output_tokens": 32768
+        "context_tokens": 32768
       },
       "verification": {
         "state": "catalog",
@@ -6115,8 +6094,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 32768,
-        "output_tokens": 32768
+        "context_tokens": 32768
       },
       "verification": {
         "state": "catalog",
@@ -6191,8 +6169,7 @@
         "vision": true,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 128000,
-        "output_tokens": 128000
+        "context_tokens": 128000
       },
       "verification": {
         "state": "catalog",
@@ -6267,7 +6244,8 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 262144
+        "context_tokens": 262144,
+        "output_tokens": 32768
       },
       "verification": {
         "state": "catalog",
@@ -6399,8 +6377,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 262144,
-        "output_tokens": 262144
+        "context_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -6437,8 +6414,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 262144,
-        "output_tokens": 262144
+        "context_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -6513,8 +6489,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 262144,
-        "output_tokens": 262144
+        "context_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -6760,8 +6735,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 262144,
-        "output_tokens": 262144
+        "context_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -6836,8 +6810,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 262144,
-        "output_tokens": 131072
+        "context_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -6855,8 +6828,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 262144,
-        "output_tokens": 262144
+        "context_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -7045,8 +7017,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 16384,
-        "output_tokens": 16384
+        "context_tokens": 16384
       },
       "verification": {
         "state": "catalog",
@@ -7064,8 +7035,7 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 65536,
-        "output_tokens": 65536
+        "context_tokens": 65536
       },
       "verification": {
         "state": "catalog",
@@ -7159,8 +7129,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 8192,
-        "output_tokens": 16384
+        "context_tokens": 8192
       },
       "verification": {
         "state": "catalog",
@@ -7254,8 +7223,7 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 131072,
-        "output_tokens": 131072
+        "context_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -7310,8 +7278,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 131072,
-        "output_tokens": 131072
+        "context_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -7329,8 +7296,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 65536,
-        "output_tokens": 65536
+        "context_tokens": 65536
       },
       "verification": {
         "state": "catalog",
@@ -7348,8 +7314,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 32768,
-        "output_tokens": 32768
+        "context_tokens": 32768
       },
       "verification": {
         "state": "catalog",
@@ -7367,8 +7332,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 1024000,
-        "output_tokens": 1024000
+        "context_tokens": 1024000
       },
       "verification": {
         "state": "catalog",
@@ -7424,8 +7388,7 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 6144,
-        "output_tokens": 6144
+        "context_tokens": 6144
       },
       "verification": {
         "state": "catalog",
@@ -7443,8 +7406,7 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 131072,
-        "output_tokens": 131072
+        "context_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -7837,7 +7799,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1048576,
-        "output_tokens": 262144
+        "output_tokens": 131072
       },
       "verification": {
         "state": "catalog",
@@ -7855,8 +7817,7 @@
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 128000,
-        "output_tokens": 128000
+        "context_tokens": 128000
       },
       "verification": {
         "state": "catalog",
@@ -7950,8 +7911,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 500000,
-        "output_tokens": 500000
+        "context_tokens": 500000
       },
       "verification": {
         "state": "catalog",
@@ -7969,8 +7929,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 500000,
-        "output_tokens": 500000
+        "context_tokens": 500000
       },
       "verification": {
         "state": "catalog",
@@ -7988,8 +7947,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 256000,
-        "output_tokens": 256000
+        "context_tokens": 256000
       },
       "verification": {
         "state": "catalog",

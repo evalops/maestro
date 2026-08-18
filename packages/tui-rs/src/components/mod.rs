@@ -81,7 +81,7 @@
 //!
 //! ### Input Components
 //! - `TextArea`: Multi-line text input with cursor tracking
-//! - `ChatInputWidget`: The main chat input box with placeholder and busy states
+//! - `ChatInputWidget`: The main chat input box with in-box prompt and busy states
 //!
 //! ### Modal Dialogs
 //! - `ApprovalModal`: Tool approval confirmation dialog
@@ -91,6 +91,7 @@
 //! - `ModelSelector`: Model selection modal
 //! - `RewindPicker`: File checkpoint restore picker modal
 //! - `SessionSwitcher`: Session list modal
+//! - `SetupModal`: First-run EvalOps or local API key modal
 //! - `ThemeSelector`: Theme picker modal
 //!
 //! ### Utility Components
@@ -132,6 +133,7 @@ mod rate_limit;
 mod rewind_picker;
 mod scroll;
 mod session_switcher;
+mod setup_modal;
 mod shortcuts_help;
 mod status_indicator;
 mod text;
@@ -156,7 +158,7 @@ pub use detail_view::DetailView;
 pub use file_search::FileSearchModal;
 pub use input::{EditorWidget, InputWidget};
 pub use layout::{column_layout, row_layout, BoxWidget};
-pub(crate) use message::calculate_input_height;
+pub(crate) use message::{calculate_input_height, composer_editor_width};
 pub use message::{
     ChatInputWidget, ChatInputWidgetOptions, ChatView, MessageWidget, StatusBarWidget,
     ToolCallWidget,
@@ -170,6 +172,7 @@ pub use rate_limit::{
 pub use rewind_picker::RewindPicker;
 pub use scroll::render_scrollbar;
 pub use session_switcher::SessionSwitcher;
+pub use setup_modal::{SetupAdvance, SetupModal, SetupPage, SetupProvider};
 pub use shortcuts_help::{Shortcut, ShortcutCategory, ShortcutsHelp, ShortcutsHelpBuilder};
 pub use status_indicator::{StatusIndicator, StatusIndicatorBuilder};
 pub use text::{StyledTextWidget, TextWidget};

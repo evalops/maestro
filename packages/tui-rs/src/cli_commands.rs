@@ -11,7 +11,10 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 
 use crate::session::{ExportFormat, ExportOptions, SessionManager};
-use crate::session_transfer::{export_portable_session, import_portable_session, PortableFormat};
+use crate::session_transfer::{
+    export_portable_session, export_secure_portable_session, import_portable_session_with_options,
+    PortableFormat, SecureSessionExportOptions, SecureSessionImportOptions,
+};
 
 const ANTHROPIC_OAUTH_REMOVED_MESSAGE: &str = "Anthropic OAuth login has been removed. Set ANTHROPIC_API_KEY to use Anthropic models, or run `maestro codex login` for the default Codex flow.";
 
@@ -99,7 +102,7 @@ fn run_sessions(args: &[String]) -> Result<i32> {
         "import" => run_sessions_import(&args[1..]),
         "help" | "--help" | "-h" => {
             println!(
-                "Usage: maestro sessions [list [N]|path|export <id> [out] [--format f]|import <file>]"
+                "Usage: maestro sessions [list [N]|path|export <id> [out] [--format f]|import <file> [secure key flags]]"
             );
             Ok(0)
         }
@@ -179,21 +182,51 @@ fn run_sessions_export(args: &[String]) -> Result<i32> {
     let mut format = ExportFormat::Json;
     let mut format_name = "json".to_string();
     let mut redact_secrets = false;
+    let mut encryption_key_file: Option<PathBuf> = None;
+    let mut signing_key_file: Option<PathBuf> = None;
+    let mut recipient_key_id: Option<String> = None;
+    let mut signing_key_id: Option<String> = None;
     let mut i = 0usize;
     while i < args.len() {
         let a = &args[i];
         if a == "--format" || a == "-f" {
             i += 1;
             let Some(f) = args.get(i) else {
-                bail!("--format requires a value (json|md|html|txt|jsonl|markdown)");
+                bail!("--format requires a value (json|secure-json|md|html|txt|jsonl|markdown)");
             };
-            format = parse_export_format(f)?;
+            if f.eq_ignore_ascii_case("secure-json") {
+                format = ExportFormat::Json;
+            } else {
+                format = parse_export_format(f)?;
+            }
             format_name = f.to_ascii_lowercase();
         } else if let Some(rest) = a.strip_prefix("--format=") {
-            format = parse_export_format(rest)?;
+            if rest.eq_ignore_ascii_case("secure-json") {
+                format = ExportFormat::Json;
+            } else {
+                format = parse_export_format(rest)?;
+            }
             format_name = rest.to_ascii_lowercase();
         } else if a == "--redact-secrets" {
             redact_secrets = true;
+        } else if a == "--encryption-key-file" || a.starts_with("--encryption-key-file=") {
+            encryption_key_file = Some(PathBuf::from(take_arg_value(
+                args,
+                &mut i,
+                a,
+                "--encryption-key-file",
+            )?));
+        } else if a == "--signing-key-file" || a.starts_with("--signing-key-file=") {
+            signing_key_file = Some(PathBuf::from(take_arg_value(
+                args,
+                &mut i,
+                a,
+                "--signing-key-file",
+            )?));
+        } else if a == "--recipient-key-id" || a.starts_with("--recipient-key-id=") {
+            recipient_key_id = Some(take_arg_value(args, &mut i, a, "--recipient-key-id")?);
+        } else if a == "--signing-key-id" || a.starts_with("--signing-key-id=") {
+            signing_key_id = Some(take_arg_value(args, &mut i, a, "--signing-key-id")?);
         } else if a.starts_with('-') {
             bail!("unknown export flag: {a}");
         } else if session_id.is_none() {
@@ -205,12 +238,36 @@ fn run_sessions_export(args: &[String]) -> Result<i32> {
     }
 
     let Some(id) = session_id else {
-        eprintln!("Usage: maestro sessions export <session-id> [output-path] [--format json|md|html|txt|jsonl]");
+        eprintln!("Usage: maestro sessions export <session-id> [output-path] [--format json|secure-json|md|html|txt|jsonl]");
         return Ok(2);
     };
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manager = SessionManager::new(cwd.to_string_lossy().to_string());
+    if format_name == "secure-json" {
+        let options = SecureSessionExportOptions {
+            encryption_key_file: encryption_key_file
+                .context("secure export requires --encryption-key-file")?,
+            signing_key_file: signing_key_file
+                .context("secure export requires --signing-key-file")?,
+            recipient_key_id: recipient_key_id
+                .context("secure export requires --recipient-key-id")?,
+            signing_key_id: signing_key_id.context("secure export requires --signing-key-id")?,
+        };
+        let out_path = export_secure_portable_session(&manager, &id, output.as_deref(), &options)?;
+        println!(
+            "Exported redacted session {id} to {} (secure-json).",
+            out_path.display()
+        );
+        return Ok(0);
+    }
+    if encryption_key_file.is_some()
+        || signing_key_file.is_some()
+        || recipient_key_id.is_some()
+        || signing_key_id.is_some()
+    {
+        bail!("secure session key flags require --format secure-json");
+    }
     if matches!(format_name.as_str(), "json" | "jsonl") {
         let portable_format = if format_name == "jsonl" {
             PortableFormat::Jsonl
@@ -279,35 +336,97 @@ fn parse_export_format(s: &str) -> Result<ExportFormat> {
         "html" | "htm" => Ok(ExportFormat::Html),
         "txt" | "text" | "plain" => Ok(ExportFormat::PlainText),
         "jsonl" => Ok(ExportFormat::Json), // handled specially above for raw copy
-        other => bail!("unsupported export format: {other} (use json|md|html|txt|jsonl)"),
+        other => {
+            bail!("unsupported export format: {other} (use json|secure-json|md|html|txt|jsonl)")
+        }
     }
 }
 
 fn run_sessions_import(args: &[String]) -> Result<i32> {
-    let Some(source) = args.first() else {
-        eprintln!("Usage: maestro sessions import <file.jsonl|file.json>");
+    let mut source: Option<PathBuf> = None;
+    let mut encryption_key_file: Option<PathBuf> = None;
+    let mut verify_key_file: Option<PathBuf> = None;
+    let mut expected_recipient_key_id: Option<String> = None;
+    let mut i = 0usize;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--encryption-key-file" || a.starts_with("--encryption-key-file=") {
+            encryption_key_file = Some(PathBuf::from(take_arg_value(
+                args,
+                &mut i,
+                a,
+                "--encryption-key-file",
+            )?));
+        } else if a == "--verify-key-file" || a.starts_with("--verify-key-file=") {
+            verify_key_file = Some(PathBuf::from(take_arg_value(
+                args,
+                &mut i,
+                a,
+                "--verify-key-file",
+            )?));
+        } else if a == "--recipient-key-id" || a.starts_with("--recipient-key-id=") {
+            expected_recipient_key_id =
+                Some(take_arg_value(args, &mut i, a, "--recipient-key-id")?);
+        } else if a.starts_with('-') {
+            bail!("unknown import flag: {a}");
+        } else if source.is_none() {
+            source = Some(PathBuf::from(a));
+        } else {
+            bail!("unexpected import argument: {a}");
+        }
+        i += 1;
+    }
+    let Some(source) = source else {
+        eprintln!("Usage: maestro sessions import <file.jsonl|file.json> [--encryption-key-file path --verify-key-file path [--recipient-key-id id]]");
         return Ok(2);
     };
-    let src = PathBuf::from(source);
+    let secure_options = match (encryption_key_file, verify_key_file) {
+        (None, None) => None,
+        (Some(encryption_key_file), Some(verify_key_file)) => Some(SecureSessionImportOptions {
+            encryption_key_file,
+            verify_key_file,
+            expected_recipient_key_id,
+        }),
+        _ => bail!("secure session import requires both key files"),
+    };
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manager = SessionManager::new(cwd.to_string_lossy().to_string());
-    let imported = import_portable_session(&manager, &src)?;
+    let imported =
+        import_portable_session_with_options(&manager, &source, secure_options.as_ref())?;
     if imported.imported_count > 1 {
         println!(
             "Imported {} sessions from {}. Active session: {}.",
             imported.imported_count,
-            src.display(),
+            source.display(),
             imported.session_id
         );
     } else {
         println!(
             "Imported session {} from {}.",
             imported.session_id,
-            src.display()
+            source.display()
         );
     }
     println!("Stored at {}", imported.session_file.display());
     Ok(0)
+}
+
+fn take_arg_value(args: &[String], index: &mut usize, arg: &str, name: &str) -> Result<String> {
+    if let Some(value) = arg.strip_prefix(&format!("{name}=")) {
+        if value.is_empty() {
+            bail!("{name} requires a value");
+        }
+        return Ok(value.to_string());
+    }
+    *index += 1;
+    let value = args
+        .get(*index)
+        .cloned()
+        .with_context(|| format!("{name} requires a value"))?;
+    if value.is_empty() {
+        bail!("{name} requires a value");
+    }
+    Ok(value)
 }
 
 fn run_cost(args: &[String]) -> Result<i32> {
@@ -868,5 +987,28 @@ mod tests {
                 .expect("anthropic command"),
             1
         );
+    }
+
+    #[test]
+    fn secure_transfer_flags_accept_equals_and_next_token_values() {
+        let args = argv(&["--recipient-key-id=recipient-v1"]);
+        let mut index = 0;
+        assert_eq!(
+            take_arg_value(&args, &mut index, &args[0], "--recipient-key-id")
+                .expect("equals value"),
+            "recipient-v1"
+        );
+
+        let args = argv(&["--verify-key-file", "/tmp/verify-key"]);
+        let mut index = 0;
+        assert_eq!(
+            take_arg_value(&args, &mut index, &args[0], "--verify-key-file")
+                .expect("next-token value"),
+            "/tmp/verify-key"
+        );
+
+        let args = argv(&["--encryption-key-file"]);
+        let mut index = 0;
+        assert!(take_arg_value(&args, &mut index, &args[0], "--encryption-key-file").is_err());
     }
 }

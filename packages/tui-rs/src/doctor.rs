@@ -382,6 +382,43 @@ const AUTH_HEALTH_PROVIDERS: &[&str] = &[
 /// Report credential availability for each well-known provider without ever
 /// printing secret values. `op://` references are actually resolved through
 /// the 1Password CLI so broken vault references surface here.
+fn credential_mode_check(
+    detected: Option<&crate::credential_mode::DetectedMode>,
+    model: &str,
+    env: &HashMap<String, String>,
+) -> DoctorCheck {
+    match detected {
+        Some(crate::credential_mode::DetectedMode::Platform(session)) => check(
+            "credential_mode",
+            CheckStatus::Pass,
+            format!(
+                "platform: org {} via EvalOps identity",
+                session.organization_id
+            ),
+            session.email.clone(),
+            false,
+        ),
+        Some(crate::credential_mode::DetectedMode::Byok)
+            if crate::credential_mode::byok_ready(model, env) =>
+        {
+            check(
+                "credential_mode",
+                CheckStatus::Pass,
+                "byok: local provider credential is available",
+                None,
+                false,
+            )
+        }
+        _ => check(
+            "credential_mode",
+            CheckStatus::Fail,
+            "no EvalOps session and no local API key",
+            Some("Run `maestro setup` to sign in or add a key.".to_owned()),
+            false,
+        ),
+    }
+}
+
 fn auth_health_checks(env: &HashMap<String, String>) -> Vec<DoctorCheck> {
     AUTH_HEALTH_PROVIDERS
         .iter()
@@ -584,8 +621,27 @@ pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) 
             }
         })
         .unwrap_or_else(|| crate::codex_auth::DEFAULT_PLATFORM_MODEL.to_string());
-    let env = std::env::vars().collect();
-    let resolved = ProviderRegistry::resolve(&requested, &env);
+    let snapshot = crate::init_cli::load_evalops_snapshot().ok().flatten();
+    let process_env = std::env::vars().collect::<HashMap<String, String>>();
+    let detected = crate::credential_mode::detect_from(snapshot.as_ref(), &process_env);
+    let mut env = process_env.clone();
+    let _ = crate::codex_auth::merge_codex_auth_snapshot_into_env(
+        &mut env,
+        crate::codex_auth::read_codex_auth(),
+        false,
+    );
+    let resolved = match &detected {
+        Some(crate::credential_mode::DetectedMode::Platform(session)) => {
+            env = session.managed_env(&requested).unwrap_or(env);
+            ProviderRegistry::resolve(&session.managed_model_route(&requested), &env)
+        }
+        _ => {
+            let _ = crate::service_connections::ConnectionBroker::merge_default_for_model(
+                &requested, &mut env,
+            );
+            ProviderRegistry::resolve(&requested, &env)
+        }
+    };
     let (provider, protocol) = resolved.as_ref().map_or_else(
         |_| ("unknown".to_owned(), "unknown".to_owned()),
         |value| {
@@ -606,6 +662,7 @@ pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) 
         catalog,
     };
     let mut checks = config_checks(cwd);
+    checks.push(credential_mode_check(detected.as_ref(), &requested, &env));
     checks.push(match resolved {
         Ok(provider) if provider.credential.is_some() => check(
             "provider",
@@ -636,8 +693,22 @@ pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) 
             false,
         ),
     });
-    checks.extend(auth_health_checks(&env));
-    checks.push(codex_login_health_check());
+    match detected.as_ref() {
+        Some(crate::credential_mode::DetectedMode::Platform(_)) => checks.push(check(
+            "auth_health",
+            CheckStatus::Pass,
+            "platform session supplies llm-gateway credentials; local provider keys are ignored",
+            None,
+            false,
+        )),
+        _ => checks.extend(auth_health_checks(&env)),
+    }
+    if !matches!(
+        detected.as_ref(),
+        Some(crate::credential_mode::DetectedMode::Platform(_))
+    ) {
+        checks.push(codex_login_health_check());
+    }
     checks.push(codex_app_server_transport_check(&selected_model.provider));
     checks.push(if has_provider_mismatch(&requested) {
         check(

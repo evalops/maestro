@@ -530,6 +530,16 @@ fn a2a_command_parses_peer_actions() {
 }
 
 #[test]
+fn setup_command_opens_setup_modal() {
+    let registry = build_command_registry();
+    let result = registry.execute("/setup", "/tmp", None, None);
+    match result.expect("setup command should succeed") {
+        CommandOutput::OpenModal(ModalType::Setup) => {}
+        other => panic!("expected setup modal, got {other:?}"),
+    }
+}
+
+#[test]
 fn hotkeys_command_opens_shortcuts_help_modal() {
     let registry = build_command_registry();
     let result = registry.execute("/hotkeys", "/tmp", None, None);

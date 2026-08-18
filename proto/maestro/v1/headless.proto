@@ -84,6 +84,24 @@ enum ApprovalMode {
   APPROVAL_MODE_FAIL = 3;
 }
 
+enum ControllerLifetimeProfile {
+  CONTROLLER_LIFETIME_PROFILE_UNSPECIFIED = 0;
+  CONTROLLER_LIFETIME_PROFILE_EPHEMERAL = 1;
+  CONTROLLER_LIFETIME_PROFILE_RESIDENT = 2;
+}
+
+message ControllerContext {
+  string schema_version = 1;
+  string controller_id = 2;
+  string organization_id = 3;
+  string workspace_id = 4;
+  string thread_id = 5;
+  optional string channel_id = 6;
+  optional string request_id = 7;
+  ControllerLifetimeProfile lifetime_profile = 8;
+  optional uint64 runtime_generation = 9;
+}
+
 enum ExecutorType {
   EXECUTOR_TYPE_UNSPECIFIED = 0;
   EXECUTOR_TYPE_LIVE = 1;
@@ -274,6 +292,9 @@ message HelloMessage {
   ClientCapabilities capabilities = 3;
   optional ConnectionRole role = 4;
   repeated NotificationType opt_out_notifications = 5;
+  optional string controller_binding_version = 6;
+  ControllerContext controller_context = 7;
+  google.protobuf.Value capability_manifest = 8;
 }
 
 // Prior conversation turn seeded before the first prompt.
@@ -654,6 +675,8 @@ message HelloOkMessage {
   optional string controller_connection_id = 8;
   optional string lease_expires_at = 9;
   ServerCapabilities server_capabilities = 10;
+  optional string controller_binding_version = 11;
+  optional string controller_binding_sha256 = 12;
 }
 
 message ConnectionInfoMessage {

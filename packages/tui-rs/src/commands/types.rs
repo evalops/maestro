@@ -787,6 +787,8 @@ pub enum ModalType {
     ShortcutsHelp,
     /// Help documentation viewer
     Help,
+    /// First-run EvalOps or local API key setup
+    Setup,
 }
 
 /// Error from command execution

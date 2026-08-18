@@ -17,6 +17,7 @@
 //!    valid without a catalog row.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::LazyLock;
@@ -466,8 +467,8 @@ async fn refresh_catalog_cache() -> anyhow::Result<()> {
 async fn fetch_remote_catalog(
     client: &reqwest::Client,
 ) -> anyhow::Result<(Vec<ModelInfo>, Option<String>)> {
-    let native = fetch_models_dev_catalog(client).await;
-    let openrouter = fetch_openrouter_catalog(client).await;
+    let native = fetch_catalog_json(client, MODELS_DEV_API_URL).await;
+    let openrouter = fetch_catalog_json(client, OPENROUTER_MODELS_API_URL).await;
     match (native, openrouter) {
         (Err(native_error), Err(openrouter_error)) => {
             anyhow::bail!(
@@ -475,12 +476,24 @@ async fn fetch_remote_catalog(
             )
         }
         (native, openrouter) => {
+            let limits = native
+                .as_ref()
+                .ok()
+                .map(|(payload, _)| DevTokenLimits::from_models_dev(payload));
             let (mut models, last_modified) = match native {
-                Ok(result) => result,
+                Ok((payload, last_modified)) => match map_models_dev_catalog(&payload) {
+                    Ok(models) if !models.is_empty() => (models, last_modified),
+                    _ => (bundled_native_models(), None),
+                },
                 Err(_) => (bundled_native_models(), None),
             };
             let openrouter_models = match openrouter {
-                Ok(models) => models,
+                Ok((payload, _)) => {
+                    match map_openrouter_catalog_with_limits(&payload, limits.as_ref()) {
+                        Ok(models) if !models.is_empty() => models,
+                        _ => bundled_openrouter_models(),
+                    }
+                }
                 Err(_) => bundled_openrouter_models(),
             };
             models.extend(openrouter_models);
@@ -493,10 +506,11 @@ async fn fetch_remote_catalog(
     }
 }
 
-async fn fetch_models_dev_catalog(
+async fn fetch_catalog_json(
     client: &reqwest::Client,
-) -> anyhow::Result<(Vec<ModelInfo>, Option<String>)> {
-    let response = client.get(MODELS_DEV_API_URL).send().await?;
+    url: &str,
+) -> anyhow::Result<(serde_json::Value, Option<String>)> {
+    let response = client.get(url).send().await?;
     let response = response.error_for_status()?;
     let last_modified = response
         .headers()
@@ -504,11 +518,7 @@ async fn fetch_models_dev_catalog(
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
     let payload: serde_json::Value = response.json().await?;
-    let models = map_models_dev_catalog(&payload)?;
-    if models.is_empty() {
-        anyhow::bail!("models.dev payload produced an empty catalog");
-    }
-    Ok((models, last_modified))
+    Ok((payload, last_modified))
 }
 
 fn bundled_native_models() -> Vec<ModelInfo> {
@@ -535,17 +545,6 @@ fn sort_catalog_models(models: &mut [ModelInfo]) {
     });
 }
 
-async fn fetch_openrouter_catalog(client: &reqwest::Client) -> anyhow::Result<Vec<ModelInfo>> {
-    let response = client.get(OPENROUTER_MODELS_API_URL).send().await?;
-    let response = response.error_for_status()?;
-    let payload: serde_json::Value = response.json().await?;
-    let models = map_openrouter_catalog(&payload)?;
-    if models.is_empty() {
-        anyhow::bail!("OpenRouter payload produced an empty catalog");
-    }
-    Ok(models)
-}
-
 /// Write the cache via a sibling temp file + rename so readers never observe
 /// a partially written catalog.
 async fn write_cache_atomic(path: &Path, cache: &CachedCatalog) -> anyhow::Result<()> {
@@ -554,6 +553,104 @@ async fn write_cache_atomic(path: &Path, cache: &CachedCatalog) -> anyhow::Resul
     tokio::task::spawn_blocking(move || crate::path_utils::atomic_private_write(&path, &contents))
         .await??;
     Ok(())
+}
+
+/// Positive output ceiling that is strictly smaller than the context window.
+/// Sources often copy `context` into `limit.output` / `max_completion_tokens`;
+/// that is not an output cap and must not be stored as one.
+fn distinct_output_tokens(context: Option<u32>, output: Option<u32>) -> Option<u32> {
+    let output = output.filter(|tokens| *tokens > 0)?;
+    match context.filter(|tokens| *tokens > 0) {
+        Some(context) if output >= context => None,
+        _ => Some(output),
+    }
+}
+
+fn parse_limit_tokens(model: &serde_json::Value, field: &str) -> Option<u32> {
+    model
+        .get("limit")
+        .and_then(|limit| limit.get(field))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|tokens| u32::try_from(tokens).ok())
+        .filter(|tokens| *tokens > 0)
+}
+
+/// models.dev `limit.context` / `limit.output` keyed for OpenRouter vendor ids.
+///
+/// Vendor-native rows are inserted first so a distinct Google/OpenAI/Moonshot
+/// output wins over an OpenRouter row that copied the context window.
+type DevTokenWindow = (Option<u32>, Option<u32>);
+
+#[derive(Debug, Default)]
+struct DevTokenLimits {
+    entries: HashMap<String, Vec<DevTokenWindow>>,
+}
+
+impl DevTokenLimits {
+    fn from_models_dev(payload: &serde_json::Value) -> Self {
+        let mut limits = Self::default();
+        let Some(providers) = payload.as_object() else {
+            return limits;
+        };
+        for (provider, body) in providers {
+            if provider == "openrouter" {
+                continue;
+            }
+            limits.index_provider(provider, body);
+        }
+        if let Some(body) = providers.get("openrouter") {
+            limits.index_provider("openrouter", body);
+        }
+        limits
+    }
+
+    fn index_provider(&mut self, provider: &str, body: &serde_json::Value) {
+        let Some(models) = body.get("models").and_then(serde_json::Value::as_object) else {
+            return;
+        };
+        for (id, model) in models {
+            let context = parse_limit_tokens(model, "context");
+            let output = parse_limit_tokens(model, "output");
+            if provider == "openrouter" {
+                self.push(id, context, output);
+            } else {
+                self.push(&format!("{provider}/{id}"), context, output);
+            }
+        }
+    }
+
+    fn push(&mut self, key: &str, context: Option<u32>, output: Option<u32>) {
+        self.entries
+            .entry(key.to_owned())
+            .or_default()
+            .push((context, output));
+    }
+
+    fn distinct_output(
+        &self,
+        openrouter_id: &str,
+        openrouter_context: u32,
+        openrouter_output: Option<u32>,
+    ) -> Option<u32> {
+        if let Some(output) = distinct_output_tokens(Some(openrouter_context), openrouter_output) {
+            return Some(output);
+        }
+        for (_context, output) in self.candidates(openrouter_id) {
+            if let Some(resolved) = distinct_output_tokens(Some(openrouter_context), output) {
+                return Some(resolved);
+            }
+        }
+        None
+    }
+
+    fn candidates(&self, openrouter_id: &str) -> Vec<DevTokenWindow> {
+        self.entries
+            .get(openrouter_id)
+            .into_iter()
+            .flatten()
+            .copied()
+            .collect()
+    }
 }
 
 /// Map a models.dev `api.json` payload into catalog entries, applying the
@@ -618,14 +715,10 @@ fn map_models_dev_model(
         .and_then(|modalities| modalities.get("input"))
         .and_then(serde_json::Value::as_array)
         .is_some_and(|inputs| inputs.iter().any(|input| input.as_str() == Some("image")));
-    // Mirror of the fetcher script: keep `limit.output` only when it is a
-    // positive integer.
-    let output_tokens = model
-        .get("limit")
-        .and_then(|limit| limit.get("output"))
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|output| u32::try_from(output).ok())
-        .filter(|output| *output > 0);
+    // Keep `limit.output` only when it is a real output cap, not a copy of
+    // the context window.
+    let output_tokens =
+        distinct_output_tokens(Some(context_tokens), parse_limit_tokens(model, "output"));
     ModelInfo {
         id: id.to_owned(),
         name,
@@ -666,21 +759,32 @@ fn catalog_protocol(provider: &str, model_id: &str) -> ModelProtocol {
 /// Map OpenRouter's `GET /api/v1/models` payload. Interactive routes are kept;
 /// `:batch` variants belong to OpenRouter's async Batch API and cannot drive
 /// Maestro's streaming agent loop.
+#[cfg(test)]
 fn map_openrouter_catalog(payload: &serde_json::Value) -> anyhow::Result<Vec<ModelInfo>> {
+    map_openrouter_catalog_with_limits(payload, None)
+}
+
+fn map_openrouter_catalog_with_limits(
+    payload: &serde_json::Value,
+    limits: Option<&DevTokenLimits>,
+) -> anyhow::Result<Vec<ModelInfo>> {
     let models = payload
         .get("data")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| anyhow::anyhow!("OpenRouter payload is missing a data array"))?;
     let mut mapped = Vec::new();
     for model in models {
-        if let Some(info) = map_openrouter_model(model) {
+        if let Some(info) = map_openrouter_model(model, limits) {
             mapped.push(info);
         }
     }
     Ok(mapped)
 }
 
-fn map_openrouter_model(model: &serde_json::Value) -> Option<ModelInfo> {
+fn map_openrouter_model(
+    model: &serde_json::Value,
+    limits: Option<&DevTokenLimits>,
+) -> Option<ModelInfo> {
     let id = model
         .get("id")
         .and_then(serde_json::Value::as_str)
@@ -696,12 +800,16 @@ fn map_openrouter_model(model: &serde_json::Value) -> Option<ModelInfo> {
         .and_then(serde_json::Value::as_u64)
         .and_then(|context| u32::try_from(context).ok())
         .filter(|context| *context > 0)?;
-    let output_tokens = top_provider
+    let advertised_output = top_provider
         .and_then(|provider| provider.get("max_completion_tokens"))
         .or_else(|| model.get("max_completion_tokens"))
         .and_then(serde_json::Value::as_u64)
         .and_then(|output| u32::try_from(output).ok())
         .filter(|output| *output > 0);
+    let output_tokens = limits.map_or_else(
+        || distinct_output_tokens(Some(context_tokens), advertised_output),
+        |limits| limits.distinct_output(id, context_tokens, advertised_output),
+    );
     let name = model
         .get("name")
         .and_then(serde_json::Value::as_str)
@@ -809,10 +917,14 @@ pub fn find_model(id: &str) -> Option<ModelInfo> {
 }
 
 /// Fallback per-request output token budget used when the catalog has no
-/// output limit for the active model. Explicit configuration
+/// distinct output limit for the active model. Explicit configuration
 /// (`set_max_tokens`, env overrides such as `MAESTRO_PRINT_MAX_TOKENS`)
 /// always wins over this default.
 pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 16_384;
+
+/// Tokens reserved for prompt + tools so a default `max_tokens` cannot consume
+/// the entire context window.
+pub const MIN_PROMPT_TOKEN_HEADROOM: u32 = 8_192;
 
 /// Catalog-declared output token limit (models.dev `limit.output`) for a
 /// model id, when known.
@@ -827,26 +939,158 @@ pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 16_384;
 /// or the catalog has no output limit for it.
 #[must_use]
 pub fn catalog_output_token_limit(model_id: &str) -> Option<u32> {
+    if let Some(output) = user_configured_token_limits(model_id)
+        .and_then(|limits| limits.output_tokens)
+        .filter(|output| *output > 0)
+    {
+        return Some(output);
+    }
     find_model(model_id)
         .or_else(|| find_model(&provider_model_name(model_id)))
         .and_then(|model| model.capabilities.output_tokens)
 }
 
-/// Default per-request output token budget for a model id: the full catalog
-/// output limit when known. A discovered local model with only a live context
-/// limit uses at most half that context, preserving prompt headroom; models
-/// without either limit use [`DEFAULT_MAX_OUTPUT_TOKENS`].
+/// Default per-request output token budget for a model id.
+///
+/// Uses the catalog output ceiling only when it is strictly smaller than the
+/// context window. OpenRouter and other catalogs often publish
+/// `max_completion_tokens` equal to the full context; requesting that as
+/// `max_tokens` leaves no room for the prompt and the provider returns 400.
+/// A discovered local model with only a live context limit uses at most half
+/// that context, capped at [`DEFAULT_MAX_OUTPUT_TOKENS`]. Models without
+/// either limit use [`DEFAULT_MAX_OUTPUT_TOKENS`].
 #[must_use]
 pub fn default_max_output_tokens(model_id: &str) -> u32 {
-    catalog_output_token_limit(model_id).unwrap_or_else(|| {
-        crate::local_models::find_discovered_model(model_id)
+    let user = user_configured_token_limits(model_id);
+    let catalog = find_model(model_id).or_else(|| find_model(&provider_model_name(model_id)));
+    let discovered = crate::local_models::find_discovered_model(model_id);
+    let context = user.and_then(|limits| limits.context_tokens).or_else(|| {
+        catalog
+            .as_ref()
+            .or(discovered.as_ref())
             .map(|model| model.capabilities.context_tokens)
             .filter(|tokens| *tokens > 0)
-            .map(|tokens| (tokens / 2).max(1))
-            .map_or(DEFAULT_MAX_OUTPUT_TOKENS, |tokens| {
-                tokens.min(DEFAULT_MAX_OUTPUT_TOKENS)
-            })
+    });
+    let user_output = user.and_then(|limits| limits.output_tokens);
+    let distinct_output = user_output
+        .filter(|output| context.is_none_or(|ctx| *output < ctx))
+        .or_else(|| {
+            catalog
+                .as_ref()
+                .and_then(|model| model.capabilities.output_tokens)
+                .filter(|output| context.is_none_or(|ctx| *output < ctx))
+        });
+    let budget = if let Some(output) = distinct_output {
+        output
+    } else if let Some(tokens) = discovered
+        .map(|model| model.capabilities.context_tokens)
+        .filter(|tokens| *tokens > 0)
+    {
+        (tokens / 2).clamp(1, DEFAULT_MAX_OUTPUT_TOKENS)
+    } else {
+        DEFAULT_MAX_OUTPUT_TOKENS
+    };
+    clamp_output_budget_to_context(budget, context)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UserModelLimits {
+    context_tokens: Option<u32>,
+    output_tokens: Option<u32>,
+}
+
+fn user_configured_token_limits(model_id: &str) -> Option<UserModelLimits> {
+    let mut found = None;
+    for path in user_provider_config_paths() {
+        if let Some(limits) = limits_from_provider_config(&path, model_id) {
+            found = Some(limits);
+        }
+    }
+    found
+}
+
+fn user_provider_config_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(home) = crate::path_utils::maestro_home_dir() {
+        paths.push(home.join("config.json"));
+        paths.push(home.join("local.json"));
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        paths.push(cwd.join(".maestro").join("config.json"));
+        paths.push(cwd.join(".maestro").join("config.local.json"));
+    }
+    paths
+}
+
+fn limits_from_provider_config(path: &Path, model_id: &str) -> Option<UserModelLimits> {
+    let raw = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let providers = value.get("providers")?.as_array()?;
+    let mut found = None;
+    for provider in providers {
+        let provider_id = provider
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let Some(models) = provider.get("models").and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for model in models {
+            let Some(id) = model.get("id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if !user_model_id_matches(model_id, provider_id, id) {
+                continue;
+            }
+            found = Some(UserModelLimits {
+                context_tokens: json_positive_u32(model, &["contextWindow", "context_window"]),
+                output_tokens: json_positive_u32(model, &["maxTokens", "max_tokens"]),
+            });
+        }
+    }
+    found.filter(|limits| limits.context_tokens.is_some() || limits.output_tokens.is_some())
+}
+
+fn user_model_id_matches(requested: &str, provider_id: &str, configured_id: &str) -> bool {
+    let requested = requested.trim();
+    let configured_id = configured_id.trim();
+    if requested.eq_ignore_ascii_case(configured_id) {
+        return true;
+    }
+    if !provider_id.is_empty() {
+        let qualified = format!("{provider_id}/{configured_id}");
+        if requested.eq_ignore_ascii_case(&qualified) {
+            return true;
+        }
+    }
+    requested
+        .rsplit_once('/')
+        .is_some_and(|(_, tail)| tail.eq_ignore_ascii_case(configured_id))
+        || requested
+            .to_ascii_lowercase()
+            .ends_with(&format!("/{}", configured_id.to_ascii_lowercase()))
+}
+
+fn json_positive_u32(value: &serde_json::Value, keys: &[&str]) -> Option<u32> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|tokens| u32::try_from(tokens).ok())
+            .filter(|tokens| *tokens > 0)
     })
+}
+
+fn clamp_output_budget_to_context(budget: u32, context: Option<u32>) -> u32 {
+    let Some(context) = context.filter(|tokens| *tokens > 0) else {
+        return budget.max(1);
+    };
+    // Never reserve more than half the window. An 8k local model with
+    // MIN_PROMPT_TOKEN_HEADROOM == 8192 would otherwise keep 1 output token.
+    let reserved = MIN_PROMPT_TOKEN_HEADROOM
+        .min(context / 2)
+        .min(context.saturating_sub(1));
+    budget.min(context.saturating_sub(reserved)).max(1)
 }
 
 #[must_use]
@@ -1300,8 +1544,8 @@ mod tests {
 
     #[test]
     fn default_max_output_tokens_prefers_the_full_catalog_limit() {
-        // The catalog limit is a cap, not a reservation: pass it through
-        // untruncated for known models, fall back for unknown ones.
+        // Distinct catalog output limits (smaller than context) pass through.
+        // Uncataloged models and output==context rows use the fallback.
         assert_eq!(default_max_output_tokens("gpt-5.6"), 128_000);
         assert_eq!(default_max_output_tokens("evalops/gpt-5.6"), 128_000);
         assert_eq!(
@@ -1309,6 +1553,74 @@ mod tests {
             DEFAULT_MAX_OUTPUT_TOKENS
         );
         assert_eq!(DEFAULT_MAX_OUTPUT_TOKENS, 16_384);
+    }
+
+    #[test]
+    fn clamp_output_budget_keeps_half_the_window_on_small_contexts() {
+        assert_eq!(clamp_output_budget_to_context(4_096, Some(8_192)), 4_096);
+        assert_eq!(
+            clamp_output_budget_to_context(DEFAULT_MAX_OUTPUT_TOKENS, Some(128_000)),
+            DEFAULT_MAX_OUTPUT_TOKENS
+        );
+    }
+
+    #[test]
+    fn default_max_output_tokens_does_not_consume_the_full_context_window() {
+        let model = find_model("openrouter/moonshotai/kimi-k2.7-code")
+            .expect("openrouter kimi catalog row");
+        assert_eq!(model.capabilities.context_tokens, 262_144);
+        assert_eq!(
+            model.capabilities.output_tokens, None,
+            "context copied into output is not a real output cap"
+        );
+        assert_eq!(
+            default_max_output_tokens("openrouter/moonshotai/kimi-k2.7-code"),
+            DEFAULT_MAX_OUTPUT_TOKENS
+        );
+        assert!(
+            default_max_output_tokens("openrouter/moonshotai/kimi-k2.7-code")
+                < model.capabilities.context_tokens
+        );
+    }
+
+    #[test]
+    fn default_max_output_tokens_honors_user_config_json_max_tokens() {
+        static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = HOME_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let home = tempfile::tempdir().expect("maestro home");
+        let previous = std::env::var_os("MAESTRO_HOME");
+        std::env::set_var("MAESTRO_HOME", home.path());
+        fs::write(
+            home.path().join("config.json"),
+            r#"{
+              "providers": [{
+                "id": "openrouter",
+                "models": [{
+                  "id": "moonshotai/kimi-k2.7-codex",
+                  "contextWindow": 262144,
+                  "maxTokens": 16384
+                }]
+              }]
+            }"#,
+        )
+        .expect("write user config");
+        let budget = default_max_output_tokens("openrouter/moonshotai/kimi-k2.7-codex");
+        match previous {
+            Some(value) => std::env::set_var("MAESTRO_HOME", value),
+            None => std::env::remove_var("MAESTRO_HOME"),
+        }
+        assert_eq!(budget, 16_384);
+    }
+
+    #[test]
+    fn distinct_output_tokens_rejects_context_copies() {
+        assert_eq!(distinct_output_tokens(Some(262_144), Some(262_144)), None);
+        assert_eq!(distinct_output_tokens(Some(65_536), Some(66_000)), None);
+        assert_eq!(
+            distinct_output_tokens(Some(200_000), Some(100_000)),
+            Some(100_000)
+        );
+        assert_eq!(distinct_output_tokens(Some(200_000), None), None);
     }
 
     #[test]
@@ -1399,7 +1711,80 @@ mod tests {
         assert_eq!(models[0].capabilities.output_tokens, Some(64_000));
         assert_eq!(models[1].id, "openai/gpt-5.4");
         assert_eq!(models[1].capabilities.protocol, ModelProtocol::OpenAiChat);
+        assert_eq!(models[1].capabilities.output_tokens, None);
         assert!(!models.iter().any(|model| model.id.ends_with(":batch")));
+    }
+
+    #[test]
+    fn openrouter_mapping_drops_output_equal_to_context_and_overlays_models_dev() {
+        let openrouter = serde_json::json!({
+            "data": [
+                {
+                    "id": "moonshotai/kimi-k2.7-code",
+                    "name": "Kimi K2.7 Code",
+                    "context_length": 262_144,
+                    "top_provider": {"max_completion_tokens": 262_144},
+                    "supported_parameters": ["tools"]
+                },
+                {
+                    "id": "google/gemma-4-31b-it",
+                    "name": "Gemma 4 31B",
+                    "context_length": 262_144,
+                    "top_provider": {"max_completion_tokens": 262_144},
+                    "supported_parameters": ["tools"]
+                },
+                {
+                    "id": "openai/o4-mini",
+                    "name": "o4 Mini",
+                    "context_length": 200_000,
+                    "top_provider": {"max_completion_tokens": 100_000},
+                    "supported_parameters": ["tools"]
+                }
+            ]
+        });
+        let models_dev = serde_json::json!({
+            "google": {"models": {
+                "gemma-4-31b-it": {"limit": {"context": 262_144, "output": 32_768}}
+            }},
+            "openai": {"models": {
+                "o4-mini": {"limit": {"context": 200_000, "output": 100_000}, "status": "deprecated"}
+            }},
+            "moonshotai": {"models": {
+                "kimi-k2.7-code": {"limit": {"context": 262_144, "output": 262_144}}
+            }},
+            "openrouter": {"models": {
+                "google/gemma-4-31b-it": {"limit": {"context": 262_144, "output": 262_144}}
+            }}
+        });
+        let limits = DevTokenLimits::from_models_dev(&models_dev);
+        let models =
+            map_openrouter_catalog_with_limits(&openrouter, Some(&limits)).expect("mapping");
+        let by_id = |id: &str| {
+            models
+                .iter()
+                .find(|model| model.id == id)
+                .unwrap_or_else(|| panic!("{id}"))
+        };
+        assert_eq!(
+            by_id("moonshotai/kimi-k2.7-code")
+                .capabilities
+                .context_tokens,
+            262_144
+        );
+        assert_eq!(
+            by_id("moonshotai/kimi-k2.7-code")
+                .capabilities
+                .output_tokens,
+            None
+        );
+        assert_eq!(
+            by_id("google/gemma-4-31b-it").capabilities.output_tokens,
+            Some(32_768)
+        );
+        assert_eq!(
+            by_id("openai/o4-mini").capabilities.output_tokens,
+            Some(100_000)
+        );
     }
 
     #[test]

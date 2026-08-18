@@ -1,8 +1,9 @@
 //! Codex-owned ChatGPT / API auth from `CODEX_HOME` (`~/.codex/auth.json`).
 //!
-//! Interactive native agent startup prefers Codex when that file has usable
-//! credentials, matching the product default: bare `maestro` should use
-//! `openai-codex/gpt-5.5` once `maestro codex login` has succeeded.
+//! Interactive native agent startup prefers an explicit `MAESTRO_MODEL` or a
+//! `model` / `model_provider` pair from Maestro config files. If neither is
+//! set and this file has usable credentials, bare `maestro` uses
+//! `openai-codex/gpt-5.5` after `maestro codex login`.
 //!
 //! Env vars already set by the user (or CLI flags) always win. We never write
 //! Codex tokens into `~/.maestro/keys.json`. Native `openai-codex/*` turns let
@@ -397,8 +398,10 @@ pub fn model_uses_openai_codex(model: &str) -> bool {
 }
 
 /// Resolve the interactive/default model without exporting Codex credentials.
-/// Explicit `MAESTRO_MODEL` wins, followed by the Codex default when auth is
-/// present, and finally the platform default.
+///
+/// Precedence: explicit `MAESTRO_MODEL`, then `model` / `model_provider` from
+/// Maestro config files (`~/.maestro/config.toml` and project overlays), then
+/// the Codex default when ChatGPT auth is present, then the platform default.
 #[must_use]
 pub fn resolve_default_model() -> String {
     if let Ok(model) = std::env::var("MAESTRO_MODEL") {
@@ -406,6 +409,17 @@ pub fn resolve_default_model() -> String {
         if !trimmed.is_empty() {
             return trimmed.to_string();
         }
+    }
+    let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let profile = std::env::var("MAESTRO_PROFILE").ok();
+    if let Some(route) = crate::config::configured_model_route(
+        &workspace,
+        profile
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+    ) {
+        return route;
     }
     read_codex_auth()
         .and_then(|snapshot| snapshot.preferred_default_model())
@@ -672,6 +686,51 @@ mod tests {
 
         unsafe {
             std::env::remove_var("CODEX_HOME");
+        }
+    }
+
+    #[test]
+    fn resolve_default_model_prefers_maestro_config_over_codex_auth() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let codex = tempfile::tempdir().unwrap();
+        write_auth(
+            codex.path(),
+            r#"{
+              "auth_mode": "chatgpt",
+              "tokens": {"access_token": "access-secret"}
+            }"#,
+        );
+        fs::write(
+            home.path().join("config.toml"),
+            "model = \"openai/o4-mini\"\nmodel_provider = \"openrouter\"\n",
+        )
+        .unwrap();
+        let previous_home = std::env::var("MAESTRO_HOME").ok();
+        let previous_cwd = std::env::current_dir().ok();
+        crate::config::clear_config_cache();
+        unsafe {
+            std::env::set_var("MAESTRO_HOME", home.path());
+            std::env::set_var("CODEX_HOME", codex.path());
+            std::env::remove_var("MAESTRO_MODEL");
+            std::env::remove_var("MAESTRO_MODEL_PROVIDER");
+            std::env::remove_var("MAESTRO_PROFILE");
+            std::env::set_current_dir(workspace.path()).expect("cwd");
+        }
+
+        assert_eq!(resolve_default_model(), "openrouter/openai/o4-mini");
+
+        crate::config::clear_config_cache();
+        unsafe {
+            match previous_home {
+                Some(value) => std::env::set_var("MAESTRO_HOME", value),
+                None => std::env::remove_var("MAESTRO_HOME"),
+            }
+            std::env::remove_var("CODEX_HOME");
+            if let Some(cwd) = previous_cwd {
+                let _ = std::env::set_current_dir(cwd);
+            }
         }
     }
 }

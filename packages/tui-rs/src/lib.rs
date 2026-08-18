@@ -66,6 +66,7 @@ pub use maestro_ai as ai;
 /// File-level checkpoints for `/rewind files` (restore files an agent turn modified).
 pub mod checkpoints;
 pub mod connections_cli;
+pub mod credential_mode;
 pub mod doctor;
 /// Shared atomic-write helper (temp file + fsync + rename + parent-dir fsync)
 /// for persisted JSON/text state. See module docs for crash-safety vs.
@@ -75,6 +76,7 @@ pub mod local_models;
 pub mod model_catalog;
 pub mod model_monitor;
 pub mod palette_resource;
+pub mod platform_provider_refs;
 
 /// Slash command system.
 /// Parses and executes commands like /help, /clear, /model, etc.

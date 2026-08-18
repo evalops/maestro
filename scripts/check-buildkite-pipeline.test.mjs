@@ -4,9 +4,11 @@ import test from "node:test";
 
 const root = new URL("../", import.meta.url);
 const pipeline = await readFile(new URL(".buildkite/pipeline.yml", root), "utf8");
+const advisory = await readFile(new URL(".buildkite/advisory.yml", root), "utf8");
 const nextest = await readFile(new URL(".config/nextest.toml", root), "utf8");
 const tooling = await readFile(new URL("scripts/run-buildkite-ci-tooling.sh", root), "utf8");
 const jetbrains = await readFile(new URL("scripts/run-buildkite-jetbrains.sh", root), "utf8");
+const coverage = await readFile(new URL("scripts/run-buildkite-coverage.sh", root), "utf8");
 
 test("Buildkite routes jobs through the configured Maestro worker pool", () => {
   assert.match(pipeline, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-medium\}"/);
@@ -18,15 +20,20 @@ test("Buildkite routes jobs through the configured Maestro worker pool", () => {
 test("Buildkite bounds shared worker concurrency and infrastructure retries", () => {
 	assert.equal(
 		pipeline.match(/priority: 50/gu)?.length,
-		11,
-		"all repository validation lanes should outrank stale default-priority work",
+		9,
+		"required repository validation lanes should outrank advisory and stale default-priority work",
 	);
-  assert.equal((pipeline.match(/concurrency: 3/g) ?? []).length, 11);
-  assert.equal((pipeline.match(/MAESTRO_CI_CONCURRENCY_GROUP/g) ?? []).length, 10);
+  assert.equal((pipeline.match(/concurrency: 3/g) ?? []).length, 9);
+  assert.equal((pipeline.match(/MAESTRO_CI_CONCURRENCY_GROUP/g) ?? []).length, 8);
   assert.equal((pipeline.match(/MAESTRO_CI_JETBRAINS_CONCURRENCY_GROUP/g) ?? []).length, 1);
-  assert.equal((pipeline.match(/exit_status: -1/g) ?? []).length, 11);
-  assert.equal((pipeline.match(/signal_reason: none/g) ?? []).length, 11);
-  assert.equal((pipeline.match(/signal_reason: agent_stop/g) ?? []).length, 11);
+  assert.equal((pipeline.match(/MAESTRO_CI_ADVISORY_CONCURRENCY_GROUP/g) ?? []).length, 0);
+  assert.equal((advisory.match(/MAESTRO_CI_ADVISORY_CONCURRENCY_GROUP/g) ?? []).length, 2);
+  assert.equal((pipeline.match(/exit_status: -1/g) ?? []).length, 9);
+  assert.equal((pipeline.match(/signal_reason: none/g) ?? []).length, 9);
+  assert.equal((pipeline.match(/signal_reason: agent_stop/g) ?? []).length, 9);
+  assert.equal((advisory.match(/exit_status: -1/g) ?? []).length, 2);
+  assert.equal((advisory.match(/signal_reason: none/g) ?? []).length, 2);
+  assert.equal((advisory.match(/signal_reason: agent_stop/g) ?? []).length, 2);
   assert.doesNotMatch(pipeline, /exit_status: "\*"/);
 });
 
@@ -50,16 +57,59 @@ test("Buildkite network and long-running operations are bounded", () => {
   }
 });
 
+test("advisory coverage uses nextest and an isolated instrumented target dir", () => {
+  assert.match(coverage, /CARGO_TARGET_DIR="\$\{repo_root\}\/\.buildkite\/cache\/cargo-target-cov"/);
+  assert.match(coverage, /cargo llvm-cov nextest/);
+  assert.match(coverage, /--lib/);
+  assert.match(coverage, /--no-clean/);
+  assert.match(coverage, /--ignore-run-fail/);
+  assert.match(coverage, /--profile buildkite/);
+  assert.match(
+    coverage,
+    /cargo-llvm-cov-x86_64-unknown-linux-gnu\.tar\.gz/,
+  );
+  assert.match(
+    coverage,
+    /b068f7c98841aacb9c4f382b4a0c184ae82f49b56a32d442b429b2961c73be15/,
+  );
+  assert.doesNotMatch(coverage, /cargo install cargo-llvm-cov/);
+  assert.doesNotMatch(coverage, /cargo llvm-cov --workspace --locked --no-report/);
+  assert.doesNotMatch(coverage, /--html/);
+});
+
+test("advisory coverage and perf are not in the default pipeline", () => {
+  assert.doesNotMatch(pipeline, /key: "coverage"/);
+  assert.doesNotMatch(pipeline, /key: "perf-baseline"/);
+  assert.match(pipeline, /key: "advisory-upload"/);
+  assert.match(pipeline, /soft_fail: true/);
+  assert.match(
+    pipeline,
+    /BUILDKITE_SOURCE\}" == "schedule" && -f \.buildkite\/advisory\.yml[\s\S]*pipeline upload \.buildkite\/advisory\.yml/,
+  );
+  assert.match(advisory, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-medium\}"/);
+  assert.match(advisory, /image: "\$\{MAESTRO_CI_IMAGE:-evalops-platform-ci-v3\}"/);
+  assert.match(advisory, /CARGO_TARGET_DIR: "\.buildkite\/cache\/cargo-target"/);
+  assert.match(advisory, /key: "coverage"[\s\S]*priority: 10/);
+  assert.match(advisory, /key: "perf-baseline"[\s\S]*priority: 10/);
+  assert.doesNotMatch(advisory, /^\s*if:/mu);
+});
+
 test("Buildkite covers every migrated validation family", () => {
   for (const key of [
     "lint", "rust-tests", "native-release", "integration", "scenario-replay",
     "ci-contracts", "workflow-tooling", "supply-chain", "jetbrains-plugin",
-    "coverage", "perf-baseline",
+    "advisory-upload",
   ]) {
     assert.match(pipeline, new RegExp(`key: "${key}"`));
   }
-  for (const script of ["ci-tooling", "supply-chain", "jetbrains", "coverage", "perf"]) {
+  for (const key of ["coverage", "perf-baseline"]) {
+    assert.match(advisory, new RegExp(`key: "${key}"`));
+  }
+  for (const script of ["ci-tooling", "supply-chain", "jetbrains"]) {
     assert.match(pipeline, new RegExp(`scripts/run-buildkite-${script}\\.sh`));
+  }
+  for (const script of ["coverage", "perf"]) {
+    assert.match(advisory, new RegExp(`scripts/run-buildkite-${script}\\.sh`));
   }
 });
 
