@@ -1,31 +1,25 @@
 name: Apply Platform controller handshake
 
 on:
-  push:
-    branches:
-      - codex/platform-controller-handshake
-    paths:
-      - scripts/codex/apply-platform-controller-handshake.part1.pyfrag
-      - scripts/codex/apply-platform-controller-handshake.part2.pyfrag
-      - scripts/codex/apply-platform-controller-handshake.part3.pyfrag
-      - scripts/codex/apply-platform-controller-handshake.part4.pyfrag
-      - .github/workflows/apply-platform-controller-handshake.yml
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
 
 concurrency:
-  group: apply-platform-controller-handshake
+  group: apply-platform-controller-handshake-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   apply:
+    if: github.head_ref == 'codex/platform-controller-handshake'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.ref_name }}
+          ref: ${{ github.head_ref }}
 
       - name: Verify reviewed source boundary
         shell: bash
@@ -75,6 +69,4 @@ jobs:
           git config user.email "noreply@openai.com"
           git add -A
           git commit -m "feat(headless): bind Platform controller context"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
-
-# Trigger after the workflow exists on the branch.
+          git push origin "HEAD:${GITHUB_HEAD_REF}"
