@@ -43,6 +43,12 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.71-alpha.5] - 2026-08-19
+
+### Fixed
+
+- Keep tag-release contract green on the public tree (#1040). <!-- maestro-release-note:df855f92e5a6 -->
+
 ## [0.10.69] - 2026-08-17
 
 ### Added
