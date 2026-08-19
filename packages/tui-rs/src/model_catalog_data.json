@@ -1,5 +1,5 @@
 {
-  "generated_at": 1787038123,
+  "generated_at": 1787124524,
   "source": "https://models.dev/api.json+https://openrouter.ai/api/v1/models",
   "models": [
     {
@@ -1305,7 +1305,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 1310720,
-        "output_tokens": 384000
+        "output_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -3079,7 +3079,7 @@
         "reasoning": true,
         "streaming": true,
         "context_tokens": 262144,
-        "output_tokens": 32768
+        "output_tokens": 16384
       },
       "verification": {
         "state": "catalog",
@@ -6489,7 +6489,8 @@
         "vision": false,
         "reasoning": false,
         "streaming": true,
-        "context_tokens": 262144
+        "context_tokens": 262144,
+        "output_tokens": 16384
       },
       "verification": {
         "state": "catalog",
@@ -6659,8 +6660,7 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 262144,
-        "output_tokens": 81920
+        "context_tokens": 262144
       },
       "verification": {
         "state": "catalog",
@@ -6810,7 +6810,8 @@
         "vision": true,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 262144
+        "context_tokens": 262144,
+        "output_tokens": 65536
       },
       "verification": {
         "state": "catalog",
@@ -7813,11 +7814,30 @@
       "description": "GLM 5.2 is a large-scale reasoning model from Z.ai. It supports text input and output with a 1M-token context window,…",
       "capabilities": {
         "protocol": "openai-chat",
-        "tools": false,
+        "tools": true,
         "vision": false,
         "reasoning": true,
         "streaming": true,
-        "context_tokens": 128000
+        "context_tokens": 256000
+      },
+      "verification": {
+        "state": "catalog",
+        "source": "openrouter"
+      }
+    },
+    {
+      "id": "z-ai/glm-5.3",
+      "name": "Z.ai: GLM 5.3",
+      "provider": "openrouter",
+      "description": "GLM-5.3 is a large-scale reasoning model from Z.ai, built for complex software engineering and long-horizon agent…",
+      "capabilities": {
+        "protocol": "openai-chat",
+        "tools": true,
+        "vision": false,
+        "reasoning": true,
+        "streaming": true,
+        "context_tokens": 1048576,
+        "output_tokens": 131072
       },
       "verification": {
         "state": "catalog",
