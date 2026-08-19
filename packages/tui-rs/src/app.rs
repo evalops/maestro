@@ -673,6 +673,9 @@ pub struct App {
     setup_modal: SetupModal,
     setup_login_rx: Option<tokio::sync::oneshot::Receiver<Result<(), String>>>,
     pending_agent_spawn: bool,
+    /// True when `current_model` was chosen by `/setup` or `/model`, so a
+    /// later respawn should not fall back to `resolve_default_model`.
+    current_model_user_set: bool,
 
     /// Keyboard shortcuts help overlay.
     shortcuts_help: ShortcutsHelp,
@@ -1398,6 +1401,7 @@ impl App {
             setup_modal: SetupModal::new(),
             setup_login_rx: None,
             pending_agent_spawn: false,
+            current_model_user_set: false,
             shortcuts_help: ShortcutsHelp::new_with_binding_labels(keybinding_labels),
             rewind_picker: RewindPicker::new(),
             usage_tracker: crate::usage::UsageTracker::new(),
@@ -2216,9 +2220,14 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         let git_branch = git::current_branch(&cwd_path);
         self.current_git_branch = git_branch.clone();
 
-        // MAESTRO_MODEL, then ~/.maestro (and project) model settings, then
-        // Codex ChatGPT login, then the platform default.
-        let model = crate::codex_auth::resolve_default_model();
+        // Prefer a model the user just picked in `/setup` or `/model`.
+        // Otherwise: MAESTRO_MODEL, then ~/.maestro (and project) model
+        // settings, then Codex ChatGPT login, then the platform default.
+        let model = if self.current_model_user_set && !self.current_model.trim().is_empty() {
+            self.current_model.clone()
+        } else {
+            crate::codex_auth::resolve_default_model()
+        };
 
         let (history, session_id, thinking_level) = self.agent_context_for_spawn();
         let (thinking_enabled, thinking_budget) = thinking_level.to_config();

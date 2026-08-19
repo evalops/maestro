@@ -1,7 +1,7 @@
 //! Typed native `maestro doctor` report.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -104,12 +104,40 @@ fn check(
     }
 }
 
+fn normalize_config_path(path: &Path) -> PathBuf {
+    dunce::canonicalize(path).unwrap_or_else(|_| {
+        let mut clean = PathBuf::new();
+        for component in path.components() {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    clean.pop();
+                }
+                other => clean.push(other.as_os_str()),
+            }
+        }
+        clean
+    })
+}
+
 fn config_paths(cwd: &Path) -> Vec<PathBuf> {
-    let mut paths = dirs::home_dir()
-        .map(|home| vec![home.join(".composer/config.toml")])
-        .unwrap_or_default();
+    let mut paths = Vec::new();
+    if let Some(home) = crate::path_utils::maestro_home_dir() {
+        paths.push(home.join("config.toml"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        paths.push(home.join(".composer/config.toml"));
+    }
+    paths.push(cwd.join(".maestro/config.toml"));
     paths.push(cwd.join(".composer/config.toml"));
-    paths
+    let mut seen = std::collections::HashSet::new();
+    let mut unique = Vec::new();
+    for path in paths {
+        if seen.insert(normalize_config_path(&path)) {
+            unique.push(path);
+        }
+    }
+    unique
 }
 
 fn config_checks(cwd: &Path) -> Vec<DoctorCheck> {
@@ -901,6 +929,40 @@ mod tests {
                 .contains(temp.path().to_string_lossy().as_ref())
                 && check.status == CheckStatus::Fail
         }));
+    }
+
+    #[test]
+    fn config_paths_include_project_files_and_dedupe() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = config_paths(temp.path());
+        assert!(
+            paths.contains(&temp.path().join(".maestro/config.toml")),
+            "{paths:?}"
+        );
+        assert!(
+            paths.contains(&temp.path().join(".composer/config.toml")),
+            "{paths:?}"
+        );
+        let keys: Vec<_> = paths
+            .iter()
+            .map(|path| normalize_config_path(path))
+            .collect();
+        let mut unique = keys.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            keys.len(),
+            unique.len(),
+            "config_paths must not repeat: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn normalize_config_path_collapses_dot_components() {
+        assert_eq!(
+            normalize_config_path(Path::new("/tmp/foo/./config.toml")),
+            normalize_config_path(Path::new("/tmp/foo/config.toml"))
+        );
     }
 
     #[test]

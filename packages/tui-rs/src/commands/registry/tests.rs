@@ -540,6 +540,69 @@ fn setup_command_opens_setup_modal() {
 }
 
 #[test]
+fn zen_command_toggles_zen_mode() {
+    let registry = build_command_registry();
+    match registry.execute("/zen", "/tmp", None, None).expect("/zen") {
+        CommandOutput::Action(CommandAction::ToggleZenMode) => {}
+        other => panic!("expected ToggleZenMode, got {other:?}"),
+    }
+}
+
+#[test]
+fn help_for_named_command_prints_usage() {
+    let registry = build_command_registry();
+    match registry
+        .execute("/help setup", "/tmp", None, None)
+        .expect("/help setup")
+    {
+        CommandOutput::Message(message) => {
+            assert!(message.contains("/setup"), "{message}");
+            assert!(message.contains("Usage: /setup"), "{message}");
+            assert!(message.contains("EvalOps"), "{message}");
+        }
+        other => panic!("expected help message, got {other:?}"),
+    }
+
+    let err = registry
+        .execute("/help not-a-command", "/tmp", None, None)
+        .expect_err("unknown command help should fail");
+    assert!(
+        err.message.contains("No help available for /not-a-command"),
+        "{err}"
+    );
+    assert!(
+        !err.message.contains("Unknown command"),
+        "must not trip unknown-slash fallback: {err}"
+    );
+}
+
+#[test]
+fn init_command_requests_scaffold_action() {
+    let registry = build_command_registry();
+    match registry
+        .execute("/init", "/tmp", None, None)
+        .expect("/init")
+    {
+        CommandOutput::Action(CommandAction::Init { force }) => assert!(!force),
+        other => panic!("expected Init, got {other:?}"),
+    }
+    match registry
+        .execute("/init --force", "/tmp", None, None)
+        .expect("/init --force")
+    {
+        CommandOutput::Action(CommandAction::Init { force }) => assert!(force),
+        other => panic!("expected Init force, got {other:?}"),
+    }
+    assert!(registry.execute("/init extra", "/tmp", None, None).is_err());
+    assert!(
+        registry
+            .execute("/init --force somewhere/else", "/tmp", None, None)
+            .is_err(),
+        "/init --force must still reject a target path"
+    );
+}
+
+#[test]
 fn hotkeys_command_opens_shortcuts_help_modal() {
     let registry = build_command_registry();
     let result = registry.execute("/hotkeys", "/tmp", None, None);
@@ -1150,6 +1213,10 @@ fn memory_and_continue_commands_parse() {
         CommandOutput::Action(CommandAction::ShowMemory) => {}
         other => panic!("expected ShowMemory, got {other:?}"),
     }
+    let err = registry
+        .execute("/memory save foo", "/tmp", None, None)
+        .expect_err("/memory save should not pretend to work");
+    assert!(err.message.contains("maestro memory"), "{err}");
     match registry
         .execute("/continue", "/tmp", None, None)
         .expect("/continue")

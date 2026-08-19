@@ -235,15 +235,61 @@ fn strip_init_global_flags(args: &[String]) -> Vec<String> {
     filtered
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum InitWorkspaceResult {
+    Created {
+        path: PathBuf,
+        prompt: String,
+    },
+    Updated {
+        path: PathBuf,
+    },
+    Exists {
+        path: PathBuf,
+        preview: String,
+        rerun: String,
+    },
+}
+
 fn init(args: &[String], force: bool) -> Result<Outcome> {
     if args.len() > 1 {
         bail!("agents init accepts at most one target path");
     }
     let cwd = std::env::current_dir()?;
-    let target = match args.first() {
+    match init_workspace(&cwd, args.first().map(String::as_str), force)? {
+        InitWorkspaceResult::Created { path, prompt } => Ok(Outcome::Generate {
+            prompt,
+            target: path,
+        }),
+        InitWorkspaceResult::Updated { path } => {
+            println!("Updated AGENTS instructions at {}.", path.display());
+            Ok(Outcome::Exit(0))
+        }
+        InitWorkspaceResult::Exists {
+            path,
+            preview,
+            rerun,
+        } => {
+            println!(
+                "AGENTS instructions already exist at {}.\nPreview the proposed update below, then re-run with `{rerun}` to apply it.\n\n{}",
+                path.display(),
+                preview
+            );
+            Ok(Outcome::Exit(0))
+        }
+    }
+}
+
+/// Scaffold `AGENTS.md` for a workspace. Shared by `maestro agents init` and `/init`.
+pub fn init_workspace(
+    cwd: &Path,
+    target_arg: Option<&str>,
+    force: bool,
+) -> Result<InitWorkspaceResult> {
+    let target = match target_arg {
         None => cwd.join("AGENTS.md"),
         Some(value) => {
-            let path = absolute(&cwd, Path::new(value));
+            let path = absolute(cwd, Path::new(value));
             if path
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
@@ -271,24 +317,23 @@ fn init(args: &[String], force: bool) -> Result<Outcome> {
             .unified_diff()
             .header("current", "proposed")
             .to_string();
-        let rerun = args.first().map_or_else(
+        let rerun = target_arg.map_or_else(
             || "maestro agents init --force".to_string(),
             |path| format!("maestro agents init {} --force", shell_quote(path)),
         );
-        println!(
-            "AGENTS instructions already exist at {}.\nPreview the proposed update below, then re-run with `{rerun}` to apply it.\n\n{}",
-            target.display(), sanitize_preview(&diff)
-        );
-        return Ok(Outcome::Exit(0));
+        return Ok(InitWorkspaceResult::Exists {
+            path: target,
+            preview: sanitize_preview(&diff),
+            rerun,
+        });
     }
     crate::skill_cli::write_atomic(&target, &content)?;
     if existed {
-        println!("Updated AGENTS instructions at {}.", target.display());
-        return Ok(Outcome::Exit(0));
+        return Ok(InitWorkspaceResult::Updated { path: target });
     }
-    Ok(Outcome::Generate {
+    Ok(InitWorkspaceResult::Created {
         prompt: generation_prompt(&target, &sources),
-        target,
+        path: target,
     })
 }
 
