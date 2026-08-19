@@ -28,9 +28,9 @@ test("Buildkite bounds shared worker concurrency and infrastructure retries", ()
   assert.equal((pipeline.match(/MAESTRO_CI_JETBRAINS_CONCURRENCY_GROUP/g) ?? []).length, 1);
   assert.equal((pipeline.match(/MAESTRO_CI_ADVISORY_CONCURRENCY_GROUP/g) ?? []).length, 0);
   assert.equal((advisory.match(/MAESTRO_CI_ADVISORY_CONCURRENCY_GROUP/g) ?? []).length, 2);
-  assert.equal((pipeline.match(/exit_status: -1/g) ?? []).length, 9);
-  assert.equal((pipeline.match(/signal_reason: none/g) ?? []).length, 9);
-  assert.equal((pipeline.match(/signal_reason: agent_stop/g) ?? []).length, 9);
+  assert.equal((pipeline.match(/exit_status: -1/g) ?? []).length, 10);
+  assert.equal((pipeline.match(/signal_reason: none/g) ?? []).length, 10);
+  assert.equal((pipeline.match(/signal_reason: agent_stop/g) ?? []).length, 10);
   assert.equal((advisory.match(/exit_status: -1/g) ?? []).length, 2);
   assert.equal((advisory.match(/signal_reason: none/g) ?? []).length, 2);
   assert.equal((advisory.match(/signal_reason: agent_stop/g) ?? []).length, 2);
@@ -38,7 +38,7 @@ test("Buildkite bounds shared worker concurrency and infrastructure retries", ()
 });
 
 test("Buildkite network and long-running operations are bounded", () => {
-  assert.equal((pipeline.match(/5m npm ci --ignore-scripts/g) ?? []).length, 4);
+  assert.equal((pipeline.match(/5m npm ci --ignore-scripts/g) ?? []).length, 5);
   assert.match(pipeline, /npm_config_fetch_retries: "1"/);
   assert.match(pipeline, /npm_config_fetch_timeout: "30000"/);
   assert.equal((pipeline.match(/2m docker pull/g) ?? []).length, 2);
@@ -62,6 +62,7 @@ test("advisory coverage uses nextest and an isolated instrumented target dir", (
   assert.match(coverage, /cargo llvm-cov nextest/);
   assert.match(coverage, /--lib/);
   assert.match(coverage, /--no-clean/);
+  assert.doesNotMatch(coverage, /llvm-cov nextest[\s\S]*--no-report/);
   assert.match(coverage, /--ignore-run-fail/);
   assert.match(coverage, /--profile buildkite/);
   assert.match(
@@ -96,9 +97,9 @@ test("advisory coverage and perf are not in the default pipeline", () => {
 
 test("Buildkite covers every migrated validation family", () => {
   for (const key of [
-    "lint", "rust-tests", "native-release", "integration", "scenario-replay",
-    "ci-contracts", "workflow-tooling", "supply-chain", "jetbrains-plugin",
-    "advisory-upload",
+    "protocol-contracts", "lint", "rust-tests", "native-release", "integration",
+    "scenario-replay", "ci-contracts", "workflow-tooling", "supply-chain",
+    "jetbrains-plugin", "advisory-upload",
   ]) {
     assert.match(pipeline, new RegExp(`key: "${key}"`));
   }
@@ -124,7 +125,41 @@ test("workflow tooling installs pinned binaries without requiring Go", () => {
 
 test("JetBrains validation fails fast and retries only its stuck-JVM exit", () => {
   assert.match(pipeline, /key: "jetbrains-plugin"[\s\S]*exit_status: 137[\s\S]*limit: 1/);
-  assert.match(jetbrains, /10m \\\n\s+\.\/gradlew check buildPlugin --no-daemon -Dorg\.gradle\.jvmargs=/);
+  assert.match(jetbrains, /10m \\\n\s+\.\/gradlew check buildPlugin --no-daemon \\/);
+  assert.match(jetbrains, /org\.gradle\.workers\.max=2/);
+  assert.match(
+    jetbrains,
+    /org\.gradle\.jvmargs="-Xmx1g -XX:MaxMetaspaceSize=256m -XX:\+ExitOnOutOfMemoryError"/,
+  );
+});
+
+test("protocol lock fails the build before heavy jobs start", () => {
+  assert.match(pipeline, /key: "protocol-contracts"/);
+  assert.match(pipeline, /npm run check:protocol-manifest/);
+  assert.equal((pipeline.match(/depends_on: "protocol-contracts"/g) ?? []).length, 4);
+});
+
+test("protocol lock does not share the rust-tests Hetzner queue", () => {
+  const lock = pipeline.split('key: "protocol-contracts"')[1]?.split('key: "')[0] ?? "";
+  const rust = pipeline.split('key: "rust-tests"')[1]?.split('key: "')[0] ?? "";
+  assert.match(lock, /queue: "\$\{MAESTRO_CI_PROTOCOL_QUEUE:-linux-medium\}"/);
+  assert.match(lock, /image: "\$\{MAESTRO_CI_PROTOCOL_IMAGE:-evalops-platform-ci-v6\}"/);
+  assert.match(rust, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-medium\}"/);
+  assert.doesNotMatch(lock, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-medium\}"/);
+});
+
+test("rust-tests caps compile jobs and retries OOM SIGKILL", () => {
+  assert.match(pipeline, /key: "rust-tests"[\s\S]*?CARGO_BUILD_JOBS: "4"/);
+  assert.match(pipeline, /key: "rust-tests"[\s\S]*?exit_status: 137/);
+});
+
+test("CI caps rustc codegen units so one crate cannot SIGKILL the worker", () => {
+  assert.match(pipeline, /CARGO_PROFILE_DEV_CODEGEN_UNITS: "16"/);
+  assert.match(pipeline, /CARGO_PROFILE_TEST_CODEGEN_UNITS: "16"/);
+  assert.match(advisory, /CARGO_PROFILE_DEV_CODEGEN_UNITS: "16"/);
+  assert.match(advisory, /CARGO_PROFILE_TEST_CODEGEN_UNITS: "16"/);
+  assert.match(pipeline, /CARGO_BUILD_JOBS: "4"/);
+  assert.match(pipeline, /key: "lint"[\s\S]*?exit_status: 137/);
 });
 
 test("internal-only contracts are conditional in the shared public pipeline", () => {
@@ -137,6 +172,13 @@ test("public projections skip the internal mirror workflow contract", () => {
     tooling,
     /check-sync-public-release-mirror-workflow\.test\.mjs[\s\S]*?\.github\/workflows\/sync-public-release-mirror\.yml/,
   );
+});
+
+test("tag-release contract stays green when the public tree omits public-release-mirror.yml", async () => {
+  const contract = await readFile(new URL("scripts/tag-release-contract.test.mjs", root), "utf8");
+  assert.match(contract, /existsSync\(/);
+  assert.match(contract, /public-release-mirror\.yml/);
+  assert.match(contract, /dispatch-public-release:/);
 });
 
 test("Rust validation uses the pinned canonical nextest split", () => {

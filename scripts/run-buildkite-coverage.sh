@@ -52,11 +52,13 @@ fi
 
 # --lib: one instrumented test harness per crate. No tests/*.rs, no bins,
 # no doctests. nextest for the same parallelism as rust-tests.
+# cargo-llvm-cov 0.9.0 rejects combining a deferred report with --no-clean
+# (Buildkite 353). Keep --no-clean so the isolated target dir stays
+# incremental; generate the lcov/summary reports in the commands below.
 timeout --signal=TERM --kill-after=30s 25m cargo llvm-cov nextest \
   --workspace \
   --lib \
   --locked \
-  --no-report \
   --no-clean \
   --ignore-run-fail \
   -- \

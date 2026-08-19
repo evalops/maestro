@@ -43,6 +43,34 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.70] - 2026-08-19
+
+### Added
+
+- Bind Platform controller context on headless hello (#3497). <!-- maestro-release-note:18ad432b83ed -->
+
+### Changed
+
+- Retrigger rust-tests after SIGKILL on #3499. <!-- maestro-release-note:056e5b7c576c -->
+- Refresh bundled model catalog (#3491). <!-- maestro-release-note:1e39c77cf3c1 -->
+
+### Fixed
+
+- Keep tag-release contract green on the public tree (#3504). <!-- maestro-release-note:1c1391898342 -->
+- Run the protocol lock on hosted linux-medium (#3503). <!-- maestro-release-note:60e6f1f2fc88 -->
+- Cap rustc codegen units to stop SIGKILL on maestro-tui (#3502). <!-- maestro-release-note:31a8b8a41ec5 -->
+- Fail protocol lock before rust-tests and cap compile jobs (#3501). <!-- maestro-release-note:a58c546eee6f -->
+- Refresh controller-binding compatibility manifest (#3499). <!-- maestro-release-note:3552d6f287fe -->
+- Live-session bugs in /cost, connections, and doctor (#3500). <!-- maestro-release-note:c52c8e5951d4 -->
+- Repair slash-command setup and developer flows (#3498). <!-- maestro-release-note:dfabbc0515dc -->
+- Stop creating broken advisory jobs on push (#3496). <!-- maestro-release-note:0d3d7007b90b -->
+- Keep protocol rejection when ledger cleanup fails. <!-- maestro-release-note:b7209bdaa3a3 -->
+- Run nightly coverage with nextest so it can finish (#3494). <!-- maestro-release-note:c921a776eebe -->
+- Stop advisory coverage from holding merge builds open (#3493). <!-- maestro-release-note:f1e0f5fffb4e -->
+- Bump h2 to 0.4.16 for RUSTSEC-2026-0258 (#3492). <!-- maestro-release-note:801f4fa30a51 -->
+- Reap dead background-task leftovers on launch (#3488). <!-- maestro-release-note:acdf943c0b24 -->
+- Clear Clippy -D warnings and cap small-context output budgets (#3490). <!-- maestro-release-note:ebc31bfe6de2 -->
+
 ## [0.10.69] - 2026-08-17
 
 ### Added

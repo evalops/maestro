@@ -6,13 +6,55 @@ env:
   CI: "true"
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_DEV_DEBUG: "0"
+  # [profile.dev] defaults to 128 codegen units. rustc compiling
+  # maestro-tui lib tests with that setting was SIGKILL'd on
+  # hetzner-linux-medium (build 342). Cap both crate parallelism
+  # and per-crate CGUs so one rustc cannot exhaust the worker.
+  CARGO_BUILD_JOBS: "4"
+  CARGO_PROFILE_DEV_CODEGEN_UNITS: "16"
+  CARGO_PROFILE_TEST_CODEGEN_UNITS: "16"
   CARGO_TARGET_DIR: ".buildkite/cache/cargo-target"
   npm_config_cache: ".buildkite/cache/npm"
   npm_config_fetch_retries: "1"
   npm_config_fetch_timeout: "30000"
 
 steps:
+  # Node-only lock. Heavy jobs depend on this so a stale
+  # protocol-compatibility-manifest.json finishes the build as failed
+  # in seconds. Combined GitHub status buildkite/maestro-internal-ci
+  # stays pending while rust-tests still runs; #3497 merged in that
+  # window because lint had already failed and the rest of the
+  # pipeline had not.
+  - label: ":lock: Protocol compatibility lock"
+    key: "protocol-contracts"
+    priority: 80
+    timeout_in_minutes: 10
+    # Node-only. Hosted linux-medium, not the Hetzner rust-tests
+    # workers. Those workers were full on #3499/#3501 and left this
+    # lock scheduled while GitHub stayed green.
+    agents:
+      queue: "${MAESTRO_CI_PROTOCOL_QUEUE:-linux-medium}"
+      image: "${MAESTRO_CI_PROTOCOL_IMAGE:-evalops-platform-ci-v6}"
+    retry:
+      automatic:
+        - exit_status: -1
+          signal_reason: none
+          limit: 1
+        - signal_reason: agent_stop
+          limit: 1
+    command: |
+      set -euo pipefail
+      timeout --signal=TERM --kill-after=10s 5m npm ci --ignore-scripts
+      npm run check:workspace-contract
+      npm run check:protocol-manifest
+      npm run check:runtime-passport
+      npm run check:rust-only-runtime
+      npm run check:helm-probes
+      npm run check:hook-dispatch
+      npm run check:session-transfer
+
   - group: ":rust: Native validation"
+    depends_on: "protocol-contracts"
     if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
     steps:
       - label: ":lint-roller: Contracts, format, and Clippy"
@@ -25,6 +67,8 @@ steps:
           automatic:
             - exit_status: -1
               signal_reason: none
+              limit: 1
+            - exit_status: 137
               limit: 1
             - signal_reason: agent_stop
               limit: 1
@@ -58,11 +102,15 @@ steps:
             - exit_status: -1
               signal_reason: none
               limit: 1
+            - exit_status: 137
+              limit: 1
             - signal_reason: agent_stop
               limit: 1
         agents:
           queue: "${MAESTRO_CI_QUEUE:-hetzner-linux-medium}"
           image: "${MAESTRO_CI_IMAGE:-evalops-platform-ci-v3}"
+        env:
+          CARGO_BUILD_JOBS: "4"
         cache:
           name: "maestro-tests-${BUILDKITE_PULL_REQUEST}"
           size: "50g"
@@ -119,6 +167,7 @@ steps:
           node scripts/run-runtime-conformance.mjs --binary "$$CARGO_TARGET_DIR/fast-validation/maestro"
 
   - group: ":repeat: Integration and replay"
+    depends_on: "protocol-contracts"
     if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
     steps:
       - label: ":docker: Control-plane integration"
@@ -193,6 +242,7 @@ steps:
 
   - label: ":pipeline: CI configuration contracts"
     key: "ci-contracts"
+    depends_on: "protocol-contracts"
     priority: 50
     if: build.env("MAESTRO_CI_SUPPLY_CHAIN_ONLY") != "true"
     timeout_in_minutes: 30
@@ -221,6 +271,7 @@ steps:
       fi
 
   - group: ":shield: Auxiliary validation"
+    depends_on: "protocol-contracts"
     steps:
       - label: ":github: Workflow and shell tooling"
         key: "workflow-tooling"
