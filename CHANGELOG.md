@@ -43,6 +43,12 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.70-beta.6] - 2026-08-19
+
+### Changed
+
+- Maintenance release with repository, CI, or documentation updates since the previous tag.
+
 ## [0.10.69] - 2026-08-17
 
 ### Added
