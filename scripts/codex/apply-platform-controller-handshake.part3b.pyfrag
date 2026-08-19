@@ -1,0 +1,25 @@
+
+
+def add_server_capability_fields_to_literals() -> None:
+    paths = list((ROOT / 'packages/tui-rs/src/headless').rglob('*.rs'))
+    paths.extend([
+        ROOT / 'packages/tui-rs/src/hosted_runner.rs',
+        ROOT / 'packages/tui-rs/src/hosted_runner/manifests.rs',
+    ])
+    for path in paths:
+        text = path.read_text()
+        pattern = re.compile(
+            r'((?:[A-Za-z0-9_]+::)*ServerCapabilities\s*\{\s*\n)'
+            r'(?P<indent>\s*)'
+            r'(?=(?:server_requests|utility_operations|raw_agent_events|connection_roles|native_tools|governed_tool_grant_algorithms)\s*:)' 
+        )
+        def repl(match: re.Match[str]) -> str:
+            indent = match.group('indent')
+            return (
+                match.group(1)
+                + f"{indent}controller_binding_versions: Vec::new(),\n"
+                + indent
+            )
+        updated, count = pattern.subn(repl, text)
+        if count:
+            path.write_text(updated)
