@@ -193,11 +193,7 @@ fn run_add(args: &Args) -> Result<i32> {
         "Usage: maestro connections add <type> <id> [source]",
     )?;
     let definitions = connection_types(args.workspace.as_deref())?;
-    let definition = definitions
-        .into_iter()
-        .find(|report| report.definition.id == type_id)
-        .map(|report| report.definition)
-        .with_context(|| format!("unknown or untrusted connection type: {type_id}"))?;
+    let definition = resolve_connection_type(&definitions, type_id)?;
     let path = ConnectionStore::default_path()?;
     let backend = KeyringSecretBackend;
     let connection = with_locked_store(&path, |store| {
@@ -533,6 +529,41 @@ fn required_position<'a>(args: &'a Args, index: usize, usage: &str) -> Result<&'
         .context(usage.to_owned())
 }
 
+fn resolve_connection_type(
+    definitions: &[ConnectionTypeReport],
+    type_id: &str,
+) -> Result<ConnectionTypeDefinition> {
+    let needle = type_id.trim();
+    if needle.is_empty() {
+        bail!("unknown or untrusted connection type: {type_id}");
+    }
+    if let Some(report) = definitions
+        .iter()
+        .find(|report| report.definition.id == needle)
+    {
+        return Ok(report.definition.clone());
+    }
+    let aliased = definitions
+        .iter()
+        .filter(|report| report.definition.provider_id == needle)
+        .collect::<Vec<_>>();
+    match aliased.as_slice() {
+        [report] => Ok(report.definition.clone()),
+        [] => bail!("unknown or untrusted connection type: {needle}"),
+        many => {
+            let mut ids = many
+                .iter()
+                .map(|report| report.definition.id.as_str())
+                .collect::<Vec<_>>();
+            ids.sort_unstable();
+            bail!(
+                "ambiguous connection type {needle}; specify one of: {}",
+                ids.join(", ")
+            )
+        }
+    }
+}
+
 fn connection_types(workspace: Option<&Path>) -> Result<Vec<ConnectionTypeReport>> {
     let mut definitions = BTreeMap::<String, ConnectionTypeReport>::new();
     for definition in builtin_connection_types() {
@@ -697,11 +728,7 @@ fn run_add_platform(args: &Args) -> Result<i32> {
         "Usage: maestro connections add <type> <id> [source]",
     )?;
     let definitions = connection_types(args.workspace.as_deref())?;
-    let definition = definitions
-        .into_iter()
-        .find(|report| report.definition.id == type_id)
-        .map(|report| report.definition)
-        .with_context(|| format!("unknown or untrusted connection type: {type_id}"))?;
+    let definition = resolve_connection_type(&definitions, type_id)?;
     if definition.auth_kind != crate::service_connections::ConnectionAuthKind::ApiKey {
         bail!("Platform mode only uploads API-key connections to EvalOps keys");
     }
@@ -812,6 +839,8 @@ Commands:\n\
   types [--json]                 List built-in and trusted-plugin connection types\n\
   list [--json]                  List non-secret connection metadata\n\
   add [<type> <id>] [source]     Add an API key or delegated account\n\
+                                 Type may be a type id (anthropic-api-key)\n\
+                                 or a provider id (anthropic)\n\
   status <id> [--json]           Validate that the credential source is available\n\
   use <id>                       Select the provider's default connection\n\
   rotate <id> [--secret-stdin]   Replace a keyring credential and revoke old leases\n\
@@ -1792,5 +1821,61 @@ mod tests {
         assert!(rendered.contains("1Password reference"));
         assert!(rendered.contains("models.invoke"));
         assert!(!rendered.contains("op://engineering/openai/credential"));
+    }
+
+    #[test]
+    fn resolve_connection_type_accepts_provider_id() {
+        let types = connection_types(None).expect("types");
+        let by_id = resolve_connection_type(&types, "anthropic-api-key").expect("type id");
+        let by_provider = resolve_connection_type(&types, "anthropic").expect("provider id");
+        assert_eq!(by_id.id, "anthropic-api-key");
+        assert_eq!(by_provider.id, by_id.id);
+        assert_eq!(by_provider.provider_id, "anthropic");
+        let err = resolve_connection_type(&types, "not-a-provider").expect_err("unknown type");
+        assert!(
+            err.to_string()
+                .contains("unknown or untrusted connection type: not-a-provider"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn resolve_connection_type_reports_ambiguous_provider() {
+        let types = vec![
+            ConnectionTypeReport {
+                definition: ConnectionTypeDefinition {
+                    id: "anthropic-api-key".into(),
+                    display_name: "Anthropic API key".into(),
+                    provider_id: "anthropic".into(),
+                    auth_kind: ConnectionAuthKind::ApiKey,
+                    placement: ConnectionPlacement::Either,
+                    env_var: Some("ANTHROPIC_API_KEY".into()),
+                    capabilities: vec![],
+                    documentation_url: None,
+                },
+                source: "maestro".into(),
+            },
+            ConnectionTypeReport {
+                definition: ConnectionTypeDefinition {
+                    id: "anthropic-plugin".into(),
+                    display_name: "Anthropic plugin".into(),
+                    provider_id: "anthropic".into(),
+                    auth_kind: ConnectionAuthKind::ApiKey,
+                    placement: ConnectionPlacement::Either,
+                    env_var: None,
+                    capabilities: vec![],
+                    documentation_url: None,
+                },
+                source: "plugin:extra".into(),
+            },
+        ];
+        let err = resolve_connection_type(&types, "anthropic").expect_err("ambiguous");
+        let message = err.to_string();
+        assert!(
+            message.contains("ambiguous connection type anthropic"),
+            "{message}"
+        );
+        assert!(message.contains("anthropic-api-key"), "{message}");
+        assert!(message.contains("anthropic-plugin"), "{message}");
     }
 }

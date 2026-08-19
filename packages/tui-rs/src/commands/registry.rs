@@ -179,6 +179,16 @@ impl CommandRegistry {
     /// ```
     pub fn register(&mut self, command: Command) {
         let name = command.name.clone();
+        assert!(
+            self.get(&name).is_none(),
+            "duplicate command registration: {name}"
+        );
+        for alias in &command.aliases {
+            assert!(
+                self.get(alias).is_none(),
+                "duplicate command alias registration: {alias} (on {name})"
+            );
+        }
         let cmd = Arc::new(command);
 
         // Register aliases pointing to primary name
@@ -444,6 +454,10 @@ impl CommandRegistry {
                 .with_hint("Type /help to see available commands")
         })?;
 
+        if command.name == "help" && !raw_args.is_empty() {
+            return self.help_for_command(&raw_args);
+        }
+
         // Parse arguments
         let args = parse_arguments(&raw_args, &command.arguments)?;
 
@@ -460,6 +474,35 @@ impl CommandRegistry {
 
         // Execute
         command.execute(&ctx)
+    }
+
+    fn help_for_command(&self, query: &str) -> CommandResult {
+        let name = query
+            .split_whitespace()
+            .next()
+            .unwrap_or(query)
+            .trim_start_matches('/');
+        let command = self.get(name).ok_or_else(|| {
+            CommandError::new(format!("No help available for /{name}"))
+                .with_hint("Type /help to see available commands")
+        })?;
+        let mut lines = vec![format!("/{} — {}", command.name, command.description)];
+        if !command.aliases.is_empty() {
+            let aliases = command
+                .aliases
+                .iter()
+                .map(|alias| format!("/{alias}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!("Aliases: {aliases}"));
+        }
+        if !command.usage.is_empty() {
+            lines.push(format!("Usage: {}", command.usage));
+        }
+        if !command.subcommands.is_empty() {
+            lines.push(format!("Subcommands: {}", command.subcommands.join(", ")));
+        }
+        Ok(CommandOutput::Message(lines.join("\n")))
     }
 
     /// Get the number of commands
@@ -945,15 +988,10 @@ pub fn build_command_registry() -> CommandRegistry {
             "help",
             "Show available commands",
             CommandCategory::Navigation,
-            Box::new(|ctx| {
-                if ctx.raw_args.is_empty() {
-                    Ok(CommandOutput::OpenModal(ModalType::Help))
-                } else {
-                    Ok(CommandOutput::Message(format!(
-                        "Help for command: {}",
-                        ctx.raw_args
-                    )))
-                }
+            Box::new(|_| {
+                // `/help [command]` is handled in `CommandRegistry::execute` so
+                // the handler can look up sibling commands.
+                Ok(CommandOutput::OpenModal(ModalType::Help))
             }),
         )
         .alias("h")
@@ -2044,6 +2082,23 @@ pub fn build_command_registry() -> CommandRegistry {
         .usage("/setup"),
     );
 
+    registry.register(
+        Command::new(
+            "init",
+            "Scaffold AGENTS.md for this project",
+            CommandCategory::Config,
+            Box::new(|ctx| {
+                let tokens: Vec<&str> = ctx.raw_args.split_whitespace().collect();
+                let force = tokens.iter().any(|arg| *arg == "--force" || *arg == "-f");
+                if !tokens.iter().all(|arg| *arg == "--force" || *arg == "-f") {
+                    return Err(CommandError::new("Usage: /init [--force]"));
+                }
+                Ok(CommandOutput::Action(CommandAction::Init { force }))
+            }),
+        )
+        .usage("/init [--force]"),
+    );
+
     // Status command
     registry.register(
         Command::new(
@@ -2305,14 +2360,6 @@ pub fn build_command_registry() -> CommandRegistry {
         .alias("v"),
     );
 
-    // Zen mode
-    registry.register(Command::new(
-        "zen",
-        "Toggle zen mode (minimal UI)",
-        CommandCategory::Ui,
-        Box::new(|_| Ok(CommandOutput::Message("Toggling zen mode".to_string()))),
-    ));
-
     // Footer command
     registry.register(
         Command::new(
@@ -2472,9 +2519,16 @@ pub fn build_command_registry() -> CommandRegistry {
             "memory",
             "Local / shared memory status",
             CommandCategory::Context,
-            Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowMemory))),
+            Box::new(|ctx| {
+                let raw = ctx.raw_args.trim();
+                if raw.is_empty() {
+                    return Ok(CommandOutput::Action(CommandAction::ShowMemory));
+                }
+                Err(CommandError::new(
+                    "Usage: /memory   (write/search/delete live on `maestro memory`)",
+                ))
+            }),
         )
-        .group(vec!["save", "search", "list", "delete", "stats"])
         .usage("/memory"),
     );
 

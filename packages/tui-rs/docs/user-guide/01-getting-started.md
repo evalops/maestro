@@ -71,6 +71,8 @@ maestro --continue          # resume most recent session for this cwd
 
 ## Authenticate
 
+On first launch with no credentials, Maestro opens `/setup`. Choose EvalOps login or paste a local API key. You can reopen it later with `/setup`.
+
 Default path for Codex subscription models:
 
 ```bash

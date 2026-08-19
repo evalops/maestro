@@ -313,6 +313,8 @@ pub enum CommandAction {
     SetFooterStyle(FooterStyle),
     /// Manage files queued for the next prompt (`/attach`).
     Attach(AttachAction),
+    /// Scaffold or refresh AGENTS.md for the current workspace (`/init`).
+    Init { force: bool },
 }
 
 /// `/attach` subcommands.

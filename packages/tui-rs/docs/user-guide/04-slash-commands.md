@@ -53,6 +53,15 @@ Queue modes: `/queue mode [steer|followup] <one|all>`.
 
 ---
 
+## Setup and project bootstrap
+
+| Command | Description |
+|---------|-------------|
+| `/setup` | First-run modal: EvalOps browser login, or a local provider API key (OpenRouter, Anthropic, OpenAI, Google, xAI). Completing setup starts the agent. |
+| `/init [--force]` | Write `AGENTS.md` in the current workspace (same scaffold as `maestro agents init`). If the file already exists, prints a preview; `--force` overwrites and, on first create, submits a draft prompt. |
+
+---
+
 ## Safety and plan
 
 | Command | Aliases | Description |
@@ -110,6 +119,31 @@ Attach a monitor to a task that is already running:
 Monitors read the task's existing stdout and stderr streams. Monitor attachment creates no process. A match adds a system notification and a live row in `/operations`. Model prompt submission is disabled for monitor events.
 
 Limits per process: 32 monitors total, 8 per task, 256 bytes per regex, 1 MiB compiled-regex size, 5 events per monitor per second, 512 displayed characters per match, 128 pending notifications, and 200 retained operation rows. Credential-shaped values are redacted before an event is stored or displayed.
+
+---
+
+## More built-ins
+
+| Command | Description |
+|---------|-------------|
+| `/btw <question>` | Tool-free side question outside main history |
+| `/workflow …` | List/run/pause/resume/stop durable workflows |
+| `/decision …` | List, answer, or cancel background decisions |
+| `/trust [status\|grant\|revoke]` | Project skills/plugins/hooks trust |
+| `/sandbox` | Interactive sandbox policy for this session |
+| `/operations` | Recent persisted tool executions |
+| `/loop [stop\|<interval> <prompt>]` | Re-run a prompt on an interval |
+| `/focus [on\|off\|toggle]` | Collapse tool-heavy turns |
+| `/prompt-audit [--json]` | Prompt provenance without prompt content |
+| `/alerts` | Recorded agent/API errors |
+| `/mcp-config …` | MCP server wizard, list, add, remove |
+| `/plugins …` | Installed plugins and marketplace |
+| `/goal …` | Structured goal mode |
+| `/harness …` | Durable prompt/memory/skill/subagent context |
+| `/rlm …` | Named context variables |
+| `/mailbox …` | Durable messages between agent sessions |
+| `/attach …` | Queue local files for the next prompt |
+| `/view-plan` | Show the current session `plan.md` |
 
 ---
 

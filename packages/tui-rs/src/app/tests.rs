@@ -436,6 +436,29 @@ fn test_slash_cycle_state_reset() {
 }
 
 #[test]
+fn switch_model_without_agent_remembers_the_route() {
+    let mut app = new_test_app();
+    assert!(app.native_agent.is_none());
+    app.switch_model("openrouter/openai/gpt-4o-mini", false);
+    assert_eq!(app.current_model, "openrouter/openai/gpt-4o-mini");
+    assert_eq!(
+        app.state.model.as_deref(),
+        Some("openrouter/openai/gpt-4o-mini")
+    );
+    assert!(app.state.error.is_none(), "{:?}", app.state.error);
+    assert!(
+        app.state
+            .status
+            .as_deref()
+            .is_some_and(|status| status.contains("openrouter/openai/gpt-4o-mini")),
+        "{:?}",
+        app.state.status
+    );
+    assert!(app.pending_agent_spawn, "missing agent should retry spawn");
+    assert!(app.current_model_user_set);
+}
+
+#[test]
 fn test_normalize_slash_completion_never_doubles() {
     use super::command_handlers::normalize_slash_completion;
 

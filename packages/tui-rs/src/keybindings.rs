@@ -152,7 +152,7 @@ pub fn load_rust_tui_keybindings(terminal_name: &str, in_tmux: bool) -> RustTuiK
 pub fn keybindings_config_path() -> PathBuf {
     std::env::var_os("MAESTRO_KEYBINDINGS_FILE")
         .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".maestro").join("keybindings.json")))
+        .or_else(|| crate::path_utils::maestro_home_dir().map(|home| home.join("keybindings.json")))
         .unwrap_or_else(|| PathBuf::from("keybindings.json"))
 }
 
@@ -862,5 +862,25 @@ mod tests {
             summarize_keybindings_config_issues_at_path(&path).as_deref(),
             Some("Keyboard shortcuts config has 1 issue. Run /hotkeys validate.")
         );
+    }
+
+    #[test]
+    fn keybindings_path_follows_maestro_home() {
+        let _guard = keybindings_test_env_lock().blocking_lock();
+        let temp = tempdir().expect("tempdir");
+        let previous_file = std::env::var_os("MAESTRO_KEYBINDINGS_FILE");
+        let previous_home = std::env::var_os("MAESTRO_HOME");
+        std::env::remove_var("MAESTRO_KEYBINDINGS_FILE");
+        std::env::set_var("MAESTRO_HOME", temp.path());
+        let path = keybindings_config_path();
+        match previous_file {
+            Some(value) => std::env::set_var("MAESTRO_KEYBINDINGS_FILE", value),
+            None => std::env::remove_var("MAESTRO_KEYBINDINGS_FILE"),
+        }
+        match previous_home {
+            Some(value) => std::env::set_var("MAESTRO_HOME", value),
+            None => std::env::remove_var("MAESTRO_HOME"),
+        }
+        assert_eq!(path, temp.path().join("keybindings.json"));
     }
 }

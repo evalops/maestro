@@ -188,14 +188,19 @@ impl App {
                     format!("Switching model: {model_id}")
                 });
             }
-        } else if persist_default {
-            self.state.status = Some(format!("Default model saved: {model_id}"));
         } else {
-            self.state.error = Some(
-                "No agent available to set model — agent failed to start. \
-                 Check the status line, or run `maestro codex login` / set OPENAI_API_KEY and restart."
-                    .to_string(),
-            );
+            // First-run `/setup` and `/model` both land here before spawn,
+            // including after a failed start. Remember the route and retry
+            // so a new key or model is actually applied.
+            self.current_model = model_id.to_owned();
+            self.current_model_user_set = true;
+            self.state.model = Some(model_id.to_owned());
+            self.pending_agent_spawn = true;
+            self.state.status = Some(if persist_default {
+                format!("Default model saved: {model_id}")
+            } else {
+                format!("Model set to {model_id}")
+            });
         }
     }
 
@@ -554,6 +559,9 @@ impl App {
             CommandAction::ShowSandbox => {
                 self.show_sandbox_status();
             }
+            CommandAction::Init { force } => {
+                self.handle_init_command(force).await;
+            }
             CommandAction::ShowTools => {
                 self.show_tools_list();
             }
@@ -650,8 +658,11 @@ impl App {
         match action {
             UsageAction::Summary => {
                 let summary = self.usage_tracker.summary();
+                // Put the numbers on the first content line. The composer
+                // covers the last line of the last message, so a heading-
+                // then-body layout only showed "## Usage Summary".
                 self.state
-                    .add_system_message(format!("## Usage Summary\n\n{summary}"));
+                    .add_system_message(format!("## Usage Summary — {summary}"));
             }
             UsageAction::Detailed => {
                 let detailed = self.usage_tracker.detailed_summary();
@@ -3515,5 +3526,67 @@ Manual snapshot: `/magic-trace stop`",
 
         self.slash_state.reset();
         Ok(())
+    }
+
+    async fn handle_init_command(&mut self, force: bool) {
+        let cwd = self
+            .state
+            .cwd
+            .as_deref()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+        let result = tokio::task::spawn_blocking({
+            let cwd = cwd.clone();
+            move || crate::agents_cli::init_workspace(&cwd, None, force)
+        })
+        .await;
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                self.state
+                    .error
+                    .replace(format!("Failed to scaffold AGENTS.md: {error:#}"));
+                return;
+            }
+        };
+        match result {
+            Ok(crate::agents_cli::InitWorkspaceResult::Created { path, prompt }) => {
+                let display = path
+                    .strip_prefix(&cwd)
+                    .map(|relative| format!("./{}", relative.display()))
+                    .unwrap_or_else(|_| path.display().to_string());
+                self.state
+                    .add_system_message(format!("Drafting AGENTS.md at {display}..."));
+                if let Err(error) = self.submit_prompt(prompt).await {
+                    self.state.error = Some(format!("Failed to start AGENTS.md draft: {error}"));
+                }
+            }
+            Ok(crate::agents_cli::InitWorkspaceResult::Updated { path }) => {
+                self.state.add_system_message(format!(
+                    "Updated AGENTS instructions at {}.",
+                    path.display()
+                ));
+            }
+            Ok(crate::agents_cli::InitWorkspaceResult::Exists {
+                path,
+                preview,
+                rerun,
+            }) => {
+                let hint = if rerun == "maestro agents init --force" {
+                    "/init --force"
+                } else {
+                    rerun.as_str()
+                };
+                self.state.add_system_message(format!(
+                    "AGENTS instructions already exist at {}.\nPreview the proposed update below, then re-run `{hint}` to apply it.\n\n{preview}",
+                    path.display()
+                ));
+            }
+            Err(error) => {
+                self.state
+                    .error
+                    .replace(format!("Failed to scaffold AGENTS.md: {error:#}"));
+            }
+        }
     }
 }
