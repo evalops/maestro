@@ -154,7 +154,12 @@ def add_hello_ok_fields_to_literals() -> None:
 
 
 def add_server_capability_fields_to_literals() -> None:
-    for path in (ROOT / 'packages/tui-rs/src').rglob('*.rs'):
+    paths = list((ROOT / 'packages/tui-rs/src/headless').rglob('*.rs'))
+    paths.extend([
+        ROOT / 'packages/tui-rs/src/hosted_runner.rs',
+        ROOT / 'packages/tui-rs/src/hosted_runner/manifests.rs',
+    ])
+    for path in paths:
         text = path.read_text()
         pattern = re.compile(
             r'(?<!struct )(?<!enum )(?<!impl )((?:[A-Za-z0-9_]+::)*ServerCapabilities\s*\{\s*\n)(?P<indent>\s*)'
