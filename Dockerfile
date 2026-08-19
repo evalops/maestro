@@ -1,4 +1,4 @@
-FROM docker.io/lukemathwalker/cargo-chef:0.1.77-rust-bookworm@sha256:1689f62cfaa6603480356923cb5966544b2dd6ea523e30486bee4f149965d5bc AS chef
+FROM docker.io/lukemathwalker/cargo-chef:0.1.78-rust-bookworm@sha256:63489cf2f47e819b82f9bcb97787b18a186d4381e4f112432246cf31e179206f AS chef
 WORKDIR /app
 
 FROM chef AS planner
