@@ -48,7 +48,7 @@ require_channel_version() {
   esac
 }
 
-for cmd in uname curl mktemp chmod mkdir tar rm cp mv awk dirname basename date openssl wc; do
+for cmd in uname curl mktemp chmod mkdir tar rm cp mv awk dirname basename date base64 tr wc; do
   command -v "$cmd" >/dev/null || fail "Required command not found: $cmd"
 done
 if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
@@ -540,6 +540,19 @@ json_field() {
   json_tool field "$file" "$field"
 }
 
+base64_decode() {
+  local value="$1"
+  local destination="$2"
+  if printf '%s' "$value" | base64 --decode > "$destination" 2>/dev/null; then
+    return 0
+  fi
+  printf '%s' "$value" | base64 -D > "$destination" 2>/dev/null
+}
+
+base64_encode_file() {
+  base64 < "$1" | tr -d '\r\n'
+}
+
 validate_channel_manifest() {
   local file="$1"
   local expected_channel="$2"
@@ -643,22 +656,29 @@ validate_channel_manifest() {
     return 1
   }
   json_tool canonical "$file" > "$payload" || return 1
-  printf '%s' "$signature_text" | openssl base64 -d -A > "$signature" || {
+  base64_decode "$signature_text" "$tmpdir/channel-manifest.signature.raw" || {
     printf 'Channel manifest: signature encoding is invalid\n' >&2
     return 1
   }
-  printf '%s' 'MCowBQYDK2VwAyEA' | openssl base64 -d -A > "$public_key" || return 1
-  printf '%s' "$expected_public_key" | openssl base64 -d -A >> "$public_key" || return 1
-  [[ "$(wc -c < "$signature")" -eq 64 && "$(wc -c < "$public_key")" -eq 44 ]] || {
+  printf '%s' "$signature_text" > "$signature"
+  base64_decode "MCowBQYDK2VwAyEA$expected_public_key" "$tmpdir/channel-manifest.public-key.der" || return 1
+  {
+    printf '%s\n' '-----BEGIN PUBLIC KEY-----'
+    base64_encode_file "$tmpdir/channel-manifest.public-key.der"
+    printf '\n%s\n' '-----END PUBLIC KEY-----'
+  } > "$public_key"
+  [[ "$(wc -c < "$tmpdir/channel-manifest.signature.raw")" -eq 64 &&
+    "$(wc -c < "$tmpdir/channel-manifest.public-key.der")" -eq 44 ]] || {
     printf 'Channel manifest: signature or public key has an invalid length\n' >&2
     return 1
   }
-  if openssl pkeyutl -verify -rawin -pubin -inkey "$public_key" \
-    -in "$payload" -sigfile "$signature" >/dev/null 2>&1; then
-    return 0
-  fi
-  openssl pkeyutl -verify -pubin -inkey "$public_key" \
-    -in "$payload" -sigfile "$signature" >/dev/null 2>&1
+  bootstrap_cosign || return 1
+  "$cosign_path" verify-blob \
+    --insecure-ignore-tlog \
+    --signature-digest-algorithm sha512 \
+    --key "$public_key" \
+    --signature "$signature" \
+    "$payload" >/dev/null 2>&1
 }
 
 
@@ -782,6 +802,18 @@ download() {
     fail "Download failed: $url"
 }
 
+bootstrap_cosign() {
+  [[ -x "$cosign_path" ]] && return 0
+  download \
+    "https://github.com/sigstore/cosign/releases/download/v$COSIGN_VERSION/$cosign_asset" \
+    "$cosign_path" \
+    "Cosign $COSIGN_VERSION"
+  actual_cosign_sha256="$(hash_file "$cosign_path")"
+  [[ "$actual_cosign_sha256" == "$cosign_sha256" ]] ||
+    fail "Cosign bootstrap checksum mismatch"
+  chmod 755 "$cosign_path"
+}
+
 verify_manifest_checksum() {
   local manifest="$1"
   local file="$2"
@@ -812,6 +844,7 @@ shell_quote() {
 }
 
 tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t maestro-install)"
+cosign_path="$tmpdir/cosign"
 stage=""
 launcher_stage=""
 cleanup() {
@@ -824,6 +857,10 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+if [[ "$allow_unsigned" != "1" && "$allow_unsigned" != "true" && "$allow_unsigned" != "yes" ]]; then
+  bootstrap_cosign
+fi
 
 if [[ -z "$release_url" ]]; then
   release_url="$(resolve_channel_release_url "$install_channel")"
@@ -864,19 +901,12 @@ else
 fi
 
 if [[ "$manifest_available" == "1" && "$allow_unsigned" != "1" && "$allow_unsigned" != "true" && "$allow_unsigned" != "yes" ]]; then
-  download \
-    "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/${cosign_asset}" \
-    "$tmpdir/cosign" \
-    "Cosign ${COSIGN_VERSION}"
-  actual_cosign_sha256="$(hash_file "$tmpdir/cosign")"
-  [[ "$actual_cosign_sha256" == "$cosign_sha256" ]] ||
-    fail "Cosign bootstrap checksum mismatch"
-  chmod 755 "$tmpdir/cosign"
+  bootstrap_cosign
   download "${release_url}/SHA256SUMS.cosign.bundle" \
     "$tmpdir/SHA256SUMS.cosign.bundle" "SHA256SUMS signature"
   download "${release_url}/${asset}.cosign.bundle" \
     "$tmpdir/${asset}.cosign.bundle" "${asset} signature"
-  verify_blob_signature "$tmpdir/cosign" "$manifest" "$tmpdir/SHA256SUMS.cosign.bundle"
+  verify_blob_signature "$cosign_path" "$manifest" "$tmpdir/SHA256SUMS.cosign.bundle"
   signature_verified=1
 else
   if [[ "$manifest_available" == "1" ]]; then
@@ -914,7 +944,7 @@ if [[ "$manifest_available" == "1" ]]; then
   if [[ "$allow_unsigned" == "1" || "$allow_unsigned" == "true" || "$allow_unsigned" == "yes" ]]; then
     printf 'Checksum manifest verified; signature verification was explicitly bypassed.\n' >&2
   else
-    verify_blob_signature "$tmpdir/cosign" "$tmpdir/$asset" "$tmpdir/${asset}.cosign.bundle"
+    verify_blob_signature "$cosign_path" "$tmpdir/$asset" "$tmpdir/$asset.cosign.bundle"
   fi
 fi
 

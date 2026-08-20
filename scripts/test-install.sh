@@ -333,7 +333,9 @@ run_install > "$fixture/first-install.log" 2>&1 ||
 
 no_python_path="$fixture/no-python-bin"
 mkdir "$no_python_path"
-for command_name in bash gzip uname curl mktemp chmod mkdir tar rm cp mv awk dirname basename date openssl wc; do
+# Keep both Python and OpenSSL out of this PATH: the standalone installer must
+# use only its documented portable shell, base64, and checksum tool baseline.
+for command_name in bash gzip uname curl mktemp chmod mkdir tar rm cp mv awk dirname basename date base64 tr wc; do
   ln -s "$(command -v "$command_name")" "$no_python_path/$command_name"
 done
 if command -v sha256sum >/dev/null 2>&1; then

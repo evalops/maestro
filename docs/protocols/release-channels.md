@@ -46,6 +46,7 @@ Alpha requires an `alpha.N` prerelease suffix, and beta requires a `beta.N`
 suffix, where N is a positive decimal ordinal. Neither preview channel uses a
 cross-channel fallback. After a GitHub discovery or manifest failure, the
 updater preserves the verification error and does not silently switch to a
+legacy source.
 
 ```text
 MAESTRO_UPDATE_CHANNEL=stable|beta|alpha
@@ -53,11 +54,10 @@ MAESTRO_UPDATE_CHANNEL=stable|beta|alpha
 
 `maestro update status --json` reports `channel` and
 `channelVerification`. A verified manifest reports `status=verified`, its
-`keyId`, `algorithm=ed25519`, and the manifest URL. A GitHub recovery
-reports `fallback=githubRelease`; a failed check retains the pointer error
-in `channelVerification`. The migration path reports
-`status=legacyFallback`. The apply and history records retain the selected
-manifest URL in `sourceUrl`.
+`keyId`, `algorithm=ed25519`, and the manifest URL. An explicitly configured
+legacy pointer reports `status=legacyFallback` and
+`fallback=legacyExplicit`; a failed check retains the verification error.
+The apply and history records retain the selected manifest URL in `sourceUrl`.
 
 Package-manager installations retain their npm/Bun update path. The channel
 manifest controls native release selection; package-manager rollback remains
@@ -83,3 +83,8 @@ channel is rejected, and the downloaded binary version must match both the
 requested version and the manifest. MAESTRO_ALLOW_UNSIGNED_INSTALL is a
 local-test escape hatch; it still enforces the channel, version, release URL,
 and manifest schema bindings.
+
+The standalone installer needs bash, curl, awk, base64, tar, and a SHA-256
+tool; it does not require Python, Node.js, or OpenSSL. For signed installs it
+downloads a checksum-pinned Cosign binary and uses it to verify the raw
+Ed25519 channel signature before any release artifact is staged.
