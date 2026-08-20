@@ -207,6 +207,7 @@ fetch_manifest() {
 fetch_channel_manifest() {
   local destination="$1"
   local url="$2"
+  local recovery_mode="${3:-fail}"
   local status
   local -a options=(
     --silent
@@ -223,6 +224,10 @@ fetch_channel_manifest() {
   esac
   if ! status="$(curl "${options[@]}" -o "$destination" "$url")"; then
     rm -f "$destination"
+    if [[ "$recovery_mode" == fallback ]]; then
+      printf 'Warning: stable GitHub latest manifest request failed; trying the Releases API.\n' >&2
+      return 1
+    fi
     fail "Channel manifest request failed: $url"
   fi
   case "$status" in
@@ -233,6 +238,10 @@ fetch_channel_manifest() {
       ;;
     *)
       rm -f "$destination"
+      if [[ "$recovery_mode" == fallback ]]; then
+        printf 'Warning: stable GitHub latest manifest returned HTTP %s; trying the Releases API.\n' "$status" >&2
+        return 1
+      fi
       fail "Channel manifest request returned HTTP $status: $url"
       ;;
   esac
@@ -825,7 +834,7 @@ resolve_channel_release_url() {
   if [[ "$channel" == stable &&
     ( -z "${MAESTRO_RELEASE_API_URL:-}" || -n "$stable_latest_manifest_url" ) ]]; then
     stable_latest_manifest_url="${stable_latest_manifest_url:-https://github.com/${REPO}/releases/latest/download/channel-manifest.json}"
-    if fetch_channel_manifest "$dest" "$stable_latest_manifest_url"; then
+    if fetch_channel_manifest "$dest" "$stable_latest_manifest_url" fallback; then
       if validate_channel_manifest "$dest" "$channel"; then
         url="$(json_field "$dest" releaseUrl || true)"
         url="${url%/}"

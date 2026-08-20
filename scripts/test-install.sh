@@ -243,7 +243,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if request_path == "/github/releases":
+        if request_path in {"/github/releases", "/github/fallback/releases"}:
             port = self.server.server_address[1]
             page = int(query.get("page", ["1"])[0])
             if page == 1:
@@ -302,6 +302,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_response(429)
             self.end_headers()
             self.wfile.write(b"rate limited")
+            return
+        if request_path == "/github/latest/unavailable":
+            self.send_response(503)
+            self.end_headers()
+            self.wfile.write(b"temporarily unavailable")
             return
         if request_path == "/github/latest/channel-manifest.json":
             port = self.server.server_address[1]
@@ -692,6 +697,31 @@ grep -q 'Using stable GitHub latest release v0.0.1' "$fixture/stable-latest-inst
   fail "stable latest-download discovery did not report the immutable tag"
 if grep -q '/github/rate-limited' "$fixture/server.log"; then
   fail "stable latest-download discovery fell back to the rate-limited Releases API"
+fi
+
+stable_latest_fallback_install_dir="$fixture/stable-latest-fallback-bin"
+stable_latest_fallback_data_dir="$fixture/stable-latest-fallback-data"
+stable_latest_fallback_log_start="$(wc -l < "$fixture/server.log")"
+HOME="$fixture/home" \
+MAESTRO_INSTALL_DIR="$stable_latest_fallback_install_dir" \
+MAESTRO_DATA_DIR="$stable_latest_fallback_data_dir" \
+MAESTRO_INSTALL_CHANNEL="stable" \
+MAESTRO_STABLE_LATEST_MANIFEST_URL="http://127.0.0.1:$port/github/latest/unavailable" \
+MAESTRO_RELEASE_API_URL="http://127.0.0.1:$port/github/fallback/releases" \
+MAESTRO_RELEASE_DOWNLOAD_BASE="http://127.0.0.1:$port" \
+MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
+bash "$ROOT/scripts/install.sh" > "$fixture/stable-latest-fallback-install.log" 2>&1 ||
+  fail "stable latest-download recovery failed after a transient error: $(cat "$fixture/stable-latest-fallback-install.log")"
+[[ "$("$stable_latest_fallback_install_dir/maestro" --version)" == "maestro 0.0.1" ]] ||
+  fail "stable latest-download recovery did not select the API release"
+grep -q 'Warning: stable GitHub latest manifest returned HTTP 503; trying the Releases API.' \
+  "$fixture/stable-latest-fallback-install.log" ||
+  fail "stable latest-download recovery did not report the API fallback"
+if ! tail -n +$((stable_latest_fallback_log_start + 1)) "$fixture/server.log" | grep -Fq 'GET /github/latest/unavailable'; then
+  fail "stable latest-download recovery did not request the unavailable endpoint"
+fi
+if ! tail -n +$((stable_latest_fallback_log_start + 1)) "$fixture/server.log" | grep -Fq 'GET /github/fallback/releases?'; then
+  fail "stable latest-download recovery did not request the Releases API"
 fi
 
 for invalid_version in 0.0.5 0.0.6 0.0.7; do
