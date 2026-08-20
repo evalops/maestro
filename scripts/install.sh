@@ -731,7 +731,7 @@ fetch_github_releases() {
     else
       separator='?'
     fi
-    url="$api$separator"per_page=100"&page=$page"
+    url="${api}${separator}per_page=100&page=${page}"
     page_file="$tmpdir/github-releases-page-$page.json"
     fetch_optional "$page_file" "$url" || return 1
     json_tool length "$page_file" >/dev/null || return 1
