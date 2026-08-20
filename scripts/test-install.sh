@@ -48,7 +48,8 @@ web_asset="maestro-web-dist.tar.gz"
 release_dir="$fixture/v0.0.1"
 manifest_failure_release_dir="$fixture/v0.0.2"
 legacy_release_dir="$fixture/v0.0.8"
-mkdir -p "$release_dir" "$manifest_failure_release_dir" "$legacy_release_dir" "$fixture/web-source" "$fixture/home"
+unsigned_legacy_release_dir="$fixture/v0.0.9"
+mkdir -p "$release_dir" "$manifest_failure_release_dir" "$legacy_release_dir" "$unsigned_legacy_release_dir" "$fixture/web-source" "$fixture/home"
 printf '%s\n' '<!doctype html><title>fixture</title>' > "$fixture/web-source/index.html"
 tar -czf "$release_dir/$web_asset" -C "$fixture/web-source" .
 
@@ -82,6 +83,8 @@ cp "$release_dir/$web_asset" "$manifest_failure_release_dir/$web_asset"
 write_fixture_binary "0.0.8" "$legacy_release_dir"
 cp "$release_dir/$web_asset" "$legacy_release_dir/$web_asset"
 write_manifest "$legacy_release_dir"
+write_fixture_binary "0.0.9" "$unsigned_legacy_release_dir"
+cp "$release_dir/$web_asset" "$unsigned_legacy_release_dir/$web_asset"
 
 preview_release_dir="$fixture/v0.0.3-beta.1"
 mkdir -p "$preview_release_dir"
@@ -381,6 +384,22 @@ if HOME="$fixture/home" \
 fi
 grep -q 'Pinned release has no channel manifest' "$fixture/legacy-strict-install.log" ||
   fail "strict signing did not reject a pinned release without a channel manifest"
+
+unsigned_legacy_install_dir="$fixture/unsigned-legacy-bin"
+unsigned_legacy_data_dir="$fixture/unsigned-legacy-data"
+unsigned_legacy_release_url="http://127.0.0.1:$port/v0.0.9"
+HOME="$fixture/home" \
+MAESTRO_INSTALL_DIR="$unsigned_legacy_install_dir" \
+MAESTRO_DATA_DIR="$unsigned_legacy_data_dir" \
+MAESTRO_INSTALL_VERSION="0.0.9" \
+MAESTRO_RELEASE_BASE_URL="$unsigned_legacy_release_url" \
+bash "$ROOT/scripts/install.sh" > "$fixture/unsigned-legacy-install.log" 2>&1 ||
+  fail "explicit pinned release without channel or checksum manifests was rejected: $(cat "$fixture/unsigned-legacy-install.log")"
+[[ "$("$unsigned_legacy_install_dir/maestro" --version)" == "maestro 0.0.9" ]] ||
+  fail "unsigned legacy pinned install installed the wrong binary"
+if grep -q 'Downloading Cosign' "$fixture/unsigned-legacy-install.log"; then
+  fail "legacy release without signed metadata bootstrapped Cosign unnecessarily"
+fi
 
 if HOME="$fixture/home" \
   MAESTRO_INSTALL_DIR="$fixture/mismatched-channel-bin" \

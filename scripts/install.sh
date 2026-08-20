@@ -892,10 +892,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [[ "$allow_unsigned" != "1" && "$allow_unsigned" != "true" && "$allow_unsigned" != "yes" ]]; then
-  bootstrap_cosign
-fi
-
 if [[ -z "$release_url" ]]; then
   release_url="$(resolve_channel_release_url "$install_channel")"
 fi
