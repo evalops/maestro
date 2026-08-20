@@ -4,7 +4,13 @@ set -euo pipefail
 REPO="${MAESTRO_RELEASE_REPO:-evalops/maestro}"
 install_channel="${MAESTRO_INSTALL_CHANNEL:-stable}"
 COSIGN_VERSION="2.6.1"
-COSIGN_IDENTITY_REGEXP='^https://github.com/evalops/(maestro-internal|maestro)/\.github/workflows/release\.yml@'
+STABLE_CHANNEL_KEY_ID="stable-2026-08-0c3df2ac"
+PRERELEASE_CHANNEL_KEY_ID="preview-2026-08-912a0dab"
+STABLE_CHANNEL_PUBLIC_KEY="IYgvaSwf2E9DioyEZ6Qcp/QMD1xpsjS0JgYluAAt0pE="
+PRERELEASE_CHANNEL_PUBLIC_KEY="4DS+odrY7y1PMg7o4s0jY1FkgcPQb8jjdy0Nst05soA="
+# Historical blobs were signed by evalops/maestro-internal and evalops/maestro
+# release.yml. Live blobs are signed by evalops/mono maestro-release.yml.
+COSIGN_IDENTITY_REGEXP='^https://github.com/evalops/(maestro-internal/.github/workflows/release\.yml|maestro/.github/workflows/release\.yml|mono/.github/workflows/maestro-release\.yml)@'
 COSIGN_OIDC_ISSUER="https://token.actions.githubusercontent.com"
 
 fail() {
@@ -12,7 +18,37 @@ fail() {
   exit 1
 }
 
-for cmd in uname curl mktemp chmod mkdir tar rm cp mv awk dirname basename date; do
+channel_version_matches() {
+  local version="$1"
+  local channel="$2"
+  case "$channel" in
+    stable) [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] ;;
+    beta) [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-beta\.[1-9][0-9]*$ ]] ;;
+    alpha) [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-alpha\.[1-9][0-9]*$ ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+require_channel_version() {
+  local version="${1#v}"
+  local channel="$2"
+  if channel_version_matches "$version" "$channel"; then
+    return 0
+  fi
+  case "$channel" in
+    stable)
+      fail "stable channel requires a stable semver version: $version"
+      ;;
+    beta)
+      fail "beta channel requires a beta prerelease version: $version"
+      ;;
+    alpha)
+      fail "alpha channel requires an alpha prerelease version: $version"
+      ;;
+  esac
+}
+
+for cmd in uname curl mktemp chmod mkdir tar rm cp mv awk dirname basename date base64 tr wc; do
   command -v "$cmd" >/dev/null || fail "Required command not found: $cmd"
 done
 if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
@@ -63,16 +99,21 @@ case "$install_channel" in
   *) fail "MAESTRO_INSTALL_CHANNEL must be stable, beta, or alpha" ;;
 esac
 
+requested_version="${MAESTRO_INSTALL_VERSION:-}"
+requested_version="${requested_version#v}"
+if [[ -n "$requested_version" ]]; then
+  require_channel_version "$requested_version" "$install_channel"
+fi
+
 if [[ -n "${MAESTRO_RELEASE_BASE_URL:-}" ]]; then
   release_url="${MAESTRO_RELEASE_BASE_URL%/}"
 elif [[ -n "${MAESTRO_INSTALL_VERSION:-}" ]]; then
-  release_url="https://github.com/${REPO}/releases/download/v${MAESTRO_INSTALL_VERSION#v}"
-elif [[ "$install_channel" == "stable" ]]; then
-  release_url="https://github.com/${REPO}/releases/latest/download"
+  release_url="https://github.com/${REPO}/releases/download/v${requested_version}"
 else
-  # Preview channels publish immutable vX.Y.Z-<channel>.N tags. The signed
-  # pointer lives in GCS; GitHub Releases is the public fallback. The deleted
-  # maestro-<channel>-channel alias is not a valid download source.
+  # Every channel resolves to an immutable GitHub release tag so that the
+  # signed channel manifest and the downloaded artifacts describe one release.
+  # An operator may still provide a legacy signed pointer explicitly for a
+  # controlled migration.
   release_url=""
 fi
 
@@ -163,6 +204,49 @@ fetch_manifest() {
   esac
 }
 
+fetch_channel_manifest() {
+  local destination="$1"
+  local url="$2"
+  local recovery_mode="${3:-fail}"
+  local status
+  local -a options=(
+    --silent
+    --show-error
+    --location
+    --max-time 180
+    --retry 2
+    --retry-delay 2
+    --write-out '%{http_code}'
+  )
+  case "$url" in
+    http://127.0.0.1:*|http://localhost:*) ;;
+    *) options+=(--proto '=https' --tlsv1.2) ;;
+  esac
+  if ! status="$(curl "${options[@]}" -o "$destination" "$url")"; then
+    rm -f "$destination"
+    if [[ "$recovery_mode" == fallback ]]; then
+      printf 'Warning: stable GitHub latest manifest request failed; trying the Releases API.\n' >&2
+      return 1
+    fi
+    fail "Channel manifest request failed: $url"
+  fi
+  case "$status" in
+    2??) return 0 ;;
+    404)
+      rm -f "$destination"
+      return 2
+      ;;
+    *)
+      rm -f "$destination"
+      if [[ "$recovery_mode" == fallback ]]; then
+        printf 'Warning: stable GitHub latest manifest returned HTTP %s; trying the Releases API.\n' "$status" >&2
+        return 1
+      fi
+      fail "Channel manifest request returned HTTP $status: $url"
+      ;;
+  esac
+}
+
 fetch_optional() {
   local destination="$1"
   local url="$2"
@@ -193,33 +277,515 @@ fetch_optional() {
   esac
 }
 
+json_tool() {
+  local mode="$1"
+  local file="$2"
+  local target="${3:-}"
+  LC_ALL=C awk -v input_file="$file" -v mode="$mode" -v target="$target" '
+    function fail(message) {
+      print message > "/dev/stderr"
+      exit 2
+    }
+    function new_node(kind_value, raw_value, id) {
+      id = ++node_count
+      node_kind[id] = kind_value
+      node_raw[id] = raw_value
+      return id
+    }
+    function skip_space(character) {
+      while (position <= text_length) {
+        character = substr(text, position, 1)
+        if (character != " " && character != "\t" && character != "\r" && character != "\n") return
+        position++
+      }
+    }
+    function parse_string(start, character) {
+      skip_space()
+      if (substr(text, position, 1) != "\"") fail("expected JSON string")
+      start = position++
+      while (position <= text_length) {
+        character = substr(text, position, 1)
+        if (character == "\"") {
+          position++
+          return new_node("string", substr(text, start, position - start))
+        }
+        if (character == "\\") {
+          position++
+          if (position > text_length) fail("unterminated JSON escape")
+          if (substr(text, position, 1) == "u") position += 5
+          else position++
+        } else {
+          position++
+        }
+      }
+      fail("unterminated JSON string")
+    }
+    function parse_number(start, character) {
+      start = position
+      while (position <= text_length) {
+        character = substr(text, position, 1)
+        if (character == " " || character == "\t" || character == "\r" || character == "\n" ||
+            character == "," || character == "]" || character == "}") break
+        position++
+      }
+      return new_node("number", substr(text, start, position - start))
+    }
+    function parse_literal(start, character) {
+      start = position
+      while (position <= text_length) {
+        character = substr(text, position, 1)
+        if (character == " " || character == "\t" || character == "\r" || character == "\n" ||
+            character == "," || character == "]" || character == "}") break
+        position++
+      }
+      return new_node("literal", substr(text, start, position - start))
+    }
+    function parse_value(character) {
+      skip_space()
+      character = substr(text, position, 1)
+      if (character == "{") return parse_object()
+      if (character == "[") return parse_array()
+      if (character == "\"") return parse_string()
+      if (character == "t" || character == "f" || character == "n") return parse_literal()
+      return parse_number()
+    }
+    function parse_object(object_id, key_id, value_id, character) {
+      position++
+      object_id = new_node("object", "")
+      skip_space()
+      if (substr(text, position, 1) == "}") {
+        position++
+        return object_id
+      }
+      while (1) {
+        key_id = parse_string()
+        skip_space()
+        if (substr(text, position, 1) != ":") fail("expected JSON object colon")
+        position++
+        value_id = parse_value()
+        object_count[object_id]++
+        object_key[object_id, object_count[object_id]] = node_raw[key_id]
+        object_child[object_id, object_count[object_id]] = value_id
+        skip_space()
+        character = substr(text, position, 1)
+        if (character == "}") {
+          position++
+          return object_id
+        }
+        if (character != ",") fail("expected JSON object separator")
+        position++
+        skip_space()
+      }
+    }
+    function parse_array(array_id, value_id, character) {
+      position++
+      array_id = new_node("array", "")
+      skip_space()
+      if (substr(text, position, 1) == "]") {
+        position++
+        return array_id
+      }
+      while (1) {
+        value_id = parse_value()
+        array_count[array_id]++
+        array_child[array_id, array_count[array_id]] = value_id
+        skip_space()
+        character = substr(text, position, 1)
+        if (character == "]") {
+          position++
+          return array_id
+        }
+        if (character != ",") fail("expected JSON array separator")
+        position++
+        skip_space()
+      }
+    }
+    function key_text(raw) {
+      return substr(raw, 2, length(raw) - 2)
+    }
+    function string_text(node_id) {
+      return substr(node_raw[node_id], 2, length(node_raw[node_id]) - 2)
+    }
+    function value_text(node_id) {
+      if (node_kind[node_id] == "string") return string_text(node_id)
+      if (node_kind[node_id] == "literal" && node_raw[node_id] == "null") return ""
+      return node_raw[node_id]
+    }
+    function object_field(object_id, wanted, i) {
+      if (node_kind[object_id] != "object") return 0
+      for (i = 1; i <= object_count[object_id]; i++) {
+        if (key_text(object_key[object_id, i]) == wanted) return object_child[object_id, i]
+      }
+      return 0
+    }
+    function canonical(node_id, i, order_index, swap, left, right, result, child, emitted) {
+      if (node_kind[node_id] == "string" || node_kind[node_id] == "number" || node_kind[node_id] == "literal") {
+        return node_raw[node_id]
+      }
+      if (node_kind[node_id] == "array") {
+        result = "["
+        for (i = 1; i <= array_count[node_id]; i++) {
+          if (i > 1) result = result ","
+          result = result canonical(array_child[node_id, i])
+        }
+        return result "]"
+      }
+      for (i = 1; i <= object_count[node_id]; i++) order[node_id, i] = i
+      for (i = 1; i <= object_count[node_id]; i++) {
+        for (order_index = i + 1; order_index <= object_count[node_id]; order_index++) {
+          left = order[node_id, i]
+          right = order[node_id, order_index]
+          if (key_text(object_key[node_id, left]) > key_text(object_key[node_id, right])) {
+            swap = order[node_id, i]
+            order[node_id, i] = order[node_id, order_index]
+            order[node_id, order_index] = swap
+          }
+        }
+      }
+      result = "{"
+      emitted = 0
+      for (i = 1; i <= object_count[node_id]; i++) {
+        child = order[node_id, i]
+        if (canonical_root == node_id && key_text(object_key[node_id, child]) == "signature") continue
+        if (emitted++ > 0) result = result ","
+        result = result object_key[node_id, child] ":" canonical(object_child[node_id, child])
+      }
+      return result "}"
+    }
+    function fast_string_field(object, wanted, start, end, character) {
+      start = index(object, "\"" wanted "\"")
+      if (!start) return ""
+      start += length(wanted) + 2
+      while (start <= length(object) && substr(object, start, 1) ~ /[ \t\r\n:]/) start++
+      if (substr(object, start, 1) != "\"") return ""
+      start++
+      end = start
+      while (end <= length(object)) {
+        character = substr(object, end, 1)
+        if (character == "\"") return substr(object, start, end - start)
+        if (character == "\\") end++
+        end++
+      }
+      return ""
+    }
+    function fast_literal_field(object, wanted, start, end, character) {
+      start = index(object, "\"" wanted "\"")
+      if (!start) return ""
+      start += length(wanted) + 2
+      while (start <= length(object) && substr(object, start, 1) ~ /[ \t\r\n:]/) start++
+      end = start
+      while (end <= length(object)) {
+        character = substr(object, end, 1)
+        if (character == "," || character == "}" || character ~ /[ \t\r\n]/) break
+        end++
+      }
+      return substr(object, start, end - start)
+    }
+    function fast_version_valid(version, channel) {
+      if (channel == "stable") return version ~ /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/
+      if (channel == "beta") return version ~ /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-beta\.[1-9][0-9]*$/
+      if (channel == "alpha") return version ~ /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-alpha\.[1-9][0-9]*$/
+      return 0
+    }
+    function fast_better(candidate, current, a, b, i) {
+      gsub(/-/, ".", candidate)
+      gsub(/-/, ".", current)
+      split(candidate, a, ".")
+      split(current, b, ".")
+      for (i = 1; i <= 4; i++) {
+        if ((a[i] + 0) != (b[i] + 0)) return (a[i] + 0) > (b[i] + 0)
+      }
+      return 0
+    }
+    function fast_release(object, channel, draft, prerelease, tag, normalized) {
+      draft = fast_literal_field(object, "draft")
+      prerelease = fast_literal_field(object, "prerelease")
+      if (draft == "true") return
+      if (channel == "stable" && prerelease == "true") return
+      if (channel != "stable" && prerelease != "true") return
+      if (!match(object, /"name"[ \t\r\n]*:[ \t\r\n]*"channel-manifest\.json"/)) return
+      tag = fast_string_field(object, "tag_name")
+      normalized = tag
+      sub(/^v/, "", normalized)
+      if (!fast_version_valid(normalized, channel)) return
+      if (fast_best == "" || fast_better(normalized, fast_best)) {
+        fast_best = normalized
+        fast_best_tag = tag
+      }
+    }
+    function fast_scan(input, channel, want_tag, i, n, character, escaped, in_string, depth, start, object, count) {
+      n = length(input)
+      for (i = 1; i <= n; i++) {
+        character = substr(input, i, 1)
+        if (in_string) {
+          if (escaped) escaped = 0
+          else if (character == "\\") escaped = 1
+          else if (character == "\"") in_string = 0
+          continue
+        }
+        if (character == "\"") {
+          in_string = 1
+          continue
+        }
+        if (character == "[") {
+          depth++
+          continue
+        }
+        if (character == "{") {
+          if (depth == 1) start = i
+          depth++
+          continue
+        }
+        if (character == "}") {
+          depth--
+          if (depth == 1 && start) {
+            object = substr(input, start, i - start + 1)
+            count++
+            fast_release(object, channel)
+            start = 0
+          }
+          continue
+        }
+        if (character == "]") depth--
+      }
+      if (want_tag) printf "%s", fast_best_tag
+      else print count
+    }
+    BEGIN {
+      if (mode == "release-tag" || mode == "length") {
+        while ((getline line < input_file) > 0) fast_input = fast_input line "\n"
+        close(input_file)
+        fast_scan(fast_input, target, mode == "release-tag")
+        exit
+      }
+      while ((getline line < input_file) > 0) text = text line "\n"
+      close(input_file)
+      text_length = length(text)
+      position = 1
+      root = parse_value()
+      canonical_root = root
+      skip_space()
+      if (position <= text_length) fail("trailing JSON data")
+      if (mode == "field") {
+        field_id = object_field(root, target)
+        if (!field_id) exit 1
+        printf "%s", value_text(field_id)
+      } else if (mode == "canonical") {
+        printf "%s", canonical(root)
+      }
+    }
+  '
+}
+
 json_field() {
   local file="$1"
   local field="$2"
-  command -v python3 >/dev/null 2>&1 || return 1
-  python3 -c 'import json,sys; value=json.load(open(sys.argv[1])).get(sys.argv[2]); print("" if value is None else value)' \
-    "$file" "$field"
+  json_tool field "$file" "$field"
+}
+
+base64_decode() {
+  local value="$1"
+  local destination="$2"
+  if printf '%s' "$value" | base64 --decode > "$destination" 2>/dev/null; then
+    return 0
+  fi
+  printf '%s' "$value" | base64 -D > "$destination" 2>/dev/null
+}
+
+base64_encode_file() {
+  base64 < "$1" | tr -d '\r\n'
+}
+
+validate_channel_manifest() {
+  local file="$1"
+  local expected_channel="$2"
+  local expected_key_id
+  local expected_public_key
+  local schema_version
+  local manifest_channel
+  local key_id
+  local version
+  local release_tag
+  local release_url
+  local metadata_url
+  local source_sha
+  local metadata_sha
+  local signature_text
+  local payload="$tmpdir/channel-manifest.payload"
+  local signature="$tmpdir/channel-manifest.signature"
+  local public_key="$tmpdir/channel-manifest.public-key"
+  local bypass_signature=0
+  case "$expected_channel" in
+    stable)
+      expected_key_id="$STABLE_CHANNEL_KEY_ID"
+      expected_public_key="$STABLE_CHANNEL_PUBLIC_KEY"
+      ;;
+    beta|alpha)
+      expected_key_id="$PRERELEASE_CHANNEL_KEY_ID"
+      expected_public_key="$PRERELEASE_CHANNEL_PUBLIC_KEY"
+      ;;
+    *) return 1 ;;
+  esac
+
+  schema_version="$(json_field "$file" schemaVersion)" || return 1
+  manifest_channel="$(json_field "$file" channel)" || return 1
+  key_id="$(json_field "$file" keyId)" || return 1
+  version="$(json_field "$file" version)" || return 1
+  release_tag="$(json_field "$file" releaseTag)" || return 1
+  release_url="$(json_field "$file" releaseUrl)" || return 1
+  metadata_url="$(json_field "$file" metadataUrl)" || return 1
+  source_sha="$(json_field "$file" sourceSha)" || return 1
+  metadata_sha="$(json_field "$file" metadataSha256)" || return 1
+  signature_text="$(json_field "$file" signature)" || return 1
+
+  [[ "$schema_version" == "evalops.maestro.release-channel.v1" ]] || {
+    printf 'Channel manifest: unsupported release channel manifest schema\n' >&2
+    return 1
+  }
+  [[ "$manifest_channel" == "$expected_channel" ]] || {
+    printf 'Channel manifest: channel does not match requested %s\n' "$expected_channel" >&2
+    return 1
+  }
+  [[ "$key_id" == "$expected_key_id" ]] || {
+    printf 'Channel manifest: key ID does not match the requested channel\n' >&2
+    return 1
+  }
+  channel_version_matches "$version" "$expected_channel" || {
+    printf 'Channel manifest: %s channel requires a matching prerelease version\n' "$expected_channel" >&2
+    return 1
+  }
+  [[ "$release_tag" == "v$version" ]] || {
+    printf 'Channel manifest: release tag does not match its version\n' >&2
+    return 1
+  }
+  case "$release_url" in
+    "https://github.com/${REPO}/releases/download/v${version}") ;;
+    http://127.0.0.1:*|http://localhost:*) ;;
+    *)
+      printf 'Channel manifest: release URL is not the requested GitHub release\n' >&2
+      return 1
+      ;;
+  esac
+  if [[ -n "$metadata_url" ]]; then
+    case "$metadata_url" in
+      https://*|http://127.0.0.1:*|http://localhost:*) ;;
+      *)
+        printf 'Channel manifest: metadata URL must use HTTPS\n' >&2
+        return 1
+        ;;
+    esac
+  fi
+  [[ "$source_sha" =~ ^[0-9a-fA-F]{40}$ ]] || {
+    printf 'Channel manifest: source SHA is invalid\n' >&2
+    return 1
+  }
+  if [[ -n "$metadata_sha" ]] && [[ ! "$metadata_sha" =~ ^sha256:[0-9a-fA-F]{64}$ ]]; then
+    printf 'Channel manifest: metadata digest is invalid\n' >&2
+    return 1
+  fi
+  [[ -n "$signature_text" ]] || {
+    printf 'Channel manifest: signature is missing or invalid\n' >&2
+    return 1
+  }
+  case "$allow_unsigned" in
+    1|true|yes) bypass_signature=1 ;;
+  esac
+  if [[ "$bypass_signature" == "1" ]]; then
+    printf 'Warning: channel manifest signature verification was explicitly bypassed.\n' >&2
+    return 0
+  fi
+  [[ "$signature_text" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || {
+    printf 'Channel manifest: signature encoding is invalid\n' >&2
+    return 1
+  }
+  json_tool canonical "$file" > "$payload" || return 1
+  base64_decode "$signature_text" "$tmpdir/channel-manifest.signature.raw" || {
+    printf 'Channel manifest: signature encoding is invalid\n' >&2
+    return 1
+  }
+  printf '%s' "$signature_text" > "$signature"
+  base64_decode "MCowBQYDK2VwAyEA$expected_public_key" "$tmpdir/channel-manifest.public-key.der" || return 1
+  {
+    printf '%s\n' '-----BEGIN PUBLIC KEY-----'
+    base64_encode_file "$tmpdir/channel-manifest.public-key.der"
+    printf '\n%s\n' '-----END PUBLIC KEY-----'
+  } > "$public_key"
+  [[ "$(wc -c < "$tmpdir/channel-manifest.signature.raw")" -eq 64 &&
+    "$(wc -c < "$tmpdir/channel-manifest.public-key.der")" -eq 44 ]] || {
+    printf 'Channel manifest: signature or public key has an invalid length\n' >&2
+    return 1
+  }
+  bootstrap_cosign || return 1
+  "$cosign_path" verify-blob \
+    --insecure-ignore-tlog \
+    --signature-digest-algorithm sha512 \
+    --key "$public_key" \
+    --signature "$signature" \
+    "$payload" >/dev/null 2>&1
+}
+
+
+fetch_github_releases() {
+  local destination="$1"
+  local api="$2"
+  local page=1
+  local separator
+  local url
+  local page_file
+  local page_count
+  : > "$destination"
+  while (( page <= 10 )); do
+    if [[ "$api" == *\?* ]]; then
+      separator='&'
+    else
+      separator='?'
+    fi
+    url="${api}${separator}per_page=100&page=${page}"
+    page_file="$tmpdir/github-releases-page-$page.json"
+    fetch_optional "$page_file" "$url" || return 1
+    json_tool length "$page_file" >/dev/null || return 1
+    printf '%s\n' "$page_file" >> "$destination"
+    page_count="$(json_tool length "$page_file")"
+    if (( page_count < 100 )); then
+      return 0
+    fi
+    page=$((page + 1))
+  done
+  return 0
+}
+
+channel_version_greater() {
+  local candidate="${1#v}"
+  local current="${2#v}"
+  LC_ALL=C awk -v candidate="$candidate" -v current="$current" '
+    BEGIN {
+      gsub(/-/, ".", candidate)
+      gsub(/-/, ".", current)
+      split(candidate, a, ".")
+      split(current, b, ".")
+      for (i = 1; i <= 4; i++) {
+        if ((a[i] + 0) != (b[i] + 0)) exit !((a[i] + 0) > (b[i] + 0))
+      }
+      exit 1
+    }
+  '
 }
 
 latest_channel_tag() {
-  local file="$1"
+  local source="$1"
   local channel="$2"
-  command -v python3 >/dev/null 2>&1 || return 1
-  python3 -c '
-import json, sys
-channel = sys.argv[2]
-suffix = "-" + channel + "."
-releases = json.load(open(sys.argv[1]))
-if not isinstance(releases, list):
-    raise SystemExit(1)
-for release in releases:
-    if release.get("draft"):
-        continue
-    tag = str(release.get("tag_name") or "")
-    if suffix in tag:
-        print(tag)
-        break
-' "$file" "$channel"
+  local page_file
+  local candidate
+  local best=""
+  while IFS= read -r page_file; do
+    [[ -n "$page_file" ]] || continue
+    candidate="$(json_tool release-tag "$page_file" "$channel" || true)"
+    [[ -n "$candidate" ]] || continue
+    if [[ -z "$best" ]] || channel_version_greater "$candidate" "$best"; then
+      best="$candidate"
+    fi
+  done < "$source"
+  printf '%s' "$best"
 }
 
 release_url_allowed() {
@@ -230,36 +796,69 @@ release_url_allowed() {
   esac
 }
 
-resolve_preview_release_url() {
+resolve_channel_release_url() {
   local channel="$1"
   local pointer="${MAESTRO_CHANNEL_MANIFEST_URL:-}"
-  local pointer_base="${MAESTRO_CHANNEL_POINTER_BASE:-https://storage.googleapis.com/evalops-prod-maestro-releases/maestro}"
+  local pointer_base="${MAESTRO_CHANNEL_POINTER_BASE:-}"
   local api="${MAESTRO_RELEASE_API_URL:-https://api.github.com/repos/${REPO}/releases}"
+  local stable_latest_manifest_url="${MAESTRO_STABLE_LATEST_MANIFEST_URL:-}"
   local dest tag url
 
-  if [[ -z "$pointer" ]]; then
+  if [[ -z "$pointer" && -n "$pointer_base" ]]; then
     pointer="${pointer_base%/}/channels/${channel}/manifest.json"
   fi
   dest="$tmpdir/channel-manifest.json"
-  if fetch_optional "$dest" "$pointer"; then
-    url="$(json_field "$dest" releaseUrl || true)"
-    url="${url%/}"
-    if release_url_allowed "$url"; then
-      printf 'Using %s channel pointer %s\n' "$channel" "$pointer" >&2
-      printf '%s' "$url"
-      return 0
+  if [[ -n "$pointer" ]] && fetch_optional "$dest" "$pointer"; then
+    if validate_channel_manifest "$dest" "$channel"; then
+      url="$(json_field "$dest" releaseUrl || true)"
+      url="${url%/}"
+      if release_url_allowed "$url"; then
+        printf 'Using %s channel pointer %s\n' "$channel" "$pointer" >&2
+        : > "$tmpdir/channel-manifest-verified"
+        printf '%s' "$url"
+        return 0
+      fi
+    fi
+    printf 'Warning: ignoring invalid %s channel pointer %s; trying GitHub Releases.\n' \
+      "$channel" "$pointer" >&2
+    rm -f "$dest"
+  fi
+
+  rm -f "$tmpdir/channel-manifest-verified"
+  # Stable releases expose a signed manifest through GitHub's latest-download
+  # redirect. Use that path before the unauthenticated Releases API so normal
+  # standalone installs do not depend on the 60-request-per-hour REST quota.
+  # An explicit API override remains authoritative for controlled mirrors;
+  # MAESTRO_STABLE_LATEST_MANIFEST_URL is a matching explicit latest endpoint
+  # override for those environments and for the installer fixture.
+  if [[ "$channel" == stable &&
+    ( -z "${MAESTRO_RELEASE_API_URL:-}" || -n "$stable_latest_manifest_url" ) ]]; then
+    stable_latest_manifest_url="${stable_latest_manifest_url:-https://github.com/${REPO}/releases/latest/download/channel-manifest.json}"
+    if fetch_channel_manifest "$dest" "$stable_latest_manifest_url" fallback; then
+      if validate_channel_manifest "$dest" "$channel"; then
+        url="$(json_field "$dest" releaseUrl || true)"
+        url="${url%/}"
+        if release_url_allowed "$url"; then
+          tag="$(json_field "$dest" releaseTag || true)"
+          printf 'Using stable GitHub latest release %s\n' "$tag" >&2
+          : > "$tmpdir/channel-manifest-verified"
+          printf '%s' "$url"
+          return 0
+        fi
+      fi
+      printf 'Warning: ignoring invalid stable GitHub latest manifest %s; trying the Releases API.\n' \
+        "$stable_latest_manifest_url" >&2
+      rm -f "$dest"
     fi
   fi
 
   dest="$tmpdir/github-releases.json"
-  if ! fetch_optional "$dest" "$api"; then
-    fail "No published ${channel} release pointer at ${pointer}, and GitHub release listing failed: ${api}"
+  if ! fetch_github_releases "$dest" "$api"; then
+    fail "No published $channel release pointer at $pointer, and GitHub release listing failed: $api"
   fi
-  command -v python3 >/dev/null 2>&1 ||
-    fail "Resolving ${channel} requires python3 to read the GitHub Releases list"
   tag="$(latest_channel_tag "$dest" "$channel" || true)"
   if [[ -z "$tag" ]]; then
-    fail "No published ${channel} release. Omit MAESTRO_INSTALL_CHANNEL for stable, or set MAESTRO_INSTALL_VERSION to a published tag."
+    fail "No published $channel release. Omit MAESTRO_INSTALL_CHANNEL for stable, or set MAESTRO_INSTALL_VERSION to a published tag."
   fi
   printf 'Using GitHub %s release %s\n' "$channel" "$tag" >&2
   printf '%s/%s' "${MAESTRO_RELEASE_DOWNLOAD_BASE:-https://github.com/${REPO}/releases/download}" "$tag"
@@ -272,6 +871,18 @@ download() {
   printf 'Downloading %s...\n' "$label" >&2
   curl_to "$destination" "$url" ||
     fail "Download failed: $url"
+}
+
+bootstrap_cosign() {
+  [[ -x "$cosign_path" ]] && return 0
+  download \
+    "https://github.com/sigstore/cosign/releases/download/v$COSIGN_VERSION/$cosign_asset" \
+    "$cosign_path" \
+    "Cosign $COSIGN_VERSION"
+  actual_cosign_sha256="$(hash_file "$cosign_path")"
+  [[ "$actual_cosign_sha256" == "$cosign_sha256" ]] ||
+    fail "Cosign bootstrap checksum mismatch"
+  chmod 755 "$cosign_path"
 }
 
 verify_manifest_checksum() {
@@ -304,6 +915,7 @@ shell_quote() {
 }
 
 tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t maestro-install)"
+cosign_path="$tmpdir/cosign"
 stage=""
 launcher_stage=""
 cleanup() {
@@ -318,7 +930,38 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ -z "$release_url" ]]; then
-  release_url="$(resolve_preview_release_url "$install_channel")"
+  release_url="$(resolve_channel_release_url "$install_channel")"
+fi
+
+channel_manifest_verified=0
+channel_manifest_version=""
+channel_manifest="$tmpdir/channel-manifest.json"
+if [[ -f "$tmpdir/channel-manifest-verified" ]]; then
+  channel_manifest_verified=1
+elif fetch_channel_manifest "$channel_manifest" "${release_url}/channel-manifest.json"; then
+  printf 'Downloading channel manifest...\n' >&2
+  validate_channel_manifest "$channel_manifest" "$install_channel" ||
+    fail "Channel manifest verification failed for $install_channel"
+  channel_manifest_verified=1
+else
+  manifest_status="$?"
+  if [[ "$manifest_status" -ne 2 || -z "$requested_version" ]]; then
+    fail "Channel manifest is required for an unpinned $install_channel installation"
+  fi
+  case "$require_signed" in
+    1|true|yes)
+      fail "Pinned release has no channel manifest; refusing unsigned installation"
+      ;;
+  esac
+  printf 'Warning: pinned release has no channel manifest; using legacy artifact verification.\n' >&2
+fi
+if [[ "$channel_manifest_verified" == "1" ]]; then
+  channel_manifest_version="$(json_field "$channel_manifest" version || true)"
+  channel_manifest_release_url="$(json_field "$channel_manifest" releaseUrl || true)"
+  channel_manifest_release_url="${channel_manifest_release_url%/}"
+  release_url_normalized="${release_url%/}"
+  [[ -n "$channel_manifest_version" && "$channel_manifest_release_url" == "$release_url_normalized" ]] ||
+    fail "Channel manifest does not describe the selected $install_channel release"
 fi
 
 manifest="$tmpdir/SHA256SUMS"
@@ -340,19 +983,12 @@ else
 fi
 
 if [[ "$manifest_available" == "1" && "$allow_unsigned" != "1" && "$allow_unsigned" != "true" && "$allow_unsigned" != "yes" ]]; then
-  download \
-    "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/${cosign_asset}" \
-    "$tmpdir/cosign" \
-    "Cosign ${COSIGN_VERSION}"
-  actual_cosign_sha256="$(hash_file "$tmpdir/cosign")"
-  [[ "$actual_cosign_sha256" == "$cosign_sha256" ]] ||
-    fail "Cosign bootstrap checksum mismatch"
-  chmod 755 "$tmpdir/cosign"
+  bootstrap_cosign
   download "${release_url}/SHA256SUMS.cosign.bundle" \
     "$tmpdir/SHA256SUMS.cosign.bundle" "SHA256SUMS signature"
   download "${release_url}/${asset}.cosign.bundle" \
     "$tmpdir/${asset}.cosign.bundle" "${asset} signature"
-  verify_blob_signature "$tmpdir/cosign" "$manifest" "$tmpdir/SHA256SUMS.cosign.bundle"
+  verify_blob_signature "$cosign_path" "$manifest" "$tmpdir/SHA256SUMS.cosign.bundle"
   signature_verified=1
 else
   if [[ "$manifest_available" == "1" ]]; then
@@ -390,7 +1026,7 @@ if [[ "$manifest_available" == "1" ]]; then
   if [[ "$allow_unsigned" == "1" || "$allow_unsigned" == "true" || "$allow_unsigned" == "yes" ]]; then
     printf 'Checksum manifest verified; signature verification was explicitly bypassed.\n' >&2
   else
-    verify_blob_signature "$tmpdir/cosign" "$tmpdir/$asset" "$tmpdir/${asset}.cosign.bundle"
+    verify_blob_signature "$cosign_path" "$tmpdir/$asset" "$tmpdir/$asset.cosign.bundle"
   fi
 fi
 
@@ -399,15 +1035,19 @@ mkdir -p "$tmpdir/maestro-web"
 tar -xzf "$tmpdir/$web_asset" -C "$tmpdir/maestro-web"
 [[ -f "$tmpdir/maestro-web/index.html" ]] || fail "$web_asset does not contain index.html"
 
-if [[ -n "${MAESTRO_INSTALL_VERSION:-}" ]]; then
-  release_version="${MAESTRO_INSTALL_VERSION#v}"
-else
-  version_output="$("$tmpdir/$asset" --version 2>/dev/null)" ||
-    fail "Downloaded Maestro binary could not report its version"
-  release_version="$(printf '%s\n' "$version_output" | awk 'NF {print $NF; exit}')"
-fi
+version_output="$("$tmpdir/$asset" --version 2>/dev/null)" ||
+  fail "Downloaded Maestro binary could not report its version"
+release_version="$(printf '%s\n' "$version_output" | awk 'NF {print $NF; exit}')"
+release_version="${release_version#v}"
 [[ "$release_version" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] ||
   fail "Invalid release version: $release_version"
+if [[ -n "$requested_version" && "$release_version" != "$requested_version" ]]; then
+  fail "Downloaded release version $release_version does not match requested version $requested_version"
+fi
+require_channel_version "$release_version" "$install_channel"
+if [[ "$channel_manifest_verified" == "1" && "$channel_manifest_version" != "$release_version" ]]; then
+  fail "Channel manifest version $channel_manifest_version does not match downloaded release $release_version"
+fi
 
 mkdir -p "$install_dir"
 release_root="$data_dir/releases"

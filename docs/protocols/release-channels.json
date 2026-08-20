@@ -2,9 +2,9 @@
   "schemaVersion": "evalops.maestro.release-channels.v1",
   "manifest": {
     "schemaVersion": "evalops.maestro.release-channel.v1",
-    "stableUrl": "https://storage.googleapis.com/evalops-prod-maestro-releases/maestro/channels/stable/manifest.json",
-    "betaUrl": "https://storage.googleapis.com/evalops-prod-maestro-releases/maestro/channels/beta/manifest.json",
-    "alphaUrl": "https://storage.googleapis.com/evalops-prod-maestro-releases/maestro/channels/alpha/manifest.json",
+    "releaseListUrl": "https://api.github.com/repos/evalops/maestro/releases",
+    "releaseAsset": "channel-manifest.json",
+    "legacyPointerBase": "https://storage.googleapis.com/evalops-prod-maestro-releases/maestro/channels",
     "signatureAlgorithm": "ed25519",
     "signatureEncoding": "base64",
     "signedPayload": "canonical-json-with-signature-field-removed-and-object-keys-sorted"
@@ -34,26 +34,21 @@
     "default": "stable",
     "stable": {
       "versionPolicy": "stable-semver-only",
-      "migrationFallback": "legacy-version-json",
-      "fallbackStatus": "legacyFallback"
+      "fallback": "explicit-legacy-pointer-only"
     },
     "beta": {
       "versionPolicy": "beta-prerelease-semver-only",
-      "fallbackEnvironment": "MAESTRO_UPDATE_PREVIEW_FALLBACK=stable",
-      "fallbackStatus": "verified"
+      "fallback": "github-release-channel-manifest"
     },
     "alpha": {
       "versionPolicy": "alpha-prerelease-semver-only",
-      "fallbackEnvironment": "MAESTRO_UPDATE_PREVIEW_FALLBACK=stable",
-      "fallbackStatus": "verified"
+      "fallback": "github-release-channel-manifest"
     }
   },
   "publication": {
+    "releaseRepository": "evalops/maestro",
+    "releaseAsset": "channel-manifest.json",
     "stableSecret": "MAESTRO_STABLE_CHANNEL_PRIVATE_KEY",
-    "prereleaseSecret": "MAESTRO_PREVIEW_CHANNEL_PRIVATE_KEY",
-    "bucketVariable": "MAESTRO_RELEASES_BUCKET",
-    "prefixVariable": "MAESTRO_RELEASES_PREFIX",
-    "serviceAccountVariable": "MAESTRO_RELEASE_GCP_SERVICE_ACCOUNT",
-    "workloadIdentityVariable": "MAESTRO_RELEASE_GCP_WORKLOAD_IDENTITY_PROVIDER"
+    "prereleaseSecret": "MAESTRO_PREVIEW_CHANNEL_PRIVATE_KEY"
   }
 }

@@ -18,11 +18,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use wait_timeout::ChildExt;
 
-const DEFAULT_GCS_URL: &str =
-    "https://storage.googleapis.com/evalops-prod-maestro-releases/maestro/version.json";
-const CHANNEL_MANIFEST_BASE_URL: &str =
+const LEGACY_CHANNEL_MANIFEST_BASE_URL: &str =
     "https://storage.googleapis.com/evalops-prod-maestro-releases/maestro/channels";
 const GITHUB_RELEASES_API_URL: &str = "https://api.github.com/repos/evalops/maestro/releases";
+const GITHUB_STABLE_LATEST_MANIFEST_URL: &str =
+    "https://github.com/evalops/maestro/releases/latest/download/channel-manifest.json";
+const GITHUB_RELEASES_PAGE_SIZE: usize = 100;
+const GITHUB_RELEASES_MAX_PAGES: usize = 10;
 const CHANNEL_MANIFEST_SCHEMA: &str = "evalops.maestro.release-channel.v1";
 const STABLE_CHANNEL_KEY_ID: &str = "stable-2026-08-0c3df2ac";
 const PRERELEASE_CHANNEL_KEY_ID: &str = "preview-2026-08-912a0dab";
@@ -432,23 +434,67 @@ fn configured_update_urls() -> Option<Vec<String>> {
     None
 }
 
-fn channel_manifest_url(channel: UpdateChannel) -> String {
+fn legacy_channel_manifest_url(channel: UpdateChannel) -> String {
     format!(
-        "{CHANNEL_MANIFEST_BASE_URL}/{}/manifest.json",
+        "{LEGACY_CHANNEL_MANIFEST_BASE_URL}/{}/manifest.json",
         channel.as_str()
     )
 }
 
 fn github_channel_manifest_url(tag: &str) -> String {
-    format!("https://github.com/evalops/maestro/releases/download/{tag}/channel-manifest.json")
+    format!("{}/channel-manifest.json", github_release_url(tag))
+}
+
+fn github_release_url(tag: &str) -> String {
+    format!("https://github.com/evalops/maestro/releases/download/{tag}")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GithubReleaseSelection {
+    tag: String,
+    release_url: String,
+    manifest_url: String,
+}
+
+fn github_release_selection(tag: &str) -> GithubReleaseSelection {
+    let release_url = github_release_url(tag);
+    GithubReleaseSelection {
+        tag: tag.to_owned(),
+        manifest_url: github_channel_manifest_url(tag),
+        release_url,
+    }
 }
 
 fn tag_matches_channel(tag: &str, channel: UpdateChannel) -> bool {
     let tag = tag.trim().trim_start_matches('v');
+    let Ok(version) = Version::parse(tag) else {
+        return false;
+    };
+    version.to_string() == tag && channel_version_matches(&version, channel)
+}
+
+fn channel_version_matches(version: &Version, channel: UpdateChannel) -> bool {
+    if !version.build.is_empty() {
+        return false;
+    }
+    let prerelease_ordinal = |prefix: &str| {
+        let Some(ordinal) = version
+            .pre
+            .as_str()
+            .strip_prefix(prefix)
+            .and_then(|value| value.strip_prefix('.'))
+        else {
+            return false;
+        };
+        let bytes = ordinal.as_bytes();
+        !bytes.is_empty()
+            && (b'1'..=b'9').contains(&bytes[0])
+            && bytes[1..].iter().all(|byte| byte.is_ascii_digit())
+    };
     match channel {
-        UpdateChannel::Stable => !tag.contains('-'),
-        UpdateChannel::Beta => tag.contains("-beta."),
-        UpdateChannel::Alpha => tag.contains("-alpha."),
+        UpdateChannel::Stable => version.pre.is_empty(),
+        UpdateChannel::Beta => prerelease_ordinal("beta"),
+        UpdateChannel::Alpha => prerelease_ordinal("alpha"),
     }
 }
 
@@ -457,34 +503,76 @@ struct GithubReleaseListItem {
     tag_name: String,
     #[serde(default)]
     draft: bool,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    assets: Vec<GithubReleaseAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubReleaseAsset {
+    name: String,
+}
+
+fn github_release_has_channel_manifest(release: &GithubReleaseListItem) -> bool {
+    release
+        .assets
+        .iter()
+        .any(|asset| asset.name == "channel-manifest.json")
+}
+
+fn github_release_is_eligible(release: &GithubReleaseListItem, channel: UpdateChannel) -> bool {
+    !release.draft
+        && github_release_has_channel_manifest(release)
+        && match channel {
+            UpdateChannel::Stable => !release.prerelease,
+            UpdateChannel::Beta | UpdateChannel::Alpha => release.prerelease,
+        }
 }
 
 async fn resolve_github_channel_manifest_url(
     client: &reqwest::Client,
     channel: UpdateChannel,
-) -> Result<String, String> {
-    let response = client
-        .get(GITHUB_RELEASES_API_URL)
-        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
-        .header(reqwest::header::USER_AGENT, "maestro-updater")
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "GitHub releases list failed ({})",
-            response.status()
-        ));
+) -> Result<GithubReleaseSelection, String> {
+    let mut releases = Vec::new();
+    for page in 1..=GITHUB_RELEASES_MAX_PAGES {
+        let response = client
+            .get(GITHUB_RELEASES_API_URL)
+            .query(&[("per_page", GITHUB_RELEASES_PAGE_SIZE), ("page", page)])
+            .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+            .header(reqwest::header::USER_AGENT, "maestro-updater")
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "GitHub releases list failed ({})",
+                response.status()
+            ));
+        }
+        let page_releases = response
+            .json::<Vec<GithubReleaseListItem>>()
+            .await
+            .map_err(|error| format!("Invalid GitHub releases list: {error}"))?;
+        let page_len = page_releases.len();
+        releases.extend(page_releases);
+        if page_len < GITHUB_RELEASES_PAGE_SIZE {
+            break;
+        }
     }
-    let releases = response
-        .json::<Vec<GithubReleaseListItem>>()
-        .await
-        .map_err(|error| format!("Invalid GitHub releases list: {error}"))?;
-    let tag = releases.into_iter().find_map(|release| {
-        (!release.draft && tag_matches_channel(&release.tag_name, channel))
-            .then_some(release.tag_name)
-    });
-    tag.map(|tag| github_channel_manifest_url(&tag))
+    let tag = releases
+        .into_iter()
+        .filter(|release| github_release_is_eligible(release, channel))
+        .filter_map(|release| {
+            if !tag_matches_channel(&release.tag_name, channel) {
+                return None;
+            }
+            let version = Version::parse(release.tag_name.trim_start_matches('v')).ok()?;
+            Some((version, release.tag_name))
+        })
+        .max_by(|left, right| left.0.cmp(&right.0))
+        .map(|(_, tag)| tag);
+    tag.map(|tag| github_release_selection(&tag))
         .ok_or_else(|| format!("No published {} GitHub release", channel.as_str()))
 }
 
@@ -495,12 +583,22 @@ fn channel_from_manifest_url(url: &str) -> Option<UpdateChannel> {
         UpdateChannel::Alpha,
     ]
     .into_iter()
-    .find(|channel| url == channel_manifest_url(*channel))
+    .find(|channel| url == legacy_channel_manifest_url(*channel))
 }
 
 fn channel_from_update_url(url: &str, requested: UpdateChannel) -> Option<UpdateChannel> {
     channel_from_manifest_url(url)
         .or_else(|| url.ends_with("/channel-manifest.json").then_some(requested))
+}
+
+fn legacy_channel_source(url: &str) -> bool {
+    [
+        UpdateChannel::Stable,
+        UpdateChannel::Beta,
+        UpdateChannel::Alpha,
+    ]
+    .into_iter()
+    .any(|channel| url == legacy_channel_manifest_url(channel))
 }
 
 fn canonical_channel_value(value: serde_json::Value) -> serde_json::Value {
@@ -569,21 +667,12 @@ fn verify_channel_manifest(
     if manifest.release_tag != format!("v{}", version) {
         bail!("release channel manifest tag does not match its version");
     }
-    match expected_channel {
-        UpdateChannel::Stable if !version.pre.is_empty() => {
-            bail!("stable channel cannot select a prerelease")
+    if !channel_version_matches(&version, expected_channel) {
+        match expected_channel {
+            UpdateChannel::Stable => bail!("stable channel requires a stable semver version"),
+            UpdateChannel::Beta => bail!("beta channel requires a beta prerelease version"),
+            UpdateChannel::Alpha => bail!("alpha channel requires an alpha prerelease version"),
         }
-        UpdateChannel::Beta
-            if version.pre.is_empty() || !version.pre.as_str().starts_with("beta.") =>
-        {
-            bail!("beta channel requires a beta prerelease version")
-        }
-        UpdateChannel::Alpha
-            if version.pre.is_empty() || !version.pre.as_str().starts_with("alpha.") =>
-        {
-            bail!("alpha channel requires an alpha prerelease version")
-        }
-        _ => {}
     }
     if !manifest.release_url.starts_with("https://") {
         bail!("release channel manifest release URL must use HTTPS");
@@ -625,6 +714,35 @@ fn verify_channel_manifest(
     Ok(())
 }
 
+fn verify_github_release_manifest_binding(
+    manifest: &ChannelManifest,
+    selected: &GithubReleaseSelection,
+) -> Result<()> {
+    let selected_version = selected.tag.trim_start_matches('v');
+    if manifest.release_tag != selected.tag {
+        bail!(
+            "release channel manifest tag {} does not match selected GitHub release {}",
+            manifest.release_tag,
+            selected.tag
+        );
+    }
+    if manifest.version.trim() != selected_version {
+        bail!(
+            "release channel manifest version {} does not match selected GitHub release {}",
+            manifest.version,
+            selected.tag
+        );
+    }
+    if manifest.release_url.trim_end_matches('/') != selected.release_url {
+        bail!(
+            "release channel manifest URL {} does not match selected GitHub release {}",
+            manifest.release_url,
+            selected.release_url
+        );
+    }
+    Ok(())
+}
+
 fn channel_verification_failure(
     channel: UpdateChannel,
     manifest_url: &str,
@@ -648,10 +766,7 @@ fn update_urls(package: &str, channel: UpdateChannel) -> Vec<String> {
             UpdateChannel::Beta => "beta",
             UpdateChannel::Alpha => "alpha",
         };
-        let mut urls = vec![channel_manifest_url(channel)];
-        if channel == UpdateChannel::Stable {
-            urls.push(DEFAULT_GCS_URL.to_owned());
-        }
+        let mut urls = github_channel_update_urls(channel);
         urls.push(format!(
             "https://registry.npmjs.org/{}/{}",
             urlencoding::encode(package),
@@ -661,26 +776,19 @@ fn update_urls(package: &str, channel: UpdateChannel) -> Vec<String> {
     })
 }
 
+fn github_channel_update_urls(channel: UpdateChannel) -> Vec<String> {
+    let mut urls = Vec::new();
+    if channel == UpdateChannel::Stable {
+        urls.push(GITHUB_STABLE_LATEST_MANIFEST_URL.to_owned());
+    }
+    urls.push(GITHUB_RELEASES_API_URL.to_owned());
+    urls
+}
+
 fn trusted_startup_update_urls(context: &InstallContext, channel: UpdateChannel) -> Vec<String> {
     match context {
         InstallContext::Package { package, .. } => update_urls(package, channel),
-        InstallContext::Release { .. } => {
-            let mut urls = vec![
-                channel_manifest_url(channel),
-                GITHUB_RELEASES_API_URL.to_owned(),
-            ];
-            if channel == UpdateChannel::Stable {
-                urls.push(DEFAULT_GCS_URL.to_owned());
-            } else if env::var("MAESTRO_UPDATE_PREVIEW_FALLBACK")
-                .ok()
-                .as_deref()
-                .map(str::trim)
-                == Some("stable")
-            {
-                urls.push(channel_manifest_url(UpdateChannel::Stable));
-            }
-            urls
-        }
+        InstallContext::Release { .. } => github_channel_update_urls(channel),
     }
 }
 
@@ -717,7 +825,7 @@ async fn check_for_update_urls_with_timeout(
     let mut last_channel_verification: Option<ChannelVerification> = None;
 
     let Ok(client) = client else {
-        return failed_check(current, "", "Failed to create update client", channel);
+        return failed_check(current, "", "Failed to create update client", channel, None);
     };
     let Ok(current_semver) = current_version else {
         return failed_check(
@@ -725,16 +833,19 @@ async fn check_for_update_urls_with_timeout(
             "",
             "Current Maestro version is not valid semver",
             channel,
+            None,
         );
     };
 
     for url in urls {
         last_url.clone_from(&url);
+        let mut selected_github_release = None;
         let url = if url == GITHUB_RELEASES_API_URL {
             match resolve_github_channel_manifest_url(&client, channel).await {
-                Ok(manifest_url) => {
-                    last_url.clone_from(&manifest_url);
-                    manifest_url
+                Ok(selection) => {
+                    last_url.clone_from(&selection.manifest_url);
+                    selected_github_release = Some(selection.clone());
+                    selection.manifest_url
                 }
                 Err(error) => {
                     last_error = Some(error);
@@ -797,6 +908,18 @@ async fn check_for_update_urls_with_timeout(
                 last_error = Some(message);
                 continue;
             }
+            if let Some(selected) = selected_github_release.as_ref() {
+                if let Err(error) = verify_github_release_manifest_binding(&manifest, selected) {
+                    let message = format!("Invalid selected GitHub release manifest: {error:#}");
+                    last_channel_verification = Some(channel_verification_failure(
+                        manifest_channel,
+                        &url,
+                        &message,
+                    ));
+                    last_error = Some(message);
+                    continue;
+                }
+            }
             let latest = match Version::parse(manifest.version.trim()) {
                 Ok(version) => version,
                 Err(error) => {
@@ -810,6 +933,7 @@ async fn check_for_update_urls_with_timeout(
                     continue;
                 }
             };
+            let legacy_source = legacy_channel_source(&url);
             return UpdateCheck {
                 status: if latest > current_semver {
                     "available"
@@ -830,9 +954,16 @@ async fn check_for_update_urls_with_timeout(
                     manifest_url: url,
                     key_id: Some(manifest.key_id),
                     algorithm: Some("ed25519".to_owned()),
-                    status: "verified".to_owned(),
-                    fallback: (manifest_channel != channel)
-                        .then(|| manifest_channel.as_str().to_owned()),
+                    status: if legacy_source {
+                        "legacyFallback".to_owned()
+                    } else {
+                        "verified".to_owned()
+                    },
+                    fallback: if legacy_source {
+                        Some("legacyExplicit".to_owned())
+                    } else {
+                        (manifest_channel != channel).then(|| manifest_channel.as_str().to_owned())
+                    },
                     error: None,
                 }),
                 attempt_id: None,
@@ -891,6 +1022,7 @@ async fn check_for_update_urls_with_timeout(
                     .as_deref()
                     .unwrap_or("No update metadata sources configured"),
                 channel,
+                last_channel_verification,
             )
         },
         |(_, check)| check,
@@ -902,6 +1034,7 @@ fn failed_check(
     source_url: &str,
     error: &str,
     channel: UpdateChannel,
+    channel_verification: Option<ChannelVerification>,
 ) -> UpdateCheck {
     UpdateCheck {
         status: "failed",
@@ -914,7 +1047,7 @@ fn failed_check(
         release_tag: None,
         release_url: None,
         release_receipt: None,
-        channel_verification: None,
+        channel_verification,
         attempt_id: None,
         verification: None,
     }
@@ -2671,6 +2804,22 @@ mod tests {
     }
 
     #[test]
+    fn channel_policy_rejects_versions_the_installer_cannot_accept() {
+        for (channel, version) in [
+            (UpdateChannel::Beta, "1.2.3-beta.foo"),
+            (UpdateChannel::Beta, "1.2.3-beta.0"),
+            (UpdateChannel::Alpha, "1.2.3-alpha.foo"),
+            (UpdateChannel::Alpha, "1.2.3-alpha.0"),
+            (UpdateChannel::Stable, "1.2.3+build"),
+        ] {
+            assert!(
+                !tag_matches_channel(&format!("v{version}"), channel),
+                "{channel:?} must reject {version}"
+            );
+        }
+    }
+
+    #[test]
     fn parses_lifecycle_subcommands() {
         assert_eq!(
             parse_args(&["status".to_owned(), "--json".to_owned()])
@@ -2960,6 +3109,11 @@ mod tests {
         ));
         assert!(tag_matches_channel("v0.10.67-beta.2", UpdateChannel::Beta));
         assert!(!tag_matches_channel(
+            "v0.10.67-beta.foo",
+            UpdateChannel::Beta
+        ));
+        assert!(!tag_matches_channel("v0.10.67-beta.0", UpdateChannel::Beta));
+        assert!(!tag_matches_channel(
             "v0.10.67-alpha.1",
             UpdateChannel::Beta
         ));
@@ -2974,6 +3128,81 @@ mod tests {
     }
 
     #[test]
+    fn github_release_selection_binds_manifest_identity() {
+        let selected = github_release_selection("v1.2.3");
+        assert_eq!(
+            selected.manifest_url,
+            "https://github.com/evalops/maestro/releases/download/v1.2.3/channel-manifest.json"
+        );
+        assert_eq!(
+            selected.release_url,
+            "https://github.com/evalops/maestro/releases/download/v1.2.3"
+        );
+
+        let manifest = ChannelManifest {
+            schema_version: CHANNEL_MANIFEST_SCHEMA.to_owned(),
+            channel: "stable".to_owned(),
+            key_id: STABLE_CHANNEL_KEY_ID.to_owned(),
+            version: "1.2.3".to_owned(),
+            release_tag: "v1.2.3".to_owned(),
+            release_url: selected.release_url.clone(),
+            metadata_url: None,
+            metadata_sha256: None,
+            source_sha: "a".repeat(40),
+            issued_at_ms: 1,
+            release_notes: None,
+            release_receipt: None,
+            signature: String::new(),
+        };
+        verify_github_release_manifest_binding(&manifest, &selected)
+            .expect("selected manifest identity should verify");
+
+        let mut older = manifest;
+        older.version = "1.2.2".to_owned();
+        older.release_tag = "v1.2.2".to_owned();
+        older.release_url = github_release_url("v1.2.2");
+        let error = verify_github_release_manifest_binding(&older, &selected)
+            .expect_err("an older signed manifest must not satisfy a newer selection");
+        assert!(error
+            .to_string()
+            .contains("does not match selected GitHub release"));
+    }
+
+    #[test]
+    fn github_release_prerelease_flags_bind_to_channels() {
+        let stable = GithubReleaseListItem {
+            tag_name: "v0.10.68".to_owned(),
+            draft: false,
+            prerelease: false,
+            assets: vec![GithubReleaseAsset {
+                name: "channel-manifest.json".to_owned(),
+            }],
+        };
+        assert!(github_release_is_eligible(&stable, UpdateChannel::Stable));
+        assert!(!github_release_is_eligible(&stable, UpdateChannel::Beta));
+
+        let beta = GithubReleaseListItem {
+            tag_name: "v0.10.67-beta.2".to_owned(),
+            draft: false,
+            prerelease: true,
+            assets: vec![GithubReleaseAsset {
+                name: "channel-manifest.json".to_owned(),
+            }],
+        };
+        assert!(!github_release_is_eligible(&beta, UpdateChannel::Stable));
+        assert!(github_release_is_eligible(&beta, UpdateChannel::Beta));
+
+        let incomplete_beta = GithubReleaseListItem {
+            assets: Vec::new(),
+            ..beta
+        };
+        assert!(!github_release_is_eligible(
+            &incomplete_beta,
+            UpdateChannel::Beta
+        ));
+    }
+
+    #[test]
     fn startup_sources_prefer_signed_release_channels() {
         let release = InstallContext::Release {
             install_dir: PathBuf::from("/opt/bin"),
@@ -2983,24 +3212,17 @@ mod tests {
         assert_eq!(
             trusted_startup_update_urls(&release, UpdateChannel::Stable),
             vec![
-                channel_manifest_url(UpdateChannel::Stable),
-                GITHUB_RELEASES_API_URL.to_owned(),
-                DEFAULT_GCS_URL.to_owned(),
+                GITHUB_STABLE_LATEST_MANIFEST_URL.to_owned(),
+                GITHUB_RELEASES_API_URL.to_owned()
             ]
         );
         assert_eq!(
             trusted_startup_update_urls(&release, UpdateChannel::Beta),
-            vec![
-                channel_manifest_url(UpdateChannel::Beta),
-                GITHUB_RELEASES_API_URL.to_owned(),
-            ]
+            vec![GITHUB_RELEASES_API_URL.to_owned()]
         );
         assert_eq!(
             trusted_startup_update_urls(&release, UpdateChannel::Alpha),
-            vec![
-                channel_manifest_url(UpdateChannel::Alpha),
-                GITHUB_RELEASES_API_URL.to_owned(),
-            ]
+            vec![GITHUB_RELEASES_API_URL.to_owned()]
         );
 
         let package = InstallContext::Package {
@@ -3012,15 +3234,15 @@ mod tests {
         assert_eq!(
             trusted_startup_update_urls(&package, UpdateChannel::Stable),
             vec![
-                channel_manifest_url(UpdateChannel::Stable),
-                DEFAULT_GCS_URL.to_owned(),
+                GITHUB_STABLE_LATEST_MANIFEST_URL.to_owned(),
+                GITHUB_RELEASES_API_URL.to_owned(),
                 "https://registry.npmjs.org/%40evalops%2Fmaestro/latest".to_owned(),
             ]
         );
         assert_eq!(
             trusted_startup_update_urls(&package, UpdateChannel::Alpha),
             vec![
-                channel_manifest_url(UpdateChannel::Alpha),
+                GITHUB_RELEASES_API_URL.to_owned(),
                 "https://registry.npmjs.org/%40evalops%2Fmaestro/alpha".to_owned(),
             ]
         );
@@ -3363,7 +3585,9 @@ mod tests {
         assert!(EMBEDDED_INSTALLER.contains("verify_blob_signature"));
         assert!(EMBEDDED_INSTALLER.contains("SHA256SUMS.cosign.bundle"));
         assert!(EMBEDDED_INSTALLER.contains("${asset}.cosign.bundle"));
-        assert!(EMBEDDED_INSTALLER.contains("(maestro-internal|maestro)"));
+        assert!(EMBEDDED_INSTALLER.contains("maestro-internal/.github/workflows/release"));
+        assert!(EMBEDDED_INSTALLER.contains("maestro/.github/workflows/release"));
+        assert!(EMBEDDED_INSTALLER.contains("mono/.github/workflows/maestro-release"));
     }
 
     #[tokio::test]
@@ -3389,5 +3613,147 @@ mod tests {
         assert_eq!(check.status, "available");
         assert_eq!(check.latest_version.as_deref(), Some("0.11.0"));
         assert_eq!(check.release_notes.as_deref(), Some("native updater"));
+    }
+
+    #[tokio::test]
+    async fn stable_update_uses_latest_manifest_before_rate_limited_api() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        use std::time::Instant;
+
+        let latest_listener = TcpListener::bind("127.0.0.1:0").expect("bind latest server");
+        let latest_address = latest_listener.local_addr().expect("latest server address");
+        let api_listener = TcpListener::bind("127.0.0.1:0").expect("bind api server");
+        api_listener
+            .set_nonblocking(true)
+            .expect("make api server nonblocking");
+        let api_address = api_listener.local_addr().expect("api server address");
+        let api_requested = Arc::new(AtomicBool::new(false));
+        let api_requested_for_server = Arc::clone(&api_requested);
+        let api_server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_millis(250);
+            while Instant::now() < deadline {
+                match api_listener.accept() {
+                    Ok((mut stream, _)) => {
+                        api_requested_for_server.store(true, Ordering::SeqCst);
+                        write!(
+                            stream,
+                            "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        )
+                        .expect("write rate-limit response");
+                        return;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("accept api request: {error}"),
+                }
+            }
+        });
+
+        let manifest = ChannelManifest {
+            schema_version: CHANNEL_MANIFEST_SCHEMA.to_owned(),
+            channel: "stable".to_owned(),
+            key_id: STABLE_CHANNEL_KEY_ID.to_owned(),
+            version: "1.2.3".to_owned(),
+            release_tag: "v1.2.3".to_owned(),
+            release_url: "https://github.com/evalops/maestro/releases/download/v1.2.3"
+                .to_owned(),
+            metadata_url: Some(
+                "https://github.com/evalops/maestro/releases/download/v1.2.3/release-metadata.json"
+                    .to_owned(),
+            ),
+            metadata_sha256: None,
+            source_sha: "a".repeat(40),
+            issued_at_ms: 1,
+            release_notes: None,
+            release_receipt: None,
+            signature: "0PaVbvGiUaH3DTgqHgfl6JvvC8VlzmRgM7cDWIXkLJwG4aXb6rTXn2ZfVVwylQVLoJX53cCSIhtM18TcYycdBw=="
+                .to_owned(),
+        };
+        let body = serde_json::to_string(&manifest).expect("serialize signed manifest");
+        let latest_server = thread::spawn(move || {
+            let (mut stream, _) = latest_listener.accept().expect("accept latest request");
+            let mut request = [0_u8; 1024];
+            let length = stream.read(&mut request).expect("read latest request");
+            let request = String::from_utf8_lossy(&request[..length]);
+            assert!(
+                request.contains("GET /releases/latest/download/channel-manifest.json HTTP/1.1")
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("write latest manifest");
+        });
+
+        let latest_url =
+            format!("http://{latest_address}/releases/latest/download/channel-manifest.json");
+        let api_url = format!("http://{api_address}/releases");
+        let check = check_for_update_urls_with_timeout(
+            "1.0.0",
+            vec![latest_url.clone(), api_url],
+            Duration::from_secs(1),
+            UpdateChannel::Stable,
+        )
+        .await;
+        latest_server.join().expect("join latest server");
+        api_server.join().expect("join api server");
+
+        assert_eq!(check.status, "available");
+        assert_eq!(check.latest_version.as_deref(), Some("1.2.3"));
+        assert_eq!(check.source_url, latest_url);
+        assert_eq!(
+            check
+                .channel_verification
+                .as_ref()
+                .map(|verification| verification.status.as_str()),
+            Some("verified")
+        );
+        assert!(
+            !api_requested.load(Ordering::SeqCst),
+            "stable update should not request the rate-limited Releases API after latest manifest succeeds"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_channel_checks_preserve_verification_context() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("server address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).expect("read request");
+            write!(
+                stream,
+                "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .expect("write response");
+        });
+
+        let url = format!("http://{address}/channel-manifest.json");
+        let check = check_for_update_urls_with_timeout(
+            "0.10.52",
+            vec![url.clone()],
+            Duration::from_secs(1),
+            UpdateChannel::Beta,
+        )
+        .await;
+        server.join().expect("join server");
+
+        let verification = check
+            .channel_verification
+            .expect("channel failure should remain visible");
+        assert_eq!(verification.status, "invalid");
+        assert_eq!(verification.manifest_url, url);
+        assert!(verification
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("403"));
     }
 }

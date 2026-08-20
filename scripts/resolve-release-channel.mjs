@@ -5,13 +5,14 @@ import { pathToFileURL } from "node:url";
 
 export function resolveReleaseChannel(version, requested = "") {
 	const normalized = version.trim().replace(/^v/, "");
-	if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(normalized)) {
+	const channelVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(alpha|beta)\.[1-9]\d*)?$/;
+	if (!channelVersion.test(normalized)) {
+		if (normalized.includes("-")) {
+			throw new Error("prerelease versions must use alpha or beta with a positive ordinal");
+		}
 		throw new Error("release version must be semver-like");
 	}
-	const prerelease = normalized.match(/-(alpha|beta)\./)?.[1] ?? "";
-	if (normalized.includes("-") && !prerelease) {
-		throw new Error("prerelease versions must use alpha or beta");
-	}
+	const prerelease = normalized.match(/-(alpha|beta)\.[1-9]\d*$/)?.[1] ?? "";
 	const inferred = prerelease || "stable";
 	const channel = requested.trim() || inferred;
 	if (!["stable", "beta", "alpha"].includes(channel)) {
