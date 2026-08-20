@@ -76,6 +76,7 @@ test("installer and signed release workflow publish receipt metadata", () => {
 	assert.match(updater, /durability_warning/);
 	assert.match(updater, /legacy_channel_manifest_url/);
 	assert.match(updater, /GITHUB_RELEASES_API_URL/);
+	assert.match(updater, /releases\/latest\/download\/channel-manifest\.json/);
 	assert.match(updater, /resolve_github_channel_manifest_url/);
 	assert.match(updater, /legacyExplicit/);
 	assert.doesNotMatch(updater, /MAESTRO_UPDATE_PREVIEW_FALLBACK/);

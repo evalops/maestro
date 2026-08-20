@@ -67,9 +67,10 @@ receipts leave release metadata unavailable.
 Native release updates select the stable channel by default. Stable and
 alpha/beta manifests are published as `channel-manifest.json` assets on the
 public GitHub releases and verified with the Ed25519 public keys embedded in
-the updater. The updater discovers the newest matching release through the
-GitHub Releases API. A legacy GCS channel pointer is accepted only when an
-operator explicitly supplies `MAESTRO_UPDATE_URL` or
+the updater. Stable updates first fetch the signed manifest through GitHub's
+`releases/latest/download` redirect and use the Releases API only as a
+bounded recovery path; beta and alpha discovery use the Releases API. A
+legacy GCS channel pointer is accepted only when an operator explicitly supplies `MAESTRO_UPDATE_URL` or
 `MAESTRO_UPDATE_URLS`; it is never included in the default source list.
 Stable accepts versions without a prerelease suffix. Alpha and beta require
 matching prerelease suffixes.

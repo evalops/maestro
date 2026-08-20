@@ -18,9 +18,11 @@ metadata digest, source SHA, publication time, release notes, and the release
 receipt when the release job produced one.
 
 The updater selects the newest non-draft GitHub release whose immutable tag
-matches the requested channel. The stable installer first follows GitHub's
-`releases/latest/download` redirect to obtain that release's signed manifest;
-preview installers use the release list or an explicit signed pointer. Every
+matches the requested channel. Stable native updates and the stable installer
+first follow GitHub's `releases/latest/download` redirect to obtain that
+release's signed manifest, avoiding the unauthenticated Releases API quota.
+The stable API/list path remains a bounded recovery path, while preview
+updates/installers use the release list or an explicit signed pointer. Every
 path verifies the selected release's `channel-manifest.json` before
 downloading its artifacts. A pointer or release URL is never accepted solely
 because it is reachable. During migration,

@@ -21,6 +21,8 @@ use wait_timeout::ChildExt;
 const LEGACY_CHANNEL_MANIFEST_BASE_URL: &str =
     "https://storage.googleapis.com/evalops-prod-maestro-releases/maestro/channels";
 const GITHUB_RELEASES_API_URL: &str = "https://api.github.com/repos/evalops/maestro/releases";
+const GITHUB_STABLE_LATEST_MANIFEST_URL: &str =
+    "https://github.com/evalops/maestro/releases/latest/download/channel-manifest.json";
 const GITHUB_RELEASES_PAGE_SIZE: usize = 100;
 const GITHUB_RELEASES_MAX_PAGES: usize = 10;
 const CHANNEL_MANIFEST_SCHEMA: &str = "evalops.maestro.release-channel.v1";
@@ -764,7 +766,7 @@ fn update_urls(package: &str, channel: UpdateChannel) -> Vec<String> {
             UpdateChannel::Beta => "beta",
             UpdateChannel::Alpha => "alpha",
         };
-        let mut urls = vec![GITHUB_RELEASES_API_URL.to_owned()];
+        let mut urls = github_channel_update_urls(channel);
         urls.push(format!(
             "https://registry.npmjs.org/{}/{}",
             urlencoding::encode(package),
@@ -774,12 +776,19 @@ fn update_urls(package: &str, channel: UpdateChannel) -> Vec<String> {
     })
 }
 
+fn github_channel_update_urls(channel: UpdateChannel) -> Vec<String> {
+    let mut urls = Vec::new();
+    if channel == UpdateChannel::Stable {
+        urls.push(GITHUB_STABLE_LATEST_MANIFEST_URL.to_owned());
+    }
+    urls.push(GITHUB_RELEASES_API_URL.to_owned());
+    urls
+}
+
 fn trusted_startup_update_urls(context: &InstallContext, channel: UpdateChannel) -> Vec<String> {
     match context {
         InstallContext::Package { package, .. } => update_urls(package, channel),
-        InstallContext::Release { .. } => {
-            vec![GITHUB_RELEASES_API_URL.to_owned()]
-        }
+        InstallContext::Release { .. } => github_channel_update_urls(channel),
     }
 }
 
@@ -3202,7 +3211,10 @@ mod tests {
         };
         assert_eq!(
             trusted_startup_update_urls(&release, UpdateChannel::Stable),
-            vec![GITHUB_RELEASES_API_URL.to_owned()]
+            vec![
+                GITHUB_STABLE_LATEST_MANIFEST_URL.to_owned(),
+                GITHUB_RELEASES_API_URL.to_owned()
+            ]
         );
         assert_eq!(
             trusted_startup_update_urls(&release, UpdateChannel::Beta),
@@ -3222,6 +3234,7 @@ mod tests {
         assert_eq!(
             trusted_startup_update_urls(&package, UpdateChannel::Stable),
             vec![
+                GITHUB_STABLE_LATEST_MANIFEST_URL.to_owned(),
                 GITHUB_RELEASES_API_URL.to_owned(),
                 "https://registry.npmjs.org/%40evalops%2Fmaestro/latest".to_owned(),
             ]
@@ -3600,6 +3613,111 @@ mod tests {
         assert_eq!(check.status, "available");
         assert_eq!(check.latest_version.as_deref(), Some("0.11.0"));
         assert_eq!(check.release_notes.as_deref(), Some("native updater"));
+    }
+
+    #[tokio::test]
+    async fn stable_update_uses_latest_manifest_before_rate_limited_api() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        use std::time::Instant;
+
+        let latest_listener = TcpListener::bind("127.0.0.1:0").expect("bind latest server");
+        let latest_address = latest_listener.local_addr().expect("latest server address");
+        let api_listener = TcpListener::bind("127.0.0.1:0").expect("bind api server");
+        api_listener
+            .set_nonblocking(true)
+            .expect("make api server nonblocking");
+        let api_address = api_listener.local_addr().expect("api server address");
+        let api_requested = Arc::new(AtomicBool::new(false));
+        let api_requested_for_server = Arc::clone(&api_requested);
+        let api_server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_millis(250);
+            while Instant::now() < deadline {
+                match api_listener.accept() {
+                    Ok((mut stream, _)) => {
+                        api_requested_for_server.store(true, Ordering::SeqCst);
+                        write!(
+                            stream,
+                            "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        )
+                        .expect("write rate-limit response");
+                        return;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("accept api request: {error}"),
+                }
+            }
+        });
+
+        let manifest = ChannelManifest {
+            schema_version: CHANNEL_MANIFEST_SCHEMA.to_owned(),
+            channel: "stable".to_owned(),
+            key_id: STABLE_CHANNEL_KEY_ID.to_owned(),
+            version: "1.2.3".to_owned(),
+            release_tag: "v1.2.3".to_owned(),
+            release_url: "https://github.com/evalops/maestro/releases/download/v1.2.3"
+                .to_owned(),
+            metadata_url: Some(
+                "https://github.com/evalops/maestro/releases/download/v1.2.3/release-metadata.json"
+                    .to_owned(),
+            ),
+            metadata_sha256: None,
+            source_sha: "a".repeat(40),
+            issued_at_ms: 1,
+            release_notes: None,
+            release_receipt: None,
+            signature: "0PaVbvGiUaH3DTgqHgfl6JvvC8VlzmRgM7cDWIXkLJwG4aXb6rTXn2ZfVVwylQVLoJX53cCSIhtM18TcYycdBw=="
+                .to_owned(),
+        };
+        let body = serde_json::to_string(&manifest).expect("serialize signed manifest");
+        let latest_server = thread::spawn(move || {
+            let (mut stream, _) = latest_listener.accept().expect("accept latest request");
+            let mut request = [0_u8; 1024];
+            let length = stream.read(&mut request).expect("read latest request");
+            let request = String::from_utf8_lossy(&request[..length]);
+            assert!(
+                request.contains("GET /releases/latest/download/channel-manifest.json HTTP/1.1")
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("write latest manifest");
+        });
+
+        let latest_url =
+            format!("http://{latest_address}/releases/latest/download/channel-manifest.json");
+        let api_url = format!("http://{api_address}/releases");
+        let check = check_for_update_urls_with_timeout(
+            "1.0.0",
+            vec![latest_url.clone(), api_url],
+            Duration::from_secs(1),
+            UpdateChannel::Stable,
+        )
+        .await;
+        latest_server.join().expect("join latest server");
+        api_server.join().expect("join api server");
+
+        assert_eq!(check.status, "available");
+        assert_eq!(check.latest_version.as_deref(), Some("1.2.3"));
+        assert_eq!(check.source_url, latest_url);
+        assert_eq!(
+            check
+                .channel_verification
+                .as_ref()
+                .map(|verification| verification.status.as_str()),
+            Some("verified")
+        );
+        assert!(
+            !api_requested.load(Ordering::SeqCst),
+            "stable update should not request the rate-limited Releases API after latest manifest succeeds"
+        );
     }
 
     #[tokio::test]
