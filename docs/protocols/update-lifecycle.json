@@ -93,10 +93,10 @@
     "releaseReceiptSchema": "evalops.maestro.release-receipt.v1",
     "channelManifestSchema": "evalops.maestro.release-channel.v1",
     "channelManifestSignature": "ed25519/base64",
-    "channelManifestUrls": {
-      "stable": "https://storage.googleapis.com/evalops-prod-maestro-releases/maestro/channels/stable/manifest.json",
-      "beta": "https://storage.googleapis.com/evalops-prod-maestro-releases/maestro/channels/beta/manifest.json",
-      "alpha": "https://storage.googleapis.com/evalops-prod-maestro-releases/maestro/channels/alpha/manifest.json"
+    "channelManifestSource": {
+      "releaseListUrl": "https://api.github.com/repos/evalops/maestro/releases",
+      "releaseAsset": "channel-manifest.json",
+      "legacyPointerBase": "https://storage.googleapis.com/evalops-prod-maestro-releases/maestro/channels"
     }
   }
 }

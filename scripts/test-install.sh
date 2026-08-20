@@ -53,23 +53,25 @@ tar -czf "$release_dir/$web_asset" -C "$fixture/web-source" .
 
 write_fixture_binary() {
   local version="$1"
+  local target_dir="${2:-$release_dir}"
   {
     printf '%s\n' '#!/bin/sh'
 	    # shellcheck disable=SC2016
 	    printf 'if [ "$1" = "--version" ]; then printf "maestro %s\\n"; elif [ "$1" = "--print-web-root" ]; then printf "%%s\\n" "$MAESTRO_WEB_STATIC_ROOT"; else printf "fixture binary\\n"; fi\n' "$version"
-  } > "$release_dir/$asset"
-  chmod 755 "$release_dir/$asset"
+  } > "$target_dir/$asset"
+  chmod 755 "$target_dir/$asset"
 }
 
 write_manifest() {
+  local target_dir="${1:-$release_dir}"
   local binary_digest
   local web_digest
-  binary_digest="$(hash_file "$release_dir/$asset")"
-  web_digest="$(hash_file "$release_dir/$web_asset")"
+  binary_digest="$(hash_file "$target_dir/$asset")"
+  web_digest="$(hash_file "$target_dir/$web_asset")"
   {
     printf '%s  %s\n' "$binary_digest" "$asset"
     printf '%s  %s\n' "$web_digest" "$web_asset"
-  } > "$release_dir/SHA256SUMS"
+  } > "$target_dir/SHA256SUMS"
 }
 
 write_fixture_binary "0.0.1"
@@ -87,6 +89,11 @@ cp "$release_dir/$web_asset" "$preview_release_dir/$web_asset"
   printf '%s  %s\n' "$(hash_file "$preview_release_dir/$asset")" "$asset"
   printf '%s  %s\n' "$(hash_file "$preview_release_dir/$web_asset")" "$web_asset"
 } > "$preview_release_dir/SHA256SUMS"
+alpha_release_dir="$fixture/v0.0.4-alpha.1"
+mkdir -p "$alpha_release_dir"
+write_fixture_binary "0.0.4-alpha.1" "$alpha_release_dir"
+cp "$release_dir/$web_asset" "$alpha_release_dir/$web_asset"
+write_manifest "$alpha_release_dir"
 write_fixture_binary "0.0.1"
 write_manifest
 
@@ -96,45 +103,187 @@ import http.server
 import json
 import os
 import sys
+from urllib.parse import parse_qs, urlsplit
 
 os.chdir(sys.argv[1])
+
+def preview_manifest(channel, version, port):
+    return {
+        "schemaVersion": "evalops.maestro.release-channel.v1",
+        "channel": channel,
+        "keyId": "preview-2026-08-912a0dab",
+        "version": version,
+        "releaseTag": f"v{version}",
+        "releaseUrl": f"http://127.0.0.1:{port}/v{version}",
+        "metadataUrl": None,
+        "metadataSha256": None,
+        "sourceSha": "a" * 40,
+        "issuedAtMs": 1,
+        "releaseNotes": None,
+        "releaseReceipt": None,
+        "signature": "fixture-signature",
+    }
+
+def stable_manifest(port, version="0.0.1", release_url=None):
+    manifest = preview_manifest("stable", version, port)
+    manifest["keyId"] = "stable-2026-08-0c3df2ac"
+    if release_url is not None:
+        manifest["releaseUrl"] = release_url
+    return manifest
+
+def beta_manifest(port):
+    return preview_manifest("beta", "0.0.3-beta.1", port)
+
+def alpha_manifest(port):
+    return preview_manifest("alpha", "0.0.4-alpha.1", port)
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/v0.0.2/SHA256SUMS":
+        request_path = urlsplit(self.path).path
+        query = parse_qs(urlsplit(self.path).query)
+        if request_path == "/v0.0.2/SHA256SUMS":
             self.send_response(500)
             self.end_headers()
             self.wfile.write(b"simulated manifest failure")
             return
-        if self.path == "/channels/beta/manifest.json":
+        if request_path == "/channels/beta/manifest.json":
             port = self.server.server_address[1]
-            body = json.dumps({
-                "channel": "beta",
-                "releaseUrl": f"http://127.0.0.1:{port}/v0.0.3-beta.1",
-                "version": "0.0.3-beta.1",
-            }).encode()
+            body = json.dumps(beta_manifest(port)).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
             return
-        if self.path == "/github/releases":
+        if request_path == "/channels/beta/noncanonical":
             port = self.server.server_address[1]
-            body = json.dumps([
-                {
-                    "tag_name": "v0.0.3-beta.1",
+            manifest = beta_manifest(port)
+            manifest["version"] = "01.0.3-beta.1"
+            manifest["releaseTag"] = "v01.0.3-beta.1"
+            body = json.dumps(manifest).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if request_path == "/channels/alpha/manifest.json":
+            port = self.server.server_address[1]
+            body = json.dumps(alpha_manifest(port)).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if request_path == "/v0.0.1/channel-manifest.json":
+            port = self.server.server_address[1]
+            body = json.dumps(stable_manifest(port)).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if request_path == "/v0.0.5/channel-manifest.json":
+            port = self.server.server_address[1]
+            manifest = stable_manifest(port, "0.0.5")
+            manifest["releaseUrl"] = f"http://127.0.0.1:{port}/v0.0.1"
+            body = json.dumps(manifest).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if request_path == "/v0.0.6/channel-manifest.json":
+            port = self.server.server_address[1]
+            manifest = stable_manifest(port, "0.0.6")
+            manifest["releaseTag"] = "v0.0.5"
+            body = json.dumps(manifest).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if request_path == "/v0.0.7/channel-manifest.json":
+            port = self.server.server_address[1]
+            manifest = stable_manifest(port, "0.0.7")
+            manifest["signature"] = ""
+            body = json.dumps(manifest).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if request_path == "/v0.0.3-beta.1/channel-manifest.json":
+            port = self.server.server_address[1]
+            body = json.dumps(beta_manifest(port)).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if request_path == "/v0.0.4-alpha.1/channel-manifest.json":
+            port = self.server.server_address[1]
+            body = json.dumps(alpha_manifest(port)).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if request_path == "/github/releases":
+            port = self.server.server_address[1]
+            page = int(query.get("page", ["1"])[0])
+            if page == 1:
+                releases = [
+                    {
+                        "tag_name": f"v9.9.{index}-beta.1",
+                        "draft": True,
+                        "prerelease": True,
+                        "assets": [],
+                    }
+                    for index in range(99)
+                ]
+                releases.append({
+                    "tag_name": "v99.99.99-beta.99",
                     "draft": False,
                     "prerelease": True,
-                    "html_url": f"http://127.0.0.1:{port}/v0.0.3-beta.1",
-                }
-            ]).encode()
+                    "assets": [],
+                })
+            else:
+                releases = [
+                    {
+                        "tag_name": "v0.0.1",
+                        "draft": False,
+                        "prerelease": False,
+                        "assets": [{"name": "channel-manifest.json"}],
+                    },
+                    {
+                        "tag_name": "v0.0.3-beta.1",
+                        "draft": False,
+                        "prerelease": True,
+                        "assets": [{"name": "channel-manifest.json"}],
+                    },
+                    {
+                        "tag_name": "v0.0.4-alpha.1",
+                        "draft": False,
+                        "prerelease": True,
+                        "assets": [{"name": "channel-manifest.json"}],
+                    },
+                ]
+            body = json.dumps(releases).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
             return
-        if self.path == "/github/empty":
+        if request_path == "/github/empty":
             body = b"[]"
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -142,7 +291,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if "maestro-beta-channel" in self.path or "maestro-alpha-channel" in self.path:
+        if "maestro-beta-channel" in request_path or "maestro-alpha-channel" in request_path:
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b"deleted channel alias")
@@ -172,17 +321,33 @@ run_install() {
   MAESTRO_INSTALL_DIR="$install_dir" \
   MAESTRO_DATA_DIR="$data_dir" \
   MAESTRO_INSTALL_VERSION="0.0.1" \
-  MAESTRO_INSTALL_CHANNEL="beta" \
+  MAESTRO_INSTALL_CHANNEL="stable" \
   MAESTRO_RELEASE_BASE_URL="$release_url" \
   MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
-  "$ROOT/scripts/install.sh"
+  bash "$ROOT/scripts/install.sh"
 }
 
 run_install > "$fixture/first-install.log" 2>&1 ||
   fail "first install failed: $(cat "$fixture/first-install.log")"
 [[ -x "$install_dir/maestro" ]] || fail "launcher was not installed"
+
+if HOME="$fixture/home" \
+  MAESTRO_INSTALL_DIR="$fixture/mismatched-channel-bin" \
+  MAESTRO_DATA_DIR="$fixture/mismatched-channel-data" \
+  MAESTRO_INSTALL_VERSION="0.0.1" \
+  MAESTRO_INSTALL_CHANNEL="beta" \
+  MAESTRO_RELEASE_BASE_URL="$release_url" \
+  MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
+  bash "$ROOT/scripts/install.sh" > "$fixture/mismatched-channel.log" 2>&1; then
+  fail "installer accepted a stable version for the beta channel"
+fi
+grep -q 'beta channel requires a beta prerelease version' "$fixture/mismatched-channel.log" ||
+  fail "installer did not reject a stable version for the beta channel"
+
 grep -q '^export MAESTRO_INSTALL_METHOD=release$' "$install_dir/maestro" ||
   fail "launcher did not identify the signed release install method"
+grep -q 'Downloading channel manifest' "$fixture/first-install.log" ||
+  fail "stable install did not verify its channel manifest"
 grep -q '^export MAESTRO_INSTALL_DIR=' "$install_dir/maestro" ||
   fail "launcher did not retain its install directory"
 grep -q '^export MAESTRO_DATA_DIR=' "$install_dir/maestro" ||
@@ -190,7 +355,7 @@ grep -q '^export MAESTRO_DATA_DIR=' "$install_dir/maestro" ||
 grep -q '^export MAESTRO_UPDATE_CHANNEL=' "$install_dir/maestro" ||
   fail "launcher did not retain its update channel"
 [[ "$(MAESTRO_UPDATE_CHANNEL='' "$install_dir/maestro" --version)" == "maestro 0.0.1" ]] ||
-  fail "launcher with a persisted beta channel did not execute"
+  fail "launcher with a persisted stable channel did not execute"
 grep -q '^export MAESTRO_STARTUP_UPDATE_STATE=' "$install_dir/maestro" ||
   fail "launcher did not retain startup update metadata"
 grep -q '^export MAESTRO_VERSION=' "$install_dir/maestro" ||
@@ -241,7 +406,7 @@ MAESTRO_DATA_DIR="$runtime_version_data_dir" \
 MAESTRO_VERSION="9.9.9" \
 MAESTRO_RELEASE_BASE_URL="$release_url" \
 MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
-"$ROOT/scripts/install.sh" > "$fixture/runtime-version-install.log" 2>&1 ||
+bash "$ROOT/scripts/install.sh" > "$fixture/runtime-version-install.log" 2>&1 ||
   fail "runtime version metadata affected install: $(cat "$fixture/runtime-version-install.log")"
 [[ "$("$runtime_version_install_dir/maestro" --version)" == "maestro 0.0.1" ]] ||
   fail "runtime version metadata pinned the installed binary"
@@ -252,7 +417,7 @@ MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
 
 if HOME="$fixture/home" \
   MAESTRO_INSTALL_CHANNEL="nightly" \
-  "$ROOT/scripts/install.sh" > "$fixture/invalid-channel.log" 2>&1; then
+  bash "$ROOT/scripts/install.sh" > "$fixture/invalid-channel.log" 2>&1; then
   fail "installer accepted an unknown update channel"
 fi
 grep -q 'MAESTRO_INSTALL_CHANNEL must be stable, beta, or alpha' "$fixture/invalid-channel.log" ||
@@ -268,7 +433,7 @@ mkdir -p "$fixture/invocation"
   MAESTRO_INSTALL_VERSION="0.0.1" \
   MAESTRO_RELEASE_BASE_URL="$release_url" \
   MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
-  "$ROOT/scripts/install.sh" > "$fixture/relative-install.log" 2>&1
+  bash "$ROOT/scripts/install.sh" > "$fixture/relative-install.log" 2>&1
 ) || fail "relative data directory install failed: $(cat "$fixture/relative-install.log")"
 relative_version="$(
   cd "$fixture/invocation"
@@ -283,7 +448,7 @@ if HOME="$fixture/home" \
   MAESTRO_INSTALL_VERSION="0.0.2" \
   MAESTRO_RELEASE_BASE_URL="http://127.0.0.1:$port/v0.0.2" \
   MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
-  "$ROOT/scripts/install.sh" > "$fixture/manifest-failure.log" 2>&1; then
+  bash "$ROOT/scripts/install.sh" > "$fixture/manifest-failure.log" 2>&1; then
   fail "manifest transport failure unexpectedly downgraded to unsigned install"
 fi
 [[ "$("$install_dir/maestro" --version)" == "maestro 0.0.1" ]] ||
@@ -299,7 +464,7 @@ if HOME="$fixture/home" \
   MAESTRO_RELEASE_BASE_URL="$release_url" \
   MAESTRO_REQUIRE_SIGNED_INSTALL=1 \
   MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
-  "$ROOT/scripts/install.sh" > "$fixture/conflicting-signing-flags.log" 2>&1; then
+  bash "$ROOT/scripts/install.sh" > "$fixture/conflicting-signing-flags.log" 2>&1; then
   fail "strict signing accepted the unsigned bypass override"
 fi
 [[ "$("$install_dir/maestro" --version)" == "maestro 0.0.1" ]] ||
@@ -311,7 +476,7 @@ if HOME="$fixture/home" \
   MAESTRO_INSTALL_VERSION="0.0.1" \
   MAESTRO_RELEASE_BASE_URL="$release_url" \
   MAESTRO_REQUIRE_SIGNED_INSTALL=1 \
-  "$ROOT/scripts/install.sh" > "$fixture/strict-install.log" 2>&1; then
+  bash "$ROOT/scripts/install.sh" > "$fixture/strict-install.log" 2>&1; then
   fail "strict mode accepted an unsigned fixture"
 fi
 [[ "$("$install_dir/maestro" --version)" == "maestro 0.0.1" ]] ||
@@ -337,7 +502,7 @@ MAESTRO_DATA_DIR="$pointer_data_dir" \
 MAESTRO_INSTALL_CHANNEL="beta" \
 MAESTRO_CHANNEL_MANIFEST_URL="http://127.0.0.1:$port/channels/beta/manifest.json" \
 MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
-"$ROOT/scripts/install.sh" > "$fixture/pointer-install.log" 2>&1 ||
+bash "$ROOT/scripts/install.sh" > "$fixture/pointer-install.log" 2>&1 ||
   fail "channel pointer install failed: $(cat "$fixture/pointer-install.log")"
 [[ "$("$pointer_install_dir/maestro" --version)" == "maestro 0.0.3-beta.1" ]] ||
   fail "channel pointer install did not select the preview release"
@@ -345,6 +510,34 @@ grep -q 'Using beta channel pointer' "$fixture/pointer-install.log" ||
   fail "channel pointer install did not report the signed pointer"
 grep -q 'maestro-beta-channel' "$fixture/pointer-install.log" &&
   fail "channel pointer install requested the deleted GitHub channel alias"
+
+if HOME="$fixture/home" \
+  MAESTRO_INSTALL_DIR="$fixture/noncanonical-bin" \
+  MAESTRO_DATA_DIR="$fixture/noncanonical-data" \
+  MAESTRO_INSTALL_CHANNEL="beta" \
+  MAESTRO_CHANNEL_MANIFEST_URL="http://127.0.0.1:$port/channels/beta/noncanonical" \
+  MAESTRO_RELEASE_API_URL="http://127.0.0.1:$port/github/empty" \
+  MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
+  bash "$ROOT/scripts/install.sh" > "$fixture/noncanonical.log" 2>&1; then
+  fail "installer accepted a non-canonical beta version: $(cat "$fixture/noncanonical.log")"
+fi
+grep -q 'beta channel requires a matching prerelease version' "$fixture/noncanonical.log" ||
+  fail "installer did not reject a non-canonical beta version"
+
+alpha_install_dir="$fixture/alpha-bin"
+alpha_data_dir="$fixture/alpha-data"
+HOME="$fixture/home" \
+MAESTRO_INSTALL_DIR="$alpha_install_dir" \
+MAESTRO_DATA_DIR="$alpha_data_dir" \
+MAESTRO_INSTALL_CHANNEL="alpha" \
+MAESTRO_CHANNEL_MANIFEST_URL="http://127.0.0.1:$port/channels/alpha/manifest.json" \
+MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
+bash "$ROOT/scripts/install.sh" > "$fixture/alpha-install.log" 2>&1 ||
+  fail "alpha channel pointer install failed: $(cat "$fixture/alpha-install.log")"
+[[ "$("$alpha_install_dir/maestro" --version)" == "maestro 0.0.4-alpha.1" ]] ||
+  fail "alpha channel pointer install did not select the alpha release"
+grep -q 'Using alpha channel pointer' "$fixture/alpha-install.log" ||
+  fail "alpha channel pointer install did not report the pointer"
 
 api_install_dir="$fixture/api-bin"
 api_data_dir="$fixture/api-data"
@@ -356,12 +549,66 @@ MAESTRO_CHANNEL_MANIFEST_URL="http://127.0.0.1:$port/missing-channel-pointer" \
 MAESTRO_RELEASE_API_URL="http://127.0.0.1:$port/github/releases" \
 MAESTRO_RELEASE_DOWNLOAD_BASE="http://127.0.0.1:$port" \
 MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
-"$ROOT/scripts/install.sh" > "$fixture/api-install.log" 2>&1 ||
+bash "$ROOT/scripts/install.sh" > "$fixture/api-install.log" 2>&1 ||
   fail "GitHub channel fallback install failed: $(cat "$fixture/api-install.log")"
 [[ "$("$api_install_dir/maestro" --version)" == "maestro 0.0.3-beta.1" ]] ||
   fail "GitHub channel fallback did not select the preview release"
 grep -q 'Using GitHub beta release v0.0.3-beta.1' "$fixture/api-install.log" ||
   fail "GitHub channel fallback did not report the immutable tag"
+
+alpha_api_install_dir="$fixture/alpha-api-bin"
+alpha_api_data_dir="$fixture/alpha-api-data"
+HOME="$fixture/home" \
+MAESTRO_INSTALL_DIR="$alpha_api_install_dir" \
+MAESTRO_DATA_DIR="$alpha_api_data_dir" \
+MAESTRO_INSTALL_CHANNEL="alpha" \
+MAESTRO_CHANNEL_MANIFEST_URL="http://127.0.0.1:$port/missing-alpha-pointer" \
+MAESTRO_RELEASE_API_URL="http://127.0.0.1:$port/github/releases" \
+MAESTRO_RELEASE_DOWNLOAD_BASE="http://127.0.0.1:$port" \
+MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
+bash "$ROOT/scripts/install.sh" > "$fixture/alpha-api-install.log" 2>&1 ||
+  fail "GitHub alpha channel fallback install failed: $(cat "$fixture/alpha-api-install.log")"
+[[ "$("$alpha_api_install_dir/maestro" --version)" == "maestro 0.0.4-alpha.1" ]] ||
+  fail "GitHub alpha channel fallback did not select the alpha release"
+grep -q 'Using GitHub alpha release v0.0.4-alpha.1' "$fixture/alpha-api-install.log" ||
+  fail "GitHub alpha channel fallback did not report the immutable tag"
+
+write_fixture_binary "0.0.1"
+write_manifest
+stable_api_install_dir="$fixture/stable-api-bin"
+stable_api_data_dir="$fixture/stable-api-data"
+HOME="$fixture/home" \
+MAESTRO_INSTALL_DIR="$stable_api_install_dir" \
+MAESTRO_DATA_DIR="$stable_api_data_dir" \
+MAESTRO_INSTALL_CHANNEL="stable" \
+MAESTRO_RELEASE_API_URL="http://127.0.0.1:$port/github/releases" \
+MAESTRO_RELEASE_DOWNLOAD_BASE="http://127.0.0.1:$port" \
+MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
+bash "$ROOT/scripts/install.sh" > "$fixture/stable-api-install.log" 2>&1 ||
+  fail "GitHub stable channel discovery install failed: $(cat "$fixture/stable-api-install.log")"
+[[ "$("$stable_api_install_dir/maestro" --version)" == "maestro 0.0.1" ]] ||
+  fail "GitHub stable channel discovery did not select the stable release"
+grep -q 'Using GitHub stable release v0.0.1' "$fixture/stable-api-install.log" ||
+  fail "GitHub stable channel discovery did not report the immutable tag"
+
+for invalid_version in 0.0.5 0.0.6 0.0.7; do
+  if HOME="$fixture/home" \
+    MAESTRO_INSTALL_DIR="$fixture/invalid-$invalid_version-bin" \
+    MAESTRO_DATA_DIR="$fixture/invalid-$invalid_version-data" \
+    MAESTRO_INSTALL_VERSION="$invalid_version" \
+    MAESTRO_INSTALL_CHANNEL="stable" \
+    MAESTRO_RELEASE_BASE_URL="http://127.0.0.1:$port/v$invalid_version" \
+    MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
+    bash "$ROOT/scripts/install.sh" > "$fixture/invalid-$invalid_version.log" 2>&1; then
+    fail "stable installer accepted invalid channel manifest fixture v$invalid_version"
+  fi
+done
+grep -q 'does not describe the selected stable release' "$fixture/invalid-0.0.5.log" ||
+  fail "stable installer did not reject a wrong release URL"
+grep -q 'Channel manifest verification failed for stable' "$fixture/invalid-0.0.6.log" ||
+  fail "stable installer did not reject a wrong release tag"
+grep -q 'Channel manifest verification failed for stable' "$fixture/invalid-0.0.7.log" ||
+  fail "stable installer did not reject a tampered manifest"
 
 if HOME="$fixture/home" \
   MAESTRO_INSTALL_DIR="$fixture/empty-bin" \
@@ -370,7 +617,7 @@ if HOME="$fixture/home" \
   MAESTRO_CHANNEL_MANIFEST_URL="http://127.0.0.1:$port/missing-channel-pointer" \
   MAESTRO_RELEASE_API_URL="http://127.0.0.1:$port/github/empty" \
   MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
-  "$ROOT/scripts/install.sh" > "$fixture/empty-channel.log" 2>&1; then
+  bash "$ROOT/scripts/install.sh" > "$fixture/empty-channel.log" 2>&1; then
   fail "installer accepted a preview channel with no published release"
 fi
 grep -q 'No published beta release' "$fixture/empty-channel.log" ||

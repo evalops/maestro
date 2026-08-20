@@ -54,6 +54,18 @@ test("release channel resolution binds prerelease names to channels", () => {
 	assert.throws(() => resolveReleaseChannel("1.2.4-rc.1"), /alpha or beta/);
 });
 
+test("release channel resolution rejects non-numeric or zero prerelease ordinals", () => {
+	for (const version of [
+		"1.2.3-beta.foo",
+		"1.2.3-beta.0",
+		"1.2.3-alpha.foo",
+		"1.2.3-alpha.0",
+		"01.2.3",
+	]) {
+		assert.throws(() => resolveReleaseChannel(version), /release version|matching/);
+	}
+});
+
 test("release workflows require a channel and publish the signed manifest", () => {
 	if (existsSync(new URL("../.github/workflows/sync-public-release-mirror.yml", import.meta.url))) {
 		const internalWorkflow = read(".github/workflows/release.yml");
