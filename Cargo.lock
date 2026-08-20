@@ -1655,7 +1655,7 @@ dependencies = [
  "rustix",
  "signal-hook",
  "signal-hook-mio",
-"winapi",
+ "winapi",
 ]
 
 
@@ -6142,6 +6142,7 @@ dependencies = [
  "wezterm-input-types",
  "winapi",
 ]
+
 
 [[package]]
 name = "textwrap"
