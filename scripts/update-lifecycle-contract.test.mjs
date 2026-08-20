@@ -62,7 +62,10 @@ test("installer and signed release workflow publish receipt metadata", () => {
 	assert.match(installer, /fetch_github_releases/);
 	assert.match(installer, /validate_channel_manifest/);
 	assert.match(installer, /channel_version_matches/);
-	assert.match(installer, /pkeyutl -verify/);
+	assert.match(installer, /bootstrap_cosign/);
+	assert.match(installer, /signature-digest-algorithm sha512/);
+	assert.doesNotMatch(installer, /pkeyutl -verify/);
+	assert.doesNotMatch(installer, /python3/);
 	assert.doesNotMatch(installer, /maestro-\$\{install_channel\}-channel/);
 	assert.match(installer, /receipt_hash_file/);
 	assert.doesNotMatch(installer, /refusing installation without release receipt metadata/);
@@ -83,4 +86,7 @@ test("installer and signed release workflow publish receipt metadata", () => {
 	assert.match(release, /channel-manifest\.json/);
 	assert.match(channelManifest, /createPrivateKey/);
 	assert.match(channelResolver, /alpha or beta/);
+	assert.match(release, /ubuntu-24\.04-arm/);
+	assert.match(release, /actions\/setup-node@/);
+	assert.match(release, /build-release-binary\.mjs/);
 });

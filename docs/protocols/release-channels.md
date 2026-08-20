@@ -88,3 +88,9 @@ The standalone installer needs bash, curl, awk, base64, tar, and a SHA-256
 tool; it does not require Python, Node.js, or OpenSSL. For signed installs it
 downloads a checksum-pinned Cosign binary and uses it to verify the raw
 Ed25519 channel signature before any release artifact is staged.
+
+An explicit MAESTRO_INSTALL_VERSION may target a historical release that
+predates channel-manifest.json. That compatibility path still verifies
+SHA256SUMS and Cosign artifacts when present, but
+MAESTRO_REQUIRE_SIGNED_INSTALL=1 rejects a pinned release without the
+channel manifest; unpinned channel installs always require the manifest.

@@ -34,8 +34,7 @@
     "default": "stable",
     "stable": {
       "versionPolicy": "stable-semver-only",
-      "migrationFallback": "legacy-version-json",
-      "fallbackStatus": "legacyFallback"
+      "fallback": "explicit-legacy-pointer-only"
     },
     "beta": {
       "versionPolicy": "beta-prerelease-semver-only",

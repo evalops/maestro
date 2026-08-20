@@ -204,6 +204,40 @@ fetch_manifest() {
   esac
 }
 
+fetch_channel_manifest() {
+  local destination="$1"
+  local url="$2"
+  local status
+  local -a options=(
+    --silent
+    --show-error
+    --location
+    --max-time 180
+    --retry 2
+    --retry-delay 2
+    --write-out '%{http_code}'
+  )
+  case "$url" in
+    http://127.0.0.1:*|http://localhost:*) ;;
+    *) options+=(--proto '=https' --tlsv1.2) ;;
+  esac
+  if ! status="$(curl "${options[@]}" -o "$destination" "$url")"; then
+    rm -f "$destination"
+    fail "Channel manifest request failed: $url"
+  fi
+  case "$status" in
+    2??) return 0 ;;
+    404)
+      rm -f "$destination"
+      return 2
+      ;;
+    *)
+      rm -f "$destination"
+      fail "Channel manifest request returned HTTP $status: $url"
+      ;;
+  esac
+}
+
 fetch_optional() {
   local destination="$1"
   local url="$2"
@@ -869,18 +903,33 @@ fi
 channel_manifest_verified=0
 channel_manifest_version=""
 channel_manifest="$tmpdir/channel-manifest.json"
-if [[ ! -f "$tmpdir/channel-manifest-verified" ]]; then
-  download "${release_url}/channel-manifest.json" "$channel_manifest" "channel manifest"
+if [[ -f "$tmpdir/channel-manifest-verified" ]]; then
+  channel_manifest_verified=1
+elif fetch_channel_manifest "$channel_manifest" "${release_url}/channel-manifest.json"; then
+  printf 'Downloading channel manifest...\n' >&2
   validate_channel_manifest "$channel_manifest" "$install_channel" ||
     fail "Channel manifest verification failed for $install_channel"
+  channel_manifest_verified=1
+else
+  manifest_status="$?"
+  if [[ "$manifest_status" -ne 2 || -z "$requested_version" ]]; then
+    fail "Channel manifest is required for an unpinned $install_channel installation"
+  fi
+  case "$require_signed" in
+    1|true|yes)
+      fail "Pinned release has no channel manifest; refusing unsigned installation"
+      ;;
+  esac
+  printf 'Warning: pinned release has no channel manifest; using legacy artifact verification.\n' >&2
 fi
-channel_manifest_verified=1
-channel_manifest_version="$(json_field "$channel_manifest" version || true)"
-channel_manifest_release_url="$(json_field "$channel_manifest" releaseUrl || true)"
-channel_manifest_release_url="${channel_manifest_release_url%/}"
-release_url_normalized="${release_url%/}"
-[[ -n "$channel_manifest_version" && "$channel_manifest_release_url" == "$release_url_normalized" ]] ||
-  fail "Channel manifest does not describe the selected $install_channel release"
+if [[ "$channel_manifest_verified" == "1" ]]; then
+  channel_manifest_version="$(json_field "$channel_manifest" version || true)"
+  channel_manifest_release_url="$(json_field "$channel_manifest" releaseUrl || true)"
+  channel_manifest_release_url="${channel_manifest_release_url%/}"
+  release_url_normalized="${release_url%/}"
+  [[ -n "$channel_manifest_version" && "$channel_manifest_release_url" == "$release_url_normalized" ]] ||
+    fail "Channel manifest does not describe the selected $install_channel release"
+fi
 
 manifest="$tmpdir/SHA256SUMS"
 manifest_available=0

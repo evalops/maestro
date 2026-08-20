@@ -47,7 +47,8 @@ asset="maestro-$platform"
 web_asset="maestro-web-dist.tar.gz"
 release_dir="$fixture/v0.0.1"
 manifest_failure_release_dir="$fixture/v0.0.2"
-mkdir -p "$release_dir" "$manifest_failure_release_dir" "$fixture/web-source" "$fixture/home"
+legacy_release_dir="$fixture/v0.0.8"
+mkdir -p "$release_dir" "$manifest_failure_release_dir" "$legacy_release_dir" "$fixture/web-source" "$fixture/home"
 printf '%s\n' '<!doctype html><title>fixture</title>' > "$fixture/web-source/index.html"
 tar -czf "$release_dir/$web_asset" -C "$fixture/web-source" .
 
@@ -78,6 +79,9 @@ write_fixture_binary "0.0.1"
 write_manifest
 cp "$release_dir/$asset" "$manifest_failure_release_dir/$asset"
 cp "$release_dir/$web_asset" "$manifest_failure_release_dir/$web_asset"
+write_fixture_binary "0.0.8" "$legacy_release_dir"
+cp "$release_dir/$web_asset" "$legacy_release_dir/$web_asset"
+write_manifest "$legacy_release_dir"
 
 preview_release_dir="$fixture/v0.0.3-beta.1"
 mkdir -p "$preview_release_dir"
@@ -349,6 +353,34 @@ env HOME="$fixture/home" PATH="$no_python_path" MAESTRO_INSTALL_DIR="$no_python_
   fail "standalone install required python3: $(cat "$fixture/no-python-install.log")"
 [[ "$("$no_python_install_dir/maestro" --version)" == "maestro 0.0.1" ]] ||
   fail "no-python standalone install did not select the stable release"
+
+legacy_install_dir="$fixture/legacy-bin"
+legacy_data_dir="$fixture/legacy-data"
+legacy_release_url="http://127.0.0.1:$port/v0.0.8"
+HOME="$fixture/home" \
+MAESTRO_INSTALL_DIR="$legacy_install_dir" \
+MAESTRO_DATA_DIR="$legacy_data_dir" \
+MAESTRO_INSTALL_VERSION="0.0.8" \
+MAESTRO_RELEASE_BASE_URL="$legacy_release_url" \
+MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
+bash "$ROOT/scripts/install.sh" > "$fixture/legacy-install.log" 2>&1 ||
+  fail "explicit pinned legacy release without a channel manifest was rejected: $(cat "$fixture/legacy-install.log")"
+[[ "$("$legacy_install_dir/maestro" --version)" == "maestro 0.0.8" ]] ||
+  fail "explicit pinned legacy release installed the wrong binary"
+grep -q 'using legacy artifact verification' "$fixture/legacy-install.log" ||
+  fail "legacy pinned install did not report its unsigned compatibility path"
+
+if HOME="$fixture/home" \
+  MAESTRO_INSTALL_DIR="$fixture/legacy-strict-bin" \
+  MAESTRO_DATA_DIR="$fixture/legacy-strict-data" \
+  MAESTRO_INSTALL_VERSION="0.0.8" \
+  MAESTRO_RELEASE_BASE_URL="$legacy_release_url" \
+  MAESTRO_REQUIRE_SIGNED_INSTALL=1 \
+  bash "$ROOT/scripts/install.sh" > "$fixture/legacy-strict-install.log" 2>&1; then
+  fail "strict signing accepted a pinned release without a channel manifest"
+fi
+grep -q 'Pinned release has no channel manifest' "$fixture/legacy-strict-install.log" ||
+  fail "strict signing did not reject a pinned release without a channel manifest"
 
 if HOME="$fixture/home" \
   MAESTRO_INSTALL_DIR="$fixture/mismatched-channel-bin" \
