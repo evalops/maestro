@@ -440,7 +440,27 @@ fn legacy_channel_manifest_url(channel: UpdateChannel) -> String {
 }
 
 fn github_channel_manifest_url(tag: &str) -> String {
-    format!("https://github.com/evalops/maestro/releases/download/{tag}/channel-manifest.json")
+    format!("{}/channel-manifest.json", github_release_url(tag))
+}
+
+fn github_release_url(tag: &str) -> String {
+    format!("https://github.com/evalops/maestro/releases/download/{tag}")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GithubReleaseSelection {
+    tag: String,
+    release_url: String,
+    manifest_url: String,
+}
+
+fn github_release_selection(tag: &str) -> GithubReleaseSelection {
+    let release_url = github_release_url(tag);
+    GithubReleaseSelection {
+        tag: tag.to_owned(),
+        manifest_url: github_channel_manifest_url(tag),
+        release_url,
+    }
 }
 
 fn tag_matches_channel(tag: &str, channel: UpdateChannel) -> bool {
@@ -511,7 +531,7 @@ fn github_release_is_eligible(release: &GithubReleaseListItem, channel: UpdateCh
 async fn resolve_github_channel_manifest_url(
     client: &reqwest::Client,
     channel: UpdateChannel,
-) -> Result<String, String> {
+) -> Result<GithubReleaseSelection, String> {
     let mut releases = Vec::new();
     for page in 1..=GITHUB_RELEASES_MAX_PAGES {
         let response = client
@@ -550,7 +570,7 @@ async fn resolve_github_channel_manifest_url(
         })
         .max_by(|left, right| left.0.cmp(&right.0))
         .map(|(_, tag)| tag);
-    tag.map(|tag| github_channel_manifest_url(&tag))
+    tag.map(|tag| github_release_selection(&tag))
         .ok_or_else(|| format!("No published {} GitHub release", channel.as_str()))
 }
 
@@ -692,6 +712,35 @@ fn verify_channel_manifest(
     Ok(())
 }
 
+fn verify_github_release_manifest_binding(
+    manifest: &ChannelManifest,
+    selected: &GithubReleaseSelection,
+) -> Result<()> {
+    let selected_version = selected.tag.trim_start_matches('v');
+    if manifest.release_tag != selected.tag {
+        bail!(
+            "release channel manifest tag {} does not match selected GitHub release {}",
+            manifest.release_tag,
+            selected.tag
+        );
+    }
+    if manifest.version.trim() != selected_version {
+        bail!(
+            "release channel manifest version {} does not match selected GitHub release {}",
+            manifest.version,
+            selected.tag
+        );
+    }
+    if manifest.release_url.trim_end_matches('/') != selected.release_url {
+        bail!(
+            "release channel manifest URL {} does not match selected GitHub release {}",
+            manifest.release_url,
+            selected.release_url
+        );
+    }
+    Ok(())
+}
+
 fn channel_verification_failure(
     channel: UpdateChannel,
     manifest_url: &str,
@@ -781,11 +830,13 @@ async fn check_for_update_urls_with_timeout(
 
     for url in urls {
         last_url.clone_from(&url);
+        let mut selected_github_release = None;
         let url = if url == GITHUB_RELEASES_API_URL {
             match resolve_github_channel_manifest_url(&client, channel).await {
-                Ok(manifest_url) => {
-                    last_url.clone_from(&manifest_url);
-                    manifest_url
+                Ok(selection) => {
+                    last_url.clone_from(&selection.manifest_url);
+                    selected_github_release = Some(selection.clone());
+                    selection.manifest_url
                 }
                 Err(error) => {
                     last_error = Some(error);
@@ -847,6 +898,18 @@ async fn check_for_update_urls_with_timeout(
                 ));
                 last_error = Some(message);
                 continue;
+            }
+            if let Some(selected) = selected_github_release.as_ref() {
+                if let Err(error) = verify_github_release_manifest_binding(&manifest, selected) {
+                    let message = format!("Invalid selected GitHub release manifest: {error:#}");
+                    last_channel_verification = Some(channel_verification_failure(
+                        manifest_channel,
+                        &url,
+                        &message,
+                    ));
+                    last_error = Some(message);
+                    continue;
+                }
             }
             let latest = match Version::parse(manifest.version.trim()) {
                 Ok(version) => version,
@@ -3053,6 +3116,47 @@ mod tests {
             github_channel_manifest_url("v0.10.67-beta.2"),
             "https://github.com/evalops/maestro/releases/download/v0.10.67-beta.2/channel-manifest.json"
         );
+    }
+
+    #[test]
+    fn github_release_selection_binds_manifest_identity() {
+        let selected = github_release_selection("v1.2.3");
+        assert_eq!(
+            selected.manifest_url,
+            "https://github.com/evalops/maestro/releases/download/v1.2.3/channel-manifest.json"
+        );
+        assert_eq!(
+            selected.release_url,
+            "https://github.com/evalops/maestro/releases/download/v1.2.3"
+        );
+
+        let manifest = ChannelManifest {
+            schema_version: CHANNEL_MANIFEST_SCHEMA.to_owned(),
+            channel: "stable".to_owned(),
+            key_id: STABLE_CHANNEL_KEY_ID.to_owned(),
+            version: "1.2.3".to_owned(),
+            release_tag: "v1.2.3".to_owned(),
+            release_url: selected.release_url.clone(),
+            metadata_url: None,
+            metadata_sha256: None,
+            source_sha: "a".repeat(40),
+            issued_at_ms: 1,
+            release_notes: None,
+            release_receipt: None,
+            signature: String::new(),
+        };
+        verify_github_release_manifest_binding(&manifest, &selected)
+            .expect("selected manifest identity should verify");
+
+        let mut older = manifest;
+        older.version = "1.2.2".to_owned();
+        older.release_tag = "v1.2.2".to_owned();
+        older.release_url = github_release_url("v1.2.2");
+        let error = verify_github_release_manifest_binding(&older, &selected)
+            .expect_err("an older signed manifest must not satisfy a newer selection");
+        assert!(error
+            .to_string()
+            .contains("does not match selected GitHub release"));
     }
 
     #[test]
