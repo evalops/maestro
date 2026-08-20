@@ -792,6 +792,7 @@ resolve_channel_release_url() {
   local pointer="${MAESTRO_CHANNEL_MANIFEST_URL:-}"
   local pointer_base="${MAESTRO_CHANNEL_POINTER_BASE:-}"
   local api="${MAESTRO_RELEASE_API_URL:-https://api.github.com/repos/${REPO}/releases}"
+  local stable_latest_manifest_url="${MAESTRO_STABLE_LATEST_MANIFEST_URL:-}"
   local dest tag url
 
   if [[ -z "$pointer" && -n "$pointer_base" ]]; then
@@ -815,6 +816,33 @@ resolve_channel_release_url() {
   fi
 
   rm -f "$tmpdir/channel-manifest-verified"
+  # Stable releases expose a signed manifest through GitHub's latest-download
+  # redirect. Use that path before the unauthenticated Releases API so normal
+  # standalone installs do not depend on the 60-request-per-hour REST quota.
+  # An explicit API override remains authoritative for controlled mirrors;
+  # MAESTRO_STABLE_LATEST_MANIFEST_URL is a matching explicit latest endpoint
+  # override for those environments and for the installer fixture.
+  if [[ "$channel" == stable &&
+    ( -z "${MAESTRO_RELEASE_API_URL:-}" || -n "$stable_latest_manifest_url" ) ]]; then
+    stable_latest_manifest_url="${stable_latest_manifest_url:-https://github.com/${REPO}/releases/latest/download/channel-manifest.json}"
+    if fetch_channel_manifest "$dest" "$stable_latest_manifest_url"; then
+      if validate_channel_manifest "$dest" "$channel"; then
+        url="$(json_field "$dest" releaseUrl || true)"
+        url="${url%/}"
+        if release_url_allowed "$url"; then
+          tag="$(json_field "$dest" releaseTag || true)"
+          printf 'Using stable GitHub latest release %s\n' "$tag" >&2
+          : > "$tmpdir/channel-manifest-verified"
+          printf '%s' "$url"
+          return 0
+        fi
+      fi
+      printf 'Warning: ignoring invalid stable GitHub latest manifest %s; trying the Releases API.\n' \
+        "$stable_latest_manifest_url" >&2
+      rm -f "$dest"
+    fi
+  fi
+
   dest="$tmpdir/github-releases.json"
   if ! fetch_github_releases "$dest" "$api"; then
     fail "No published $channel release pointer at $pointer, and GitHub release listing failed: $api"

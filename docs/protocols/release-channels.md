@@ -5,8 +5,9 @@ channel manifests. The public release repository is the canonical pointer
 source:
 
 ```text
-release list  https://api.github.com/repos/evalops/maestro/releases
-asset        channel-manifest.json
+stable latest manifest  https://github.com/evalops/maestro/releases/latest/download/channel-manifest.json
+preview release list    https://api.github.com/repos/evalops/maestro/releases
+asset                   channel-manifest.json
 ```
 
 Each manifest uses `evalops.maestro.release-channel.v1` and an Ed25519
@@ -16,10 +17,13 @@ include the channel, key ID, version, release tag, release URL, metadata URL,
 metadata digest, source SHA, publication time, release notes, and the release
 receipt when the release job produced one.
 
-The updater and installer select the newest non-draft GitHub release whose
-immutable tag matches the requested channel, then verify that release's
-`channel-manifest.json` before downloading its artifacts. A pointer or release
-URL is never accepted solely because it is reachable. During migration,
+The updater selects the newest non-draft GitHub release whose immutable tag
+matches the requested channel. The stable installer first follows GitHub's
+`releases/latest/download` redirect to obtain that release's signed manifest;
+preview installers use the release list or an explicit signed pointer. Every
+path verifies the selected release's `channel-manifest.json` before
+downloading its artifacts. A pointer or release URL is never accepted solely
+because it is reachable. During migration,
 `MAESTRO_CHANNEL_MANIFEST_URL` or `MAESTRO_CHANNEL_POINTER_BASE` may explicitly
 provide a legacy signed pointer; those overrides are not required for normal
 public downloads.

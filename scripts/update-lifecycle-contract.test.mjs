@@ -58,6 +58,7 @@ test("installer and signed release workflow publish receipt metadata", () => {
 	assert.match(installer, /MAESTRO_INSTALL_CHANNEL/);
 	assert.match(installer, /MAESTRO_UPDATE_CHANNEL/);
 	assert.match(installer, /MAESTRO_CHANNEL_MANIFEST_URL/);
+	assert.match(installer, /releases\/latest\/download\/channel-manifest\.json/);
 	assert.match(installer, /resolve_channel_release_url/);
 	assert.match(installer, /fetch_github_releases/);
 	assert.match(installer, /validate_channel_manifest/);

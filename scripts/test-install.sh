@@ -298,6 +298,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if request_path == "/github/rate-limited":
+            self.send_response(429)
+            self.end_headers()
+            self.wfile.write(b"rate limited")
+            return
+        if request_path == "/github/latest/channel-manifest.json":
+            port = self.server.server_address[1]
+            body = json.dumps(stable_manifest(port)).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if "maestro-beta-channel" in request_path or "maestro-alpha-channel" in request_path:
             self.send_response(404)
             self.end_headers()
@@ -660,6 +674,25 @@ bash "$ROOT/scripts/install.sh" > "$fixture/stable-api-install.log" 2>&1 ||
   fail "GitHub stable channel discovery did not select the stable release"
 grep -q 'Using GitHub stable release v0.0.1' "$fixture/stable-api-install.log" ||
   fail "GitHub stable channel discovery did not report the immutable tag"
+
+stable_latest_install_dir="$fixture/stable-latest-bin"
+stable_latest_data_dir="$fixture/stable-latest-data"
+HOME="$fixture/home" \
+MAESTRO_INSTALL_DIR="$stable_latest_install_dir" \
+MAESTRO_DATA_DIR="$stable_latest_data_dir" \
+MAESTRO_INSTALL_CHANNEL="stable" \
+MAESTRO_STABLE_LATEST_MANIFEST_URL="http://127.0.0.1:$port/github/latest/channel-manifest.json" \
+MAESTRO_RELEASE_API_URL="http://127.0.0.1:$port/github/rate-limited" \
+MAESTRO_ALLOW_UNSIGNED_INSTALL=1 \
+bash "$ROOT/scripts/install.sh" > "$fixture/stable-latest-install.log" 2>&1 ||
+  fail "stable latest-download discovery failed under a rate-limited API: $(cat "$fixture/stable-latest-install.log")"
+[[ "$("$stable_latest_install_dir/maestro" --version)" == "maestro 0.0.1" ]] ||
+  fail "stable latest-download discovery did not select the stable release"
+grep -q 'Using stable GitHub latest release v0.0.1' "$fixture/stable-latest-install.log" ||
+  fail "stable latest-download discovery did not report the immutable tag"
+if grep -q '/github/rate-limited' "$fixture/server.log"; then
+  fail "stable latest-download discovery fell back to the rate-limited Releases API"
+fi
 
 for invalid_version in 0.0.5 0.0.6 0.0.7; do
   if HOME="$fixture/home" \
