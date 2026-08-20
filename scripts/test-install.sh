@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-for cmd in curl mktemp mkdir printf tar python3 find dirname chmod awk sleep cat wc tr rm cp; do
+for cmd in curl mktemp mkdir printf tar python3 find dirname chmod awk sleep cat wc tr rm cp ln; do
   command -v "$cmd" >/dev/null || {
     printf 'Required command not found: %s\n' "$cmd" >&2
     exit 1
@@ -330,6 +330,23 @@ run_install() {
 run_install > "$fixture/first-install.log" 2>&1 ||
   fail "first install failed: $(cat "$fixture/first-install.log")"
 [[ -x "$install_dir/maestro" ]] || fail "launcher was not installed"
+
+no_python_path="$fixture/no-python-bin"
+mkdir "$no_python_path"
+for command_name in bash gzip uname curl mktemp chmod mkdir tar rm cp mv awk dirname basename date openssl wc; do
+  ln -s "$(command -v "$command_name")" "$no_python_path/$command_name"
+done
+if command -v sha256sum >/dev/null 2>&1; then
+  ln -s "$(command -v sha256sum)" "$no_python_path/sha256sum"
+else
+  ln -s "$(command -v shasum)" "$no_python_path/shasum"
+fi
+no_python_install_dir="$fixture/no-python-bin-install"
+no_python_data_dir="$fixture/no-python-bin-data"
+env HOME="$fixture/home" PATH="$no_python_path" MAESTRO_INSTALL_DIR="$no_python_install_dir" MAESTRO_DATA_DIR="$no_python_data_dir" MAESTRO_INSTALL_CHANNEL="stable" MAESTRO_RELEASE_API_URL="http://127.0.0.1:$port/github/releases" MAESTRO_RELEASE_DOWNLOAD_BASE="http://127.0.0.1:$port" MAESTRO_ALLOW_UNSIGNED_INSTALL=1 bash "$ROOT/scripts/install.sh" > "$fixture/no-python-install.log" 2>&1 ||
+  fail "standalone install required python3: $(cat "$fixture/no-python-install.log")"
+[[ "$("$no_python_install_dir/maestro" --version)" == "maestro 0.0.1" ]] ||
+  fail "no-python standalone install did not select the stable release"
 
 if HOME="$fixture/home" \
   MAESTRO_INSTALL_DIR="$fixture/mismatched-channel-bin" \
