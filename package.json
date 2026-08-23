@@ -1,91 +1,91 @@
 {
-  "name": "@evalops/maestro",
-  "description": "Maestro by EvalOps — native Rust coding agent, CLI, TUI, and web runtime gateway",
-  "version": "0.10.70",
-  "private": false,
-  "type": "module",
-  "bin": {
-    "maestro": "bin/maestro"
-  },
-  "files": [
-    "bin",
-    "vendor/maestro",
-    "skills",
-    "packages/web/dist",
-    "proto/maestro/v1/protocol-compatibility-manifest.json"
-  ],
-  "scripts": {
-    "clean": "node scripts/clean-paths.js bin target",
-    "build": "cargo build --profile fast-validation --locked -p maestro && node scripts/materialize-native-package.mjs --profile fast-validation",
-    "build:release": "cargo build --profile release --locked -p maestro && node scripts/materialize-native-package.mjs --profile release",
-    "build:all": "npm run build",
-    "check": "npm run check:workspace-contract && npm run check:protocol-manifest && npm run check:runtime-passport && npm run check:rust-only-runtime && npm run check:helm-probes && npm run check:hook-dispatch && npm run check:session-transfer && cargo check --workspace --all-targets --locked",
-    "test": "cargo test --workspace --locked",
-    "test:internal": "node --test test/internal/*.test.mjs",
-    "lint": "cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D warnings",
-    "format": "cargo fmt --all",
-    "start": "./bin/maestro",
-    "cli": "./bin/maestro",
-    "tui": "./bin/maestro",
-    "web": "./bin/maestro web",
-    "check:workspace-contract": "node scripts/check-workspace-contract.mjs",
-    "check:rust-only-runtime": "node scripts/check-rust-only-runtime.mjs && node scripts/check-rust-only-docs.mjs",
-    "check:helm-probes": "node --test scripts/check-helm-probes.test.mjs",
-    "verify:runtime-deps": "npm run check:rust-only-runtime",
-    "check:doc-paths": "node scripts/check-doc-paths.mjs",
-    "check:hook-dispatch": "node scripts/check-hook-dispatch-coverage.mjs",
-    "check:session-transfer": "node --test scripts/secure-session-transfer-contract.test.mjs",
-    "check:protocol-manifest": "node scripts/generate-protocol-compatibility-manifest.mjs --check && node --test scripts/generate-protocol-compatibility-manifest.test.mjs",
-    "check:runtime-passport": "node --check scripts/run-runtime-conformance.mjs && node --test scripts/generate-runtime-passport.test.mjs scripts/run-runtime-conformance.test.mjs",
-    "check:update-lifecycle": "node --check scripts/create-release-metadata.mjs && node --test scripts/update-lifecycle-contract.test.mjs",
-    "protocol:manifest:generate": "node scripts/generate-protocol-compatibility-manifest.mjs",
-    "check:scenario-replay-gate": "node scripts/run-scenario-replay-gate.mjs",
-    "check:docker-runtime-workspaces": "node scripts/check-docker-runtime-workspaces.mjs && node --test scripts/check-docker-runtime-workspaces.test.mjs",
-    "smoke": "node scripts/smoke-release-native-only.mjs",
-    "smoke:release-native-only": "node scripts/smoke-release-native-only.mjs",
-    "smoke:tui": "bash scripts/smoke-tui-interactive.sh",
-    "release:check": "npm run check:rust-only-runtime && npm run build:release && npm run smoke:release-native-only",
-    "release:check:ci": "npm run release:check",
-    "pr:ready": "node scripts/pr-ready-to-merge.mjs",
-    "metadata:sync": "node scripts/sync-package-metadata.js",
-    "metadata:check": "node scripts/sync-package-metadata.js --check",
-    "version:patch": "node scripts/version.js patch",
-    "version:minor": "node scripts/version.js minor",
-    "version:major": "node scripts/version.js major",
-    "version:sync": "node scripts/sync-versions.js",
-    "tui-rs:build": "cargo build --release --locked -p maestro-tui",
-    "tui-rs:check": "cargo check --locked -p maestro-tui",
-    "tui-rs:test": "cargo test --locked -p maestro-tui",
-    "runtime-gateway-rs:build": "cargo build --release --locked -p maestro-runtime-gateway",
-    "maestro-rs:build": "cargo build --release --locked -p maestro",
-    "release:verify:published": "node scripts/smoke-registry-install.js",
-    "release:verify:published:e2e": "node scripts/smoke-published-replay-e2e.js",
-    "release:verify:published:evidence": "node scripts/verify-published-replay-evidence.js",
-    "release:deprecate": "node scripts/deprecate-release.js"
-  },
-  "keywords": [
-    "maestro",
-    "evalops",
-    "ai",
-    "llm",
-    "cli",
-    "tui",
-    "agent"
-  ],
-  "author": "EvalOps",
-  "license": "BUSL-1.1",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/evalops/maestro.git"
-  },
-  "packageManager": "npm@11.18.0",
-  "devDependencies": {
-    "yaml": "^2.9.0"
-  },
-  "maestro": {
-    "canonicalPackageName": "@evalops/maestro",
-    "packageAliases": [
-      "@evalops/maestro"
-    ]
-  }
+	"name": "@evalops/maestro",
+	"description": "Maestro by EvalOps — native Rust coding agent, CLI, TUI, and web runtime gateway",
+	"version": "0.10.72-alpha.13",
+	"private": false,
+	"type": "module",
+	"bin": {
+		"maestro": "bin/maestro"
+	},
+	"files": [
+		"bin",
+		"vendor/maestro",
+		"skills",
+		"packages/web/dist",
+		"proto/maestro/v1/protocol-compatibility-manifest.json"
+	],
+	"scripts": {
+		"clean": "node scripts/clean-paths.js bin target",
+		"build": "cargo build --profile fast-validation --locked -p maestro && node scripts/materialize-native-package.mjs --profile fast-validation",
+		"build:release": "cargo build --profile release --locked -p maestro && node scripts/materialize-native-package.mjs --profile release",
+		"build:all": "npm run build",
+		"check": "npm run check:workspace-contract && npm run check:protocol-manifest && npm run check:runtime-passport && npm run check:rust-only-runtime && npm run check:helm-probes && npm run check:hook-dispatch && npm run check:session-transfer && cargo check --workspace --all-targets --locked",
+		"test": "cargo test --workspace --locked",
+		"test:internal": "node --test test/internal/*.test.mjs",
+		"lint": "cargo fmt --all --check && cargo clippy --workspace --all-targets --locked -- -D warnings",
+		"format": "cargo fmt --all",
+		"start": "./bin/maestro",
+		"cli": "./bin/maestro",
+		"tui": "./bin/maestro",
+		"web": "./bin/maestro web",
+		"check:workspace-contract": "node scripts/check-workspace-contract.mjs",
+		"check:rust-only-runtime": "node scripts/check-rust-only-runtime.mjs && node scripts/check-rust-only-docs.mjs",
+		"check:helm-probes": "node --test scripts/check-helm-probes.test.mjs",
+		"verify:runtime-deps": "npm run check:rust-only-runtime",
+		"check:doc-paths": "node scripts/check-doc-paths.mjs",
+		"check:hook-dispatch": "node scripts/check-hook-dispatch-coverage.mjs",
+		"check:session-transfer": "node --test scripts/secure-session-transfer-contract.test.mjs",
+		"check:protocol-manifest": "node scripts/generate-protocol-compatibility-manifest.mjs --check && node --test scripts/generate-protocol-compatibility-manifest.test.mjs",
+		"check:runtime-passport": "node --check scripts/run-runtime-conformance.mjs && node --test scripts/generate-runtime-passport.test.mjs scripts/run-runtime-conformance.test.mjs",
+		"check:update-lifecycle": "node --check scripts/create-release-metadata.mjs && node --test scripts/update-lifecycle-contract.test.mjs",
+		"protocol:manifest:generate": "node scripts/generate-protocol-compatibility-manifest.mjs",
+		"check:scenario-replay-gate": "node scripts/run-scenario-replay-gate.mjs",
+		"check:docker-runtime-workspaces": "node scripts/check-docker-runtime-workspaces.mjs && node --test scripts/check-docker-runtime-workspaces.test.mjs",
+		"smoke": "node scripts/smoke-release-native-only.mjs",
+		"smoke:release-native-only": "node scripts/smoke-release-native-only.mjs",
+		"smoke:tui": "bash scripts/smoke-tui-interactive.sh",
+		"release:check": "npm run check:rust-only-runtime && npm run build:release && npm run smoke:release-native-only",
+		"release:check:ci": "npm run release:check",
+		"pr:ready": "node scripts/pr-ready-to-merge.mjs",
+		"metadata:sync": "node scripts/sync-package-metadata.js",
+		"metadata:check": "node scripts/sync-package-metadata.js --check",
+		"version:patch": "node scripts/version.js patch",
+		"version:minor": "node scripts/version.js minor",
+		"version:major": "node scripts/version.js major",
+		"version:sync": "node scripts/sync-versions.js",
+		"tui-rs:build": "cargo build --release --locked -p maestro-tui",
+		"tui-rs:check": "cargo check --locked -p maestro-tui",
+		"tui-rs:test": "cargo test --locked -p maestro-tui",
+		"runtime-gateway-rs:build": "cargo build --release --locked -p maestro-runtime-gateway",
+		"maestro-rs:build": "cargo build --release --locked -p maestro",
+		"release:verify:published": "node scripts/smoke-registry-install.js",
+		"release:verify:published:e2e": "node scripts/smoke-published-replay-e2e.js",
+		"release:verify:published:evidence": "node scripts/verify-published-replay-evidence.js",
+		"release:deprecate": "node scripts/deprecate-release.js"
+	},
+	"keywords": [
+		"maestro",
+		"evalops",
+		"ai",
+		"llm",
+		"cli",
+		"tui",
+		"agent"
+	],
+	"author": "EvalOps",
+	"license": "BUSL-1.1",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/evalops/maestro.git"
+	},
+	"packageManager": "npm@11.18.0",
+	"devDependencies": {
+		"yaml": "^2.9.0"
+	},
+	"maestro": {
+		"canonicalPackageName": "@evalops/maestro",
+		"packageAliases": [
+			"@evalops/maestro"
+		]
+	}
 }
