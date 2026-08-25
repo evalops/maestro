@@ -43,6 +43,12 @@ versioning when releases are cut.
   and keep scheduled public runs inert so public publishing stays downstream of
   the internal source-of-truth release.
 
+## [0.10.72-alpha.17] - 2026-08-25
+
+### Fixed
+
+- Use public GitHub assets for channel pointers (#1046). <!-- maestro-release-note:c0806ed2096c -->
+
 ## [0.10.70] - 2026-08-19
 
 ### Added
