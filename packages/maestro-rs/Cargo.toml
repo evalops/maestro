@@ -1,6 +1,6 @@
 [package]
 name = "maestro"
-version = "0.10.70"
+version = "0.10.72-alpha.21"
 edition = "2021"
 license = "MIT"
 description = "Canonical native Rust CLI for Maestro"
