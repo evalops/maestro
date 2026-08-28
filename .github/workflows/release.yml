@@ -442,30 +442,6 @@ jobs:
           prerelease: ${{ needs.prepare.outputs.release_channel != 'stable' }}
           make_latest: ${{ needs.prepare.outputs.release_channel == 'stable' }}
           files: release-assets/*
-      - name: Publish signed channel pointer
-        uses: ./.github/actions/gcs-artifacts
-        with:
-          mode: upload
-          if-missing: error
-          bucket: gs://${{ vars.MAESTRO_RELEASES_BUCKET }}
-          service-account: ${{ vars.MAESTRO_RELEASE_GCP_SERVICE_ACCOUNT }}
-          workload-identity-provider: ${{ vars.MAESTRO_RELEASE_GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          prefix: ${{ vars.MAESTRO_RELEASES_PREFIX }}/channels/${{ needs.prepare.outputs.release_channel }}
-          paths: |
-            release-assets/version.json
-            release-assets/manifest.json
-      - name: Publish stable legacy pointer
-        if: ${{ needs.prepare.outputs.release_channel == 'stable' }}
-        uses: ./.github/actions/gcs-artifacts
-        with:
-          mode: upload
-          if-missing: error
-          bucket: gs://${{ vars.MAESTRO_RELEASES_BUCKET }}
-          service-account: ${{ vars.MAESTRO_RELEASE_GCP_SERVICE_ACCOUNT }}
-          workload-identity-provider: ${{ vars.MAESTRO_RELEASE_GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          prefix: ${{ vars.MAESTRO_RELEASES_PREFIX }}
-          paths: release-assets/version.json
-
   post-publish-canary:
     needs:
       - prepare
