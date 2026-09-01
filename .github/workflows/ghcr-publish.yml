@@ -100,6 +100,7 @@ jobs:
           done
           echo "Published ${source_ref} as main, latest, and sha-${short_sha}."
 
+      # The receipt is consumed by K8s; keep this dispatch explicit for auditability.
       - name: Dispatch K8s GitOps image sync
         env:
           GH_TOKEN: ${{ secrets.RUNTIME_IMAGE_SYNC_TOKEN }}
