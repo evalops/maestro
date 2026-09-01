@@ -98,21 +98,21 @@ jobs:
           done
           echo "Published ${source_ref} as main, latest, and sha-${short_sha}."
 
-      - name: Dispatch deploy GitOps image sync
+      - name: Dispatch K8s GitOps image sync
         env:
           GH_TOKEN: ${{ secrets.RUNTIME_IMAGE_SYNC_TOKEN }}
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           if [[ -z "${GH_TOKEN}" ]]; then
-            echo "::notice::RUNTIME_IMAGE_SYNC_TOKEN is not configured; skipping evalops/deploy image sync dispatch. The internal repo performs this dispatch."
+            echo "::notice::RUNTIME_IMAGE_SYNC_TOKEN is not configured; skipping evalops/k8s image sync dispatch. K8s catch-up remains available."
             exit 0
           fi
 
           image_tag="sha-${SOURCE_SHA:0:7}"
           gh api \
             --method POST \
-            repos/evalops/deploy/dispatches \
+            repos/evalops/k8s/dispatches \
             -f event_type=maestro_runtime_image_published \
             -f "client_payload[source_sha]=${SOURCE_SHA}" \
             -f "client_payload[image_tag]=${image_tag}"
