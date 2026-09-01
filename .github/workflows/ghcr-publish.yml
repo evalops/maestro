@@ -1,5 +1,7 @@
 name: GHCR Publish
 
+# Image receipts are consumed by the authoritative evalops/k8s runtime lane.
+
 on:
   push:
     branches:
