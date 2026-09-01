@@ -7,9 +7,15 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+fn scenario_binary() -> PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_maestro-scenario")
+        .map(PathBuf::from)
+        .expect("Cargo must provide the maestro-scenario integration-test binary")
+}
+
 #[test]
 fn offline_runner_preserves_full_cli_argument_shape() {
-    let output = Command::new(env!("CARGO_BIN_EXE_maestro-scenario"))
+    let output = Command::new(scenario_binary())
         .args([
             "scenario",
             "run",
@@ -31,7 +37,7 @@ fn offline_runner_preserves_full_cli_argument_shape() {
 
 #[test]
 fn thin_runner_rejects_real_agent_execution() {
-    let output = Command::new(env!("CARGO_BIN_EXE_maestro-scenario"))
+    let output = Command::new(scenario_binary())
         .args([
             "scenario",
             "run",
@@ -43,6 +49,8 @@ fn thin_runner_rejects_real_agent_execution() {
         .expect("run thin scenario binary");
 
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr)
-        .contains("--execute requires the full maestro binary"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("--execute requires the full maestro binary")
+    );
 }

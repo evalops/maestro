@@ -9,6 +9,10 @@ Maestro ships the following extension and interoperability surfaces in Rust:
 - `maestro plugins enable|disable <name>` controls a whole plugin.
 - `maestro plugins capability <name> <skills|agents|commands|hooks|mcp|connections> <on|off>`
   controls each executable capability independently.
+- Plugin packages may use Maestro's root `plugin.json` or the portable
+  `.plugin/plugin.json` layout used by OpenHands and Claude Code. Existing
+  skills, agents, commands, hooks, and MCP definitions retain Maestro's
+  workspace-trust and per-capability admission gates.
 - `maestro connections` manages API-key references and delegated subscription
   accounts. Plugin connection schemas are declarative and default off; Maestro
   alone owns secret storage, scoped leases, revocation generations, and use

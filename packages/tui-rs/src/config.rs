@@ -824,7 +824,7 @@ fn load_global_config_cached(path: &Path) -> Option<Arc<ComposerConfig>> {
     config
 }
 
-fn clear_global_config_cache() {
+pub(crate) fn clear_global_config_cache() {
     let mut cache = GLOBAL_CONFIG_CACHE
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1398,9 +1398,8 @@ pub fn configured_model_route(workspace_dir: &Path, profile_name: Option<&str>) 
 ///    already-existing env var the user typed is a pure bugfix (today it is
 ///    silently ignored by the interactive TUI), not a default-behavior change
 ///    that needs staging.
-/// 2. The staged-rollout internal gate `MAESTRO_INTERNAL_TUI_SANDBOX_DEFAULT`
-///    (see `docs/CONVENTIONS/staged-rollout-registry.json`, entry
-///    `internal-gate:tui-sandbox-default`). While this is unset/false, the
+/// 2. The staged-rollout gate `MAESTRO_INTERNAL_TUI_SANDBOX_DEFAULT`. While
+///    this is unset/false, the
 ///    interactive TUI keeps its historical unsandboxed-by-default behavior —
 ///    this ships the sandboxing mechanism as an enabling primitive, not as a
 ///    default-behavior flip, until a follow-up PR promotes it after an
@@ -1608,6 +1607,26 @@ pub fn parse_cli_override(override_str: &str) -> Option<(String, toml::Value)> {
 // Run specific test: `cargo test test_name`
 // Run with output: `cargo test -- --nocapture`
 
+/// Serialize tests that mutate process-global `HOME` / `MAESTRO_*` env vars.
+/// `cargo test` runs `#[test]` functions concurrently; without this lock,
+/// Maestro-home config tests observe each other's directories and fail.
+#[cfg(test)]
+fn test_process_env_mutex() -> Arc<tokio::sync::Mutex<()>> {
+    static LOCK: std::sync::OnceLock<Arc<tokio::sync::Mutex<()>>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
+#[cfg(test)]
+pub(crate) fn test_process_env_lock() -> tokio::sync::OwnedMutexGuard<()> {
+    test_process_env_mutex().blocking_lock_owned()
+}
+
+#[cfg(test)]
+pub(crate) async fn test_process_env_lock_async() -> tokio::sync::OwnedMutexGuard<()> {
+    test_process_env_mutex().lock_owned().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*; // Import everything from parent (config) module
@@ -1675,9 +1694,11 @@ mod tests {
         let crate::sandbox::SandboxPolicy::WorkspaceWrite { writable_roots, .. } = &policy else {
             panic!("expected WorkspaceWrite");
         };
-        assert!(writable_roots
-            .iter()
-            .any(|root| root == std::path::Path::new("/custom/extra/path")));
+        assert!(
+            writable_roots
+                .iter()
+                .any(|root| root == std::path::Path::new("/custom/extra/path"))
+        );
     }
 
     #[test]
@@ -1930,6 +1951,7 @@ model_reasoning_effort = "high"
         // process-global env vars and `#[test]` functions run concurrently by
         // default, so every scenario lives in one sequential test rather
         // than racing separate tests against the same two env vars.
+        let _guard = test_process_env_lock();
         env::remove_var("MAESTRO_SANDBOX_MODE");
         env::remove_var("MAESTRO_INTERNAL_TUI_SANDBOX_DEFAULT");
 
@@ -2254,6 +2276,7 @@ sandbox_mode = "danger-full-access"
 
     #[test]
     fn test_set_workspace_trust_in_global_config_round_trip() {
+        let _guard = test_process_env_lock();
         let home = TempDir::new().unwrap();
         let workspace = TempDir::new().unwrap();
         // SAFETY: serial unit test isolating HOME for config path resolution.
@@ -2356,6 +2379,7 @@ sandbox_mode = "danger-full-access"
 
     #[test]
     fn load_config_reads_maestro_home_model_settings() {
+        let _guard = test_process_env_lock();
         let maestro_home = TempDir::new().unwrap();
         let user_home = TempDir::new().unwrap();
         let workspace = TempDir::new().unwrap();
@@ -2381,6 +2405,7 @@ sandbox_mode = "danger-full-access"
 
     #[test]
     fn configured_model_route_composes_maestro_home_settings() {
+        let _guard = test_process_env_lock();
         let maestro_home = TempDir::new().unwrap();
         let user_home = TempDir::new().unwrap();
         let workspace = TempDir::new().unwrap();
@@ -2399,16 +2424,19 @@ sandbox_mode = "danger-full-access"
             "model = \"openai/o4-mini\"\nmodel_provider = \"openrouter\"\n",
         )
         .unwrap();
+        clear_config_cache();
         let route = configured_model_route(workspace.path(), None);
         restore_os_env("MAESTRO_HOME", previous_maestro_home);
         restore_os_env("HOME", previous_home);
         restore_os_env("MAESTRO_MODEL", previous_model);
         restore_os_env("MAESTRO_MODEL_PROVIDER", previous_provider);
+        clear_config_cache();
         assert_eq!(route.as_deref(), Some("openrouter/openai/o4-mini"));
     }
 
     #[test]
     fn configured_model_route_is_none_without_user_settings() {
+        let _guard = test_process_env_lock();
         let maestro_home = TempDir::new().unwrap();
         let user_home = TempDir::new().unwrap();
         let workspace = TempDir::new().unwrap();
@@ -2427,6 +2455,7 @@ sandbox_mode = "danger-full-access"
         restore_os_env("HOME", previous_home);
         restore_os_env("MAESTRO_MODEL", previous_model);
         restore_os_env("MAESTRO_MODEL_PROVIDER", previous_provider);
+        clear_config_cache();
         assert_eq!(route, None);
     }
 }

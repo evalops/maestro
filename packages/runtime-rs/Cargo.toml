@@ -6,9 +6,19 @@ license = "MIT"
 description = "Transport-neutral native runtime contracts for Maestro"
 
 [dependencies]
+anyhow.workspace = true
+http.workspace = true
+opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tracing.workspace = true
+tracing-opentelemetry.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 serde_json.workspace = true

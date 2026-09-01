@@ -11,12 +11,12 @@ use std::time::Duration;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use reqwest::{
-    header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION},
     Client, StatusCode,
+    header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderName, HeaderValue},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -1142,6 +1142,7 @@ fn build_remote_hello_message(config: &RemoteTransportConfig) -> ToAgentMessage 
         role: build_remote_connection_role(config),
         opt_out_notifications: (!config.opt_out_notifications.is_empty())
             .then(|| config.opt_out_notifications.clone()),
+        controller_binding: None,
     }
 }
 

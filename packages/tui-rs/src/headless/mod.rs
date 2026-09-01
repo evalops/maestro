@@ -198,7 +198,7 @@
 //! For multi-threaded scenarios, wrap transports in `Arc<Mutex<_>>` or use the
 //! async transport from a single task.
 
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 
 mod async_transport;
 pub(crate) mod controller_binding;
@@ -212,6 +212,9 @@ mod remote_transport;
 mod session;
 mod supervisor;
 mod transport;
+pub mod workspace_capabilities;
+#[cfg(test)]
+mod workspace_capabilities_test;
 
 fn local_controller_capabilities() -> messages::ClientCapabilities {
     messages::ClientCapabilities {
@@ -267,6 +270,7 @@ pub(crate) fn native_server_capabilities() -> messages::ServerCapabilities {
             messages::ConnectionRole::Controller,
         ],
         native_tools,
+        workspace_prompt_capability_activation: true,
         governed_tool_grant_algorithms: crate::headless_server::governed_grant_verifier_algorithms(
         )
         .into_iter()
@@ -276,16 +280,20 @@ pub(crate) fn native_server_capabilities() -> messages::ServerCapabilities {
 }
 
 // Core message types
-pub use maestro_runtime::{TaggedMessageDecode, TaggedMessageDecodeError, UnknownWireMessage};
+pub use maestro_runtime::{
+    DelegationControlAction, DelegationControlProjection, DelegationControlState, DelegationEvent,
+    DelegationEventKind, DelegationLifecycleState, TaggedMessageDecode, TaggedMessageDecodeError,
+    UnknownWireMessage,
+};
 pub use messages::{
-    decode_from_agent_message, ActiveTool, AgentEvent, AgentState, ApprovalMode,
-    ClientCapabilities, ClientInfo, ClientToolExecutionOwner, ClientToolResultContent, CodeMode,
-    ConnectionGrantBinding, ConnectionRole, ExternalToolDefinition, FromAgentMessage,
-    GovernedToolGrant, HeadlessErrorType, HistoryMessage, HistoryRole, InitConfig,
+    ActiveTool, AgentEvent, AgentState, ApprovalMode, ClientCapabilities, ClientInfo,
+    ClientToolExecutionOwner, ClientToolResultContent, CodeMode, ConnectionGrantBinding,
+    ConnectionRole, ExternalToolDefinition, FromAgentMessage, GovernedToolGrant,
+    HEADLESS_PROTOCOL_VERSION, HeadlessErrorType, HistoryMessage, HistoryRole, InitConfig,
     NativeToolCapability, PendingApproval, ServerCapabilities, ServerRequestResolutionStatus,
     ServerRequestResolvedBy, ServerRequestType, StreamingResponse, ThinkingLevel, ToAgentMessage,
     TokenUsage, ToolResult, UtilityCommandShellMode, UtilityCommandStream, UtilityOperation,
-    HEADLESS_PROTOCOL_VERSION,
+    decode_from_agent_message,
 };
 pub use proto::maestro::v1 as proto_types;
 
@@ -302,14 +310,14 @@ pub use remote_transport::{RemoteAgentTransport, RemoteIncoming, RemoteTransport
 
 // Session persistence
 pub use session::{
-    delete_session, list_sessions, SessionEntry, SessionMetadata, SessionReader, SessionRecorder,
-    SessionReplay,
+    SessionEntry, SessionMetadata, SessionReader, SessionRecorder, SessionReplay, delete_session,
+    list_sessions,
 };
 
 // Supervisor with reconnection
 pub use supervisor::{
-    agent_event_to_message, AgentSupervisor, HealthStatus, SupervisorBuilder, SupervisorConfig,
-    SupervisorEvent,
+    AgentSupervisor, HealthStatus, SupervisorBuilder, SupervisorConfig, SupervisorEvent,
+    agent_event_to_message,
 };
 
 pub(crate) fn send_transport_event<T>(
@@ -328,7 +336,7 @@ pub(crate) fn send_transport_event<T>(
 // shared with `tools::registry::execute` and `agent::native`, not part of
 // this crate's public surface.
 pub(crate) use supervisor::report_diagnostic_nonblocking;
-pub(crate) use supervisor::{response_ack_request_id, ResponseAcknowledgement};
+pub(crate) use supervisor::{ResponseAcknowledgement, response_ack_request_id};
 
 // Message framing
 pub use framing::{

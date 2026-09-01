@@ -12,12 +12,12 @@ use maestro_runtime::RuntimeTerminalClassification;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::agent::session_scope::MaestroThreadId;
+use crate::agent::{ManagedInferenceAuthorization, session_scope::MaestroThreadId};
 use crate::headless::{CodeMode, GovernedToolGrant};
 
 use super::{
-    response_ack_request_id, FromAgentMessage, HostedRunnerDrainResult, IdentityBindingFailure,
-    ServerRequestType, StreamEnvelope, ToAgentMessage,
+    FromAgentMessage, HostedRunnerDrainResult, IdentityBindingFailure, ServerRequestType,
+    StreamEnvelope, ToAgentMessage, response_ack_request_id,
 };
 
 pub(super) const THREAD_PROTOCOL_VERSION: &str = "evalops.maestro.thread.v1";
@@ -96,6 +96,8 @@ pub(super) struct AppendTurnRequest {
     pub(super) code_mode: Option<CodeMode>,
     #[serde(default)]
     pub(super) tool_grant: Option<GovernedToolGrant>,
+    #[serde(default)]
+    pub(super) managed_inference_authorization: Option<ManagedInferenceAuthorization>,
 }
 
 impl AppendTurnRequest {
@@ -119,10 +121,10 @@ impl AppendTurnRequest {
             THREAD_PROTOCOL_VERSION if self.code_mode.is_none() && self.tool_grant.is_none() => {}
             GOVERNED_THREAD_PROTOCOL_VERSION if self.governed_fields_are_valid() => {}
             GOVERNED_THREAD_PROTOCOL_VERSION => {
-                return Err("governed thread protocol requires codeMode and toolGrant")
+                return Err("governed thread protocol requires codeMode and toolGrant");
             }
             THREAD_PROTOCOL_VERSION => {
-                return Err("thread v1 does not accept governed code fields")
+                return Err("thread v1 does not accept governed code fields");
             }
             _ => return Err("unsupported thread protocol version"),
         }
@@ -138,6 +140,9 @@ impl AppendTurnRequest {
             .is_some_and(|attachments| attachments.len() > MAX_ATTACHMENTS)
         {
             return Err("attachments must contain at most 64 entries");
+        }
+        if let Some(authorization) = self.managed_inference_authorization.as_ref() {
+            authorization.validate()?;
         }
         Ok(())
     }
@@ -1193,6 +1198,7 @@ mod tests {
             grant_hash: "sha256:grant-1".to_string(),
             signing_key_id: "key-1".to_string(),
             grant_signature: "hmac-sha256:signature".to_string(),
+            identity_authorization: None,
             native_tool_ids: vec!["read".to_string()],
             external_tools: Vec::new(),
             connection_bindings: Vec::new(),
@@ -1208,6 +1214,7 @@ mod tests {
             attachments: None,
             code_mode: Some(CodeMode::GovernedCode),
             tool_grant: Some(test_governed_grant()),
+            managed_inference_authorization: None,
         }
     }
 
@@ -1235,6 +1242,7 @@ mod tests {
             attachments: None,
             code_mode: None,
             tool_grant: None,
+            managed_inference_authorization: None,
         };
         legacy.validate().expect("legacy v1 remains valid");
     }
@@ -1265,6 +1273,71 @@ mod tests {
             !record.matches(&changed_grant),
             "same turn id with different authority must conflict, not replay"
         );
+    }
+
+    #[test]
+    fn managed_inference_authorization_is_ephemeral_and_replay_safe() {
+        let mut request = governed_request();
+        request.managed_inference_authorization = Some(
+            crate::agent::ManagedInferenceAuthorization::new("signed-capability-marker"),
+        );
+        let mut state = ThreadProtocolState::new("thread-1".to_string().into(), 0);
+        state.append(request.clone(), 1);
+        let record = state.turn("turn-1").expect("accepted turn record");
+
+        let serialized = serde_json::to_string(record).expect("serialize durable turn record");
+        assert!(!serialized.contains("managed_inference_authorization"));
+        assert!(!serialized.contains("signed-capability-marker"));
+
+        let mut replay = request.clone();
+        replay.managed_inference_authorization = Some(
+            crate::agent::ManagedInferenceAuthorization::new("refreshed-capability-marker"),
+        );
+        assert!(
+            record.matches(&replay),
+            "a replay must match without persisting or comparing the capability"
+        );
+
+        replay.content = "different prompt".to_string();
+        assert!(
+            !record.matches(&replay),
+            "replay matching must still reject a different durable payload"
+        );
+    }
+
+    #[test]
+    fn managed_inference_authorization_is_bounded_and_control_free() {
+        let mut empty = governed_request();
+        empty.managed_inference_authorization =
+            Some(crate::agent::ManagedInferenceAuthorization::new(""));
+        assert_eq!(
+            empty.validate(),
+            Err("managedInferenceAuthorization must not be empty")
+        );
+
+        let mut oversized = governed_request();
+        oversized.managed_inference_authorization = Some(
+            crate::agent::ManagedInferenceAuthorization::new("x".repeat(64 * 1024 + 1)),
+        );
+        assert_eq!(
+            oversized.validate(),
+            Err("managedInferenceAuthorization exceeds 64 KiB")
+        );
+
+        let mut control = governed_request();
+        control.managed_inference_authorization = Some(
+            crate::agent::ManagedInferenceAuthorization::new("signed\ncapability"),
+        );
+        assert_eq!(
+            control.validate(),
+            Err("managedInferenceAuthorization contains control characters")
+        );
+
+        let mut valid = governed_request();
+        valid.managed_inference_authorization = Some(
+            crate::agent::ManagedInferenceAuthorization::new("signed-capability"),
+        );
+        valid.validate().expect("bounded opaque authorization");
     }
 
     #[test]
@@ -1313,6 +1386,7 @@ mod tests {
                 attachments: None,
                 code_mode: None,
                 tool_grant: None,
+                managed_inference_authorization: None,
             },
             1,
         );
@@ -1539,6 +1613,7 @@ mod tests {
                 attachments: None,
                 code_mode: None,
                 tool_grant: None,
+                managed_inference_authorization: None,
             },
             1,
         );

@@ -1,4 +1,4 @@
-use crate::{model_config_path, read_json_value, Config, MAX_JSON_BODY_BYTES};
+use crate::{Config, MAX_JSON_BODY_BYTES, model_config_path, read_json_value};
 use maestro_tui::ai::ProviderRegistry;
 use maestro_tui::model_catalog as shared_catalog;
 use maestro_tui::model_catalog::ModelProtocol;

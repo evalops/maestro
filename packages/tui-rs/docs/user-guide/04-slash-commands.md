@@ -80,7 +80,7 @@ Queue modes: `/queue mode [steer|followup] <one|all>`.
 |---------|---------|-------------|
 | `/compact [instructions]` | | Compact conversation history |
 | `/context` | | Show context summary |
-| `/memory` | | Local / shared memory status |
+| `/memory` | | Account / local / shared memory status |
 | `/tools [list\|mcp\|lsp]` | | List built-in tools |
 | `/mcp [resources\|prompts …]` | | MCP status and resources/prompts |
 | `/hooks [list\|toggle\|reload\|metrics\|enable\|disable]` | `/hook` | Manage hooks |

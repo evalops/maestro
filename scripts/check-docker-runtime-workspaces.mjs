@@ -57,6 +57,42 @@ if (missing.length > 0) {
 	console.error(`Dockerfile is missing native runtime contracts: ${missing.join(", ")}`);
 	process.exit(1);
 }
+
+// A workspace member that no build stage copies is invisible until the image
+// build runs, and the image build runs only on the publisher. Bind the copy
+// list to the checked-in workspace so the next dependency addition fails on
+// its own pull request instead.
+const cargoManifestPath = join(process.cwd(), "Cargo.toml");
+if (!existsSync(cargoManifestPath)) {
+	console.error("Cargo.toml not found; cannot check the Docker copy list against the workspace.");
+	process.exit(1);
+}
+const cargoManifest = readFileSync(cargoManifestPath, "utf8");
+const membersBlock = cargoManifest.match(/members\s*=\s*\[([\s\S]*?)\]/);
+if (!membersBlock) {
+	console.error("Cargo.toml declares no workspace members array.");
+	process.exit(1);
+}
+const workspaceMembers = [...membersBlock[1].matchAll(/"([^"]+)"/g)]
+	.map((match) => match[1].replace(/\/+$/, ""))
+	.filter((member) => member.startsWith("packages/"));
+const copiesMember = (stage, member) =>
+	new RegExp(`COPY\\s+${member.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+\\.\\/${member.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\s|$)`, "m").test(stage);
+const uncopied = [];
+for (const member of workspaceMembers) {
+	if (!copiesMember(plannerStage, member)) {
+		uncopied.push(`${member} in the planner stage`);
+	}
+	if (!copiesMember(nativeStage, member)) {
+		uncopied.push(`${member} in the native stage`);
+	}
+}
+if (uncopied.length > 0) {
+	console.error(
+		`Dockerfile does not copy every Cargo workspace member: ${uncopied.join(", ")}`,
+	);
+	process.exit(1);
+}
 if (/Acquire::https::Verify-(?:Peer|Host)=false/.test(dockerfile)) {
 	console.error("Dockerfile must not disable HTTPS certificate verification.");
 	process.exit(1);

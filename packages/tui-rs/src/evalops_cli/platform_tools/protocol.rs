@@ -1,9 +1,9 @@
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use super::{
-    SafeResult, MAX_COMMAND_BYTES, MAX_OPERATION_ID_BYTES, MCP_PROTOCOL_VERSION, RESULT_SCHEMA,
+    MAX_COMMAND_BYTES, MAX_OPERATION_ID_BYTES, MCP_PROTOCOL_VERSION, RESULT_SCHEMA, SafeResult,
     TOOL_NAME,
 };
 
@@ -100,11 +100,13 @@ mod tests {
     fn tool_schema_requires_a_stable_operation_id() {
         let tool = tool_definition();
         assert_eq!(tool["name"], TOOL_NAME);
-        assert!(tool["inputSchema"]["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|value| value == "operationId"));
+        assert!(
+            tool["inputSchema"]["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "operationId")
+        );
         assert_eq!(tool["annotations"]["destructiveHint"], true);
         assert_eq!(tool["annotations"]["idempotentHint"], false);
     }

@@ -6,7 +6,7 @@
 //! replacing the state file. This keeps a second gateway process or a crash
 //! from turning an in-memory placeholder into a false success.
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use hmac::{Hmac, KeyInit, Mac};
 use maestro_tui::agent::{CredentialVault, FromAgent, NativeAgent, NativeAgentConfig};
 use serde::{Deserialize, Serialize};
@@ -546,7 +546,8 @@ impl AutomationStore {
         let Some(signature) = unsigned.signature.take() else {
             return false;
         };
-        signature == format!("hmac-sha256:{}", sign_bytes(&self.signing_key, &unsigned))
+        let expected = format!("hmac-sha256:{}", sign_bytes(&self.signing_key, &unsigned));
+        crate::auth::constant_time_eq(signature.as_bytes(), expected.as_bytes())
     }
 }
 
@@ -1050,6 +1051,12 @@ async fn execute_native_turn(claim: &ClaimedAutomationRun, cwd: &Path) -> Automa
         Err(_) => return failed_run("agent_initialization_failed"),
     };
     if agent
+        .set_session_context(Some(claim.run_id.clone()), "automation", false)
+        .is_err()
+    {
+        return failed_run("session_context_failed");
+    }
+    if agent
         .prompt(claim.prompt.clone(), Vec::new())
         .await
         .is_err()
@@ -1223,5 +1230,47 @@ mod tests {
         assert_eq!(run.status, AutomationRunStatus::RetryScheduled);
         assert_eq!(run.receipts[0].error_type.as_deref(), Some("lease_expired"));
         assert_ne!(run.status, AutomationRunStatus::Succeeded);
+    }
+
+    #[test]
+    fn verify_receipt_accepts_valid_signature_and_rejects_tampered_or_missing() {
+        let (_dir, mut store) = store();
+        store.upsert(None, &definition_body(), 1_000).unwrap();
+        let claim = match store
+            .claim_manual(
+                "nightly",
+                Some("request-9"),
+                "owner-a",
+                "openrouter/test",
+                2_000,
+            )
+            .unwrap()
+        {
+            RunClaim::Claimed(claim) => claim,
+            _ => panic!("claim should be new"),
+        };
+        store
+            .complete(&claim, failed_run("provider_error"), 2_100)
+            .unwrap();
+        let runs = store.list_runs("nightly").unwrap();
+        let run: AutomationRun = serde_json::from_value(runs[0].clone()).unwrap();
+        let receipt = run.receipts[0].clone();
+
+        // The server-generated signature verifies.
+        assert!(store.verify_receipt(&receipt));
+
+        // A signature tampered to the same byte length is rejected.
+        let mut tampered = receipt.clone();
+        let original = tampered.signature.clone().expect("receipt is signed");
+        let mut bytes = original.into_bytes();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x01;
+        tampered.signature = Some(String::from_utf8(bytes).unwrap());
+        assert!(!store.verify_receipt(&tampered));
+
+        // A missing signature is rejected.
+        let mut unsigned = receipt;
+        unsigned.signature = None;
+        assert!(!store.verify_receipt(&unsigned));
     }
 }

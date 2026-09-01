@@ -1,4 +1,4 @@
-use maestro_runtime_gateway::{serve_listener, RuntimeGatewayConfig};
+use maestro_runtime_gateway::{RuntimeGatewayConfig, serve_listener};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

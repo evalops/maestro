@@ -14,6 +14,10 @@ inputs:
     description: Create and push the resolved tag when it does not already exist.
     required: false
     default: "false"
+  workspace:
+    description: Directory containing package.json.
+    required: false
+    default: "."
 
 outputs:
   release_tag:
@@ -23,7 +27,7 @@ outputs:
     description: Semver release version without the leading v.
     value: ${{ steps.context.outputs.release_version }}
   package_name:
-    description: Current published package name from package.json.
+    description: Source package name from package.json.
     value: ${{ steps.context.outputs.package_name }}
   package_version:
     description: Current package version from package.json.
@@ -32,10 +36,10 @@ outputs:
     description: Declared CLI command from package.json bin map.
     value: ${{ steps.context.outputs.cli_command }}
   canonical_package_name:
-    description: Canonical package name once npm scope recovery is complete.
+    description: Canonical Deixic Code public package name.
     value: ${{ steps.context.outputs.canonical_package_name }}
   package_aliases_json:
-    description: JSON array of recognized package-name aliases.
+    description: JSON array of canonical and retained compatibility package names.
     value: ${{ steps.context.outputs.package_aliases_json }}
   tag_exists:
     description: Whether the resolved tag already exists in git.
@@ -55,10 +59,12 @@ runs:
   steps:
     - name: Fetch tags
       shell: bash
+      working-directory: ${{ inputs.workspace }}
       run: git fetch --tags --force
 
     - id: context
       shell: bash
+      working-directory: ${{ inputs.workspace }}
       env:
         MAESTRO_RELEASE_REQUESTED_VERSION: ${{ inputs.requested-version }}
         MAESTRO_RELEASE_FALLBACK_TO_PACKAGE_VERSION: ${{ inputs.fallback-to-package-version }}
@@ -155,6 +161,7 @@ runs:
     - name: Create missing tag
       if: ${{ inputs.create-tag-if-missing == 'true' && steps.context.outputs.tag_exists != 'true' }}
       shell: bash
+      working-directory: ${{ inputs.workspace }}
       env:
         RELEASE_TAG: ${{ steps.context.outputs.release_tag }}
       run: |

@@ -1,9 +1,9 @@
 use serde_json::json;
 
 use super::controller_binding::{
-    controller_binding_from_hello_json, controller_binding_sha256, ControllerContext,
-    ControllerLifetimeProfile, ControllerScopeExpectation, CONTROLLER_BINDING_VERSION,
-    CONTROLLER_CONTEXT_SCHEMA_VERSION,
+    CONTROLLER_BINDING_VERSION, CONTROLLER_CONTEXT_SCHEMA_VERSION, ControllerContext,
+    ControllerLifetimeProfile, ControllerScopeExpectation, controller_binding_from_hello_json,
+    controller_binding_sha256,
 };
 
 fn context() -> ControllerContext {
@@ -80,13 +80,15 @@ fn controller_binding_requires_complete_scope_and_matching_runtime_identity() {
 
 #[test]
 fn controller_binding_is_optional_but_partial_or_late_generation_shapes_fail_closed() {
-    assert!(controller_binding_from_hello_json(
-        r#"{"type":"hello","protocol_version":"2026-08-08"}"#,
-        "2026-08-08",
-        &ControllerScopeExpectation::default(),
-    )
-    .expect("legacy hello")
-    .is_none());
+    assert!(
+        controller_binding_from_hello_json(
+            r#"{"type":"hello","protocol_version":"2026-08-08"}"#,
+            "2026-08-08",
+            &ControllerScopeExpectation::default(),
+        )
+        .expect("legacy hello")
+        .is_none()
+    );
 
     let partial = json!({
         "type": "hello",
@@ -94,12 +96,14 @@ fn controller_binding_is_optional_but_partial_or_late_generation_shapes_fail_clo
         "controller_context": context()
     })
     .to_string();
-    assert!(controller_binding_from_hello_json(
-        &partial,
-        "2026-08-08",
-        &ControllerScopeExpectation::default(),
-    )
-    .is_err());
+    assert!(
+        controller_binding_from_hello_json(
+            &partial,
+            "2026-08-08",
+            &ControllerScopeExpectation::default(),
+        )
+        .is_err()
+    );
 
     let mut resident = context();
     resident.lifetime_profile = ControllerLifetimeProfile::Resident;
@@ -111,10 +115,12 @@ fn controller_binding_is_optional_but_partial_or_late_generation_shapes_fail_clo
         "capability_manifest": manifest()
     })
     .to_string();
-    assert!(controller_binding_from_hello_json(
-        &invalid_generation,
-        "2026-08-08",
-        &ControllerScopeExpectation::default(),
-    )
-    .is_err());
+    assert!(
+        controller_binding_from_hello_json(
+            &invalid_generation,
+            "2026-08-08",
+            &ControllerScopeExpectation::default(),
+        )
+        .is_err()
+    );
 }

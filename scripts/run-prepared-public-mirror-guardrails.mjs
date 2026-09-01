@@ -14,14 +14,23 @@ function parseTarget(argv) {
 }
 
 /**
- * Lightweight checks on the prepared public tree before opening/updating the
- * sync PR. Full `cargo test` / clippy / evals already ran on internal main for
- * the same product sources; re-running a workspace cargo check here only burns
- * minutes and still cannot catch public-runner skew. Keep the mirror-specific
- * rust-only boundary check only.
+ * Projection-specific checks on the prepared public tree before opening or
+ * updating the sync PR. Full Cargo validation already ran on internal main,
+ * but public-only replacement scripts and sanitized contracts exist only in
+ * this tree and must be exercised here.
  */
 export function preparedPublicMirrorGuardrailCommands() {
 	return [
+		{
+			command: "npm",
+			args: ["run", "check:hosted-orb-delegation"],
+			label: "Hosted Computer delegation contract",
+		},
+		{
+			command: "cargo",
+			args: ["metadata", "--locked", "--no-deps", "--format-version", "1"],
+			label: "Public Cargo dependency containment",
+		},
 		{
 			command: "npm",
 			args: ["run", "check:rust-only-runtime"],

@@ -8,10 +8,21 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::service_connections::{ConnectionAuthKind, ConnectionPlacement};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConnectionMcpBindingDefinition {
+    pub server_name: String,
+    pub endpoint: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_preset: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -27,6 +38,8 @@ pub struct ConnectionTypeDefinition {
     pub capabilities: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub documentation_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_binding: Option<ConnectionMcpBindingDefinition>,
 }
 
 impl ConnectionTypeDefinition {
@@ -97,6 +110,65 @@ impl ConnectionTypeDefinition {
                 url::Url::parse(url).context("invalid connection type documentationUrl")?;
             if parsed.scheme() != "https" {
                 bail!("connection type documentationUrl must use HTTPS");
+            }
+        }
+        if let Some(binding) = &self.mcp_binding {
+            if binding.server_name.trim().is_empty()
+                || !binding
+                    .server_name
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+            {
+                bail!("connection MCP binding serverName must be alphanumeric with - or _");
+            }
+            let endpoint = url::Url::parse(&binding.endpoint)
+                .context("invalid connection MCP binding endpoint")?;
+            if endpoint.scheme() != "https"
+                || endpoint.host_str().is_none()
+                || endpoint.username() != ""
+                || endpoint.password().is_some()
+                || endpoint.query().is_some()
+                || endpoint.fragment().is_some()
+            {
+                bail!(
+                    "connection MCP binding endpoint must be an HTTPS URL without credentials, query, or fragment"
+                );
+            }
+            if binding.scopes.is_empty() {
+                bail!("connection MCP bindings must declare at least one scope");
+            }
+            let mut previous: Option<&str> = None;
+            let mut seen = BTreeSet::new();
+            for scope in &binding.scopes {
+                if scope.is_empty()
+                    || !scope.chars().all(|ch| {
+                        ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':' | '/')
+                    })
+                    || previous.is_some_and(|value| value >= scope.as_str())
+                    || !seen.insert(scope)
+                {
+                    bail!("connection MCP binding scopes must be normalized, sorted, and unique");
+                }
+                previous = Some(scope);
+            }
+            if binding.scopes.iter().any(|scope| {
+                !self
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == scope)
+            }) {
+                bail!(
+                    "connection MCP binding scopes must be included in the connection capabilities"
+                );
+            }
+            if let Some(auth_preset) = &binding.auth_preset {
+                if auth_preset.trim().is_empty()
+                    || !auth_preset
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':'))
+                {
+                    bail!("connection MCP binding authPreset contains unsupported characters");
+                }
             }
         }
         Ok(())
@@ -193,21 +265,97 @@ mod tests {
             env_var: Some("ANTHROPIC_API_KEY".into()),
             capabilities: vec!["responses.create".into()],
             documentation_url: None,
+            mcp_binding: None,
         };
-        assert!(definition
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("not an authentication target"));
+        assert!(
+            definition
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("not an authentication target")
+        );
 
         definition.provider_id = "custom-provider".into();
         definition.validate().unwrap();
 
         definition.auth_kind = ConnectionAuthKind::OAuth;
-        assert!(definition
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("cannot declare envVar"));
+        assert!(
+            definition
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("cannot declare envVar")
+        );
+    }
+
+    #[test]
+    fn connection_types_can_declare_a_secret_free_mcp_binding() {
+        let manifest: ConnectionTypeManifest = serde_json::from_str(
+            r#"{
+              "schemaVersion": 1,
+              "connectionTypes": [{
+                "id": "orb-hosted",
+                "displayName": "Hosted Computer",
+                "providerId": "orb",
+                "authKind": "oauth",
+                "placement": "local",
+                "capabilities": ["orb:threads:read", "orb:threads:write"],
+                "mcpBinding": {
+                  "serverName": "orb",
+                  "endpoint": "https://orb.evalops.dev/mcp",
+                  "scopes": ["orb:threads:read", "orb:threads:write"]
+                }
+              }]
+            }"#,
+        )
+        .unwrap();
+
+        manifest.validate().unwrap();
+        let binding = manifest.connection_types[0]
+            .mcp_binding
+            .as_ref()
+            .expect("binding");
+        assert_eq!(binding.server_name, "orb");
+        assert_eq!(binding.endpoint, "https://orb.evalops.dev/mcp");
+        let encoded = serde_json::to_string(&manifest).unwrap();
+        assert!(!encoded.contains("access_token"));
+        assert!(!encoded.contains("secret"));
+    }
+
+    #[test]
+    fn mcp_binding_requires_https_and_declared_capability_scopes() {
+        let mut definition = ConnectionTypeDefinition {
+            id: "remote-mcp".into(),
+            display_name: "Remote MCP".into(),
+            provider_id: "remote".into(),
+            auth_kind: ConnectionAuthKind::OAuth,
+            placement: ConnectionPlacement::Either,
+            env_var: None,
+            capabilities: vec!["records.read".into()],
+            documentation_url: None,
+            mcp_binding: Some(ConnectionMcpBindingDefinition {
+                server_name: "records".into(),
+                endpoint: "http://mcp.example.test".into(),
+                scopes: vec!["records.read".into()],
+                auth_preset: None,
+            }),
+        };
+        assert!(
+            definition
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("HTTPS")
+        );
+
+        definition.mcp_binding.as_mut().unwrap().endpoint = "https://mcp.example.test".into();
+        definition.mcp_binding.as_mut().unwrap().scopes = vec!["records.write".into()];
+        assert!(
+            definition
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("included in the connection capabilities")
+        );
     }
 }

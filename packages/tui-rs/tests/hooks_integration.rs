@@ -884,6 +884,10 @@ fn test_registry_post_message_hook() {
         hook_event_name: "PostMessage".to_string(),
         cwd: "/tmp".to_string(),
         session_id: None,
+        transcript_path: None,
+        transcript_size_before: None,
+        organization_id: None,
+        workspace_id: None,
         timestamp: "2024-01-01T00:00:00Z".to_string(),
         response: "Here is my response...".to_string(),
         input_tokens: 1000,
@@ -927,6 +931,8 @@ fn test_registry_session_start_hook() {
         session_id: Some("sess_123".to_string()),
         timestamp: "2024-01-01T00:00:00Z".to_string(),
         source: "cli".to_string(),
+        organization_id: None,
+        workspace_id: None,
     };
     assert!(matches!(
         registry.execute_session_start(&cli_input),
@@ -940,6 +946,8 @@ fn test_registry_session_start_hook() {
         session_id: Some("sess_456".to_string()),
         timestamp: "2024-01-01T00:00:00Z".to_string(),
         source: "api".to_string(),
+        organization_id: None,
+        workspace_id: None,
     };
     assert!(matches!(
         registry.execute_session_start(&api_input),
@@ -971,6 +979,9 @@ fn test_registry_session_end_hook() {
         hook_event_name: "SessionEnd".to_string(),
         cwd: "/tmp".to_string(),
         session_id: Some("sess_123".to_string()),
+        transcript_path: None,
+        organization_id: None,
+        workspace_id: None,
         timestamp: "2024-01-01T00:00:00Z".to_string(),
         reason: "user_quit".to_string(),
         duration_ms: 60000,

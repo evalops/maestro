@@ -48,6 +48,7 @@ pub const HEADLESS_TO_AGENT_MESSAGE_TYPES: &[&str] = &[
     "tool_response",
     "client_tool_result",
     "governed_client_tool_result",
+    "apply_workspace_capability_set",
     "server_request_response",
     "utility_command_start",
     "utility_command_terminate",
@@ -93,4 +94,6 @@ pub const HEADLESS_FROM_AGENT_MESSAGE_TYPES: &[&str] = &[
     "turn_completed",
     "turn_interrupted",
     "provider_error",
+    "delegation_event",
+    "workspace_capability_set_applied",
 ];

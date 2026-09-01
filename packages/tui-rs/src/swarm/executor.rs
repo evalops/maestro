@@ -5,7 +5,7 @@
 use anyhow::Result;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 
 use super::plan_parser::validate_plan;
 use super::types::{
@@ -374,9 +374,9 @@ mod tests {
     #[test]
     fn test_executor_rejects_invalid_plan() {
         // Plan with missing dependency
-        let plan =
-            SwarmPlan::new("Test Plan").with_tasks(vec![SwarmTask::new("task-1", "First Task")
-                .with_dependencies(vec!["nonexistent".into()])]);
+        let plan = SwarmPlan::new("Test Plan").with_tasks(vec![
+            SwarmTask::new("task-1", "First Task").with_dependencies(vec!["nonexistent".into()]),
+        ]);
 
         let result = SwarmExecutor::new(plan, SwarmConfig::default());
         assert!(result.is_err());

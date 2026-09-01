@@ -4,11 +4,11 @@
 //! restore. Opened by pressing Esc twice with an empty composer.
 
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState},
-    Frame,
 };
 
 use crate::checkpoints::Checkpoint;

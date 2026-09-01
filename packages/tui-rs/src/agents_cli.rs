@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 use serde_yaml::{Mapping, Value};
@@ -155,7 +155,9 @@ pub fn run(args: &[String]) -> Result<Outcome> {
             Ok(Outcome::Exit(0))
         }
         "help" | "--help" | "-h" => {
-            println!("Usage: maestro agents [init [path] [--force]|profile <list|show|create|delete>]");
+            println!(
+                "Usage: maestro agents [init [path] [--force]|profile <list|show|create|delete>]"
+            );
             Ok(Outcome::Exit(0))
         }
         value => bail!(
@@ -469,7 +471,10 @@ fn scaffold(project: &str, sources: &[RuleSource]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    format!("{}\n\n## Imported AI Tooling Rules\n<!-- Imported by maestro /init from: {paths} -->\n\nReview and fold these existing AI-tool instructions into the sections above:\n\n{list}\n", template.trim_end())
+    format!(
+        "{}\n\n## Imported AI Tooling Rules\n<!-- Imported by maestro /init from: {paths} -->\n\nReview and fold these existing AI-tool instructions into the sections above:\n\n{list}\n",
+        template.trim_end()
+    )
 }
 
 fn generation_prompt(target: &Path, sources: &[RuleSource]) -> String {
@@ -874,9 +879,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("AGENTS.md");
         let result = init(&[target.to_string_lossy().into()], false).unwrap();
-        assert!(fs::read_to_string(target)
-            .unwrap()
-            .contains("# Repository Guidelines"));
+        assert!(
+            fs::read_to_string(target)
+                .unwrap()
+                .contains("# Repository Guidelines")
+        );
         assert!(matches!(result, Outcome::Generate { prompt, .. } if prompt.contains("AGENTS.md")));
     }
 

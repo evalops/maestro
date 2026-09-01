@@ -65,6 +65,9 @@ impl App {
                 description: Some(tool.tool.description.clone()),
             })
             .collect::<Vec<_>>();
+        let unified_context_manifest =
+            crate::context_cli::load_unified_context_manifest_json(std::path::Path::new(&cwd))
+                .context("Failed to capture the session context manifest")?;
 
         let header = SessionHeader {
             version: Some(2),
@@ -78,7 +81,7 @@ impl App {
             system_prompt: None,
             prompt_metadata: None,
             prompt_context_manifest: None,
-            unified_context_manifest: None,
+            unified_context_manifest: Some(Box::new(unified_context_manifest)),
             tools,
             branched_from: None,
             parent_session: None,
@@ -238,6 +241,14 @@ impl App {
             data: Some(serde_json::json!({
                 "content": content,
                 "agentNote": agent_note,
+                "projection": maestro_runtime::DelegationEvent::from_subagent_lifecycle(
+                    &event.mailbox_message_id,
+                    &event.subagent_id,
+                    event.attempt,
+                    &format!("{:?}", event.status).to_ascii_lowercase(),
+                    event.summary.as_deref(),
+                    event.error.as_deref(),
+                ),
                 "event": event,
             })),
         });
@@ -401,6 +412,9 @@ impl App {
                 id: call.call_id.clone(),
                 name: call.tool.clone(),
                 args: call.args.clone(),
+                // Pin the tool identity this call was issued against so a
+                // resume cannot dispatch a different tool of the same name.
+                contract: crate::tools::tool_call_contract::stamp(&call.call_id, &call.tool),
             });
         }
 

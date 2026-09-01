@@ -18,8 +18,9 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Duration as ChronoDuration, SecondsFormat, Utc};
 use maestro_runtime::{
-    headless_protocol_capability_digest, RuntimeLifecycleState, RuntimeReceipt,
-    RuntimeReceiptInput, RuntimeReceiptKind, RuntimeTerminalClassification,
+    RuntimeLifecycleState, RuntimeReceipt, RuntimeReceiptInput, RuntimeReceiptKind,
+    RuntimeTerminalClassification, TraceHeaders, headless_protocol_capability_digest,
+    record_outcome, route_class, server_span,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -29,22 +30,25 @@ use tokio::net::TcpListener;
 #[cfg(test)]
 use tokio::net::TcpStream;
 use tokio::process::Command;
-use tokio::sync::{broadcast, Notify};
+use tokio::sync::{Notify, broadcast};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use uuid::Uuid;
 
+use crate::headless::controller_binding::{
+    ControllerBindingReceipt, ControllerScopeExpectation, controller_binding_from_hello_extension,
+};
 use crate::headless::messages::{
-    ClientCapabilities, ClientInfo, ConnectionRole, ConnectionState, FromAgentMessage, InitConfig,
-    ServerCapabilities, ServerRequestType, ThinkingLevel, ToAgentMessage, UtilityCommandShellMode,
-    UtilityCommandStream, UtilityCommandTerminalMode, UtilityFileSearchMatch, UtilityOperation,
-    HEADLESS_PROTOCOL_VERSION,
+    ClientCapabilities, ClientInfo, ConnectionRole, ConnectionState, FromAgentMessage,
+    HEADLESS_PROTOCOL_VERSION, InitConfig, ServerCapabilities, ServerRequestType, ThinkingLevel,
+    ToAgentMessage, UtilityCommandShellMode, UtilityCommandStream, UtilityCommandTerminalMode,
+    UtilityFileSearchMatch, UtilityOperation,
 };
 use crate::headless::{
-    native_server_capabilities, response_ack_request_id, AgentState, AgentSupervisor,
-    AsyncTransportError, ResponseAcknowledgement, SessionReplay,
+    AgentState, AgentSupervisor, AsyncTransportError, ResponseAcknowledgement, SessionReplay,
+    native_server_capabilities, response_ack_request_id,
 };
-use crate::headless_server::{verify_governed_tool_grant, GovernedGrantVerificationContext};
+use crate::headless_server::{GovernedGrantVerificationContext, verify_governed_tool_grant};
 
 mod config;
 mod handle;
@@ -256,6 +260,7 @@ struct RunnerState {
     /// Durable provider binding used for lifecycle receipts across restart.
     runtime_provider_binding: Option<String>,
     runtime_receipt: Option<RuntimeReceipt>,
+    controller_binding: Option<ControllerBindingReceipt>,
     controller_connection_id: Option<String>,
     controller_stream_cancellation: CancellationToken,
     connections: HashMap<String, ConnectionRecord>,
@@ -1165,6 +1170,23 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
     ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
         let started = Instant::now();
         let message_kind = hosted_message_kind(&message);
+        if let ToAgentMessage::Hello {
+            controller_binding: Some(binding),
+            ..
+        } = &message
+        {
+            let mut supervisor = self
+                .supervisor
+                .lock()
+                .map_err(|_| HostedRunnerError::internal("agent supervisor mutex poisoned"))?;
+            supervisor
+                .set_local_controller_binding(binding.clone())
+                .map_err(hosted_runner_error_from_async_transport)?;
+            return Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+                Vec::new(),
+                "Rust hosted runner forwarded the resident controller binding to the native child",
+            ));
+        }
         if matches!(message, ToAgentMessage::Hello { .. }) {
             tracing::debug!(
                 target: "maestro.hosted",
@@ -1459,6 +1481,7 @@ fn hosted_message_kind(message: &ToAgentMessage) -> &'static str {
         ToAgentMessage::ToolResponse { .. } => "tool_response",
         ToAgentMessage::ClientToolResult { .. } => "client_tool_result",
         ToAgentMessage::GovernedClientToolResult { .. } => "governed_client_tool_result",
+        ToAgentMessage::ApplyWorkspaceCapabilitySet { .. } => "apply_workspace_capability_set",
         ToAgentMessage::ServerRequestResponse { .. } => "server_request_response",
         ToAgentMessage::UtilityCommandStart { .. } => "utility_command_start",
         ToAgentMessage::UtilityCommandTerminate { .. } => "utility_command_terminate",
@@ -1494,7 +1517,7 @@ fn load_executor_response_ledger(
         Err(error) => {
             return Err(HostedRunnerError::internal(format!(
                 "read response ledger: {error}"
-            )))
+            )));
         }
     };
     serde_json::from_str(&contents)
@@ -1689,6 +1712,21 @@ pub async fn start_hosted_runner_with_message_executor(
     start_prepared_hosted_runner(prepared, message_executor)
 }
 
+#[cfg(test)]
+async fn start_hosted_runner_with_message_executor_and_maintenance_interval(
+    config: HostedRunnerConfig,
+    message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
+    maintenance_interval: Duration,
+) -> io::Result<HostedRunnerHandle> {
+    validate_message_executor_startup_runtime_receipt_binding(message_executor.as_ref())?;
+    let prepared = prepare_hosted_runner(config).await?;
+    start_prepared_hosted_runner_with_maintenance_interval(
+        prepared,
+        message_executor,
+        maintenance_interval,
+    )
+}
+
 pub(crate) async fn prepare_hosted_runner(
     config: HostedRunnerConfig,
 ) -> io::Result<PreparedHostedRunner> {
@@ -1710,7 +1748,7 @@ pub(crate) async fn prepare_hosted_runner(
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "maestro hosted-runner requires auth_token or workload identity when binding to non-loopback interfaces",
+            "deixic-code hosted-runner requires auth_token or workload identity when binding to non-loopback interfaces",
         ));
     }
     config.workspace_root = workspace_root;
@@ -1819,6 +1857,18 @@ pub(crate) fn start_prepared_hosted_runner(
     prepared: PreparedHostedRunner,
     message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
 ) -> io::Result<HostedRunnerHandle> {
+    start_prepared_hosted_runner_with_maintenance_interval(
+        prepared,
+        message_executor,
+        MAINTENANCE_PUMP_INTERVAL,
+    )
+}
+
+fn start_prepared_hosted_runner_with_maintenance_interval(
+    prepared: PreparedHostedRunner,
+    message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
+    maintenance_interval: Duration,
+) -> io::Result<HostedRunnerHandle> {
     let PreparedHostedRunner {
         startup_started,
         config,
@@ -1842,7 +1892,7 @@ pub(crate) fn start_prepared_hosted_runner(
         message_executor,
         restore_manifest,
     )?;
-    shared.start_event_pump();
+    shared.start_event_pump(maintenance_interval);
     let server_shared = shared.clone();
     let (task, identity_task, tls) =
         if let Some((exchanger, identity, client_identity, workload)) = identity_runtime {
@@ -1921,8 +1971,12 @@ pub(crate) fn start_prepared_hosted_runner(
     })
 }
 
-async fn pump_agent_events(shared: SharedRunner, cancelled: CancellationToken) {
-    let mut interval = tokio::time::interval(MAINTENANCE_PUMP_INTERVAL);
+async fn pump_agent_events(
+    shared: SharedRunner,
+    cancelled: CancellationToken,
+    maintenance_interval: Duration,
+) {
+    let mut interval = tokio::time::interval(maintenance_interval);
     loop {
         let should_pump = tokio::select! {
             () = cancelled.cancelled() => break,
@@ -2212,11 +2266,11 @@ impl SharedRunner {
         }
     }
 
-    fn start_event_pump(&self) {
+    fn start_event_pump(&self, maintenance_interval: Duration) {
         let shared = self.clone();
         let cancelled = self.event_pump_cancellation.clone();
         let task = tokio::spawn(async move {
-            pump_agent_events(shared, cancelled).await;
+            pump_agent_events(shared, cancelled, maintenance_interval).await;
         });
         *self
             .event_pump_task
@@ -2838,44 +2892,32 @@ async fn route_request(
     shared: SharedRunner,
     peer_addr: SocketAddr,
 ) -> HostedResult<ResponseBody> {
-    let span = tracing::info_span!(
-        "hosted_runner.http",
-        method = request.method.as_str(),
-        route_class = hosted_route_class(&request.path),
-        causal_receipt_id = shared.config.causal_receipt_id.as_deref().unwrap_or(""),
-        http_status = tracing::field::Empty,
-        duration_ms = tracing::field::Empty,
-        outcome = tracing::field::Empty,
-        error_kind = tracing::field::Empty,
-        trace_id = tracing::field::Empty,
-        w3c.traceparent = tracing::field::Empty,
+    let parent = TraceHeaders::from_values(
+        request.headers.get("traceparent").map(String::as_str),
+        request.headers.get("tracestate").map(String::as_str),
     );
-    if let Some(traceparent) = request
-        .headers
-        .get("traceparent")
-        .and_then(|value| safe_traceparent(value))
-    {
-        span.record("trace_id", traceparent.split('-').nth(1).unwrap_or(""));
-        span.record("w3c.traceparent", traceparent);
-    }
+    let span = server_span(&request.method, &route_class(&request.path), &parent);
     let started = std::time::Instant::now();
     let result = route_request_inner(request, shared, peer_addr)
         .instrument(span.clone())
         .await;
-    span.record("duration_ms", started.elapsed().as_millis() as u64);
     match &result {
         Ok(ResponseBody::Json { status, .. }) => {
-            span.record("http_status", *status);
-            span.record("outcome", if *status < 400 { "success" } else { "error" });
+            span.record("http.response.status_code", i64::from(*status));
+            record_outcome(
+                &span,
+                if *status < 400 { "success" } else { "error" },
+                started.elapsed(),
+                (*status >= 500).then_some("http_server_error"),
+            );
         }
         Ok(ResponseBody::Sse { .. }) => {
-            span.record("http_status", 200_u16);
-            span.record("outcome", "stream");
+            span.record("http.response.status_code", 200_i64);
+            record_outcome(&span, "stream", started.elapsed(), None);
         }
         Err(error) => {
-            span.record("http_status", error.status);
-            span.record("outcome", "error");
-            span.record("error_kind", error.code.as_str());
+            span.record("http.response.status_code", i64::from(error.status));
+            record_outcome(&span, "error", started.elapsed(), Some(error.code.as_str()));
         }
     }
     result
@@ -3026,49 +3068,6 @@ async fn route_request_inner(
             "route not found",
         )),
     }
-}
-
-fn hosted_route_class(path: &str) -> &'static str {
-    match path {
-        "/readyz" | "/healthz" => "health",
-        HOSTED_RUNNER_IDENTITY_PATH => "identity",
-        HOSTED_RUNNER_DRAIN_PATH => "drain",
-        path if path.ends_with("/connections") => "headless.connections",
-        path if path.ends_with("/subscribe") => "headless.subscribe",
-        path if path.ends_with("/events") => "headless.events",
-        path if path.ends_with("/turns") => "thread.turns",
-        path if path.ends_with("/messages") || path.ends_with("/message") => "headless.messages",
-        path if path.ends_with("/heartbeat") => "headless.heartbeat",
-        path if path.ends_with("/disconnect") => "headless.disconnect",
-        HOSTED_RUNNER_RECEIPT_PATH => "runtime.receipt",
-        path if path.starts_with("/api/headless/threads/") => "thread.snapshot",
-        path if path.starts_with("/api/headless/sessions/") => "headless.session",
-        _ => "other",
-    }
-}
-
-fn safe_traceparent(value: &str) -> Option<&str> {
-    let value = value.trim();
-    let mut parts = value.split('-');
-    let version = parts.next()?;
-    let trace_id = parts.next()?;
-    let span_id = parts.next()?;
-    let flags = parts.next()?;
-    if parts.next().is_some()
-        || version.len() != 2
-        || version.eq_ignore_ascii_case("ff")
-        || trace_id.len() != 32
-        || span_id.len() != 16
-        || flags.len() != 2
-        || !value.is_ascii()
-        || !trace_id.bytes().all(|byte| byte.is_ascii_hexdigit())
-        || !span_id.bytes().all(|byte| byte.is_ascii_hexdigit())
-        || trace_id.bytes().all(|byte| byte == b'0')
-        || span_id.bytes().all(|byte| byte == b'0')
-    {
-        return None;
-    }
-    Some(value)
 }
 
 fn require_auth_header(
@@ -3601,7 +3600,7 @@ fn handle_thread_state(shared: SharedRunner, thread_id: &str) -> HostedResult<Re
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    ensure_thread_id(&state, Some(thread_id))?;
+    ensure_thread_id(&shared.binding, Some(thread_id))?;
     json_response(
         200,
         json!({
@@ -3624,6 +3623,49 @@ fn handle_thread_state(shared: SharedRunner, thread_id: &str) -> HostedResult<Re
     )
 }
 
+fn append_turn_message(input: AppendTurnRequest) -> ToAgentMessage {
+    let AppendTurnRequest {
+        protocol_version: _,
+        turn_id: _,
+        kind,
+        content,
+        attachments,
+        code_mode,
+        tool_grant,
+        managed_inference_authorization,
+    } = input;
+    match (kind, code_mode, tool_grant) {
+        (ThreadTurnKind::UserMessage, Some(code_mode), Some(tool_grant)) => {
+            ToAgentMessage::GovernedPrompt {
+                content,
+                attachments,
+                code_mode,
+                tool_grant,
+                managed_inference_authorization,
+            }
+        }
+        (ThreadTurnKind::Steer, Some(code_mode), Some(tool_grant)) => {
+            ToAgentMessage::GovernedSteer {
+                content,
+                attachments,
+                code_mode,
+                tool_grant,
+                managed_inference_authorization,
+            }
+        }
+        (ThreadTurnKind::UserMessage, _, _) => ToAgentMessage::Prompt {
+            content,
+            attachments,
+            managed_inference_authorization,
+        },
+        (ThreadTurnKind::Steer, _, _) => ToAgentMessage::Steer {
+            content,
+            attachments,
+            managed_inference_authorization,
+        },
+    }
+}
+
 async fn handle_append_turn(
     shared: SharedRunner,
     thread_id: &str,
@@ -3642,7 +3684,7 @@ async fn handle_append_turn(
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        ensure_thread_id(&state, Some(thread_id))?;
+        ensure_thread_id(&shared.binding, Some(thread_id))?;
         let connection_id = resolve_authorized_connection_id(
             &state,
             connection_header_id,
@@ -3760,32 +3802,8 @@ async fn handle_append_turn(
         }
     }
 
-    let message = match (input.kind, input.code_mode, input.tool_grant) {
-        (ThreadTurnKind::UserMessage, Some(code_mode), Some(tool_grant)) => {
-            ToAgentMessage::GovernedPrompt {
-                content: input.content,
-                attachments: input.attachments,
-                code_mode,
-                tool_grant,
-            }
-        }
-        (ThreadTurnKind::Steer, Some(code_mode), Some(tool_grant)) => {
-            ToAgentMessage::GovernedSteer {
-                content: input.content,
-                attachments: input.attachments,
-                code_mode,
-                tool_grant,
-            }
-        }
-        (ThreadTurnKind::UserMessage, _, _) => ToAgentMessage::Prompt {
-            content: input.content,
-            attachments: input.attachments,
-        },
-        (ThreadTurnKind::Steer, _, _) => ToAgentMessage::Steer {
-            content: input.content,
-            attachments: input.attachments,
-        },
-    };
+    let turn_id = input.turn_id.clone();
+    let message = append_turn_message(input);
     let execution = handle_message_inner(shared.clone(), thread_id, headers, message).await;
     if let Err(error) = execution {
         let mut state = shared
@@ -3811,7 +3829,7 @@ async fn handle_append_turn(
     shared.persist_thread_or_defer(&state, "turn_dispatch_completed");
     let turn = state
         .thread
-        .turn(&input.turn_id)
+        .turn(&turn_id)
         .expect("accepted turn remains in append-only thread");
     tracing::info!(
         target: "maestro.hosted",
@@ -3882,7 +3900,7 @@ fn handle_events(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     match identity {
-        EventsRouteIdentity::Thread => ensure_thread_id(&state, Some(session_id))?,
+        EventsRouteIdentity::Thread => ensure_thread_id(&shared.binding, Some(session_id))?,
         EventsRouteIdentity::Session => ensure_session_id(&shared.binding, Some(session_id))?,
     }
     let (grade, controller_authorization) = match query.get("subscriptionId") {
@@ -3989,6 +4007,9 @@ async fn handle_message_inner(
     headers: HashMap<String, String>,
     message: ToAgentMessage,
 ) -> HostedResult<ResponseBody> {
+    message
+        .validate_managed_inference_authorization()
+        .map_err(|error| HostedError::new(HostedRunnerErrorCode::BadRequest, error))?;
     let requested_response_idempotency_key = headers
         .get("x-maestro-idempotency-key")
         .map(|key| key.trim())
@@ -4152,6 +4173,7 @@ async fn handle_message_inner(
                 capabilities,
                 role,
                 opt_out_notifications,
+                controller_binding,
             } => {
                 if !crate::headless::messages::client_protocol_version_is_supported(
                     protocol_version.as_deref(),
@@ -4197,14 +4219,55 @@ async fn handle_message_inner(
                             lease_expires_at(connection)
                         });
                 let controller_connection_id = state.controller_connection_id.clone();
+                let accepted_binding = controller_binding_from_hello_extension(
+                    controller_binding.as_ref(),
+                    HEADLESS_PROTOCOL_VERSION,
+                    &ControllerScopeExpectation {
+                        organization_id: shared
+                            .config
+                            .workload_identity
+                            .as_ref()
+                            .map(|identity| identity.organization_id.clone()),
+                        workspace_id: Some(startup_workspace_id(&shared.config)),
+                        thread_id: Some(state.session_id.clone()),
+                        channel_id: None,
+                        request_id: None,
+                    },
+                )
+                .map_err(|error| {
+                    HostedError::new(
+                        HostedRunnerErrorCode::BadRequest,
+                        format!("invalid controller binding: {error}"),
+                    )
+                })?;
+                if let Some(binding) = accepted_binding {
+                    match state.controller_binding.as_ref() {
+                        Some(existing) if existing.binding_sha256 != binding.binding_sha256 => {
+                            return Err(HostedError::new(
+                                HostedRunnerErrorCode::LeaseConflict,
+                                "controller binding cannot be replaced",
+                            ));
+                        }
+                        Some(_) => {}
+                        None => state.controller_binding = Some(binding),
+                    }
+                }
+                let controller_binding_version = state
+                    .controller_binding
+                    .as_ref()
+                    .map(|binding| binding.binding_version.clone());
+                let controller_binding_sha256 = state
+                    .controller_binding
+                    .as_ref()
+                    .map(|binding| binding.binding_sha256.clone());
                 let server_capabilities =
                     server_capabilities_for_executor(shared.message_executor.as_ref());
                 shared.publish_message(
                     &mut state,
                     FromAgentMessage::HelloOk {
                         protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
-                        controller_binding_version: None,
-                        controller_binding_sha256: None,
+                        controller_binding_version,
+                        controller_binding_sha256,
                         connection_id: Some(resolved_connection_id.clone()),
                         client_protocol_version: protocol_version.clone(),
                         client_info: client_info.clone(),
@@ -4216,6 +4279,18 @@ async fn handle_message_inner(
                         lease_expires_at,
                     },
                 );
+                if controller_binding.is_some() {
+                    executor_request = Some((
+                        Arc::clone(&shared.message_executor),
+                        message_context(
+                            &state,
+                            &resolved_connection_id,
+                            subscription_id.clone(),
+                            &shared.config.workspace_root,
+                            response_idempotency_key.clone(),
+                        )?,
+                    ));
+                }
             }
             ToAgentMessage::Init {
                 system_prompt: _,
@@ -4255,11 +4330,23 @@ async fn handle_message_inner(
                     )?,
                 ));
             }
-            ToAgentMessage::Prompt { content, .. }
-            | ToAgentMessage::Steer { content, .. }
-            | ToAgentMessage::GovernedPrompt { content, .. }
-            | ToAgentMessage::GovernedSteer { content, .. } => {
-                state.last_status = Some(format!("Prompt: {content}"));
+            ToAgentMessage::ApplyWorkspaceCapabilitySet { .. } => {
+                executor_request = Some((
+                    Arc::clone(&shared.message_executor),
+                    message_context(
+                        &state,
+                        &resolved_connection_id,
+                        subscription_id.clone(),
+                        &shared.config.workspace_root,
+                        response_idempotency_key.clone(),
+                    )?,
+                ));
+            }
+            ToAgentMessage::Prompt { .. }
+            | ToAgentMessage::Steer { .. }
+            | ToAgentMessage::GovernedPrompt { .. }
+            | ToAgentMessage::GovernedSteer { .. } => {
+                state.last_status = Some("Prompt accepted".to_string());
                 executor_request = Some((
                     Arc::clone(&shared.message_executor),
                     message_context(
@@ -5223,8 +5310,8 @@ fn ensure_connection_session_id(
     .with_details(failure.details()))
 }
 
-fn ensure_thread_id(state: &RunnerState, requested: Option<&str>) -> HostedResult<()> {
-    if requested.is_some_and(|thread_id| thread_id != state.session_id) {
+fn ensure_thread_id(binding: &HostedRunnerBinding, requested: Option<&str>) -> HostedResult<()> {
+    if requested.is_some_and(|thread_id| thread_id != binding.runner_session_id.as_str()) {
         return Err(HostedError::new(
             HostedRunnerErrorCode::StaleSession,
             "Headless thread not found",

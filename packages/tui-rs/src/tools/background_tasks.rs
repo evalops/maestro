@@ -51,11 +51,11 @@ use tokio::process::Command;
 use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
-use super::bash::{resolve_shell_config, BashTool};
+use super::bash::{BashTool, resolve_shell_config};
 use super::process_registry;
 use super::process_utils::set_new_process_group;
 use super::shell_env::resolve_shell_environment;
-use crate::safety::{check_dangerous_patterns, Severity};
+use crate::safety::{Severity, check_dangerous_patterns};
 
 /// Status of a background task.
 #[derive(Debug, Clone)]
@@ -640,11 +640,9 @@ impl LogRotationObserver {
             if let Some(reason) = &state.failure_reason {
                 return Err(reason.clone());
             }
-            return Err(
-                "No log rotation yet (non-blocking waitForRotation). \
+            return Err("No log rotation yet (non-blocking waitForRotation). \
                  Prefer action=logs/list, or attach_monitor; set timeoutMs>0 only if you must wait."
-                    .to_string(),
-            );
+                .to_string());
         }
 
         let deadline = Instant::now() + timeout;
@@ -930,6 +928,10 @@ impl RotatingLogWriter {
 }
 
 fn logs_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(home) = std::env::var_os("MAESTRO_HOME") {
+        return PathBuf::from(home).join("logs");
+    }
     dirs::home_dir().map_or_else(
         || std::env::temp_dir().join("composer-logs"),
         |home| home.join(".composer").join("logs"),
@@ -1672,9 +1674,11 @@ mod tests {
         assert!(attach_monitor("missing-monitor-task", "error").is_err());
         let task_id = format!("monitor-validation-{}", Uuid::new_v4());
         insert_running_test_task(&task_id);
-        assert!(attach_monitor(&task_id, "(")
-            .unwrap_err()
-            .contains("Invalid"));
+        assert!(
+            attach_monitor(&task_id, "(")
+                .unwrap_err()
+                .contains("Invalid")
+        );
         assert!(
             attach_monitor(&task_id, &"x".repeat(MAX_MONITOR_PATTERN_BYTES + 1))
                 .unwrap_err()
@@ -1701,9 +1705,11 @@ mod tests {
             .collect();
         assert_eq!(events.len(), MAX_MONITOR_EVENTS_PER_SECOND as usize);
         assert!(events.iter().all(|event| !event.output.contains("sk-")));
-        assert!(events
-            .iter()
-            .all(|event| event.output.chars().count() <= MAX_MONITOR_OUTPUT_CHARS + 3));
+        assert!(
+            events
+                .iter()
+                .all(|event| event.output.chars().count() <= MAX_MONITOR_OUTPUT_CHARS + 3)
+        );
         remove_monitor(&monitor.id).unwrap();
         TASKS.write().unwrap().remove(&task_id);
     }

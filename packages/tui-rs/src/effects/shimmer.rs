@@ -4,9 +4,9 @@
 //! share one implementation (Deixic palette, rest/pulse, diagonal sheen).
 
 pub use crate::shimmer::{
-    anim_phase_secs, diagonal_shimmer_lines, shimmer_frame, shimmer_line, shimmer_spans,
-    shimmer_spans_at_time, shimmer_spans_with_config, shine_opacity, ShimmerConfig, DEIXIC_SOFT,
-    DEIXIC_VIOLET, SHIMMER_FPS,
+    DEIXIC_SOFT, DEIXIC_VIOLET, SHIMMER_FPS, ShimmerConfig, anim_phase_secs,
+    diagonal_shimmer_lines, shimmer_frame, shimmer_line, shimmer_spans, shimmer_spans_at_time,
+    shimmer_spans_with_config, shine_opacity,
 };
 
 #[cfg(test)]

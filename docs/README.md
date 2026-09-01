@@ -1,4 +1,4 @@
-# Maestro Documentation Index
+# Deixic Code Documentation Index
 
 Use this index to jump to the right guide quickly and see how the pieces connect.
 
@@ -8,7 +8,8 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [Contributor Runbook](CONTRIBUTOR_RUNBOOK.md) — day-one flow for contributors (build, lint, verify).
 - [Feature Guide](FEATURES.md) — user-facing capabilities across the TUI and CLI with power-user tips.
 - [Web UI Guide](WEB_UI.md) — browser workflow and TUI/Web parity appendix.
-- [Conductor Bridge](CONDUCTOR_BRIDGE.md) — connect the Conductor extension to a local Maestro server.
+- [Compatibility and migration](DEIXIC_CODE_MIGRATION.md) — canonical names, retained Maestro coordinates, and publication boundaries.
+- [Conductor Bridge](CONDUCTOR_BRIDGE.md) — connect the Conductor extension to a local Deixic Code server.
 
 ## Core Reference
 - [Tools Reference](TOOLS_REFERENCE.md) — authoritative slash command and flag definitions.
@@ -23,7 +24,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [Headless Protocol Reference](protocols/headless.md) — versioned JSON-over-stdio contract for Chat, TUIs, and other embedders.
 - [Codex Parity Conformance](protocols/codex-parity-conformance.md) — compact anchors for Codex-inspired auth, patching, MCP, queue, and hosted-runtime surfaces.
 - [RPC Protocol Conformance](protocols/rpc-protocol-conformance.md) — release-gated JSON-over-stdio request, response, and client-correlation contract.
-- [Hosted Runner Contract](protocols/hosted-runner-contract.md) — provider-neutral runtime contract for account-scoped remote Maestro sessions.
+- [Hosted Runner Contract](protocols/hosted-runner-contract.md) — provider-neutral runtime contract for account-scoped remote Deixic Code sessions (the protocol retains Maestro identifiers).
 - [Pending Request Contract](protocols/pending-requests.md) — unified session projection for approvals, user input, MCP elicitations, tool retries, and Platform waits.
 
 ## Architecture & Patterns

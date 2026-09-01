@@ -423,8 +423,8 @@ mod imp {
     use std::path::Path;
     use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
-    use super::format::{self, MAX_FILE_SIZE, MAX_FRAMES};
     use super::TERMINAL_RESTORE_SEQ;
+    use super::format::{self, MAX_FILE_SIZE, MAX_FRAMES};
 
     // ── Platform-specific ucontext access ────────────────────────────────
     //

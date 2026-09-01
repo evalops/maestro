@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::{
-    ClientCapabilities, ClientInfo, ConnectionRole, ConnectionState, FromAgentMessage,
-    HeadlessErrorType, ResponseToolsSummary, ServerCapabilities, ServerRequestResolutionStatus,
-    ServerRequestType, ToAgentMessage, TokenUsage, UtilityCommandShellMode,
-    UtilityCommandTerminalMode, CODEX_SUBAGENT_TOOL_PREFIX, CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+    CODEX_SUBAGENT_TOOL_PREFIX, CODEX_SUBAGENT_WORK_GRAPH_SCHEMA, ClientCapabilities, ClientInfo,
+    ConnectionRole, ConnectionState, FromAgentMessage, HeadlessErrorType, ResponseToolsSummary,
+    ServerCapabilities, ServerRequestResolutionStatus, ServerRequestType, ToAgentMessage,
+    TokenUsage, UtilityCommandShellMode, UtilityCommandTerminalMode, WorkspaceCapabilitySetApplied,
 };
 
 /// # State Synchronization
@@ -661,6 +661,7 @@ impl AgentState {
                 capabilities,
                 role,
                 opt_out_notifications,
+                controller_binding: _,
             } => {
                 self.client_protocol_version = protocol_version.clone();
                 self.client_info = client_info.clone();
@@ -688,7 +689,9 @@ impl AgentState {
                     lease_expires_at: None,
                 }];
             }
-            ToAgentMessage::Init { .. } | ToAgentMessage::GovernedInit { .. } => {}
+            ToAgentMessage::Init { .. }
+            | ToAgentMessage::GovernedInit { .. }
+            | ToAgentMessage::ApplyWorkspaceCapabilitySet { .. } => {}
             ToAgentMessage::RestoreConversation { .. } => {}
             ToAgentMessage::Prompt { .. } | ToAgentMessage::GovernedPrompt { .. } => {
                 self.current_response = None;
@@ -800,6 +803,20 @@ impl AgentState {
             // not a customer-visible protocol event.
             FromAgentMessage::ConversationSnapshot { .. } => None,
             FromAgentMessage::ResponseAccepted { .. } => None,
+            FromAgentMessage::ManagedGatewayReceipt {
+                request_id,
+                record_id,
+                lineage_id,
+                record_status,
+            } => Some(AgentEvent::ManagedGatewayReceipt {
+                request_id,
+                record_id,
+                lineage_id,
+                record_status,
+            }),
+            FromAgentMessage::WorkspaceCapabilitySetApplied { receipt } => {
+                Some(AgentEvent::WorkspaceCapabilitySetApplied { receipt })
+            }
             FromAgentMessage::HelloOk {
                 protocol_version,
                 controller_binding_version,
@@ -1491,6 +1508,9 @@ impl AgentState {
                 self.last_status = Some(message.clone());
                 Some(AgentEvent::Status { message })
             }
+            FromAgentMessage::DelegationEvent { event } => {
+                Some(AgentEvent::DelegationEvent { event })
+            }
             FromAgentMessage::Compaction {
                 summary,
                 first_kept_entry_index,
@@ -1531,6 +1551,18 @@ pub enum AgentEvent {
     RawAgentEvent {
         event_type: String,
         event: serde_json::Value,
+    },
+    ManagedGatewayReceipt {
+        request_id: String,
+        record_id: String,
+        lineage_id: String,
+        record_status: String,
+    },
+    WorkspaceCapabilitySetApplied {
+        receipt: WorkspaceCapabilitySetApplied,
+    },
+    DelegationEvent {
+        event: maestro_runtime::DelegationEvent,
     },
     Ready {
         protocol_version: Option<String>,

@@ -32,6 +32,7 @@ pub(super) struct PromptFragment {
     name: String,
     source: String,
     content: String,
+    rendered: bool,
 }
 
 impl PromptFragment {
@@ -44,6 +45,16 @@ impl PromptFragment {
             name: name.into(),
             source: source.into(),
             content: content.into(),
+            rendered: true,
+        }
+    }
+
+    pub(super) fn audit_only(name: impl Into<String>, source: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            source: source.into(),
+            content: String::new(),
+            rendered: false,
         }
     }
 }
@@ -61,6 +72,7 @@ impl PromptAssembly {
     pub(super) fn render(&self) -> String {
         self.fragments
             .iter()
+            .filter(|fragment| fragment.rendered)
             .map(|fragment| fragment.content.as_str())
             .collect::<Vec<_>>()
             .join("\n\n")
@@ -441,10 +453,12 @@ mod tests {
             report.fragments[0].redacted_sha256, report.fragments[1].redacted_sha256,
             "the fixture must exercise a redaction collision"
         );
-        assert!(report
-            .findings
-            .iter()
-            .all(|finding| finding.kind != PromptAuditFindingKind::DuplicateFragment));
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|finding| finding.kind != PromptAuditFindingKind::DuplicateFragment)
+        );
     }
 
     #[test]

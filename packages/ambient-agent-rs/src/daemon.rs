@@ -16,8 +16,8 @@ use crate::{
         GoalEvaluatorVerdict,
     },
     ipc::{
-        default_socket_path, verify_token_constant_time, IpcCommand, IpcResponse, IpcServer,
-        StatusResponse,
+        IpcCommand, IpcResponse, IpcServer, StatusResponse, default_socket_path,
+        verify_token_constant_time,
     },
     learner::Learner,
     platform_event_bus::{
@@ -33,7 +33,7 @@ use crate::{
 use chrono::Utc;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
 struct FinishedPlanExecution<'a> {
@@ -1467,11 +1467,10 @@ mod tests {
 
     #[test]
     fn test_goal_gate_only_passes_candidate_complete() {
-        assert!(goal_gate_rejection_reason(Ok(verdict(
-            GoalEvaluatorDecision::CandidateComplete,
-            ""
-        )))
-        .is_none());
+        assert!(
+            goal_gate_rejection_reason(Ok(verdict(GoalEvaluatorDecision::CandidateComplete, "")))
+                .is_none()
+        );
 
         let reason =
             goal_gate_rejection_reason(Ok(verdict(GoalEvaluatorDecision::Continue, ""))).unwrap();

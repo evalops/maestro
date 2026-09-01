@@ -19,6 +19,8 @@ pub struct CodexSessionKey {
     pub profile: String,
     pub workspace: PathBuf,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 impl CodexSessionKey {
@@ -37,7 +39,16 @@ impl CodexSessionKey {
             profile: profile.into(),
             workspace,
             model: normalize_codex_model(model.as_ref()),
+            session_id: None,
         })
+    }
+
+    pub fn with_session_id(mut self, session_id: Option<&str>) -> Self {
+        self.session_id = session_id
+            .map(str::trim)
+            .filter(|session_id| !session_id.is_empty())
+            .map(str::to_owned);
+        self
     }
 
     fn storage_id(&self) -> String {
@@ -47,6 +58,10 @@ impl CodexSessionKey {
         hasher.update(self.workspace.to_string_lossy().as_bytes());
         hasher.update([0]);
         hasher.update(self.model.as_bytes());
+        if let Some(session_id) = &self.session_id {
+            hasher.update([0]);
+            hasher.update(session_id.as_bytes());
+        }
         hex_lower(&hasher.finalize())
     }
 }
@@ -249,7 +264,7 @@ fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
 
     use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
     };
 
     fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
@@ -395,6 +410,44 @@ mod tests {
     }
 
     #[test]
+    fn explicit_sessions_have_distinct_bindings_and_legacy_json_remains_readable()
+    -> anyhow::Result<()> {
+        let state_root = tempfile::tempdir()?;
+        let workspace = tempfile::tempdir()?;
+        let legacy_key = CodexSessionKey::new("work", workspace.path(), "gpt-5.5")?;
+        let first_key = legacy_key.clone().with_session_id(Some("context-1"));
+        let repeated_key = legacy_key.clone().with_session_id(Some(" context-1 "));
+        let second_key = legacy_key.clone().with_session_id(Some("context-2"));
+
+        assert_eq!(first_key, repeated_key);
+        assert_ne!(
+            binding_path(state_root.path(), &first_key),
+            binding_path(state_root.path(), &second_key)
+        );
+        assert_ne!(
+            binding_path(state_root.path(), &legacy_key),
+            binding_path(state_root.path(), &first_key)
+        );
+
+        let legacy_binding =
+            CodexThreadBinding::new(legacy_key.clone(), "legacy-thread", None, 1_725_000_000);
+        let mut serialized = serde_json::to_value(&legacy_binding)?;
+        serialized["key"]
+            .as_object_mut()
+            .expect("key object")
+            .remove("session_id");
+        let legacy_path = binding_path(state_root.path(), &legacy_key);
+        fs::create_dir_all(legacy_path.parent().expect("binding parent"))?;
+        fs::write(&legacy_path, serde_json::to_vec_pretty(&serialized)?)?;
+
+        assert_eq!(
+            CodexThreadBinding::load_at(state_root.path(), &legacy_key)?,
+            Some(legacy_binding)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn binding_store_replaces_existing_exact_key_binding() -> anyhow::Result<()> {
         let state_root = tempfile::tempdir()?;
         let workspace = tempfile::tempdir()?;
@@ -432,21 +485,27 @@ mod tests {
         let binding = CodexThreadBinding::new(key.clone(), "thread-123", None, 1_725_000_000);
         binding.store_at(state_root.path())?;
 
-        assert!(CodexThreadBinding::load_at(
-            state_root.path(),
-            &CodexSessionKey::new("personal", workspace.path(), "openai-codex/gpt-5.5")?
-        )?
-        .is_none());
-        assert!(CodexThreadBinding::load_at(
-            state_root.path(),
-            &CodexSessionKey::new("work", other_workspace.path(), "openai-codex/gpt-5.5")?
-        )?
-        .is_none());
-        assert!(CodexThreadBinding::load_at(
-            state_root.path(),
-            &CodexSessionKey::new("work", workspace.path(), "openai-codex/gpt-5.1")?
-        )?
-        .is_none());
+        assert!(
+            CodexThreadBinding::load_at(
+                state_root.path(),
+                &CodexSessionKey::new("personal", workspace.path(), "openai-codex/gpt-5.5")?
+            )?
+            .is_none()
+        );
+        assert!(
+            CodexThreadBinding::load_at(
+                state_root.path(),
+                &CodexSessionKey::new("work", other_workspace.path(), "openai-codex/gpt-5.5")?
+            )?
+            .is_none()
+        );
+        assert!(
+            CodexThreadBinding::load_at(
+                state_root.path(),
+                &CodexSessionKey::new("work", workspace.path(), "openai-codex/gpt-5.1")?
+            )?
+            .is_none()
+        );
         assert_eq!(
             CodexThreadBinding::load_at(state_root.path(), &key)?,
             Some(binding)

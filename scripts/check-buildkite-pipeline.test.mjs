@@ -9,12 +9,28 @@ const nextest = await readFile(new URL(".config/nextest.toml", root), "utf8");
 const tooling = await readFile(new URL("scripts/run-buildkite-ci-tooling.sh", root), "utf8");
 const jetbrains = await readFile(new URL("scripts/run-buildkite-jetbrains.sh", root), "utf8");
 const coverage = await readFile(new URL("scripts/run-buildkite-coverage.sh", root), "utf8");
+const miseRunner = await readFile(new URL(".buildkite/run-with-mise", root), "utf8");
+const a2aTmuxSmoke = await readFile(new URL("scripts/smoke-maestro-a2a-tmux.sh", root), "utf8");
 
 test("Buildkite routes jobs through the configured Maestro worker pool", () => {
-  assert.match(pipeline, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-medium\}"/);
-  assert.match(pipeline, /image: "\$\{MAESTRO_CI_IMAGE:-evalops-platform-ci-v3\}"/);
+  assert.match(pipeline, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-heavy\}"/);
+  assert.match(pipeline, /image: "\$\{MAESTRO_CI_IMAGE:-evalops-platform-ci-v6\}"/);
   assert.match(pipeline, /queue: "\$\{MAESTRO_CI_JETBRAINS_QUEUE:-hetzner-linux-heavy\}"/);
-  assert.match(pipeline, /image: "\$\{MAESTRO_CI_JETBRAINS_IMAGE:-evalops-platform-ci-v3\}"/);
+  assert.match(pipeline, /image: "\$\{MAESTRO_CI_JETBRAINS_IMAGE:-evalops-platform-ci-v6\}"/);
+  assert.match(pipeline, /queue: "\$\{MAESTRO_CI_INTEGRATION_QUEUE:-linux-medium\}"/);
+  assert.match(pipeline, /image: "\$\{MAESTRO_CI_INTEGRATION_IMAGE:-evalops-platform-ci-v6\}"/);
+});
+
+test("Rust lanes bootstrap the pinned toolchain before invoking Cargo", () => {
+	assert.equal((pipeline.match(/\.buildkite\/run-with-mise "rust@1\.95\.0"/g) ?? []).length, 5);
+	assert.equal(
+		(pipeline.match(/\.buildkite\/run-with-mise "rust@1\.95\.0 gh@2\.88\.1"/g) ?? []).length,
+		1,
+	);
+  assert.match(miseRunner, /mise_version="2026\.4\.24"/);
+  assert.match(miseRunner, /4ecf49b825741e1e3e8ff8c92ee242cf728da951d1b3592ef1c2f080201fa454/);
+  assert.match(miseRunner, /sha256sum --check --status/);
+  assert.match(miseRunner, /exec "\$\{tools\[@\]\}" -- "\$@"/);
 });
 
 test("Buildkite bounds shared worker concurrency and infrastructure retries", () => {
@@ -57,6 +73,13 @@ test("Buildkite network and long-running operations are bounded", () => {
   }
 });
 
+test("Buildkite publishes only the offline machine-auth contract", () => {
+  assert.doesNotMatch(
+    pipeline,
+    /live exchange remains disabled|Identity owns|durable replay store/,
+  );
+});
+
 test("advisory coverage uses nextest and an isolated instrumented target dir", () => {
   assert.match(coverage, /CARGO_TARGET_DIR="\$\{repo_root\}\/\.buildkite\/cache\/cargo-target-cov"/);
   assert.match(coverage, /cargo llvm-cov nextest/);
@@ -87,8 +110,8 @@ test("advisory coverage and perf are not in the default pipeline", () => {
     pipeline,
     /BUILDKITE_SOURCE\}" == "schedule" && -f \.buildkite\/advisory\.yml[\s\S]*pipeline upload \.buildkite\/advisory\.yml/,
   );
-  assert.match(advisory, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-medium\}"/);
-  assert.match(advisory, /image: "\$\{MAESTRO_CI_IMAGE:-evalops-platform-ci-v3\}"/);
+  assert.match(advisory, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-heavy\}"/);
+  assert.match(advisory, /image: "\$\{MAESTRO_CI_IMAGE:-evalops-platform-ci-v6\}"/);
   assert.match(advisory, /CARGO_TARGET_DIR: "\.buildkite\/cache\/cargo-target"/);
   assert.match(advisory, /key: "coverage"[\s\S]*priority: 10/);
   assert.match(advisory, /key: "perf-baseline"[\s\S]*priority: 10/);
@@ -126,7 +149,7 @@ test("workflow tooling installs pinned binaries without requiring Go", () => {
 test("JetBrains validation fails fast and retries only its stuck-JVM exit", () => {
   assert.match(pipeline, /key: "jetbrains-plugin"[\s\S]*exit_status: 137[\s\S]*limit: 1/);
   assert.match(jetbrains, /10m \\\n\s+\.\/gradlew check buildPlugin --no-daemon \\/);
-  assert.match(jetbrains, /org\.gradle\.workers\.max=2/);
+  assert.match(jetbrains, /org\.gradle\.workers\.max=1/);
   assert.match(
     jetbrains,
     /org\.gradle\.jvmargs="-Xmx1g -XX:MaxMetaspaceSize=256m -XX:\+ExitOnOutOfMemoryError"/,
@@ -144,8 +167,8 @@ test("protocol lock does not share the rust-tests Hetzner queue", () => {
   const rust = pipeline.split('key: "rust-tests"')[1]?.split('key: "')[0] ?? "";
   assert.match(lock, /queue: "\$\{MAESTRO_CI_PROTOCOL_QUEUE:-linux-medium\}"/);
   assert.match(lock, /image: "\$\{MAESTRO_CI_PROTOCOL_IMAGE:-evalops-platform-ci-v6\}"/);
-  assert.match(rust, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-medium\}"/);
-  assert.doesNotMatch(lock, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-medium\}"/);
+  assert.match(rust, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-heavy\}"/);
+  assert.doesNotMatch(lock, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-heavy\}"/);
 });
 
 test("rust-tests caps compile jobs and retries OOM SIGKILL", () => {
@@ -191,8 +214,50 @@ test("Rust validation uses the pinned canonical nextest split", () => {
   assert.match(nextest, /\[test-groups\.pty-e2e\]\nmax-threads = 1/);
 });
 
+test("rust-tests explicitly proves CI machine auth fails closed without privileged tokens", () => {
+  const rust = pipeline.split('key: "rust-tests"')[1]?.split('key: "')[0] ?? "";
+  assert.match(rust, /cargo test --locked -p maestro-tui ci_auth_conformance/);
+  assert.doesNotMatch(rust, /ACTIONS_ID_TOKEN_REQUEST_TOKEN/);
+});
+
 test("integration containers are removed by their actual names", () => {
   assert.match(pipeline, /trap 'docker rm -f "\$\$redis" "\$\$postgres"/);
+});
+
+test("Docker integration and supply-chain checks select their required runtimes", () => {
+  const integration = pipeline.split('key: "integration"')[1]?.split('key: "')[0] ?? "";
+  const integrationAgents = integration.split("agents:")[1]?.split("cache:")[0] ?? "";
+  const supplyChain = pipeline.split('key: "supply-chain"')[1]?.split('key: "')[0] ?? "";
+  assert.match(integration, /queue: "\$\{MAESTRO_CI_INTEGRATION_QUEUE:-linux-medium\}"/);
+  assert.doesNotMatch(integration, /queue: "\$\{MAESTRO_CI_QUEUE:-hetzner-linux-heavy\}"/);
+  assert.doesNotMatch(integrationAgents, /#/);
+  assert.match(integration, /docker pull/);
+  assert.match(supplyChain, /queue: "\$\{MAESTRO_CI_SUPPLY_CHAIN_QUEUE:-linux-medium\}"/);
+  assert.match(supplyChain, /image: "\$\{MAESTRO_CI_SUPPLY_CHAIN_IMAGE:-evalops-platform-ci-v6\}"/);
+  assert.match(
+    supplyChain,
+    /command: \.buildkite\/run-with-mise "rust@1\.95\.0 gh@2\.88\.1" scripts\/run-buildkite-supply-chain\.sh/,
+  );
+});
+
+test("A2A tmux smoke atomically reserves its session before resetting durable task databases", () => {
+  const cleanup = a2aTmuxSmoke.split("cleanup() {")[1]?.split("a2a_cli() {")[0] ?? "";
+  const startup = a2aTmuxSmoke.split('cd "$ROOT_DIR"')[1] ?? "";
+  const reservation = startup.indexOf('tmux new-session -d -s "$SESSION_NAME" -n peer-a "sleep 300"');
+  const resetStart = startup.indexOf("rm -f");
+  const respawn = startup.indexOf('tmux respawn-window -k -t "$SESSION_NAME:peer-a"');
+  assert.match(cleanup, /if \[\[ "\$OWNS_SESSION" == "1" \]\]; then/);
+  assert.match(startup, /if tmux new-session[^\n]+; then\n\tOWNS_SESSION=1/);
+  assert.ok(reservation >= 0, "smoke must atomically reserve the tmux session");
+  assert.ok(resetStart > reservation, "state reset must follow session reservation");
+  assert.ok(respawn > resetStart, "peer A must start after state reset");
+  assert.doesNotMatch(startup, /tmux has-session/);
+  const reset = startup.slice(resetStart, respawn);
+  for (const tasks of ["TASKS_A", "TASKS_B"]) {
+    for (const suffix of ["", ".sqlite3", ".sqlite3-wal", ".sqlite3-shm"]) {
+      assert.ok(reset.includes(`"$${tasks}${suffix}"`), `reset must remove $${tasks}${suffix}`);
+    }
+  }
 });
 
 test("legacy GitHub validation workflows are absent", async () => {

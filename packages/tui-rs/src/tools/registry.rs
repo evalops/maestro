@@ -97,12 +97,13 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::sandbox::SandboxPolicy;
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::Value;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use super::SubagentLifecycleEvent;
 use super::ask_user;
 use super::background_tasks;
 use super::bash::{BashArgs, BashOutputStream, BashTool, BashVersion};
@@ -114,25 +115,29 @@ use super::exa;
 use super::extract_document;
 use super::gh;
 use super::image::{ImageTool, ReadImageArgs, ScreenshotArgs};
-use super::inline::{load_inline_tools, InlineTool, InlineToolExecutor};
+use super::inline::{InlineTool, InlineToolExecutor, load_inline_tools};
 use super::notebook_edit;
+use super::orb_delegation::{
+    DEFAULT_ORB_MCP_SERVER, OrbConsoleAction, OrbDelegationAdapter, OrbOperationValidator,
+    is_reserved_orb_tool,
+};
 use super::status;
 use super::subagents::SubagentManager;
 use super::todo;
 use super::versions::ToolVersionOverrides;
 use super::web_fetch::{WebFetchArgs, WebFetchTool};
-use super::SubagentLifecycleEvent;
 use crate::agent::{
     CredentialVault, DenialReason, ExecutionSource, FromAgent, ToolDefinition, ToolExecution,
     ToolResult,
 };
 use crate::lsp;
 use crate::mcp::{
-    append_mcp_prompt_summary, load_mcp_config, McpClient, McpConfigScope, McpContent, McpPrompt,
-    McpTransport,
+    McpClient, McpConfig, McpConfigScope, McpContent, McpPrompt, McpServerConfig, McpTransport,
+    append_mcp_prompt_summary, load_mcp_config_with_managed_connections,
 };
+use crate::orb_connection::{HostedOrbOwnerBinding, hosted_orb_owner_binding};
 use crate::safety::{
-    expand_tilde, is_tilde_path, run_validators_with_diagnostics, ActionFirewall, FirewallVerdict,
+    ActionFirewall, FirewallVerdict, expand_tilde, is_tilde_path, run_validators_with_diagnostics,
 };
 
 const MAX_READ_SIZE_BYTES: u64 = 10 * 1024 * 1024;
@@ -140,6 +145,55 @@ const MAX_GREP_LINES: usize = 100;
 const MAX_LIST_LINES: usize = 200;
 const MAX_DIFF_LINES: usize = 400;
 const MCP_RECONNECT_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone)]
+struct HostedOrbConnectionSnapshot {
+    server: McpServerConfig,
+    owner_binding: HostedOrbOwnerBinding,
+}
+
+/// Resolve the managed Computer server and its opaque owner binding from one
+/// immutable configuration snapshot. The client synchronizer must consume
+/// that same snapshot; resolving the owner first and reloading configuration
+/// for the client can otherwise pair owner A with connection B during a
+/// managed-account switch.
+fn hosted_orb_connection_snapshot(
+    config: &McpConfig,
+) -> Result<HostedOrbConnectionSnapshot, String> {
+    hosted_orb_connection_snapshot_with(config, |server| {
+        hosted_orb_owner_binding(server)
+            .map_err(|error| format!("resolve hosted Computer owner binding: {error:#}"))
+    })
+}
+
+fn hosted_orb_connection_snapshot_with<F>(
+    config: &McpConfig,
+    resolve_owner: F,
+) -> Result<HostedOrbConnectionSnapshot, String>
+where
+    F: FnOnce(&McpServerConfig) -> Result<HostedOrbOwnerBinding, String>,
+{
+    let Some(server) = config
+        .enabled_servers()
+        .find(|server| server.name == DEFAULT_ORB_MCP_SERVER)
+        .cloned()
+    else {
+        return Err(format!(
+            "Computer delegation requires a managed MCP server named \"{DEFAULT_ORB_MCP_SERVER}\""
+        ));
+    };
+    if server.transport != McpTransport::Http {
+        return Err(
+            "Computer delegation requires the hosted HTTP MCP endpoint; local Computer control planes are not supported"
+            .to_string(),
+        );
+    }
+    let owner_binding = resolve_owner(&server)?;
+    Ok(HostedOrbConnectionSnapshot {
+        server,
+        owner_binding,
+    })
+}
 
 fn vault_tool_result_credentials(
     vault: &CredentialVault,
@@ -488,6 +542,13 @@ pub struct ToolExecutor {
 
     /// Native sandbox requested for this executor, if any.
     sandbox_policy: Option<SandboxPolicy>,
+    /// Whether this executor runs where no human can answer an approval
+    /// prompt (print/exec mode and other headless runs).
+    unattended: bool,
+
+    /// The organization's MCP server policy, applied to every MCP client this
+    /// executor builds. `None` means no administrator opinion.
+    managed_mcp_policy: Option<crate::mcp::ManagedMcpPolicy>,
 
     /// Whether successful write/edit calls may run process-global safe-mode
     /// validators. Governed runtimes disable this and own validation separately.
@@ -545,6 +606,12 @@ pub struct ToolExecutor {
     /// MCP client for resource tools (lazy-initialized)
     mcp_client: tokio::sync::Mutex<Option<Arc<crate::mcp::McpClient>>>,
 
+    /// Serializes managed-connection snapshots with MCP client replacement and
+    /// Orb adapter installation. Existing adapters retain their own client
+    /// snapshot when a managed connection changes, so an old owner cannot be
+    /// paired with the newly selected connection.
+    mcp_sync_lock: tokio::sync::Mutex<()>,
+
     /// MCP tool annotations for approval hints
     mcp_tool_annotations: RwLock<HashMap<String, crate::mcp::McpToolAnnotations>>,
 
@@ -556,6 +623,18 @@ pub struct ToolExecutor {
 
     /// Last reconnect attempt timestamp for configured MCP servers.
     mcp_last_connect_attempts: RwLock<HashMap<String, Instant>>,
+
+    /// Executor used for the tools in
+    /// [`crate::tools::executor::PROCESS_ISOLATABLE_TOOLS`], when the caller
+    /// configured one.
+    ///
+    /// `None` -- the default -- means every tool runs on this process's own
+    /// dispatch. When it is set, only the isolatable tools are handed to it;
+    /// approvals, hooks, the action firewall, sandbox-policy denial, the
+    /// result cache, credential vaulting, and receipt construction have all
+    /// already run in this process before the handoff, and every other tool
+    /// still runs here.
+    isolated_dispatch: Option<Arc<dyn crate::tools::executor::ToolExecutor>>,
 }
 
 /// Every exact name that `execute_impl`'s dispatch `match` (in
@@ -762,6 +841,8 @@ impl ToolExecutor {
             credential_vault,
             bash: BashTool::new(&cwd),
             sandbox_policy: None,
+            unattended: false,
+            managed_mcp_policy: None,
             ambient_mutation_validators_enabled: true,
             tool_versions: ToolVersionOverrides::default(),
             web_fetch: WebFetchTool::new(),
@@ -774,10 +855,12 @@ impl ToolExecutor {
             registry,
             cache: RwLock::new(ToolResultCache::default()),
             mcp_client: tokio::sync::Mutex::new(None),
+            mcp_sync_lock: tokio::sync::Mutex::new(()),
             mcp_tool_annotations: RwLock::new(HashMap::new()),
             mcp_last_errors: RwLock::new(HashMap::new()),
             mcp_synced_configs: RwLock::new(HashMap::new()),
             mcp_last_connect_attempts: RwLock::new(HashMap::new()),
+            isolated_dispatch: None,
         }
     }
 
@@ -805,6 +888,8 @@ impl ToolExecutor {
             credential_vault: CredentialVault::new(),
             bash: BashTool::new(&cwd),
             sandbox_policy: None,
+            unattended: false,
+            managed_mcp_policy: None,
             ambient_mutation_validators_enabled: true,
             tool_versions: ToolVersionOverrides::default(),
             web_fetch: WebFetchTool::new(),
@@ -817,10 +902,12 @@ impl ToolExecutor {
             registry,
             cache: RwLock::new(ToolResultCache::default()),
             mcp_client: tokio::sync::Mutex::new(None),
+            mcp_sync_lock: tokio::sync::Mutex::new(()),
             mcp_tool_annotations: RwLock::new(HashMap::new()),
             mcp_last_errors: RwLock::new(HashMap::new()),
             mcp_synced_configs: RwLock::new(HashMap::new()),
             mcp_last_connect_attempts: RwLock::new(HashMap::new()),
+            isolated_dispatch: None,
         }
     }
 
@@ -852,6 +939,8 @@ impl ToolExecutor {
             credential_vault,
             bash: BashTool::new(&cwd),
             sandbox_policy: None,
+            unattended: false,
+            managed_mcp_policy: None,
             ambient_mutation_validators_enabled: true,
             tool_versions: ToolVersionOverrides::default(),
             web_fetch: WebFetchTool::new(),
@@ -864,11 +953,106 @@ impl ToolExecutor {
             registry,
             cache: RwLock::new(ToolResultCache::new(cache_config)),
             mcp_client: tokio::sync::Mutex::new(None),
+            mcp_sync_lock: tokio::sync::Mutex::new(()),
             mcp_tool_annotations: RwLock::new(HashMap::new()),
             mcp_last_errors: RwLock::new(HashMap::new()),
             mcp_synced_configs: RwLock::new(HashMap::new()),
             mcp_last_connect_attempts: RwLock::new(HashMap::new()),
+            isolated_dispatch: None,
         }
+    }
+
+    /// Route the tools in
+    /// [`crate::tools::executor::PROCESS_ISOLATABLE_TOOLS`] through
+    /// `dispatch` instead of this process's own dispatch.
+    ///
+    /// Everything the agent decides before a tool runs still runs here, and
+    /// every tool outside that list still runs here too.
+    #[must_use]
+    pub fn with_isolated_dispatch(
+        mut self,
+        dispatch: Arc<dyn crate::tools::executor::ToolExecutor>,
+    ) -> Self {
+        self.isolated_dispatch = Some(dispatch);
+        self
+    }
+
+    /// The isolated executor for `tool_name`, if one is configured and the
+    /// tool is allowed to leave this process.
+    fn isolated_dispatch_for(
+        &self,
+        tool_name: &str,
+    ) -> Option<Arc<dyn crate::tools::executor::ToolExecutor>> {
+        // Inline tools can never reach here under an isolatable name:
+        // `register_inline_tools` rejects every name in
+        // `is_reserved_execute_dispatch_name`, which covers all of them.
+        let dispatch = self.isolated_dispatch.as_ref()?;
+        crate::tools::executor::is_process_isolatable(tool_name).then(|| Arc::clone(dispatch))
+    }
+
+    /// The invocation handed across the executor seam for one tool call.
+    fn isolated_invocation(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        call_id: &str,
+        approved_inline_env: Option<&HashMap<String, String>>,
+    ) -> crate::tools::executor::ToolInvocation {
+        let env = approved_inline_env
+            .map(|environment| {
+                let mut entries = environment
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<Vec<_>>();
+                entries.sort();
+                entries
+            })
+            .unwrap_or_default();
+        crate::tools::executor::ToolInvocation::new(
+            call_id,
+            tool_name,
+            args.clone(),
+            PathBuf::from(&self.cwd),
+        )
+        .with_env(env)
+        .with_sandbox(crate::tools::executor::SandboxPolicySnapshot::from_policy(
+            self.sandbox_policy.clone(),
+        ))
+    }
+
+    /// Run one invocation on this process's dispatch, with no policy, cache,
+    /// hook, or receipt work.
+    ///
+    /// This is the raw entry point behind
+    /// [`crate::tools::executor::InProcessExecutor`]. Callers that have not
+    /// already applied the layers above the executor seam must use
+    /// [`Self::execute`] instead.
+    pub(crate) async fn dispatch_invocation(
+        &self,
+        invocation: &crate::tools::executor::ToolInvocation,
+        event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+        cancel: CancellationToken,
+    ) -> ToolResult {
+        self.execute_impl(
+            &invocation.tool,
+            &invocation.args,
+            event_tx,
+            &invocation.call_id,
+            self.credential_generation(),
+            ToolExecutionContext {
+                cancel: Some(cancel),
+                approved_inline_env: None,
+                hooks: None,
+                emit_tool_events: false,
+            },
+        )
+        .await
+    }
+
+    /// The working directory every tool in this executor runs in.
+    #[must_use]
+    pub fn cwd(&self) -> &str {
+        &self.cwd
     }
 
     /// Apply a native sandbox to subprocess-backed tools.
@@ -876,6 +1060,43 @@ impl ToolExecutor {
         self.sandbox_policy = Some(policy);
         self.bash = self.build_bash_tool();
         self
+    }
+
+    /// Install the organization's MCP server policy.
+    ///
+    /// Every MCP client this executor builds, including one rebuilt after a
+    /// configuration change, carries this policy. That is why the policy lives
+    /// on the executor rather than on one client instance.
+    #[must_use]
+    pub fn with_managed_mcp_policy(mut self, policy: Option<crate::mcp::ManagedMcpPolicy>) -> Self {
+        self.managed_mcp_policy = policy;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn managed_mcp_policy_version_for_test(&self) -> Option<u64> {
+        self.managed_mcp_policy
+            .as_ref()
+            .map(|policy| policy.version)
+    }
+
+    /// Mark this executor as running with no approval UI.
+    ///
+    /// Print/exec mode and other headless runs cannot collect a human
+    /// approval, so tools that would otherwise escalate an unclassifiable
+    /// input to the user must refuse it instead. Currently this makes the
+    /// bash tool fail closed on a command its analyzer cannot parse.
+    #[must_use]
+    pub fn unattended(mut self) -> Self {
+        self.unattended = true;
+        self.bash = self.build_bash_tool();
+        self
+    }
+
+    /// Whether this executor runs with no approval UI.
+    #[must_use]
+    pub fn is_unattended(&self) -> bool {
+        self.unattended
     }
 
     /// Disable process-global safe-mode validators for callers that own a
@@ -906,6 +1127,11 @@ impl ToolExecutor {
     /// Build the bash tool honoring the pinned behavior version and sandbox.
     fn build_bash_tool(&self) -> BashTool {
         let tool = BashTool::new(&self.cwd).with_version(self.resolved_bash_version());
+        let tool = if self.unattended {
+            tool.unattended()
+        } else {
+            tool
+        };
         match &self.sandbox_policy {
             Some(policy) => tool.with_sandbox_policy(policy.clone()),
             None => tool,
@@ -969,6 +1195,14 @@ impl ToolExecutor {
     /// outlives any one session; a new or resumed session rotates the scope
     /// rather than replacing the executor, which would drop its inline tools
     /// and MCP state.
+    /// Point this executor's blocking tool waits at a steering signal.
+    ///
+    /// Without it `wait_subagent` sleeps until its own timeout and the user's
+    /// message waits behind it.
+    pub(crate) fn set_steer_signal(&self, signal: std::sync::Arc<crate::agent::SteerSignal>) {
+        self.subagents.set_steer_signal(signal);
+    }
+
     pub(crate) fn set_subagent_parent_scope(&self, parent_scope_id: String) {
         self.subagents.set_parent_scope_id(parent_scope_id);
     }
@@ -1006,7 +1240,7 @@ impl ToolExecutor {
     pub(crate) fn cancel_subagent_by_id(&self, subagent_id: &str) -> Result<(), String> {
         let result = self
             .subagents
-            .cancel(&serde_json::json!({"subagent_id": subagent_id}));
+            .cancel_native(&serde_json::json!({"subagent_id": subagent_id}));
         if result.success {
             Ok(())
         } else {
@@ -1092,6 +1326,19 @@ impl ToolExecutor {
     }
 
     async fn ensure_mcp_client(&self) -> Result<Arc<McpClient>, String> {
+        let _sync_guard = self.mcp_sync_lock.lock().await;
+        let config = load_mcp_config_with_managed_connections(Some(Path::new(&self.cwd)));
+        self.ensure_mcp_client_for_config(&config).await
+    }
+
+    /// Synchronize a client from one immutable configuration snapshot. The
+    /// caller must hold `mcp_sync_lock`; replacing the client, rather than
+    /// mutating it in place, keeps adapters created for the previous managed
+    /// connection paired with that connection after an account switch.
+    async fn ensure_mcp_client_for_config(
+        &self,
+        config: &McpConfig,
+    ) -> Result<Arc<McpClient>, String> {
         if self
             .sandbox_policy
             .as_ref()
@@ -1101,7 +1348,6 @@ impl ToolExecutor {
                 "MCP blocked because the active sandbox policy disables network access".to_string(),
             );
         }
-        let config = load_mcp_config(Some(Path::new(&self.cwd)));
         let servers: Vec<_> = config.enabled_servers().cloned().collect();
         let desired_configs: HashMap<String, crate::mcp::McpServerConfig> = servers
             .iter()
@@ -1123,14 +1369,29 @@ impl ToolExecutor {
             .read()
             .map(|attempts| attempts.clone())
             .unwrap_or_default();
+        let replace_client =
+            previous_configs != desired_configs || self.mcp_client.lock().await.as_ref().is_none();
         let client = {
-            let mut guard = self.mcp_client.lock().await;
-            Arc::clone(guard.get_or_insert_with(|| Arc::new(McpClient::new())))
+            if replace_client {
+                let client = Arc::new(McpClient::new());
+                client
+                    .set_managed_policy(self.managed_mcp_policy.clone())
+                    .await;
+                client
+            } else {
+                let guard = self.mcp_client.lock().await;
+                guard
+                    .as_ref()
+                    .map(Arc::clone)
+                    .expect("MCP client exists when replacement is not required")
+            }
         };
 
-        for (name, previous) in &previous_configs {
-            if desired_configs.get(name) != Some(previous) {
-                let _ = client.disconnect(name).await;
+        if !replace_client {
+            for (name, previous) in &previous_configs {
+                if desired_configs.get(name) != Some(previous) {
+                    let _ = client.disconnect(name).await;
+                }
             }
         }
 
@@ -1139,10 +1400,9 @@ impl ToolExecutor {
         let now = Instant::now();
 
         // Project/local-scoped servers come from the repository and may be
-        // hostile. Enforce the per-workspace trust approval recorded in
-        // requiresProjectApproval (default: required for stdio, which spawns
-        // a repo-controlled process). Trust is read from global config only,
-        // so a repository cannot grant itself trust.
+        // hostile. Enforce the per-workspace trust approval for every
+        // transport. Trust is read from global config only, so a repository
+        // cannot grant itself trust.
         let workspace_trusted =
             crate::config::workspace_trusted_in_global_config(Path::new(&self.cwd));
 
@@ -1163,7 +1423,7 @@ impl ToolExecutor {
                 continue;
             }
 
-            let config_changed = previous_configs.get(name) != Some(server);
+            let config_changed = replace_client || previous_configs.get(name) != Some(server);
             let is_connected = connected.contains(name);
             let retry_allowed = match last_attempts.get(name) {
                 Some(last_attempt) => {
@@ -1173,7 +1433,10 @@ impl ToolExecutor {
             };
 
             if config_changed || (!is_connected && retry_allowed) {
-                match client.connect(server.clone()).await {
+                match client
+                    .connect_with_workspace_trust(server.clone(), Some(Path::new(&self.cwd)))
+                    .await
+                {
                     Ok(()) => {
                         last_errors.remove(name);
                     }
@@ -1207,6 +1470,11 @@ impl ToolExecutor {
             *map = last_attempts;
         }
 
+        if replace_client {
+            let mut guard = self.mcp_client.lock().await;
+            *guard = Some(Arc::clone(&client));
+        }
+
         let annotations = client.list_tool_annotations().await;
         if let Ok(mut map) = self.mcp_tool_annotations.write() {
             map.clear();
@@ -1215,12 +1483,94 @@ impl ToolExecutor {
             }
         }
 
+        // Publish the identity of every dispatchable MCP tool so the session
+        // recorder can stamp each call with the definition it was issued
+        // against. See `tools::tool_call_contract`.
+        let live_tools = client.list_all_tools().await;
+        crate::tools::tool_call_contract::publish_live_identities(
+            live_tools
+                .iter()
+                .map(|tool| (tool.name.as_str(), Some(&tool.input_schema))),
+        );
+
         Ok(client)
+    }
+
+    /// Identity of an MCP tool as the currently configured servers define it.
+    ///
+    /// `None` when no configured server offers that name any more.
+    pub(crate) async fn live_mcp_tool_contract(
+        &self,
+        call_id: &str,
+        tool_name: &str,
+    ) -> Option<crate::tools::tool_call_contract::ToolCallContract> {
+        let client = self.ensure_mcp_client().await.ok()?;
+        client
+            .list_all_tools()
+            .await
+            .into_iter()
+            .find(|tool| tool.name == tool_name)
+            .map(|tool| {
+                crate::tools::tool_call_contract::ToolCallContract::record(
+                    call_id,
+                    tool_name,
+                    Some(&tool.input_schema),
+                )
+            })
+    }
+
+    pub(crate) async fn ensure_orb_delegation_adapter(&self) -> Result<(), String> {
+        // The managed connection authority is the source of truth for hosted
+        // Orb bindings. Keep the owner and client on one immutable merged
+        // snapshot, otherwise an account/connection switch between two
+        // independent loads can pair owner A with client B.
+        let _sync_guard = self.mcp_sync_lock.lock().await;
+        let config = load_mcp_config_with_managed_connections(Some(Path::new(&self.cwd)));
+        let snapshot = hosted_orb_connection_snapshot(&config)?;
+        let client = self.ensure_mcp_client_for_config(&config).await?;
+        let expected_server = snapshot.server.clone();
+        let expected_owner = snapshot.owner_binding.clone();
+        let cwd = self.cwd.clone();
+        let operation_validator: OrbOperationValidator = Arc::new(move || {
+            let current_config = load_mcp_config_with_managed_connections(Some(Path::new(&cwd)));
+            let current_snapshot = hosted_orb_connection_snapshot(&current_config)?;
+            if current_snapshot.server != expected_server {
+                return Err(
+                    "active managed Computer connection configuration changed; remote operation refused"
+                        .to_string(),
+                );
+            }
+            if current_snapshot.owner_binding != expected_owner {
+                return Err(
+                    "active account, workspace, or managed Computer connection owner changed; remote operation refused"
+                        .to_string(),
+                );
+            }
+            Ok(())
+        });
+        self.subagents
+            .set_orb_adapter(OrbDelegationAdapter::from_mcp_client_with_validator(
+                client,
+                snapshot.server.name,
+                snapshot.owner_binding,
+                Some(operation_validator),
+            ))
+            .await;
+        Ok(())
+    }
+
+    /// Execute a native hosted Computer operation through the same managed
+    /// connection and durable subagent registry used by model tool calls.
+    /// Provider setup failures are projected as `Unavailable` by the manager;
+    /// durable local task identity is never discarded.
+    pub(crate) async fn run_orb_console(&self, action: OrbConsoleAction) -> ToolResult {
+        let provider_error = self.ensure_orb_delegation_adapter().await.err();
+        self.subagents.orb_console(action, provider_error).await
     }
 
     /// Get MCP server status snapshots for UI display
     pub async fn mcp_status(&self) -> Result<Vec<McpServerStatus>, String> {
-        let config = load_mcp_config(Some(Path::new(&self.cwd)));
+        let config = load_mcp_config_with_managed_connections(Some(Path::new(&self.cwd)));
         let client = self.ensure_mcp_client().await?;
 
         let connected: std::collections::HashSet<_> =
@@ -1340,13 +1690,18 @@ impl ToolExecutor {
 
     /// Drain live MCP notifications and refresh cached metadata when server lists change.
     pub async fn poll_mcp_updates(&self) -> Result<Vec<crate::mcp::McpRuntimeEvent>, String> {
-        let client = {
+        // Reconcile the merged config and global workspace trust before
+        // touching cached connections. This disconnects repository-controlled
+        // servers immediately after trust revocation instead of allowing a
+        // stale HTTP/SSE refresh or stdio respawn through the poll path.
+        let has_cached_client = {
             let guard = self.mcp_client.lock().await;
-            guard.as_ref().cloned()
+            guard.is_some()
         };
-        let Some(client) = client else {
+        if !has_cached_client {
             return Ok(Vec::new());
-        };
+        }
+        let client = self.ensure_mcp_client().await?;
 
         let events = client
             .poll_notifications()
@@ -1832,15 +2187,39 @@ impl ToolExecutor {
         // Other tools can safely race their whole execution against the
         // per-call token.
         let cancellation = execution_context.cancel.clone();
-        let owns_cancellation_cleanup = self.owns_cancellation_cleanup(tool_name);
-        let execution = Box::pin(self.execute_impl(
-            tool_name,
-            args,
-            event_tx,
-            call_id,
-            generation,
-            execution_context,
-        ));
+        let isolated = self.isolated_dispatch_for(tool_name);
+        // An isolated executor owns its own kill path, so the outer select
+        // below must not abandon the call and leave the child running.
+        let owns_cancellation_cleanup =
+            isolated.is_some() || self.owns_cancellation_cleanup(tool_name);
+        let execution = Box::pin(async {
+            match isolated {
+                Some(dispatch) => {
+                    let invocation = self.isolated_invocation(
+                        tool_name,
+                        args,
+                        call_id,
+                        execution_context.approved_inline_env,
+                    );
+                    let sink = event_tx
+                        .cloned()
+                        .map(crate::tools::executor::OutputSink::new);
+                    let token = execution_context.cancel.clone().unwrap_or_default();
+                    dispatch.execute(invocation, token, sink).await
+                }
+                None => {
+                    self.execute_impl(
+                        tool_name,
+                        args,
+                        event_tx,
+                        call_id,
+                        generation,
+                        execution_context,
+                    )
+                    .await
+                }
+            }
+        });
         let (uncached_result, synthetically_cancelled) = match cancellation {
             Some(token) if !owns_cancellation_cleanup => {
                 tokio::select! {

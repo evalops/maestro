@@ -7,15 +7,15 @@ use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
-use serde_json::{json, Map, Value};
+use anyhow::{Context, Result, anyhow, bail};
+use serde_json::{Map, Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, oneshot, Mutex, Notify};
+use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 use tokio::time::timeout;
 
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
@@ -53,7 +53,7 @@ impl Default for ClientInfo {
     fn default() -> Self {
         Self {
             name: "maestro".to_owned(),
-            title: Some("Maestro".to_owned()),
+            title: Some("Deixic Code".to_owned()),
             version: Some(package_version()),
         }
     }
@@ -1220,7 +1220,7 @@ impl MockCodexTransport {
 
     pub fn spawn_error_enoent(&self) {
         let _ = self.event_tx.send(IoEvent::SpawnError(
-            "Codex app-server executable was not found (mock-codex). Maestro uses the bundled @openai/codex package when installed and falls back to a codex binary on PATH; run your package manager install in this checkout or install Codex with `npm install -g @openai/codex`.".to_owned(),
+            "Codex app-server executable was not found (mock-codex). Deixic Code uses the bundled @openai/codex package when installed and falls back to a codex binary on PATH; run your package manager install in this checkout or install Codex with `npm install -g @openai/codex`.".to_owned(),
         ));
     }
 
@@ -1295,7 +1295,7 @@ async fn handle_line(
                 "id": id,
                 "error": {
                     "code": -32601,
-                    "message": "Maestro does not manage Codex ChatGPT auth tokens directly. Run `maestro codex login` or `codex login` so Codex app-server owns ChatGPT auth refresh."
+                    "message": "Deixic Code does not manage Codex ChatGPT auth tokens directly. Run `deixic-code codex login` or `codex login` so Codex app-server owns ChatGPT auth refresh."
                 }
             });
             let _ = write_tx.send(format!("{response}\n"));
@@ -1339,7 +1339,7 @@ async fn handle_line(
                             "error": {
                                 "code": -32000,
                                 "message": format!(
-                                    "Timed out waiting for Maestro to handle {method_owned}"
+                                    "Timed out waiting for Deixic Code to handle {method_owned}"
                                 )
                             }
                         }),
@@ -1642,7 +1642,7 @@ fn format_spawn_error(error: &std::io::Error, command_label: Option<&str>) -> an
             .map(|label| format!(" ({label})"))
             .unwrap_or_default();
         return anyhow!(
-            "Codex app-server executable was not found{command}. Maestro uses the bundled @openai/codex package when installed and falls back to a codex binary on PATH; run your package manager install in this checkout or install Codex with `npm install -g @openai/codex`."
+            "Codex app-server executable was not found{command}. Deixic Code uses the bundled @openai/codex package when installed and falls back to a codex binary on PATH; run your package manager install in this checkout or install Codex with `npm install -g @openai/codex`."
         );
     }
     anyhow!(error.to_string())
@@ -1809,10 +1809,12 @@ lines.on("line", (line) => {
         let response = mock.next_request().await.expect("error response");
         assert_eq!(response["id"], "server-1");
         assert_eq!(response["error"]["code"], -32601);
-        assert!(response["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("maestro codex login"));
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("deixic-code codex login")
+        );
         drop(client);
     }
 

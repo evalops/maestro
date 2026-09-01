@@ -1,7 +1,7 @@
 use reqwest::StatusCode;
 use std::fs;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Condvar;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tempfile::tempdir;
 use tokio::sync::Notify;
 
@@ -10,10 +10,34 @@ use std::os::unix::fs::PermissionsExt;
 
 use super::config::HostedRunnerWorkloadIdentityConfig;
 use super::*;
-use crate::headless::messages::{CodexSubagentContinuityEdge, ToolRetryDecisionAction};
 use crate::headless::RemoteTransportConfig;
+use crate::headless::messages::{CodexSubagentContinuityEdge, ToolRetryDecisionAction};
 use crate::headless::{NativeToolCapability, PendingApproval};
 use crate::hosted_runner::rendezvous_protocol::RendezvousMode;
+
+#[test]
+fn append_turn_dispatch_preserves_managed_inference_authorization() {
+    let message = append_turn_message(AppendTurnRequest {
+        protocol_version: THREAD_PROTOCOL_VERSION.to_string(),
+        turn_id: "turn-managed".to_string(),
+        kind: ThreadTurnKind::UserMessage,
+        content: "managed prompt".to_string(),
+        attachments: None,
+        code_mode: None,
+        tool_grant: None,
+        managed_inference_authorization: Some(crate::agent::ManagedInferenceAuthorization::new(
+            "signed-capability-marker",
+        )),
+    });
+
+    assert!(matches!(
+        message,
+        ToAgentMessage::Prompt {
+            managed_inference_authorization: Some(authorization),
+            ..
+        } if authorization.as_str() == "signed-capability-marker"
+    ));
+}
 
 #[tokio::test]
 async fn initial_identity_exchanges_are_polled_concurrently() {
@@ -61,9 +85,24 @@ async fn hosted_runner_preparation_is_reversible_before_activation() {
     assert!(prepared.identity_runtime.is_none());
     drop(prepared);
 
-    let rebound = TcpListener::bind(local_addr)
-        .await
-        .expect("dropping preparation releases listener");
+    // The full workspace suite opens thousands of ephemeral listeners in
+    // parallel. Another test can claim this port between the drop above and
+    // our first rebind attempt, so allow that transient race to clear while
+    // still requiring this exact address to become available promptly.
+    let rebound = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match TcpListener::bind(local_addr).await {
+                Ok(listener) => break Ok(listener),
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(error) => break Err(error),
+            }
+        }
+    })
+    .await
+    .expect("dropping preparation releases listener promptly")
+    .expect("dropping preparation releases listener");
     drop(rebound);
 }
 
@@ -136,15 +175,16 @@ async fn padded_receipt_identities_fail_before_listener_bind() {
 #[test]
 fn hosted_trace_fields_accept_only_valid_w3c_parent_and_safe_route_classes() {
     let parent = "00-0af7656daaaaaaaaaaaaaaaaaaaaaaaa-b7ad6b7169203331-01";
-    assert_eq!(safe_traceparent(parent), Some(parent));
-    assert_eq!(safe_traceparent("prompt=never-log-this"), None);
+    let headers = TraceHeaders::from_values(Some(parent), None);
+    assert_eq!(headers.traceparent(), Some(parent));
+    assert!(!TraceHeaders::from_values(Some("prompt=never-log-this"), None).is_valid());
     assert_eq!(
-        hosted_route_class("/api/headless/threads/t-1/turns"),
-        "thread.turns"
+        route_class("/api/headless/threads/t-1/turns"),
+        "/api/headless/threads/:id/turns"
     );
     assert_eq!(
-        hosted_route_class("/api/headless/sessions/s-1/events"),
-        "headless.events"
+        route_class("/api/headless/sessions/s-1/events"),
+        "/api/headless/sessions/:id/events"
     );
 }
 
@@ -241,6 +281,7 @@ fn runtime_receipt_tracks_generation_bound_durable_lifecycle_boundaries() {
                 attachments: None,
                 code_mode: None,
                 tool_grant: None,
+                managed_inference_authorization: None,
             },
             cursor,
         );
@@ -277,6 +318,7 @@ fn runtime_receipt_tracks_generation_bound_durable_lifecycle_boundaries() {
                 attachments: None,
                 code_mode: None,
                 tool_grant: None,
+                managed_inference_authorization: None,
             },
             cursor,
         );
@@ -337,6 +379,7 @@ fn late_terminal_event_does_not_override_first_terminal_receipt() {
                 attachments: None,
                 code_mode: None,
                 tool_grant: None,
+                managed_inference_authorization: None,
             },
             cursor,
         );
@@ -386,6 +429,7 @@ fn late_ready_event_does_not_replace_a_durable_terminal_receipt() {
                 attachments: None,
                 code_mode: None,
                 tool_grant: None,
+                managed_inference_authorization: None,
             },
             cursor,
         );
@@ -538,7 +582,6 @@ async fn oversized_supervisor_binding_fails_before_listener_bind_and_ready_recei
             .await
             .expect("reserve listener address");
         let bind_addr = reserved.local_addr().expect("reserved listener address");
-        drop(reserved);
         let mut config = test_config(workspace.path().to_path_buf());
         config.bind_addr = bind_addr;
         let executor = Arc::new(StatefulRuntimeExecutor::new(AgentState {
@@ -555,10 +598,11 @@ async fn oversized_supervisor_binding_fails_before_listener_bind_and_ready_recei
         assert!(error.to_string().contains(field));
         assert!(error.to_string().contains("runtime receipt limit"));
 
-        let rebound = tokio::net::TcpListener::bind(bind_addr)
-            .await
-            .expect("failed startup must leave listener unbound");
-        drop(rebound);
+        assert_eq!(
+            reserved.local_addr().expect("reserved listener address"),
+            bind_addr,
+            "validation must fail while the listener address remains reserved",
+        );
     }
 }
 
@@ -651,7 +695,7 @@ async fn retryable_dispatch_failure_does_not_fence_same_generation_restart() {
 
     let response = client
         .post(format!(
-            "{}/api/headless/threads/sess_test/turns",
+            "{}/api/headless/threads/mrs_test/turns",
             handle.base_url()
         ))
         .header(
@@ -725,6 +769,7 @@ fn same_generation_restart_scans_past_failed_steer_for_interrupted_run() {
                 attachments: None,
                 code_mode: None,
                 tool_grant: None,
+                managed_inference_authorization: None,
             },
             1,
         );
@@ -738,6 +783,7 @@ fn same_generation_restart_scans_past_failed_steer_for_interrupted_run() {
                 attachments: None,
                 code_mode: None,
                 tool_grant: None,
+                managed_inference_authorization: None,
             },
             3,
         );
@@ -776,6 +822,7 @@ fn same_generation_restart_does_not_resurrect_terminal_after_failed_user_turn() 
                 attachments: None,
                 code_mode: None,
                 tool_grant: None,
+                managed_inference_authorization: None,
             },
             1,
         );
@@ -795,6 +842,7 @@ fn same_generation_restart_does_not_resurrect_terminal_after_failed_user_turn() 
                 attachments: None,
                 code_mode: None,
                 tool_grant: None,
+                managed_inference_authorization: None,
             },
             4,
         );
@@ -878,9 +926,11 @@ async fn runtime_receipt_endpoint_and_state_field_are_additive() {
     assert_eq!(receipt["kind"], "ready");
     assert_eq!(receipt["lifecycleState"], "execution_ready");
     assert!(receipt["flushWatermark"].as_u64().unwrap_or_default() > 0);
-    assert!(!receipt
-        .to_string()
-        .contains("sentinel-runtime-receipt-auth-token"));
+    assert!(
+        !receipt
+            .to_string()
+            .contains("sentinel-runtime-receipt-auth-token")
+    );
     assert!(!receipt.to_string().contains("token"));
 
     let health: serde_json::Value = client
@@ -1020,6 +1070,7 @@ fn terminal_receipt_waits_for_session_recorder_flush() {
                 attachments: None,
                 code_mode: None,
                 tool_grant: None,
+                managed_inference_authorization: None,
             },
             cursor,
         );
@@ -1106,6 +1157,7 @@ fn failed_session_flush_does_not_replay_terminal_when_failure_fence_write_fails(
                 attachments: None,
                 code_mode: None,
                 tool_grant: None,
+                managed_inference_authorization: None,
             },
             cursor,
         );
@@ -1123,9 +1175,11 @@ fn failed_session_flush_does_not_replay_terminal_when_failure_fence_write_fails(
             StreamEnvelope::Message { message, .. }
                 if matches!(message.as_ref(), FromAgentMessage::TurnCompleted { .. })
         )));
-        assert!(shared
-            .thread_persistence_retry_pending
-            .load(Ordering::Acquire));
+        assert!(
+            shared
+                .thread_persistence_retry_pending
+                .load(Ordering::Acquire)
+        );
     }
 
     drop(shared);
@@ -1162,6 +1216,7 @@ fn terminal_receipt_keeps_durable_model_provider_binding_across_restart() {
                 attachments: None,
                 code_mode: None,
                 tool_grant: None,
+                managed_inference_authorization: None,
             },
             cursor,
         );
@@ -1299,9 +1354,11 @@ async fn fatal_runtime_error_recovery_continues_after_inline_retry_failure() {
     .await
     .expect("independent recovery supervisor must converge");
     assert_eq!(receipt.error_type.as_deref(), Some("event_pump_failed"));
-    assert!(!shared
-        .thread_persistence_retry_pending
-        .load(Ordering::Acquire));
+    assert!(
+        !shared
+            .thread_persistence_retry_pending
+            .load(Ordering::Acquire)
+    );
     drop(shared);
 
     let restarted = SharedRunner::new(config);
@@ -1336,10 +1393,12 @@ async fn shutdown_cancels_persistence_recovery_before_releasing_journal() {
         "shutdown_persistence_failure",
         HostedRunnerError::internal("journal remains unwritable during shutdown test"),
     );
-    assert!(handle
-        .shared
-        .thread_persistence_retry_pending
-        .load(Ordering::Acquire));
+    assert!(
+        handle
+            .shared
+            .thread_persistence_retry_pending
+            .load(Ordering::Acquire)
+    );
     tokio::time::timeout(Duration::from_secs(1), async {
         while !handle
             .shared
@@ -1380,10 +1439,12 @@ async fn stopped_event_pump_schedules_deferred_persistence_recovery() {
         let mut state = handle.shared.state.lock().expect("runner state");
         assert!(!handle.shared.publish_snapshot(&mut state));
     }
-    assert!(handle
-        .shared
-        .thread_persistence_retry_pending
-        .load(Ordering::Acquire));
+    assert!(
+        handle
+            .shared
+            .thread_persistence_retry_pending
+            .load(Ordering::Acquire)
+    );
 
     tokio::time::timeout(Duration::from_secs(2), async {
         while handle
@@ -1433,6 +1494,7 @@ fn failed_snapshot_persistence_replaces_a_terminal_receipt_after_retry() {
                 attachments: None,
                 code_mode: None,
                 tool_grant: None,
+                managed_inference_authorization: None,
             },
             cursor,
         );
@@ -1486,6 +1548,7 @@ fn published_turn_terminals_survive_journal_reload_with_their_replay_envelopes()
                     attachments: None,
                     code_mode: None,
                     tool_grant: None,
+                    managed_inference_authorization: None,
                 },
                 1,
             );
@@ -1539,6 +1602,7 @@ fn startup_receipt_fences_old_generations_and_prefers_a_restored_interrupted_tur
                 attachments: None,
                 code_mode: None,
                 tool_grant: None,
+                managed_inference_authorization: None,
             },
             0,
         );
@@ -1558,6 +1622,7 @@ fn startup_receipt_fences_old_generations_and_prefers_a_restored_interrupted_tur
                 attachments: None,
                 code_mode: None,
                 tool_grant: None,
+                managed_inference_authorization: None,
             },
             interrupted_turn_cursor,
         );
@@ -1729,6 +1794,7 @@ fn terminal_error_classifications_survive_journal_reload() {
                     attachments: None,
                     code_mode: None,
                     tool_grant: None,
+                    managed_inference_authorization: None,
                 },
                 cursor,
             );
@@ -1907,7 +1973,7 @@ async fn hosted_runner_identity_binding_rejects_thread_ids_and_accepts_runner_se
         1
     );
 
-    let runner_alias_thread = client
+    let runner_thread = client
         .get(format!(
             "{}/api/headless/threads/mrs_test",
             restarted.base_url()
@@ -1915,9 +1981,13 @@ async fn hosted_runner_identity_binding_rejects_thread_ids_and_accepts_runner_se
         .send()
         .await
         .expect("runner alias thread response");
-    assert_eq!(runner_alias_thread.status(), StatusCode::NOT_FOUND);
+    assert_eq!(runner_thread.status(), StatusCode::OK);
+    let runner_thread_body: serde_json::Value =
+        runner_thread.json().await.expect("runner thread json");
+    assert_eq!(runner_thread_body["thread_id"], "mrs_test");
+    assert_eq!(runner_thread_body["runtime"]["session_id"], "sess_test");
 
-    let runner_alias_thread_events = client
+    let runner_thread_events = client
         .get(format!(
             "{}/api/headless/threads/mrs_test/events?cursor=0",
             restarted.base_url()
@@ -1925,9 +1995,9 @@ async fn hosted_runner_identity_binding_rejects_thread_ids_and_accepts_runner_se
         .send()
         .await
         .expect("runner alias thread events response");
-    assert_eq!(runner_alias_thread_events.status(), StatusCode::NOT_FOUND);
+    assert_eq!(runner_thread_events.status(), StatusCode::OK);
 
-    let thread = client
+    let maestro_alias_thread = client
         .get(format!(
             "{}/api/headless/threads/sess_test",
             restarted.base_url()
@@ -1935,7 +2005,7 @@ async fn hosted_runner_identity_binding_rejects_thread_ids_and_accepts_runner_se
         .send()
         .await
         .expect("thread response");
-    assert_eq!(thread.status(), StatusCode::OK);
+    assert_eq!(maestro_alias_thread.status(), StatusCode::NOT_FOUND);
 
     let restarted_state = client
         .get(format!(
@@ -1955,24 +2025,24 @@ fn hosted_runner_events_validate_the_route_identity_boundary() {
     let workspace = tempdir().expect("workspace");
     let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
 
-    let thread_alias = match handle_events(
+    handle_events(
         shared.clone(),
         "mrs_test",
         HashMap::new(),
         EventsRouteIdentity::Thread,
-    ) {
-        Ok(_) => panic!("thread events must reject the runner-session alias"),
-        Err(error) => error,
-    };
-    assert_eq!(thread_alias.code, HostedRunnerErrorCode::StaleSession);
+    )
+    .expect("thread events should accept the runner session id");
 
-    handle_events(
+    let maestro_alias = match handle_events(
         shared.clone(),
         "sess_test",
         HashMap::new(),
         EventsRouteIdentity::Thread,
-    )
-    .expect("thread events should accept the bound Maestro thread id");
+    ) {
+        Ok(_) => panic!("thread events must reject the Maestro-session alias"),
+        Err(error) => error,
+    };
+    assert_eq!(maestro_alias.code, HostedRunnerErrorCode::StaleSession);
     handle_events(
         shared,
         "mrs_test",
@@ -2840,14 +2910,16 @@ fn shadow_rendezvous_emits_candidate_only_and_never_admits_commands() {
         idempotency_key: "command-1".into(),
         payload: serde_json::json!({"type":"prompt"}),
     };
-    assert!(process_request(
-        &mut lifecycle,
-        &request,
-        accepted_at,
-        accepted_at,
-        accepted_at
-    )
-    .is_err());
+    assert!(
+        process_request(
+            &mut lifecycle,
+            &request,
+            accepted_at,
+            accepted_at,
+            accepted_at
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -3059,6 +3131,270 @@ async fn hosted_init_reaches_the_native_agent_executor() {
         "The private computer is already provisioned."
     );
     restarted.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hosted_runner_forwards_resident_binding_to_native_workspace_activation() {
+    const CHILD_ENV: &str = "MAESTRO_HOSTED_WORKSPACE_BINDING_CHILD";
+    if std::env::var_os(CHILD_ENV).is_some() {
+        assert_eq!(
+            crate::headless_server::run_headless_server(None)
+                .await
+                .expect("native hosted child"),
+            0
+        );
+        return;
+    }
+
+    let workspace = tempdir().expect("workspace");
+    let fixtures = tempdir().expect("fixtures");
+    let wrapper = fixtures.path().join("native-child.sh");
+    let child_input_log = fixtures.path().join("native-child-input.log");
+    let child_output_log = fixtures.path().join("native-child-output.log");
+    let current = std::env::current_exe().expect("current test binary");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\ntee \"$MAESTRO_HOSTED_WORKSPACE_BINDING_INPUT_LOG\" | \"{}\" hosted_runner::tests::hosted_runner_forwards_resident_binding_to_native_workspace_activation --exact --nocapture --format terse | tee \"$MAESTRO_HOSTED_WORKSPACE_BINDING_OUTPUT_LOG\" | while IFS= read -r line; do case \"$line\" in '{{'*) printf '%s\\n' \"$line\" ;; esac; done\n",
+            current.display()
+        ),
+    )
+    .expect("native child wrapper");
+    let mut permissions = std::fs::metadata(&wrapper)
+        .expect("wrapper metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&wrapper, permissions).expect("wrapper permissions");
+
+    let mut supervisor_config = crate::headless::SupervisorConfig {
+        auto_reconnect: false,
+        ..Default::default()
+    };
+    supervisor_config.transport.cli_path = wrapper.display().to_string();
+    supervisor_config.transport.cwd = Some(workspace.path().display().to_string());
+    supervisor_config.transport.env = vec![
+        (CHILD_ENV.to_string(), "1".to_string()),
+        (
+            "MAESTRO_HOSTED_WORKSPACE_BINDING_INPUT_LOG".to_string(),
+            child_input_log.display().to_string(),
+        ),
+        (
+            "MAESTRO_HOSTED_WORKSPACE_BINDING_OUTPUT_LOG".to_string(),
+            child_output_log.display().to_string(),
+        ),
+        ("OPENAI_API_KEY".to_string(), "fixture-key".to_string()),
+        (
+            crate::credential_mode::ACCESS_TOKEN_ENV.to_string(),
+            "fixture-evalops-access-token".to_string(),
+        ),
+        (
+            "MAESTRO_IDENTITY_URL".to_string(),
+            crate::credential_mode::test_identity_base_url().to_string(),
+        ),
+        (
+            "MAESTRO_RUNNER_SESSION_ID".to_string(),
+            "mrs_test".to_string(),
+        ),
+        ("MAESTRO_SESSION_ID".to_string(), "sess_test".to_string()),
+        ("MAESTRO_EVALOPS_ORG_ID".to_string(), "org-1".to_string()),
+        (
+            "MAESTRO_EVALOPS_WORKSPACE_ID".to_string(),
+            "ws_test".to_string(),
+        ),
+        (
+            "MAESTRO_EVALOPS_THREAD_ID".to_string(),
+            "sess_test".to_string(),
+        ),
+    ];
+    let mut supervisor = AgentSupervisor::new(supervisor_config);
+    supervisor.connect().await.expect("connect native child");
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while supervisor.state().model.is_none() {
+            supervisor.recv().await.expect("native child startup event");
+        }
+    })
+    .await
+    .expect("native child ready");
+    let supervisor = Arc::new(Mutex::new(supervisor));
+    let executor = Arc::new(AgentSupervisorHostedRunnerMessageExecutor::new(Arc::clone(
+        &supervisor,
+    )));
+    let mut config = test_config(workspace.path().to_path_buf());
+    config.runtime_generation = 7;
+    let handle = start_hosted_runner_with_message_executor(config, executor.clone())
+        .await
+        .expect("hosted runner");
+    handle
+        .shared
+        .stop_event_pump()
+        .await
+        .expect("stop background event pump for deterministic fixture");
+    let client = reqwest::Client::new();
+    let connection_id = "conn_workspace_binding";
+    let (capability, subscription_id) =
+        attach_thread_controller(&client, &handle.base_url(), connection_id).await;
+    let message_url = format!(
+        "{}/api/headless/sessions/sess_test/messages",
+        handle.base_url()
+    );
+    let send = |body: serde_json::Value| {
+        client
+            .post(&message_url)
+            .header("x-maestro-headless-connection-id", connection_id)
+            .header("x-maestro-headless-subscriber-id", &subscription_id)
+            .header("x-maestro-headless-connection-capability", &capability)
+            .json(&body)
+            .send()
+    };
+    let hello = json!({
+        "type": "hello",
+        "protocol_version": HEADLESS_PROTOCOL_VERSION,
+        "controller_binding_version": crate::headless::controller_binding::CONTROLLER_BINDING_VERSION,
+        "controller_context": {
+            "schema_version": crate::headless::controller_binding::CONTROLLER_CONTEXT_SCHEMA_VERSION,
+            "controller_id": "evalops.platform",
+            "organization_id": "org-1",
+            "workspace_id": "ws_test",
+            "thread_id": "sess_test",
+            "lifetime_profile": "resident",
+            "runtime_generation": 7
+        },
+        "capability_manifest": {
+            "schema_version": "evalops.maestro.capability-manifest.v1",
+            "engine_kind": "maestro",
+            "protocol_version": HEADLESS_PROTOCOL_VERSION,
+            "tool_protocol_version": "evalops.maestro.tool-bridge.v1",
+            "supported_tools": [],
+            "native_tool_calls": true,
+            "approvals": true,
+            "continuation": false,
+            "cancellation": true,
+            "idempotent_replay": true,
+            "streaming": true
+        }
+    });
+    let hello_ack: serde_json::Value = send(hello)
+        .await
+        .expect("hosted hello response")
+        .error_for_status()
+        .expect("hosted hello status")
+        .json()
+        .await
+        .expect("hosted hello acknowledgement");
+
+    let body = "Always keep the hosted receipt causal.";
+    let mut request = crate::headless::workspace_capabilities::ApplyWorkspaceCapabilitySet {
+        organization_id: "org-1".to_string(),
+        workspace_id: "ws_test".to_string(),
+        runner_session_id: "mrs_test".to_string(),
+        runtime_generation: 7,
+        activation_generation: 1,
+        workspace_snapshot_digest:
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        workspace_skill_set_digest:
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111".to_string(),
+        capability_set_digest: String::new(),
+        workspace_instructions: vec!["Use hosted workspace guidance.".to_string()],
+        admitted_catalog: vec![
+            crate::headless::workspace_capabilities::WorkspacePromptCapability {
+                qualified_id: "skill.hosted-review".to_string(),
+                name: "hosted-review".to_string(),
+                scope: "workspace".to_string(),
+                revision_digest:
+                    "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                        .to_string(),
+                body_digest: format!("sha256:{:x}", Sha256::digest(body.as_bytes())),
+                trigger_patterns: vec!["review".to_string()],
+                user_invocable: true,
+                pinned_prompt_only: true,
+                title: "Hosted review".to_string(),
+                description: "Review hosted workspace changes.".to_string(),
+                instructions: vec!["Apply the hosted checklist.".to_string()],
+                body: body.to_string(),
+                entry_digest: String::new(),
+            },
+        ],
+        admission_receipt_id: "hosted-admission-1".to_string(),
+    };
+    crate::headless::workspace_capabilities::recompute_request_digests(&mut request)
+        .expect("hosted request digests");
+    let activation_ack: serde_json::Value =
+        send(json!({"type":"apply_workspace_capability_set","request":request}))
+            .await
+            .expect("hosted activation response")
+            .error_for_status()
+            .expect("hosted activation status")
+            .json()
+            .await
+            .expect("hosted activation acknowledgement");
+    assert_eq!(hello_ack["execution"], "runtime_handled");
+    assert_eq!(activation_ack["execution"], "runtime_handled");
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !std::fs::read_to_string(&child_output_log)
+            .unwrap_or_default()
+            .contains(r#""type":"workspace_capability_set_applied""#)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("native child activation receipt barrier");
+    let child_input = std::fs::read_to_string(&child_input_log).expect("native child input");
+    let binding_offset = child_input
+        .find(r#""controller_binding_version""#)
+        .expect("native child received resident binding");
+    let activation_offset = child_input
+        .find(r#""type":"apply_workspace_capability_set""#)
+        .expect("native child received activation");
+    assert!(binding_offset < activation_offset);
+    let receipt = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            assert_eq!(pump_tick(&handle.shared), PumpTick::Continue);
+            let receipt = handle
+                .shared
+                .state
+                .lock()
+                .expect("runner state")
+                .envelopes
+                .iter()
+                .find_map(|envelope| match envelope {
+                    StreamEnvelope::Message { message, .. } => match message.as_ref() {
+                        FromAgentMessage::WorkspaceCapabilitySetApplied { receipt } => {
+                            Some(receipt.clone())
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                });
+            if let Some(receipt) = receipt {
+                break receipt;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("native activation receipt through hosted runner");
+    assert_eq!(receipt.organization_id, "org-1");
+    assert_eq!(receipt.workspace_id, "ws_test");
+    assert_eq!(receipt.runner_session_id, "mrs_test");
+    assert_eq!(receipt.runtime_generation, 7);
+    assert_eq!(receipt.activation_generation, 1);
+    assert!(!receipt.controller_binding_sha256.is_empty());
+
+    handle.shutdown().await;
+    drop(executor);
+    let mutex = Arc::try_unwrap(supervisor).unwrap_or_else(|supervisor| {
+        panic!(
+            "release supervisor owners: {} remain",
+            Arc::strong_count(&supervisor)
+        )
+    });
+    mutex
+        .into_inner()
+        .unwrap_or_else(|error| error.into_inner())
+        .shutdown_and_wait()
+        .await;
 }
 
 #[tokio::test]
@@ -3346,6 +3682,7 @@ fn supervisor_executor_reports_runtime_not_ready_until_connected() {
             ToAgentMessage::Prompt {
                 content: "hello".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             },
         )
         .expect_err("supervisor should not be connected");
@@ -3386,6 +3723,7 @@ fn supervisor_executor_negotiates_hello_without_mutating_shared_runtime() {
                 capabilities: context.capabilities.clone(),
                 role: Some(ConnectionRole::Viewer),
                 opt_out_notifications: None,
+                controller_binding: None,
             },
         )
         .expect("hosted hello");
@@ -3451,9 +3789,11 @@ fn hosted_server_capabilities_fail_closed_without_executor_state() {
     drop(state);
     assert!(!snapshot_capabilities.server_requests.is_empty());
     assert!(!snapshot_capabilities.native_tools.is_empty());
-    assert!(snapshot_capabilities
-        .governed_tool_grant_algorithms
-        .is_empty());
+    assert!(
+        snapshot_capabilities
+            .governed_tool_grant_algorithms
+            .is_empty()
+    );
 
     let mut formerly_capable = native_server_capabilities();
     formerly_capable.governed_tool_grant_algorithms = vec!["ed25519".to_string()];
@@ -3487,9 +3827,11 @@ fn hosted_server_capabilities_fail_closed_without_executor_state() {
     };
     assert!(!restored_snapshot_capabilities.server_requests.is_empty());
     assert!(!restored_snapshot_capabilities.native_tools.is_empty());
-    assert!(restored_snapshot_capabilities
-        .governed_tool_grant_algorithms
-        .is_empty());
+    assert!(
+        restored_snapshot_capabilities
+            .governed_tool_grant_algorithms
+            .is_empty()
+    );
 }
 
 #[test]
@@ -3510,6 +3852,7 @@ fn supervisor_hello_capabilities_prefer_attached_agent_state() {
         },
         last_init: None,
         semantic_conversation: None,
+        last_workspace_capability_set: None,
     });
     let executor =
         AgentSupervisorHostedRunnerMessageExecutor::new(Arc::new(Mutex::new(supervisor)));
@@ -3805,11 +4148,13 @@ fn coarse_stream_resume_suppresses_stale_snapshots_but_preserves_resets() {
     };
     let mut filter = TranscriptStreamFilter::new(crate::transcript::TranscriptGrade::Turn, 3);
 
-    assert!(filter
-        .apply(StreamEnvelope::Snapshot {
-            snapshot: stale.clone(),
-        })
-        .is_empty());
+    assert!(
+        filter
+            .apply(StreamEnvelope::Snapshot {
+                snapshot: stale.clone(),
+            })
+            .is_empty()
+    );
     assert_eq!(
         filter
             .apply(StreamEnvelope::Reset {
@@ -3841,16 +4186,18 @@ fn coarse_stream_reset_discards_partial_aggregation() {
             .len(),
         1
     );
-    assert!(filter
-        .apply(stream_message(
-            2,
-            FromAgentMessage::ResponseChunk {
-                response_id: "response".into(),
-                content: "partial".into(),
-                is_thinking: false,
-            },
-        ))
-        .is_empty());
+    assert!(
+        filter
+            .apply(stream_message(
+                2,
+                FromAgentMessage::ResponseChunk {
+                    response_id: "response".into(),
+                    content: "partial".into(),
+                    is_thinking: false,
+                },
+            ))
+            .is_empty()
+    );
     let workspace = tempdir().expect("workspace");
     let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
     let snapshot = {
@@ -3924,9 +4271,11 @@ fn coarse_stream_new_response_retires_orphaned_response() {
         },
     ));
     assert_eq!(completed.len(), 1);
-    assert!(!serde_json::to_string(&completed)
-        .unwrap()
-        .contains("partial"));
+    assert!(
+        !serde_json::to_string(&completed)
+            .unwrap()
+            .contains("partial")
+    );
 }
 
 #[test]
@@ -4297,9 +4646,11 @@ fn controller_subscribe_returns_only_current_raw_pending_executable_events() {
             public_snapshot.state.pending_client_tools[0]["args"],
             serde_json::json!({})
         );
-        assert!(!serde_json::to_string(&public_snapshot)
-            .expect("serialize public snapshot")
-            .contains("pending-controller-secret"));
+        assert!(
+            !serde_json::to_string(&public_snapshot)
+                .expect("serialize public snapshot")
+                .contains("pending-controller-secret")
+        );
 
         for index in 0..=MAX_EVENTS {
             shared.publish_message(
@@ -4383,19 +4734,25 @@ fn controller_subscribe_returns_only_current_raw_pending_executable_events() {
     assert_eq!(pending_events[1]["tool_execution_id"], "exec_pending");
     assert_eq!(pending_events[1]["args"], pending_args);
     assert!(controller.to_string().contains("pending-controller-secret"));
-    assert!(!controller
-        .to_string()
-        .contains("completed-controller-secret"));
+    assert!(
+        !controller
+            .to_string()
+            .contains("completed-controller-secret")
+    );
 
     let controller_capability = controller["connection_capability"]
         .as_str()
         .expect("controller connection capability");
-    assert!(!controller["snapshot"]
-        .to_string()
-        .contains(controller_capability));
-    assert!(!controller["snapshot"]
-        .to_string()
-        .contains("pending-controller-secret"));
+    assert!(
+        !controller["snapshot"]
+            .to_string()
+            .contains(controller_capability)
+    );
+    assert!(
+        !controller["snapshot"]
+            .to_string()
+            .contains("pending-controller-secret")
+    );
 }
 
 #[test]
@@ -4487,14 +4844,18 @@ fn controller_recovers_every_live_pending_event_beyond_replay_capacity_once() {
             public_snapshot.state.pending_client_tools.len(),
             PENDING_COUNT
         );
-        assert!(public_snapshot
-            .state
-            .pending_client_tools
-            .iter()
-            .all(|pending| pending["args"] == serde_json::json!({})));
-        assert!(!serde_json::to_string(&public_snapshot)
-            .expect("serialize public snapshot")
-            .contains("pending-controller-secret"));
+        assert!(
+            public_snapshot
+                .state
+                .pending_client_tools
+                .iter()
+                .all(|pending| pending["args"] == serde_json::json!({}))
+        );
+        assert!(
+            !serde_json::to_string(&public_snapshot)
+                .expect("serialize public snapshot")
+                .contains("pending-controller-secret")
+        );
 
         shared.controller_pending_events(&mut state)
     };
@@ -4904,9 +5265,11 @@ fn rejects_default_env_only_wildcard_bind_without_auth_token() {
 
     let error = HostedRunnerConfig::from_env_map(&env).expect_err("expected config error");
 
-    assert!(error
-        .to_string()
-        .contains("MAESTRO_HOSTED_RUNNER_AUTH_TOKEN"));
+    assert!(
+        error
+            .to_string()
+            .contains("MAESTRO_HOSTED_RUNNER_AUTH_TOKEN")
+    );
 }
 
 #[test]
@@ -5030,9 +5393,11 @@ fn rejects_non_loopback_bind_without_auth_token() {
     );
 
     let error = HostedRunnerConfig::from_env_map(&env).expect_err("expected config error");
-    assert!(error
-        .to_string()
-        .contains("MAESTRO_HOSTED_RUNNER_AUTH_TOKEN"));
+    assert!(
+        error
+            .to_string()
+            .contains("MAESTRO_HOSTED_RUNNER_AUTH_TOKEN")
+    );
 }
 
 #[tokio::test]
@@ -5505,9 +5870,11 @@ async fn drain_manifest_records_runtime_cursor_after_activity() {
         .json()
         .await
         .expect("subscription json");
-    assert!(subscription["controller_subscription_id"]
-        .as_str()
-        .is_some());
+    assert!(
+        subscription["controller_subscription_id"]
+            .as_str()
+            .is_some()
+    );
     let subscription_id = subscription["subscription_id"]
         .as_str()
         .expect("subscription id");
@@ -7240,6 +7607,14 @@ async fn message_executor_publishes_runtime_handled_events() {
 }
 
 async fn next_sse_message_type(response: &mut reqwest::Response, buffered: &mut String) -> String {
+    next_sse_message_type_with_timeout(response, buffered, Duration::from_millis(250)).await
+}
+
+async fn next_sse_message_type_with_timeout(
+    response: &mut reqwest::Response,
+    buffered: &mut String,
+    timeout: Duration,
+) -> String {
     loop {
         if let Some(event_end) = buffered.find("\n\n") {
             let event = buffered[..event_end].to_string();
@@ -7252,7 +7627,7 @@ async fn next_sse_message_type(response: &mut reqwest::Response, buffered: &mut 
                 .to_string();
         }
 
-        let chunk = tokio::time::timeout(std::time::Duration::from_millis(250), response.chunk())
+        let chunk = tokio::time::timeout(timeout, response.chunk())
             .await
             .expect("response event should arrive without another HTTP request")
             .expect("event chunk read")
@@ -7275,9 +7650,10 @@ async fn wait_for_condition(mut condition: impl FnMut() -> bool) {
 async fn transport_notification_publishes_ready_before_maintenance_tick() {
     let workspace = tempdir().expect("workspace");
     let executor = Arc::new(NotifyingPumpRuntimeExecutor::default());
-    let handle = start_hosted_runner_with_message_executor(
+    let handle = start_hosted_runner_with_message_executor_and_maintenance_interval(
         test_config(workspace.path().to_path_buf()),
         executor.clone(),
+        Duration::from_secs(5),
     )
     .await
     .expect("start hosted runner");
@@ -7341,11 +7717,11 @@ async fn transport_notification_publishes_ready_before_maintenance_tick() {
 
     executor.queue_ready_event();
     let ready = tokio::time::timeout(
-        Duration::from_millis(75),
-        next_sse_message_type(&mut events, &mut buffered),
+        Duration::from_secs(1),
+        next_sse_message_type_with_timeout(&mut events, &mut buffered, Duration::from_secs(1)),
     )
     .await
-    .expect("ready event should not wait for the 100ms maintenance tick");
+    .expect("ready event should not wait for the 5s maintenance tick");
     assert_eq!(ready, "ready");
 
     handle.shutdown().await;
@@ -7438,18 +7814,34 @@ async fn event_pump_publishes_agent_events_without_a_follow_up_http_request() {
         .expect("prompt json");
     assert_eq!(prompt["published_messages"], 0);
 
-    assert_eq!(
-        next_sse_message_type(&mut events, &mut buffered).await,
-        "response_start"
-    );
-    assert_eq!(
-        next_sse_message_type(&mut events, &mut buffered).await,
-        "response_chunk"
-    );
-    assert_eq!(
-        next_sse_message_type(&mut events, &mut buffered).await,
-        "response_end"
-    );
+    let (response_start, response_chunk, response_end) =
+        tokio::time::timeout(Duration::from_secs(1), async {
+            (
+                next_sse_message_type_with_timeout(
+                    &mut events,
+                    &mut buffered,
+                    Duration::from_secs(1),
+                )
+                .await,
+                next_sse_message_type_with_timeout(
+                    &mut events,
+                    &mut buffered,
+                    Duration::from_secs(1),
+                )
+                .await,
+                next_sse_message_type_with_timeout(
+                    &mut events,
+                    &mut buffered,
+                    Duration::from_secs(1),
+                )
+                .await,
+            )
+        })
+        .await
+        .expect("response event pump should publish all events without another HTTP request");
+    assert_eq!(response_start, "response_start");
+    assert_eq!(response_chunk, "response_chunk");
+    assert_eq!(response_end, "response_end");
 
     handle.shutdown().await;
 }
@@ -7559,6 +7951,7 @@ async fn drain_fences_in_flight_prompts_and_serializes_repeated_drains() {
             ToAgentMessage::Prompt {
                 content: "finish before drain".to_string(),
                 attachments: None,
+                managed_inference_authorization: None,
             },
         )
         .await
@@ -7741,13 +8134,15 @@ async fn utility_command_completion_after_drain_does_not_mutate_snapshot_state()
     )
     .await
     .expect("start blocked utility command");
-    assert!(handle
-        .shared
-        .state
-        .lock()
-        .expect("runner state")
-        .active_utility_commands
-        .contains_key(&command_id));
+    assert!(
+        handle
+            .shared
+            .state
+            .lock()
+            .expect("runner state")
+            .active_utility_commands
+            .contains_key(&command_id)
+    );
 
     let manifest = handle
         .drain_for_shutdown("test drain", "hosted runner test")
@@ -8765,12 +9160,16 @@ async fn state_snapshot_redacts_sensitive_supervisor_state() {
     );
     assert_eq!(state["state"]["pending_approvals"][0]["tool"], "bash");
     assert_eq!(state["state"]["pending_approvals"][0]["args"], json!({}));
-    assert!(state["state"]["pending_approvals"][0]
-        .get("tool_execution_id")
-        .is_none());
-    assert!(state["state"]["pending_approvals"][0]
-        .get("started_at_ms")
-        .is_none());
+    assert!(
+        state["state"]["pending_approvals"][0]
+            .get("tool_execution_id")
+            .is_none()
+    );
+    assert!(
+        state["state"]["pending_approvals"][0]
+            .get("started_at_ms")
+            .is_none()
+    );
     assert_eq!(state["state"]["pending_client_tools"], json!([]));
     assert_eq!(state["state"]["pending_mcp_elicitations"], json!([]));
     assert_eq!(
@@ -8782,9 +9181,11 @@ async fn state_snapshot_redacts_sensitive_supervisor_state() {
         "input-exec-1"
     );
     assert_eq!(state["state"]["pending_user_inputs"][0]["args"], json!({}));
-    assert!(state["state"]["pending_user_inputs"][0]
-        .get("request_id")
-        .is_none());
+    assert!(
+        state["state"]["pending_user_inputs"][0]
+            .get("request_id")
+            .is_none()
+    );
     assert_eq!(
         state["state"]["pending_tool_retries"][0]["call_id"],
         "retry-call-1"
@@ -9275,11 +9676,13 @@ async fn drain_manifest_filename_stays_inside_snapshot_root() {
     let manifest_path = PathBuf::from(drain["manifest_path"].as_str().expect("manifest path"));
     assert_eq!(manifest_path.parent(), Some(snapshot_root.as_path()));
     assert!(manifest_path.exists());
-    assert!(manifest_path
-        .file_name()
-        .expect("manifest filename")
-        .to_string_lossy()
-        .starts_with("___evil_session_v1-"));
+    assert!(
+        manifest_path
+            .file_name()
+            .expect("manifest filename")
+            .to_string_lossy()
+            .starts_with("___evil_session_v1-")
+    );
 
     handle.shutdown().await;
 }
@@ -9673,7 +10076,7 @@ async fn failed_accepted_turn_persistence_rolls_back_and_allows_a_clean_retry() 
     let post_turn = || {
         client
             .post(format!(
-                "{}/api/headless/threads/sess_test/turns",
+                "{}/api/headless/threads/mrs_test/turns",
                 handle.base_url()
             ))
             .header("x-maestro-headless-connection-id", "conn_accept_retry")
@@ -9724,7 +10127,7 @@ async fn accepting_a_new_turn_clears_the_previous_terminal_receipt() {
     let client = reqwest::Client::new();
     let (capability, subscription_id) =
         attach_thread_controller(&client, &handle.base_url(), "conn_receipt_turns").await;
-    let turns_url = format!("{}/api/headless/threads/sess_test/turns", handle.base_url());
+    let turns_url = format!("{}/api/headless/threads/mrs_test/turns", handle.base_url());
     let append_turn = |turn_id: &str, content: &str| {
         client
             .post(&turns_url)
@@ -9811,7 +10214,7 @@ async fn failed_post_dispatch_persistence_returns_success_without_duplicate_disp
     let post_turn = || {
         client
             .post(format!(
-                "{}/api/headless/threads/sess_test/turns",
+                "{}/api/headless/threads/mrs_test/turns",
                 handle.base_url()
             ))
             .header("x-maestro-headless-connection-id", "conn_dispatch_persist")
@@ -9867,7 +10270,7 @@ async fn durable_thread_appends_idempotent_turns_and_exposes_waiting_state() {
     let client = reqwest::Client::new();
     let (capability, subscription_id) =
         attach_thread_controller(&client, &handle.base_url(), "conn_thread").await;
-    let turns_url = format!("{}/api/headless/threads/sess_test/turns", handle.base_url());
+    let turns_url = format!("{}/api/headless/threads/mrs_test/turns", handle.base_url());
 
     let append_turn = |turn_id: &str, kind: &str, content: &str| {
         client
@@ -9893,7 +10296,7 @@ async fn durable_thread_appends_idempotent_turns_and_exposes_waiting_state() {
         .json()
         .await
         .expect("first turn json");
-    assert_eq!(first["thread_id"], "sess_test");
+    assert_eq!(first["thread_id"], "mrs_test");
     assert_eq!(first["turn_id"], "turn-1");
     assert_eq!(first["run_id"], "run_turn-1");
     assert_eq!(first["phase"], "completed");
@@ -9935,7 +10338,7 @@ async fn durable_thread_appends_idempotent_turns_and_exposes_waiting_state() {
 
     let thread: serde_json::Value = client
         .get(format!(
-            "{}/api/headless/threads/sess_test",
+            "{}/api/headless/threads/mrs_test",
             handle.base_url()
         ))
         .send()
@@ -9947,7 +10350,7 @@ async fn durable_thread_appends_idempotent_turns_and_exposes_waiting_state() {
         .await
         .expect("thread state json");
     assert_eq!(thread["protocol_version"], "evalops.maestro.thread.v1");
-    assert_eq!(thread["thread_id"], "sess_test");
+    assert_eq!(thread["thread_id"], "mrs_test");
     assert_eq!(thread["phase"], "waiting_for_approval");
     assert_eq!(thread["active_turn_id"], "turn-2");
     assert_eq!(thread["turns"].as_array().expect("turns").len(), 2);
@@ -10020,7 +10423,7 @@ async fn durable_thread_restores_turn_idempotency_and_cursor_from_workspace() {
     });
     let source_turn: serde_json::Value = client
         .post(format!(
-            "{}/api/headless/threads/sess_test/turns",
+            "{}/api/headless/threads/mrs_test/turns",
             source.base_url()
         ))
         .header("x-maestro-headless-connection-id", "conn_source_thread")
@@ -10049,7 +10452,7 @@ async fn durable_thread_restores_turn_idempotency_and_cursor_from_workspace() {
     .expect("start restored hosted runner");
     let restored_state: serde_json::Value = client
         .get(format!(
-            "{}/api/headless/threads/sess_test",
+            "{}/api/headless/threads/mrs_test",
             restored.base_url()
         ))
         .send()
@@ -10066,7 +10469,7 @@ async fn durable_thread_restores_turn_idempotency_and_cursor_from_workspace() {
         attach_thread_controller(&client, &restored.base_url(), "conn_restored_thread").await;
     let replayed: serde_json::Value = client
         .post(format!(
-            "{}/api/headless/threads/sess_test/turns",
+            "{}/api/headless/threads/mrs_test/turns",
             restored.base_url()
         ))
         .header("x-maestro-headless-connection-id", "conn_restored_thread")
@@ -10244,6 +10647,7 @@ async fn response_messages_cover_input_client_tool_retry_and_persist_idempotency
     let prompt = ToAgentMessage::Prompt {
         content: "idempotency headers do not turn prompts into responses".into(),
         attachments: None,
+        managed_inference_authorization: None,
     };
     handle_message(
         handle.shared.clone(),
@@ -10370,9 +10774,11 @@ async fn queued_response_restarts_pending_and_consumes_once_after_child_exit() {
     let ResponseBody::Json { body, .. } = first_result else {
         panic!("queued response must return JSON");
     };
-    assert!(body["message"]
-        .as_str()
-        .is_some_and(|message| message.contains("pending native consumption")));
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("pending native consumption"))
+    );
     let duplicate_while_queued = handle_message(
         first.shared.clone(),
         "sess_test",
@@ -10384,9 +10790,11 @@ async fn queued_response_restarts_pending_and_consumes_once_after_child_exit() {
     let ResponseBody::Json { body, .. } = duplicate_while_queued else {
         panic!("queued reconciliation must return JSON");
     };
-    assert!(body["message"]
-        .as_str()
-        .is_some_and(|message| message.contains("pending native consumption")));
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("pending native consumption"))
+    );
     tokio::time::sleep(Duration::from_millis(200)).await;
     first.shutdown().await;
     first_supervisor
@@ -10505,15 +10913,19 @@ async fn correlated_protocol_rejection_rolls_back_ownership_and_allows_retry() {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(!state
-            .pending_response_idempotency
-            .contains_key("rejected-key"));
+        assert!(
+            !state
+                .pending_response_idempotency
+                .contains_key("rejected-key")
+        );
     }
-    assert!(!executor
-        .queued_responses
-        .lock()
-        .expect("queued responses")
-        .contains_key("rejected-key"));
+    assert!(
+        !executor
+            .queued_responses
+            .lock()
+            .expect("queued responses")
+            .contains_key("rejected-key")
+    );
     assert!(
         !load_executor_response_ledger(workspace.path(), "sess_test")
             .expect("response ledger")
@@ -10592,9 +11004,11 @@ async fn delayed_protocol_rejection_after_queued_return_is_rolled_back_by_event_
     let ResponseBody::Json { body, .. } = queued else {
         panic!("queued response must return JSON");
     };
-    assert!(body["message"]
-        .as_str()
-        .is_some_and(|message| message.contains("pending native consumption")));
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("pending native consumption"))
+    );
     tokio::time::sleep(Duration::from_millis(400)).await;
     {
         let state = handle
@@ -10602,20 +11016,26 @@ async fn delayed_protocol_rejection_after_queued_return_is_rolled_back_by_event_
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(!state
-            .pending_response_idempotency
-            .contains_key("delayed-rejected-key"));
+        assert!(
+            !state
+                .pending_response_idempotency
+                .contains_key("delayed-rejected-key")
+        );
     }
-    assert!(!executor
-        .queued_responses
-        .lock()
-        .expect("queued responses")
-        .contains_key("delayed-rejected-key"));
-    assert!(!executor
-        .memory_completed_responses
-        .lock()
-        .expect("memory completion")
-        .contains_key("delayed-rejected-key"));
+    assert!(
+        !executor
+            .queued_responses
+            .lock()
+            .expect("queued responses")
+            .contains_key("delayed-rejected-key")
+    );
+    assert!(
+        !executor
+            .memory_completed_responses
+            .lock()
+            .expect("memory completion")
+            .contains_key("delayed-rejected-key")
+    );
     assert!(
         !load_executor_response_ledger(workspace.path(), "sess_test")
             .expect("response ledger")
@@ -10693,23 +11113,29 @@ async fn delayed_rejection_rollback_survives_thread_persistence_failure() {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(!state
-            .pending_response_idempotency
-            .contains_key("rejection-persist-key"));
+        assert!(
+            !state
+                .pending_response_idempotency
+                .contains_key("rejection-persist-key")
+        );
     }
-    assert!(!executor
-        .queued_responses
-        .lock()
-        .expect("queued responses")
-        .contains_key("rejection-persist-key"));
-    assert!(!handle
-        .shared
-        .event_pump_task
-        .lock()
-        .await
-        .as_ref()
-        .expect("event pump task")
-        .is_finished());
+    assert!(
+        !executor
+            .queued_responses
+            .lock()
+            .expect("queued responses")
+            .contains_key("rejection-persist-key")
+    );
+    assert!(
+        !handle
+            .shared
+            .event_pump_task
+            .lock()
+            .await
+            .as_ref()
+            .expect("event pump task")
+            .is_finished()
+    );
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if !handle
@@ -10782,33 +11208,41 @@ async fn delayed_rejection_survives_ledger_cleanup_failure() {
 
     // The executor drain observed the rejection; the ledger cleanup failure
     // must not fail the drain and kill the event pump.
-    assert!(!handle
-        .shared
-        .event_pump_task
-        .lock()
-        .await
-        .as_ref()
-        .expect("event pump task")
-        .is_finished());
+    assert!(
+        !handle
+            .shared
+            .event_pump_task
+            .lock()
+            .await
+            .as_ref()
+            .expect("event pump task")
+            .is_finished()
+    );
     {
         let state = handle
             .shared
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(!state
-            .pending_response_idempotency
-            .contains_key("pump-ledger-key"));
+        assert!(
+            !state
+                .pending_response_idempotency
+                .contains_key("pump-ledger-key")
+        );
     }
-    assert!(!executor
-        .queued_responses
-        .lock()
-        .expect("queued responses")
-        .contains_key("pump-ledger-key"));
-    assert!(load_executor_response_ledger(workspace.path(), "sess_test")
-        .expect("response ledger")
-        .iter()
-        .any(|(key, dispatched)| key == "pump-ledger-key" && !dispatched));
+    assert!(
+        !executor
+            .queued_responses
+            .lock()
+            .expect("queued responses")
+            .contains_key("pump-ledger-key")
+    );
+    assert!(
+        load_executor_response_ledger(workspace.path(), "sess_test")
+            .expect("response ledger")
+            .iter()
+            .any(|(key, dispatched)| key == "pump-ledger-key" && !dispatched)
+    );
 
     handle_message(handle.shared.clone(), "sess_test", headers, response)
         .await
@@ -10874,15 +11308,19 @@ async fn rejected_response_releases_ownership_when_ledger_cleanup_fails() {
     assert!(error.message.contains("not awaiting a decision"));
     // The in-memory ownership slot is released even though the ledger
     // cleanup failed; only the stale pending entry remains on disk.
-    assert!(!executor
-        .queued_responses
-        .lock()
-        .expect("queued responses")
-        .contains_key("ownership-rejected-key"));
-    assert!(load_executor_response_ledger(workspace.path(), "sess_test")
-        .expect("response ledger")
-        .iter()
-        .any(|(key, dispatched)| key == "ownership-rejected-key" && !dispatched));
+    assert!(
+        !executor
+            .queued_responses
+            .lock()
+            .expect("queued responses")
+            .contains_key("ownership-rejected-key")
+    );
+    assert!(
+        load_executor_response_ledger(workspace.path(), "sess_test")
+            .expect("response ledger")
+            .iter()
+            .any(|(key, dispatched)| key == "ownership-rejected-key" && !dispatched)
+    );
 
     // A same-key retry is admitted (pending entries never dedup) and the
     // accepted retry marks the stale entry dispatched.
@@ -10894,10 +11332,12 @@ async fn rejected_response_releases_ownership_when_ledger_cleanup_fails() {
     )
     .await
     .expect("corrected retry dispatches despite the stale pending entry");
-    assert!(load_executor_response_ledger(workspace.path(), "sess_test")
-        .expect("response ledger after retry")
-        .iter()
-        .any(|(key, dispatched)| key == "ownership-rejected-key" && *dispatched));
+    assert!(
+        load_executor_response_ledger(workspace.path(), "sess_test")
+            .expect("response ledger after retry")
+            .iter()
+            .any(|(key, dispatched)| key == "ownership-rejected-key" && *dispatched)
+    );
     assert_eq!(
         std::fs::read_to_string(&log_path)
             .expect("rejected ledger failure log")
@@ -10950,15 +11390,19 @@ fn transport_error_releases_ownership_when_ledger_cleanup_fails() {
         .expect_err("disconnected supervisor must fail the dispatch");
     assert_eq!(error.code, HostedRunnerErrorCode::RuntimeNotReady);
     assert_ne!(error.code, HostedRunnerErrorCode::Internal);
-    assert!(!executor
-        .queued_responses
-        .lock()
-        .expect("queued responses")
-        .contains_key("transport-ledger-key"));
-    assert!(load_executor_response_ledger(workspace.path(), "sess_test")
-        .expect("response ledger")
-        .iter()
-        .any(|(key, dispatched)| key == "transport-ledger-key" && !dispatched));
+    assert!(
+        !executor
+            .queued_responses
+            .lock()
+            .expect("queued responses")
+            .contains_key("transport-ledger-key")
+    );
+    assert!(
+        load_executor_response_ledger(workspace.path(), "sess_test")
+            .expect("response ledger")
+            .iter()
+            .any(|(key, dispatched)| key == "transport-ledger-key" && !dispatched)
+    );
 
     let retry = executor
         .execute(&context, response)
@@ -10998,26 +11442,34 @@ async fn unacknowledged_response_releases_ownership_when_ledger_cleanup_fails() 
         .execute(&context, response.clone())
         .expect_err("governed result has no ack id, so the consumer cannot acknowledge it");
     assert_eq!(error.code, HostedRunnerErrorCode::RuntimeFailed);
-    assert!(error
-        .message
-        .contains("response consumer did not acknowledge the control response"));
-    assert!(!executor
-        .queued_responses
-        .lock()
-        .expect("queued responses")
-        .contains_key("not-expected-key"));
-    assert!(load_executor_response_ledger(workspace.path(), "sess_test")
-        .expect("response ledger")
-        .iter()
-        .any(|(key, dispatched)| key == "not-expected-key" && !dispatched));
+    assert!(
+        error
+            .message
+            .contains("response consumer did not acknowledge the control response")
+    );
+    assert!(
+        !executor
+            .queued_responses
+            .lock()
+            .expect("queued responses")
+            .contains_key("not-expected-key")
+    );
+    assert!(
+        load_executor_response_ledger(workspace.path(), "sess_test")
+            .expect("response ledger")
+            .iter()
+            .any(|(key, dispatched)| key == "not-expected-key" && !dispatched)
+    );
 
     let retry = executor
         .execute(&context, response)
         .expect_err("same-key retry is admitted and re-dispatches");
     assert_eq!(retry.code, HostedRunnerErrorCode::RuntimeFailed);
-    assert!(retry
-        .message
-        .contains("response consumer did not acknowledge the control response"));
+    assert!(
+        retry
+            .message
+            .contains("response consumer did not acknowledge the control response")
+    );
     supervisor.lock().expect("supervisor").shutdown();
 }
 
@@ -11281,34 +11733,46 @@ async fn delayed_ack_event_pump_finalizes_before_restart_without_redispatch() {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(state
-            .response_idempotency_keys
-            .contains("delayed-restart-key"));
-        assert!(!state
-            .pending_response_idempotency
-            .contains_key("delayed-restart-key"));
+        assert!(
+            state
+                .response_idempotency_keys
+                .contains("delayed-restart-key")
+        );
+        assert!(
+            !state
+                .pending_response_idempotency
+                .contains_key("delayed-restart-key")
+        );
     }
-    assert!(first_executor
-        .memory_completed_responses
-        .lock()
-        .expect("memory-completed responses")
-        .is_empty());
-    assert!(load_executor_response_ledger(workspace.path(), "sess_test")
-        .expect("recovered executor ledger")
-        .iter()
-        .any(|(key, dispatched)| key == "delayed-restart-key" && *dispatched));
-    assert!(!first
-        .shared
-        .thread_persistence_retry_pending
-        .load(Ordering::Acquire));
-    assert!(!first
-        .shared
-        .event_pump_task
-        .lock()
-        .await
-        .as_ref()
-        .expect("event pump task")
-        .is_finished());
+    assert!(
+        first_executor
+            .memory_completed_responses
+            .lock()
+            .expect("memory-completed responses")
+            .is_empty()
+    );
+    assert!(
+        load_executor_response_ledger(workspace.path(), "sess_test")
+            .expect("recovered executor ledger")
+            .iter()
+            .any(|(key, dispatched)| key == "delayed-restart-key" && *dispatched)
+    );
+    assert!(
+        !first
+            .shared
+            .thread_persistence_retry_pending
+            .load(Ordering::Acquire)
+    );
+    assert!(
+        !first
+            .shared
+            .event_pump_task
+            .lock()
+            .await
+            .as_ref()
+            .expect("event pump task")
+            .is_finished()
+    );
     first.shutdown().await;
     first_supervisor
         .lock()
@@ -11507,9 +11971,11 @@ fn executor_queue_capacity_rejects_new_ownership_without_evicting_live_keys() {
     assert_eq!(error.code, HostedRunnerErrorCode::ResponseCapacity);
     let reloaded = load_executor_response_ledger(workspace.path(), "sess_test").unwrap();
     assert_eq!(reloaded.len(), MAX_RESPONSE_IDEMPOTENCY_RECORDS);
-    assert!(reloaded
-        .iter()
-        .any(|(key, dispatched)| key == "ledger-live-0" && !*dispatched));
+    assert!(
+        reloaded
+            .iter()
+            .any(|(key, dispatched)| key == "ledger-live-0" && !*dispatched)
+    );
 }
 
 #[test]
@@ -11566,12 +12032,16 @@ fn ledger_transaction_prevents_stale_admission_from_overwriting_delayed_ack() {
     assert!(!admission.join().unwrap().unwrap());
     acknowledgement.join().unwrap().unwrap();
     let ledger = load_executor_response_ledger(workspace.path(), "sess_test").unwrap();
-    assert!(ledger
-        .iter()
-        .any(|(key, dispatched)| key == "acknowledged-key" && *dispatched));
-    assert!(ledger
-        .iter()
-        .any(|(key, dispatched)| key == "new-admission-key" && !*dispatched));
+    assert!(
+        ledger
+            .iter()
+            .any(|(key, dispatched)| key == "acknowledged-key" && *dispatched)
+    );
+    assert!(
+        ledger
+            .iter()
+            .any(|(key, dispatched)| key == "new-admission-key" && !*dispatched)
+    );
 
     let restarted = AgentSupervisorHostedRunnerMessageExecutor::new(Arc::new(Mutex::new(
         AgentSupervisor::new(crate::headless::SupervisorConfig::default()),
@@ -11604,11 +12074,13 @@ fn ledger_transaction_prevents_stale_admission_from_overwriting_delayed_ack() {
         result.execution,
         HostedRunnerHeadlessMessageExecution::RuntimeHandled
     );
-    assert!(restarted
-        .queued_responses
-        .lock()
-        .expect("restarted queued responses")
-        .is_empty());
+    assert!(
+        restarted
+            .queued_responses
+            .lock()
+            .expect("restarted queued responses")
+            .is_empty()
+    );
 }
 
 #[cfg(unix)]
@@ -11748,9 +12220,11 @@ fn acknowledged_response_ledger_write_failure_is_memory_only() {
         workspace_root: workspace.path().to_path_buf(),
         session_id: "sess_acknowledged".to_string(),
     };
-    assert!(executor
-        .persist_consumed_response("response-key", &ownership)
-        .is_err());
+    assert!(
+        executor
+            .persist_consumed_response("response-key", &ownership)
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -11765,7 +12239,7 @@ async fn durable_thread_rejects_stale_runtime_generation() {
 
     let response = client
         .post(format!(
-            "{}/api/headless/threads/sess_test/turns",
+            "{}/api/headless/threads/mrs_test/turns",
             handle.base_url()
         ))
         .header("x-maestro-headless-connection-id", "conn_stale_thread")
@@ -11802,7 +12276,7 @@ async fn durable_thread_only_accepts_steering_while_a_turn_is_active() {
     let post = |turn_id: &str, kind: &str, content: &str| {
         client
             .post(format!(
-                "{}/api/headless/threads/sess_test/turns",
+                "{}/api/headless/threads/mrs_test/turns",
                 handle.base_url()
             ))
             .header("x-maestro-headless-connection-id", "conn_steering")
@@ -11866,7 +12340,7 @@ async fn durable_thread_requires_turn_completed_after_response_end_for_active_ru
     let post = |turn_id: &str, kind: &str, content: &str| {
         client
             .post(format!(
-                "{}/api/headless/threads/sess_test/turns",
+                "{}/api/headless/threads/mrs_test/turns",
                 handle.base_url()
             ))
             .header("x-maestro-headless-connection-id", "conn_steer_completion")
@@ -11897,7 +12371,7 @@ async fn durable_thread_requires_turn_completed_after_response_end_for_active_ru
     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     let running: serde_json::Value = client
         .get(format!(
-            "{}/api/headless/threads/sess_test",
+            "{}/api/headless/threads/mrs_test",
             handle.base_url()
         ))
         .send()
@@ -11915,7 +12389,7 @@ async fn durable_thread_requires_turn_completed_after_response_end_for_active_ru
         loop {
             let thread: serde_json::Value = client
                 .get(format!(
-                    "{}/api/headless/threads/sess_test",
+                    "{}/api/headless/threads/mrs_test",
                     handle.base_url()
                 ))
                 .send()
@@ -12885,9 +13359,11 @@ async fn drain_start_persistence_failure_is_synchronous_and_retryable() {
         !shared.event_pump_cancellation.is_cancelled(),
         "the event pump must not be stopped before the draining boundary is durable"
     );
-    assert!(!shared
-        .thread_persistence_retry_pending
-        .load(Ordering::Acquire));
+    assert!(
+        !shared
+            .thread_persistence_retry_pending
+            .load(Ordering::Acquire)
+    );
 
     let response = handle_drain(
         shared,
@@ -12972,6 +13448,7 @@ fn draining_terminal_messages_keep_the_draining_receipt_until_finalization() {
                 attachments: None,
                 code_mode: None,
                 tool_grant: None,
+                managed_inference_authorization: None,
             },
             cursor,
         );
@@ -13485,13 +13962,15 @@ async fn replacement_restore_removes_source_executor_drain_handoff() {
         },
     )
     .expect("write source drain handoff");
-    assert!(load_executor_drain_result(
-        workspace.path(),
-        "sess_test",
-        source_config.runtime_generation
-    )
-    .expect("load source drain handoff")
-    .is_some());
+    assert!(
+        load_executor_drain_result(
+            workspace.path(),
+            "sess_test",
+            source_config.runtime_generation
+        )
+        .expect("load source drain handoff")
+        .is_some()
+    );
 
     let mut replacement_config = source_config;
     replacement_config.runner_session_id = "mrs_replacement_handoff_cleanup".to_string();
@@ -13513,13 +13992,15 @@ async fn replacement_restore_removes_source_executor_drain_handoff() {
             "replacement must not replay the source runner handoff"
         );
     }
-    assert!(load_executor_drain_result(
-        workspace.path(),
-        "sess_test",
-        replacement_config.runtime_generation
-    )
-    .expect("load cleaned source drain handoff")
-    .is_none());
+    assert!(
+        load_executor_drain_result(
+            workspace.path(),
+            "sess_test",
+            replacement_config.runtime_generation
+        )
+        .expect("load cleaned source drain handoff")
+        .is_none()
+    );
     drop(first_replacement);
 
     let restarted_replacement = SharedRunner::new_with_message_executor_and_restore(
@@ -13697,9 +14178,11 @@ async fn drain_succeeds_despite_journal_failure_for_drained_keys() {
     };
     assert_eq!(status, 200);
     assert_eq!(body["status"], "drained");
-    assert!(body["manifest_path"]
-        .as_str()
-        .is_some_and(|p| !p.is_empty()));
+    assert!(
+        body["manifest_path"]
+            .as_str()
+            .is_some_and(|p| !p.is_empty())
+    );
     {
         let state = shared
             .state
@@ -13882,9 +14365,11 @@ async fn executor_drain_result_survives_completion_marker_failure_and_restart() 
         load_executor_drain_result(workspace.path(), "sess_test", config.runtime_generation)
             .expect("load crash recovery handoff")
             .expect("crash recovery handoff");
-    assert!(!serde_json::to_string(&retained)
-        .expect("serialize retained handoff")
-        .contains("drain-result-secret-must-not-persist"));
+    assert!(
+        !serde_json::to_string(&retained)
+            .expect("serialize retained handoff")
+            .contains("drain-result-secret-must-not-persist")
+    );
     drop(first);
 
     let restarted = SharedRunner::new_with_message_executor_and_restore(

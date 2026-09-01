@@ -88,7 +88,25 @@ Project entries override user entries by server name where applicable.
 | Transport | Description |
 |-----------|-------------|
 | `stdio` (default) | Spawn process, communicate on stdin/stdout |
-| `http` / `sse` | Remote MCP server |
+| `http` | Streamable HTTP MCP endpoint; uses the configured URL directly and keeps a stateful MCP session |
+| `sse` | Legacy Server-Sent Events transport using `<url>/sse` and `<url>/message` |
+
+For a Streamable HTTP server, set `url` to its MCP endpoint (for example, `https://host.example/mcp`) and place any required authorization in `headers`. Maestro sends those headers on every MCP request, replays the server-issued `Mcp-Session-Id`, sends the `notifications/initialized` notification, and terminates the session with `DELETE` when disconnecting. If the endpoint rejects the initial Streamable HTTP POST with `400`, `404`, or `405`, Maestro falls back to the legacy `<url>/message` request path.
+
+```json
+{
+  "servers": [
+    {
+      "name": "hosted-mcp",
+      "transport": "http",
+      "url": "https://host.example/mcp",
+      "headers": { "Authorization": "Bearer ${MCP_API_KEY}" }
+    }
+  ]
+}
+```
+
+The same Streamable HTTP shape can be used when Maestro consumes a centrally configured third-party MCP server, whether it runs locally or inside a hosted Computer. The host supplies the authoritative endpoint and can provision an OAuth access token as a bearer value in `headers`; Maestro replays that header on initialization, notifications, requests, retries, and session termination. Maestro does not perform the browser OAuth flow, read per-invocation `mcp_config`, or log the token. Keep centrally configured remote servers and exposed tool sets small and high-level; host-side filtering such as `includeTools` is outside this client transport.
 
 MCP servers do **not** inherit full `process.env` by default; pass required secrets explicitly in `env`.
 

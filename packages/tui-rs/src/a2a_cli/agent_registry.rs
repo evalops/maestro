@@ -4,11 +4,11 @@
 
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use anyhow::{Context, Result, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::operating_plane_client::normalize_base_url;
 
@@ -517,10 +517,7 @@ pub fn resolve_agent_registry_config_with_workspace(
     let base_url = get_env_value(BASE_URL_ENV_VARS)?;
     let token = get_env_value(TOKEN_ENV_VARS)?;
     let organization_id = get_env_value(ORGANIZATION_ENV_VARS)?;
-    let workspace_id = trim_opt(workspace_id)
-        .map(str::to_string)
-        .or_else(|| get_env_value(WORKSPACE_ENV_VARS))
-        .or_else(|| Some(organization_id.clone()))?;
+    let workspace_id = resolve_workspace_scope(workspace_id, get_env_value(WORKSPACE_ENV_VARS))?;
     Some(AgentRegistryConfig {
         base_url: normalize_base_url(&base_url, BASE_URL_SUFFIXES),
         token,
@@ -571,10 +568,7 @@ pub async fn register_agent_with_platform(
     insert_string(
         &mut body,
         "workspaceId",
-        input
-            .workspace_id
-            .as_deref()
-            .or(Some(config.workspace_id.as_str())),
+        trim_opt(input.workspace_id.as_deref()).or(Some(config.workspace_id.as_str())),
     );
     insert_string(&mut body, "id", input.id.as_deref());
     body.insert("name".into(), Value::String(input.name));
@@ -653,7 +647,11 @@ pub async fn list_agents_with_platform(
         None => return Ok(None),
     };
     let mut body = Map::new();
-    insert_string(&mut body, "workspaceId", input.workspace_id.as_deref());
+    insert_string(
+        &mut body,
+        "workspaceId",
+        trim_opt(input.workspace_id.as_deref()).or(Some(config.workspace_id.as_str())),
+    );
     insert_string(&mut body, "agentType", input.agent_type.as_deref());
     insert_string(&mut body, "capability", input.capability.as_deref());
     insert_string(&mut body, "surface", input.surface.as_deref());
@@ -769,7 +767,11 @@ pub async fn delegate_agent_with_platform(
         None => return Ok(None),
     };
     let mut body = Map::new();
-    insert_string(&mut body, "workspaceId", input.workspace_id.as_deref());
+    insert_string(
+        &mut body,
+        "workspaceId",
+        trim_opt(input.workspace_id.as_deref()).or(Some(config.workspace_id.as_str())),
+    );
     body.insert("fromAgentId".into(), Value::String(input.from_agent_id));
     insert_string(&mut body, "toAgentId", input.to_agent_id.as_deref());
     insert_string(
@@ -856,10 +858,7 @@ pub async fn get_a2a_delegation_graph_with_platform(
     insert_string(
         &mut body,
         "workspaceId",
-        input
-            .workspace_id
-            .as_deref()
-            .or(Some(config.workspace_id.as_str())),
+        trim_opt(input.workspace_id.as_deref()).or(Some(config.workspace_id.as_str())),
     );
     insert_string(
         &mut body,
@@ -917,13 +916,24 @@ fn resolve_config(
 ) -> Option<AgentRegistryConfig> {
     match config {
         Some(mut config) => {
-            if let Some(workspace) = trim_opt(workspace_id) {
-                config.workspace_id = workspace.to_string();
-            }
+            let workspace = resolve_workspace_scope(
+                workspace_id,
+                trim_opt(Some(config.workspace_id.as_str())).map(str::to_string),
+            )?;
+            config.workspace_id = workspace;
             Some(config)
         }
         None => resolve_agent_registry_config_with_workspace(workspace_id),
     }
+}
+
+fn resolve_workspace_scope(
+    requested_workspace_id: Option<&str>,
+    configured_workspace_id: Option<String>,
+) -> Option<String> {
+    trim_opt(requested_workspace_id)
+        .map(str::to_string)
+        .or(configured_workspace_id)
 }
 
 async fn post_agent_registry(
@@ -1502,9 +1512,11 @@ mod tests {
             let read = stream.read(&mut buffer).await.unwrap();
             let request = String::from_utf8_lossy(&buffer[..read]);
             assert!(request.contains("POST /agents.v1.AgentService/List"));
-            assert!(request
-                .to_ascii_lowercase()
-                .contains("authorization: bearer reg-token"));
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer reg-token")
+            );
             assert!(
                 request.contains("X-Organization-ID: org_1")
                     || request.contains("x-organization-id: org_1")
@@ -1516,6 +1528,10 @@ mod tests {
             assert!(
                 request.contains("Connect-Protocol-Version: 1")
                     || request.contains("connect-protocol-version: 1")
+            );
+            assert!(
+                request.contains(r#""workspaceId":"ws_1""#),
+                "list requests must carry the configured workspace scope: {request}"
             );
             let body = r#"{
               "agents": [{
@@ -1573,5 +1589,31 @@ mod tests {
             Some("matched")
         );
         server.await.unwrap();
+    }
+
+    #[test]
+    fn agent_registry_scope_requires_an_explicit_workspace() {
+        assert_eq!(resolve_workspace_scope(None, None), None);
+        assert_eq!(
+            resolve_workspace_scope(Some("  ws_requested  "), None),
+            Some("ws_requested".to_owned())
+        );
+        assert_eq!(
+            resolve_workspace_scope(None, Some("ws_configured".to_owned())),
+            Some("ws_configured".to_owned())
+        );
+    }
+
+    #[test]
+    fn supplied_agent_registry_config_cannot_be_unscoped() {
+        let config = AgentRegistryConfig {
+            base_url: "https://platform.example".to_owned(),
+            token: "token".to_owned(),
+            organization_id: "org_1".to_owned(),
+            workspace_id: String::new(),
+            timeout_ms: 1_000,
+            max_attempts: 1,
+        };
+        assert!(resolve_config(Some(config), None).is_none());
     }
 }

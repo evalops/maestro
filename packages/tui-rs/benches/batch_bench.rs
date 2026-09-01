@@ -2,7 +2,7 @@
 //!
 //! Run with: cargo bench --bench batch_bench
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use maestro_tui::tools::{BatchConfig, BatchExecutor, BatchToolCall};
 use serde_json::json;
 

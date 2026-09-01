@@ -443,10 +443,12 @@ mod tests {
                 .count(),
             1
         );
-        assert!(!critique
-            .issues
-            .iter()
-            .any(|issue| issue.description.contains("Warning budget exceeded")));
+        assert!(
+            !critique
+                .issues
+                .iter()
+                .any(|issue| issue.description.contains("Warning budget exceeded"))
+        );
     }
 
     #[tokio::test]

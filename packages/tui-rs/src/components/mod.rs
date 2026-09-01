@@ -91,7 +91,7 @@
 //! - `ModelSelector`: Model selection modal
 //! - `RewindPicker`: File checkpoint restore picker modal
 //! - `SessionSwitcher`: Session list modal
-//! - `SetupModal`: First-run EvalOps or local API key modal
+//! - `SetupModal`: First-run EvalOps Identity and optional local API key modal
 //! - `ThemeSelector`: Theme picker modal
 //!
 //! ### Utility Components
@@ -142,32 +142,32 @@ mod theme_selector;
 mod thinking_indicator;
 mod welcome;
 
-pub use crate::model_catalog::{available_models, ModelInfo};
+pub use crate::model_catalog::{ModelInfo, available_models};
 pub use approval::{
-    approval_modal_kind, ApprovalController, ApprovalDecision, ApprovalModal, ApprovalModalKind,
-    ApprovalRequest, BatchedApprovalModal,
+    ApprovalController, ApprovalDecision, ApprovalModal, ApprovalModalKind, ApprovalRequest,
+    BatchedApprovalModal, approval_modal_kind,
 };
 pub use command_palette::CommandPalette;
 pub use config_selector::{ConfigCategory, ConfigChangeEvent, ConfigOption, ConfigSelector};
 pub use context_indicator::{ContextIndicator, ContextIndicatorBuilder, UsageLevel};
 pub use deixic_logo::{
-    logo_line_count, logo_visual_width, pick_logo, render_welcome, welcome_content_lines,
-    LOGO_COMPACT, LOGO_FULL, LOGO_MICRO, LOGO_TINY,
+    LOGO_COMPACT, LOGO_FULL, LOGO_MICRO, LOGO_TINY, logo_line_count, logo_visual_width, pick_logo,
+    render_welcome, welcome_content_lines,
 };
 pub use detail_view::DetailView;
 pub use file_search::FileSearchModal;
 pub use input::{EditorWidget, InputWidget};
-pub use layout::{column_layout, row_layout, BoxWidget};
-pub(crate) use message::{calculate_input_height, composer_editor_width};
+pub use layout::{BoxWidget, column_layout, row_layout};
 pub use message::{
     ChatInputWidget, ChatInputWidgetOptions, ChatView, MessageWidget, StatusBarWidget,
     ToolCallWidget,
 };
+pub(crate) use message::{calculate_input_height, composer_editor_width};
 pub use model_selector::ModelSelector;
-pub use operations::{project_session, OperationRow, OperationsModal, ReceiptSummary};
+pub use operations::{OperationRow, OperationsModal, ReceiptSummary, project_session};
 pub use rate_limit::{
-    format_duration_compact, format_elapsed, CreditsDisplay, RateLimitDisplay, RateLimitState,
-    RateLimitTracker, RateLimitWindow,
+    CreditsDisplay, RateLimitDisplay, RateLimitState, RateLimitTracker, RateLimitWindow,
+    format_duration_compact, format_elapsed,
 };
 pub use rewind_picker::RewindPicker;
 pub use scroll::render_scrollbar;

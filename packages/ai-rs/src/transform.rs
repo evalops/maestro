@@ -16,8 +16,8 @@
 //! let transformed = transform_messages(&messages, AiProvider::OpenAI);
 //! ```
 
-use super::types::{ContentBlock, Message, MessageContent, Role};
 use super::AiProvider;
+use super::types::{ContentBlock, Message, MessageContent, Role};
 use std::collections::HashSet;
 
 /// Transform messages for cross-provider compatibility.

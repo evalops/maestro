@@ -182,7 +182,7 @@
 //! ```
 
 use super::wire_format_generated::canonical_stop_reason;
-use crate::agent::{compaction::ContinuationRecord, ExecutionReceipt};
+use crate::agent::{ExecutionReceipt, compaction::ContinuationRecord};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
@@ -790,6 +790,13 @@ pub enum ContentBlock {
         name: String,
         #[serde(rename = "arguments", alias = "args", default)]
         args: serde_json::Value,
+        /// Identity of the tool this call was made against.
+        ///
+        /// Absent on transcripts written before the contract existed; a
+        /// missing contract means the resumed call is dispatched by name
+        /// alone, exactly as it was before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contract: Option<crate::tools::tool_call_contract::ToolCallContract>,
     },
     /// Image (base64)
     Image {

@@ -9,6 +9,8 @@
 
 use regex::Regex;
 
+use super::bash_analyzer::canonicalize_for_matching;
+
 /// A dangerous pattern with its compiled regex
 #[derive(Debug)]
 pub struct DangerousPattern {
@@ -258,13 +260,31 @@ static DANGEROUS_PATTERNS: std::sync::LazyLock<Vec<DangerousPattern>> = std::syn
     },
 );
 
+/// The forms of an input that patterns are matched against.
+///
+/// Always the input as written, plus the ANSI-C decoded form when the two
+/// differ. `$'\x72\x6d' -rf /` runs `rm -rf /` but contains no literal `rm`,
+/// so a regex over the raw text alone never sees it. Matching both forms only
+/// adds coverage: a pattern that matched before still matches.
+fn matching_forms(input: &str) -> Vec<String> {
+    let canonical = canonicalize_for_matching(input);
+    if canonical == input {
+        vec![input.to_string()]
+    } else {
+        vec![input.to_string(), canonical]
+    }
+}
+
 /// Check input against all dangerous patterns
 ///
 /// Returns a list of all matching patterns, sorted by severity (high first).
+/// Each pattern is reported at most once even when it matches both the raw and
+/// the ANSI-C decoded form of the input.
 pub fn check_dangerous_patterns(input: &str) -> Vec<PatternMatch> {
+    let forms = matching_forms(input);
     let mut matches: Vec<PatternMatch> = DANGEROUS_PATTERNS
         .iter()
-        .filter_map(|p| p.matches(input))
+        .filter_map(|p| forms.iter().find_map(|form| p.matches(form)))
         .collect();
 
     // Sort by severity (High first)
@@ -278,10 +298,14 @@ pub fn check_dangerous_patterns(input: &str) -> Vec<PatternMatch> {
 }
 
 /// Check if input contains any high-severity dangerous pattern
+///
+/// Matches the raw input and its ANSI-C decoded form, as
+/// [`check_dangerous_patterns`] does.
 pub fn has_high_severity_pattern(input: &str) -> bool {
+    let forms = matching_forms(input);
     DANGEROUS_PATTERNS
         .iter()
-        .any(|p| p.severity == Severity::High && p.regex.is_match(input))
+        .any(|p| p.severity == Severity::High && forms.iter().any(|form| p.regex.is_match(form)))
 }
 
 /// Get the most severe pattern match
@@ -294,6 +318,24 @@ pub fn most_severe_match(input: &str) -> Option<PatternMatch> {
 #[allow(clippy::no_effect_underscore_binding)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_ansi_c_quoted_rm_rf_is_detected() {
+        // `$'\x72\x6d' -rf /` executes `rm -rf /`; the raw text contains no
+        // literal `rm`, so only the decoded form matches the regex.
+        assert!(has_high_severity_pattern(r"$'\x72\x6d' -rf /"));
+        assert!(has_high_severity_pattern(r"$'\162\155' -rf /"));
+        let matches = check_dangerous_patterns(r"$'\x72\x6d' -rf /");
+        assert!(matches.iter().any(|m| m.pattern_id == "rm_rf"));
+        // Each pattern is reported once even though both forms are matched.
+        let rm_rf_hits = matches.iter().filter(|m| m.pattern_id == "rm_rf").count();
+        assert_eq!(rm_rf_hits, 1);
+    }
+
+    #[test]
+    fn test_inputs_without_ansi_c_quoting_are_matched_unchanged() {
+        assert_eq!(matching_forms("rm -rf /"), vec!["rm -rf /".to_string()]);
+    }
 
     #[test]
     fn test_rm_rf_detection() {

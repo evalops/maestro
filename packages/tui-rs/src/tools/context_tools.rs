@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agent::{ToolDefinition, ToolResult};
 use crate::ai::Tool;
@@ -66,10 +66,13 @@ pub(crate) fn definitions() -> Vec<(String, ToolDefinition)> {
             definition(
                 "reject_harness_refinement",
                 "Reject one pending harness refinement proposal with an optional review note.",
-                object_schema(json!({
-                    "id": {"type": "string"},
-                    "note": {"type": "string"}
-                }), &["id"]),
+                object_schema(
+                    json!({
+                        "id": {"type": "string"},
+                        "note": {"type": "string"}
+                    }),
+                    &["id"],
+                ),
                 true,
             ),
         ),

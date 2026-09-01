@@ -5,7 +5,7 @@
     "canonicalization": "rfc8785",
     "encoding": "utf-8"
   },
-  "compatibilityDigest": "sha256:018743356b2809509e531e9adc1be3722693c6eec97b924bcd27069d6f6353aa",
+  "compatibilityDigest": "sha256:42ad887c57891cca7a1593e5922ff6873075417ea4c40a6fdbba05b266d05352",
   "buildIdentity": {
     "sourceSha": null,
     "buildDigest": null,
@@ -37,8 +37,8 @@
         "2026-08-08"
       ],
       "schemaDeclaredVersion": "2026-08-08",
-      "schemaContractDigest": "sha256:f13a004f2e6b7783c44bde300de51d6c5f13724926db255e9a704718c34436ba",
-      "runtimeContractDigest": "sha256:f78037424e4c6cc97773e65e57aab7ea7fcffb96e617946567dbfd705706e5b8",
+      "schemaContractDigest": "sha256:fe05109aeb95e656a5c9137f91dfffca0eee35f7e01d448ada451b7bf10f3d21",
+      "runtimeContractDigest": "sha256:c53230b8a58600a489163892dde465087f376fc5b929b37d8b1f7eb6f5e650a0",
       "messages": {
         "toRuntime": [
           "hello",
@@ -49,6 +49,7 @@
           "governed_prompt",
           "steer",
           "governed_steer",
+          "apply_workspace_capability_set",
           "interrupt",
           "tool_response",
           "client_tool_result",
@@ -69,6 +70,8 @@
           "conversation_snapshot",
           "hello_ok",
           "response_accepted",
+          "managed_gateway_receipt",
+          "workspace_capability_set_applied",
           "ready",
           "response_start",
           "response_chunk",
@@ -89,6 +92,7 @@
           "server_request_resolved",
           "error",
           "provider_error",
+          "delegation_event",
           "status",
           "compaction",
           "session_info",
@@ -112,6 +116,7 @@
         ],
         "runtimeOnlyFromRuntime": [
           "conversation_snapshot",
+          "managed_gateway_receipt",
           "codex_session_state",
           "codex_turn_state",
           "codex_usage_state",
@@ -166,7 +171,7 @@
       }
     },
     "thread": {
-      "contractDigest": "sha256:7dfa8484ba8253855f34181d9f6057fe2d46b1a4d331e02befda31bd76c3f864",
+      "contractDigest": "sha256:e9e3ded126437a773c2ab66cc3524341d38787baf541ec61594a39aa06447fb9",
       "supportedVersions": [
         {
           "version": "evalops.maestro.thread.v1",
@@ -191,7 +196,7 @@
     },
     "runtime": {
       "schemaVersion": "evalops.maestro.headless-protocol.v1",
-      "contractDigest": "sha256:a8b61e700bb628cbdef3393e35d653ed518f02aa79f8b7a468d550bfbbb83fb8",
+      "contractDigest": "sha256:9880e7faab794e4f7c93c3ffc14f9692b0ad5745bca0174b873b5e97245419d8",
       "receipt": {
         "schemaVersion": "evalops.maestro.runtime-receipt.v1",
         "sourceDigest": "sha256:8fbcb58770dccabaf0d87b2532121addafd35e04f5a09f9dffdd2dea8897b921",

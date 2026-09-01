@@ -1,15 +1,17 @@
-//! Grok-style plugin discovery foundation.
+//! Native plugin discovery foundation.
 //!
 //! Plugins are filesystem packages that may bundle skills, slash-command
-//! templates, hooks, and MCP configs:
+//! templates, hooks, MCP configs, and declarative connection types:
 //!
 //! ```text
 //! <plugin-root>/
-//!   plugin.json          # optional manifest
+//!   plugin.json or .plugin/plugin.json  # optional manifest
 //!   skills/              # SKILL.md packages
+//!   agents/              # specialized agent definitions
 //!   commands/            # markdown command templates
 //!   hooks/hooks.json or hooks.toml
 //!   .mcp.json or mcp.json
+//!   connections.json     # declarative types; no secrets
 //! ```
 //!
 //! # Discovery order (high → low priority)
@@ -30,17 +32,22 @@ mod manager;
 mod manifest;
 pub mod marketplace;
 
-pub use connection_types::{ConnectionTypeDefinition, ConnectionTypeManifest};
-pub use discovery::{default_search_roots, search_roots_for_workspace, PluginOrigin};
-pub use loader::{load_manifest, resolve_components, PluginComponents};
+pub use connection_types::{
+    ConnectionMcpBindingDefinition, ConnectionTypeDefinition, ConnectionTypeManifest,
+};
+pub use discovery::{PluginOrigin, default_search_roots, search_roots_for_workspace};
+pub use loader::{
+    MAX_PLUGIN_FILE_BYTES, NATIVE_PLUGIN_MANIFEST_PATH, PORTABLE_PLUGIN_MANIFEST_PATH,
+    PluginComponents, load_manifest, load_manifest_with_path, read_plugin_file, resolve_components,
+};
 pub use manager::{
-    install, install_with_provenance, set_capability, set_enabled, InstallPreview,
-    InstallProvenance, PluginCapability, PluginState, PluginTrustState,
+    InstallPreview, InstallProvenance, PluginCapability, PluginState, PluginTrustState, install,
+    install_with_provenance, set_capability, set_enabled,
 };
 pub use manifest::PluginManifest;
 pub use marketplace::{
-    builtin_catalog, find_entry, format_catalog, is_installed, resolve_install_source,
-    MarketplaceEntry, MarketplaceTier,
+    MarketplaceEntry, MarketplaceTier, builtin_catalog, find_entry, format_catalog, is_installed,
+    resolve_install_source,
 };
 
 use std::collections::HashMap;
@@ -56,8 +63,10 @@ pub struct DiscoveredPlugin {
     pub root: PathBuf,
     /// Discovery origin (project / user / legacy).
     pub origin: PluginOrigin,
-    /// Parsed `plugin.json` when present.
+    /// Parsed native or portable manifest when present.
     pub manifest: Option<PluginManifest>,
+    /// Manifest path that supplied plugin identity and metadata.
+    pub manifest_path: Option<PathBuf>,
     /// Resolved component paths (skills, agents, commands, hooks, MCP).
     pub components: PluginComponents,
 }
@@ -106,7 +115,12 @@ impl DiscoveredPlugin {
             if let Some(ref description) = manifest.description {
                 msg.push_str(&format!("**Description:** {description}\n"));
             }
-            msg.push_str("**Manifest:** `plugin.json`\n");
+            let manifest_path = self
+                .manifest_path
+                .as_deref()
+                .and_then(|path| path.strip_prefix(&self.root).ok())
+                .unwrap_or_else(|| Path::new("plugin.json"));
+            msg.push_str(&format!("**Manifest:** `{}`\n", manifest_path.display()));
         } else {
             msg.push_str("**Manifest:** _(convention paths)_\n");
         }
@@ -407,7 +421,7 @@ impl PluginRegistry {
                 "Install plugins under:\n".to_string(),
                 "- `.maestro/plugins/<name>/` (project)\n".to_string(),
                 "- `~/.maestro/plugins/<name>/` (user)\n\n".to_string(),
-                "Each plugin may include `plugin.json`, `skills/`, `agents/`, `commands/`, hooks, and MCP configs.\n".to_string(),
+                "Each plugin may include `plugin.json` or `.plugin/plugin.json`, `skills/`, `agents/`, `commands/`, hooks, and MCP configs.\n".to_string(),
             ]
             .concat();
         }
@@ -446,7 +460,9 @@ fn load_plugin_dir(path: &Path, origin: PluginOrigin) -> Option<DiscoveredPlugin
         return None;
     }
 
-    let manifest = load_manifest(path);
+    let loaded_manifest = load_manifest_with_path(path);
+    let manifest_path = loaded_manifest.as_ref().map(|(_, path)| path.clone());
+    let manifest = loaded_manifest.map(|(manifest, _)| manifest);
     let name = manifest
         .as_ref()
         .and_then(|m| m.name.clone())
@@ -459,6 +475,7 @@ fn load_plugin_dir(path: &Path, origin: PluginOrigin) -> Option<DiscoveredPlugin
         root: path.to_path_buf(),
         origin,
         manifest,
+        manifest_path,
         components,
     })
 }
@@ -561,6 +578,31 @@ mod tests {
         assert_eq!(plugin.origin, PluginOrigin::Project);
         assert!(plugin.manifest.is_some());
         assert_eq!(registry.skill_dirs().len(), 1);
+    }
+
+    #[test]
+    fn discover_portable_manifest_and_reports_its_path() {
+        let tmp = TempDir::new().unwrap();
+        let plugins_root = tmp.path().join("plugins");
+        let plugin = plugins_root.join("portable");
+        fs::create_dir_all(plugin.join("skills")).unwrap();
+        write_file(
+            &plugin.join(PORTABLE_PLUGIN_MANIFEST_PATH),
+            r#"{"name":"open-plugin","version":"3.0.0"}"#,
+        );
+
+        let registry = PluginRegistry::discover_from(&[(plugins_root, PluginOrigin::User)]);
+        let plugin = registry.get("open-plugin").unwrap();
+        let expected_manifest_path = plugin.root.join(PORTABLE_PLUGIN_MANIFEST_PATH);
+        assert_eq!(
+            plugin.manifest_path.as_deref(),
+            Some(expected_manifest_path.as_path())
+        );
+        assert!(
+            plugin
+                .detail_report()
+                .contains("**Manifest:** `.plugin/plugin.json`")
+        );
     }
 
     #[test]

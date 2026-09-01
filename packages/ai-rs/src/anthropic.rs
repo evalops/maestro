@@ -78,11 +78,11 @@
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
-use super::client::{provider_model_name, AiClient, AiProvider};
+use super::client::{AiClient, AiProvider, provider_model_name};
 use super::op_secret;
 use super::types::{ContentBlock, Message, RequestConfig, StopReason, StreamEvent};
 

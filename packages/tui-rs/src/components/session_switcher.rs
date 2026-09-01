@@ -3,11 +3,11 @@
 //! Provides a UI for listing and switching between sessions.
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
-    Frame,
 };
 use std::path::PathBuf;
 use std::time::{Duration, UNIX_EPOCH};
@@ -217,11 +217,11 @@ impl SessionSwitcher {
         true
     }
 
-    /// Delete the selected session (removes the session file)
+    /// Delete the selected session and its owned sidecar data.
     pub fn delete_selected(&mut self) -> Result<(), String> {
-        if let Some(session) = self.selected_session() {
-            // Delete the session file
-            std::fs::remove_file(&session.path)
+        if let Some(session) = self.selected_session().cloned() {
+            self.manager
+                .delete_session(&session)
                 .map_err(|e| format!("Failed to delete session: {e}"))?;
             self.refresh();
         }
@@ -542,10 +542,15 @@ mod tests {
             index_path.exists(),
             "refresh persisted the session index for the next open"
         );
+        let spill_dir = dir.join("tool-output/session-1");
+        std::fs::create_dir_all(&spill_dir).unwrap();
+        std::fs::write(spill_dir.join("large.txt"), "output").unwrap();
 
-        // Deleting the file prunes it from both the list and the index.
+        // Deleting the session prunes its transcript, spill data, list row,
+        // and index entry together.
         switcher.delete_selected().unwrap();
         assert!(switcher.sessions.is_empty());
+        assert!(!spill_dir.exists());
         let raw = std::fs::read_to_string(&index_path).unwrap();
         assert!(!raw.contains("session-1"));
     }

@@ -3,8 +3,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
-use serde_json::{json, Map, Value};
+use anyhow::{Context, Result, bail};
+use serde_json::{Map, Value, json};
 
 pub fn run_mcp_config(args: &[String]) -> Result<i32> {
     println!("{}", apply_mcp_config(args)?);
@@ -17,7 +17,7 @@ pub fn apply_mcp_config(args: &[String]) -> Result<String> {
     let cwd = std::env::current_dir()?;
     match command {
         "list" => {
-            let config = crate::mcp::load_mcp_config(Some(&cwd));
+            let config = crate::mcp::load_mcp_config_with_managed_connections(Some(&cwd));
             Ok(serde_json::to_string_pretty(&redact_server_configs(
                 serde_json::to_value(&config.servers)?,
             ))?)
@@ -59,7 +59,9 @@ pub fn apply_mcp_config(args: &[String]) -> Result<String> {
             }
             let (path, scope) = target_path(args, &cwd)?;
             if scope != "user" && server.get("headers").is_some() {
-                bail!("bearer-token bindings are user-scope only; project configs cannot read secrets");
+                bail!(
+                    "bearer-token bindings are user-scope only; project configs cannot read secrets"
+                );
             }
             mutate_server(&path, name, Some(server))?;
             Ok(format!(
@@ -435,29 +437,32 @@ mod tests {
         assert!(reject_literal_secrets(&["--refresh_token".into(), "secret".into()]).is_err());
         assert!(reject_literal_secrets(&["--auth-token".into(), "secret".into()]).is_err());
         assert!(reject_literal_secrets(&["--authorization=Bearer secret".into()]).is_err());
-        assert!(reject_literal_secrets(&[
-            "--header".into(),
-            "Authorization: Bearer literal-secret".into()
-        ])
-        .is_err());
+        assert!(
+            reject_literal_secrets(&[
+                "--header".into(),
+                "Authorization: Bearer literal-secret".into()
+            ])
+            .is_err()
+        );
         assert!(
             reject_literal_secrets(&["--header".into(), "X-API-Key: literal-secret".into()])
                 .is_err()
         );
-        assert!(reject_literal_secrets(&[
-            "--header".into(),
-            "Authorization: Bearer ${SERVICE_TOKEN}".into()
-        ])
-        .is_ok());
-        assert!(reject_literal_secrets(&[
-            "--token".into(),
-            "${SERVICE_TOKEN:-literal-secret}".into()
-        ])
-        .is_err());
-        assert!(reject_literal_secrets(&[
-            "--client-secret=${CLIENT_SECRET:-literal-secret}".into()
-        ])
-        .is_err());
+        assert!(
+            reject_literal_secrets(&[
+                "--header".into(),
+                "Authorization: Bearer ${SERVICE_TOKEN}".into()
+            ])
+            .is_ok()
+        );
+        assert!(
+            reject_literal_secrets(&["--token".into(), "${SERVICE_TOKEN:-literal-secret}".into()])
+                .is_err()
+        );
+        assert!(
+            reject_literal_secrets(&["--client-secret=${CLIENT_SECRET:-literal-secret}".into()])
+                .is_err()
+        );
         assert!(reject_literal_secrets(&["--token".into(), "${SERVICE_TOKEN}".into()]).is_ok());
         assert!(reject_literal_secrets(&["--access-token=${ACCESS_TOKEN}".into()]).is_ok());
         assert!(reject_literal_secrets(&["--credentials".into(), "opaque-secret".into()]).is_err());
@@ -518,6 +523,11 @@ mod tests {
             {
                 "name": "private-key-service",
                 "command": "safe-command"
+            },
+            {
+                "name": "managed",
+                "connectionRef": "orb-team",
+                "credentialRef": "secretbroker://orb/team"
             }
         ]));
 
@@ -539,5 +549,8 @@ mod tests {
         assert!(!listed.to_string().contains("api-header-secret"));
         assert_eq!(listed[2]["name"], "private-key-service");
         assert_eq!(listed[2]["command"], "safe-command");
+        assert_eq!(listed[3]["connectionRef"], "orb-team");
+        assert_eq!(listed[3]["credentialRef"], "[REDACTED]");
+        assert!(!listed.to_string().contains("secretbroker://orb/team"));
     }
 }

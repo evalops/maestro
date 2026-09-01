@@ -1,4 +1,4 @@
-//! Deixic brand mark for the Maestro TUI welcome surface.
+//! Deixic brand mark for the Deixic Code TUI welcome surface.
 //!
 //! Art is original terminal glyph work derived from the Dex ghost silhouette
 //! on https://github.com/evalops/deixic (`app/icon.svg`, `components/dex/Ghost.tsx`):
@@ -16,8 +16,8 @@ use ratatui::widgets::{Paragraph, Widget};
 use unicode_width::UnicodeWidthStr;
 
 use crate::shimmer::{
-    diagonal_shimmer_lines, shimmer_spans, DEIXIC_LOGO_BASE, DEIXIC_LOGO_HILITE, DEIXIC_MUTED,
-    DEIXIC_TEXT, DEIXIC_VIOLET,
+    DEIXIC_LOGO_BASE, DEIXIC_LOGO_HILITE, DEIXIC_MUTED, DEIXIC_TEXT, DEIXIC_VIOLET,
+    diagonal_shimmer_lines, shimmer_spans,
 };
 
 /// Full Dex ghost (wide). Shown when the welcome area is tall enough.
@@ -162,14 +162,14 @@ pub fn wordmark_line(animate: bool) -> Line<'static> {
     }
 }
 
-/// Product title line (kept as Maestro — product name is not Deixic).
+/// Canonical product title line.
 #[must_use]
 pub fn product_title_line(animate: bool) -> Line<'static> {
     if animate {
-        Line::from(shimmer_spans("Maestro")).alignment(Alignment::Center)
+        Line::from(shimmer_spans("Deixic Code")).alignment(Alignment::Center)
     } else {
         Line::from(Span::styled(
-            "Maestro",
+            "Deixic Code",
             Style::default()
                 .fg(Color::Rgb(DEIXIC_TEXT.0, DEIXIC_TEXT.1, DEIXIC_TEXT.2))
                 .add_modifier(Modifier::BOLD),
@@ -327,14 +327,14 @@ mod tests {
     }
 
     #[test]
-    fn welcome_content_always_includes_maestro_and_hint() {
+    fn welcome_content_always_includes_deixic_code_and_hint() {
         let lines = welcome_content_lines(24, false);
         let text: String = lines
             .iter()
             .map(Line::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("Maestro"));
+        assert!(text.contains("Deixic Code"));
         assert!(text.contains("Type a message or /help."));
         assert!(text.contains("deixic"));
     }
@@ -373,7 +373,7 @@ mod tests {
             .map(Line::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("Maestro"));
+        assert!(text.contains("Deixic Code"));
         assert!(text.contains("Type a message or /help."));
         // No room for brand block.
         assert!(!text.contains("deixic"));
@@ -388,7 +388,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains('◉'));
-        assert!(text.contains("Maestro"));
+        assert!(text.contains("Deixic Code"));
         assert!(text.contains("Type a message or /help."));
         assert!(!text.contains("deixic"));
         assert_eq!(lines.len(), 3);

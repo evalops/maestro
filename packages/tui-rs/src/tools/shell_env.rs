@@ -4,7 +4,7 @@
 //! leaking credential-like or loader-injection variables into arbitrary
 //! commands.
 
-use crate::config::{load_config, ShellEnvironmentPolicy, ShellInherit};
+use crate::config::{ShellEnvironmentPolicy, ShellInherit, load_config};
 use glob::Pattern;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;

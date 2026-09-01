@@ -1704,7 +1704,7 @@ Usage: ${n.usage}`};let i=n.prompt;for(const[s,r]of Object.entries(t)){const a=n
 						<div class="session-gallery" aria-live="polite">
 							<div class="session-gallery-header">
 								<h3>Resume a Session</h3>
-								<span>Select a recent Maestro run to continue.</span>
+								<span>Select a recent Deixic Code run to continue.</span>
 							</div>
 							<div class="session-grid">
 								${e.map(r=>H`
@@ -2149,7 +2149,7 @@ ${c}`}render(){return H`<iframe
 
 				<div class="content-column">
 					<div class="header">
-						<span class="role-name">${this.role==="user"?"You":"Maestro"}</span>
+						<span class="role-name">${this.role==="user"?"You":"Deixic Code"}</span>
 						<span class="timestamp">
 							${this.formatTimestamp(this.timestamp)}
 							${i?H`
@@ -4374,7 +4374,7 @@ ${c}`}render(){return H`<iframe
 								<input
 									class="field-input"
 									type="text"
-									.placeholder=${"Search maestro packages"}
+									.placeholder=${"Search Deixic Code packages"}
 									.value=${this.packageSearchQuery}
 									aria-label=${"Package search"}
 									@input=${t=>{this.packageSearchQuery=t.target.value}}
@@ -10683,7 +10683,7 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 				<button class="toggle-sidebar-btn" @click=${this.toggleSidebar} title=${this.sidebarOpen?"Collapse sidebar":"Expand sidebar"}>
 					${this.sidebarOpen?un("chevron-left"):un("chevron-right")}
 				</button>
-				<h1>Maestro</h1>
+				<h1>Deixic Code</h1>
 			</div>
 			<div class="status-bar">
 						<div class="status-item active">

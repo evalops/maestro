@@ -6,7 +6,7 @@
 //! contract that those owners can validate against while preserving the
 //! existing wire format.
 
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -186,6 +186,7 @@ pub enum ToRuntimeMessageType {
     ToolResponse,
     ClientToolResult,
     GovernedClientToolResult,
+    ApplyWorkspaceCapabilitySet,
     ServerRequestResponse,
     UtilityCommandStart,
     UtilityCommandTerminate,
@@ -237,6 +238,8 @@ pub enum FromRuntimeMessageType {
     TurnCompleted,
     TurnInterrupted,
     ProviderError,
+    DelegationEvent,
+    WorkspaceCapabilitySetApplied,
     /// Private Codex lifecycle projection retained outside the generated
     /// public envelope.
     CodexSessionState,
@@ -309,6 +312,7 @@ pub const HEADLESS_TO_RUNTIME_MESSAGE_NAMES: &[&str] = &[
     "tool_response",
     "client_tool_result",
     "governed_client_tool_result",
+    "apply_workspace_capability_set",
     "server_request_response",
     "utility_command_start",
     "utility_command_terminate",
@@ -358,6 +362,8 @@ pub const HEADLESS_FROM_RUNTIME_MESSAGE_NAMES: &[&str] = &[
     "turn_completed",
     "turn_interrupted",
     "provider_error",
+    "delegation_event",
+    "workspace_capability_set_applied",
     "conversation_snapshot",
     "codex_session_state",
     "codex_turn_state",
@@ -467,6 +473,7 @@ const TO_RUNTIME_MESSAGES: &[ToRuntimeMessageType] = &[
     ToRuntimeMessageType::ToolResponse,
     ToRuntimeMessageType::ClientToolResult,
     ToRuntimeMessageType::GovernedClientToolResult,
+    ToRuntimeMessageType::ApplyWorkspaceCapabilitySet,
     ToRuntimeMessageType::ServerRequestResponse,
     ToRuntimeMessageType::UtilityCommandStart,
     ToRuntimeMessageType::UtilityCommandTerminate,
@@ -515,6 +522,8 @@ const FROM_RUNTIME_MESSAGES: &[FromRuntimeMessageType] = &[
     FromRuntimeMessageType::TurnCompleted,
     FromRuntimeMessageType::TurnInterrupted,
     FromRuntimeMessageType::ProviderError,
+    FromRuntimeMessageType::DelegationEvent,
+    FromRuntimeMessageType::WorkspaceCapabilitySetApplied,
     FromRuntimeMessageType::ConversationSnapshot,
     FromRuntimeMessageType::CodexSessionState,
     FromRuntimeMessageType::CodexTurnState,
@@ -1174,7 +1183,7 @@ mod tests {
         assert_eq!(headless_protocol_capability_digest(), expected);
         assert_eq!(
             headless_protocol_capability_digest(),
-            "sha256:a8b61e700bb628cbdef3393e35d653ed518f02aa79f8b7a468d550bfbbb83fb8"
+            "sha256:9880e7faab794e4f7c93c3ffc14f9692b0ad5745bca0174b873b5e97245419d8"
         );
     }
 }

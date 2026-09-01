@@ -124,7 +124,9 @@ impl HostedRunnerConfig {
             &["MAESTRO_RUNNER_SESSION_ID", "REMOTE_RUNNER_SESSION_ID"],
         )
         .ok_or_else(|| {
-            HostedRunnerConfigError::new("maestro hosted-runner requires MAESTRO_RUNNER_SESSION_ID")
+            HostedRunnerConfigError::new(
+                "deixic-code hosted-runner requires MAESTRO_RUNNER_SESSION_ID",
+            )
         })?;
         let workspace_root = resolve_config_workspace_root(
             first_env(env, &["MAESTRO_WORKSPACE_ROOT", "WORKSPACE_ROOT"]).as_deref(),
@@ -175,7 +177,7 @@ impl HostedRunnerConfig {
         }
         if !bind_addr.ip().is_loopback() && auth_token.is_none() && workload_identity.is_none() {
             return Err(HostedRunnerConfigError::new(
-                "maestro hosted-runner requires MAESTRO_HOSTED_RUNNER_AUTH_TOKEN or MAESTRO_WEB_API_KEY when binding to non-loopback interfaces",
+                "deixic-code hosted-runner requires MAESTRO_HOSTED_RUNNER_AUTH_TOKEN or MAESTRO_WEB_API_KEY when binding to non-loopback interfaces",
             ));
         }
         let snapshot_root = resolve_snapshot_root(
@@ -525,15 +527,16 @@ impl HostedRunnerConfig {
     /// authentication are both configured, or when the runtime boundary
     /// contains invalid required identity fields.
     pub fn runtime_boundary(&self) -> Result<HostedRuntimeBoundary, HostedRunnerConfigError> {
-        let auth_mode =
-            match (&self.auth_token, &self.workload_identity) {
-                (Some(_), None) => HostedRuntimeAuthMode::StaticBearer,
-                (None, Some(_)) => HostedRuntimeAuthMode::WorkloadIdentity,
-                (None, None) => HostedRuntimeAuthMode::None,
-                (Some(_), Some(_)) => return Err(HostedRunnerConfigError::new(
+        let auth_mode = match (&self.auth_token, &self.workload_identity) {
+            (Some(_), None) => HostedRuntimeAuthMode::StaticBearer,
+            (None, Some(_)) => HostedRuntimeAuthMode::WorkloadIdentity,
+            (None, None) => HostedRuntimeAuthMode::None,
+            (Some(_), Some(_)) => {
+                return Err(HostedRunnerConfigError::new(
                     "hosted runner cannot use static bearer authentication with workload identity",
-                )),
-            };
+                ));
+            }
+        };
         HostedRuntimeBoundary::new(HostedRuntimeBoundaryInput {
             runner_session_id: self.runner_session_id.clone(),
             workspace_root: self.workspace_root.to_string_lossy().into_owned(),
@@ -565,7 +568,7 @@ fn parse_rendezvous(
         _ => {
             return Err(HostedRunnerConfigError::new(
                 "MAESTRO_RENDEZVOUS_MODE must be inbound, outbound_shadow, or outbound",
-            ))
+            ));
         }
     };
     if !has_workload_identity {
@@ -921,7 +924,9 @@ fn resolve_config_workspace_root(path: Option<&str>) -> Result<PathBuf, HostedRu
         .map(str::trim)
         .filter(|path| !path.is_empty())
         .ok_or_else(|| {
-            HostedRunnerConfigError::new("maestro hosted-runner requires MAESTRO_WORKSPACE_ROOT")
+            HostedRunnerConfigError::new(
+                "deixic-code hosted-runner requires MAESTRO_WORKSPACE_ROOT",
+            )
         })?;
     let workspace_root = dunce::canonicalize(Path::new(path)).map_err(|error| {
         HostedRunnerConfigError::new(format!(

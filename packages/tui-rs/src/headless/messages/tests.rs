@@ -2,6 +2,103 @@ use super::*;
 use crate::agent::{ExecutionReceipt, ExecutionSource, ExecutionStatus, ToolReceiptDetails};
 
 #[test]
+fn headless_receipt_event_contains_record_lineage_and_status_only() {
+    let message = FromAgentMessage::ManagedGatewayReceipt {
+        request_id: "request-1".to_string(),
+        record_id: "record-1".to_string(),
+        lineage_id: "lineage-1".to_string(),
+        record_status: "planned".to_string(),
+    };
+
+    let encoded = serde_json::to_value(message).expect("serialize managed Gateway receipt");
+    assert_eq!(
+        encoded,
+        serde_json::json!({
+            "type": "managed_gateway_receipt",
+            "request_id": "request-1",
+            "record_id": "record-1",
+            "lineage_id": "lineage-1",
+            "record_status": "planned"
+        })
+    );
+}
+
+#[test]
+fn headless_prompt_rejects_malformed_managed_authorization_before_dispatch() {
+    let message = ToAgentMessage::Prompt {
+        content: "managed prompt".to_string(),
+        attachments: None,
+        managed_inference_authorization: Some(crate::agent::ManagedInferenceAuthorization::new(
+            "signed\ncapability",
+        )),
+    };
+
+    assert_eq!(
+        message.validate_managed_inference_authorization(),
+        Err("managedInferenceAuthorization contains control characters")
+    );
+}
+
+#[test]
+fn managed_gateway_receipt_survives_headless_state_conversion() {
+    let event = AgentState::default().handle_message(FromAgentMessage::ManagedGatewayReceipt {
+        request_id: "request-1".to_string(),
+        record_id: "record-1".to_string(),
+        lineage_id: "lineage-1".to_string(),
+        record_status: "planned".to_string(),
+    });
+
+    assert!(matches!(
+        event,
+        Some(AgentEvent::ManagedGatewayReceipt {
+            request_id,
+            record_id,
+            lineage_id,
+            record_status,
+        }) if request_id == "request-1"
+            && record_id == "record-1"
+            && lineage_id == "lineage-1"
+            && record_status == "planned"
+    ));
+}
+
+#[test]
+fn delegation_event_round_trips_as_typed_headless_protocol_state() {
+    let projection = maestro_runtime::DelegationEvent::from_subagent_lifecycle(
+        "event-1",
+        "delegation-1",
+        1,
+        "approval_required",
+        Some("Approval is needed."),
+        None,
+    );
+    let message = FromAgentMessage::DelegationEvent {
+        event: projection.clone(),
+    };
+    let encoded = serde_json::to_value(&message).expect("delegation event serializes");
+    assert_eq!(encoded["type"], "delegation_event");
+    assert_eq!(encoded["event"]["lifecycleState"], "approval_required");
+    assert_eq!(encoded["event"]["summary"], "Approval is needed.");
+
+    let decoded =
+        decode_from_agent_message(&serde_json::to_string(&message).expect("delegation event JSON"))
+            .expect("delegation event decodes");
+    assert!(matches!(
+        decoded,
+        maestro_runtime::TaggedMessageDecode::Known(FromAgentMessage::DelegationEvent { event })
+            if event == projection
+    ));
+
+    let mut state = AgentState::default();
+    let event = state.handle_message(message);
+    assert!(matches!(
+        event,
+        Some(AgentEvent::DelegationEvent { event })
+            if event.lifecycle_state == maestro_runtime::DelegationLifecycleState::ApprovalRequired
+    ));
+}
+
+#[test]
 fn parse_ready_message() {
     let json = r#"{"type":"ready","protocol_version":"2026-03-30","model":"claude-3-opus","provider":"anthropic","session_id":"sess_123"}"#;
     let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
@@ -491,6 +588,7 @@ fn serialize_prompt_message() {
     let msg = ToAgentMessage::Prompt {
         content: "Hello".to_string(),
         attachments: None,
+        managed_inference_authorization: None,
     };
     let json = serde_json::to_string(&msg).unwrap();
     assert!(json.contains(r#""type":"prompt""#));
@@ -630,6 +728,7 @@ fn serialize_hello_message() {
         }),
         role: Some(ConnectionRole::Controller),
         opt_out_notifications: Some(vec!["status".to_string()]),
+        controller_binding: None,
     };
     let json = serde_json::to_string(&msg).unwrap();
     assert!(json.contains(r#""type":"hello""#));
@@ -1159,6 +1258,7 @@ fn state_tracks_connection_metadata_from_hello_and_connection_info() {
         }),
         role: Some(ConnectionRole::Controller),
         opt_out_notifications: Some(vec!["status".to_string()]),
+        controller_binding: None,
     });
     let event = state.handle_message(FromAgentMessage::ConnectionInfo {
         connection_id: Some("conn_remote".to_string()),

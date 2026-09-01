@@ -1,5 +1,5 @@
 use super::*;
-use crate::commands::{AttachAction, GoalAction, HarnessAction, RlmAction};
+use crate::commands::{AttachAction, GoalAction, HarnessAction, OrbAction, RlmAction};
 use crate::state::ApprovalMode;
 
 /// Normalize a slash-completion string to a single leading `/`.
@@ -497,6 +497,9 @@ impl App {
             CommandAction::Mcp(action) => {
                 self.handle_mcp_action(action).await;
             }
+            CommandAction::Orb(action) => {
+                self.handle_orb_action(action).await;
+            }
             CommandAction::A2a(action) => {
                 self.handle_a2a_action(action);
             }
@@ -648,6 +651,57 @@ impl App {
 
                 self.state.add_system_message(diag);
             }
+        }
+    }
+
+    async fn handle_orb_action(&mut self, action: OrbAction) {
+        let action = match action {
+            OrbAction::List => crate::tools::orb_delegation::OrbConsoleAction::List,
+            OrbAction::Status(id) => crate::tools::orb_delegation::OrbConsoleAction::Status { id },
+            OrbAction::Followup { id, prompt } => {
+                crate::tools::orb_delegation::OrbConsoleAction::Followup { id, prompt }
+            }
+            OrbAction::Pause(id) => crate::tools::orb_delegation::OrbConsoleAction::Pause { id },
+            OrbAction::Resume(id) => crate::tools::orb_delegation::OrbConsoleAction::Resume { id },
+            OrbAction::Cancel(id) => crate::tools::orb_delegation::OrbConsoleAction::Cancel { id },
+            OrbAction::Collect(id) => {
+                crate::tools::orb_delegation::OrbConsoleAction::Collect { id }
+            }
+            OrbAction::HandoffCreate {
+                source_id,
+                target_thread_id,
+                files,
+                artifact_ids,
+                include_diff,
+            } => crate::tools::orb_delegation::OrbConsoleAction::HandoffCreate {
+                source_id,
+                target_thread_id,
+                files,
+                artifact_ids,
+                include_diff,
+            },
+            OrbAction::HandoffList { target_thread_id } => {
+                crate::tools::orb_delegation::OrbConsoleAction::HandoffList { target_thread_id }
+            }
+            OrbAction::HandoffRead {
+                target_thread_id,
+                package_id,
+            } => crate::tools::orb_delegation::OrbConsoleAction::HandoffRead {
+                target_thread_id,
+                package_id,
+            },
+        };
+        let result = self.tool_executor.run_orb_console(action).await;
+        if result.success {
+            if !result.output.is_empty() {
+                self.state.add_system_message(result.output);
+            }
+        } else {
+            self.state.error = Some(
+                result
+                    .error
+                    .unwrap_or_else(|| "Hosted Computer operation failed".to_string()),
+            );
         }
     }
 
@@ -931,6 +985,10 @@ impl App {
     fn show_memory_status(&mut self) {
         use crate::path_utils::maestro_home_dir;
         let mut msg = String::from("## Memory\n\n");
+        msg.push_str(&format!(
+            "**{}**\n\n",
+            crate::memory_cli::local_account_memory_status()
+        ));
         if let Some(home) = maestro_home_dir() {
             let memory_dir = home.join("memory");
             msg.push_str(&format!("**Local dir:** `{}`\n", memory_dir.display()));
@@ -967,10 +1025,10 @@ impl App {
         }
         if std::env::var("MAESTRO_SHARED_MEMORY_BASE").is_ok() {
             msg.push_str(
-                "\n**Shared memory:** configured (`MAESTRO_SHARED_MEMORY_BASE`). Use `maestro memory` for sync.\n",
+                "\n**Shared memory sync:** configured (`MAESTRO_SHARED_MEMORY_BASE`). The account-memory commands use EvalOps instead.\n",
             );
         } else {
-            msg.push_str("\n**Shared memory:** not configured. Local-only status above.\n");
+            msg.push_str("\n**Shared memory sync:** not configured.\n");
         }
         self.state.add_system_message(msg);
     }
@@ -1079,6 +1137,9 @@ impl App {
             agent.clear_history();
         }
         restore_visible_session_messages(&mut self.state, session);
+        crate::tools::tool_call_contract::restore_pending_contracts(
+            unanswered_tool_call_contracts(session),
+        );
         self.plan_review_comments =
             crate::session::reconstruct_plan_review(&session.plan_review_events);
 
@@ -1223,6 +1284,7 @@ impl App {
         self.active_turn_assistant_messages_persisted = true;
         self.ephemeral_lifecycle_applications.clear();
         crate::plan_mode::set_active_session_id(None);
+        crate::tools::tool_call_contract::clear_pending_contracts();
         self.session_started_at = SystemTime::now();
         self.session_resume_failed = false;
         self.usage_tracker = crate::usage::UsageTracker::new();
@@ -2123,6 +2185,7 @@ Manual snapshot: `/magic-trace stop`",
                         "/a2a delegate <peer> <text>",
                         "/a2a reply <peer> <task-id> <text>",
                         "/a2a send <peer> <text>",
+                        "/handoff <text>",
                         "",
                         "Native pairing codes, fleet views, and delegation ledgers are shared with the TypeScript CLI/TUI.",
                     ]
@@ -2131,13 +2194,13 @@ Manual snapshot: `/magic-trace stop`",
             }
             A2aAction::Fleet => {
                 self.state.add_system_message(
-                    "A2A fleet inspection uses the shared Maestro peer registry. Run `maestro a2a fleet` for live health and task summaries until the Rust fleet reader is wired into this view."
+                    "A2A fleet inspection uses the shared Maestro peer registry. Run `deixic-code a2a fleet` for live health and task summaries until the Rust fleet reader is wired into this view."
                         .to_string(),
                 );
             }
             A2aAction::Peers => {
                 self.state.add_system_message(
-                    "A2A peer listing uses the shared Maestro peer registry. Run `maestro a2a peers` for the current registry until the Rust registry reader is wired into this view."
+                    "A2A peer listing uses the shared Maestro peer registry. Run `deixic-code a2a peers` for the current registry until the Rust registry reader is wired into this view."
                         .to_string(),
                 );
             }
@@ -2157,7 +2220,7 @@ Manual snapshot: `/magic-trace stop`",
                     ""
                 };
                 self.state.add_system_message(format!(
-                    "A2A task ledger requested for {scope}{graph_hint}. Run `maestro a2a tasks{graph_flag}` for the current durable ledger until the Rust task reader is wired into this view."
+                    "A2A task ledger requested for {scope}{graph_hint}. Run `deixic-code a2a tasks{graph_flag}` for the current durable ledger until the Rust task reader is wired into this view."
                 ));
             }
             A2aAction::Coordinate {
@@ -2181,12 +2244,12 @@ Manual snapshot: `/magic-trace stop`",
                     ""
                 };
                 self.state.add_system_message(format!(
-                    "A2A coordination requested for {scope}{reply_hint}{graph_hint}. Run `maestro a2a coordinate [peer] --reply <text> --wait{graph_flag}` while the Rust coordination controller is connected to the shared A2A client."
+                    "A2A coordination requested for {scope}{reply_hint}{graph_hint}. Run `deixic-code a2a coordinate [peer] --reply <text> --wait{graph_flag}` while the Rust coordination controller is connected to the shared A2A client."
                 ));
             }
             A2aAction::Accept { code } => {
                 self.state.add_system_message(format!(
-                    "A2A pairing code captured ({} chars). Run `maestro a2a accept <code>` Persist it with `/a2a accept <code>` in this TUI, or `maestro a2a accept <code>` from the CLI.",
+                    "A2A pairing code captured ({} chars). Run `deixic-code a2a accept <code>` Persist it with `/a2a accept <code>` in this TUI, or `deixic-code a2a accept <code>` from the CLI.",
                     code.len()
                 ));
             }
@@ -2204,9 +2267,9 @@ Manual snapshot: `/magic-trace stop`",
                     .map(|value| format!(" at `{value}`"))
                     .unwrap_or_default();
                 let command_hint = if heartbeat_only {
-                    "maestro a2a register --heartbeat-only --agent-id <id>"
+                    "deixic-code a2a register --heartbeat-only --agent-id <id>"
                 } else {
-                    "maestro a2a register --url <base-url> [--agent-id <id>]"
+                    "deixic-code a2a register --url <base-url> [--agent-id <id>]"
                 };
                 let action_hint = if heartbeat_only {
                     "refresh the existing Platform heartbeat without requiring a public A2A URL"
@@ -2219,7 +2282,7 @@ Manual snapshot: `/magic-trace stop`",
             }
             A2aAction::Delegate { peer, text } => {
                 self.state.add_system_message(format!(
-                    "A2A delegation prepared for `{peer}` ({} chars). Run `maestro a2a delegate {peer} <text> --wait` while the Rust delegation controller is connected to the shared A2A client.",
+                    "A2A delegation prepared for `{peer}` ({} chars). Run `deixic-code a2a delegate {peer} <text> --wait` while the Rust delegation controller is connected to the shared A2A client.",
                     text.len()
                 ));
             }
@@ -2229,15 +2292,22 @@ Manual snapshot: `/magic-trace stop`",
                 text,
             } => {
                 self.state.add_system_message(format!(
-                    "A2A task reply prepared for `{peer}` task `{task_id}` ({} chars). Run `maestro a2a reply {peer} {task_id} <text> --wait` while the Rust task-continuation controller is connected to the shared A2A client.",
+                    "A2A task reply prepared for `{peer}` task `{task_id}` ({} chars). Run `deixic-code a2a reply {peer} {task_id} <text> --wait` while the Rust task-continuation controller is connected to the shared A2A client.",
                     text.len()
                 ));
             }
             A2aAction::Send { peer, text } => {
                 self.state.add_system_message(format!(
-                    "A2A send request prepared for `{peer}` ({} chars). Run `maestro a2a send {peer} <text> --wait` while the Rust send controller is connected to the shared A2A client.",
+                    "A2A send request prepared for `{peer}` ({} chars). Run `deixic-code a2a send {peer} <text> --wait` while the Rust send controller is connected to the shared A2A client.",
                     text.len()
                 ));
+            }
+            A2aAction::Handoff {
+                peer,
+                text,
+                computer_package,
+            } => {
+                self.handle_live_handoff(peer, text, computer_package);
             }
         }
     }
@@ -3589,4 +3659,48 @@ Manual snapshot: `/magic-trace stop`",
             }
         }
     }
+}
+
+/// Contracts for tool calls in a resumed transcript that never received a
+/// result.
+///
+/// Those are the pending calls: the replayed history still shows them to the
+/// model, so the model re-issues them under fresh call ids. Pinning them by
+/// tool name is what lets dispatch refuse a call whose tool identity changed
+/// while the session was saved.
+pub(crate) fn unanswered_tool_call_contracts(
+    session: &crate::session::ParsedSession,
+) -> Vec<crate::tools::tool_call_contract::ToolCallContract> {
+    use crate::session::{AppMessage, ContentBlock};
+
+    let answered: std::collections::HashSet<&str> = session
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            AppMessage::ToolResult { tool_call_id, .. } => Some(tool_call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    let mut contracts = Vec::new();
+    for message in &session.messages {
+        let AppMessage::Assistant { content, .. } = message else {
+            continue;
+        };
+        for block in content {
+            let ContentBlock::ToolCall {
+                id,
+                contract: Some(contract),
+                ..
+            } = block
+            else {
+                continue;
+            };
+            if answered.contains(id.as_str()) {
+                continue;
+            }
+            contracts.push(contract.clone());
+        }
+    }
+    contracts
 }

@@ -201,7 +201,9 @@ The HTTP runtime gateway is authenticated by
 `packages/runtime-gateway-rs/src/auth.rs`:
 
 - API keys are accepted as `Authorization: Bearer` or
-  `x-maestro-api-key` (the legacy `x-composer-api-key` is also accepted).
+  `x-maestro-api-key` (the legacy `x-composer-api-key` is also accepted), but
+  production session and chat routes require tenant-bearing identity rather
+  than a static process key alone.
 - Identity JWTs are accepted through `MAESTRO_JWT_SECRET` (HS256) or
   `MAESTRO_JWT_JWKS_URL` / `MAESTRO_JWT_JWKS` (RS-family). Claims populate
   `subject`, `organization_id`, `workspace_id`, and `scopes` on `AuthContext`.
@@ -245,9 +247,10 @@ owner-restricted paths and retain KMS/HSM, proxy, and centralized log records.
 For a local or shared deployment:
 
 - Bind the runtime gateway to loopback unless remote access is required.
-- For a remote bind, configure `MAESTRO_WEB_API_KEY`, a supported JWT/shared
-  secret, or trusted-proxy authentication; use `MAESTRO_PROFILE=prod` and
-  configure CSRF for browser clients.
+- For a remote bind, configure a supported tenant-bearing JWT or trusted-proxy
+  authenticator for session and chat routes. A static `MAESTRO_WEB_API_KEY` may
+  additionally protect non-tenant process routes; use `MAESTRO_PROFILE=prod`
+  and configure CSRF for browser clients.
 - Keep approval mode at prompt or fail for untrusted work. Do not combine
   automatic approval with `danger-full-access`.
 - Select `read-only` or `workspace-write` sandboxing where the host supports

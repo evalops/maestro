@@ -19,23 +19,31 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use maestro_runtime::{DelegationControlAction, DelegationEvent, DelegationLifecycleState};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{RwLock, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::{
-    CredentialVault, FromAgent, NativeAgent, NativeAgentConfig, PromptKind, ToolResult,
+    CredentialVault, FromAgent, NativeAgent, NativeAgentConfig, PromptKind, SteerSignal, ToolResult,
 };
 use crate::config::InboundControlPolicy;
 use crate::headless::{FromAgentMessage, SessionRecorder, ToAgentMessage};
 use crate::hooks::{HookResult, IntegratedHookSystem};
 use crate::mailbox::{MailboxControlMode as ControlMode, MailboxLifecycleStatus};
+use crate::orb_connection::HostedOrbOwnerBinding;
 use crate::sandbox::SandboxPolicy;
-use crate::session::{sanitize_path_for_dirname, SessionLock};
+use crate::session::{SessionLock, sanitize_path_for_dirname};
 use crate::state::ApprovalMode;
 use crate::tools::ToolRegistry;
 use crate::worktree::WorktreeSession;
+
+use super::orb_delegation::{
+    OrbConsoleAction, OrbDelegateRequest, OrbDelegationAdapter, OrbDelegationConfig,
+    OrbSpawnSettings, deterministic_idempotency_key, normalize_orb_controls,
+    normalize_orb_lifecycle, orb_delegation_event,
+};
 
 /// Built-in tools which belong to this lifecycle surface and must not be
 /// advertised to a child. Without this guard a child could recursively spawn
@@ -73,6 +81,22 @@ const LIFECYCLE_RECONCILIATION_INTERVAL: Duration = Duration::ZERO;
 
 fn terminal_checkpoint_ready(terminal_seen: bool, semantic_snapshot_seen: bool) -> bool {
     terminal_seen && semantic_snapshot_seen
+}
+
+fn orb_status_allows_resume(
+    lifecycle: DelegationLifecycleState,
+    available_commands: &[String],
+) -> bool {
+    if matches!(
+        lifecycle,
+        DelegationLifecycleState::Paused | DelegationLifecycleState::NeedsAttention
+    ) {
+        return true;
+    }
+
+    let controls = normalize_orb_controls(available_commands);
+    controls.contains(&DelegationControlAction::Resume)
+        || controls.contains(&DelegationControlAction::Retry)
 }
 
 /// Characters of streamed assistant text counted as one output token when the
@@ -209,6 +233,80 @@ pub(crate) enum SubagentStatus {
     Cancelled,
     TimedOut,
     Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SubagentBackend {
+    #[default]
+    Native,
+    Orb,
+}
+
+impl SubagentBackend {
+    fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value
+            .unwrap_or("native")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "native" | "local" => Ok(Self::Native),
+            // `orb` is the persisted and wire compatibility spelling. New
+            // model-facing requests should use the product name, Computer.
+            "computer" | "orb" => Ok(Self::Orb),
+            other => Err(format!(
+                "backend must be either native or computer (orb is a compatibility alias); got {other}"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct OrbSubagentRef {
+    pub thread_id: String,
+    #[serde(default)]
+    pub receipt_id: Option<String>,
+    pub start_idempotency_key: String,
+    pub config: OrbDelegationConfig,
+    /// The opaque tenant and managed-connection identity captured before the
+    /// first remote mutation. These fields intentionally exclude credentials.
+    #[serde(default)]
+    pub organization_id: Option<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub connection_ref: Option<String>,
+    #[serde(default)]
+    pub managed_generation: Option<u64>,
+    #[serde(default)]
+    pub lifecycle_state: Option<String>,
+    /// Provider-advertised controls are persisted only as an internal raw
+    /// snapshot. Native surfaces render the typed projection instead.
+    #[serde(default)]
+    pub available_commands: Vec<String>,
+}
+
+fn admitting_orb_subagent_ref(
+    config: OrbDelegationConfig,
+    owner_binding: HostedOrbOwnerBinding,
+    start_idempotency_key: String,
+) -> OrbSubagentRef {
+    OrbSubagentRef {
+        // The atomic hosted-run path does not expose a thread id until
+        // admission succeeds. Persist the operation key and owner before
+        // dispatch so a crash cannot leave an unbound durable task.
+        thread_id: String::new(),
+        receipt_id: None,
+        start_idempotency_key,
+        config,
+        organization_id: Some(owner_binding.organization_id),
+        workspace_id: Some(owner_binding.workspace_id),
+        connection_ref: Some(owner_binding.connection_ref),
+        managed_generation: Some(owner_binding.managed_generation),
+        lifecycle_state: Some("admitting".to_string()),
+        available_commands: Vec::new(),
+    }
 }
 
 impl SubagentStatus {
@@ -444,6 +542,10 @@ pub(crate) struct SubagentRecord {
     pub current_prompt: String,
     pub role: SubagentRole,
     #[serde(default)]
+    pub backend: SubagentBackend,
+    #[serde(default)]
+    pub orb: Option<OrbSubagentRef>,
+    #[serde(default)]
     pub profile: Option<String>,
     #[serde(default)]
     pub profile_prompt: Option<String>,
@@ -479,10 +581,52 @@ pub(crate) struct SubagentRecord {
     pub lifecycle_notification_published: bool,
 }
 
+/// Secret-free native projection of one hosted Computer task. The MCP server name,
+/// endpoint, and credential references are deliberately absent; only durable
+/// task identity and owner-authoritative controls cross into the console.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OrbConsoleTask {
+    pub id: String,
+    pub agent_ref: String,
+    pub task: String,
+    pub attempt: u32,
+    pub event: DelegationEvent,
+    pub thread_id: Option<String>,
+    pub receipt_id: Option<String>,
+    pub recoverable: bool,
+    pub result: Option<SubagentResult>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum OrbConsoleControl {
+    Pause,
+    Cancel,
+}
+
+impl OrbConsoleControl {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Pause => "paused",
+            Self::Cancel => "cancelled",
+        }
+    }
+
+    fn idempotency_kind(self) -> &'static str {
+        match self {
+            Self::Pause => "pause",
+            Self::Cancel => "cancel",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct SpawnRequest {
     task: String,
     role: SubagentRole,
+    backend: SubagentBackend,
+    orb: OrbDelegationConfig,
     profile: Option<String>,
     profile_prompt: Option<String>,
     profile_tools: Option<Vec<String>>,
@@ -748,6 +892,14 @@ pub(crate) struct SubagentManager {
     last_lifecycle_reconciliation: Arc<Mutex<Instant>>,
     observed_lifecycle_records: Arc<Mutex<HashMap<String, LifecycleRecordObservation>>>,
     pending_lifecycle: Arc<Mutex<HashSet<String>>>,
+    orb_adapter: Arc<RwLock<Option<OrbDelegationAdapter>>>,
+    /// The runner's "a steering message is queued" signal, when this manager
+    /// belongs to a runner that owns a message queue.
+    ///
+    /// `None` for executors built outside a conversation (tests, one-shot
+    /// tooling); those keep the old sleep-until-timeout behavior because
+    /// there is no queue for a user message to land in.
+    steer_signal: Arc<Mutex<Option<Arc<SteerSignal>>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -843,7 +995,137 @@ impl SubagentManager {
             )),
             observed_lifecycle_records: Arc::new(Mutex::new(HashMap::new())),
             pending_lifecycle: Arc::new(Mutex::new(HashSet::new())),
+            orb_adapter: Arc::new(RwLock::new(None)),
+            steer_signal: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Point this manager at the runner's steering signal.
+    ///
+    /// Blocking waits consult it so a user message ends the wait instead of
+    /// sitting behind it.
+    pub(crate) fn set_steer_signal(&self, signal: Arc<SteerSignal>) {
+        let mut current = self
+            .steer_signal
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *current = Some(signal);
+    }
+
+    fn steer_signal(&self) -> Option<Arc<SteerSignal>> {
+        self.steer_signal
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub(crate) async fn set_orb_adapter(&self, adapter: OrbDelegationAdapter) {
+        *self.orb_adapter.write().await = Some(adapter);
+    }
+
+    async fn orb_adapter(&self) -> Option<OrbDelegationAdapter> {
+        self.orb_adapter.read().await.clone()
+    }
+
+    fn validate_orb_owner_binding(
+        record: &SubagentRecord,
+        adapter: &OrbDelegationAdapter,
+    ) -> Result<(), String> {
+        if record.backend != SubagentBackend::Orb {
+            return Ok(());
+        }
+        let Some(orb) = record.orb.as_ref() else {
+            return Err(
+                "Hosted Computer task has no durable owner binding; it cannot be safely resumed after a restart or connection change"
+                    .to_string(),
+            );
+        };
+        let Some(current) = adapter.owner_binding() else {
+            return Err(
+                "Hosted Computer owner binding is unavailable; refusing the remote operation until the managed account, workspace, and connection identity are available"
+                    .to_string(),
+            );
+        };
+        let (Some(organization_id), Some(workspace_id), Some(connection_ref), Some(generation)) = (
+            orb.organization_id.as_deref(),
+            orb.workspace_id.as_deref(),
+            orb.connection_ref.as_deref(),
+            orb.managed_generation,
+        ) else {
+            return Err(
+                "Hosted Computer task has no durable owner binding; it cannot be safely resumed after a restart or connection change"
+                    .to_string(),
+            );
+        };
+        let expected = HostedOrbOwnerBinding {
+            organization_id: organization_id.trim().to_string(),
+            workspace_id: workspace_id.trim().to_string(),
+            connection_ref: connection_ref.trim().to_string(),
+            managed_generation: generation,
+        };
+        if expected.organization_id.is_empty()
+            || expected.workspace_id.is_empty()
+            || expected.connection_ref.is_empty()
+            || expected.managed_generation == 0
+        {
+            return Err(
+                "Hosted Computer task has an incomplete durable owner binding; it cannot be safely resumed"
+                    .to_string(),
+            );
+        }
+        if &expected != current {
+            return Err(
+                "Hosted Computer owner binding changed with the active account, workspace, or managed connection; remote operation refused"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    async fn orb_adapter_for_record(
+        &self,
+        record: &SubagentRecord,
+    ) -> Result<OrbDelegationAdapter, String> {
+        let Some(adapter) = self.orb_adapter().await else {
+            return Err(
+                "Computer backend is not configured; connect the managed Computer MCP server first"
+                    .to_string(),
+            );
+        };
+        Self::validate_orb_owner_binding(record, &adapter).map(|()| adapter)
+    }
+
+    pub(crate) fn uses_orb_backend(&self, args: &serde_json::Value) -> bool {
+        if args
+            .get("backend")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|backend| {
+                backend.eq_ignore_ascii_case("computer") || backend.eq_ignore_ascii_case("orb")
+            })
+        {
+            return true;
+        }
+        let id = subagent_id(args).map(str::to_string).or_else(|| {
+            args.get("agent_ref")
+                .or_else(|| args.get("agentRef"))
+                .and_then(serde_json::Value::as_str)
+                .and_then(|reference| parse_agent_ref(reference).ok())
+                .map(|(id, _)| id)
+        });
+        id.and_then(|id| self.load_record(&id).ok())
+            .is_some_and(|record| record.backend == SubagentBackend::Orb)
+    }
+
+    pub(crate) fn has_orb_records(&self) -> bool {
+        std::fs::read_dir(&self.root)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_dir())
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+            .filter_map(|id| self.load_record(&id).ok())
+            .any(|record| record.backend == SubagentBackend::Orb)
     }
 
     pub(crate) fn parent_scope_id(&self) -> String {
@@ -1079,10 +1361,12 @@ impl SubagentManager {
             std::fs::read(&path).map_err(|error| format!("read subagent {id} record: {error}"))?;
         let mut record: SubagentRecord = serde_json::from_slice(&bytes)
             .map_err(|error| format!("parse subagent {id} record: {error}"))?;
-        if matches!(
-            record.status,
-            SubagentStatus::Queued | SubagentStatus::Running
-        ) && self.runtime.get(&record.id).is_none()
+        if record.backend != SubagentBackend::Orb
+            && matches!(
+                record.status,
+                SubagentStatus::Queued | SubagentStatus::Running
+            )
+            && self.runtime.get(&record.id).is_none()
             && !Self::execution_lease_is_held(&record)
         {
             record.status = SubagentStatus::Interrupted;
@@ -1194,27 +1478,75 @@ impl SubagentManager {
             Ok(request) => request,
             Err(error) => return ToolResult::failure(error),
         };
+        let parent_scope_id = self.parent_scope_id();
+        // Orb provisions the isolated workspace on the hosted control plane;
+        // a local Maestro worktree would create a second, unrelated isolation
+        // boundary and cannot be sent to the hosted agent.
+        if request.backend == SubagentBackend::Orb {
+            request.isolation = SubagentIsolation::Shared;
+        }
         let child_credential_vault = credential_vault.fork();
 
-        if let Err(error) =
-            apply_subagent_start_hook(&mut request, &self.cwd, &self.parent_scope_id())
-        {
+        if let Err(error) = apply_subagent_start_hook(&mut request, &self.cwd, &parent_scope_id) {
             return ToolResult::failure(error);
         }
         if let Err(error) = resolve_spawn_profile(&mut request, &self.cwd) {
             return ToolResult::failure(error);
         }
-        // Resolve through the current parent scope first, then re-vault into
-        // the child scope so the durable prompt never contains plaintext or
-        // an unresolvable parent-only reference.
-        let parent_resolved_task = credential_vault.resolve_all(&request.task);
-        request.task = child_credential_vault.vault_in_text(&parent_resolved_task);
+        if request.backend == SubagentBackend::Orb {
+            if let Err(error) = infer_hosted_computer_context(&mut request.orb, &self.cwd) {
+                return ToolResult::failure(error);
+            }
+            apply_orb_delegation_policy(&mut request);
+        }
+        // Local children can resolve and re-vault parent credentials. Hosted
+        // Orb cannot consume Maestro's local references, and forwarding the
+        // resolved plaintext would violate the hosted-credential boundary.
+        if request.backend == SubagentBackend::Orb {
+            if CredentialVault::has_references(&request.task) {
+                return ToolResult::failure(
+                    "Computer delegation cannot forward local credential references; provide a credential-free task",
+                );
+            }
+        } else {
+            // Resolve through the current parent scope first, then re-vault into
+            // the child scope so the durable prompt never contains plaintext or
+            // an unresolvable parent-only reference.
+            let parent_resolved_task = credential_vault.resolve_all(&request.task);
+            request.task = child_credential_vault.vault_in_text(&parent_resolved_task);
+        }
 
         if cancel.is_some_and(CancellationToken::is_cancelled) {
             return cancelled_result("spawn_subagent cancelled before launch");
         }
 
+        // Resolve the owner before creating any durable Orb record. The
+        // admitting record must never exist as a generic `backend=orb` record
+        // with `orb: null`, because a crash in that window would leave a
+        // restart unable to distinguish an unlaunched task from a task that
+        // may safely be resumed.
+        let orb_owner_binding = if request.backend == SubagentBackend::Orb {
+            let Some(adapter) = self.orb_adapter().await else {
+                return ToolResult::failure(
+                    "Computer backend is not configured; connect the managed Computer MCP server first",
+                );
+            };
+            let Some(owner_binding) = adapter.owner_binding().cloned() else {
+                return ToolResult::failure(
+                    "Hosted Computer owner binding is unavailable; connect the active managed account, workspace, and connection before launching",
+                );
+            };
+            Some(owner_binding)
+        } else {
+            None
+        };
+
         let id = uuid::Uuid::new_v4().to_string();
+        let start_idempotency_key =
+            deterministic_idempotency_key("start", &[&parent_scope_id, parent_call_id]);
+        let orb = orb_owner_binding.map(|owner_binding| {
+            admitting_orb_subagent_ref(request.orb.clone(), owner_binding, start_idempotency_key)
+        });
         let (child_cwd, worktree_path, mut worktree_setup) = match request.isolation {
             SubagentIsolation::Shared => (self.cwd.clone(), None, None),
             SubagentIsolation::Worktree => {
@@ -1266,13 +1598,15 @@ impl SubagentManager {
         let cwd = serialize_repository_path(&child_cwd);
         let record = SubagentRecord {
             id: id.clone(),
-            parent_scope_id: self.parent_scope_id(),
+            parent_scope_id: parent_scope_id.clone(),
             parent_call_id: parent_call_id.to_string(),
-            last_parent_scope_id: self.parent_scope_id(),
+            last_parent_scope_id: parent_scope_id,
             last_call_id: parent_call_id.to_string(),
             task: request.task.clone(),
             current_prompt: request.task.clone(),
             role: request.role,
+            backend: request.backend,
+            orb,
             profile: request.profile.clone(),
             profile_prompt: request.profile_prompt.clone(),
             profile_tools: request.profile_tools.clone(),
@@ -1319,6 +1653,7 @@ impl SubagentManager {
         if let Err(error) = recorder.record_sent(&ToAgentMessage::Prompt {
             content: request.task.clone(),
             attachments: None,
+            managed_inference_authorization: None,
         }) {
             return ToolResult::failure(format!("record subagent prompt: {error}"));
         }
@@ -1329,6 +1664,15 @@ impl SubagentManager {
 
         if let Err(error) = self.write_record(&record) {
             return ToolResult::failure(error);
+        }
+
+        if request.backend == SubagentBackend::Orb {
+            if let Some(setup) = worktree_setup.take() {
+                setup.disarm();
+            }
+            return self
+                .spawn_orb(record, request, parent_call_id, cancel)
+                .await;
         }
 
         let token = CancellationToken::new();
@@ -1411,6 +1755,191 @@ impl SubagentManager {
         }
     }
 
+    async fn spawn_orb(
+        &self,
+        mut record: SubagentRecord,
+        request: SpawnRequest,
+        _parent_call_id: &str,
+        cancel: Option<&CancellationToken>,
+    ) -> ToolResult {
+        let start_idempotency_key = {
+            let Some(orb) = record.orb.as_ref() else {
+                return self.finish_orb_record(
+                    record,
+                    "Hosted Computer task has no durable owner binding; refusing to launch",
+                );
+            };
+            if !orb.thread_id.trim().is_empty() {
+                return self.finish_orb_record(
+                    record,
+                    "Hosted Computer task already has a remote thread; refusing duplicate launch",
+                );
+            }
+            orb.start_idempotency_key.clone()
+        };
+        let token = cancel.cloned().unwrap_or_else(CancellationToken::new);
+        // The admitting record is the recovery fence for the remote mutation.
+        // Persist it immediately before resolving the adapter or dispatching,
+        // so cancellation or an uncertain response retains the same launch key.
+        if let Err(error) = self.write_record(&record) {
+            return ToolResult::failure(error);
+        }
+        let adapter = match self.orb_adapter_for_record(&record).await {
+            Ok(adapter) => adapter,
+            Err(error) => return self.finish_orb_record(record, error),
+        };
+        let handle = match adapter
+            .delegate(
+                &OrbDelegateRequest {
+                    prompt: record.task.clone(),
+                    project: request.orb.project.clone(),
+                    profile: request.orb.profile.clone(),
+                    settings: request.orb.settings.clone(),
+                    start_idempotency_key: start_idempotency_key.clone(),
+                },
+                &token,
+            )
+            .await
+        {
+            Ok(handle) => handle,
+            Err(error) => return self.finish_orb_record(record, error.to_string()),
+        };
+        if let Some(orb) = record.orb.as_mut() {
+            orb.thread_id = handle.thread_id;
+            orb.receipt_id = Some(handle.receipt_id);
+            orb.lifecycle_state = Some("active".to_string());
+        }
+        record.started_at_ms = Some(now_millis());
+        record.status = SubagentStatus::Running;
+        if let Err(error) = self.write_record(&record) {
+            return ToolResult::failure(error);
+        }
+        if request.run_in_background {
+            return ToolResult::success(format!(
+                "Spawned hosted Computer subagent {} in the background",
+                record.id
+            ))
+            .with_details(record_details(&record));
+        }
+        self.wait_orb_until_terminal(&record.id, request.timeout_ms, cancel)
+            .await
+    }
+
+    fn finish_orb_record(
+        &self,
+        mut record: SubagentRecord,
+        error: impl Into<String>,
+    ) -> ToolResult {
+        let error = error.into();
+        record.status = SubagentStatus::Failed;
+        record.finished_at_ms = Some(now_millis());
+        record.error = Some(error.clone());
+        if let Err(persist_error) = self.write_record(&record) {
+            return ToolResult::failure(format!(
+                "{error}; persist Computer record: {persist_error}"
+            ));
+        }
+        ToolResult::failure(error).with_details(record_details(&record))
+    }
+
+    async fn refresh_orb_record(
+        &self,
+        mut record: SubagentRecord,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<SubagentRecord, String> {
+        if record.backend != SubagentBackend::Orb {
+            return Ok(record);
+        }
+        let Some(orb) = record.orb.clone() else {
+            return Err(
+                "Hosted Computer task has no durable owner binding; refusing status or collect until its launch is recovered"
+                    .to_string(),
+            );
+        };
+        if orb.thread_id.trim().is_empty() {
+            return Err(
+                "Hosted Computer task has no remote thread; refusing status or collect until its launch is recovered"
+                    .to_string(),
+            );
+        }
+        let token = cancel.cloned().unwrap_or_else(CancellationToken::new);
+        let adapter = self.orb_adapter_for_record(&record).await?;
+        let status = adapter
+            .status(&orb.thread_id, &token)
+            .await
+            .map_err(|error| error.to_string())?;
+        let adapter = self.orb_adapter_for_record(&record).await?;
+        let report = adapter
+            .collect(&orb.thread_id, &token)
+            .await
+            .map_err(|error| error.to_string())?;
+        let lifecycle_state = status.lifecycle_state.clone();
+        let mapped_status = match normalize_orb_lifecycle(&lifecycle_state) {
+            DelegationLifecycleState::Queued => SubagentStatus::Queued,
+            DelegationLifecycleState::Active | DelegationLifecycleState::Resumed => {
+                SubagentStatus::Running
+            }
+            DelegationLifecycleState::Paused => SubagentStatus::Interrupted,
+            DelegationLifecycleState::Cancelled => SubagentStatus::Cancelled,
+            DelegationLifecycleState::Completed => SubagentStatus::Completed,
+            DelegationLifecycleState::NeedsAttention
+            | DelegationLifecycleState::ApprovalRequired
+            | DelegationLifecycleState::Failed => SubagentStatus::Failed,
+            DelegationLifecycleState::Unavailable => record.status,
+        };
+        record.status = mapped_status;
+        if let Some(output) = report
+            .latest_assistant_message()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            record.result = Some(SubagentResult {
+                output: output.to_string(),
+                files_modified: Vec::new(),
+            });
+        } else if record.status == SubagentStatus::Failed {
+            if let Some(outcome) = status
+                .controller
+                .as_ref()
+                .and_then(|controller| controller.outcome.as_ref())
+            {
+                record.result = Some(SubagentResult {
+                    output: serde_json::to_string(outcome)
+                        .unwrap_or_else(|_| "Computer task failed".to_string()),
+                    files_modified: Vec::new(),
+                });
+            }
+        }
+        if let Some(orb) = record.orb.as_mut() {
+            orb.lifecycle_state = Some(lifecycle_state.clone());
+            orb.available_commands = status.available_commands.clone();
+        }
+        if record.status == SubagentStatus::Failed && record.error.is_none() {
+            record.error = Some(format!("Computer task entered {lifecycle_state}"));
+        }
+        if record.status.is_terminal() {
+            record.finished_at_ms.get_or_insert_with(now_millis);
+        }
+        self.write_record(&record)?;
+        Ok(record)
+    }
+
+    async fn wait_orb_until_terminal(
+        &self,
+        id: &str,
+        timeout_ms: u64,
+        cancel: Option<&CancellationToken>,
+    ) -> ToolResult {
+        self.wait(
+            &serde_json::json!({
+                "subagent_id": id,
+                "timeout_ms": timeout_ms.min(MAX_WAIT_MS),
+            }),
+            cancel,
+        )
+        .await
+    }
+
     pub(crate) async fn list(&self) -> ToolResult {
         let mut records = Vec::new();
         let mut errors = Vec::new();
@@ -1449,6 +1978,20 @@ impl SubagentManager {
                 })),
             }
         }
+        if self.orb_adapter().await.is_some() {
+            let token = CancellationToken::new();
+            for record in &mut records {
+                if record.backend == SubagentBackend::Orb {
+                    match self.refresh_orb_record(record.clone(), Some(&token)).await {
+                        Ok(refreshed) => *record = refreshed,
+                        Err(error) => errors.push(serde_json::json!({
+                            "entry": record.id,
+                            "error": error,
+                        })),
+                    }
+                }
+            }
+        }
         records.sort_by_key(|record| std::cmp::Reverse(record.created_at_ms));
         let lines = records
             .iter()
@@ -1483,6 +2026,622 @@ impl SubagentManager {
         match self.load_record(id) {
             Ok(record) => tool_result_for_record(record),
             Err(error) => ToolResult::failure(error),
+        }
+    }
+
+    pub(crate) async fn get_remote(
+        &self,
+        args: &serde_json::Value,
+        cancel: Option<&CancellationToken>,
+    ) -> ToolResult {
+        let Some(id) = subagent_id(args) else {
+            return ToolResult::failure("subagent_id is required");
+        };
+        let record = match self.load_record(id) {
+            Ok(record) => record,
+            Err(error) => return ToolResult::failure(error),
+        };
+        if record.backend != SubagentBackend::Orb {
+            return tool_result_for_record(record);
+        }
+        match self.refresh_orb_record(record, cancel).await {
+            Ok(record) => tool_result_for_record(record),
+            Err(error) => ToolResult::failure(error),
+        }
+    }
+
+    /// Run a native hosted Computer operation. This is the product-facing
+    /// projection over the existing durable subagent record and the Computer
+    /// runtime's `orb` compatibility adapter;
+    /// it never creates a second launch path or a second ledger.
+    pub(crate) async fn orb_console(
+        &self,
+        action: OrbConsoleAction,
+        provider_error: Option<String>,
+    ) -> ToolResult {
+        if provider_error.is_some() {
+            return self.orb_console_unavailable(action).await;
+        }
+        match action {
+            OrbConsoleAction::List => self.orb_console_list().await,
+            OrbConsoleAction::Status { id } | OrbConsoleAction::Collect { id } => {
+                self.orb_console_status(&id).await
+            }
+            OrbConsoleAction::Followup { id, prompt } => {
+                self.orb_console_followup(&id, &prompt).await
+            }
+            OrbConsoleAction::Pause { id } => self.orb_console_pause(&id).await,
+            OrbConsoleAction::Resume { id } => self.orb_console_resume(&id).await,
+            OrbConsoleAction::Cancel { id } => self.orb_console_cancel(&id).await,
+            OrbConsoleAction::HandoffCreate {
+                source_id,
+                target_thread_id,
+                files,
+                artifact_ids,
+                include_diff,
+            } => {
+                self.orb_console_handoff_create(
+                    &source_id,
+                    &target_thread_id,
+                    &files,
+                    &artifact_ids,
+                    include_diff,
+                )
+                .await
+            }
+            OrbConsoleAction::HandoffList { target_thread_id } => {
+                self.orb_console_handoff_list(&target_thread_id).await
+            }
+            OrbConsoleAction::HandoffRead {
+                target_thread_id,
+                package_id,
+            } => {
+                self.orb_console_handoff_read(&target_thread_id, &package_id)
+                    .await
+            }
+        }
+    }
+
+    fn orb_records(&self) -> Result<Vec<SubagentRecord>, String> {
+        let entries = match std::fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(format!("list hosted Computer tasks: {error}")),
+        };
+        let mut records = Vec::new();
+        for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
+            let id = entry.file_name().to_string_lossy().into_owned();
+            if let Ok(record) = self.load_record(&id) {
+                if record.backend == SubagentBackend::Orb {
+                    records.push(record);
+                }
+            }
+        }
+        records.sort_by(|left, right| {
+            right
+                .created_at_ms
+                .cmp(&left.created_at_ms)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(records)
+    }
+
+    async fn orb_console_list(&self) -> ToolResult {
+        let records = match self.orb_records() {
+            Ok(records) => records,
+            Err(error) => return ToolResult::failure(error),
+        };
+        let mut tasks = Vec::with_capacity(records.len());
+        let mut errors = Vec::new();
+        for record in records {
+            match self.refresh_orb_record(record.clone(), None).await {
+                Ok(record) => tasks.push(orb_console_task(&record, None)),
+                Err(error) => {
+                    let reason_code = if is_orb_owner_binding_error(&error) {
+                        "owner_binding_mismatch"
+                    } else {
+                        "provider_unavailable"
+                    };
+                    tasks.push(orb_console_task(&record, Some(reason_code)));
+                    errors.push(serde_json::json!({
+                        "taskId": record.id,
+                        "reasonCode": reason_code
+                    }));
+                }
+            }
+        }
+        let lines = tasks
+            .iter()
+            .map(|task| {
+                format!(
+                    "{}  {}  {}",
+                    task.id,
+                    task.event.lifecycle_state.as_str(),
+                    task.task.replace(['\n', '\r'], " ")
+                )
+            })
+            .collect::<Vec<_>>();
+        let details = serde_json::json!({
+            "schemaVersion": maestro_runtime::DELEGATION_PROJECTION_SCHEMA_VERSION,
+            "complete": errors.is_empty(),
+            "count": tasks.len(),
+            "tasks": tasks,
+            "errors": errors,
+        });
+        ToolResult::success(if lines.is_empty() {
+            "No hosted Computer tasks".to_string()
+        } else {
+            lines.join("\n")
+        })
+        .with_details(details)
+    }
+
+    async fn orb_console_status(&self, id: &str) -> ToolResult {
+        let record = match self.load_record(id) {
+            Ok(record) if record.backend == SubagentBackend::Orb => record,
+            Ok(_) => {
+                return ToolResult::failure(format!("subagent {id} is not a hosted Computer task"));
+            }
+            Err(error) => return ToolResult::failure(error),
+        };
+        match self.refresh_orb_record(record.clone(), None).await {
+            Ok(record) => {
+                let task = orb_console_task(&record, None);
+                orb_console_task_result(task, format!("Hosted Computer task {id}"))
+            }
+            Err(error) if is_orb_owner_binding_error(&error) => {
+                self.orb_owner_binding_failure(&record, error)
+            }
+            Err(_) => self.orb_unavailable_result(&record),
+        }
+    }
+
+    async fn orb_console_followup(&self, id: &str, prompt: &str) -> ToolResult {
+        let mut record = match self.load_record(id) {
+            Ok(record) if record.backend == SubagentBackend::Orb => record,
+            Ok(_) => {
+                return ToolResult::failure(format!("subagent {id} is not a hosted Computer task"));
+            }
+            Err(error) => return ToolResult::failure(error),
+        };
+        if prompt.trim().is_empty() {
+            return ToolResult::failure("followup requires a non-empty prompt");
+        }
+        if CredentialVault::has_references(prompt) {
+            return ToolResult::failure(
+                "Computer delegation cannot forward local credential references; provide a credential-free follow-up",
+            );
+        }
+        let Some(orb) = record.orb.clone() else {
+            return ToolResult::failure(format!("Computer subagent {id} has no remote thread"));
+        };
+        if orb.thread_id.trim().is_empty() {
+            return ToolResult::failure(format!("Computer subagent {id} has no remote thread"));
+        }
+        let token = CancellationToken::new();
+        let adapter = match self.orb_adapter_for_record(&record).await {
+            Ok(adapter) => adapter,
+            Err(error) => return self.orb_operation_failure(&record, error),
+        };
+        let remote_status = match adapter.status(&orb.thread_id, &token).await {
+            Ok(status) => status,
+            Err(error) => return self.orb_operation_failure(&record, error.to_string()),
+        };
+        let remote_lifecycle = normalize_orb_lifecycle(&remote_status.lifecycle_state);
+        if remote_lifecycle == DelegationLifecycleState::Unavailable {
+            return self.orb_unavailable_result(&record);
+        }
+        let can_resume =
+            orb_status_allows_resume(remote_lifecycle, &remote_status.available_commands);
+        if !can_resume
+            && matches!(
+                remote_lifecycle,
+                DelegationLifecycleState::Completed
+                    | DelegationLifecycleState::Cancelled
+                    | DelegationLifecycleState::Failed
+            )
+        {
+            let task = orb_console_task(&record, None);
+            return orb_console_task_failure(
+                task,
+                format!(
+                    "Hosted Computer task {id} cannot receive a follow-up in its terminal state"
+                ),
+            );
+        }
+        let attempt = record.attempt.to_string();
+        let key = deterministic_idempotency_key("followup", &[id, &attempt, prompt.trim()]);
+        if can_resume {
+            let adapter = match self.orb_adapter_for_record(&record).await {
+                Ok(adapter) => adapter,
+                Err(error) => return self.orb_operation_failure(&record, error),
+            };
+            if let Err(error) = adapter.resume(&orb.thread_id, &key, &token).await {
+                return self.orb_operation_failure(&record, error.to_string());
+            }
+        }
+        let adapter = match self.orb_adapter_for_record(&record).await {
+            Ok(adapter) => adapter,
+            Err(error) => return self.orb_operation_failure(&record, error),
+        };
+        if let Err(error) = adapter
+            .follow_up(&orb.thread_id, prompt.trim(), &key, &token)
+            .await
+        {
+            return self.orb_operation_failure(&record, error.to_string());
+        }
+        record.attempt = record.attempt.saturating_add(1);
+        record.current_prompt = prompt.trim().to_string();
+        record.last_parent_scope_id = self.parent_scope_id();
+        record.last_call_id = format!("orb-console:followup:{id}");
+        record.status = SubagentStatus::Running;
+        record.started_at_ms = Some(now_millis());
+        record.finished_at_ms = None;
+        record.result = None;
+        record.error = None;
+        record.snapshot_attempt = None;
+        if let Some(orb) = record.orb.as_mut() {
+            orb.lifecycle_state = Some("active".to_string());
+            orb.available_commands = remote_status.available_commands;
+        }
+        if let Err(error) = self.write_record(&record) {
+            return ToolResult::failure(error);
+        }
+        let task = orb_console_task(&record, None);
+        orb_console_task_result(task, format!("Follow-up sent to hosted Computer task {id}"))
+    }
+
+    async fn orb_console_handoff_create(
+        &self,
+        source_id: &str,
+        target_thread_id: &str,
+        files: &[String],
+        artifact_ids: &[String],
+        include_diff: bool,
+    ) -> ToolResult {
+        let record = match self.load_record(source_id) {
+            Ok(record) if record.backend == SubagentBackend::Orb => record,
+            Ok(_) => {
+                return ToolResult::failure(format!(
+                    "subagent {source_id} is not a hosted Computer task"
+                ));
+            }
+            Err(error) => return ToolResult::failure(error),
+        };
+        let Some(orb) = record.orb.as_ref() else {
+            return ToolResult::failure(format!(
+                "Computer subagent {source_id} has no remote thread"
+            ));
+        };
+        if orb.thread_id.trim().is_empty() {
+            return ToolResult::failure(format!(
+                "Computer subagent {source_id} has no remote thread"
+            ));
+        }
+        let adapter = match self.orb_adapter_for_record(&record).await {
+            Ok(adapter) => adapter,
+            Err(error) => return self.orb_operation_failure(&record, error),
+        };
+        let cancel = CancellationToken::new();
+        let package = match adapter
+            .create_handoff_package(
+                &orb.thread_id,
+                target_thread_id,
+                files,
+                artifact_ids,
+                include_diff,
+                &cancel,
+            )
+            .await
+        {
+            Ok(package) => package,
+            Err(crate::tools::orb_delegation::OrbDelegationError::InvalidHandoffSelection(
+                error,
+            )) => return ToolResult::failure(error),
+            Err(error) => return self.orb_operation_failure(&record, error.to_string()),
+        };
+        ToolResult::success(handoff_package_summary(&package)).with_details(serde_json::json!({
+            "schemaVersion": "evalops.maestro.orb-handoff.v1",
+            "handoffPackage": package,
+            "sourceTaskId": source_id,
+            "sourceThreadId": orb.thread_id.clone(),
+            "targetThreadId": target_thread_id,
+        }))
+    }
+
+    async fn orb_console_handoff_list(&self, target_thread_id: &str) -> ToolResult {
+        let Some(adapter) = self.orb_adapter().await else {
+            return ToolResult::failure(
+                "Hosted Computer is unavailable; handoff packages were not listed",
+            )
+            .with_details(serde_json::json!({
+                "schemaVersion": "evalops.maestro.orb-handoff.v1",
+                "reasonCode": "provider_unavailable",
+            }));
+        };
+        let cancel = CancellationToken::new();
+        let packages = match adapter
+            .list_handoff_packages(target_thread_id, &cancel)
+            .await
+        {
+            Ok(packages) => packages,
+            Err(error) => {
+                return ToolResult::failure(format!("Hosted Computer handoff failed: {error}"));
+            }
+        };
+        ToolResult::success(handoff_package_list_summary(&packages)).with_details(
+            serde_json::json!({
+                "schemaVersion": "evalops.maestro.orb-handoff.v1",
+                "targetThreadId": target_thread_id,
+                "handoffPackages": packages,
+            }),
+        )
+    }
+
+    async fn orb_console_handoff_read(
+        &self,
+        target_thread_id: &str,
+        package_id: &str,
+    ) -> ToolResult {
+        let Some(adapter) = self.orb_adapter().await else {
+            return ToolResult::failure(
+                "Hosted Computer is unavailable; the handoff package was not read",
+            )
+            .with_details(serde_json::json!({
+                "schemaVersion": "evalops.maestro.orb-handoff.v1",
+                "reasonCode": "provider_unavailable",
+            }));
+        };
+        let cancel = CancellationToken::new();
+        let package = match adapter
+            .read_handoff_package(target_thread_id, package_id, &cancel)
+            .await
+        {
+            Ok(package) => package,
+            Err(error) => {
+                return ToolResult::failure(format!("Hosted Computer handoff failed: {error}"));
+            }
+        };
+        ToolResult::success(handoff_package_summary(&package)).with_details(serde_json::json!({
+            "schemaVersion": "evalops.maestro.orb-handoff.v1",
+            "targetThreadId": target_thread_id,
+            "handoffPackage": package,
+        }))
+    }
+
+    async fn orb_console_pause(&self, id: &str) -> ToolResult {
+        self.orb_console_control(id, OrbConsoleControl::Pause).await
+    }
+
+    async fn orb_console_resume(&self, id: &str) -> ToolResult {
+        let mut record = match self.load_record(id) {
+            Ok(record) if record.backend == SubagentBackend::Orb => record,
+            Ok(_) => {
+                return ToolResult::failure(format!("subagent {id} is not a hosted Computer task"));
+            }
+            Err(error) => return ToolResult::failure(error),
+        };
+        let Some(orb) = record.orb.clone() else {
+            return ToolResult::failure(format!("Computer subagent {id} has no remote thread"));
+        };
+        if orb.thread_id.trim().is_empty() {
+            return ToolResult::failure(format!("Computer subagent {id} has no remote thread"));
+        }
+        let token = CancellationToken::new();
+        let adapter = match self.orb_adapter_for_record(&record).await {
+            Ok(adapter) => adapter,
+            Err(error) => return self.orb_operation_failure(&record, error),
+        };
+        let status = match adapter.status(&orb.thread_id, &token).await {
+            Ok(status) => status,
+            Err(error) => return self.orb_operation_failure(&record, error.to_string()),
+        };
+        let lifecycle = normalize_orb_lifecycle(&status.lifecycle_state);
+        if lifecycle == DelegationLifecycleState::Unavailable {
+            return self.orb_unavailable_result(&record);
+        }
+        if matches!(
+            lifecycle,
+            DelegationLifecycleState::Completed | DelegationLifecycleState::Cancelled
+        ) {
+            let task = orb_console_task(&record, None);
+            return orb_console_task_failure(
+                task,
+                format!("Hosted Computer task {id} is terminal"),
+            );
+        }
+        let key = deterministic_idempotency_key("resume", &[id]);
+        if orb_status_allows_resume(lifecycle, &status.available_commands) {
+            let adapter = match self.orb_adapter_for_record(&record).await {
+                Ok(adapter) => adapter,
+                Err(error) => return self.orb_operation_failure(&record, error),
+            };
+            let status = match adapter.resume(&orb.thread_id, &key, &token).await {
+                Ok(status) => status,
+                Err(error) => return self.orb_operation_failure(&record, error.to_string()),
+            };
+            if let Some(orb) = record.orb.as_mut() {
+                orb.lifecycle_state = Some(status.lifecycle_state.clone());
+                orb.available_commands = status.available_commands.clone();
+            }
+        } else if lifecycle == DelegationLifecycleState::Active {
+            if let Some(orb) = record.orb.as_mut() {
+                orb.lifecycle_state = Some(status.lifecycle_state.clone());
+                orb.available_commands = status.available_commands.clone();
+            }
+        } else {
+            let task = orb_console_task(&record, None);
+            return orb_console_task_failure(
+                task,
+                format!(
+                    "Hosted Computer task {id} cannot be resumed from {}",
+                    lifecycle.as_str()
+                ),
+            );
+        }
+        record.status = SubagentStatus::Running;
+        record.started_at_ms = Some(now_millis());
+        record.finished_at_ms = None;
+        record.error = None;
+        if let Err(error) = self.write_record(&record) {
+            return ToolResult::failure(error);
+        }
+        let task = orb_console_task(&record, None);
+        orb_console_task_result(task, format!("Hosted Computer task {id} resumed"))
+    }
+
+    async fn orb_console_cancel(&self, id: &str) -> ToolResult {
+        self.orb_console_control(id, OrbConsoleControl::Cancel)
+            .await
+    }
+
+    async fn orb_console_control(&self, id: &str, control: OrbConsoleControl) -> ToolResult {
+        let mut record = match self.load_record(id) {
+            Ok(record) if record.backend == SubagentBackend::Orb => record,
+            Ok(_) => {
+                return ToolResult::failure(format!("subagent {id} is not a hosted Computer task"));
+            }
+            Err(error) => return ToolResult::failure(error),
+        };
+        let Some(orb) = record.orb.clone() else {
+            return ToolResult::failure(format!("Computer subagent {id} has no remote thread"));
+        };
+        if orb.thread_id.trim().is_empty() {
+            return ToolResult::failure(format!("Computer subagent {id} has no remote thread"));
+        }
+        let adapter = match self.orb_adapter_for_record(&record).await {
+            Ok(adapter) => adapter,
+            Err(error) => return self.orb_operation_failure(&record, error),
+        };
+        let token = CancellationToken::new();
+        let key_kind = control.idempotency_kind();
+        let key = deterministic_idempotency_key(key_kind, &[id]);
+        let status = match control {
+            OrbConsoleControl::Pause => adapter.pause(&orb.thread_id, &key, &token).await,
+            OrbConsoleControl::Cancel => adapter.cancel(&orb.thread_id, &key, &token).await,
+        };
+        let status = match status {
+            Ok(status) => status,
+            Err(error) => return self.orb_operation_failure(&record, error.to_string()),
+        };
+        if let Some(orb) = record.orb.as_mut() {
+            orb.lifecycle_state = Some(status.lifecycle_state.clone());
+            orb.available_commands = status.available_commands.clone();
+        }
+        match control {
+            OrbConsoleControl::Pause => record.status = SubagentStatus::Interrupted,
+            OrbConsoleControl::Cancel => {
+                record.status = SubagentStatus::Cancelled;
+                record.finished_at_ms = Some(now_millis());
+            }
+        }
+        record.error = None;
+        if let Err(error) = self.write_record(&record) {
+            return ToolResult::failure(error);
+        }
+        let task = orb_console_task(&record, None);
+        orb_console_task_result(
+            task,
+            format!("Hosted Computer task {id} {}", control.label()),
+        )
+    }
+
+    async fn orb_console_unavailable(&self, action: OrbConsoleAction) -> ToolResult {
+        match action {
+            OrbConsoleAction::List => {
+                let records = self.orb_records().unwrap_or_default();
+                let tasks = records
+                    .iter()
+                    .map(|record| orb_console_task(record, Some("provider_unavailable")))
+                    .collect::<Vec<_>>();
+                let lines = tasks
+                    .iter()
+                    .map(|task| {
+                        format!(
+                            "{}  {}  {}",
+                            task.id,
+                            task.event.lifecycle_state.as_str(),
+                            task.task.replace(['\n', '\r'], " ")
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                ToolResult::success(if lines.is_empty() {
+                    "Hosted Computer is unavailable; no durable Computer tasks found".to_string()
+                } else {
+                    lines.join("\n")
+                })
+                .with_details(serde_json::json!({
+                    "schemaVersion": maestro_runtime::DELEGATION_PROJECTION_SCHEMA_VERSION,
+                    "complete": false,
+                    "count": tasks.len(),
+                    "tasks": tasks,
+                    "reasonCode": "provider_unavailable"
+                }))
+            }
+            action => {
+                let id = match action {
+                    OrbConsoleAction::Status { id }
+                    | OrbConsoleAction::Followup { id, .. }
+                    | OrbConsoleAction::Pause { id }
+                    | OrbConsoleAction::Resume { id }
+                    | OrbConsoleAction::Cancel { id }
+                    | OrbConsoleAction::Collect { id } => id,
+                    OrbConsoleAction::HandoffCreate { source_id, .. } => source_id,
+                    OrbConsoleAction::HandoffList { .. } | OrbConsoleAction::HandoffRead { .. } => {
+                        return ToolResult::failure(
+                            "Hosted Computer is unavailable; the handoff operation was not executed",
+                        )
+                        .with_details(serde_json::json!({
+                            "schemaVersion": "evalops.maestro.orb-handoff.v1",
+                            "reasonCode": "provider_unavailable",
+                        }));
+                    }
+                    OrbConsoleAction::List => unreachable!(),
+                };
+                match self.load_record(&id) {
+                    Ok(record) if record.backend == SubagentBackend::Orb => {
+                        self.orb_unavailable_result(&record)
+                    }
+                    Ok(_) => {
+                        ToolResult::failure(format!("subagent {id} is not a hosted Computer task"))
+                    }
+                    Err(error) => ToolResult::failure(error),
+                }
+            }
+        }
+    }
+
+    fn orb_unavailable_result(&self, record: &SubagentRecord) -> ToolResult {
+        let task = orb_console_task(record, Some("provider_unavailable"));
+        orb_console_task_failure(
+            task,
+            "Hosted Computer is unavailable; durable task identity was retained".to_string(),
+        )
+    }
+
+    fn orb_owner_binding_failure(
+        &self,
+        record: &SubagentRecord,
+        error: impl Into<String>,
+    ) -> ToolResult {
+        let task = orb_console_task(record, Some("owner_binding_mismatch"));
+        ToolResult::failure(error.into()).with_details(serde_json::json!({
+            "schemaVersion": maestro_runtime::DELEGATION_PROJECTION_SCHEMA_VERSION,
+            "task": task,
+            "reasonCode": "owner_binding_mismatch",
+        }))
+    }
+
+    fn orb_operation_failure(
+        &self,
+        record: &SubagentRecord,
+        error: impl Into<String>,
+    ) -> ToolResult {
+        let error = error.into();
+        if is_orb_owner_binding_error(&error) {
+            self.orb_owner_binding_failure(record, error)
+        } else {
+            self.orb_unavailable_result(record)
         }
     }
 
@@ -1631,6 +2790,7 @@ impl SubagentManager {
             Err(error) => return ToolResult::failure(error),
         };
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let steer_signal = self.steer_signal();
 
         loop {
             let record = match self.load_record(id) {
@@ -1640,13 +2800,39 @@ impl SubagentManager {
             if record.status.is_terminal() || timeout_ms == 0 || Instant::now() >= deadline {
                 return tool_result_for_record(record);
             }
-
+            if cancel.is_some_and(CancellationToken::is_cancelled) {
+                return cancelled_result("wait_subagent cancelled");
+            }
+            let (record, slice) = if record.backend == SubagentBackend::Orb {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let refresh_cancel =
+                    cancel.map_or_else(CancellationToken::new, CancellationToken::child_token);
+                let refresh = self.refresh_orb_record(record.clone(), Some(&refresh_cancel));
+                let record = match tokio::time::timeout(remaining, refresh).await {
+                    Ok(Ok(record)) => record,
+                    Ok(Err(error)) => return ToolResult::failure(error),
+                    Err(_) => {
+                        refresh_cancel.cancel();
+                        return tool_result_for_record(record);
+                    }
+                };
+                (record, Duration::from_millis(250))
+            } else {
+                (record, Duration::from_millis(50))
+            };
+            if record.status.is_terminal() || Instant::now() >= deadline {
+                return tool_result_for_record(record);
+            }
             if cancel.is_some_and(CancellationToken::is_cancelled) {
                 return cancelled_result("wait_subagent cancelled");
             }
 
             let remaining = deadline.saturating_duration_since(Instant::now());
-            tokio::time::sleep(remaining.min(Duration::from_millis(50))).await;
+            match sleep_or_release(remaining.min(slice), cancel, steer_signal.as_deref()).await {
+                WaitWake::Elapsed => {}
+                WaitWake::Cancelled => return cancelled_result("wait_subagent cancelled"),
+                WaitWake::Steered => return steer_released_result(&record),
+            }
         }
     }
 
@@ -1689,6 +2875,11 @@ impl SubagentManager {
             Ok(record) => record,
             Err(error) => return ToolResult::failure(error),
         };
+        if initial.backend == SubagentBackend::Orb {
+            return self
+                .resume_orb(initial, prompt, args, parent_call_id, cancel)
+                .await;
+        }
         let child_credential_vault = self
             .runtime
             .credential_scope(id)
@@ -1696,6 +2887,12 @@ impl SubagentManager {
         let mut request = SpawnRequest {
             task: prompt,
             role: initial.role,
+            backend: initial.backend,
+            orb: initial
+                .orb
+                .as_ref()
+                .map(|orb| orb.config.clone())
+                .unwrap_or_default(),
             profile: initial.profile.clone(),
             profile_prompt: initial.profile_prompt.clone(),
             profile_tools: initial.profile_tools.clone(),
@@ -1756,7 +2953,7 @@ impl SubagentManager {
         let mut recorder = match SessionRecorder::resume(&session_dir, id) {
             Ok(recorder) => recorder,
             Err(error) => {
-                return ToolResult::failure(format!("resume subagent transcript: {error}"))
+                return ToolResult::failure(format!("resume subagent transcript: {error}"));
             }
         };
         let snapshot_attempt = recorder
@@ -1771,6 +2968,7 @@ impl SubagentManager {
         if let Err(error) = recorder.record_sent(&ToAgentMessage::Prompt {
             content: prompt.clone(),
             attachments: None,
+            managed_inference_authorization: None,
         }) {
             return ToolResult::failure(format!("record subagent follow-up: {error}"));
         }
@@ -1862,7 +3060,149 @@ impl SubagentManager {
         }
     }
 
-    pub(crate) fn cancel(&self, args: &serde_json::Value) -> ToolResult {
+    async fn resume_orb(
+        &self,
+        mut record: SubagentRecord,
+        prompt: String,
+        args: &serde_json::Value,
+        parent_call_id: &str,
+        cancel: Option<&CancellationToken>,
+    ) -> ToolResult {
+        if CredentialVault::has_references(&prompt) {
+            return ToolResult::failure(
+                "Computer delegation cannot forward local credential references; provide a credential-free follow-up",
+            );
+        }
+        let Some(orb) = record.orb.clone() else {
+            return ToolResult::failure(format!(
+                "Computer subagent {} has no remote thread",
+                record.id
+            ));
+        };
+        if orb.thread_id.trim().is_empty() {
+            return ToolResult::failure(format!(
+                "Computer subagent {} has no remote thread",
+                record.id
+            ));
+        }
+        let adapter = match self.orb_adapter_for_record(&record).await {
+            Ok(adapter) => adapter,
+            Err(error) if is_orb_owner_binding_error(&error) => {
+                return self.orb_owner_binding_failure(&record, error);
+            }
+            Err(error) => return ToolResult::failure(error).with_details(record_details(&record)),
+        };
+        let token = cancel.cloned().unwrap_or_else(CancellationToken::new);
+        if token.is_cancelled() {
+            return cancelled_result("resume_subagent cancelled before Computer follow-up");
+        }
+        let remote_status = match adapter.status(&orb.thread_id, &token).await {
+            Ok(status) => status,
+            Err(error) => {
+                let error = error.to_string();
+                if is_orb_owner_binding_error(&error) {
+                    return self.orb_owner_binding_failure(&record, error);
+                }
+                return ToolResult::failure(error).with_details(record_details(&record));
+            }
+        };
+        let remote_lifecycle = normalize_orb_lifecycle(&remote_status.lifecycle_state);
+        let can_resume =
+            orb_status_allows_resume(remote_lifecycle, &remote_status.available_commands);
+        let key = args
+            .get("idempotency_key")
+            .or_else(|| args.get("idempotencyKey"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                deterministic_idempotency_key("resume", &[record.id.as_str(), parent_call_id])
+            });
+        if can_resume {
+            let adapter = match self.orb_adapter_for_record(&record).await {
+                Ok(adapter) => adapter,
+                Err(error) if is_orb_owner_binding_error(&error) => {
+                    return self.orb_owner_binding_failure(&record, error);
+                }
+                Err(error) => {
+                    return ToolResult::failure(error).with_details(record_details(&record));
+                }
+            };
+            if let Err(error) = adapter.resume(&orb.thread_id, &key, &token).await {
+                let error = error.to_string();
+                if is_orb_owner_binding_error(&error) {
+                    return self.orb_owner_binding_failure(&record, error);
+                }
+                return ToolResult::failure(error).with_details(record_details(&record));
+            }
+        } else if matches!(
+            remote_lifecycle,
+            DelegationLifecycleState::Completed
+                | DelegationLifecycleState::Cancelled
+                | DelegationLifecycleState::Failed
+        ) {
+            return ToolResult::failure(format!(
+                "Computer task {} is {}; it cannot be resumed",
+                record.id, remote_status.lifecycle_state
+            ))
+            .with_details(record_details(&record));
+        }
+        let adapter = match self.orb_adapter_for_record(&record).await {
+            Ok(adapter) => adapter,
+            Err(error) if is_orb_owner_binding_error(&error) => {
+                return self.orb_owner_binding_failure(&record, error);
+            }
+            Err(error) => return ToolResult::failure(error).with_details(record_details(&record)),
+        };
+        if let Err(error) = adapter
+            .follow_up(&orb.thread_id, &prompt, &key, &token)
+            .await
+        {
+            let error = error.to_string();
+            if is_orb_owner_binding_error(&error) {
+                return self.orb_owner_binding_failure(&record, error);
+            }
+            return ToolResult::failure(error).with_details(record_details(&record));
+        }
+        record.attempt = record.attempt.saturating_add(1);
+        record.current_prompt = prompt;
+        record.last_parent_scope_id = self.parent_scope_id();
+        record.last_call_id = parent_call_id.to_string();
+        record.status = SubagentStatus::Running;
+        record.started_at_ms = Some(now_millis());
+        record.finished_at_ms = None;
+        record.result = None;
+        record.error = None;
+        record.snapshot_attempt = None;
+        if let Some(orb) = record.orb.as_mut() {
+            orb.lifecycle_state = Some("active".to_string());
+        }
+        if let Err(error) = self.write_record(&record) {
+            return ToolResult::failure(error);
+        }
+        let run_in_background = args
+            .get("run_in_background")
+            .or_else(|| args.get("runInBackground"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+        if run_in_background {
+            ToolResult::success(format!(
+                "Sent follow-up to hosted Computer subagent {}",
+                record.id
+            ))
+            .with_details(record_details(&record))
+        } else {
+            self.wait_orb_until_terminal(&record.id, record.timeout_ms, cancel)
+                .await
+        }
+    }
+
+    pub(crate) async fn cancel(
+        &self,
+        args: &serde_json::Value,
+        cancel: Option<&CancellationToken>,
+    ) -> ToolResult {
         let Some(id) = subagent_id(args) else {
             return ToolResult::failure("subagent_id is required");
         };
@@ -1870,6 +3210,61 @@ impl SubagentManager {
             Ok(record) => record,
             Err(error) => return ToolResult::failure(error),
         };
+        if record.backend == SubagentBackend::Orb {
+            let Some(orb) = record.orb.clone() else {
+                return ToolResult::failure(format!("Computer subagent {id} has no remote thread"));
+            };
+            if orb.thread_id.trim().is_empty() {
+                return ToolResult::failure(format!("Computer subagent {id} has no remote thread"));
+            }
+            let adapter = match self.orb_adapter_for_record(&record).await {
+                Ok(adapter) => adapter,
+                Err(error) if is_orb_owner_binding_error(&error) => {
+                    return self.orb_owner_binding_failure(&record, error);
+                }
+                Err(error) => return ToolResult::failure(error),
+            };
+            let token = cancel.cloned().unwrap_or_else(CancellationToken::new);
+            let key = deterministic_idempotency_key("cancel", &[id]);
+            match adapter.cancel(&orb.thread_id, &key, &token).await {
+                Ok(status) => {
+                    let mut updated = record;
+                    updated.status = SubagentStatus::Cancelled;
+                    updated.finished_at_ms = Some(now_millis());
+                    updated.error = Some("Computer task cancellation requested".to_string());
+                    if let Some(orb) = updated.orb.as_mut() {
+                        orb.lifecycle_state = Some(status.lifecycle_state);
+                    }
+                    if let Err(error) = self.write_record(&updated) {
+                        return ToolResult::failure(error);
+                    }
+                    return tool_result_for_record(updated);
+                }
+                Err(error) => {
+                    let error = error.to_string();
+                    if is_orb_owner_binding_error(&error) {
+                        return self.orb_owner_binding_failure(&record, error);
+                    }
+                    return ToolResult::failure(error);
+                }
+            }
+        }
+        self.cancel_native(args)
+    }
+
+    pub(crate) fn cancel_native(&self, args: &serde_json::Value) -> ToolResult {
+        let Some(id) = subagent_id(args) else {
+            return ToolResult::failure("subagent_id is required");
+        };
+        let record = match self.load_record(id) {
+            Ok(record) => record,
+            Err(error) => return ToolResult::failure(error),
+        };
+        if record.backend == SubagentBackend::Orb {
+            return ToolResult::failure(
+                "Computer subagents require the asynchronous cancel_subagent tool",
+            );
+        }
         if record.status.is_terminal() {
             return tool_result_for_record(record);
         }
@@ -1914,6 +3309,11 @@ impl SubagentManager {
             Ok(mode) => mode,
             Err(error) => return ToolResult::failure(error),
         };
+        if record.backend == SubagentBackend::Orb {
+            return self
+                .control_orb(record, mode, args, call_id, parent_credential_vault)
+                .await;
+        }
         if mode == ControlMode::Collect {
             return tool_result_for_record(record);
         }
@@ -2013,6 +3413,184 @@ impl SubagentManager {
             ))
             .with_details(details),
         }
+    }
+
+    async fn control_orb(
+        &self,
+        mut record: SubagentRecord,
+        mode: ControlMode,
+        args: &serde_json::Value,
+        call_id: &str,
+        _parent_credential_vault: CredentialVault,
+    ) -> ToolResult {
+        let Some(orb) = record.orb.clone() else {
+            return ToolResult::failure(format!(
+                "Computer subagent {} has no remote thread",
+                record.id
+            ));
+        };
+        if orb.thread_id.trim().is_empty() {
+            return ToolResult::failure(format!(
+                "Computer subagent {} has no remote thread",
+                record.id
+            ));
+        }
+        if mode == ControlMode::Collect {
+            return match self.refresh_orb_record(record, None).await {
+                Ok(record) => tool_result_for_record(record),
+                Err(error) => ToolResult::failure(error),
+            };
+        }
+        let body = args
+            .get("message")
+            .or_else(|| args.get("task"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| mode.label());
+        if matches!(mode, ControlMode::Steer | ControlMode::Followup) && body == mode.label() {
+            return ToolResult::failure("message is required for steer and followup controls");
+        }
+        if body.len() > MAX_TASK_BYTES {
+            return ToolResult::failure(format!(
+                "subagent control exceeds the {} byte limit",
+                MAX_TASK_BYTES
+            ));
+        }
+        if CredentialVault::has_references(body) {
+            return ToolResult::failure(
+                "Computer delegation cannot forward local credential references; provide a credential-free control message",
+            );
+        }
+        let token = CancellationToken::new();
+        let key = args
+            .get("idempotency_key")
+            .or_else(|| args.get("idempotencyKey"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                deterministic_idempotency_key(
+                    "control",
+                    &[record.id.as_str(), call_id, mode.label()],
+                )
+            });
+        let remote_status = match mode {
+            ControlMode::Steer => {
+                let adapter = match self.orb_adapter_for_record(&record).await {
+                    Ok(adapter) => adapter,
+                    Err(error) if is_orb_owner_binding_error(&error) => {
+                        return self.orb_owner_binding_failure(&record, error);
+                    }
+                    Err(error) => return ToolResult::failure(error),
+                };
+                match adapter
+                    .direct_task(&orb.thread_id, &key, body, &token)
+                    .await
+                {
+                    Ok(status) => Some(status),
+                    Err(error) => {
+                        let error = error.to_string();
+                        if is_orb_owner_binding_error(&error) {
+                            return self.orb_owner_binding_failure(&record, error);
+                        }
+                        return ToolResult::failure(error);
+                    }
+                }
+            }
+            ControlMode::Followup => {
+                let adapter = match self.orb_adapter_for_record(&record).await {
+                    Ok(adapter) => adapter,
+                    Err(error) if is_orb_owner_binding_error(&error) => {
+                        return self.orb_owner_binding_failure(&record, error);
+                    }
+                    Err(error) => return ToolResult::failure(error),
+                };
+                if let Err(error) = adapter.follow_up(&orb.thread_id, body, &key, &token).await {
+                    let error = error.to_string();
+                    if is_orb_owner_binding_error(&error) {
+                        return self.orb_owner_binding_failure(&record, error);
+                    }
+                    return ToolResult::failure(error);
+                }
+                None
+            }
+            ControlMode::Interrupt => {
+                let adapter = match self.orb_adapter_for_record(&record).await {
+                    Ok(adapter) => adapter,
+                    Err(error) if is_orb_owner_binding_error(&error) => {
+                        return self.orb_owner_binding_failure(&record, error);
+                    }
+                    Err(error) => return ToolResult::failure(error),
+                };
+                match adapter.pause(&orb.thread_id, &key, &token).await {
+                    Ok(status) => Some(status),
+                    Err(error) => {
+                        let error = error.to_string();
+                        if is_orb_owner_binding_error(&error) {
+                            return self.orb_owner_binding_failure(&record, error);
+                        }
+                        return ToolResult::failure(error);
+                    }
+                }
+            }
+            ControlMode::Cancel => {
+                let adapter = match self.orb_adapter_for_record(&record).await {
+                    Ok(adapter) => adapter,
+                    Err(error) if is_orb_owner_binding_error(&error) => {
+                        return self.orb_owner_binding_failure(&record, error);
+                    }
+                    Err(error) => return ToolResult::failure(error),
+                };
+                match adapter.cancel(&orb.thread_id, &key, &token).await {
+                    Ok(status) => Some(status),
+                    Err(error) => {
+                        let error = error.to_string();
+                        if is_orb_owner_binding_error(&error) {
+                            return self.orb_owner_binding_failure(&record, error);
+                        }
+                        return ToolResult::failure(error);
+                    }
+                }
+            }
+            ControlMode::Collect => unreachable!("collect is handled above"),
+        };
+        record.last_parent_scope_id = self.parent_scope_id();
+        record.last_call_id = call_id.to_string();
+        match mode {
+            ControlMode::Steer | ControlMode::Followup => {
+                record.current_prompt = body.to_string();
+                record.status = SubagentStatus::Running;
+            }
+            ControlMode::Interrupt => {
+                record.status = SubagentStatus::Interrupted;
+            }
+            ControlMode::Cancel => {
+                record.status = SubagentStatus::Cancelled;
+                record.finished_at_ms = Some(now_millis());
+            }
+            ControlMode::Collect => unreachable!("collect is handled above"),
+        }
+        if let Some(status) = remote_status {
+            if let Some(orb) = record.orb.as_mut() {
+                orb.lifecycle_state = Some(status.lifecycle_state);
+            }
+        }
+        if let Err(error) = self.write_record(&record) {
+            return ToolResult::failure(error);
+        }
+        ToolResult::success(format!(
+            "{} control applied to hosted Computer subagent {}",
+            mode.label(),
+            record.id
+        ))
+        .with_details(serde_json::json!({
+            "mode": mode.label(),
+            "deliveryState": "remote_applied",
+            "idempotencyKey": key,
+            "record": record_details(&record),
+        }))
     }
 
     pub(crate) fn inspect_control(
@@ -2235,10 +3813,12 @@ impl SubagentManager {
                 ControlMode::Steer => Some(ToAgentMessage::Steer {
                     content: request.body.clone(),
                     attachments: None,
+                    managed_inference_authorization: None,
                 }),
                 ControlMode::Followup => Some(ToAgentMessage::Prompt {
                     content: request.body.clone(),
                     attachments: None,
+                    managed_inference_authorization: None,
                 }),
                 ControlMode::Interrupt | ControlMode::Cancel => Some(ToAgentMessage::Interrupt),
                 ControlMode::Collect => None,
@@ -2466,7 +4046,34 @@ impl SubagentManager {
             history.get_or_insert_with(Vec::new).push(message);
         }
 
-        let child_policy = child_sandbox_policy(record.role, sandbox_policy);
+        let platform_session = match crate::credential_mode::detect() {
+            Ok(crate::credential_mode::DetectedMode::Platform(session)) => Some(session),
+            _ => None,
+        };
+        let managed_setup =
+            crate::managed_setup::ManagedSetupClient::resolve(platform_session.as_ref());
+        let managed_mcp_policy = managed_setup
+            .is_managed()
+            .then(|| crate::mcp::ManagedMcpPolicy {
+                version: managed_setup.version(),
+                policy: managed_setup.mcp_policy().clone(),
+            });
+        let child_policy = match managed_setup.native_sandbox_policy(
+            &child_cwd,
+            child_sandbox_policy(record.role, sandbox_policy),
+        ) {
+            Ok(policy) => policy,
+            Err(error) => {
+                return self.finish_record(
+                    record,
+                    SubagentStatus::Failed,
+                    None,
+                    Some(format!("load child sandbox policy: {error}")),
+                    &credential_vault,
+                    &parent_credential_scope,
+                );
+            }
+        };
         let model = record
             .model
             .clone()
@@ -2498,6 +4105,9 @@ impl SubagentManager {
             approval_mode: ApprovalMode::Yolo,
             context_window: None,
             sandbox_policy: child_policy,
+            managed_mcp_policy,
+            max_turn_steps: crate::agent::DEFAULT_MAX_TURN_STEPS,
+            allow_unbounded_turn: false,
         };
         let allowed_tools =
             child_allowed_tools_for_role(record.role, record.profile_tools.as_deref());
@@ -2530,7 +4140,10 @@ impl SubagentManager {
         // Stamp the durable child id onto the runner's hook system and fire
         // SessionStart. send_session_info only emits a UI event; without this
         // every child PreToolUse/PostToolUse payload carries sessionId: null.
-        if let Err(error) = agent.set_session_context(Some(record.id.clone()), "subagent_start") {
+        // The child record is not a SessionManager transcript cleanup owner.
+        if let Err(error) =
+            agent.set_session_context(Some(record.id.clone()), "subagent_start", false)
+        {
             agent.shutdown().await;
             return self.finish_record(
                 record,
@@ -3030,6 +4643,72 @@ impl SubagentManager {
     }
 }
 
+fn handoff_package_summary(package: &serde_json::Value) -> String {
+    let manifest = package.get("manifest").unwrap_or(package);
+    let package_id = manifest
+        .get("package_id")
+        .or_else(|| manifest.get("packageId"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let target = manifest
+        .get("target_thread_id")
+        .or_else(|| manifest.get("targetThreadId"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let items = package
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .or_else(|| manifest.get("items").and_then(serde_json::Value::as_array));
+    let item_count = items.map_or(0, Vec::len);
+    let bytes = items.map_or(0, |items| {
+        items
+            .iter()
+            .filter_map(|item| {
+                item.get("metadata")
+                    .and_then(|metadata| metadata.get("size_bytes"))
+                    .or_else(|| item.get("sizeBytes"))
+                    .and_then(serde_json::Value::as_u64)
+            })
+            .sum::<u64>()
+    });
+    format!(
+        "Handoff package {package_id} addressed to {target} ({item_count} items, {bytes} bytes)"
+    )
+}
+
+fn handoff_package_list_summary(packages: &serde_json::Value) -> String {
+    let Some(entries) = packages
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return "No handoff packages".to_string();
+    };
+    if entries.is_empty() {
+        return "No handoff packages".to_string();
+    }
+    entries
+        .iter()
+        .map(|package| {
+            let package_id = package
+                .get("package_id")
+                .or_else(|| package.get("packageId"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            let source = package
+                .get("source_thread_id")
+                .or_else(|| package.get("sourceThreadId"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            let item_count = package
+                .get("items")
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, Vec::len);
+            format!("{package_id}  from {source}  ({item_count} items)")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn default_root(cwd: &Path) -> PathBuf {
     let base = std::env::var_os("MAESTRO_SUBAGENTS_DIR")
         .map(PathBuf::from)
@@ -3067,6 +4746,16 @@ fn parse_spawn_request(args: &serde_json::Value) -> Result<SpawnRequest, String>
     }
 
     let role = SubagentRole::parse(args.get("role").and_then(serde_json::Value::as_str))?;
+    let backend = SubagentBackend::parse(args.get("backend").and_then(serde_json::Value::as_str))?;
+    let computer = args.get("computer");
+    let orb_alias = args.get("orb");
+    if computer.is_some() && orb_alias.is_some() {
+        return Err(
+            "provide only one hosted Computer configuration: `computer` or its `orb` compatibility alias"
+                .to_string(),
+        );
+    }
+    let orb = parse_orb_delegation_config(computer.or(orb_alias))?;
     let profile = args
         .get("profile")
         .or_else(|| args.get("agent_profile"))
@@ -3100,6 +4789,8 @@ fn parse_spawn_request(args: &serde_json::Value) -> Result<SpawnRequest, String>
     Ok(SpawnRequest {
         task,
         role,
+        backend,
+        orb,
         profile,
         profile_prompt: None,
         profile_tools: None,
@@ -3110,6 +4801,270 @@ fn parse_spawn_request(args: &serde_json::Value) -> Result<SpawnRequest, String>
         isolation,
         worktree_name,
     })
+}
+
+fn parse_orb_delegation_config(
+    value: Option<&serde_json::Value>,
+) -> Result<OrbDelegationConfig, String> {
+    let Some(value) = value else {
+        return Ok(OrbDelegationConfig::default());
+    };
+    let Some(object) = value.as_object() else {
+        return Err("computer configuration must be an object".to_string());
+    };
+    let unsupported = [
+        "repository_url",
+        "agent_selection",
+        "provider_identity_id",
+        "permission_policy",
+        "require_approval",
+        "approval_policy",
+        "provisioner",
+        "machine",
+        "resource_profile",
+        "max_run_cost_credits",
+    ];
+    if let Some(field) = unsupported
+        .iter()
+        .find(|field| object.contains_key(**field))
+    {
+        return Err(format!(
+            "computer.{field} is policy-owned infrastructure; provide only project/repository intent and an optional high-level computer.profile"
+        ));
+    }
+    let string_field = |name: &str| {
+        object
+            .get(name)
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("computer.{name} must be a non-empty string"))
+            })
+            .transpose()
+    };
+    let repository = match object.get("repository").or_else(|| object.get("repo")) {
+        Some(value) => {
+            let value = value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "computer.repository must be a non-empty string".to_string())?;
+            validate_orb_repository_intent(value)?;
+            Some(value.to_string())
+        }
+        None => None,
+    };
+    let profile = string_field("profile")?;
+    if let Some(profile) = profile.as_deref() {
+        validate_orb_profile_override(profile)?;
+    }
+    Ok(OrbDelegationConfig {
+        project: string_field("project")?,
+        repository,
+        title: string_field("title")?,
+        profile,
+        settings: OrbSpawnSettings::default(),
+    })
+}
+
+/// Fill the minimum hosted Computer launch context from the active workspace.
+///
+/// The model should not have to manufacture a project id or copy a repository
+/// URL just because the user said "work on this in a Computer". When the
+/// request omits either value, use the current workspace's `origin` remote,
+/// normalize it to the HTTPS form required by `computer_launch`, and derive the
+/// project identity from its path. Explicit caller values always win; a
+/// missing or non-remote-backed workspace fails closed with an actionable
+/// error rather than launching against an inferred personal/default project.
+fn infer_hosted_computer_context(
+    config: &mut OrbDelegationConfig,
+    cwd: &Path,
+) -> Result<(), String> {
+    // Explicit repository intent still crosses the hosted launch boundary,
+    // so canonicalize and validate it even when the caller supplied both
+    // project and repository.  The previous early return let an absolute
+    // `http://` URL (or one carrying a query/fragment) reach `computer_launch`
+    // unchanged.
+    if let Some(repository) = config.repository.as_deref() {
+        config.repository = Some(normalize_hosted_repository_url(repository)?);
+    }
+    if let Some(repository) = config.settings.repository_url.as_deref() {
+        config.settings.repository_url = Some(normalize_hosted_repository_url(repository)?);
+    }
+
+    let needs_project = config
+        .project
+        .as_deref()
+        .is_none_or(|project| project.trim().is_empty());
+    let needs_repository = config
+        .settings
+        .repository_url
+        .as_deref()
+        .is_none_or(|repository| repository.trim().is_empty())
+        && config
+            .repository
+            .as_deref()
+            .is_none_or(|repository| repository.trim().is_empty());
+
+    if !needs_project && !needs_repository {
+        return Ok(());
+    }
+
+    let repository_source = config
+        .settings
+        .repository_url
+        .as_deref()
+        .or(config.repository.as_deref())
+        .map(str::to_owned)
+        .or_else(|| git_origin_url(cwd));
+    let Some(repository_source) = repository_source else {
+        return Err(
+            "Computer delegation needs the active workspace's remote repository; configure `computer.repository` or add an origin remote"
+                .to_string(),
+        );
+    };
+    let repository_url = normalize_hosted_repository_url(&repository_source)?;
+
+    if needs_repository {
+        config.repository = Some(repository_url.clone());
+    }
+    if needs_project {
+        config.project = Some(hosted_project_from_repository_url(&repository_url)?);
+    }
+    Ok(())
+}
+
+fn git_origin_url(cwd: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["config", "--get", "remote.origin.url"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?;
+    let value = value.trim();
+    (!value.is_empty()).then_some(value.to_string())
+}
+
+/// Normalize a credential-free Git origin into the HTTPS URL accepted by the
+/// hosted Computer launch contract.
+fn normalize_hosted_repository_url(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("computer.repository must be a non-empty repository URL".to_string());
+    }
+
+    if let Some(scp) = value.strip_prefix("git@") {
+        let Some((host, path)) = scp.split_once(':') else {
+            return Err(
+                "computer.repository must be an HTTPS URL or a normal SSH Git origin".to_string(),
+            );
+        };
+        return https_repository_url(host, path);
+    }
+
+    let parsed = url::Url::parse(value).map_err(|_| {
+        "computer.repository must be an HTTPS URL or a normal SSH Git origin".to_string()
+    })?;
+    if parsed.username() != "" || parsed.password().is_some() {
+        return Err("computer.repository must not contain embedded credentials".to_string());
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err("computer.repository must not contain a query or fragment".to_string());
+    }
+    if parsed.scheme() == "ssh" {
+        let Some(host) = parsed.host_str() else {
+            return Err("computer.repository SSH origin is missing a host".to_string());
+        };
+        return https_repository_url(host, parsed.path());
+    }
+    if parsed.scheme() != "https" {
+        return Err("computer.repository must use HTTPS for hosted Computer launches".to_string());
+    }
+    if parsed.host_str().is_none() || parsed.path().trim_matches('/').is_empty() {
+        return Err("computer.repository must include a host and repository path".to_string());
+    }
+    Ok(value.trim_end_matches('/').to_string())
+}
+
+fn https_repository_url(host: &str, path: &str) -> Result<String, String> {
+    let host = host.trim();
+    let path = path.trim().trim_start_matches('/');
+    if host.is_empty() || path.is_empty() || path.chars().any(char::is_control) {
+        return Err("computer.repository must include a host and repository path".to_string());
+    }
+    let url = format!("https://{host}/{path}");
+    let parsed = url::Url::parse(&url)
+        .map_err(|_| "computer.repository could not be normalized to HTTPS".to_string())?;
+    if parsed.host_str().is_none() || parsed.path().trim_matches('/').is_empty() {
+        return Err("computer.repository must include a host and repository path".to_string());
+    }
+    Ok(url.trim_end_matches('/').to_string())
+}
+
+fn hosted_project_from_repository_url(repository_url: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(repository_url)
+        .map_err(|_| "computer.repository must be a valid HTTPS URL".to_string())?;
+    let project = parsed
+        .path_segments()
+        .into_iter()
+        .flatten()
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    let project = project.trim_end_matches(".git").trim_matches('/');
+    if project.is_empty() {
+        return Err(
+            "Computer delegation could not infer a project from the repository URL; provide `computer.project`"
+                .to_string(),
+        );
+    }
+    if project.chars().count() > 128 {
+        return Err("computer.project is too long after repository inference".to_string());
+    }
+    Ok(project.to_string())
+}
+
+fn validate_orb_repository_intent(value: &str) -> Result<(), String> {
+    let repository_url = url::Url::parse(value)
+        .map_err(|_| "computer.repository must be a valid absolute URL".to_string())?;
+    let has_credentials =
+        !repository_url.username().is_empty() || repository_url.password().is_some();
+    if has_credentials {
+        return Err("computer.repository must not contain embedded credentials".to_string());
+    }
+    Ok(())
+}
+
+fn validate_orb_profile_override(value: &str) -> Result<(), String> {
+    if value.len() > 64
+        || !value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+    {
+        return Err(
+            "computer.profile must be a bounded hosted profile id using letters, numbers, '.', '-', or '_'"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn apply_orb_delegation_policy(request: &mut SpawnRequest) {
+    if let Some(profile) = request.orb.profile.clone() {
+        request.orb.settings.resource_profile = Some(profile);
+    }
+    if request.orb.settings.repository_url.is_none() {
+        request.orb.settings.repository_url = request.orb.repository.clone();
+    }
+    if request.orb.settings.model.is_none() {
+        request.orb.settings.model = request.model.clone();
+    }
 }
 
 fn default_child_timeout_ms() -> u64 {
@@ -3858,6 +5813,10 @@ fn record_details(record: &SubagentRecord) -> serde_json::Value {
         "task": record.task,
         "currentPrompt": record.current_prompt,
         "role": record.role,
+        "backend": record.backend,
+        "orbThreadId": record.orb.as_ref().map(|orb| &orb.thread_id),
+        "orbReceiptId": record.orb.as_ref().and_then(|orb| orb.receipt_id.as_ref()),
+        "orbLifecycleState": record.orb.as_ref().and_then(|orb| orb.lifecycle_state.as_ref()),
         "profile": record.profile,
         "model": record.model,
         "timeoutMs": record.timeout_ms,
@@ -3884,6 +5843,76 @@ fn record_details(record: &SubagentRecord) -> serde_json::Value {
                 | SubagentStatus::Interrupted
         )
     })
+}
+
+fn is_orb_owner_binding_error(error: &str) -> bool {
+    error.starts_with("Hosted Computer owner binding")
+        || error.starts_with("Hosted Computer task has no durable owner binding")
+        || error.starts_with("Hosted Computer task has an incomplete durable owner binding")
+}
+
+fn orb_console_task(record: &SubagentRecord, unavailable: Option<&str>) -> OrbConsoleTask {
+    let orb = record.orb.as_ref();
+    let raw_state = unavailable
+        .map(|_| "unavailable")
+        .or_else(|| orb.and_then(|orb| orb.lifecycle_state.as_deref()))
+        .unwrap_or_else(|| status_label(record.status));
+    let summary = record
+        .result
+        .as_ref()
+        .map(|result| result.output.trim())
+        .filter(|summary| !summary.is_empty())
+        .or(record.error.as_deref())
+        .or(Some(record.task.as_str()));
+    let event = orb_delegation_event(
+        &format!("{}:{}", record.id, record.attempt),
+        &record.id,
+        record.attempt,
+        raw_state,
+        summary,
+        unavailable.map(|_| "Hosted Computer is unavailable"),
+        orb.map(|orb| orb.available_commands.as_slice())
+            .unwrap_or(&[]),
+    );
+    let recoverable = unavailable.is_some()
+        || matches!(
+            event.lifecycle_state,
+            DelegationLifecycleState::Queued
+                | DelegationLifecycleState::Active
+                | DelegationLifecycleState::Paused
+                | DelegationLifecycleState::NeedsAttention
+                | DelegationLifecycleState::ApprovalRequired
+                | DelegationLifecycleState::Failed
+                | DelegationLifecycleState::Unavailable
+        );
+    OrbConsoleTask {
+        id: record.id.clone(),
+        agent_ref: agent_ref(record),
+        task: record.task.clone(),
+        attempt: record.attempt,
+        event,
+        thread_id: orb
+            .map(|orb| orb.thread_id.clone())
+            .filter(|thread_id| !thread_id.is_empty()),
+        receipt_id: orb.and_then(|orb| orb.receipt_id.clone()),
+        recoverable,
+        result: record.result.clone(),
+        error: record.error.clone(),
+    }
+}
+
+fn orb_console_task_result(task: OrbConsoleTask, message: String) -> ToolResult {
+    ToolResult::success(message).with_details(serde_json::json!({
+        "schemaVersion": maestro_runtime::DELEGATION_PROJECTION_SCHEMA_VERSION,
+        "task": task,
+    }))
+}
+
+fn orb_console_task_failure(task: OrbConsoleTask, message: String) -> ToolResult {
+    ToolResult::failure(message).with_details(serde_json::json!({
+        "schemaVersion": maestro_runtime::DELEGATION_PROJECTION_SCHEMA_VERSION,
+        "task": task,
+    }))
 }
 
 fn tool_result_for_record(record: SubagentRecord) -> ToolResult {
@@ -3914,6 +5943,79 @@ fn tool_result_for_record(record: SubagentRecord) -> ToolResult {
     }
 }
 
+/// Why a wait slice stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaitWake {
+    /// The slice ran to its end.
+    Elapsed,
+    /// The parent turn was cancelled.
+    Cancelled,
+    /// The user sent a message while the wait was blocking.
+    Steered,
+}
+
+/// Sleep for one slice, but stop early on cancellation or a queued steer.
+///
+/// The sleep races cancellation and user injection so a blocking wait releases
+/// promptly. An injection that is already pending returns without sleeping.
+async fn sleep_or_release(
+    slice: Duration,
+    cancel: Option<&CancellationToken>,
+    steer: Option<&SteerSignal>,
+) -> WaitWake {
+    if steer.is_some_and(SteerSignal::is_pending) {
+        return WaitWake::Steered;
+    }
+    tokio::select! {
+        biased;
+        () = async {
+            match cancel {
+                Some(token) => token.cancelled().await,
+                None => std::future::pending().await,
+            }
+        } => WaitWake::Cancelled,
+        () = async {
+            match steer {
+                Some(signal) => signal.pending().await,
+                None => std::future::pending().await,
+            }
+        } => WaitWake::Steered,
+        () = tokio::time::sleep(slice) => WaitWake::Elapsed,
+    }
+}
+
+/// The result returned when a user message ends a blocking wait.
+///
+/// This is a success, not a failure: nothing went wrong and the subagent is
+/// untouched. The text says so explicitly, because a model that reads a
+/// terminated wait as a terminated subagent will report work as abandoned
+/// that is still running.
+fn steer_released_result(record: &SubagentRecord) -> ToolResult {
+    let mut details = record_details(record);
+    if let Some(object) = details.as_object_mut() {
+        object.insert(
+            "status".to_string(),
+            serde_json::Value::String("released_by_steering".to_string()),
+        );
+        object.insert(
+            "releasedBySteering".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        object.insert(
+            "subagentStatus".to_string(),
+            serde_json::Value::String(status_label(record.status).to_string()),
+        );
+    }
+    ToolResult::success(format!(
+        "Stopped waiting on subagent {} because the user sent a new message. The subagent is \
+         still {} and its completion will still be delivered. Read the new message and act on \
+         it; do not wait again.",
+        record.id,
+        status_label(record.status),
+    ))
+    .with_details(details)
+}
+
 fn cancelled_result(message: &str) -> ToolResult {
     ToolResult::failure(message).with_details(serde_json::json!({
         "cancelled": true,
@@ -3930,6 +6032,17 @@ fn child_event_to_headless(event: &FromAgent, session_id: &str) -> Option<FromAg
         } => Some(FromAgentMessage::ConversationSnapshot {
             protocol_version: protocol_version.clone(),
             messages: messages.clone(),
+        }),
+        FromAgent::ManagedGatewayReceipt {
+            request_id,
+            record_id,
+            lineage_id,
+            record_status,
+        } => Some(FromAgentMessage::ManagedGatewayReceipt {
+            request_id: request_id.clone(),
+            record_id: record_id.clone(),
+            lineage_id: lineage_id.clone(),
+            record_status: record_status.clone(),
         }),
         FromAgent::Ready { model, provider } => Some(FromAgentMessage::Ready {
             protocol_version: Some(crate::headless::HEADLESS_PROTOCOL_VERSION.to_string()),
@@ -4045,13 +6158,9 @@ fn child_event_to_headless(event: &FromAgent, session_id: &str) -> Option<FromAg
             kind: *kind,
             message: message.clone(),
         }),
-        FromAgent::CodexNativeDecision { method, decision } => {
-            Some(FromAgentMessage::Status {
-                message: format!(
-                    "Codex approval receipt: method={method} decision={decision}"
-                ),
-            })
-        }
+        FromAgent::CodexNativeDecision { method, decision } => Some(FromAgentMessage::Status {
+            message: format!("Codex approval receipt: method={method} decision={decision}"),
+        }),
         FromAgent::CodexTransportReceipt {
             provider,
             transport,
@@ -4170,7 +6279,212 @@ fn convert_usage(usage: &crate::agent::TokenUsage) -> crate::headless::TokenUsag
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
+    use futures::future::BoxFuture;
+
+    use super::super::orb_delegation::OrbToolCaller;
     use super::*;
+    use crate::mcp::{McpContent, McpToolResult};
+
+    struct OwnerBindingCaller {
+        calls: Mutex<Vec<String>>,
+        lifecycle_state: String,
+        available_commands: Vec<String>,
+        delay: Duration,
+    }
+
+    impl OwnerBindingCaller {
+        fn new() -> Arc<Self> {
+            Self::with_status("active", &[])
+        }
+
+        fn with_status(lifecycle_state: &str, available_commands: &[&str]) -> Arc<Self> {
+            Self::with_status_delay(lifecycle_state, available_commands, Duration::ZERO)
+        }
+
+        fn with_status_delay(
+            lifecycle_state: &str,
+            available_commands: &[&str],
+            delay: Duration,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                calls: Mutex::new(Vec::new()),
+                lifecycle_state: lifecycle_state.to_string(),
+                available_commands: available_commands
+                    .iter()
+                    .map(|command| (*command).to_string())
+                    .collect(),
+                delay,
+            })
+        }
+    }
+
+    impl OrbToolCaller for OwnerBindingCaller {
+        fn call<'a>(
+            &'a self,
+            tool: &'a str,
+            _arguments: serde_json::Value,
+            _cancel: &'a CancellationToken,
+        ) -> BoxFuture<'a, Result<McpToolResult, String>> {
+            self.calls
+                .lock()
+                .expect("owner caller calls lock")
+                .push(tool.to_string());
+            let value = match tool {
+                "orb_task_status" => serde_json::json!({
+                    "lifecycle_state": self.lifecycle_state,
+                    "available_commands": self.available_commands,
+                }),
+                "orb_resume_task" => serde_json::json!({
+                    "detail": {
+                        "lifecycle_state": "active",
+                        "available_commands": []
+                    }
+                }),
+                "orb_send_message" => serde_json::json!({"accepted": true}),
+                "orb_get_thread" => serde_json::json!({
+                    "summary": {},
+                    "recent_messages": []
+                }),
+                "orb_cancel_task" => serde_json::json!({
+                    "lifecycle_state": "cancelled",
+                    "available_commands": []
+                }),
+                _ => serde_json::json!({}),
+            };
+            Box::pin(async move {
+                tokio::time::sleep(self.delay).await;
+                Ok(McpToolResult {
+                    content: vec![McpContent::Text {
+                        text: serde_json::to_string(&value).expect("owner caller response"),
+                    }],
+                    is_error: false,
+                })
+            })
+        }
+    }
+
+    fn owner_binding(
+        organization_id: &str,
+        workspace_id: &str,
+        connection_ref: &str,
+        managed_generation: u64,
+    ) -> HostedOrbOwnerBinding {
+        HostedOrbOwnerBinding {
+            organization_id: organization_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+            connection_ref: connection_ref.to_string(),
+            managed_generation,
+        }
+    }
+
+    #[test]
+    fn orb_admitting_record_binds_owner_before_remote_thread_exists() {
+        let binding = owner_binding("org-a", "workspace-a", "connection-a", 7);
+        let orb = admitting_orb_subagent_ref(
+            OrbDelegationConfig::default(),
+            binding.clone(),
+            "start-a".to_string(),
+        );
+        assert!(orb.thread_id.is_empty());
+        assert_eq!(orb.organization_id.as_deref(), Some("org-a"));
+        assert_eq!(orb.workspace_id.as_deref(), Some("workspace-a"));
+        assert_eq!(orb.connection_ref.as_deref(), Some("connection-a"));
+        assert_eq!(orb.managed_generation, Some(7));
+        assert_eq!(orb.start_idempotency_key, "start-a");
+        assert_eq!(orb.lifecycle_state.as_deref(), Some("admitting"));
+    }
+
+    #[tokio::test]
+    async fn orb_spawn_persists_owner_bound_admitting_record_before_dispatch() {
+        let root = tempfile::tempdir().expect("temp root");
+        let manager =
+            SubagentManager::with_root(root.path().to_path_buf(), root.path().join("records"));
+        manager.set_parent_scope_id("session-a".to_string());
+        let binding = owner_binding("org-a", "workspace-a", "connection-a", 1);
+        let caller = OwnerBindingCaller::new();
+        manager
+            .set_orb_adapter(OrbDelegationAdapter::from_caller_with_owner_binding(
+                caller,
+                binding.clone(),
+            ))
+            .await;
+
+        let result = manager
+            .spawn(
+                &serde_json::json!({
+                    "task": "inspect the hosted workspace",
+                    "backend": "orb",
+                    "run_in_background": true,
+                    "orb": {
+                        "project": "project-a",
+                        "repository": "https://github.com/evalops/example"
+                    }
+                }),
+                "parent-call",
+                None,
+                CredentialVault::new(),
+                None,
+            )
+            .await;
+        assert!(!result.success, "the fixture intentionally rejects launch");
+        let id = result
+            .details
+            .as_ref()
+            .and_then(|details| details.get("subagentId"))
+            .and_then(serde_json::Value::as_str)
+            .expect("failed Computer launch keeps its durable id");
+        let record = manager.load_record(id).expect("persisted Computer record");
+        let orb = record.orb.expect("owner-bound admitting Computer record");
+        assert!(orb.thread_id.is_empty());
+        assert_eq!(orb.organization_id.as_deref(), Some("org-a"));
+        assert_eq!(orb.workspace_id.as_deref(), Some("workspace-a"));
+        assert_eq!(orb.connection_ref.as_deref(), Some("connection-a"));
+        assert_eq!(orb.managed_generation, Some(binding.managed_generation));
+        assert_eq!(orb.lifecycle_state.as_deref(), Some("admitting"));
+        let retry = manager
+            .spawn(
+                &serde_json::json!({
+                    "task": "inspect the hosted workspace",
+                    "backend": "orb",
+                    "run_in_background": true,
+                    "orb": {
+                        "project": "project-a",
+                        "repository": "https://github.com/evalops/example"
+                    }
+                }),
+                "parent-call",
+                None,
+                CredentialVault::new(),
+                None,
+            )
+            .await;
+        assert!(
+            !retry.success,
+            "the fixture intentionally rejects the retry"
+        );
+        let retry_id = retry
+            .details
+            .as_ref()
+            .and_then(|details| details.get("subagentId"))
+            .and_then(serde_json::Value::as_str)
+            .expect("failed Computer retry keeps its durable id");
+        assert_ne!(id, retry_id, "each local attempt keeps a distinct record");
+        let retry_orb = manager
+            .load_record(retry_id)
+            .expect("persisted Computer retry record")
+            .orb
+            .expect("owner-bound retry record");
+        assert_eq!(
+            orb.start_idempotency_key, retry_orb.start_idempotency_key,
+            "a retry of the same parent call must replay the atomic hosted launch"
+        );
+        assert_eq!(
+            orb.start_idempotency_key,
+            deterministic_idempotency_key("start", &["session-a", "parent-call"])
+        );
+    }
 
     fn control_receipt_record(root: &Path) -> SubagentRecord {
         SubagentRecord {
@@ -4182,6 +6496,8 @@ mod tests {
             task: "inspect".to_string(),
             current_prompt: "inspect".to_string(),
             role: SubagentRole::Explore,
+            backend: SubagentBackend::Native,
+            orb: None,
             profile: None,
             profile_prompt: None,
             profile_tools: None,
@@ -4206,6 +6522,582 @@ mod tests {
             error: None,
             lifecycle_notification_published: false,
         }
+    }
+
+    fn orb_resume_record(root: &Path, binding: &HostedOrbOwnerBinding) -> SubagentRecord {
+        let mut record = control_receipt_record(root);
+        record.backend = SubagentBackend::Orb;
+        record.status = SubagentStatus::Failed;
+        record.orb = Some(OrbSubagentRef {
+            thread_id: "thread-resume".to_string(),
+            receipt_id: Some("receipt-resume".to_string()),
+            start_idempotency_key: "start-resume".to_string(),
+            config: OrbDelegationConfig::default(),
+            organization_id: Some(binding.organization_id.clone()),
+            workspace_id: Some(binding.workspace_id.clone()),
+            connection_ref: Some(binding.connection_ref.clone()),
+            managed_generation: Some(binding.managed_generation),
+            lifecycle_state: Some("failed".to_string()),
+            available_commands: Vec::new(),
+        });
+        record
+    }
+
+    fn running_orb_record(root: &Path, binding: &HostedOrbOwnerBinding) -> SubagentRecord {
+        let mut record = orb_resume_record(root, binding);
+        record.status = SubagentStatus::Running;
+        record.error = None;
+        if let Some(orb) = record.orb.as_mut() {
+            orb.lifecycle_state = Some("active".to_string());
+        }
+        record
+    }
+
+    #[tokio::test]
+    async fn orb_wait_zero_timeout_uses_cached_record_without_remote_refresh() {
+        let root = tempfile::tempdir().expect("temp root");
+        let manager =
+            SubagentManager::with_root(root.path().to_path_buf(), root.path().join("records"));
+        let binding = owner_binding("org-a", "workspace-a", "connection-a", 1);
+        let caller = OwnerBindingCaller::new();
+        manager
+            .set_orb_adapter(OrbDelegationAdapter::from_caller_with_owner_binding(
+                caller.clone(),
+                binding.clone(),
+            ))
+            .await;
+        let record = running_orb_record(root.path(), &binding);
+        manager
+            .write_record(&record)
+            .expect("persist Computer record");
+
+        let result = manager
+            .wait(
+                &serde_json::json!({
+                    "subagent_id": record.id,
+                    "timeout_ms": 0,
+                }),
+                None,
+            )
+            .await;
+
+        assert!(result.success, "cached running record is a valid snapshot");
+        assert!(
+            caller
+                .calls
+                .lock()
+                .expect("owner caller calls lock")
+                .is_empty(),
+            "an immediate wait must not make a remote status or collect call"
+        );
+    }
+
+    #[tokio::test]
+    async fn orb_wait_bounds_remote_refresh_by_remaining_timeout() {
+        let root = tempfile::tempdir().expect("temp root");
+        let manager =
+            SubagentManager::with_root(root.path().to_path_buf(), root.path().join("records"));
+        let binding = owner_binding("org-a", "workspace-a", "connection-a", 1);
+        let caller = OwnerBindingCaller::with_status_delay("active", &[], Duration::from_secs(5));
+        manager
+            .set_orb_adapter(OrbDelegationAdapter::from_caller_with_owner_binding(
+                caller.clone(),
+                binding.clone(),
+            ))
+            .await;
+        let record = running_orb_record(root.path(), &binding);
+        manager
+            .write_record(&record)
+            .expect("persist Computer record");
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            manager.wait(
+                &serde_json::json!({
+                    "subagent_id": record.id,
+                    "timeout_ms": 25,
+                }),
+                None,
+            ),
+        )
+        .await
+        .expect("wait deadline must bound a slow remote refresh");
+
+        assert!(result.success, "the cached running snapshot remains valid");
+        assert_eq!(
+            caller
+                .calls
+                .lock()
+                .expect("owner caller calls lock")
+                .as_slice(),
+            ["orb_task_status"],
+            "a timed-out status refresh must not proceed to collect"
+        );
+    }
+
+    #[tokio::test]
+    async fn orb_resume_rejects_all_terminal_lifecycle_aliases_without_sending() {
+        for lifecycle_state in [
+            "succeeded",
+            "success",
+            "completed",
+            "cancelled",
+            "canceled",
+            "failed",
+            "rejected",
+            "timed_out",
+            "interrupted",
+        ] {
+            let root = tempfile::tempdir().expect("temp root");
+            let manager =
+                SubagentManager::with_root(root.path().to_path_buf(), root.path().join("records"));
+            let binding = owner_binding("org-a", "workspace-a", "connection-a", 1);
+            let caller = OwnerBindingCaller::with_status(lifecycle_state, &[]);
+            manager
+                .set_orb_adapter(OrbDelegationAdapter::from_caller_with_owner_binding(
+                    caller.clone(),
+                    binding.clone(),
+                ))
+                .await;
+
+            let result = manager
+                .resume_orb(
+                    orb_resume_record(root.path(), &binding),
+                    "continue".to_string(),
+                    &serde_json::json!({}),
+                    "parent-call",
+                    None,
+                )
+                .await;
+
+            assert!(!result.success, "{lifecycle_state} must be terminal");
+            assert_eq!(
+                caller
+                    .calls
+                    .lock()
+                    .expect("owner caller calls lock")
+                    .as_slice(),
+                ["orb_task_status"],
+                "{lifecycle_state} must not resume or send a follow-up"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn orb_console_followup_rejects_failed_without_an_advertised_retry() {
+        let root = tempfile::tempdir().expect("temp root");
+        let manager =
+            SubagentManager::with_root(root.path().to_path_buf(), root.path().join("records"));
+        let binding = owner_binding("org-a", "workspace-a", "connection-a", 1);
+        let caller = OwnerBindingCaller::with_status("failed", &[]);
+        manager
+            .set_orb_adapter(OrbDelegationAdapter::from_caller_with_owner_binding(
+                caller.clone(),
+                binding.clone(),
+            ))
+            .await;
+        let record = orb_resume_record(root.path(), &binding);
+        manager
+            .write_record(&record)
+            .expect("persist Computer record");
+
+        let result = manager.orb_console_followup(&record.id, "continue").await;
+
+        assert!(!result.success, "failed without retry must be terminal");
+        assert_eq!(
+            caller
+                .calls
+                .lock()
+                .expect("owner caller calls lock")
+                .as_slice(),
+            ["orb_task_status"],
+            "terminal follow-up must stop after status"
+        );
+    }
+
+    #[tokio::test]
+    async fn orb_resume_uses_an_advertised_retry_before_sending_to_a_failed_task() {
+        let root = tempfile::tempdir().expect("temp root");
+        let manager =
+            SubagentManager::with_root(root.path().to_path_buf(), root.path().join("records"));
+        let binding = owner_binding("org-a", "workspace-a", "connection-a", 1);
+        let caller = OwnerBindingCaller::with_status("failed", &["retry"]);
+        manager
+            .set_orb_adapter(OrbDelegationAdapter::from_caller_with_owner_binding(
+                caller.clone(),
+                binding.clone(),
+            ))
+            .await;
+
+        let result = manager
+            .resume_orb(
+                orb_resume_record(root.path(), &binding),
+                "continue".to_string(),
+                &serde_json::json!({}),
+                "parent-call",
+                None,
+            )
+            .await;
+
+        assert!(
+            result.success,
+            "advertised retry should permit the follow-up"
+        );
+        assert_eq!(
+            caller
+                .calls
+                .lock()
+                .expect("owner caller calls lock")
+                .as_slice(),
+            ["orb_task_status", "orb_resume_task", "orb_send_message"]
+        );
+    }
+
+    #[tokio::test]
+    async fn orb_resume_accepts_the_raw_prefixed_resume_control() {
+        let root = tempfile::tempdir().expect("temp root");
+        let manager =
+            SubagentManager::with_root(root.path().to_path_buf(), root.path().join("records"));
+        let binding = owner_binding("org-a", "workspace-a", "connection-a", 1);
+        let caller = OwnerBindingCaller::with_status("failed", &["orb_resume_task"]);
+        manager
+            .set_orb_adapter(OrbDelegationAdapter::from_caller_with_owner_binding(
+                caller.clone(),
+                binding.clone(),
+            ))
+            .await;
+
+        let result = manager
+            .resume_orb(
+                orb_resume_record(root.path(), &binding),
+                "continue".to_string(),
+                &serde_json::json!({}),
+                "parent-call",
+                None,
+            )
+            .await;
+
+        assert!(result.success, "raw provider control should permit resume");
+        assert_eq!(
+            caller
+                .calls
+                .lock()
+                .expect("owner caller calls lock")
+                .as_slice(),
+            ["orb_task_status", "orb_resume_task", "orb_send_message"]
+        );
+    }
+
+    #[tokio::test]
+    async fn orb_console_resume_accepts_the_raw_prefixed_resume_control() {
+        let root = tempfile::tempdir().expect("temp root");
+        let manager =
+            SubagentManager::with_root(root.path().to_path_buf(), root.path().join("records"));
+        let binding = owner_binding("org-a", "workspace-a", "connection-a", 1);
+        let caller = OwnerBindingCaller::with_status("failed", &["orb_resume_task"]);
+        manager
+            .set_orb_adapter(OrbDelegationAdapter::from_caller_with_owner_binding(
+                caller.clone(),
+                binding.clone(),
+            ))
+            .await;
+        let record = orb_resume_record(root.path(), &binding);
+        manager
+            .write_record(&record)
+            .expect("persist Computer record");
+
+        let result = manager.orb_console_resume(&record.id).await;
+
+        assert!(result.success, "raw provider control should permit resume");
+        assert_eq!(
+            caller
+                .calls
+                .lock()
+                .expect("owner caller calls lock")
+                .as_slice(),
+            ["orb_task_status", "orb_resume_task"]
+        );
+    }
+
+    #[tokio::test]
+    async fn orb_console_followup_accepts_the_raw_prefixed_resume_control() {
+        let root = tempfile::tempdir().expect("temp root");
+        let manager =
+            SubagentManager::with_root(root.path().to_path_buf(), root.path().join("records"));
+        let binding = owner_binding("org-a", "workspace-a", "connection-a", 1);
+        let caller = OwnerBindingCaller::with_status("failed", &["orb_resume_task"]);
+        manager
+            .set_orb_adapter(OrbDelegationAdapter::from_caller_with_owner_binding(
+                caller.clone(),
+                binding.clone(),
+            ))
+            .await;
+        let record = orb_resume_record(root.path(), &binding);
+        manager
+            .write_record(&record)
+            .expect("persist Computer record");
+
+        let result = manager.orb_console_followup(&record.id, "continue").await;
+
+        assert!(
+            result.success,
+            "raw provider control should permit follow-up"
+        );
+        assert_eq!(
+            caller
+                .calls
+                .lock()
+                .expect("owner caller calls lock")
+                .as_slice(),
+            ["orb_task_status", "orb_resume_task", "orb_send_message"]
+        );
+    }
+
+    #[tokio::test]
+    async fn orb_console_provider_failure_retains_identity_and_redacts_details() {
+        let root = tempfile::tempdir().expect("temp root");
+        let manager =
+            SubagentManager::with_root(PathBuf::from("/workspace"), root.path().join("records"));
+        let mut record = control_receipt_record(root.path());
+        record.id = "123e4567-e89b-12d3-a456-426614174000".to_string();
+        record.backend = SubagentBackend::Orb;
+        record.task = "inspect the hosted workspace".to_string();
+        record.orb = Some(OrbSubagentRef {
+            thread_id: "thread-1".to_string(),
+            receipt_id: Some("receipt-1".to_string()),
+            start_idempotency_key: "start-1".to_string(),
+            config: OrbDelegationConfig::default(),
+            organization_id: None,
+            workspace_id: None,
+            connection_ref: None,
+            managed_generation: None,
+            lifecycle_state: Some("active".to_string()),
+            available_commands: vec!["orb_pause_task".to_string()],
+        });
+        manager
+            .write_record(&record)
+            .expect("persist durable record");
+
+        let result = manager
+            .orb_console(
+                OrbConsoleAction::Status {
+                    id: record.id.clone(),
+                },
+                Some("provider secret and mcp endpoint".to_string()),
+            )
+            .await;
+        assert!(!result.success);
+        let details = result.details.expect("typed unavailable projection");
+        let task = &details["task"];
+        assert_eq!(task["id"], "123e4567-e89b-12d3-a456-426614174000");
+        assert_eq!(task["threadId"], "thread-1");
+        assert_eq!(task["receiptId"], "receipt-1");
+        assert_eq!(task["event"]["lifecycleState"], "unavailable");
+        assert_eq!(task["recoverable"], true);
+        let encoded = serde_json::to_string(&details).expect("details serialize");
+        assert!(!encoded.contains("provider secret"));
+        assert!(!encoded.contains("mcp endpoint"));
+        assert!(!encoded.contains("orb_pause_task"));
+
+        let persisted = manager
+            .load_record("123e4567-e89b-12d3-a456-426614174000")
+            .expect("durable record remains");
+        assert_eq!(
+            persisted.orb.as_ref().expect("Computer identity").thread_id,
+            "thread-1"
+        );
+    }
+
+    #[tokio::test]
+    async fn orb_owner_binding_switch_fails_closed_before_remote_status_or_cancel() {
+        let root = tempfile::tempdir().expect("temp root");
+        let manager =
+            SubagentManager::with_root(PathBuf::from("/workspace"), root.path().join("records"));
+        let owner_a = owner_binding("org-a", "workspace-a", "connection-a", 1);
+        let owner_b = owner_binding("org-b", "workspace-b", "connection-b", 2);
+        let caller_a = OwnerBindingCaller::new();
+        let caller_b = OwnerBindingCaller::new();
+        manager
+            .set_orb_adapter(OrbDelegationAdapter::from_caller_with_owner_binding(
+                caller_a.clone(),
+                owner_a.clone(),
+            ))
+            .await;
+
+        let mut record = control_receipt_record(root.path());
+        record.id = "123e4567-e89b-12d3-a456-426614174000".to_string();
+        record.backend = SubagentBackend::Orb;
+        record.orb = Some(OrbSubagentRef {
+            thread_id: "thread-a".to_string(),
+            receipt_id: Some("receipt-a".to_string()),
+            start_idempotency_key: "start-a".to_string(),
+            config: OrbDelegationConfig::default(),
+            organization_id: Some(owner_a.organization_id.clone()),
+            workspace_id: Some(owner_a.workspace_id.clone()),
+            connection_ref: Some(owner_a.connection_ref.clone()),
+            managed_generation: Some(owner_a.managed_generation),
+            lifecycle_state: Some("active".to_string()),
+            available_commands: vec!["orb_cancel_task".to_string()],
+        });
+        manager
+            .write_record(&record)
+            .expect("persist owner-bound record");
+
+        let status = manager
+            .get_remote(&serde_json::json!({"subagent_id": record.id.clone()}), None)
+            .await;
+        assert!(
+            status.success,
+            "matching owner should permit status: {status:?}"
+        );
+        assert_eq!(
+            caller_a
+                .calls
+                .lock()
+                .expect("owner A calls lock")
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["orb_task_status", "orb_get_thread"]
+        );
+
+        manager
+            .set_orb_adapter(OrbDelegationAdapter::from_caller_with_owner_binding(
+                caller_b.clone(),
+                owner_b,
+            ))
+            .await;
+        let switched_status = manager
+            .get_remote(&serde_json::json!({"subagent_id": record.id.clone()}), None)
+            .await;
+        assert!(!switched_status.success);
+        assert!(
+            switched_status
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("owner binding"))
+        );
+        assert!(
+            caller_b
+                .calls
+                .lock()
+                .expect("owner B calls lock")
+                .is_empty()
+        );
+
+        let switched_cancel = manager
+            .cancel(&serde_json::json!({"subagent_id": record.id.clone()}), None)
+            .await;
+        assert!(!switched_cancel.success);
+        assert!(
+            switched_cancel
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("owner binding"))
+        );
+        assert!(
+            caller_b
+                .calls
+                .lock()
+                .expect("owner B calls lock")
+                .is_empty()
+        );
+
+        let mut legacy_record = record;
+        legacy_record.id = "123e4567-e89b-12d3-a456-426614174001".to_string();
+        let legacy_orb = legacy_record
+            .orb
+            .as_mut()
+            .expect("legacy Computer identity");
+        legacy_orb.organization_id = None;
+        legacy_orb.workspace_id = None;
+        legacy_orb.connection_ref = None;
+        legacy_orb.managed_generation = None;
+        manager
+            .write_record(&legacy_record)
+            .expect("persist legacy record");
+        let legacy_result = manager
+            .get_remote(
+                &serde_json::json!({"subagent_id": legacy_record.id.clone()}),
+                None,
+            )
+            .await;
+        assert!(!legacy_result.success);
+        assert!(
+            legacy_result
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("no durable owner binding"))
+        );
+        assert!(
+            caller_b
+                .calls
+                .lock()
+                .expect("owner B calls lock")
+                .is_empty()
+        );
+
+        let mut unbound_record = control_receipt_record(root.path());
+        unbound_record.id = "123e4567-e89b-12d3-a456-426614174003".to_string();
+        unbound_record.backend = SubagentBackend::Orb;
+        manager
+            .write_record(&unbound_record)
+            .expect("persist pre-owner-binding record");
+        let unbound_result = manager
+            .get_remote(
+                &serde_json::json!({"subagent_id": unbound_record.id.clone()}),
+                None,
+            )
+            .await;
+        assert!(!unbound_result.success);
+        assert!(
+            unbound_result
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("no durable owner binding"))
+        );
+        assert!(
+            caller_b
+                .calls
+                .lock()
+                .expect("owner B calls lock")
+                .is_empty()
+        );
+
+        let mut admitting_record = legacy_record;
+        admitting_record.id = "123e4567-e89b-12d3-a456-426614174002".to_string();
+        let admitting_orb = admitting_record
+            .orb
+            .as_mut()
+            .expect("admitting Computer identity");
+        admitting_orb.thread_id.clear();
+        admitting_orb.organization_id = Some("org-a".to_string());
+        admitting_orb.workspace_id = Some("workspace-a".to_string());
+        admitting_orb.connection_ref = Some("connection-a".to_string());
+        admitting_orb.managed_generation = Some(1);
+        manager
+            .write_record(&admitting_record)
+            .expect("persist admitting record");
+        let admitting_result = manager
+            .get_remote(
+                &serde_json::json!({"subagent_id": admitting_record.id.clone()}),
+                None,
+            )
+            .await;
+        assert!(!admitting_result.success);
+        assert!(
+            admitting_result
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("no remote thread"))
+        );
+        assert!(
+            caller_b
+                .calls
+                .lock()
+                .expect("owner B calls lock")
+                .is_empty()
+        );
     }
 
     fn coordination_control_message(
@@ -4441,16 +7333,20 @@ mod tests {
         assert_eq!(request.timeout_ms, 2500);
         assert_eq!(request.max_tokens, 4096);
 
-        assert!(parse_spawn_request(&serde_json::json!({
-            "task": "inspect",
-            "timeout_ms": 0
-        }))
-        .is_err());
-        assert!(parse_spawn_request(&serde_json::json!({
-            "task": "inspect",
-            "max_tokens": 0
-        }))
-        .is_err());
+        assert!(
+            parse_spawn_request(&serde_json::json!({
+                "task": "inspect",
+                "timeout_ms": 0
+            }))
+            .is_err()
+        );
+        assert!(
+            parse_spawn_request(&serde_json::json!({
+                "task": "inspect",
+                "max_tokens": 0
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -4691,6 +7587,136 @@ mod tests {
         );
     }
 
+    fn running_wait_record(root: &Path) -> SubagentRecord {
+        SubagentRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_scope_id: "wait-scope".to_string(),
+            parent_call_id: "wait-call".to_string(),
+            last_parent_scope_id: "wait-scope".to_string(),
+            last_call_id: "wait-call".to_string(),
+            task: "keep working".to_string(),
+            current_prompt: "keep working".to_string(),
+            role: SubagentRole::Explore,
+            backend: SubagentBackend::Native,
+            orb: None,
+            profile: None,
+            profile_prompt: None,
+            profile_tools: None,
+            model: None,
+            timeout_ms: DEFAULT_CHILD_TIMEOUT_MS,
+            max_tokens: DEFAULT_CHILD_MAX_TOKENS,
+            isolation: SubagentIsolation::Shared,
+            cwd: serialize_repository_path(root),
+            worktree_path: None,
+            worktree_cleaned: false,
+            initial_files: Vec::new(),
+            initial_file_fingerprints: HashMap::new(),
+            initial_head: None,
+            session_dir: serialize_repository_path(&root.join("session")),
+            status: SubagentStatus::Running,
+            attempt: 1,
+            snapshot_attempt: None,
+            created_at_ms: 1,
+            started_at_ms: Some(2),
+            finished_at_ms: None,
+            result: None,
+            error: None,
+            lifecycle_notification_published: false,
+        }
+    }
+
+    /// `wait` loads through `load_record`, which rewrites a Running child with
+    /// no runtime entry and no execution lease to Interrupted.
+    fn hold_running_wait_lease(record: &SubagentRecord) -> SessionLock {
+        std::fs::create_dir_all(SubagentManager::session_dir(record))
+            .expect("session directory should exist");
+        SessionLock::acquire(&SubagentManager::timeline_path(record))
+            .expect("execution lease should be held")
+    }
+
+    #[tokio::test]
+    async fn a_blocking_subagent_wait_is_released_when_the_user_steers() {
+        let root = tempfile::tempdir().expect("records root should exist");
+        let manager =
+            SubagentManager::with_root(root.path().to_path_buf(), root.path().join("records"));
+        let record = running_wait_record(root.path());
+        manager.write_record(&record).expect("write running record");
+        let _lease = hold_running_wait_lease(&record);
+
+        let mut queue = crate::agent::message_queue::MessageQueue::with_max_size(10);
+        manager.set_steer_signal(queue.steer_signal());
+
+        let args = serde_json::json!({
+            "subagent_id": record.id,
+            "timeout_ms": 30_000,
+        });
+        let waiting_manager = manager.clone();
+        let waiting = tokio::spawn(async move { waiting_manager.wait(&args, None).await });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let steered_at = Instant::now();
+        queue.push_with_kind("stop and read this instead", PromptKind::Steer);
+
+        let result = tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("a steered wait must not run to its 30s timeout")
+            .expect("wait task");
+        let released_after = steered_at.elapsed();
+
+        assert!(
+            released_after < Duration::from_millis(250),
+            "the wait must release promptly after the steer, took {released_after:?}"
+        );
+        assert!(result.success, "release is not a failure: {result:?}");
+        assert!(
+            result.output.contains("still running"),
+            "the model must be told the subagent survived: {}",
+            result.output
+        );
+        let details = result.details.expect("released wait carries details");
+        assert_eq!(
+            details.get("status").and_then(serde_json::Value::as_str),
+            Some("released_by_steering")
+        );
+        assert_eq!(
+            details
+                .get("subagentStatus")
+                .and_then(serde_json::Value::as_str),
+            Some("running")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wait_without_a_queued_steer_still_runs_to_its_timeout() {
+        let root = tempfile::tempdir().expect("records root should exist");
+        let manager =
+            SubagentManager::with_root(root.path().to_path_buf(), root.path().join("records"));
+        let record = running_wait_record(root.path());
+        manager.write_record(&record).expect("write running record");
+
+        let queue = crate::agent::message_queue::MessageQueue::with_max_size(10);
+        manager.set_steer_signal(queue.steer_signal());
+        let _lease = hold_running_wait_lease(&record);
+
+        let args = serde_json::json!({
+            "subagent_id": record.id,
+            "timeout_ms": 200,
+        });
+        let started = Instant::now();
+        let result = manager.wait(&args, None).await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed >= Duration::from_millis(150),
+            "an unsteered wait must still block for its timeout, took {elapsed:?}"
+        );
+        let details = result.details.expect("timed-out wait carries details");
+        assert_ne!(
+            details.get("status").and_then(serde_json::Value::as_str),
+            Some("released_by_steering")
+        );
+    }
+
     #[test]
     fn resumed_child_completion_is_routed_to_the_current_parent_scope() {
         let root = tempfile::tempdir().expect("records root should exist");
@@ -4707,6 +7733,8 @@ mod tests {
             task: "inspect".to_string(),
             current_prompt: "inspect".to_string(),
             role: SubagentRole::Explore,
+            backend: SubagentBackend::Native,
+            orb: None,
             profile: None,
             profile_prompt: None,
             profile_tools: None,
@@ -4784,6 +7812,8 @@ mod tests {
             task: "inspect".to_string(),
             current_prompt: "inspect".to_string(),
             role: SubagentRole::Explore,
+            backend: SubagentBackend::Native,
+            orb: None,
             profile: None,
             profile_prompt: None,
             profile_tools: None,
@@ -4892,6 +7922,8 @@ mod tests {
             task: "inspect".to_string(),
             current_prompt: "inspect".to_string(),
             role: SubagentRole::Explore,
+            backend: SubagentBackend::Native,
+            orb: None,
             profile: None,
             profile_prompt: None,
             profile_tools: None,
@@ -4972,6 +8004,8 @@ mod tests {
             task: "inspect".to_string(),
             current_prompt: "inspect".to_string(),
             role: SubagentRole::Explore,
+            backend: SubagentBackend::Native,
+            orb: None,
             profile: None,
             profile_prompt: None,
             profile_tools: None,
@@ -5004,11 +8038,13 @@ mod tests {
             .expect("simulate resumed child lease");
         // The first reconciliation discovers this record from disk.
         manager.retry_terminal_lifecycle_notifications();
-        assert!(manager
-            .pending_lifecycle
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .contains(&record.id));
+        assert!(
+            manager
+                .pending_lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&record.id)
+        );
 
         record.attempt = 2;
         record.status = SubagentStatus::Running;
@@ -5025,11 +8061,13 @@ mod tests {
         assert_eq!(loaded.attempt, 2);
         assert_eq!(loaded.status, SubagentStatus::Running);
         assert_eq!(loaded.current_prompt, "resume safely");
-        assert!(manager
-            .pending_lifecycle
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .contains(&record.id));
+        assert!(
+            manager
+                .pending_lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&record.id)
+        );
 
         drop(_lease);
         record.status = SubagentStatus::Completed;
@@ -5037,17 +8075,29 @@ mod tests {
         manager
             .write_record(&record)
             .expect("persist resumed attempt completion");
-        manager.retry_terminal_lifecycle_notifications();
-
-        let published = manager
-            .load_record(&record.id)
-            .expect("reload published completion");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let published = loop {
+            manager.retry_terminal_lifecycle_notifications();
+            let published = manager
+                .load_record(&record.id)
+                .expect("reload published completion");
+            if published.lifecycle_notification_published {
+                break published;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "resumed completion stayed blocked after the inherited lock descriptor closed"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
         assert!(published.lifecycle_notification_published);
-        assert!(!manager
-            .pending_lifecycle
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .contains(&record.id));
+        assert!(
+            !manager
+                .pending_lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&record.id)
+        );
     }
 
     #[test]
@@ -5067,6 +8117,8 @@ mod tests {
             task: "inspect".to_string(),
             current_prompt: "inspect again".to_string(),
             role: SubagentRole::Explore,
+            backend: SubagentBackend::Native,
+            orb: None,
             profile: None,
             profile_prompt: None,
             profile_tools: None,
@@ -5626,6 +8678,8 @@ mod tests {
             task: "inspect".to_string(),
             current_prompt: "inspect".to_string(),
             role: SubagentRole::Explore,
+            backend: SubagentBackend::Native,
+            orb: None,
             profile: None,
             profile_prompt: None,
             profile_tools: None,
@@ -5756,6 +8810,8 @@ mod tests {
             task: "inspect".to_string(),
             current_prompt: "inspect".to_string(),
             role: SubagentRole::Explore,
+            backend: SubagentBackend::Native,
+            orb: None,
             profile: None,
             profile_prompt: None,
             profile_tools: None,
@@ -5821,6 +8877,8 @@ mod tests {
             task: "inspect".to_string(),
             current_prompt: "inspect".to_string(),
             role: SubagentRole::Explore,
+            backend: SubagentBackend::Native,
+            orb: None,
             profile: None,
             profile_prompt: None,
             profile_tools: None,
@@ -5880,6 +8938,8 @@ mod tests {
             task: "inspect".to_string(),
             current_prompt: "inspect".to_string(),
             role: SubagentRole::Explore,
+            backend: SubagentBackend::Native,
+            orb: None,
             profile: None,
             profile_prompt: None,
             profile_tools: None,
@@ -5933,6 +8993,8 @@ mod tests {
             task: "inspect".to_string(),
             current_prompt: "inspect".to_string(),
             role: SubagentRole::Explore,
+            backend: SubagentBackend::Native,
+            orb: None,
             profile: None,
             profile_prompt: None,
             profile_tools: None,
@@ -5979,8 +9041,28 @@ mod tests {
         );
 
         drop(lease);
+        // Another test may have forked while `lease` was live, temporarily
+        // keeping its inherited file descriptor open until exec. Once that
+        // descriptor closes, the record must be reconciled as interrupted.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let interrupted = loop {
+            let loaded = manager.load_record(&id).expect("record should load");
+            if loaded.status == SubagentStatus::Interrupted {
+                break loaded;
+            }
+            assert_eq!(
+                loaded.status,
+                SubagentStatus::Running,
+                "a lease handoff must not produce another terminal status"
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a child with no live lease stayed running after the inherited descriptor closed"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
         assert_eq!(
-            manager.load_record(&id).expect("record should load").status,
+            interrupted.status,
             SubagentStatus::Interrupted,
             "a child with no live lease is an orphan from a previous run"
         );
@@ -6009,6 +9091,8 @@ mod tests {
             task: "inspect".to_string(),
             current_prompt: "inspect".to_string(),
             role: SubagentRole::Explore,
+            backend: SubagentBackend::Native,
+            orb: None,
             profile: None,
             profile_prompt: None,
             profile_tools: None,
@@ -6059,11 +9143,29 @@ mod tests {
 
         drop(lease);
 
-        let cleaned = manager.cleanup(&serde_json::json!({"subagent_id": id}));
-        assert!(
-            cleaned.success,
-            "cleanup must proceed once no process holds the lease"
-        );
+        // Parallel fixtures can fork while this test owns the lease. Their
+        // inherited descriptor keeps the advisory lock live until the child
+        // execs or exits, so wait only for that expected contention instead of
+        // treating a just-released local guard as an immediate global unlock.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let cleaned = manager.cleanup(&serde_json::json!({"subagent_id": id}));
+            if cleaned.success {
+                break;
+            }
+            assert!(
+                cleaned
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| { error.contains("is being run by another process") }),
+                "cleanup failed for a reason other than an inherited lease: {cleaned:?}"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "cleanup must proceed after every inherited lease closes: {cleaned:?}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
         // This fixture is isolation=shared (no worktree). Cleanup is a no-op
         // and must not flip worktree_cleaned, which would block resume.
         assert!(
@@ -6097,6 +9199,8 @@ mod tests {
             task: "inspect".to_string(),
             current_prompt: "inspect".to_string(),
             role: SubagentRole::Explore,
+            backend: SubagentBackend::Native,
+            orb: None,
             profile: None,
             profile_prompt: None,
             profile_tools: None,
@@ -6158,6 +9262,8 @@ mod tests {
             task: "inspect".to_string(),
             current_prompt: "inspect".to_string(),
             role: SubagentRole::Explore,
+            backend: SubagentBackend::Native,
+            orb: None,
             profile: None,
             profile_prompt: None,
             profile_tools: None,
@@ -6210,6 +9316,8 @@ mod tests {
             task: "inspect".to_string(),
             current_prompt: "inspect".to_string(),
             role: SubagentRole::Explore,
+            backend: SubagentBackend::Native,
+            orb: None,
             profile: None,
             profile_prompt: None,
             profile_tools: None,
@@ -6307,6 +9415,8 @@ mod tests {
         let mut request = SpawnRequest {
             task: "review the change".to_string(),
             role: SubagentRole::Review,
+            backend: SubagentBackend::Native,
+            orb: OrbDelegationConfig::default(),
             profile: Some("rust-reviewer".to_string()),
             profile_prompt: None,
             profile_tools: None,
@@ -6329,6 +9439,175 @@ mod tests {
             Some(vec!["read".to_string(), "grep".to_string()])
         );
         assert_eq!(request.model.as_deref(), Some("review-model"));
+    }
+
+    #[test]
+    fn orb_delegation_keeps_placement_policy_out_of_the_request() {
+        let mut request = parse_spawn_request(&serde_json::json!({
+            "task": "inspect the repository",
+            "role": "explore",
+            "backend": "orb",
+            "orb": {
+                "project": "demo",
+                "repository": "https://github.com/example/example"
+            }
+        }))
+        .expect("high-level Computer intent should parse");
+        apply_orb_delegation_policy(&mut request);
+        assert_eq!(request.orb.project.as_deref(), Some("demo"));
+        assert_eq!(
+            request.orb.settings.repository_url.as_deref(),
+            Some("https://github.com/example/example")
+        );
+        assert_eq!(request.orb.settings.resource_profile, None);
+        assert_eq!(request.orb.settings.provisioner, None);
+        assert_eq!(request.orb.settings.machine, None);
+
+        let error = parse_spawn_request(&serde_json::json!({
+            "task": "inspect the repository",
+            "backend": "orb",
+            "orb": {"resource_profile": "large"}
+        }))
+        .expect_err("raw placement settings must stay policy-owned");
+        assert!(error.contains("policy-owned infrastructure"));
+
+        let error = parse_spawn_request(&serde_json::json!({
+            "task": "inspect the repository",
+            "backend": "orb",
+            "orb": {"profile": "large profile"}
+        }))
+        .expect_err("profile overrides must be bounded ids");
+        assert!(error.contains("bounded hosted profile id"));
+    }
+
+    #[test]
+    fn computer_delegation_is_the_canonical_model_facing_backend() {
+        let request = parse_spawn_request(&serde_json::json!({
+            "task": "implement the requested change",
+            "backend": "computer",
+            "computer": {
+                "project": "demo",
+                "repository": "https://github.com/example/example"
+            }
+        }))
+        .expect("canonical Computer delegation should parse");
+
+        assert_eq!(request.backend, SubagentBackend::Orb);
+        assert_eq!(request.orb.project.as_deref(), Some("demo"));
+        assert_eq!(
+            request.orb.repository.as_deref(),
+            Some("https://github.com/example/example")
+        );
+
+        let error = parse_spawn_request(&serde_json::json!({
+            "task": "inspect the repository",
+            "backend": "computer",
+            "computer": {"project": "demo"},
+            "orb": {"project": "legacy"}
+        }))
+        .expect_err("canonical and compatibility config must not be ambiguous");
+        assert!(error.contains("only one hosted Computer configuration"));
+    }
+
+    #[test]
+    fn hosted_computer_context_infers_https_origin_and_project() {
+        let root = tempfile::tempdir().expect("temporary workspace should exist");
+        Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root.path())
+            .status()
+            .expect("git should be available")
+            .success()
+            .then_some(())
+            .expect("temporary workspace should be a git repository");
+        Command::new("git")
+            .args([
+                "config",
+                "remote.origin.url",
+                "git@github.com:evalops/mono.git",
+            ])
+            .current_dir(root.path())
+            .status()
+            .expect("git config should be available")
+            .success()
+            .then_some(())
+            .expect("origin should be configured");
+
+        let mut config = OrbDelegationConfig::default();
+        infer_hosted_computer_context(&mut config, root.path())
+            .expect("hosted Computer context should be inferred");
+
+        assert_eq!(config.project.as_deref(), Some("evalops/mono"));
+        assert_eq!(
+            config.repository.as_deref(),
+            Some("https://github.com/evalops/mono.git")
+        );
+    }
+
+    #[test]
+    fn hosted_computer_context_never_infers_from_a_credential_bearing_origin() {
+        let root = tempfile::tempdir().expect("temporary workspace should exist");
+        Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root.path())
+            .status()
+            .expect("git should be available")
+            .success()
+            .then_some(())
+            .expect("temporary workspace should be a git repository");
+        Command::new("git")
+            .args([
+                "config",
+                "remote.origin.url",
+                "https://user:secret@github.com/evalops/mono.git",
+            ])
+            .current_dir(root.path())
+            .status()
+            .expect("git config should be available")
+            .success()
+            .then_some(())
+            .expect("origin should be configured");
+
+        let mut config = OrbDelegationConfig::default();
+        let error = infer_hosted_computer_context(&mut config, root.path())
+            .expect_err("credential-bearing origins must fail closed");
+        assert!(error.contains("embedded credentials"));
+    }
+
+    #[test]
+    fn hosted_computer_context_fails_closed_without_a_remote_origin() {
+        let root = tempfile::tempdir().expect("temporary workspace should exist");
+        let mut config = OrbDelegationConfig::default();
+
+        let error = infer_hosted_computer_context(&mut config, root.path())
+            .expect_err("a workspace without an origin must not pick a default project");
+        assert!(error.contains("remote repository"));
+    }
+
+    #[test]
+    fn hosted_computer_context_validates_explicit_repository_even_with_project() {
+        let root = tempfile::tempdir().expect("temporary workspace should exist");
+        let mut config = OrbDelegationConfig {
+            project: Some("demo".to_string()),
+            repository: Some("http://github.com/example/example".to_string()),
+            ..OrbDelegationConfig::default()
+        };
+
+        let error = infer_hosted_computer_context(&mut config, root.path())
+            .expect_err("hosted Computer launches must require HTTPS repositories");
+        assert!(error.contains("must use HTTPS"));
+    }
+
+    #[test]
+    fn orb_repository_intent_rejects_malformed_urls() {
+        let error = parse_spawn_request(&serde_json::json!({
+            "task": "inspect the repository",
+            "backend": "orb",
+            "orb": {"repository": "https://secret@"}
+        }))
+        .expect_err("malformed repository URLs must fail before delegation");
+
+        assert!(error.contains("valid absolute URL"));
     }
 
     #[test]
@@ -6615,6 +9894,33 @@ mod tests {
         let restored_text = restored[0].content.as_text().expect("restored prompt text");
         assert_eq!(restored_text, format!("Use {reference} now"));
         assert_eq!(vault.resolve_all(restored_text), "Use arbitrary-secret now");
+    }
+
+    #[test]
+    fn managed_gateway_receipt_survives_subagent_forwarding() {
+        let mapped = child_event_to_headless(
+            &FromAgent::ManagedGatewayReceipt {
+                request_id: "request-child".to_string(),
+                record_id: "record-child".to_string(),
+                lineage_id: "lineage-child".to_string(),
+                record_status: "planned".to_string(),
+            },
+            "child-session",
+        )
+        .expect("managed receipt should be forwarded");
+
+        assert!(matches!(
+            mapped,
+            FromAgentMessage::ManagedGatewayReceipt {
+                request_id,
+                record_id,
+                lineage_id,
+                record_status,
+            } if request_id == "request-child"
+                && record_id == "record-child"
+                && lineage_id == "lineage-child"
+                && record_status == "planned"
+        ));
     }
 
     #[test]

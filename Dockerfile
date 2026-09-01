@@ -11,6 +11,8 @@ COPY packages/maestro-rs ./packages/maestro-rs
 COPY packages/runtime-rs ./packages/runtime-rs
 COPY packages/ambient-agent-rs ./packages/ambient-agent-rs
 COPY packages/ai-rs ./packages/ai-rs
+COPY packages/a2a-ledger-rs ./packages/a2a-ledger-rs
+COPY packages/session-history-rs ./packages/session-history-rs
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS native
@@ -25,6 +27,8 @@ COPY packages/maestro-rs ./packages/maestro-rs
 COPY packages/runtime-rs ./packages/runtime-rs
 COPY packages/ambient-agent-rs ./packages/ambient-agent-rs
 COPY packages/ai-rs ./packages/ai-rs
+COPY packages/a2a-ledger-rs ./packages/a2a-ledger-rs
+COPY packages/session-history-rs ./packages/session-history-rs
 COPY proto ./proto
 COPY scripts/install.sh ./scripts/install.sh
 COPY test/fixtures/codex/coding-tools-doctor-v1.json ./test/fixtures/codex/coding-tools-doctor-v1.json

@@ -2,7 +2,7 @@
 
 use std::sync::mpsc;
 
-use crate::model_catalog::{verify_model_offline, ModelVerification};
+use crate::model_catalog::{ModelVerification, verify_model_offline};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelVerificationEvent {

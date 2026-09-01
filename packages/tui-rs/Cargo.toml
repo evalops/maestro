@@ -19,12 +19,14 @@ bench = false
 name = "maestro-perf-bench"
 path = "src/bin/maestro_perf_bench.rs"
 bench = false
+required-features = ["test-support"]
 
 [lib]
 name = "maestro_tui"
 path = "src/lib.rs"
 
 [dependencies]
+maestro-a2a-ledger.workspace = true
 # Terminal handling
 crossterm = { version = "0.29", features = ["bracketed-paste", "event-stream"] }
 ratatui = { version = "0.30.2", default-features = false, features = [
@@ -37,6 +39,7 @@ ratatui = { version = "0.30.2", default-features = false, features = [
 uncurses = "0.0.1"
 
 # Async runtime
+async-trait = "0.1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "signal", "fs", "net", "process", "time"] }
 tokio-stream.workspace = true
 tokio-rustls.workspace = true
@@ -47,6 +50,7 @@ futures.workspace = true
 maestro-ai.workspace = true
 maestro-execpolicy.workspace = true
 maestro-runtime.workspace = true
+maestro-session-history.workspace = true
 
 # HTTP client for AI APIs
 reqwest = { workspace = true, features = ["blocking", "json", "stream", "rustls-tls"] }
@@ -82,6 +86,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 clap.workspace = true
 glob.workspace = true
+ipnet.workspace = true
 regex.workspace = true
 dirs.workspace = true
 dunce.workspace = true
@@ -164,6 +169,9 @@ windows-sys = { version = "0.61", features = [
 
 [features]
 default = []
+# Unverified NativeAgent constructor for in-crate tests plus the local
+# perf/bench binaries. Shipped maestro / deixic-code builds must not enable it.
+test-support = []
 thin-scenario = []
 clipboard = ["arboard"]
 # Hook backends
@@ -176,6 +184,7 @@ hooks-full = ["lua", "wasm", "hot-reload"]
 [dev-dependencies]
 pretty_assertions = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
+wat = "1"
 # Enables `#[tokio::test(start_paused = true)]` for deterministic timeout tests.
 tokio = { workspace = true, features = ["test-util"] }
 portable-pty.workspace = true
@@ -217,6 +226,7 @@ harness = false
 [[bench]]
 name = "agent_loop_bench"
 harness = false
+required-features = ["test-support"]
 
 # Clippy lint configuration - enable pedantic with targeted allowances
 [lints.clippy]

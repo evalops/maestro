@@ -1,18 +1,21 @@
 use crate::model_catalog::{available_models, resolve_model};
-use crate::{now_millis, now_rfc3339, send_sse, send_ws_json, AppState, ChatRequest};
+use crate::{
+    AppState, ChatRequest, PendingToolResponseOwner, now_millis, now_rfc3339, send_sse,
+    send_ws_json,
+};
 use maestro_tui::agent::{TokenUsage, ToolResult};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::Command;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 pub(crate) const CODEX_SUBAGENT_WORK_GRAPH_SCHEMA: &str =
     "evalops.maestro.codex.subagent-workgraph.v1";
@@ -1389,6 +1392,14 @@ async fn handle_codex_headless_approval_request(
         .lock()
         .await
         .insert(external_request_id.clone(), sender);
+    if let Some(session_id) = session_id {
+        // Record the owning session so the resume endpoint can verify the caller
+        // may see it before delivering the approval decision.
+        state.pending_tool_response_sessions.lock().await.insert(
+            external_request_id.clone(),
+            PendingToolResponseOwner::Session(session_id.to_string()),
+        );
+    }
     pending_approval_ids
         .lock()
         .await
@@ -1428,8 +1439,10 @@ async fn cleanup_codex_headless_approvals(
         return;
     }
     let mut pending = state.pending_tool_responses.lock().await;
+    let mut owners = state.pending_tool_response_sessions.lock().await;
     for id in ids {
         pending.remove(&id);
+        owners.remove(&id);
     }
 }
 

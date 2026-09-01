@@ -32,11 +32,11 @@ impl App {
         match self.active_modal {
             ActiveModal::FileSearch => return self.handle_file_search_key(code, ctrl).await,
             ActiveModal::SessionSwitcher => {
-                return self.handle_session_switcher_key(code, ctrl).await
+                return self.handle_session_switcher_key(code, ctrl).await;
             }
             ActiveModal::Operations => return self.handle_operations_key(code),
             ActiveModal::CommandPalette => {
-                return self.handle_command_palette_key(code, ctrl).await
+                return self.handle_command_palette_key(code, ctrl).await;
             }
             ActiveModal::Approval => return self.handle_approval_key(code, modifiers).await,
             ActiveModal::ModelSelector => return self.handle_model_selector_key(code, ctrl).await,

@@ -156,9 +156,9 @@ pub use branching::{
     BranchId, BranchManager, BranchMetadata, BranchPoint, BranchSummary, MessageId,
 };
 pub use entries::*;
-pub use export::{export_session_file, ExportFormat, ExportOptions, SessionExporter};
-pub use fork::{fork_session_file, ForkedSession};
-pub use index::{collect_sessions, default_index_path, IndexedSession, SessionIndexEntry};
+pub use export::{ExportFormat, ExportOptions, SessionExporter, export_session_file};
+pub use fork::{ForkedSession, fork_session_file};
+pub use index::{IndexedSession, SessionIndexEntry, collect_sessions, default_index_path};
 pub use manager::{SessionInfo, SessionManager};
 pub use reader::{
     LifecycleAgentNoteEntry, LifecycleNotificationEntry, ParsedSession, SessionReadError,
@@ -166,5 +166,5 @@ pub use reader::{
 };
 pub(crate) use writer::SessionLock;
 pub use writer::{
-    generate_session_filename, sanitize_path_for_dirname, sessions_dir, SessionWriter,
+    SessionWriter, generate_session_filename, sanitize_path_for_dirname, sessions_dir,
 };

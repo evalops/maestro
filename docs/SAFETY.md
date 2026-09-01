@@ -214,14 +214,16 @@ For a shared or remote web deployment:
 
 ```
 MAESTRO_PROFILE=prod \
-MAESTRO_WEB_API_KEY="$(openssl rand -hex 32)" \
+MAESTRO_JWT_JWKS_URL="https://identity.example/.well-known/jwks.json" \
 MAESTRO_WEB_CSRF_TOKEN="$(openssl rand -hex 32)" \
 maestro web
 ```
 
 The runtime gateway requires authentication on non-loopback binds. It accepts
 API-key, shared-secret, JWT/JWKS, or trusted-proxy authentication as described
-in `docs/THREAT_MODEL.md`. State-changing API and A2A requests are CSRF
+in `docs/THREAT_MODEL.md`. Core session and chat routes in production require
+tenant-bearing JWT or trusted-proxy identity; the static process API key alone
+does not grant access to tenant data. State-changing API and A2A requests are CSRF
 protected when CSRF enforcement is enabled. `MAESTRO_WEB_REQUIRE_KEY=0` is a
 loopback-only development switch.
 

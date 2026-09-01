@@ -362,7 +362,7 @@ Add tests -> Setup project, Add authentication
     #[test]
     fn test_validate_plan_missing_dependency() {
         let plan = SwarmPlan::new("Test").with_tasks(vec![
-            SwarmTask::new("task-1", "First").with_dependencies(vec!["nonexistent".into()])
+            SwarmTask::new("task-1", "First").with_dependencies(vec!["nonexistent".into()]),
         ]);
 
         assert!(validate_plan(&plan).is_err());

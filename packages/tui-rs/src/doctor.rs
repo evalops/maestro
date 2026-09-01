@@ -4,12 +4,12 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::ai::{op_secret, ProviderProtocol, ProviderRegistry, ResolvedProvider};
+use crate::ai::{ProviderProtocol, ProviderRegistry, ResolvedProvider, op_secret};
 use crate::model_catalog::{
-    find_model, has_provider_mismatch, protocol_name, verify_model_offline, ModelInfo,
+    ModelInfo, find_model, has_provider_mismatch, protocol_name, verify_model_offline,
 };
 
 pub const REPORT_SCHEMA_VERSION: u32 = 1;
@@ -297,7 +297,7 @@ async fn live_metadata_check_with_env(
                 "HTTP client setup failed",
                 None,
                 true,
-            )
+            );
         }
     };
     let (request, protocol) = match metadata_request(&client, &resolved, token) {
@@ -312,7 +312,7 @@ async fn live_metadata_check_with_env(
                 ),
                 None,
                 true,
-            )
+            );
         }
         Err(_) => {
             return check(
@@ -321,7 +321,7 @@ async fn live_metadata_check_with_env(
                 "provider metadata endpoint is invalid",
                 None,
                 true,
-            )
+            );
         }
     };
     let endpoint = request
@@ -410,38 +410,57 @@ const AUTH_HEALTH_PROVIDERS: &[&str] = &[
 /// Report credential availability for each well-known provider without ever
 /// printing secret values. `op://` references are actually resolved through
 /// the 1Password CLI so broken vault references surface here.
-fn credential_mode_check(
-    detected: Option<&crate::credential_mode::DetectedMode>,
-    model: &str,
-    env: &HashMap<String, String>,
-) -> DoctorCheck {
-    match detected {
-        Some(crate::credential_mode::DetectedMode::Platform(session)) => check(
-            "credential_mode",
-            CheckStatus::Pass,
-            format!(
-                "platform: org {} via EvalOps identity",
-                session.organization_id
-            ),
-            session.email.clone(),
-            false,
-        ),
-        Some(crate::credential_mode::DetectedMode::Byok)
-            if crate::credential_mode::byok_ready(model, env) =>
+fn credential_mode_check(readiness: &Result<crate::credential_mode::DetectedMode>) -> DoctorCheck {
+    match readiness {
+        Ok(crate::credential_mode::DetectedMode::Platform(session))
+            if session
+                .workspace_id
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty()) =>
         {
             check(
                 "credential_mode",
                 CheckStatus::Pass,
-                "byok: local provider credential is available",
-                None,
+                format!(
+                    "platform: org {} via EvalOps identity",
+                    session.organization_id
+                ),
+                session.email.clone(),
                 false,
             )
         }
-        _ => check(
+        Ok(crate::credential_mode::DetectedMode::Platform(_)) => check(
             "credential_mode",
             CheckStatus::Fail,
-            "no EvalOps session and no local API key",
-            Some("Run `maestro setup` to sign in or add a key.".to_owned()),
+            "platform session is missing workspace scope",
+            Some("Sign in again or set MAESTRO_EVALOPS_WORKSPACE_ID.".to_owned()),
+            false,
+        ),
+        Ok(crate::credential_mode::DetectedMode::Byok) => check(
+            "credential_mode",
+            CheckStatus::Pass,
+            "byok: EvalOps Identity and a provider route are available",
+            None,
+            false,
+        ),
+        Err(error)
+            if error
+                .to_string()
+                .contains(crate::credential_mode::IDENTITY_REQUIRED_MESSAGE) =>
+        {
+            check(
+                "credential_mode",
+                CheckStatus::Fail,
+                "EvalOps Identity is required",
+                Some(error.to_string()),
+                false,
+            )
+        }
+        Err(error) => check(
+            "credential_mode",
+            CheckStatus::Fail,
+            "no usable managed or local provider credential",
+            Some(error.to_string()),
             false,
         ),
     }
@@ -549,7 +568,7 @@ fn codex_login_health_check() -> DoctorCheck {
         _ => check(
             "codex_login",
             CheckStatus::Warning,
-            "Codex auth not found — run `maestro codex login` for ChatGPT subscription models",
+            "Codex auth not found — run `deixic-code codex login` for ChatGPT subscription models",
             crate::codex_auth::codex_auth_path().map(|p| p.display().to_string()),
             false,
         ),
@@ -603,7 +622,7 @@ fn codex_app_server_transport_check(selected_provider: &str) -> DoctorCheck {
             "codex_app_server",
             CheckStatus::Warning,
             format!(
-                "Codex app-server spawn resolved ({spawn_detail}) but ChatGPT auth missing — run `maestro codex login`"
+                "Codex app-server spawn resolved ({spawn_detail}) but ChatGPT auth missing — run `deixic-code codex login`"
             ),
             Some(spawn_detail),
             false,
@@ -651,24 +670,28 @@ pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) 
         .unwrap_or_else(|| crate::codex_auth::DEFAULT_PLATFORM_MODEL.to_string());
     let snapshot = crate::init_cli::load_evalops_snapshot().ok().flatten();
     let process_env = std::env::vars().collect::<HashMap<String, String>>();
-    let detected = crate::credential_mode::detect_from(snapshot.as_ref(), &process_env);
     let mut env = process_env.clone();
     let _ = crate::codex_auth::merge_codex_auth_snapshot_into_env(
         &mut env,
         crate::codex_auth::read_codex_auth(),
         false,
     );
-    let resolved = match &detected {
-        Some(crate::credential_mode::DetectedMode::Platform(session)) => {
-            env = session.managed_env(&requested).unwrap_or(env);
-            ProviderRegistry::resolve(&session.managed_model_route(&requested), &env)
+    let readiness =
+        crate::service_connections::ConnectionBroker::merge_default_for_model(&requested, &mut env)
+            .and_then(|_| {
+                crate::credential_mode::require_ready_from(snapshot.as_ref(), &env, &requested)
+            });
+    let resolved = match readiness.as_ref() {
+        Ok(crate::credential_mode::DetectedMode::Platform(session)) => {
+            match session.managed_env(&requested, &process_env) {
+                Ok(managed_env) => {
+                    env = managed_env;
+                    ProviderRegistry::resolve(&session.managed_model_route(&requested), &env)
+                }
+                Err(error) => Err(error),
+            }
         }
-        _ => {
-            let _ = crate::service_connections::ConnectionBroker::merge_default_for_model(
-                &requested, &mut env,
-            );
-            ProviderRegistry::resolve(&requested, &env)
-        }
+        _ => ProviderRegistry::resolve(&requested, &env),
     };
     let (provider, protocol) = resolved.as_ref().map_or_else(
         |_| ("unknown".to_owned(), "unknown".to_owned()),
@@ -690,7 +713,7 @@ pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) 
         catalog,
     };
     let mut checks = config_checks(cwd);
-    checks.push(credential_mode_check(detected.as_ref(), &requested, &env));
+    checks.push(credential_mode_check(&readiness));
     checks.push(match resolved {
         Ok(provider) if provider.credential.is_some() => check(
             "provider",
@@ -721,8 +744,8 @@ pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) 
             false,
         ),
     });
-    match detected.as_ref() {
-        Some(crate::credential_mode::DetectedMode::Platform(_)) => checks.push(check(
+    match readiness.as_ref() {
+        Ok(crate::credential_mode::DetectedMode::Platform(_)) => checks.push(check(
             "auth_health",
             CheckStatus::Pass,
             "platform session supplies llm-gateway credentials; local provider keys are ignored",
@@ -732,8 +755,8 @@ pub async fn build_report(model_override: Option<&str>, live: bool, cwd: &Path) 
         _ => checks.extend(auth_health_checks(&env)),
     }
     if !matches!(
-        detected.as_ref(),
-        Some(crate::credential_mode::DetectedMode::Platform(_))
+        readiness.as_ref(),
+        Ok(crate::credential_mode::DetectedMode::Platform(_))
     ) {
         checks.push(codex_login_health_check());
     }
@@ -811,7 +834,7 @@ pub async fn run_doctor(args: &[String]) -> Result<i32> {
     let options = match parse_options(args) {
         Ok(options) => options,
         Err(error) if error.to_string() == "help" => {
-            println!("Usage: maestro doctor [--json] [--live] [--model <provider/model>]");
+            println!("Usage: deixic-code doctor [--json] [--live] [--model <provider/model>]");
             return Ok(0);
         }
         Err(error) => return Err(error),
@@ -821,7 +844,7 @@ pub async fn run_doctor(args: &[String]) -> Result<i32> {
     if options.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        println!("Maestro Doctor (schema v{})", report.schema_version);
+        println!("Deixic Code Doctor (schema v{})", report.schema_version);
         println!(
             "Model: {} ({}, {})",
             report.selected_model.requested,
@@ -851,6 +874,31 @@ fn report_exit_code(report: &DoctorReport) -> i32 {
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl EnvRestore {
+        fn capture(names: &[&'static str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .map(|name| (*name, std::env::var_os(name)))
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                if let Some(value) = value {
+                    std::env::set_var(name, value);
+                } else {
+                    std::env::remove_var(name);
+                }
+            }
+        }
+    }
 
     fn selected_model(requested: &str) -> SelectedModelReport {
         SelectedModelReport {
@@ -912,6 +960,63 @@ mod tests {
         assert_eq!(
             report.checks.last().map(|check| check.status),
             Some(CheckStatus::Skipped)
+        );
+    }
+
+    #[test]
+    fn offline_report_requires_identity_before_reporting_byok_ready() {
+        let _lock = crate::config::test_process_env_lock();
+        let _restore = EnvRestore::capture(&[
+            "MAESTRO_HOME",
+            "MAESTRO_OAUTH_STORAGE_MODE",
+            "MAESTRO_DISABLE_KEYCHAIN",
+            crate::credential_mode::ACCESS_TOKEN_ENV,
+            crate::credential_mode::ACCESS_TOKEN_FILE_ENV,
+            crate::credential_mode::ORG_ID_ENV,
+            crate::credential_mode::WORKSPACE_ID_ENV,
+            "OPENROUTER_API_KEY",
+            "MAESTRO_CONNECTION",
+            "CODEX_HOME",
+        ]);
+        let home = tempfile::tempdir().expect("maestro home");
+        let codex_home = tempfile::tempdir().expect("codex home");
+        std::env::set_var("MAESTRO_HOME", home.path());
+        std::env::set_var("MAESTRO_OAUTH_STORAGE_MODE", "file");
+        std::env::set_var("MAESTRO_DISABLE_KEYCHAIN", "1");
+        std::env::set_var("OPENROUTER_API_KEY", "or-test");
+        std::env::set_var("CODEX_HOME", codex_home.path());
+        for name in [
+            crate::credential_mode::ACCESS_TOKEN_ENV,
+            crate::credential_mode::ACCESS_TOKEN_FILE_ENV,
+            crate::credential_mode::ORG_ID_ENV,
+            crate::credential_mode::WORKSPACE_ID_ENV,
+            "MAESTRO_CONNECTION",
+        ] {
+            std::env::remove_var(name);
+        }
+
+        let cwd = tempfile::tempdir().expect("cwd");
+        let report = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("doctor runtime")
+            .block_on(build_report(
+                Some("openrouter/openai/o4-mini"),
+                false,
+                cwd.path(),
+            ));
+        let check = report
+            .checks
+            .iter()
+            .find(|check| check.id == "credential_mode")
+            .expect("credential mode check");
+        assert_eq!(check.status, CheckStatus::Fail);
+        assert_eq!(check.summary, "EvalOps Identity is required");
+        assert!(
+            check
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("deixic-code evalops login"))
         );
     }
 
@@ -999,9 +1104,11 @@ mod tests {
         let anthropic =
             ProviderRegistry::resolve("anthropic/claude-sonnet-4-5-20250514", &anthropic_env)
                 .expect("Anthropic provider");
-        assert!(metadata_request(&client, &anthropic, "anthropic-secret")
-            .expect("Anthropic request")
-            .is_none());
+        assert!(
+            metadata_request(&client, &anthropic, "anthropic-secret")
+                .expect("Anthropic request")
+                .is_none()
+        );
 
         let google_env = HashMap::from([
             ("GEMINI_API_KEY".to_owned(), "google-secret".to_owned()),
@@ -1012,9 +1119,11 @@ mod tests {
         ]);
         let google = ProviderRegistry::resolve("google/gemini-2.5-pro", &google_env)
             .expect("Google provider");
-        assert!(metadata_request(&client, &google, "google-secret")
-            .expect("Google request")
-            .is_none());
+        assert!(
+            metadata_request(&client, &google, "google-secret")
+                .expect("Google request")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1023,10 +1132,12 @@ mod tests {
         let report = build_report(Some("anthropic/gpt-4o"), false, temp.path()).await;
         assert!(!report.ok);
         assert_eq!(report_exit_code(&report), 1);
-        assert!(report
-            .checks
-            .iter()
-            .any(|check| { check.id == "model_catalog" && check.status == CheckStatus::Fail }));
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|check| { check.id == "model_catalog" && check.status == CheckStatus::Fail })
+        );
     }
 
     #[tokio::test]
@@ -1072,10 +1183,12 @@ mod tests {
             live_metadata_check_with_env(&selected_model("openai/gpt-4o"), &openai_env(base_url))
                 .await;
         assert_eq!(timeout.status, CheckStatus::Fail);
-        assert!(timeout
-            .detail
-            .as_deref()
-            .is_some_and(|detail| detail.contains("timed out")));
+        assert!(
+            timeout
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("timed out"))
+        );
         server.await.expect("timeout server");
 
         let (base_url, server) = test_server(200, r#"{"data":[]}"#, Duration::ZERO).await;
@@ -1183,12 +1296,16 @@ mod tests {
         }
         // openai / openai-codex may additionally have stored credentials on
         // disk; only assert those checks exist and never print a secret.
-        assert!(checks
-            .iter()
-            .any(|check| check.summary.starts_with("openai:")));
-        assert!(checks
-            .iter()
-            .any(|check| check.summary.starts_with("openai-codex:")));
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.summary.starts_with("openai:"))
+        );
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.summary.starts_with("openai-codex:"))
+        );
         for check in &checks {
             assert!(
                 !check.summary.contains("sk-")

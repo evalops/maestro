@@ -303,9 +303,11 @@ fn unsupported_assertion_kind_fails_rather_than_silently_passing() {
     let assertion = scripted_assertion(json!({"id": "a1", "kind": "made_up_kind"}));
     let result = evaluate_assertion(&assertion, &scenario, Path::new("."), None);
     assert_eq!(result.status, "fail");
-    assert!(result
-        .message
-        .contains("Unsupported scripted assertion kind"));
+    assert!(
+        result
+            .message
+            .contains("Unsupported scripted assertion kind")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -640,11 +642,62 @@ mod execute_tests {
     use super::super::execute::{self, ExecuteOptions};
     use super::*;
     use crate::session::SessionReader;
+    use std::path::Path;
+
+    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl EnvRestore {
+        fn capture(names: &[&'static str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .copied()
+                    .map(|name| (name, std::env::var_os(name)))
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
 
     fn options_for(home: &Path) -> ExecuteOptions {
         ExecuteOptions {
             session_home: Some(home.to_path_buf()),
         }
+    }
+
+    async fn execute_identity_guard() -> (
+        tokio::sync::OwnedMutexGuard<()>,
+        EnvRestore,
+        tempfile::TempDir,
+    ) {
+        let guard = crate::config::test_process_env_lock_async().await;
+        let mut names = vec![
+            "MAESTRO_HOME",
+            "MAESTRO_OAUTH_STORAGE_MODE",
+            "MAESTRO_DISABLE_KEYCHAIN",
+        ];
+        names.extend(
+            crate::credential_mode::TEST_IDENTITY_ENV_VARS
+                .iter()
+                .copied(),
+        );
+        let restore = EnvRestore::capture(&names);
+        let maestro_home = tempfile::tempdir().expect("maestro home");
+        std::env::set_var("MAESTRO_HOME", maestro_home.path());
+        std::env::set_var("MAESTRO_OAUTH_STORAGE_MODE", "file");
+        std::env::set_var("MAESTRO_DISABLE_KEYCHAIN", "1");
+        crate::credential_mode::install_test_identity_env();
+        (guard, restore, maestro_home)
     }
 
     fn execute_scenario_json(tool_calls: Value) -> Value {
@@ -709,6 +762,7 @@ mod execute_tests {
 
     #[tokio::test]
     async fn execute_runs_real_tool_calls_and_records_a_real_session() {
+        let (_guard, _restore, _maestro_home) = execute_identity_guard().await;
         let home = tempfile::tempdir().expect("home");
         let workspace = tempfile::tempdir().expect("workspace");
         fs::write(
@@ -754,13 +808,27 @@ mod execute_tests {
         // results included.
         assert!(execution.session_path.exists());
         assert!(execution.session_path.starts_with(home.path()));
-        assert!(execution
-            .session_path
-            .to_string_lossy()
-            .contains(".composer/agent/sessions"));
+        assert!(
+            execution
+                .session_path
+                .to_string_lossy()
+                .contains(".composer/agent/sessions")
+        );
         let parsed = SessionReader::read_file(&execution.session_path)
             .expect("session parses with the native reader");
         assert_eq!(parsed.header.id, execution.session_id);
+        let context_manifest = parsed
+            .header
+            .unified_context_manifest
+            .as_ref()
+            .expect("scenario sessions persist their context generation");
+        assert_eq!(
+            context_manifest
+                .get("manifestSha256")
+                .and_then(Value::as_str)
+                .map(str::len),
+            Some(71)
+        );
         let rendered = fs::read_to_string(&execution.session_path).expect("session jsonl");
         assert!(rendered.contains("call-read-package-json"));
         assert!(rendered.contains("call-write-artifact"));
@@ -770,6 +838,7 @@ mod execute_tests {
 
     #[tokio::test]
     async fn execute_is_deterministic_across_runs() {
+        let (_guard, _restore, _maestro_home) = execute_identity_guard().await;
         let home = tempfile::tempdir().expect("home");
 
         let mut hashes = Vec::new();
@@ -798,6 +867,7 @@ mod execute_tests {
 
     #[tokio::test]
     async fn execute_hydrates_the_workspace_from_the_manifest() {
+        let (_guard, _restore, _maestro_home) = execute_identity_guard().await;
         let home = tempfile::tempdir().expect("home");
         let fixture_root = tempfile::tempdir().expect("fixture root");
         let hydration = fixture_root.path().join("workspaces/exec");
@@ -859,5 +929,48 @@ mod execute_tests {
         .await
         .expect_err("frameless scenario must fail");
         assert!(error.to_string().contains("no frames to execute"));
+    }
+
+    #[tokio::test]
+    async fn execute_requires_evalops_identity() {
+        let _guard = crate::config::test_process_env_lock_async().await;
+        let mut names = vec![
+            "MAESTRO_HOME",
+            "MAESTRO_OAUTH_STORAGE_MODE",
+            "MAESTRO_DISABLE_KEYCHAIN",
+        ];
+        names.extend(
+            crate::credential_mode::TEST_IDENTITY_ENV_VARS
+                .iter()
+                .copied(),
+        );
+        let _restore = EnvRestore::capture(&names);
+        let maestro_home = tempfile::tempdir().expect("maestro home");
+        std::env::set_var("MAESTRO_HOME", maestro_home.path());
+        std::env::set_var("MAESTRO_OAUTH_STORAGE_MODE", "file");
+        std::env::set_var("MAESTRO_DISABLE_KEYCHAIN", "1");
+        for name in crate::credential_mode::TEST_IDENTITY_ENV_VARS {
+            std::env::remove_var(name);
+        }
+
+        let home = tempfile::tempdir().expect("home");
+        let workspace = tempfile::tempdir().expect("workspace");
+        fs::write(
+            workspace.path().join("package.json"),
+            "{\"name\":\"execute-test\"}\n",
+        )
+        .expect("seed package.json");
+        let scenario = parse_execute_scenario(read_write_scenario());
+        let error = execute::execute_scripted_scenario_with_options(
+            &scenario,
+            workspace.path(),
+            &options_for(home.path()),
+        )
+        .await
+        .expect_err("scenario execute must not bypass EvalOps Identity");
+        assert!(
+            format!("{error:#}").contains("deixic-code evalops login"),
+            "{error:#}"
+        );
     }
 }

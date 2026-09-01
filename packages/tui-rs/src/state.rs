@@ -32,13 +32,13 @@ use std::time::{Instant, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{ExecutionStatus, FromAgent, TokenUsage};
-use crate::kill_ring::{next_word_start, previous_word_start, KillRing};
+use crate::kill_ring::{KillRing, next_word_start, previous_word_start};
 use crate::session::ThinkingLevel;
 // Import from our own crate using `crate::` prefix
 // `FromAgent` is an enum of all messages the agent can send us
 
 use crate::components::message_layout::{MessageLayout, MessageLayoutCache};
-use crate::components::textarea::{TextArea, PASTE_FOLD_MIN_CHARS, PASTE_FOLD_MIN_LINES};
+use crate::components::textarea::{PASTE_FOLD_MIN_CHARS, PASTE_FOLD_MIN_LINES, TextArea};
 // Our multi-line text input component
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -849,6 +849,9 @@ impl AppState {
         match msg {
             // Private durable provider state is not interactive UI state.
             FromAgent::ConversationSnapshot { .. } => {}
+            // Managed receipts are forwarded to headless consumers but carry
+            // no interactive UI content.
+            FromAgent::ManagedGatewayReceipt { .. } => {}
             // Accounting only: reported so a caller metering model output can
             // charge Codex-native operations, which never arrive as `ToolCall`.
             // It carries no text to display and needs no response.

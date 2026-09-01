@@ -1,4 +1,4 @@
-use maestro_runtime_gateway::{serve_listener, RuntimeGatewayConfig};
+use maestro_runtime_gateway::{RuntimeGatewayConfig, serve_listener};
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -21,11 +21,13 @@ async fn legacy_session_map_is_atomically_upgraded_before_serving() {
     let migrated: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&store).unwrap()).unwrap();
     assert!(migrated["sessions"]["session-2"].is_object());
-    assert!(std::fs::read_dir(&root).unwrap().all(|entry| !entry
-        .unwrap()
-        .file_name()
-        .to_string_lossy()
-        .contains("migration-")));
+    assert!(std::fs::read_dir(&root).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("migration-")
+    }));
     let _ = std::fs::remove_dir_all(root);
 }
 

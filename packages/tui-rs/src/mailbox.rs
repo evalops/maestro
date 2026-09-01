@@ -9,7 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use fd_lock::{RwLock as FileLock, RwLockWriteGuard};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1018,19 +1018,23 @@ mod tests {
     fn body_and_agent_limits_are_enforced() {
         let mut store = MailboxStore::default();
         assert!(store.send("", "child", "message").is_err());
-        assert!(store
-            .send("parent", "child", "x".repeat(MAX_BODY_CHARS + 1))
-            .is_err());
-        assert!(store
-            .send_typed(
-                "parent",
-                "child",
-                "message",
-                MailboxPayload::Advisory,
-                MailboxDeliveryState::Queued,
-                Some("x".repeat(MAX_BODY_CHARS + 1)),
-            )
-            .is_err());
+        assert!(
+            store
+                .send("parent", "child", "x".repeat(MAX_BODY_CHARS + 1))
+                .is_err()
+        );
+        assert!(
+            store
+                .send_typed(
+                    "parent",
+                    "child",
+                    "message",
+                    MailboxPayload::Advisory,
+                    MailboxDeliveryState::Queued,
+                    Some("x".repeat(MAX_BODY_CHARS + 1)),
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -1100,14 +1104,18 @@ mod tests {
 
         let loaded = MailboxStore::load_from_path(&path).expect("reload");
         assert_eq!(loaded.messages.len(), 2);
-        assert!(loaded
-            .messages
-            .iter()
-            .any(|message| message.sender == "first"));
-        assert!(loaded
-            .messages
-            .iter()
-            .any(|message| message.sender == "second"));
+        assert!(
+            loaded
+                .messages
+                .iter()
+                .any(|message| message.sender == "first")
+        );
+        assert!(
+            loaded
+                .messages
+                .iter()
+                .any(|message| message.sender == "second")
+        );
     }
 
     #[test]
@@ -1191,15 +1199,19 @@ mod tests {
                 None,
             )
             .expect("held message");
-        assert!(store
-            .claim_typed("child", |_| true)
-            .expect("claim held")
-            .is_none());
+        assert!(
+            store
+                .claim_typed("child", |_| true)
+                .expect("claim held")
+                .is_none()
+        );
         store.approve_held(&id).expect("release held message");
-        assert!(store
-            .claim_typed("child", |_| true)
-            .expect("claim released")
-            .is_some());
+        assert!(
+            store
+                .claim_typed("child", |_| true)
+                .expect("claim released")
+                .is_some()
+        );
     }
 
     #[test]
@@ -1261,16 +1273,18 @@ mod tests {
             )
             .expect("same key in another scope");
         assert_ne!(first, other_scope);
-        assert!(store
-            .send_typed(
-                "parent-a",
-                "child-a",
-                "different",
-                payload,
-                MailboxDeliveryState::Queued,
-                Some("retry-1".to_string()),
-            )
-            .is_err());
+        assert!(
+            store
+                .send_typed(
+                    "parent-a",
+                    "child-a",
+                    "different",
+                    payload,
+                    MailboxDeliveryState::Queued,
+                    Some("retry-1".to_string()),
+                )
+                .is_err()
+        );
     }
 
     #[test]

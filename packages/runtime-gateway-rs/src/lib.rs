@@ -1,7 +1,10 @@
 use anyhow::Context;
 use base64::{
-    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
     Engine as _,
+    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
+};
+use maestro_runtime::{
+    TelemetryConfig, TelemetryGuard, TraceHeaders, record_outcome, route_class, server_span,
 };
 use maestro_tui::agent::{
     ExecutionSource, FromAgent, NativeAgent, NativeAgentConfig, TokenUsage, ToolDefinition,
@@ -19,8 +22,8 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::process;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(test)]
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -29,7 +32,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
 #[cfg(test)]
 use tokio::sync::watch;
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{Mutex, broadcast, mpsc};
+use tracing::Instrument;
 
 mod a2a;
 mod a2a_platform_registration;
@@ -47,73 +51,87 @@ mod markitdown;
 mod migrations;
 mod model_catalog;
 mod runtime_assets;
+mod session_messaging;
 mod sessions;
 
 #[allow(unused_imports)]
 pub(crate) use a2a::{
-    a2a_agent_card, a2a_agent_message, a2a_agent_skills, a2a_context_id,
-    a2a_public_base_url_for_config, a2a_push_authorization_header, a2a_push_ip_is_private,
-    a2a_push_notification_payloads, a2a_return_immediately, a2a_state_is_completed,
-    a2a_state_is_failed, a2a_task_is_terminal, a2a_task_ledger_lock_path, a2a_task_value,
-    a2a_user_message_value, acquire_a2a_task_ledger_file_lock, apply_platform_a2a_artifact_update,
-    apply_platform_a2a_status_update, canonical_a2a_task_state, claim_a2a_send_task,
+    A2A_DEFAULT_LIST_PAGE_SIZE, A2A_DEFAULT_TURN_TIMEOUT_MS, A2A_LEDGER_LOCK_HEARTBEAT_FILE,
+    A2A_LEDGER_LOCK_RETRY_MS, A2A_MAX_LIST_PAGE_SIZE, A2A_PROTOCOL_VERSION,
+    A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY, A2A_RUNTIME_GATEWAY_LEDGER_DISPLAY_NAME,
+    A2A_RUNTIME_GATEWAY_LEDGER_PEER, A2A_TERMINAL_TASK_STORE_LIMIT, A2ACancelReceiver,
+    A2ACancelSender, A2AMessageBody, A2APartBody, A2ASendMessageRequest, A2ATaskEventHistory,
+    A2ATaskUpdateEvent, EVALOPS_A2A_EXTENSION_URI, a2a_agent_card, a2a_agent_message,
+    a2a_agent_skills, a2a_context_id, a2a_public_base_url_for_config,
+    a2a_push_authorization_header, a2a_push_ip_is_private, a2a_push_notification_payloads,
+    a2a_return_immediately, a2a_state_is_completed, a2a_state_is_failed, a2a_task_is_terminal,
+    a2a_task_ledger_lock_path, a2a_task_value, a2a_user_message_value,
+    acquire_a2a_task_ledger_file_lock, canonical_a2a_task_state, claim_a2a_send_task,
     complete_a2a_task, handle_a2a_endpoint, handle_a2a_streaming_endpoint,
     handle_platform_a2a_push_endpoint, is_a2a_endpoint, is_a2a_streaming_endpoint,
     is_platform_a2a_push_endpoint, load_a2a_tasks, normalize_a2a_push_notification_config,
-    persist_a2a_tasks, publish_a2a_task_update, release_a2a_task_ledger_file_lock,
-    spawn_a2a_task_ledger_lock_heartbeat, store_a2a_task_unless_canceled, A2ACancelReceiver,
-    A2ACancelSender, A2AMessageBody, A2APartBody, A2ASendMessageRequest, A2ATaskEventHistory,
-    A2ATaskUpdateEvent, A2A_DEFAULT_LIST_PAGE_SIZE, A2A_DEFAULT_TURN_TIMEOUT_MS,
-    A2A_LEDGER_LOCK_HEARTBEAT_FILE, A2A_LEDGER_LOCK_RETRY_MS, A2A_MAX_LIST_PAGE_SIZE,
-    A2A_PROTOCOL_VERSION, A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY,
-    A2A_RUNTIME_GATEWAY_LEDGER_DISPLAY_NAME, A2A_RUNTIME_GATEWAY_LEDGER_PEER,
-    A2A_TERMINAL_TASK_STORE_LIMIT, EVALOPS_A2A_EXTENSION_URI,
+    persist_a2a_tasks, persist_a2a_tasks_locked, publish_a2a_task_update,
+    release_a2a_task_ledger_file_lock, spawn_a2a_task_ledger_lock_heartbeat,
+    store_a2a_task_unless_canceled,
 };
+#[cfg(test)]
+pub(crate) use a2a::{apply_platform_a2a_artifact_update, apply_platform_a2a_status_update};
 use a2a_platform_registration::maybe_spawn_a2a_platform_registration_loop;
 #[cfg(test)]
 use a2a_platform_registration::{
-    a2a_platform_heartbeat_payload, a2a_platform_register_payload,
+    A2APlatformRegistrationConfig, a2a_platform_heartbeat_payload, a2a_platform_register_payload,
     a2a_platform_registration_enabled, normalize_platform_base_url, platform_error_is_conflict,
     register_or_update_a2a_platform_agent, resolve_a2a_platform_registration_config,
-    send_a2a_platform_heartbeat, A2APlatformRegistrationConfig,
+    send_a2a_platform_heartbeat,
 };
 #[cfg(test)]
 use a2a_skill_catalog::A2A_SUBAGENT_REQUEST_METADATA_PATH;
 use auth::*;
 #[allow(unused_imports)]
 pub(crate) use chat::{
-    approval_blocked_tool_event, build_prompt_from_chat, composer_assistant_message,
-    composer_assistant_message_with_tools, composer_text_content, finish_client_tool_metadata,
-    finish_tool_metadata, handle_chat_endpoint, handle_chat_websocket_endpoint,
-    handle_codex_app_server_chat_transport, is_chat_endpoint, is_chat_websocket_endpoint,
-    prepare_chat_attachments, record_chat_user_message, record_tool_call_metadata, send_sse,
-    send_ws_json, sse_headers, strip_data_url_prefix, try_parse_websocket_text_message,
-    update_tool_metadata_status, websocket_accept_key, ChatAttachment, ChatMessage, ChatRequest,
-    ExtractAttachmentRequest, ExtractDocumentOutput, PreparedAttachments,
+    ChatAttachment, ChatMessage, ChatRequest, ExtractAttachmentRequest, ExtractDocumentOutput,
+    PreparedAttachments, approval_blocked_tool_event, build_prompt_from_chat,
+    composer_assistant_message, composer_assistant_message_with_tools, composer_text_content,
+    finish_client_tool_metadata, finish_tool_metadata, handle_chat_endpoint,
+    handle_chat_websocket_endpoint, handle_codex_app_server_chat_transport, is_chat_endpoint,
+    is_chat_websocket_endpoint, prepare_chat_attachments, record_chat_user_message,
+    record_tool_call_metadata, send_sse, send_ws_json, sse_headers, strip_data_url_prefix,
+    try_parse_websocket_text_message, update_tool_metadata_status, websocket_accept_key,
 };
 pub(crate) use codex_bridge::*;
-use extended::{handle_extended_endpoint, is_extended_endpoint, ExtendedApiState};
+use extended::{ExtendedApiState, handle_extended_endpoint, is_extended_endpoint};
+pub(crate) use http::MAX_JSON_BODY_BYTES;
 #[cfg(test)]
 use http::parse_request_head;
-pub(crate) use http::MAX_JSON_BODY_BYTES;
 use http::{
-    header_end, json_response, origin_allowed, percent_decode_component, query_flag,
+    RequestHead, header_end, json_response, origin_allowed, percent_decode_component, query_flag,
     read_request_body, read_request_body_with_limit, read_request_head, requested_cors_origin,
     response, response_cors_credentials_header, response_cors_origin, response_with_extra_headers,
     response_with_extra_headers_and_length, response_with_no_store, text_response,
-    with_response_cors_origin, RequestHead,
+    with_response_cors_origin,
 };
 #[cfg(test)]
 use http::{response_with_cache_and_length, response_with_no_store_and_length};
 use local::*;
 use markitdown::{extract_with_markitdown, should_prefer_markitdown, should_try_markitdown};
-pub(crate) use model_catalog::{available_models, default_model, resolve_model, ModelInfo};
+pub(crate) use model_catalog::{ModelInfo, available_models, default_model, resolve_model};
 #[cfg(test)]
 use model_catalog::{
-    builtin_models, default_model_from_registry, emergency_default_model, merge_configured_models,
-    merge_llm_gateway_model_catalog, ModelRegistry,
+    ModelRegistry, builtin_models, default_model_from_registry, emergency_default_model,
+    merge_configured_models, merge_llm_gateway_model_catalog,
 };
 use runtime_assets::*;
+#[cfg(test)]
+pub(crate) use session_messaging::{
+    LIST_SESSION_PEERS_TOOL, SEND_SESSION_MESSAGE_TOOL, SESSION_MESSAGE_INBOX_CAP, SessionMessage,
+    list_peers_for_auth,
+};
+pub(crate) use session_messaging::{
+    MessageStore, handle_session_messaging_endpoint, handle_session_messaging_tool_call,
+    is_session_messaging_endpoint, is_session_messaging_tool, load_message_store,
+    mark_inbox_messages_read, prune_orphaned_session_messages, render_peer_messages_block,
+    session_messaging_tool_definitions, unread_inbox_for_session,
+};
 use sessions::*;
 
 const MAX_EXTRACT_JSON_BODY_BYTES: usize = 72 * 1024 * 1024;
@@ -154,9 +172,9 @@ where
 
 pub fn print_cli_help() {
     println!(
-        "Maestro Runtime Gateway\n\n\
+        "Deixic Code Runtime Gateway\n\n\
 Usage:\n  maestro-runtime-gateway [--help] [--version]\n\n\
-Environment:\n  MAESTRO_CONTROL_HOST  bind host (default: 127.0.0.1)\n  PORT                  bind port (default: 8080)\n  MAESTRO_HOME          state directory for sessions, usage, and preferences\n  MAESTRO_WEB_API_KEY   API key accepted via Bearer or x-maestro-api-key\n  MAESTRO_WEB_REQUIRE_KEY=0 disables API-key auth for local development; only honored when the bind host is loopback\n  MAESTRO_WEB_ALLOWED_HOSTS  extra comma-separated Host header values accepted on a loopback bind\n"
+Environment:\n  MAESTRO_CONTROL_HOST  bind host (default: 127.0.0.1)\n  PORT                  bind port (default: 8080)\n  MAESTRO_HOME          state directory for sessions, usage, and preferences\n  MAESTRO_WEB_API_KEY   API key accepted via Bearer or x-maestro-api-key\n  MAESTRO_WEB_API_KEY_SCOPES  scopes granted to a non-loopback API key (comma/space separated; maestro:write permits mutations)\n  MAESTRO_WEB_REQUIRE_KEY=0 disables API-key auth for local development; only honored when the bind host is loopback\n  MAESTRO_WEB_ALLOWED_HOSTS  extra comma-separated Host header values accepted on a loopback bind\n"
     );
 }
 
@@ -273,6 +291,7 @@ pub struct RuntimeGatewayConfig {
     require_csrf: bool,
     cwd: PathBuf,
     session_store_path: PathBuf,
+    session_messages_path: PathBuf,
     command_prefs_path: PathBuf,
     usage_file_path: PathBuf,
     a2a_tasks_file_path: PathBuf,
@@ -327,6 +346,9 @@ impl RuntimeGatewayConfig {
             session_store_path: env::var("MAESTRO_SESSIONS_FILE")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| default_session_store_path(&cwd)),
+            session_messages_path: env::var("MAESTRO_SESSION_MESSAGES_FILE")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| default_session_messages_path(&cwd)),
             command_prefs_path: command_prefs_path(),
             usage_file_path: usage_file_path(),
             a2a_tasks_file_path: a2a_tasks_file_path(),
@@ -379,6 +401,7 @@ impl RuntimeGatewayConfig {
             require_csrf: false,
             cwd,
             session_store_path: state_root.join("sessions.json"),
+            session_messages_path: state_root.join("session-messages.json"),
             command_prefs_path: state_root.join("command-preferences.json"),
             usage_file_path: state_root.join("usage.jsonl"),
             a2a_tasks_file_path: state_root.join("a2a-tasks.json"),
@@ -426,7 +449,9 @@ impl RuntimeGatewayConfig {
                     self.listen_host
                 )
             };
-            anyhow::bail!("web auth is required because {reason}; set MAESTRO_WEB_API_KEY, MAESTRO_JWT_SECRET, MAESTRO_JWT_JWKS_URL, or MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN");
+            anyhow::bail!(
+                "web auth is required because {reason}; set MAESTRO_WEB_API_KEY, MAESTRO_JWT_SECRET, MAESTRO_JWT_JWKS_URL, or MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN"
+            );
         }
         Ok(())
     }
@@ -445,10 +470,17 @@ struct AppState {
     sessions: Arc<Mutex<SessionStore>>,
     session_store_persist_enabled: bool,
     session_persist_lock: Arc<Mutex<()>>,
+    session_messages: Arc<Mutex<MessageStore>>,
+    session_messages_persist_enabled: bool,
+    session_messages_persist_lock: Arc<Mutex<()>>,
     usage_persist_lock: Arc<Mutex<()>>,
     shared_sessions: Arc<Mutex<HashMap<String, SharedSessionGrant>>>,
     approval_modes: Arc<Mutex<HashMap<String, String>>>,
     pending_tool_responses: Arc<Mutex<HashMap<String, PendingToolResponseSender>>>,
+    // Maps a pending-request id to the session or authenticated principal that
+    // owns the blocked agent turn. Sessionless client-tool turns retain a
+    // resumable owner without weakening the cross-tenant resume check.
+    pending_tool_response_sessions: Arc<Mutex<HashMap<String, PendingToolResponseOwner>>>,
     completed_client_tool_results: Arc<Mutex<HashMap<String, bool>>>,
     a2a_tasks: Arc<Mutex<HashMap<String, Value>>>,
     a2a_task_persist_lock: Arc<Mutex<()>>,
@@ -456,6 +488,29 @@ struct AppState {
     a2a_task_event_history: Arc<Mutex<HashMap<String, A2ATaskEventHistory>>>,
     a2a_cancel_senders: Arc<Mutex<HashMap<String, A2ACancelSender>>>,
     extended_api: Arc<Mutex<ExtendedApiState>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PendingToolResponseOwner {
+    Session(String),
+    Principal {
+        subject: String,
+        organization_id: Option<String>,
+        workspace_id: Option<String>,
+    },
+}
+
+impl PendingToolResponseOwner {
+    fn for_request(session_id: Option<&str>, auth: &AuthContext) -> Option<Self> {
+        if let Some(session_id) = session_id {
+            return Some(Self::Session(session_id.to_string()));
+        }
+        auth.subject.as_ref().map(|subject| Self::Principal {
+            subject: subject.clone(),
+            organization_id: auth.organization_id.clone(),
+            workspace_id: auth.workspace_id.clone(),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -584,9 +639,36 @@ pub async fn serve_listener(
     config: RuntimeGatewayConfig,
 ) -> anyhow::Result<()> {
     config.validate_startup()?;
+    let _telemetry = TelemetryGuard::init(TelemetryConfig::new(
+        "maestro-runtime-gateway",
+        env!("CARGO_PKG_VERSION"),
+        "info",
+        "local",
+    ));
     let config = Arc::new(config);
     let (sessions, session_store_persist_enabled) =
         load_session_store(&config.session_store_path).await;
+    if !session_store_persist_enabled {
+        anyhow::bail!(
+            "session store is unavailable at {}",
+            config.session_store_path.display()
+        );
+    }
+    let (mut session_messages, session_messages_persist_enabled) =
+        load_message_store(&config.session_messages_path).await;
+    if !session_messages_persist_enabled {
+        anyhow::bail!(
+            "session message store is unavailable at {}",
+            config.session_messages_path.display()
+        );
+    }
+    if prune_orphaned_session_messages(&mut session_messages, &sessions) {
+        migrations::atomic_write_validated_json(&config.session_messages_path, &session_messages)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("persist reconciled session message store: {error}")
+            })?;
+    }
     let shared_sessions = sessions.shared_sessions.clone();
     let command_prefs = load_command_prefs(&config.command_prefs_path).await;
     let a2a_tasks = load_a2a_tasks(&config.a2a_tasks_file_path).await;
@@ -609,10 +691,14 @@ pub async fn serve_listener(
         sessions: Arc::new(Mutex::new(sessions)),
         session_store_persist_enabled,
         session_persist_lock: Arc::new(Mutex::new(())),
+        session_messages: Arc::new(Mutex::new(session_messages)),
+        session_messages_persist_enabled,
+        session_messages_persist_lock: Arc::new(Mutex::new(())),
         usage_persist_lock: Arc::new(Mutex::new(())),
         shared_sessions: Arc::new(Mutex::new(shared_sessions)),
         approval_modes: Arc::new(Mutex::new(HashMap::new())),
         pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
+        pending_tool_response_sessions: Arc::new(Mutex::new(HashMap::new())),
         completed_client_tool_results: Arc::new(Mutex::new(HashMap::new())),
         a2a_tasks: Arc::new(Mutex::new(a2a_tasks)),
         a2a_task_persist_lock: Arc::new(Mutex::new(())),
@@ -653,8 +739,14 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> anyhow::Re
         .map_err(anyhow::Error::msg)
         .context("failed to read request head")?;
     let response_origin = requested_cors_origin(&head);
+    let parent = TraceHeaders::from_values(
+        head.headers.get("traceparent").map(String::as_str),
+        head.headers.get("tracestate").map(String::as_str),
+    );
+    let span = server_span(&head.method, &route_class(&head.path), &parent);
+    let started = Instant::now();
 
-    with_response_cors_origin(response_origin, async move {
+    let result = with_response_cors_origin(response_origin, async move {
         if !host_header_allowed(&head, &state.config) {
             let response = json_response(
                 421,
@@ -768,7 +860,15 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> anyhow::Re
         let _ = stream.shutdown().await;
         Ok(())
     })
-    .await
+    .instrument(span.clone())
+    .await;
+    record_outcome(
+        &span,
+        if result.is_ok() { "success" } else { "error" },
+        started.elapsed(),
+        result.as_ref().err().map(|_| "request_error"),
+    );
+    result
 }
 
 fn is_local_endpoint(head: &RequestHead) -> bool {
@@ -818,6 +918,12 @@ fn is_local_endpoint(head: &RequestHead) -> bool {
                 | "/api/attachments/extract"
         )
     ) || is_session_endpoint(head)
+        // `is_session_endpoint` only admits POST under `/api/sessions/{id}/`
+        // for the `share`, `export` and attachment-extract tails, so the
+        // messaging routes must be admitted explicitly or `POST
+        // /api/sessions/{id}/messages` falls through to the 501
+        // not-yet-migrated response.
+        || is_session_messaging_endpoint(head)
         || is_pending_request_resume_endpoint(head)
 }
 
@@ -907,6 +1013,19 @@ async fn handle_local_endpoint(
     if head.method == "GET" && shared_session_path_from_path(&head.path).is_some() {
         return handle_session_endpoint(stream, initial, &head, state).await;
     }
+    // Session-messaging endpoints (`/api/sessions/peers`,
+    // `/api/sessions/{id}/messages`) must be recognized BEFORE the generic
+    // session endpoint, because `is_session_endpoint` would otherwise claim
+    // `GET /api/sessions/peers` and `GET /api/sessions/{id}/messages` and route
+    // them to the session handler, which would treat `peers` (or the `{id}`
+    // whose tail is `messages`) as a plain session lookup and 404. CSRF is
+    // already validated above; the handler captures the AuthContext itself.
+    if is_session_messaging_endpoint(&head) {
+        if let Err(response) = authorize(&head, &state.config) {
+            return response;
+        }
+        return handle_session_messaging_endpoint(stream, initial, &head, state).await;
+    }
     if is_session_endpoint(&head) {
         if let Err(response) = authorize(&head, &state.config) {
             return response;
@@ -914,10 +1033,11 @@ async fn handle_local_endpoint(
         return handle_session_endpoint(stream, initial, &head, state).await;
     }
     if is_pending_request_resume_endpoint(&head) {
-        if let Err(response) = authorize(&head, &state.config) {
-            return response;
-        }
-        return handle_pending_request_resume_endpoint(stream, initial, &head, state).await;
+        let auth = match authorized_context(&head, &state.config) {
+            Ok(auth) => auth,
+            Err(response) => return response,
+        };
+        return handle_pending_request_resume_endpoint(stream, initial, &head, state, &auth).await;
     }
 
     match (head.method.as_str(), head.path.as_str()) {
@@ -989,7 +1109,10 @@ async fn handle_local_endpoint(
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            json_response(200, &serde_json::json!({ "files": workspace_files(&state.config.cwd).await }))
+            json_response(
+                200,
+                &serde_json::json!({ "files": workspace_files(&state.config.cwd).await }),
+            )
         }
         ("GET", "/api/commands") => {
             if let Err(response) = authorize(&head, &state.config) {
@@ -1091,7 +1214,10 @@ async fn handle_local_endpoint(
                 }
             };
             if serialized.len() > 256 * 1024 {
-                return json_response(413, &serde_json::json!({ "error": "Config exceeds maximum allowed size" }));
+                return json_response(
+                    413,
+                    &serde_json::json!({ "error": "Config exceeds maximum allowed size" }),
+                );
             }
             if let Err(error) = tokio::fs::write(&config_path, serialized).await {
                 return json_response(
@@ -1107,13 +1233,19 @@ async fn handle_local_endpoint(
             }
             json_response(200, &usage_snapshot(&state.config.usage_file_path).await)
         }
-        ("GET", "/api/metrics") => text_response(200, "# HELP maestro_rust_control_plane_up Rust control plane up\n# TYPE maestro_rust_control_plane_up gauge\nmaestro_rust_control_plane_up 1\n"),
+        ("GET", "/api/metrics") => text_response(
+            200,
+            "# HELP maestro_rust_control_plane_up Rust control plane up\n# TYPE maestro_rust_control_plane_up gauge\nmaestro_rust_control_plane_up 1\n",
+        ),
         ("GET", "/api/run") => {
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
             if head.query.get("action").map(String::as_str) == Some("scripts") {
-                return json_response(200, &serde_json::json!({ "scripts": package_scripts(&state.config.cwd).await }));
+                return json_response(
+                    200,
+                    &serde_json::json!({ "scripts": package_scripts(&state.config.cwd).await }),
+                );
             }
             json_response(400, &serde_json::json!({ "error": "Invalid action" }))
         }
@@ -1214,28 +1346,38 @@ async fn handle_local_endpoint(
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            json_response(200, &serde_json::json!({ "runtime": "rust-control-plane", "cwd": state.config.cwd }))
+            json_response(
+                200,
+                &serde_json::json!({ "runtime": "rust-control-plane", "cwd": state.config.cwd }),
+            )
         }
         ("GET", "/api/stats") => {
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            json_response(200, &serde_json::json!({ "runtime": "rust-control-plane", "uptime": state.started_at.elapsed().as_secs_f64() }))
+            json_response(
+                200,
+                &serde_json::json!({ "runtime": "rust-control-plane", "uptime": state.started_at.elapsed().as_secs_f64() }),
+            )
         }
         ("GET", "/api/telemetry") => {
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            json_response(200, &telemetry_status(*state.telemetry_override.lock().await))
+            json_response(
+                200,
+                &telemetry_status(*state.telemetry_override.lock().await),
+            )
         }
         ("POST", "/api/telemetry") => {
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            let action = match read_required_action(stream, initial, &head, &["on", "off", "reset"]).await {
-                Ok(action) => action,
-                Err(response) => return response,
-            };
+            let action =
+                match read_required_action(stream, initial, &head, &["on", "off", "reset"]).await {
+                    Ok(action) => action,
+                    Err(response) => return response,
+                };
             let override_value = match action.as_str() {
                 "on" => Some(true),
                 "off" => Some(false),
@@ -1262,10 +1404,11 @@ async fn handle_local_endpoint(
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            let action = match read_required_action(stream, initial, &head, &["on", "off", "reset"]).await {
-                Ok(action) => action,
-                Err(response) => return response,
-            };
+            let action =
+                match read_required_action(stream, initial, &head, &["on", "off", "reset"]).await {
+                    Ok(action) => action,
+                    Err(response) => return response,
+                };
             let override_value = match action.as_str() {
                 "on" => Some(false),
                 "off" => Some(true),
@@ -1445,7 +1588,7 @@ fn compute_onboarding_snapshot(
     let steps = vec![
         OnboardingStep {
             key: "workspace",
-            text: "Ask Maestro to create a new app or clone a repository.",
+            text: "Ask Deixic Code to create a new app or clone a repository.",
             is_complete: !workspace_empty,
             is_enabled: workspace_empty,
         },
@@ -1616,13 +1759,20 @@ fn trimmed_env_file(name: &str) -> Option<String> {
     }
 }
 
-fn truthy_env(name: &str) -> bool {
-    trimmed_env(name)
-        .map(|value| {
-            let normalized = value.to_ascii_lowercase();
-            !matches!(normalized.as_str(), "0" | "false" | "off" | "no")
-        })
-        .unwrap_or(false)
+/// Parse a boolean environment variable strictly.
+///
+/// Returns `Some(true)` only for the affirmative tokens `1`/`true`/`yes`/`on`
+/// (case-insensitive), `Some(false)` for the negative tokens
+/// `0`/`false`/`no`/`off`, and `None` for anything else: unset, empty, or an
+/// unrecognized value such as `disabled`, `none`, or a typo. Call sites that
+/// need a plain `bool` choose the default for an unknown value explicitly with
+/// `.unwrap_or(false)`; an unknown value never means true.
+fn env_bool(name: &str) -> Option<bool> {
+    trimmed_env(name).and_then(|value| match value.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    })
 }
 
 fn llm_gateway_models_url() -> Option<String> {
@@ -1635,7 +1785,7 @@ fn llm_gateway_models_url() -> Option<String> {
     if let Some(url) = trimmed_env("MAESTRO_OPENROUTER_MODELS_URL") {
         return Some(url);
     }
-    if truthy_env("MAESTRO_ENABLE_OPENROUTER_MODELS")
+    if env_bool("MAESTRO_ENABLE_OPENROUTER_MODELS").unwrap_or(false)
         || trimmed_env("MAESTRO_OPENROUTER_API_KEY").is_some()
         || trimmed_env("OPENROUTER_API_KEY").is_some()
     {

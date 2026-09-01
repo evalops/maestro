@@ -1,6 +1,6 @@
 {
 	"schemaVersion": "evalops.maestro.codex.subagent-dispatch-table.v1",
-	"description": "Versioned Codex subagent dispatch contract shared by Maestro's TypeScript hosted runtime, Rust control plane, and Rust swarm runtime.",
+	"description": "Versioned Codex subagent dispatch contract shared by the Deixic Code runtime (internally/compatibly Maestro).",
 	"defaultCapability": "code:write",
 	"modelProviders": ["anthropic", "openai", "openai-codex", "google"],
 	"modelTiers": {
@@ -27,8 +27,8 @@
 		{
 			"laneId": "code-writer",
 			"skillId": "maestro.subagent.code-writer",
-			"displayName": "Maestro code writer subagent",
-			"description": "Delegate bounded implementation work to a target-owned Maestro coding child agent.",
+			"displayName": "Deixic Code writer subagent",
+			"description": "Delegate bounded implementation work to a target-owned Deixic Code child agent.",
 			"tags": ["maestro", "subagent", "code", "write"],
 			"typeAliases": ["worker", "coder", "code", "code-writer", "default"],
 			"capabilityAliases": [
@@ -43,8 +43,8 @@
 		{
 			"laneId": "code-review",
 			"skillId": "maestro.subagent.code-review",
-			"displayName": "Maestro code review subagent",
-			"description": "Delegate code review and risk analysis to a target-owned Maestro review child agent.",
+			"displayName": "Deixic Code review subagent",
+			"description": "Delegate code review and risk analysis to a target-owned Deixic Code review child agent.",
 			"tags": ["maestro", "subagent", "code", "review"],
 			"typeAliases": [
 				"pr-review",
@@ -58,8 +58,8 @@
 		{
 			"laneId": "test-runner",
 			"skillId": "maestro.subagent.test-runner",
-			"displayName": "Maestro test runner subagent",
-			"description": "Delegate test execution, failure triage, and result artifact capture to a target-owned Maestro child agent.",
+			"displayName": "Deixic Code test runner subagent",
+			"description": "Delegate test execution, failure triage, and result artifact capture to a target-owned Deixic Code child agent.",
 			"tags": ["maestro", "subagent", "test", "ci"],
 			"typeAliases": ["test", "qa", "ci", "ci-monitor", "test-runner"],
 			"capabilityAliases": [
@@ -73,8 +73,8 @@
 		{
 			"laneId": "browser-qa",
 			"skillId": "maestro.subagent.browser-qa",
-			"displayName": "Maestro browser QA subagent",
-			"description": "Delegate browser-based product QA, console inspection, screenshots, repro videos, and evidence-backed bug reports to a target-owned Maestro child agent.",
+			"displayName": "Deixic Code browser QA subagent",
+			"description": "Delegate browser-based product QA, console inspection, screenshots, repro videos, and evidence-backed bug reports to a target-owned Deixic Code child agent.",
 			"tags": ["maestro", "subagent", "browser", "qa", "evidence"],
 			"typeAliases": [
 				"browser-qa",
@@ -96,8 +96,8 @@
 		{
 			"laneId": "repo-explorer",
 			"skillId": "maestro.subagent.repo-explorer",
-			"displayName": "Maestro repo explorer subagent",
-			"description": "Delegate repository inspection and context gathering to a target-owned Maestro exploration child agent.",
+			"displayName": "Deixic Code repo explorer subagent",
+			"description": "Delegate repository inspection and context gathering to a target-owned Deixic Code exploration child agent.",
 			"tags": ["maestro", "subagent", "repo", "explore"],
 			"typeAliases": [
 				"explore",
@@ -118,8 +118,8 @@
 		{
 			"laneId": "release-shepherd",
 			"skillId": "maestro.subagent.release-shepherd",
-			"displayName": "Maestro release shepherd subagent",
-			"description": "Delegate release, rollout, and merge-follow-through work to a target-owned Maestro child agent.",
+			"displayName": "Deixic Code release shepherd subagent",
+			"description": "Delegate release, rollout, and merge-follow-through work to a target-owned Deixic Code child agent.",
 			"tags": ["maestro", "subagent", "release", "deploy"],
 			"typeAliases": ["release", "release-shepherd"],
 			"capabilityAliases": [

@@ -403,5 +403,6 @@ pub enum SessionEntry {
 
 ## Known Issues / TODOs
 
-1. Headless protocol integration is partial (not wired into the default TUI runtime yet)
+1. Headless/RPC mode is routed through the native Rust entrypoint and runtime;
+   keep its protocol and request-parity tests aligned with the interactive agent.
 2. MCP support exists, but parity and UX with the TypeScript surfaces is still evolving

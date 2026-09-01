@@ -4,13 +4,13 @@
 
 use ambient_agent::{
     daemon::{DaemonBuilder, DaemonCommand},
-    ipc::{default_socket_path, IpcClient},
+    ipc::{IpcClient, default_socket_path},
     types::*,
 };
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tracing::{info, Level};
+use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
 /// CLI-specific config that gets converted to/from AmbientConfig

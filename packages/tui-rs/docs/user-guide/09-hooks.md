@@ -95,6 +95,19 @@ return { continue = true }
 """
 ```
 
+```toml
+[[hooks]]
+event = "PreToolUse"
+wasm = "~/.maestro/plugins/safety.wasm"
+required = false # explicit advisory behavior
+```
+
+WASM `PreToolUse` hooks are fail-closed by default because they can enforce a
+tool policy. Set `required = false` explicitly when a WASM hook is advisory;
+load, timeout, resource, and invalid-result failures are then logged and the
+tool call continues. A build without the optional `wasm` feature never treats
+a configured WASM hook as active.
+
 ---
 
 ## In-session management

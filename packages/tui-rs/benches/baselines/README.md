@@ -29,7 +29,7 @@ File naming: `<platform>.json` where `<platform>` is `<os>-<arch>` —
 ## Running the bench
 
 ```
-cargo run -p maestro-tui --release --locked --bin maestro-perf-bench
+cargo run -p maestro-tui --release --locked --features test-support --bin maestro-perf-bench
 ```
 
 ## Producing or refreshing a baseline
@@ -37,7 +37,7 @@ cargo run -p maestro-tui --release --locked --bin maestro-perf-bench
 Run on a quiet machine of the target platform:
 
 ```
-cargo run -p maestro-tui --release --locked --bin maestro-perf-bench -- \
+cargo run -p maestro-tui --release --locked --features test-support --bin maestro-perf-bench -- \
   --write-baseline packages/tui-rs/benches/baselines/<platform>.json
 ```
 
@@ -48,7 +48,7 @@ run in the PR body so reviewers can sanity-check the new numbers.
 ## Comparing against a baseline
 
 ```
-cargo run -p maestro-tui --release --locked --bin maestro-perf-bench -- \
+cargo run -p maestro-tui --release --locked --features test-support --bin maestro-perf-bench -- \
   --baseline packages/tui-rs/benches/baselines/<platform>.json
 ```
 
@@ -63,4 +63,4 @@ present on only one side are skipped.
   advisory; recalibrate with `--write-baseline` on representative hardware if
   the warnings get noisy.
 - These scenarios are also covered by the binary's unit tests for the
-  comparison logic (`cargo test -p maestro-tui --bin maestro-perf-bench`).
+  comparison logic (`cargo test -p maestro-tui --features test-support --bin maestro-perf-bench`).

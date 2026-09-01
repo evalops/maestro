@@ -10,6 +10,11 @@ use std::time::Duration;
 
 use tempfile::tempdir;
 
+fn maestro_tui_binary() -> std::ffi::OsString {
+    std::env::var_os("CARGO_BIN_EXE_maestro-tui")
+        .expect("Cargo must provide the maestro-tui integration-test binary")
+}
+
 fn assert_signal_drains(signal: &str) {
     let workspace = tempdir().expect("workspace");
     let agent = workspace.path().join("fake-agent.sh");
@@ -33,7 +38,7 @@ fn assert_signal_drains(signal: &str) {
         .port()
         .to_string();
     let listen = format!("127.0.0.1:{port}");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_maestro-tui"))
+    let mut child = Command::new(maestro_tui_binary())
         .args([
             "hosted-runner",
             "--runner-session-id",
@@ -83,9 +88,11 @@ fn assert_signal_drains(signal: &str) {
     let manifest_path = shutdown["drain"]["manifest_path"]
         .as_str()
         .expect("drain manifest path");
-    assert!(fs::metadata(manifest_path)
-        .expect("drain manifest")
-        .is_file());
+    assert!(
+        fs::metadata(manifest_path)
+            .expect("drain manifest")
+            .is_file()
+    );
     assert!(child.wait().expect("hosted runner exit").success());
 }
 

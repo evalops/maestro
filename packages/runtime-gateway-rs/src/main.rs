@@ -1,5 +1,5 @@
 use maestro_runtime_gateway::{
-    parse_cli_action, print_cli_help, print_cli_version, serve, CliAction, RuntimeGatewayConfig,
+    CliAction, RuntimeGatewayConfig, parse_cli_action, print_cli_help, print_cli_version, serve,
 };
 use std::{env, process};
 

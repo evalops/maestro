@@ -5,10 +5,10 @@
 //! load failures fail closed (block) to match CLI behavior.
 
 use base64::{
-    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
     Engine as _,
+    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
 };
-use ring::signature::{UnparsedPublicKey, ED25519};
+use ring::signature::{ED25519, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
@@ -1171,13 +1171,17 @@ fn check_network_restrictions(url: &str, network: &NetworkPolicy) -> Option<Stri
     let parsed = match Url::parse(url.trim()) {
         Ok(parsed) => parsed,
         Err(_) => {
-            return Some("Invalid URL format - cannot validate against network policy.".to_string())
+            return Some(
+                "Invalid URL format - cannot validate against network policy.".to_string(),
+            );
         }
     };
     let host = match parsed.host_str() {
         Some(host) => host,
         None => {
-            return Some("Invalid URL format - cannot validate against network policy.".to_string())
+            return Some(
+                "Invalid URL format - cannot validate against network policy.".to_string(),
+            );
         }
     };
     let host = host.trim_matches(['[', ']']);
@@ -2203,9 +2207,11 @@ mod tests {
         std::env::set_var("MAESTRO_ORG_ID", "org-1");
         std::env::set_var("MAESTRO_WORKSPACE_ID", "workspace-1");
         assert!(refresh_managed_policy().valid);
-        assert!(managed_path
-            .with_file_name("managed-policy.json.state")
-            .is_file());
+        assert!(
+            managed_path
+                .with_file_name("managed-policy.json.state")
+                .is_file()
+        );
 
         let mut expired = signed_test_envelope(&key_pair, 1, false);
         let now = unix_now().unwrap();

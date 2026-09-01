@@ -103,8 +103,10 @@ pub fn build_maestro_a2a_peer_projection(
 pub fn maestro_a2a_agent_skills() -> Vec<PlatformAgentA2ASkill> {
     let mut skills = vec![PlatformAgentA2ASkill {
         id: "maestro-tui-turn".into(),
-        name: Some("Maestro TUI turn".into()),
-        description: Some("Run a prompt through the local Maestro native TUI agent runner.".into()),
+        name: Some("Deixic Code TUI turn".into()),
+        description: Some(
+            "Run a prompt through the local Deixic Code native TUI agent runner.".into(),
+        ),
         tags: Some(vec![
             "maestro".into(),
             "tui".into(),
@@ -299,7 +301,7 @@ mod tests {
             public_endpoint_url: "http://127.0.0.1:18787/".into(),
             attributes: Some(BTreeMap::from([(
                 "publishedBy".into(),
-                "maestro a2a register".into(),
+                "deixic-code a2a register".into(),
             )])),
             ..Default::default()
         });
@@ -313,16 +315,18 @@ mod tests {
         );
         let skills = projection.skills.unwrap();
         assert!(skills.iter().any(|skill| skill.id == "maestro-tui-turn"));
-        assert!(skills
-            .iter()
-            .any(|skill| skill.id == "maestro-subagent-code-writer"));
+        assert!(
+            skills
+                .iter()
+                .any(|skill| skill.id == "maestro-subagent-code-writer")
+        );
         assert_eq!(
             projection
                 .attributes
                 .as_ref()
                 .and_then(|attrs| attrs.get("publishedBy"))
                 .and_then(|v| v.as_str()),
-            Some("maestro a2a register")
+            Some("deixic-code a2a register")
         );
     }
 }

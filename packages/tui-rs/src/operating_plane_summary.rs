@@ -539,8 +539,10 @@ mod tests {
             "Artifacts: gateway:req_123 (llm_gateway/model_event, available, revision rev_1)"
         ));
         assert!(formatted.contains("Next action: Post allowed artifact revision to operator"));
-        assert!(formatted
-            .contains("Withheld/out of scope: customer_content, 2 redactions, tool-execution"));
+        assert!(
+            formatted
+                .contains("Withheld/out of scope: customer_content, 2 redactions, tool-execution")
+        );
         assert!(!formatted.contains("SECRET raw customer prompt"));
         assert!(!formatted.contains("SECRET raw artifact summary"));
     }

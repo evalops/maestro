@@ -20,9 +20,9 @@ use std::os::unix::process::CommandExt;
 use anyhow::{Context, Result};
 
 use crate::agent::{CredentialVault, ExecutionSource, FromAgent, NativeAgent, NativeAgentConfig};
-use crate::ai::{provider_model_name, AiProvider};
+use crate::ai::{AiProvider, provider_model_name};
 use crate::model_catalog::{
-    available_models, model_route, verify_model_offline, VerificationState,
+    VerificationState, available_models, model_route, verify_model_offline,
 };
 use crate::tools::ToolExecutor;
 
@@ -83,7 +83,6 @@ pub fn pick_review_model(current: &str, requested: Option<&str>) -> Result<Strin
         return Ok(requested.to_string());
     }
 
-    let current_provider = AiProvider::from_model(current);
     let models = available_models();
     // Auto-pick only models whose provider credentials are actually
     // configured; anything else would just fail when the review starts.
@@ -92,19 +91,9 @@ pub fn pick_review_model(current: &str, requested: Option<&str>) -> Result<Strin
         verification.state == VerificationState::Verified
             && verification.source != "provider-registry"
     };
-    if let Some(route) = models.iter().find_map(|model| {
-        let route = model_route(model);
-        (!same_model(&route, current)
-            && AiProvider::from_model(&route) != current_provider
-            && usable(&route))
-        .then_some(route)
-    }) {
-        return Ok(route);
-    }
-    if let Some(route) = models.iter().find_map(|model| {
-        let route = model_route(model);
-        (!same_model(&route, current) && usable(&route)).then_some(route)
-    }) {
+    if let Some(route) =
+        pick_automatic_review_model(current, models.iter().map(model_route), usable)
+    {
         return Ok(route);
     }
     Err(
@@ -112,6 +101,29 @@ pub fn pick_review_model(current: &str, requested: Option<&str>) -> Result<Strin
          Configure credentials for another provider or pass a model explicitly: /rubber-duck <model>."
             .to_string(),
     )
+}
+
+fn pick_automatic_review_model(
+    current: &str,
+    routes: impl IntoIterator<Item = String>,
+    usable: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let current_provider = AiProvider::from_model(current);
+    let routes: Vec<_> = routes.into_iter().collect();
+    routes
+        .iter()
+        .find(|route| {
+            !same_model(route, current)
+                && AiProvider::from_model(route) != current_provider
+                && usable(route)
+        })
+        .cloned()
+        .or_else(|| {
+            routes
+                .iter()
+                .find(|route| !same_model(route, current) && usable(route))
+                .cloned()
+        })
 }
 
 /// Canonical provider/model identity comparison, so provider-qualified
@@ -396,6 +408,9 @@ async fn drive_review(model: &str, cwd: &str, prompt: &str) -> Result<String> {
         // the second-opinion agent matches print-mode / headless default until
         // a caller chooses an explicit policy.
         sandbox_policy: None,
+        managed_mcp_policy: None,
+        max_turn_steps: crate::agent::DEFAULT_MAX_TURN_STEPS,
+        allow_unbounded_turn: false,
     };
 
     let allowed_tools: HashSet<String> = REVIEW_TOOLS
@@ -895,29 +910,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pick_prefers_different_provider() {
-        let Ok(picked) = pick_review_model("gpt-5.5", None) else {
-            // No authenticated alternative model in this environment.
-            return;
-        };
-        assert_ne!(picked, "gpt-5.5");
-        assert_ne!(
-            AiProvider::from_model(&picked),
-            AiProvider::from_model("gpt-5.5")
-        );
-        assert_eq!(
-            verify_model_offline(&picked).state,
-            VerificationState::Verified
-        );
+    fn automatic_pick_prefers_a_different_provider() {
+        let picked = pick_automatic_review_model(
+            "gpt-5.5",
+            ["gpt-5.5", "gpt-5.6", "anthropic/claude-sonnet-4-6"]
+                .into_iter()
+                .map(str::to_owned),
+            |_| true,
+        )
+        .expect("an alternative model");
+        assert_eq!(picked, "anthropic/claude-sonnet-4-6");
     }
 
     #[test]
-    fn pick_never_returns_current_model() {
-        let Ok(picked) = pick_review_model("claude-sonnet-4-6", None) else {
-            // No authenticated alternative model in this environment.
-            return;
-        };
-        assert_ne!(picked, "claude-sonnet-4-6");
+    fn automatic_pick_falls_back_to_a_different_model_from_the_same_provider() {
+        let picked = pick_automatic_review_model(
+            "gpt-5.5",
+            ["gpt-5.5", "gpt-5.6"].into_iter().map(str::to_owned),
+            |_| true,
+        )
+        .expect("an alternative model");
+        assert_eq!(picked, "gpt-5.6");
     }
 
     #[test]
@@ -939,16 +952,20 @@ mod tests {
         assert!(pick_review_model("openai/gpt-5.5", Some("gpt-5.5")).is_err());
         // An OpenRouter vendor route is not independent from the same direct
         // vendor model, even though the transport providers differ.
-        assert!(pick_review_model(
-            "openrouter/anthropic/claude-sonnet-4.5",
-            Some("anthropic/claude-sonnet-4.5")
-        )
-        .is_err());
-        assert!(pick_review_model(
-            "openrouter/google/gemini-2.5-pro",
-            Some("google/gemini-2.5-pro")
-        )
-        .is_err());
+        assert!(
+            pick_review_model(
+                "openrouter/anthropic/claude-sonnet-4.5",
+                Some("anthropic/claude-sonnet-4.5")
+            )
+            .is_err()
+        );
+        assert!(
+            pick_review_model(
+                "openrouter/google/gemini-2.5-pro",
+                Some("google/gemini-2.5-pro")
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1108,12 +1125,14 @@ mod tests {
     #[test]
     fn tracked_diff_failure_is_not_treated_as_an_unborn_repository() {
         let temp = tempfile::tempdir().expect("tempdir");
-        assert!(Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(temp.path())
-            .status()
-            .expect("git init")
-            .success());
+        assert!(
+            Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(temp.path())
+                .status()
+                .expect("git init")
+                .success()
+        );
         std::fs::write(temp.path().join("tracked.rs"), "fn tracked() {}\n").expect("write file");
         for args in [
             ["add", "tracked.rs"].as_slice(),
@@ -1128,12 +1147,14 @@ mod tests {
             ]
             .as_slice(),
         ] {
-            assert!(Command::new("git")
-                .args(args)
-                .current_dir(temp.path())
-                .status()
-                .expect("git command")
-                .success());
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(temp.path())
+                    .status()
+                    .expect("git command")
+                    .success()
+            );
         }
         std::fs::write(temp.path().join(".git/index"), b"corrupt index").expect("corrupt index");
 
@@ -1144,12 +1165,14 @@ mod tests {
     #[test]
     fn invalid_head_is_not_treated_as_an_unborn_repository() {
         let temp = tempfile::tempdir().expect("tempdir");
-        assert!(Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(temp.path())
-            .status()
-            .expect("git init")
-            .success());
+        assert!(
+            Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(temp.path())
+                .status()
+                .expect("git init")
+                .success()
+        );
         std::fs::write(temp.path().join(".git/HEAD"), "not a valid HEAD\n").expect("break HEAD");
 
         let err = uncommitted_diff(temp.path()).expect_err("invalid HEAD must be surfaced");
@@ -1164,12 +1187,14 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().expect("tempdir");
-        assert!(Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(temp.path())
-            .status()
-            .expect("git init")
-            .success());
+        assert!(
+            Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(temp.path())
+                .status()
+                .expect("git init")
+                .success()
+        );
         std::fs::write(temp.path().join("tracked.rs"), "before\n").expect("write tracked");
         for args in [
             ["add", "tracked.rs"].as_slice(),
@@ -1184,12 +1209,14 @@ mod tests {
             ]
             .as_slice(),
         ] {
-            assert!(Command::new("git")
-                .args(args)
-                .current_dir(temp.path())
-                .status()
-                .expect("git command")
-                .success());
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(temp.path())
+                    .status()
+                    .expect("git command")
+                    .success()
+            );
         }
         let sentinel = temp.path().join("external-diff-ran");
         let helper = temp.path().join("trap-diff");
@@ -1201,12 +1228,14 @@ mod tests {
         let mut permissions = std::fs::metadata(&helper).expect("metadata").permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(&helper, permissions).expect("chmod");
-        assert!(Command::new("git")
-            .args(["config", "diff.external", helper.to_str().expect("utf8")])
-            .current_dir(temp.path())
-            .status()
-            .expect("git config")
-            .success());
+        assert!(
+            Command::new("git")
+                .args(["config", "diff.external", helper.to_str().expect("utf8")])
+                .current_dir(temp.path())
+                .status()
+                .expect("git config")
+                .success()
+        );
         std::fs::write(temp.path().join("tracked.rs"), "after\n").expect("edit tracked");
 
         let diff = uncommitted_diff(temp.path()).expect("diff must use built-in path");

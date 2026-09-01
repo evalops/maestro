@@ -24,13 +24,18 @@
 //! IAM credentials via
 //! `http://169.254.169.254/latest/meta-data/iam/security-credentials/`.
 //! Keep this the single implementation for every tool that fetches
-//! attacker-influenceable URLs; do not reimplement it.
+//! attacker-influenceable URLs; do not reimplement it. The A2A push
+//! notification guard in `maestro-runtime-gateway` delegates here for the same
+//! reason.
+//!
+//! [`is_blocked_ip`] is the exact negation of the public-address predicate.
+//! In-tree vectors keep the boundary classification explicit.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
-use reqwest::header::LOCATION;
 use reqwest::StatusCode;
+use reqwest::header::LOCATION;
 use tokio::net::lookup_host;
 
 /// Maximum redirect hops to follow before giving up.
@@ -194,20 +199,27 @@ fn parse_host_ip(host: &str) -> Option<IpAddr> {
 
 /// Returns true if `ip` is a private, reserved, or otherwise non-public
 /// address that outbound tool fetches must not reach.
-pub(crate) fn is_blocked_ip(ip: IpAddr) -> bool {
+///
+/// This is the exact negation of the public-address predicate used for
+/// attacker-influenceable outbound requests. Boundary cases are checked
+/// against `testdata/egress-ip-vectors.json` within this tree.
+pub fn is_blocked_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(addr) => is_blocked_ipv4(addr),
-        IpAddr::V6(addr) => {
-            addr.to_ipv4_mapped().is_some_and(is_blocked_ipv4)
-                || ipv4_compatible_addr(addr).is_some_and(is_blocked_ipv4)
-                || is_blocked_ipv6(addr)
-        }
+        IpAddr::V6(addr) => is_blocked_ipv6(addr),
     }
 }
 
-fn ipv4_compatible_addr(addr: Ipv6Addr) -> Option<Ipv4Addr> {
+/// The IPv4 address embedded in an IPv4-mapped (`::ffff:a.b.c.d`) or
+/// IPv4-compatible (`::a.b.c.d`) IPv6 address. Both forms name an IPv4
+/// destination, so a blocked IPv4 target must not become reachable by
+/// re-encoding it as an IPv6 literal.
+fn embedded_ipv4(addr: Ipv6Addr) -> Option<Ipv4Addr> {
     let octets = addr.octets();
-    if octets[..12].iter().all(|octet| *octet == 0) {
+    let is_compatible = octets[..12].iter().all(|octet| *octet == 0);
+    let is_mapped =
+        octets[..10].iter().all(|octet| *octet == 0) && octets[10] == 0xff && octets[11] == 0xff;
+    if is_compatible || is_mapped {
         Some(Ipv4Addr::new(
             octets[12], octets[13], octets[14], octets[15],
         ))
@@ -217,76 +229,136 @@ fn ipv4_compatible_addr(addr: Ipv6Addr) -> Option<Ipv4Addr> {
 }
 
 fn is_blocked_ipv4(addr: Ipv4Addr) -> bool {
-    addr.is_private()
+    let [a, b, c, d] = addr.octets();
+    if addr.is_unspecified()
         || addr.is_loopback()
+        || addr.is_private()
         || addr.is_link_local()
         || addr.is_multicast()
         || addr.is_broadcast()
-        || addr.is_unspecified()
-        || is_shared_address_space_ipv4(addr)
-        || is_current_network_ipv4(addr)
-        || is_ietf_protocol_assignment_ipv4(addr)
-        || is_benchmarking_ipv4(addr)
-        || is_reserved_ipv4(addr)
-}
-
-/// `100.64.0.0/10` (RFC 6598 "Shared Address Space" / CGNAT).
-///
-/// `Ipv4Addr::is_private()` does not cover this range. This fleet's
-/// Tailscale network lives entirely inside it, and Alibaba Cloud's instance
-/// metadata endpoint (`100.100.100.200`) sits inside it too, so this was a
-/// gap that let a fetch tool reach both internal fleet services and a cloud
-/// metadata endpoint.
-fn is_shared_address_space_ipv4(addr: Ipv4Addr) -> bool {
-    let octets = addr.octets();
-    octets[0] == 100 && (64..=127).contains(&octets[1])
-}
-
-/// `0.0.0.0/8` ("this network", RFC 791). `is_unspecified()` only matches
-/// the exact all-zero address, not the rest of the block.
-fn is_current_network_ipv4(addr: Ipv4Addr) -> bool {
-    addr.octets()[0] == 0
-}
-
-/// `192.0.0.0/24` (IETF protocol assignments, RFC 6890).
-fn is_ietf_protocol_assignment_ipv4(addr: Ipv4Addr) -> bool {
-    let octets = addr.octets();
-    octets[0] == 192 && octets[1] == 0 && octets[2] == 0
-}
-
-/// `198.18.0.0/15` (benchmarking, RFC 2544).
-fn is_benchmarking_ipv4(addr: Ipv4Addr) -> bool {
-    let octets = addr.octets();
-    octets[0] == 198 && (octets[1] == 18 || octets[1] == 19)
-}
-
-/// `240.0.0.0/4` (reserved for future use; also covers the broadcast
-/// address, which `is_broadcast()` already blocks).
-fn is_reserved_ipv4(addr: Ipv4Addr) -> bool {
-    addr.octets()[0] >= 240
+    {
+        return true;
+    }
+    // `0.0.0.0/8` ("this network", RFC 791). `is_unspecified()` only matches
+    // the exact all-zero address, not the rest of the block.
+    if a == 0 {
+        return true;
+    }
+    // `100.64.0.0/10` (RFC 6598 shared address space / CGNAT). `is_private()`
+    // does not cover this range. This fleet's Tailscale network lives entirely
+    // inside it, and Alibaba Cloud's instance metadata endpoint
+    // (`100.100.100.200`) sits inside it too.
+    if a == 100 && (64..=127).contains(&b) {
+        return true;
+    }
+    // `192.0.0.0/24` (IETF protocol assignments, RFC 6890). `192.0.0.9` (PCP
+    // anycast, RFC 7723) and `192.0.0.10` (NAT64/DNS64 discovery anycast, RFC
+    // 8155) are the only entries IANA marks globally reachable.
+    if a == 192 && b == 0 && c == 0 {
+        return !matches!(d, 9 | 10);
+    }
+    // `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` (documentation).
+    if addr.is_documentation() {
+        return true;
+    }
+    // `192.88.99.0/24` (6to4 relay anycast, deprecated by RFC 7526).
+    if a == 192 && b == 88 && c == 99 {
+        return true;
+    }
+    // `198.18.0.0/15` (benchmarking, RFC 2544).
+    if a == 198 && matches!(b, 18 | 19) {
+        return true;
+    }
+    // `240.0.0.0/4` (reserved for future use).
+    a >= 240
 }
 
 fn is_blocked_ipv6(addr: Ipv6Addr) -> bool {
-    addr.is_loopback()
-        || addr.is_unspecified()
-        || addr.is_multicast()
-        || is_unique_local_ipv6(addr)
-        || is_unicast_link_local_ipv6(addr)
+    if addr.is_loopback() || addr.is_unspecified() {
+        return true;
+    }
+    if let Some(embedded) = embedded_ipv4(addr) {
+        return is_blocked_ipv4(embedded);
+    }
+    let segments = addr.segments();
+    if addr.is_multicast()
+        // `fc00::/7` (unique local addresses, RFC 4193).
+        || (segments[0] & 0xfe00) == 0xfc00
+        // `fe80::/10` (link-local unicast).
+        || (segments[0] & 0xffc0) == 0xfe80
+        // `fec0::/10` (site-local, deprecated by RFC 3879).
+        || (segments[0] & 0xffc0) == 0xfec0
+    {
+        return true;
+    }
+    // `64:ff9b::/32` holds both assigned NAT64 translation prefixes (RFC 6052
+    // `64:ff9b::/96` and RFC 8215 `64:ff9b:1::/48`); the low bits carry a
+    // caller-chosen IPv4 destination.
+    if segments[0] == 0x0064 && segments[1] == 0xff9b {
+        return true;
+    }
+    // `100::/64` (discard-only, RFC 6666) and `100:0:0:1::/64` (dummy prefix,
+    // RFC 9780).
+    if segments[0] == 0x0100 && segments[1] == 0 && segments[2] == 0 && matches!(segments[3], 0 | 1)
+    {
+        return true;
+    }
+    // `2001:db8::/32` (documentation) and `2001:2::/48` (benchmarking).
+    if segments[0] == 0x2001 && matches!(segments[1], 0x0db8 | 0x0002) {
+        return true;
+    }
+    // `2001::/23` (IETF protocol assignments, RFC 2928), which includes
+    // Teredo `2001::/32` and the deprecated ORCHID prefix `2001:10::/28`.
+    if segments[0] == 0x2001 && segments[1] <= 0x01ff {
+        return !is_globally_reachable_protocol_assignment(segments);
+    }
+    // `2002::/16` (6to4, deprecated by RFC 7526), `3fff::/20` (documentation,
+    // RFC 9637), `5f00::/16` (segment routing SIDs, RFC 9602).
+    segments[0] == 0x2002
+        || (segments[0] == 0x3fff && (segments[1] & 0xf000) == 0)
+        || segments[0] == 0x5f00
 }
 
-/// `fc00::/7` (unique local addresses, RFC 4193).
-fn is_unique_local_ipv6(addr: Ipv6Addr) -> bool {
-    (addr.segments()[0] & 0xfe00) == 0xfc00
-}
-
-/// `fe80::/10` (link-local unicast).
-fn is_unicast_link_local_ipv6(addr: Ipv6Addr) -> bool {
-    (addr.segments()[0] & 0xffc0) == 0xfe80
+/// The `2001::/23` children IANA marks globally reachable: the `2001:1::1..3`
+/// anycast addresses, AMT (`2001:3::/32`), AS112-v6 (`2001:4:112::/48`),
+/// ORCHIDv2 (`2001:20::/28`), and drone remote ID (`2001:30::/28`).
+fn is_globally_reachable_protocol_assignment(segments: [u16; 8]) -> bool {
+    (segments[1] == 0x0001
+        && segments[2..7].iter().all(|segment| *segment == 0)
+        && matches!(segments[7], 1..=3))
+        || segments[1] == 0x0003
+        || (segments[1] == 0x0004 && segments[2] == 0x0112)
+        || (segments[1] & 0xfff0) == 0x0020
+        || (segments[1] & 0xfff0) == 0x0030
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shared classification vectors for the local egress policy test.
+    const EGRESS_VECTORS: &str = include_str!("../../testdata/egress-ip-vectors.json");
+
+    #[test]
+    fn test_shared_egress_vectors_classify_identically() {
+        let parsed: serde_json::Value =
+            serde_json::from_str(EGRESS_VECTORS).expect("shared egress vector file parses");
+        let vectors = parsed["ip_vectors"]
+            .as_array()
+            .expect("ip_vectors is an array");
+        assert!(vectors.len() >= 70, "the shared vector table lost entries");
+        for vector in vectors {
+            let address = vector["address"]
+                .as_str()
+                .expect("vector address is a string");
+            let expected = vector["blocked"]
+                .as_bool()
+                .expect("vector blocked is a bool");
+            let note = vector["note"].as_str().unwrap_or("");
+            let ip: IpAddr = address.parse().expect("vector address parses");
+            assert_eq!(is_blocked_ip(ip), expected, "{address} ({note})");
+        }
+    }
 
     #[test]
     fn test_validate_fetch_url_rejects_non_http_schemes() {

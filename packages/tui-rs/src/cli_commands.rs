@@ -8,15 +8,15 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::session::{ExportFormat, ExportOptions, SessionManager};
 use crate::session_transfer::{
-    export_portable_session, export_secure_portable_session, import_portable_session_with_options,
     PortableFormat, SecureSessionExportOptions, SecureSessionImportOptions,
+    export_portable_session, export_secure_portable_session, import_portable_session_with_options,
 };
 
-const ANTHROPIC_OAUTH_REMOVED_MESSAGE: &str = "Anthropic OAuth login has been removed. Set ANTHROPIC_API_KEY to use Anthropic models, or run `maestro codex login` for the default Codex flow.";
+const ANTHROPIC_OAUTH_REMOVED_MESSAGE: &str = "Anthropic OAuth login has been removed. Set ANTHROPIC_API_KEY to use Anthropic models, or run `deixic-code codex login` for the default Codex flow.";
 
 /// Dispatch a top-level CLI helper subcommand.
 ///
@@ -36,13 +36,13 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
         "doctor" => crate::doctor::run_doctor(&args[1..]).await,
         "setup" => crate::setup_cli::run_setup(&args[1..]).await,
         "status" if args.get(1).is_some_and(|arg| is_help(arg)) => {
-            println!("Usage: maestro status");
+            println!("Usage: deixic-code status");
             Ok(0)
         }
         "status" => run_status(),
         "hooks" => run_hooks(&args[1..]),
         "export" if args.get(1).is_some_and(|arg| is_help(arg)) => {
-            println!("Usage: maestro export <session-id> [output-path] [--format f]");
+            println!("Usage: deixic-code export <session-id> [output-path] [--format f]");
             Ok(0)
         }
         "export" => {
@@ -50,12 +50,12 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
             run_sessions_export(&args[1..])
         }
         "import" if args.get(1).is_some_and(|arg| is_help(arg)) => {
-            println!("Usage: maestro import <file.jsonl|file.json>");
+            println!("Usage: deixic-code import <file.jsonl|file.json>");
             Ok(0)
         }
         "import" => run_sessions_import(&args[1..]),
         "import-claude" if args.get(1).is_some_and(|arg| is_help(arg)) => {
-            println!("Usage: maestro import-claude [--dry-run]");
+            println!("Usage: deixic-code import-claude [--dry-run]");
             Ok(0)
         }
         "import-claude" => crate::import_claude_cli::run_import_claude(&args[1..]),
@@ -65,8 +65,14 @@ pub async fn run_cli_command(args: &[String]) -> Result<i32> {
         "memory" => crate::memory_cli::run_memory(&args[1..]).await,
         "mission" => crate::mission_cli::run_mission(&args[1..]).await,
         "init" => crate::init_cli::run_init(&args[1..]).await,
+        "login" if args.get(1).is_some_and(|arg| is_help(arg)) => {
+            println!("Usage: maestro login");
+            Ok(0)
+        }
+        "login" => crate::evalops_cli::run_evalops(&["login".to_owned()]).await,
         "evalops" => crate::evalops_cli::run_evalops(&args[1..]).await,
         "openai" => crate::openai_cli::run_openai(&args[1..]).await,
+        "computer" | "orb" => crate::orb_cli::run_orb(&args[1..]).await,
         "config" => crate::config_cli::run_config(&args[1..]).await,
         "operating-plane" => crate::operating_plane_cli::run_operating_plane(&args[1..]).await,
         "painter" => crate::painter_cli::run_painter(&args[1..]),
@@ -102,13 +108,13 @@ fn run_sessions(args: &[String]) -> Result<i32> {
         "import" => run_sessions_import(&args[1..]),
         "help" | "--help" | "-h" => {
             println!(
-                "Usage: maestro sessions [list [N]|path|export <id> [out] [--format f]|import <file> [secure key flags]]"
+                "Usage: deixic-code sessions [list [N]|path|export <id> [out] [--format f]|import <file> [secure key flags]]"
             );
             Ok(0)
         }
         other => {
             eprintln!("Unknown sessions subcommand: {other}");
-            eprintln!("Try: maestro sessions list|export|import|path");
+            eprintln!("Try: deixic-code sessions list|export|import|path");
             Ok(1)
         }
     }
@@ -238,7 +244,9 @@ fn run_sessions_export(args: &[String]) -> Result<i32> {
     }
 
     let Some(id) = session_id else {
-        eprintln!("Usage: maestro sessions export <session-id> [output-path] [--format json|secure-json|md|html|txt|jsonl]");
+        eprintln!(
+            "Usage: deixic-code sessions export <session-id> [output-path] [--format json|secure-json|md|html|txt|jsonl]"
+        );
         return Ok(2);
     };
 
@@ -377,7 +385,9 @@ fn run_sessions_import(args: &[String]) -> Result<i32> {
         i += 1;
     }
     let Some(source) = source else {
-        eprintln!("Usage: maestro sessions import <file.jsonl|file.json> [--encryption-key-file path --verify-key-file path [--recipient-key-id id]]");
+        eprintln!(
+            "Usage: deixic-code sessions import <file.jsonl|file.json> [--encryption-key-file path --verify-key-file path [--recipient-key-id id]]"
+        );
         return Ok(2);
     };
     let secure_options = match (encryption_key_file, verify_key_file) {
@@ -435,7 +445,7 @@ fn run_cost(args: &[String]) -> Result<i32> {
         "clear" => run_cost_clear(args),
         "breakdown" => run_cost_breakdown(),
         "help" | "--help" | "-h" => {
-            println!("Usage: maestro cost [today|week|month|all|breakdown|clear]");
+            println!("Usage: deixic-code cost [today|week|month|all|breakdown|clear]");
             Ok(0)
         }
         "today" | "yesterday" | "week" | "7d" | "month" | "30d" | "all" | "total" => {
@@ -443,7 +453,7 @@ fn run_cost(args: &[String]) -> Result<i32> {
         }
         other => {
             eprintln!("Unknown cost subcommand: {other}");
-            eprintln!("Try: maestro cost today|yesterday|week|month|all|breakdown|clear");
+            eprintln!("Try: deixic-code cost today|yesterday|week|month|all|breakdown|clear");
             Ok(1)
         }
     }
@@ -477,7 +487,7 @@ fn run_cost_summary(period: &str) -> Result<i32> {
         other => other,
     };
 
-    println!("Maestro cost — {label}");
+    println!("Deixic Code cost — {label}");
     println!("  Sessions scanned: {session_count}");
     println!("  Input tokens:     {input_tokens}");
     println!("  Output tokens:    {output_tokens}");
@@ -504,7 +514,7 @@ fn run_cost_breakdown() -> Result<i32> {
         entry.3 += s.stats.total_cost;
     }
 
-    println!("Maestro cost breakdown (by model, last 200 sessions)");
+    println!("Deixic Code cost breakdown (by model, last 200 sessions)");
     if by_model.is_empty() {
         println!("  No session usage found.");
         return Ok(0);
@@ -662,7 +672,7 @@ fn run_stats(args: &[String]) -> Result<i32> {
             }
             "help" | "--help" | "-h" => {
                 println!(
-                    "Usage: maestro stats [today|yesterday|week|month|all] [--json|--csv] [--session <id>]"
+                    "Usage: deixic-code stats [today|yesterday|week|month|all] [--json|--csv] [--session <id>]"
                 );
                 return Ok(0);
             }
@@ -727,7 +737,7 @@ fn run_stats(args: &[String]) -> Result<i32> {
         m.2 += e.cost;
     }
 
-    println!("Maestro stats — {label} (native usage.json)");
+    println!("Deixic Code stats — {label} (native usage.json)");
     if entries.is_empty() {
         // Fall back to session rollups when no usage DB.
         println!("  No usage.json entries; showing local session rollup instead.");
@@ -766,7 +776,7 @@ fn run_models(args: &[String]) -> Result<i32> {
         let model = args
             .get(1)
             .filter(|arg| !arg.starts_with('-'))
-            .context("Usage: maestro models inspect <model-id> [--json]")?;
+            .context("Usage: deixic-code models inspect <model-id> [--json]")?;
         let inspection = crate::model_catalog::inspect_model(model)?;
         if args.iter().any(|arg| arg == "--json") {
             println!("{}", serde_json::to_string_pretty(&inspection)?);
@@ -802,8 +812,8 @@ fn run_models(args: &[String]) -> Result<i32> {
             "providers" => sub = "providers",
             "help" | "--help" | "-h" => {
                 println!(
-                    "Usage: maestro models [list|providers] [--provider <name>]\n\
-                     \x20      maestro models inspect <model-id> [--json]"
+                    "Usage: deixic-code models [list|providers] [--provider <name>]\n\
+                     \x20      deixic-code models inspect <model-id> [--json]"
                 );
                 return Ok(0);
             }
@@ -888,7 +898,7 @@ fn run_models(args: &[String]) -> Result<i32> {
 fn run_status() -> Result<i32> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let version = env!("CARGO_PKG_VERSION");
-    println!("Maestro status (native)");
+    println!("Deixic Code status (native)");
     println!("  Binary:     maestro {version}");
     println!("  Cwd:        {}", cwd.display());
     println!(
@@ -913,11 +923,121 @@ fn run_status() -> Result<i32> {
     Ok(0)
 }
 
+const HOOKS_IMPORT_USAGE: &str = "Usage: deixic-code hooks import --from-claude-code [path] [--out <file>]\n\nReads a Claude Code settings.json and writes the equivalent Deixic Code hook\nconfig. With no path, reads .claude/settings.json in the working directory,\nthen ~/.claude/settings.json.\n\nExits non-zero and lists every entry that has no Deixic Code equivalent. Nothing\nis written in that case, so a partial import is never mistaken for a\ncomplete one.";
+
+/// Locate the Claude Code settings file to import.
+fn claude_code_settings_path(explicit: Option<&str>) -> Option<PathBuf> {
+    if let Some(path) = explicit {
+        return Some(PathBuf::from(path));
+    }
+    let local = std::env::current_dir()
+        .ok()?
+        .join(".claude")
+        .join("settings.json");
+    if local.is_file() {
+        return Some(local);
+    }
+    let global = dirs::home_dir()?.join(".claude").join("settings.json");
+    global.is_file().then_some(global)
+}
+
+fn run_hooks_import(args: &[String]) -> Result<i32> {
+    if args.iter().any(|arg| is_help(arg)) {
+        println!("{HOOKS_IMPORT_USAGE}");
+        return Ok(0);
+    }
+    if !args.iter().any(|arg| arg == "--from-claude-code") {
+        eprintln!("{HOOKS_IMPORT_USAGE}");
+        return Ok(1);
+    }
+
+    let mut explicit_source = None;
+    let mut out_path = None;
+    let mut index = 0;
+    while index < args.len() {
+        let argument = args[index].as_str();
+        match argument {
+            "--from-claude-code" => {}
+            "--out" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    eprintln!("--out requires a path");
+                    return Ok(1);
+                };
+                out_path = Some(PathBuf::from(value));
+            }
+            other if other.starts_with("--") => {
+                eprintln!("Unknown option for `deixic-code hooks import`: {other}");
+                return Ok(1);
+            }
+            other => explicit_source = Some(other.to_string()),
+        }
+        index += 1;
+    }
+
+    let Some(source) = claude_code_settings_path(explicit_source.as_deref()) else {
+        eprintln!(
+            "No Claude Code settings found. Looked for .claude/settings.json here and ~/.claude/settings.json."
+        );
+        return Ok(1);
+    };
+    let text = match std::fs::read_to_string(&source) {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!("Failed to read {}: {error}", source.display());
+            return Ok(1);
+        }
+    };
+    let outcome = match crate::hooks::import_claude_code_hooks(&text) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            eprintln!("Failed to parse {}: {error}", source.display());
+            return Ok(1);
+        }
+    };
+
+    if outcome.has_unmappable() {
+        eprintln!(
+            "{} of {} entries in {} have no Deixic Code equivalent:",
+            outcome.unmappable.len(),
+            outcome.unmappable.len() + outcome.hooks.len(),
+            source.display()
+        );
+        for entry in &outcome.unmappable {
+            eprintln!("  - {entry}");
+        }
+        eprintln!("Nothing was written. Remove or rewrite those entries and run the import again.");
+        return Ok(1);
+    }
+
+    let rendered = crate::hooks::render_maestro_hooks_json(&outcome);
+    match out_path {
+        Some(path) => {
+            if let Err(error) = std::fs::write(&path, &rendered) {
+                eprintln!("Failed to write {}: {error}", path.display());
+                return Ok(1);
+            }
+            println!(
+                "Imported {} hook(s) from {} into {}",
+                outcome.hooks.len(),
+                source.display(),
+                path.display()
+            );
+        }
+        None => print!("{rendered}"),
+    }
+    Ok(0)
+}
+
 fn run_hooks(args: &[String]) -> Result<i32> {
     let sub = args.first().map(String::as_str).unwrap_or("status");
+    if sub == "import" {
+        return run_hooks_import(&args[1..]);
+    }
     if sub != "status" && sub != "list" {
         eprintln!("Unknown hooks subcommand: {sub}");
-        eprintln!("Try: maestro hooks status");
+        eprintln!("Try: deixic-code hooks status");
+        eprintln!("     deixic-code hooks import --from-claude-code [path]");
         return Ok(1);
     }
 
@@ -933,6 +1053,7 @@ fn run_hooks(args: &[String]) -> Result<i32> {
     }
     println!();
     println!("Inspect hooks from the interactive TUI (/hooks) for live concurrency stats.");
+    println!("Import a Claude Code config with `deixic-code hooks import --from-claude-code`.");
     Ok(0)
 }
 
@@ -980,7 +1101,7 @@ mod tests {
     #[tokio::test]
     async fn anthropic_command_reports_removed_oauth_flow() {
         assert!(ANTHROPIC_OAUTH_REMOVED_MESSAGE.contains("ANTHROPIC_API_KEY"));
-        assert!(ANTHROPIC_OAUTH_REMOVED_MESSAGE.contains("maestro codex login"));
+        assert!(ANTHROPIC_OAUTH_REMOVED_MESSAGE.contains("deixic-code codex login"));
         assert_eq!(
             run_cli_command(&argv(&["anthropic", "status"]))
                 .await
@@ -1010,5 +1131,93 @@ mod tests {
         let args = argv(&["--encryption-key-file"]);
         let mut index = 0;
         assert!(take_arg_value(&args, &mut index, &args[0], "--encryption-key-file").is_err());
+    }
+
+    #[test]
+    fn hooks_import_writes_mapped_config_and_refuses_unmappable_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        fs::write(
+            &settings,
+            r#"{
+              "hooks": {
+                "PreToolUse": [
+                  {"matcher": "Bash", "hooks": [{"type": "command", "command": "./guard.sh"}]},
+                  {"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "./fmt.sh"}]}
+                ],
+                "UserPromptSubmit": [
+                  {"hooks": [{"type": "command", "command": "./context.sh"}]}
+                ],
+                "Stop": [
+                  {"hooks": [{"type": "command", "command": "./done.sh"}]}
+                ],
+                "PostToolUse": [
+                  {"matcher": "Nonsense", "hooks": [{"type": "command", "command": "./never.sh"}]}
+                ]
+              }
+            }"#,
+        )
+        .unwrap();
+        let out = dir.path().join("hooks.json");
+
+        // Two entries cannot be mapped, so the command fails and writes
+        // nothing rather than reporting a partial import as a success.
+        assert_eq!(
+            run_hooks(&argv(&[
+                "import",
+                "--from-claude-code",
+                settings.to_str().unwrap(),
+                "--out",
+                out.to_str().unwrap(),
+            ]))
+            .unwrap(),
+            1
+        );
+        assert!(!out.exists(), "a refused import must not write output");
+
+        // With the two unmappable entries removed, the remaining three map.
+        fs::write(
+            &settings,
+            r#"{
+              "hooks": {
+                "PreToolUse": [
+                  {"matcher": "Bash", "hooks": [{"type": "command", "command": "./guard.sh"}]},
+                  {"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "./fmt.sh"}]}
+                ],
+                "UserPromptSubmit": [
+                  {"hooks": [{"type": "command", "command": "./context.sh"}]}
+                ]
+              }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            run_hooks(&argv(&[
+                "import",
+                "--from-claude-code",
+                settings.to_str().unwrap(),
+                "--out",
+                out.to_str().unwrap(),
+            ]))
+            .unwrap(),
+            0
+        );
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&out).unwrap()).unwrap();
+        assert_eq!(written["version"], 1);
+        assert_eq!(written["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            written["hooks"]["UserPromptSubmit"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn hooks_import_requires_the_source_flag() {
+        assert_eq!(run_hooks(&argv(&["import"])).unwrap(), 1);
+        assert_eq!(run_hooks(&argv(&["import", "--help"])).unwrap(), 0);
     }
 }

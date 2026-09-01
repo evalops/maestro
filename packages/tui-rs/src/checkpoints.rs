@@ -536,11 +536,7 @@ fn git_text(repo_root: &Path, args: &[&str]) -> Option<String> {
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    if text.is_empty() { None } else { Some(text) }
 }
 
 /// Fetch the committed content of `path` at `head`.
@@ -985,10 +981,12 @@ mod tests {
         fs::write(fx.repo.join("gen/top.txt"), "generated top\n").unwrap();
         let checkpoint = finalize_turn(pending).unwrap().expect("checkpoint");
         assert_eq!(checkpoint.entries.len(), 2);
-        assert!(checkpoint
-            .entries
-            .iter()
-            .all(|e| e.kind == EntryKind::Created));
+        assert!(
+            checkpoint
+                .entries
+                .iter()
+                .all(|e| e.kind == EntryKind::Created)
+        );
 
         let report = restore_latest(&store(&fx)).unwrap().expect("restore");
         assert_eq!(report.deleted.len(), 2);

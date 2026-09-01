@@ -19,7 +19,7 @@ use std::process::{Command, Stdio};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 
 /// Sanitize a user-supplied worktree name into a valid git branch name.
 ///
@@ -568,9 +568,11 @@ mod tests {
         );
         assert!(requested_name(&args(&["exec", "do", "it"])).is_none());
         assert!(requested_name(&args(&["-w"])).unwrap().is_err());
-        assert!(requested_name(&args(&["--worktree", "--json"]))
-            .unwrap()
-            .is_err());
+        assert!(
+            requested_name(&args(&["--worktree", "--json"]))
+                .unwrap()
+                .is_err()
+        );
         assert!(requested_name(&args(&["--worktree="])).unwrap().is_err());
     }
 
@@ -800,11 +802,13 @@ mod tests {
         );
 
         session.finish();
-        assert!(!repo
-            .parent()
-            .expect("repo has a parent")
-            .join("repo-wt-subdirectory")
-            .exists());
+        assert!(
+            !repo
+                .parent()
+                .expect("repo has a parent")
+                .join("repo-wt-subdirectory")
+                .exists()
+        );
         fs::remove_dir_all(repo.parent().expect("repo has a parent"))
             .expect("test directory should be removed");
     }

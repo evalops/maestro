@@ -113,6 +113,7 @@ return { continue = true }
 # [[hooks]]
 # event = "PreToolUse"
 # description = "WASM safety plugin"
+# required = true # default for PreToolUse WASM policies; set false for advisory
 # wasm = "~/.composer/plugins/safety.wasm"
 
 # ============================================================================

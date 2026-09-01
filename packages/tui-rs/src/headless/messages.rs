@@ -91,8 +91,10 @@
 //!  | <------- ToolEnd -----------|
 //! ```
 
-use crate::agent::ExecutionReceipt;
-use serde::{de::Deserializer, Deserialize, Serialize};
+use super::workspace_capabilities::{ApplyWorkspaceCapabilitySet, WorkspaceCapabilitySetApplied};
+use crate::agent::{ExecutionReceipt, ManagedInferenceAuthorization};
+use serde::{Deserialize, Serialize, de::Deserializer};
+use serde_json::Value;
 use std::collections::HashMap;
 
 pub(crate) const CODEX_SUBAGENT_TOOL_PREFIX: &str = "codex.subagent.";
@@ -102,6 +104,15 @@ pub(crate) const SEMANTIC_CONVERSATION_PROTOCOL: &str = "evalops.maestro.semanti
 
 /// Current headless protocol version shared with the TypeScript runtime.
 pub use super::generated_protocol::HEADLESS_PROTOCOL_VERSION;
+
+/// Complete secret-free controller binding carried by an extended hello.
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControllerBindingHello {
+    pub controller_binding_version: String,
+    pub controller_context: Value,
+    pub capability_manifest: Value,
+}
 
 /// Client protocol versions a `Hello` may announce.
 ///
@@ -200,6 +211,8 @@ pub enum ToAgentMessage {
         role: Option<ConnectionRole>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         opt_out_notifications: Option<Vec<String>>,
+        #[serde(flatten)]
+        controller_binding: Option<ControllerBindingHello>,
     },
     /// Configure agent behavior before the first prompt
     Init {
@@ -242,6 +255,8 @@ pub enum ToAgentMessage {
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         attachments: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        managed_inference_authorization: Option<ManagedInferenceAuthorization>,
     },
     GovernedPrompt {
         content: String,
@@ -249,12 +264,16 @@ pub enum ToAgentMessage {
         attachments: Option<Vec<String>>,
         code_mode: CodeMode,
         tool_grant: GovernedToolGrant,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        managed_inference_authorization: Option<ManagedInferenceAuthorization>,
     },
     /// Steer the currently active agent turn.
     Steer {
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         attachments: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        managed_inference_authorization: Option<ManagedInferenceAuthorization>,
     },
     GovernedSteer {
         content: String,
@@ -262,6 +281,12 @@ pub enum ToAgentMessage {
         attachments: Option<Vec<String>>,
         code_mode: CodeMode,
         tool_grant: GovernedToolGrant,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        managed_inference_authorization: Option<ManagedInferenceAuthorization>,
+    },
+    /// Replace the Platform-owned prompt capability set for a resident workspace runtime.
+    ApplyWorkspaceCapabilitySet {
+        request: ApplyWorkspaceCapabilitySet,
     },
     /// Interrupt the current operation
     Interrupt,
@@ -391,6 +416,31 @@ pub enum ToAgentMessage {
     Shutdown,
 }
 
+impl ToAgentMessage {
+    pub(crate) fn validate_managed_inference_authorization(&self) -> Result<(), &'static str> {
+        let authorization = match self {
+            Self::Prompt {
+                managed_inference_authorization,
+                ..
+            }
+            | Self::GovernedPrompt {
+                managed_inference_authorization,
+                ..
+            }
+            | Self::Steer {
+                managed_inference_authorization,
+                ..
+            }
+            | Self::GovernedSteer {
+                managed_inference_authorization,
+                ..
+            } => managed_inference_authorization.as_ref(),
+            _ => None,
+        };
+        authorization.map_or(Ok(()), ManagedInferenceAuthorization::validate)
+    }
+}
+
 /// Role of a seeded history message in headless `init`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -502,8 +552,41 @@ pub struct ConnectionGrantBinding {
     pub policy_hash: String,
 }
 
-/// Immutable tool authority for one governed session or hosted turn.
+/// Server-derived authorization facts sealed into the Platform grant.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IdentityToolAuthorizationEvidence {
+    pub schema_version: String,
+    pub organization_id: String,
+    pub workspace_id: String,
+    pub application_id: String,
+    pub subject_id: String,
+    pub actor_chain_digest: String,
+    pub decision_id: String,
+    pub authorization_lineage_id: String,
+    pub policy_id: String,
+    pub policy_version: String,
+    pub policy_digest: String,
+    pub authorization_fingerprint: String,
+    pub capability_digest: String,
+    pub action_digest: String,
+    pub audience: String,
+    pub issued_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub revocation_epoch: u64,
+}
+
+/// Immutable tool authority for one governed session or hosted turn.
+///
+/// `deny_unknown_fields` is load-bearing, not hygiene. The grant hash is
+/// computed by Runner Host over the JSON object it builds and recomputed here
+/// over the object rebuilt from this struct. Without it, a field Runner Host
+/// signs and this struct does not declare is silently dropped, the two hashes
+/// disagree, and the resident answers `thread.append` with an opaque
+/// `bad_request`. With it, the same skew fails deserialization and names the
+/// unknown field.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct GovernedToolGrant {
     pub envelope_version: u32,
     pub grant_id: String,
@@ -523,6 +606,8 @@ pub struct GovernedToolGrant {
     pub grant_hash: String,
     pub signing_key_id: String,
     pub grant_signature: String,
+    #[serde(default)]
+    pub identity_authorization: Option<IdentityToolAuthorizationEvidence>,
     #[serde(default)]
     pub native_tool_ids: Vec<String>,
     #[serde(default)]
@@ -596,6 +681,9 @@ pub struct ServerCapabilities {
     pub connection_roles: Vec<ConnectionRole>,
     #[serde(default)]
     pub native_tools: Vec<NativeToolCapability>,
+    /// This runtime accepts prompt-only workspace capability activation.
+    #[serde(default)]
+    pub workspace_prompt_capability_activation: bool,
     /// Grant signature algorithms verified by this exact agent process.
     #[serde(default)]
     pub governed_tool_grant_algorithms: Vec<String>,
@@ -826,6 +914,17 @@ pub enum FromAgentMessage {
     /// Durable native-agent acknowledgement that a control response was
     /// accepted by the response consumer rather than merely queued.
     ResponseAccepted { request_id: String },
+    /// Safe managed-Gateway evidence for one inference request.
+    ManagedGatewayReceipt {
+        request_id: String,
+        record_id: String,
+        lineage_id: String,
+        record_status: String,
+    },
+    /// Receipt for an accepted, non-executable workspace prompt capability set.
+    WorkspaceCapabilitySetApplied {
+        receipt: WorkspaceCapabilitySetApplied,
+    },
     /// Agent is ready
     Ready {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -979,6 +1078,10 @@ pub enum FromAgentMessage {
     ProviderError {
         kind: maestro_ai::ProviderStreamErrorKind,
         message: String,
+    },
+    /// Surface-neutral lifecycle/control projection for delegated work.
+    DelegationEvent {
+        event: maestro_runtime::DelegationEvent,
     },
     /// Status update
     Status { message: String },
@@ -1303,15 +1406,15 @@ pub enum ToolRetryDecisionAction {
 /// current session.
 ///
 mod state;
-#[allow(unused_imports)]
-pub(crate) use state::{
-    active_codex_subagent_status, codex_subagent_child_runs, codex_subagent_edge_key,
-    codex_subagent_operation, codex_subagent_status_is_terminal, json_string_array_from_object,
-    json_string_from_object, CodexSubagentChildRun, HEADLESS_OUTPUT_LIMIT,
-};
 pub use state::{
     ActiveFileWatch, ActiveTool, ActiveUtilityCommand, AgentEvent, AgentState,
     CodexSubagentContinuityEdge, GovernedClientToolBinding, PendingApproval, StreamingResponse,
+};
+#[allow(unused_imports)]
+pub(crate) use state::{
+    CodexSubagentChildRun, HEADLESS_OUTPUT_LIMIT, active_codex_subagent_status,
+    codex_subagent_child_runs, codex_subagent_edge_key, codex_subagent_operation,
+    codex_subagent_status_is_terminal, json_string_array_from_object, json_string_from_object,
 };
 
 #[cfg(test)]

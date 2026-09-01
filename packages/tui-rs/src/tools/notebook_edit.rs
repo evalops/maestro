@@ -19,7 +19,7 @@
 //! a target cell, a new notebook is created with the provided content.
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::ToolResult;

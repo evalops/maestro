@@ -15,10 +15,17 @@ pub(crate) struct ExtendedApiState {
 }
 
 pub(crate) fn is_extended_endpoint(head: &RequestHead) -> bool {
-    let path = head.path.as_str();
-    if head.method == "POST" && path == "/.well-known/evalops/remote-runner/drain" {
+    if head.method == "POST" && head.path == "/.well-known/evalops/remote-runner/drain" {
         return true;
     }
+    extended_api_matches_path(&head.path)
+}
+
+// Path-only membership test for the extended API surface, independent of HTTP
+// method. `runtime_tenant_resource_path` (auth.rs) uses this to bind every
+// extended path to a tenant principal; keep it in sync with the routes handled
+// by `handle_extended_endpoint`.
+pub(crate) fn extended_api_matches_path(path: &str) -> bool {
     if !path.starts_with("/api/") {
         return false;
     }
@@ -133,8 +140,11 @@ pub(crate) async fn handle_extended_endpoint(
     if let Err(response) = validate_csrf(&head, &state.config) {
         return response;
     }
-    if head.path.starts_with("/api/") {
-        if let Err(response) = authorize(&head, &state.config) {
+    if head.path.starts_with("/api/") || head.path == "/.well-known/evalops/remote-runner/drain" {
+        // `authorize_extended` applies the tenant-bound write authorization for
+        // the whole surface and additionally requires the administrator role for
+        // `/api/admin/*` and MCP-config mutations.
+        if let Err(response) = authorize_extended(&head, &state.config) {
             return response;
         }
     }
@@ -160,7 +170,9 @@ pub(crate) async fn handle_extended_endpoint(
         let _mcp_config_guard = state.extended_api.lock().await;
         return match head.method.as_str() {
             "GET" => {
-                let config = maestro_tui::mcp::load_mcp_config(Some(&state.config.cwd));
+                let config = maestro_tui::mcp::load_mcp_config_with_managed_connections(Some(
+                    &state.config.cwd,
+                ));
                 json_response(
                     200,
                     &serde_json::json!({ "servers": config.servers, "authPresets": [] }),
@@ -803,7 +815,7 @@ async fn mutate_mcp_config(cwd: &Path, action: &str, body: &Value) -> Result<Val
                 return Err((404, format!("MCP server not found: {name}")));
             }
             write_mcp_config_document(&path, &document).await?;
-            let fallback = maestro_tui::mcp::load_mcp_config(Some(cwd))
+            let fallback = maestro_tui::mcp::load_mcp_config_with_managed_connections(Some(cwd))
                 .get_server(name)
                 .map(|server| {
                     serde_json::json!({
@@ -835,6 +847,7 @@ fn writable_mcp_scope(
 
 fn mcp_scope_name(scope: maestro_tui::mcp::McpConfigScope) -> &'static str {
     match scope {
+        maestro_tui::mcp::McpConfigScope::Managed => "managed",
         maestro_tui::mcp::McpConfigScope::Local => "local",
         maestro_tui::mcp::McpConfigScope::Project => "project",
         maestro_tui::mcp::McpConfigScope::User => "user",
@@ -847,6 +860,9 @@ fn writable_mcp_config_path(
     scope: maestro_tui::mcp::McpConfigScope,
 ) -> Result<PathBuf, (u16, String)> {
     match scope {
+        maestro_tui::mcp::McpConfigScope::Managed => {
+            Err((400, "managed MCP config is read-only".to_string()))
+        }
         maestro_tui::mcp::McpConfigScope::Local => Ok(cwd.join(".composer").join("mcp.local.json")),
         maestro_tui::mcp::McpConfigScope::Project => Ok(cwd.join(".composer").join("mcp.json")),
         maestro_tui::mcp::McpConfigScope::User => {

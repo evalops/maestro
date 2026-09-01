@@ -106,19 +106,22 @@
 use anyhow::{Context, Result};
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use super::client::{provider_model_name, AiClient, AiProvider};
+use super::client::{AiClient, AiProvider, CancellableStream, provider_model_name};
 use super::op_secret;
 use super::types::{
-    ContentBlock, ImageSource, Message, MessageContent, ProviderStreamErrorKind, RequestConfig,
-    Role, StreamEvent, Tool,
+    ContentBlock, ImageSource, ManagedGatewayReceipt, Message, MessageContent,
+    ProviderStreamErrorKind, RequestConfig, Role, StreamEvent, Tool,
 };
 
 pub(crate) const MANAGED_GATEWAY_RESPONSE_OPEN_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(30);
+const MANAGED_GATEWAY_RECEIPT_ID_MAX_LEN: usize = 256;
+const MANAGED_GATEWAY_RECEIPT_LINEAGE_MAX_LEN: usize = 256;
+const MANAGED_GATEWAY_RECEIPT_STATUS_MAX_LEN: usize = 64;
 
 /// SSE event structure for Responses API (matches `OpenAI`'s format)
 ///
@@ -220,6 +223,247 @@ async fn send_with_response_open_timeout(
         None => send.await,
     }
     .context("Failed to send request to OpenAI API")
+}
+
+fn required_managed_receipt_header(
+    headers: &HeaderMap,
+    name: &'static str,
+    max_len: usize,
+) -> Result<String> {
+    let value = headers
+        .get(name)
+        .with_context(|| format!("managed Gateway response is missing required {name} header"))?
+        .to_str()
+        .with_context(|| format!("managed Gateway response has invalid {name} header"))?;
+    let value = value.trim();
+    if value.is_empty() {
+        anyhow::bail!("managed Gateway response has empty {name} header");
+    }
+    if value.len() > max_len {
+        anyhow::bail!("managed Gateway response {name} header exceeds the {max_len}-byte limit");
+    }
+    Ok(value.to_string())
+}
+
+fn managed_gateway_receipt(
+    headers: &HeaderMap,
+    expected_lineage: Option<&str>,
+) -> Result<ManagedGatewayReceipt> {
+    let lineage_id = required_managed_receipt_header(
+        headers,
+        "x-evalops-lineage-id",
+        MANAGED_GATEWAY_RECEIPT_LINEAGE_MAX_LEN,
+    )?;
+    if let Some(expected_lineage) = expected_lineage {
+        if lineage_id != expected_lineage {
+            anyhow::bail!("managed Gateway response receipt lineage mismatch");
+        }
+    }
+    Ok(ManagedGatewayReceipt {
+        request_id: required_managed_receipt_header(
+            headers,
+            "x-request-id",
+            MANAGED_GATEWAY_RECEIPT_ID_MAX_LEN,
+        )?,
+        record_id: required_managed_receipt_header(
+            headers,
+            "x-evalops-record-id",
+            MANAGED_GATEWAY_RECEIPT_ID_MAX_LEN,
+        )?,
+        lineage_id,
+        record_status: required_managed_receipt_header(
+            headers,
+            "x-evalops-record-status",
+            MANAGED_GATEWAY_RECEIPT_STATUS_MAX_LEN,
+        )?,
+    })
+}
+
+fn parse_managed_inference_authorization(encoded: &str) -> Result<(serde_json::Value, String)> {
+    let authorization: serde_json::Value = serde_json::from_str(encoded)
+        .context("managed inference authorization must be valid JSON")?;
+    let authorization_object = authorization
+        .as_object()
+        .context("managed inference authorization must be a JSON object")?;
+    let claims = match authorization_object.get("claims") {
+        Some(claims) => claims
+            .as_object()
+            .context("managed inference authorization claims must be a JSON object")?,
+        None => authorization_object,
+    };
+    let lineage_id = claims
+        .get("lineage_id")
+        .or_else(|| claims.get("lineageId"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .context("managed inference authorization is missing lineage_id")?
+        .to_string();
+    Ok((authorization, lineage_id))
+}
+
+fn managed_inference_context(authorization: &serde_json::Value) -> Result<serde_json::Value> {
+    let object = authorization
+        .as_object()
+        .context("managed inference authorization must be a JSON object")?;
+    let claims = object
+        .get("claims")
+        .and_then(serde_json::Value::as_object)
+        .unwrap_or(object);
+    let claim = |snake: &str, camel: &str| {
+        claims
+            .get(snake)
+            .or_else(|| claims.get(camel))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .with_context(|| format!("managed inference authorization is missing {snake}"))
+    };
+    Ok(serde_json::json!({
+        "session_id": claim("session_id", "sessionId")?,
+        "thread_id": claim("thread_id", "threadId")?,
+        "run_id": claim("run_id", "runId")?,
+        "turn_id": claim("turn_id", "turnId")?
+    }))
+}
+
+fn project_managed_provider_candidates(
+    provider_candidates: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let candidates = provider_candidates
+        .as_array()
+        .context("managed inference authorization provider_candidates must be an array")?;
+    if candidates.is_empty() {
+        anyhow::bail!(
+            "managed inference authorization provider_candidates must be a non-empty array"
+        );
+    }
+
+    let mut projected = Vec::with_capacity(candidates.len());
+    for (index, candidate) in candidates.iter().enumerate() {
+        let candidate = candidate.as_object().with_context(|| {
+            format!("managed inference authorization provider candidate {index} must be an object")
+        })?;
+        let field = |names: &[&str], label: &str| {
+            names
+				.iter()
+				.find_map(|name| candidate.get(*name))
+				.and_then(serde_json::Value::as_str)
+				.map(str::to_owned)
+				.with_context(|| {
+					format!(
+						"managed inference authorization provider candidate {index} is missing {label}"
+					)
+				})
+        };
+        let provider = field(&["provider"], "provider")?;
+        let environment = field(&["environment"], "environment")?;
+        let credential_name = field(&["credential_name", "credentialName"], "credential_name")?;
+        let team_id = field(&["team_id", "teamId"], "team_id")?;
+        let model = field(&["model"], "model")?;
+        if provider.trim().is_empty() || environment.trim().is_empty() || model.trim().is_empty() {
+            anyhow::bail!(
+                "managed inference authorization provider candidate {index} has an empty provider, environment, or model"
+            );
+        }
+        for (label, value) in [
+            ("provider", &provider),
+            ("environment", &environment),
+            ("credential_name", &credential_name),
+            ("team_id", &team_id),
+            ("model", &model),
+        ] {
+            if value != value.trim() {
+                anyhow::bail!(
+                    "managed inference authorization provider candidate {index} {label} must not have surrounding whitespace"
+                );
+            }
+        }
+
+        projected.push(serde_json::json!({
+            "model": model,
+            "provider_ref": {
+                "provider": provider,
+                "environment": environment,
+                "credential_name": credential_name,
+                "team_id": team_id,
+            },
+        }));
+    }
+
+    Ok(serde_json::Value::Array(projected))
+}
+
+fn project_managed_inference_route(
+    request: &mut serde_json::Map<String, serde_json::Value>,
+    authorization: &serde_json::Value,
+) -> Result<()> {
+    let authorization_object = authorization
+        .as_object()
+        .context("managed inference authorization must be a JSON object")?;
+    let claims = authorization_object
+        .get("claims")
+        .and_then(serde_json::Value::as_object)
+        .unwrap_or(authorization_object);
+    let claim = |snake: &str, camel: &str| {
+        claims
+            .get(snake)
+            .or_else(|| claims.get(camel))
+            .with_context(|| format!("managed inference authorization is missing {snake}"))
+    };
+
+    let model = claim("model", "model")?
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .context("managed inference authorization model must be a non-empty string")?;
+    if model != model.trim() {
+        anyhow::bail!("managed inference authorization model must not have surrounding whitespace");
+    }
+    let provider_candidates = claim("provider_candidates", "providerCandidates")?;
+    let projected_provider_candidates = project_managed_provider_candidates(provider_candidates)?;
+    let routing = claim("routing", "routingStrategy")?;
+    let routing_strategy = match routing {
+        serde_json::Value::Object(routing) => routing
+            .get("strategy")
+            .or_else(|| routing.get("routing_strategy"))
+            .or_else(|| routing.get("routingStrategy"))
+            .cloned()
+            .context("managed inference authorization routing is missing strategy")?,
+        routing => routing.clone(),
+    };
+    let output_token_budget = claim("output_token_budget", "outputTokenBudget")?;
+    if !output_token_budget.is_object() {
+        anyhow::bail!("managed inference authorization output_token_budget must be an object");
+    }
+
+    for key in [
+        "provider_ref",
+        "providerRef",
+        "provider_refs",
+        "providerRefs",
+        "provider_candidates",
+        "providerCandidates",
+        "routing_strategy",
+        "routingStrategy",
+        "output_token_budget",
+        "outputTokenBudget",
+    ] {
+        request.remove(key);
+    }
+    request.insert(
+        "model".to_string(),
+        serde_json::Value::String(model.to_string()),
+    );
+    request.insert(
+        "provider_candidates".to_string(),
+        projected_provider_candidates,
+    );
+    request.insert("routing_strategy".to_string(), routing_strategy);
+    request.insert(
+        "output_token_budget".to_string(),
+        output_token_budget.clone(),
+    );
+    Ok(())
 }
 
 fn missing_text_suffix(emitted: &str, aggregate: &str) -> Option<String> {
@@ -448,6 +692,39 @@ fn classify_error(error: &serde_json::Value) -> ApiError {
     }
 }
 
+fn response_failed_error(
+    response: Option<&serde_json::Value>,
+) -> (ProviderStreamErrorKind, String) {
+    let Some(error) = response.and_then(|response| response.get("error")) else {
+        return (
+            ProviderStreamErrorKind::ProviderDeclaredFailure,
+            "openai_response_failed: Unknown error".to_string(),
+        );
+    };
+    let classified = classify_error(error);
+    let kind = match &classified {
+        ApiError::RateLimited { .. } | ApiError::Retryable { .. } => {
+            ProviderStreamErrorKind::TransientProtocol
+        }
+        ApiError::ContextWindowExceeded | ApiError::QuotaExceeded | ApiError::Fatal { .. } => {
+            ProviderStreamErrorKind::ProviderDeclaredFailure
+        }
+    };
+    let message = match &classified {
+        ApiError::ContextWindowExceeded => "Context window exceeded - message too long".to_string(),
+        ApiError::QuotaExceeded => "API quota exceeded - check your billing".to_string(),
+        ApiError::RateLimited { retry_after } => {
+            if let Some(delay) = retry_after {
+                format!("Rate limited - retry after {delay:?}")
+            } else {
+                "Rate limited - please try again".to_string()
+            }
+        }
+        ApiError::Retryable { message } | ApiError::Fatal { message } => message.clone(),
+    };
+    (kind, format!("openai_response_failed: {message}"))
+}
+
 /// Parse retry-after duration from error message
 fn parse_retry_after(message: &str) -> Option<std::time::Duration> {
     // Pattern: "try again in X.XXs" or "try again in X seconds"
@@ -545,11 +822,7 @@ fn extract_text_from_item(item: &serde_json::Value) -> Option<String> {
         }
     }
 
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    if text.is_empty() { None } else { Some(text) }
 }
 
 fn strip_managed_model_prefix(model: &str) -> &str {
@@ -727,7 +1000,10 @@ pub struct OpenAiClient {
     extra_headers: HeaderMap,
     request_extensions: serde_json::Map<String, serde_json::Value>,
     managed_gateway: bool,
+    managed_organization_id: Option<String>,
+    managed_workspace_id: Option<String>,
     managed_request_lineage: Option<ManagedRequestLineage>,
+    managed_inference_authorization: Option<String>,
     route_provider: Option<String>,
     #[cfg(test)]
     response_open_timeout_override: Option<std::time::Duration>,
@@ -754,7 +1030,10 @@ impl OpenAiClient {
             extra_headers: HeaderMap::new(),
             request_extensions: serde_json::Map::new(),
             managed_gateway: false,
+            managed_organization_id: None,
+            managed_workspace_id: None,
             managed_request_lineage: None,
+            managed_inference_authorization: None,
             route_provider: None,
             #[cfg(test)]
             response_open_timeout_override: None,
@@ -776,7 +1055,10 @@ impl OpenAiClient {
             extra_headers: HeaderMap::new(),
             request_extensions: serde_json::Map::new(),
             managed_gateway: false,
+            managed_organization_id: None,
+            managed_workspace_id: None,
             managed_request_lineage: None,
+            managed_inference_authorization: None,
             route_provider: None,
             #[cfg(test)]
             response_open_timeout_override: None,
@@ -796,9 +1078,22 @@ impl OpenAiClient {
         self.managed_gateway
     }
 
+    pub(crate) fn managed_gateway_scope(&self) -> Option<(&str, &str)> {
+        if !self.managed_gateway {
+            return None;
+        }
+        self.managed_organization_id
+            .as_deref()
+            .zip(self.managed_workspace_id.as_deref())
+    }
+
     pub(crate) fn set_managed_request_lineage(&mut self, lineage_id: Option<String>) {
         self.managed_request_lineage =
             lineage_id.map(|lineage_id| ManagedRequestLineage { lineage_id });
+    }
+
+    pub(crate) fn set_managed_inference_authorization(&mut self, authorization: Option<String>) {
+        self.managed_inference_authorization = authorization;
     }
 
     fn response_open_timeout(&self) -> Option<std::time::Duration> {
@@ -822,15 +1117,35 @@ impl OpenAiClient {
     pub(crate) fn with_managed_gateway_context(
         mut self,
         organization_id: &str,
+        workspace_id: &str,
         provider_ref: serde_json::Value,
     ) -> Result<Self> {
+        let organization_id = organization_id.trim();
+        let workspace_id = workspace_id.trim();
+        if organization_id.is_empty() || workspace_id.is_empty() {
+            return Err(anyhow::anyhow!(
+                "managed gateway organization and workspace scope are required"
+            ));
+        }
         self.managed_gateway = true;
+        self.managed_organization_id = Some(organization_id.to_owned());
         self.extra_headers.insert(
             HeaderName::from_static("x-organization-id"),
             HeaderValue::from_str(organization_id).context("invalid EvalOps organization id")?,
         );
+        self.extra_headers.insert(
+            HeaderName::from_static("x-workspace-id"),
+            HeaderValue::from_str(workspace_id).context("invalid EvalOps workspace id")?,
+        );
+        self.request_extensions.insert(
+            "organization_id".to_string(),
+            serde_json::json!(organization_id),
+        );
+        self.request_extensions
+            .insert("workspace_id".to_string(), serde_json::json!(workspace_id));
         self.request_extensions
             .insert("provider_ref".to_string(), provider_ref);
+        self.managed_workspace_id = Some(workspace_id.to_owned());
         Ok(self)
     }
 
@@ -839,17 +1154,12 @@ impl OpenAiClient {
     /// gateway cannot resolve a model for one workspace while authorizing
     /// another.
     pub(crate) fn with_managed_gateway_scope(
-        mut self,
+        self,
         organization_id: &str,
         workspace_id: &str,
         provider_ref: serde_json::Value,
     ) -> Result<Self> {
-        self = self.with_managed_gateway_context(organization_id, provider_ref)?;
-        self.extra_headers.insert(
-            HeaderName::from_static("x-workspace-id"),
-            HeaderValue::from_str(workspace_id).context("invalid EvalOps workspace id")?,
-        );
-        Ok(self)
+        self.with_managed_gateway_context(organization_id, workspace_id, provider_ref)
     }
 
     /// Create a new client from environment variable
@@ -934,20 +1244,59 @@ impl OpenAiClient {
     }
 
     fn managed_request(&self, mut body: serde_json::Value) -> Result<serde_json::Value> {
-        let Some(lineage) = self.managed_request_lineage.as_ref() else {
-            return Ok(body);
-        };
         if !self.managed_gateway {
+            return Ok(body);
+        }
+
+        let authorization = self
+            .managed_inference_authorization
+            .as_deref()
+            .map(parse_managed_inference_authorization)
+            .transpose()?;
+        let managed_context = authorization
+            .as_ref()
+            .map(|(authorization, _)| managed_inference_context(authorization))
+            .transpose()?;
+        let explicit_lineage_id = self
+            .managed_request_lineage
+            .as_ref()
+            .map(|lineage| lineage.lineage_id.as_str())
+            .filter(|lineage_id| !lineage_id.trim().is_empty())
+            .map(str::to_string);
+        if let (Some(explicit_lineage_id), Some((_, authorized_lineage_id))) =
+            (explicit_lineage_id.as_deref(), authorization.as_ref())
+        {
+            if explicit_lineage_id != authorized_lineage_id.as_str() {
+                anyhow::bail!(
+                    "managed request lineage does not match managed inference authorization lineage"
+                );
+            }
+        }
+        let lineage_id = explicit_lineage_id.or_else(|| {
+            authorization
+                .as_ref()
+                .map(|(_, lineage_id)| lineage_id.clone())
+        });
+        if authorization.is_none() && lineage_id.is_none() {
             return Ok(body);
         }
 
         let object = body
             .as_object_mut()
             .context("managed gateway request body must be an object")?;
-        object.insert(
-            "lineage_id".to_string(),
-            serde_json::Value::String(lineage.lineage_id.clone()),
-        );
+        if let Some((authorization, _)) = authorization {
+            project_managed_inference_route(object, &authorization)?;
+            object.insert("managed_inference_authorization".to_string(), authorization);
+        }
+        if let Some(context) = managed_context {
+            object.insert("managed_inference_context".to_string(), context);
+        }
+        if let Some(lineage_id) = lineage_id {
+            object.insert(
+                "lineage_id".to_string(),
+                serde_json::Value::String(lineage_id),
+            );
+        }
         Ok(body)
     }
 
@@ -1536,16 +1885,12 @@ impl OpenAiClient {
     }
 }
 
-impl AiClient for OpenAiClient {
-    fn provider(&self) -> AiProvider {
-        AiProvider::OpenAI
-    }
-
-    async fn stream(
+impl OpenAiClient {
+    pub(crate) async fn stream_with_producer(
         &self,
         messages: &[Message],
         config: &RequestConfig,
-    ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
+    ) -> Result<CancellableStream> {
         let (tx, rx) = mpsc::unbounded_channel();
 
         // Build request body
@@ -1564,9 +1909,18 @@ impl AiClient for OpenAiClient {
         let response =
             send_with_response_open_timeout(request, self.response_open_timeout()).await?;
 
-        // Check for errors
+        // Classify the provider response before enforcing success-only receipt
+        // headers. Managed gateways may legitimately omit receipts on an
+        // authentication, throttling, or upstream failure response; that must
+        // not hide the actionable HTTP status behind a receipt protocol error.
         if !response.status().is_success() {
             let status = response.status();
+            if self.managed_gateway {
+                let expected_lineage = body.get("lineage_id").and_then(serde_json::Value::as_str);
+                if let Ok(receipt) = managed_gateway_receipt(response.headers(), expected_lineage) {
+                    let _ = tx.send(StreamEvent::ManagedGatewayReceipt(receipt));
+                }
+            }
             let error_text = response.text().await.unwrap_or_default();
             let kind = if status.is_server_error()
                 || matches!(
@@ -1586,14 +1940,30 @@ impl AiClient for OpenAiClient {
                     super::summarize_error_body(&error_text)
                 ),
             });
-            return Ok(rx);
+            return Ok(CancellableStream::detached(rx));
+        }
+
+        if self.managed_gateway {
+            let expected_lineage = body.get("lineage_id").and_then(serde_json::Value::as_str);
+            match managed_gateway_receipt(response.headers(), expected_lineage) {
+                Ok(receipt) => {
+                    let _ = tx.send(StreamEvent::ManagedGatewayReceipt(receipt));
+                }
+                Err(error) => {
+                    let _ = tx.send(StreamEvent::ProviderError {
+                        kind: ProviderStreamErrorKind::TransientProtocol,
+                        message: format!("managed_gateway_receipt_error: {error}"),
+                    });
+                    return Ok(CancellableStream::detached(rx));
+                }
+            }
         }
 
         // Spawn task to process SSE stream
         let model = config.model.clone();
         let is_responses_api = self.uses_responses_api_for(&config.model);
 
-        if is_responses_api {
+        let producer = if is_responses_api {
             // Use eventsource-stream for proper SSE parsing (Responses API)
             let stream = response.bytes_stream();
             tokio::spawn(async move {
@@ -1608,7 +1978,14 @@ impl AiClient for OpenAiClient {
                 let mut tool_indices_by_output = std::collections::HashMap::new();
                 let mut tool_call_index = 1; // Start at 1, reserve 0 for text content
 
-                while let Some(event_result) = sse_stream.next().await {
+                loop {
+                    let event_result = tokio::select! {
+                        () = tx.closed() => return,
+                        event_result = sse_stream.next() => event_result,
+                    };
+                    let Some(event_result) = event_result else {
+                        break;
+                    };
                     match event_result {
                         Ok(sse) => {
                             // Parse the SSE data as JSON
@@ -1913,46 +2290,9 @@ impl AiClient for OpenAiClient {
                                     return;
                                 }
                                 "response.failed" => {
-                                    // Classify the error for proper handling
-                                    let (error_msg, _api_error) = if let Some(resp) =
-                                        &event.response
-                                    {
-                                        if let Some(error) = resp.get("error") {
-                                            let classified = classify_error(error);
-                                            let msg = match &classified {
-                                                ApiError::ContextWindowExceeded => {
-                                                    "Context window exceeded - message too long"
-                                                        .to_string()
-                                                }
-                                                ApiError::QuotaExceeded => {
-                                                    "API quota exceeded - check your billing"
-                                                        .to_string()
-                                                }
-                                                ApiError::RateLimited { retry_after } => {
-                                                    if let Some(delay) = retry_after {
-                                                        format!(
-                                                            "Rate limited - retry after {delay:?}"
-                                                        )
-                                                    } else {
-                                                        "Rate limited - please try again"
-                                                            .to_string()
-                                                    }
-                                                }
-                                                ApiError::Retryable { message } => message.clone(),
-                                                ApiError::Fatal { message } => message.clone(),
-                                            };
-                                            (msg, Some(classified))
-                                        } else {
-                                            ("Unknown error".to_string(), None)
-                                        }
-                                    } else {
-                                        ("Unknown error".to_string(), None)
-                                    };
-
-                                    let _ = tx.send(StreamEvent::ProviderError {
-                                        kind: ProviderStreamErrorKind::ProviderDeclaredFailure,
-                                        message: format!("openai_response_failed: {error_msg}"),
-                                    });
+                                    let (kind, message) =
+                                        response_failed_error(event.response.as_ref());
+                                    let _ = tx.send(StreamEvent::ProviderError { kind, message });
                                     return;
                                 }
                                 _ => {
@@ -1974,7 +2314,7 @@ impl AiClient for OpenAiClient {
                     kind: ProviderStreamErrorKind::TransientProtocol,
                     message: RESPONSES_MISSING_TERMINAL_EVENT_ERROR.to_string(),
                 });
-            });
+            })
         } else {
             // Chat Completions API - uses simpler line-based SSE
             let mut stream = response.bytes_stream();
@@ -1984,7 +2324,14 @@ impl AiClient for OpenAiClient {
                 let mut current_tool_calls: Vec<ToolCallAccumulator> = Vec::new();
                 let mut content_started = false;
 
-                while let Some(chunk) = stream.next().await {
+                loop {
+                    let chunk = tokio::select! {
+                        () = tx.closed() => return,
+                        chunk = stream.next() => chunk,
+                    };
+                    let Some(chunk) = chunk else {
+                        break;
+                    };
                     match chunk {
                         Ok(bytes) => {
                             buffer.push_str(&String::from_utf8_lossy(&bytes));
@@ -2166,10 +2513,27 @@ impl AiClient for OpenAiClient {
                         }
                     }
                 }
-            });
-        }
+            })
+        };
 
-        Ok(rx)
+        Ok(CancellableStream::with_producer(rx, producer))
+    }
+}
+
+impl AiClient for OpenAiClient {
+    fn provider(&self) -> AiProvider {
+        AiProvider::OpenAI
+    }
+
+    async fn stream(
+        &self,
+        messages: &[Message],
+        config: &RequestConfig,
+    ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
+        Ok(self
+            .stream_with_producer(messages, config)
+            .await?
+            .into_receiver())
     }
 }
 
@@ -2374,6 +2738,7 @@ struct ToolCallAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::UnifiedClient;
 
     fn client_with_responses_sse(sse_body: &str) -> OpenAiClient {
         use std::io::{Read, Write};
@@ -2422,6 +2787,791 @@ mod tests {
         })
         .await
         .expect("Responses stream should terminate")
+    }
+
+    fn managed_authorization_fixture(lineage_id: &str) -> String {
+        serde_json::json!({
+            "claims": {
+                "schema_version": 1,
+                "authorization_id": "auth-1",
+                "key_id": "key-1",
+                "audience": "evalops.llm-gateway",
+                "issued_at_ms": 1_700_000_000_000_i64,
+                "not_before_ms": 1_700_000_000_000_i64,
+                "expires_at_ms": 1_700_000_060_000_i64,
+                "grant_epoch": 7,
+                "organization_id": "org_123",
+                "workspace_id": "workspace_456",
+                "session_id": "session-1",
+                "thread_id": "thread-1",
+                "run_id": "run-1",
+                "turn_id": "turn-1",
+                "lineage_id": lineage_id,
+                "runtime_generation": 3,
+                "endpoint": "responses",
+                "model": "openai/gpt-5.6-terra",
+                "providerCandidates": [{
+                    "provider": "openai",
+                    "environment": "production",
+                    "credentialName": "default",
+                    "teamId": "",
+                    "model": "openai/gpt-5.6-terra"
+                }],
+                "routing": {
+                    "strategy": "ordered",
+                    "max_attempts": 1
+                },
+                "output_token_budget": {
+                    "value": 4096,
+                    "origin": "explicit",
+                    "origin_reference": "turn"
+                },
+                "scope_digest": "scope-digest"
+            },
+            "signature": "signature-marker"
+        })
+        .to_string()
+    }
+
+    fn read_complete_http_request(stream: &mut std::net::TcpStream) -> String {
+        use std::io::Read;
+
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("set managed request timeout");
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        loop {
+            let count = stream.read(&mut chunk).expect("read managed request");
+            if count == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..count]);
+            let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+            else {
+                continue;
+            };
+            let headers =
+                std::str::from_utf8(&request[..header_end]).expect("managed request headers");
+            let content_length = headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find_map(|(name, value)| {
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or_default();
+            if request.len() >= header_end + 4 + content_length {
+                break;
+            }
+        }
+        String::from_utf8(request).expect("managed request is UTF-8")
+    }
+
+    fn captured_request_headers(request: &str) -> std::collections::HashMap<String, String> {
+        let (headers, _) = request
+            .split_once("\r\n\r\n")
+            .expect("captured request has headers");
+        headers
+            .lines()
+            .skip(1)
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
+            .collect()
+    }
+
+    fn captured_request_body(request: &str) -> serde_json::Value {
+        let (_, body) = request
+            .split_once("\r\n\r\n")
+            .expect("captured request has a body");
+        serde_json::from_str(body).expect("captured request body is JSON")
+    }
+
+    fn managed_gateway_test_server(
+        sse_body: &str,
+        receipt_headers: &[(&str, &str)],
+    ) -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock managed Gateway");
+        let address = listener.local_addr().expect("managed Gateway address");
+        let sse_body = sse_body.to_string();
+        let receipt_headers = receipt_headers
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+            .collect::<Vec<_>>();
+        let (request_tx, request_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept managed Gateway request");
+            let request = read_complete_http_request(&mut stream);
+            request_tx
+                .send(request)
+                .expect("capture managed Gateway request");
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n",
+                sse_body.len()
+            )
+            .expect("write managed Gateway response headers");
+            for (name, value) in receipt_headers {
+                write!(stream, "{name}: {value}\r\n").expect("write managed receipt header");
+            }
+            write!(stream, "\r\n{sse_body}").expect("write managed Gateway response body");
+        });
+        (format!("http://{address}/v1"), request_rx)
+    }
+
+    fn managed_gateway_test_client(
+        sse_body: &str,
+        receipt_headers: &[(&str, &str)],
+    ) -> (OpenAiClient, std::sync::mpsc::Receiver<String>) {
+        let (base_url, request_rx) = managed_gateway_test_server(sse_body, receipt_headers);
+        let client = OpenAiClient::with_base_url("delegated-token", base_url)
+            .expect("construct managed Gateway client")
+            .with_route_provider("openai")
+            .with_managed_gateway_scope(
+                "org_123",
+                "workspace_456",
+                serde_json::json!({
+                    "provider": "openai",
+                    "environment": "production",
+                    "credential_name": "default"
+                }),
+            )
+            .expect("attach managed Gateway scope");
+        (client, request_rx)
+    }
+
+    fn managed_gateway_error_client(status: &str, body: &str) -> OpenAiClient {
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock managed Gateway");
+        let address = listener.local_addr().expect("managed Gateway address");
+        let status = status.to_owned();
+        let body = body.to_owned();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept managed Gateway request");
+            let _request = read_complete_http_request(&mut stream);
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            )
+            .expect("write managed Gateway error response");
+        });
+
+        OpenAiClient::with_base_url("delegated-token", format!("http://{address}/v1"))
+            .expect("construct managed Gateway client")
+            .with_route_provider("openai")
+            .with_managed_gateway_scope(
+                "org_123",
+                "workspace_456",
+                serde_json::json!({
+                    "provider": "openai",
+                    "environment": "production",
+                    "credential_name": "default"
+                }),
+            )
+            .expect("attach managed Gateway scope")
+    }
+
+    async fn collect_stream_events(
+        mut receiver: mpsc::UnboundedReceiver<StreamEvent>,
+    ) -> Vec<StreamEvent> {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async move {
+            let mut events = Vec::new();
+            while let Some(event) = receiver.recv().await {
+                events.push(event);
+            }
+            events
+        })
+        .await
+        .expect("managed stream should terminate")
+    }
+
+    fn managed_receipt_headers() -> [(&'static str, &'static str); 4] {
+        [
+            ("X-Request-ID", "request-1"),
+            ("x-evalops-record-id", "record-1"),
+            ("X-EVALOPS-LINEAGE-ID", "lineage-receipt"),
+            ("x-EvalOps-Record-Status", "planned"),
+        ]
+    }
+
+    const MANAGED_COMPLETED_SSE: &str = r#"data: {"type":"response.created","response":{"id":"resp_managed"}}
+
+data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1}}}
+
+"#;
+
+    #[tokio::test]
+    async fn managed_request_sends_authorization_and_workspace_scope() {
+        let authorization = managed_authorization_fixture("lineage-explicit");
+        let (base_url, captured_request) =
+            managed_gateway_test_server(MANAGED_COMPLETED_SSE, &managed_receipt_headers());
+        let client = crate::openai::OpenAiClient::with_base_url("delegated-token", base_url)
+            .expect("construct wrapped managed Gateway client")
+            .with_route_provider("openai")
+            .with_managed_gateway_scope(
+                "org_123",
+                "workspace_456",
+                serde_json::json!({
+                    "provider": "openai",
+                    "environment": "production",
+                    "credential_name": "default"
+                }),
+            )
+            .expect("attach wrapped managed Gateway scope");
+        let mut client = UnifiedClient::OpenAI(client);
+        client.set_managed_request_lineage(Some("lineage-explicit".to_string()));
+        client.set_managed_inference_authorization(Some(authorization.clone()));
+
+        let receiver = client
+            .stream(
+                &[],
+                &RequestConfig {
+                    model: "evalops/openai/gpt-5.6-terra".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("start managed request");
+        let events = collect_stream_events(receiver).await;
+        let request = captured_request
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("capture managed request");
+        let headers = captured_request_headers(&request);
+        let body = captured_request_body(&request);
+
+        assert_eq!(headers["x-organization-id"], "org_123");
+        assert_eq!(headers["x-workspace-id"], "workspace_456");
+        assert_eq!(body["lineage_id"], "lineage-explicit");
+        assert_eq!(
+            body["managed_inference_authorization"],
+            serde_json::from_str::<serde_json::Value>(&authorization)
+                .expect("authorization fixture is JSON")
+        );
+        assert_eq!(
+            body["managed_inference_context"],
+            serde_json::json!({
+                "session_id": "session-1",
+                "thread_id": "thread-1",
+                "run_id": "run-1",
+                "turn_id": "turn-1"
+            })
+        );
+        assert_eq!(
+            body["provider_candidates"],
+            serde_json::json!([{
+                "model": "openai/gpt-5.6-terra",
+                "provider_ref": {
+                    "provider": "openai",
+                    "environment": "production",
+                    "credential_name": "default",
+                    "team_id": ""
+                }
+            }])
+        );
+        assert!(body.get("provider_ref").is_none());
+        assert!(
+            !format!("{events:?}").contains("signature-marker"),
+            "stream events must not expose the opaque authorization"
+        );
+    }
+
+    #[test]
+    fn managed_provider_candidate_projection_preserves_signed_values() {
+        let projected = project_managed_provider_candidates(&serde_json::json!([{
+            "provider": "OpenAI",
+            "environment": "production-us",
+            "credentialName": "team/shared",
+            "teamId": "team-1",
+            "model": "openai/gpt-5.6-terra",
+        }]))
+        .expect("signed candidate values should project without normalization");
+
+        assert_eq!(
+            projected,
+            serde_json::json!([{
+                "model": "openai/gpt-5.6-terra",
+                "provider_ref": {
+                    "provider": "OpenAI",
+                    "environment": "production-us",
+                    "credential_name": "team/shared",
+                    "team_id": "team-1",
+                }
+            }])
+        );
+    }
+
+    #[test]
+    fn managed_provider_candidate_projection_rejects_noncanonical_signed_values() {
+        let error = project_managed_provider_candidates(&serde_json::json!([{
+            "provider": "openai",
+            "environment": "production",
+            "credential_name": "default",
+            "team_id": "team-1",
+            "model": " openai/gpt-5.6-terra",
+        }]))
+        .expect_err("surrounding whitespace would fail Gateway scope admission");
+
+        assert!(
+            error
+                .to_string()
+                .contains("model must not have surrounding whitespace")
+        );
+    }
+
+    #[test]
+    fn managed_request_projects_the_authorized_route_bundle() {
+        let authorization = managed_authorization_fixture("lineage-route");
+        let authorization_json =
+            serde_json::from_str::<serde_json::Value>(&authorization).expect("authorization JSON");
+        let mut client = OpenAiClient::with_base_url("delegated-token", "http://127.0.0.1:9/v1")
+            .expect("construct managed Gateway client")
+            .with_managed_gateway_scope(
+                "org_123",
+                "workspace_456",
+                serde_json::json!({
+                    "provider": "openai",
+                    "environment": "production",
+                    "credential_name": "default"
+                }),
+            )
+            .expect("attach managed Gateway scope");
+        client.set_managed_inference_authorization(Some(authorization));
+
+        let request = client
+            .managed_request(client.build_request_body(
+                &[],
+                &RequestConfig {
+                    model: "openai/gpt-5.6-terra".to_string(),
+                    ..Default::default()
+                },
+            ))
+            .expect("project authorized route");
+
+        assert_eq!(
+            request["provider_candidates"],
+            serde_json::json!([{
+                "model": "openai/gpt-5.6-terra",
+                "provider_ref": {
+                    "provider": "openai",
+                    "environment": "production",
+                    "credential_name": "default",
+                    "team_id": ""
+                }
+            }])
+        );
+        assert_eq!(request["model"], "openai/gpt-5.6-terra");
+        assert_eq!(request["routing_strategy"], "ordered");
+        assert_eq!(
+            request["output_token_budget"],
+            authorization_json["claims"]["output_token_budget"]
+        );
+        assert!(
+            request.get("provider_ref").is_none(),
+            "the signed candidate set must replace the unsigned fallback provider"
+        );
+        assert!(request.get("provider_refs").is_none());
+    }
+
+    #[tokio::test]
+    async fn managed_request_derives_lineage_from_authorization_when_not_explicit() {
+        let authorization = managed_authorization_fixture("lineage-derived");
+        let (mut client, captured_request) =
+            managed_gateway_test_client(MANAGED_COMPLETED_SSE, &managed_receipt_headers());
+        client.set_managed_inference_authorization(Some(authorization));
+
+        let receiver = client
+            .stream(
+                &[],
+                &RequestConfig {
+                    model: "evalops/openai/gpt-5.6-terra".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("start managed request");
+        let _events = collect_stream_events(receiver).await;
+        let request = captured_request
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("capture managed request");
+        let body = captured_request_body(&request);
+
+        assert_eq!(body["lineage_id"], "lineage-derived");
+    }
+
+    #[test]
+    fn managed_request_rejects_conflicting_explicit_and_authorized_lineage() {
+        let mut client = OpenAiClient::with_base_url("delegated-token", "http://127.0.0.1:9/v1")
+            .expect("construct managed Gateway client")
+            .with_managed_gateway_scope(
+                "org_123",
+                "workspace_456",
+                serde_json::json!({
+                    "provider": "openai",
+                    "environment": "production",
+                    "credential_name": "default"
+                }),
+            )
+            .expect("attach managed Gateway scope");
+        client.set_managed_request_lineage(Some("lineage-explicit".to_string()));
+        client.set_managed_inference_authorization(Some(managed_authorization_fixture(
+            "lineage-authorized",
+        )));
+
+        let error = client
+            .managed_request(serde_json::json!({}))
+            .expect_err("conflicting lineage IDs must fail before sending");
+
+        assert!(error.to_string().contains(
+            "managed request lineage does not match managed inference authorization lineage"
+        ));
+        assert!(!error.to_string().contains("signature-marker"));
+    }
+
+    #[tokio::test]
+    async fn managed_request_rejects_authorization_without_lineage_before_sending() {
+        for authorization in [
+            {
+                let mut authorization = serde_json::from_str::<serde_json::Value>(
+                    &managed_authorization_fixture("lineage-present"),
+                )
+                .expect("authorization fixture");
+                authorization["claims"]
+                    .as_object_mut()
+                    .expect("authorization claims")
+                    .remove("lineage_id");
+                authorization.to_string()
+            },
+            managed_authorization_fixture(""),
+        ] {
+            let mut client =
+                OpenAiClient::with_base_url("delegated-token", "http://127.0.0.1:9/v1")
+                    .expect("construct managed Gateway client")
+                    .with_managed_gateway_scope(
+                        "org_123",
+                        "workspace_456",
+                        serde_json::json!({
+                            "provider": "openai",
+                            "environment": "production",
+                            "credential_name": "default"
+                        }),
+                    )
+                    .expect("attach managed Gateway scope");
+            client.set_managed_inference_authorization(Some(authorization));
+
+            let error = match client
+                .stream(
+                    &[],
+                    &RequestConfig {
+                        model: "evalops/openai/gpt-5.6-terra".to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await
+            {
+                Ok(_) => panic!("authorization without lineage must fail before sending"),
+                Err(error) => error,
+            };
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("managed inference authorization is missing lineage_id")
+            );
+            assert!(!error.to_string().contains("signature-marker"));
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_stream_emits_receipt_headers_before_provider_content() {
+        let authorization = managed_authorization_fixture("lineage-receipt");
+        let (mut client, _captured_request) =
+            managed_gateway_test_client(MANAGED_COMPLETED_SSE, &managed_receipt_headers());
+        client.set_managed_inference_authorization(Some(authorization));
+
+        let mut receiver = client
+            .stream(
+                &[],
+                &RequestConfig {
+                    model: "evalops/openai/gpt-5.6-terra".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("start managed stream");
+        let first = receiver.recv().await.expect("managed receipt event");
+
+        assert!(matches!(
+            &first,
+            StreamEvent::ManagedGatewayReceipt(receipt)
+                if receipt.request_id == "request-1"
+                    && receipt.record_id == "record-1"
+                    && receipt.lineage_id == "lineage-receipt"
+                    && receipt.record_status == "planned"
+        ));
+        assert!(
+            !format!("{first:?}").contains("signature-marker"),
+            "receipt must contain only safe identifiers"
+        );
+        assert!(matches!(
+            receiver.recv().await,
+            Some(StreamEvent::MessageStart { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn managed_stream_rejects_missing_receipt_headers_before_provider_content() {
+        let incomplete_headers = [
+            ("X-Request-ID", "request-1"),
+            ("x-evalops-record-id", "record-1"),
+            ("X-EVALOPS-LINEAGE-ID", "lineage-receipt"),
+        ];
+        let (mut client, _captured_request) =
+            managed_gateway_test_client(MANAGED_COMPLETED_SSE, &incomplete_headers);
+        client.set_managed_inference_authorization(Some(managed_authorization_fixture(
+            "lineage-receipt",
+        )));
+
+        let receiver = client
+            .stream(
+                &[],
+                &RequestConfig {
+                    model: "evalops/openai/gpt-5.6-terra".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("managed receipt failure is a stream event");
+        let events = collect_stream_events(receiver).await;
+
+        assert!(matches!(
+            events.as_slice(),
+            [StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message,
+            }] if message.contains("x-evalops-record-status")
+                && !message.contains("signature-marker")
+        ));
+    }
+
+    #[tokio::test]
+    async fn managed_error_status_without_receipts_preserves_http_classification() {
+        let cases = [
+            (
+                "401 Unauthorized",
+                r#"{"error":{"message":"invalid delegated token"}}"#,
+                ProviderStreamErrorKind::ProviderDeclaredFailure,
+                "invalid delegated token",
+            ),
+            (
+                "429 Too Many Requests",
+                r#"{"error":{"message":"managed quota exhausted"}}"#,
+                ProviderStreamErrorKind::TransientProtocol,
+                "managed quota exhausted",
+            ),
+            (
+                "500 Internal Server Error",
+                r#"{"error":{"message":"gateway unavailable"}}"#,
+                ProviderStreamErrorKind::TransientProtocol,
+                "gateway unavailable",
+            ),
+        ];
+
+        for (status, body, expected_kind, expected_message) in cases {
+            let mut client = managed_gateway_error_client(status, body);
+            client.set_managed_request_lineage(Some("lineage-error".to_string()));
+            let receiver = client
+                .stream(
+                    &[],
+                    &RequestConfig {
+                        model: "evalops/openai/gpt-5.6-terra".to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .expect("HTTP error is represented as a stream event");
+            let events = collect_stream_events(receiver).await;
+
+            assert!(matches!(
+                events.as_slice(),
+                [StreamEvent::ProviderError { kind, message }]
+                    if *kind == expected_kind
+                        && message.contains(status)
+                        && message.contains(expected_message)
+                        && !message.contains("managed_gateway_receipt_error")
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_stream_rejects_receipt_with_mismatched_request_lineage() {
+        let mismatched_headers = [
+            ("X-Request-ID", "request-1"),
+            ("x-evalops-record-id", "record-1"),
+            ("X-EVALOPS-LINEAGE-ID", "lineage-receipt"),
+            ("x-EvalOps-Record-Status", "planned"),
+        ];
+        let (mut client, _captured_request) =
+            managed_gateway_test_client(MANAGED_COMPLETED_SSE, &mismatched_headers);
+        client.set_managed_request_lineage(Some("lineage-request".to_string()));
+
+        let receiver = client
+            .stream(
+                &[],
+                &RequestConfig {
+                    model: "evalops/openai/gpt-5.6-terra".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("managed receipt failure is a stream event");
+        let events = collect_stream_events(receiver).await;
+
+        assert!(matches!(
+            events.as_slice(),
+            [StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message,
+            }] if message.contains("receipt lineage mismatch")
+        ));
+    }
+
+    #[tokio::test]
+    async fn managed_stream_rejects_oversized_receipt_headers() {
+        let oversized_record_id = "r".repeat(MANAGED_GATEWAY_RECEIPT_ID_MAX_LEN + 1);
+        let headers = [
+            ("X-Request-ID", "request-1"),
+            ("x-evalops-record-id", oversized_record_id.as_str()),
+            ("X-EVALOPS-LINEAGE-ID", "lineage-receipt"),
+            ("x-EvalOps-Record-Status", "planned"),
+        ];
+        let (mut client, _captured_request) =
+            managed_gateway_test_client(MANAGED_COMPLETED_SSE, &headers);
+        client.set_managed_request_lineage(Some("lineage-receipt".to_string()));
+
+        let receiver = client
+            .stream(
+                &[],
+                &RequestConfig {
+                    model: "evalops/openai/gpt-5.6-terra".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("managed receipt failure is a stream event");
+        let events = collect_stream_events(receiver).await;
+
+        assert!(matches!(
+            events.as_slice(),
+            [StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message,
+            }] if message.contains("x-evalops-record-id header exceeds")
+        ));
+    }
+
+    #[tokio::test]
+    async fn managed_stream_maps_rate_limit_and_retryable_response_failed_to_transient() {
+        for error in [
+            serde_json::json!({
+                "code": "rate_limit_exceeded",
+                "message": "try again in 1s"
+            }),
+            serde_json::json!({
+                "type": "server_error",
+                "message": "provider temporarily unavailable"
+            }),
+        ] {
+            let sse_body = format!(
+                "data: {}\n\n",
+                serde_json::json!({
+                    "type": "response.failed",
+                    "response": {"id": "resp_failed", "error": error}
+                })
+            );
+            let (mut client, _captured_request) =
+                managed_gateway_test_client(&sse_body, &managed_receipt_headers());
+            client.set_managed_inference_authorization(Some(managed_authorization_fixture(
+                "lineage-receipt",
+            )));
+
+            let receiver = client
+                .stream(
+                    &[],
+                    &RequestConfig {
+                        model: "evalops/openai/gpt-5.6-terra".to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .expect("start managed stream");
+            let events = collect_stream_events(receiver).await;
+
+            assert!(matches!(
+                events.last(),
+                Some(StreamEvent::ProviderError {
+                    kind: ProviderStreamErrorKind::TransientProtocol,
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_stream_keeps_fatal_response_failed_non_retryable() {
+        for error in [
+            serde_json::json!({
+                "code": "context_length_exceeded",
+                "message": "context is too large"
+            }),
+            serde_json::json!({
+                "code": "insufficient_quota",
+                "message": "quota exhausted"
+            }),
+            serde_json::json!({
+                "code": "invalid_api_key",
+                "message": "provider rejected the request"
+            }),
+        ] {
+            let sse_body = format!(
+                "data: {}\n\n",
+                serde_json::json!({
+                    "type": "response.failed",
+                    "response": {"id": "resp_failed", "error": error}
+                })
+            );
+            let (mut client, _captured_request) =
+                managed_gateway_test_client(&sse_body, &managed_receipt_headers());
+            client.set_managed_inference_authorization(Some(managed_authorization_fixture(
+                "lineage-receipt",
+            )));
+
+            let receiver = client
+                .stream(
+                    &[],
+                    &RequestConfig {
+                        model: "evalops/openai/gpt-5.6-terra".to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .expect("start managed stream");
+            let events = collect_stream_events(receiver).await;
+
+            assert!(matches!(
+                events.last(),
+                Some(StreamEvent::ProviderError {
+                    kind: ProviderStreamErrorKind::ProviderDeclaredFailure,
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]
@@ -2681,10 +3831,12 @@ mod tests {
             llama.build_request_body(&messages, &config)["cache_prompt"],
             true
         );
-        assert!(openai
-            .build_request_body(&messages, &config)
-            .get("cache_prompt")
-            .is_none());
+        assert!(
+            openai
+                .build_request_body(&messages, &config)
+                .get("cache_prompt")
+                .is_none()
+        );
     }
 
     #[test]
@@ -3069,6 +4221,7 @@ mod tests {
                 .unwrap()
                 .with_managed_gateway_context(
                     "org_123",
+                    "workspace_456",
                     serde_json::json!({
                         "provider": "anthropic",
                         "environment": "prod",
@@ -3136,9 +4289,11 @@ mod tests {
 
         assert_eq!(first_body["lineage_id"], replay_body["lineage_id"]);
         assert_eq!(first_body["lineage_id"], next_body["lineage_id"]);
-        assert!(first_body["lineage_id"]
-            .as_str()
-            .is_some_and(|value| value.starts_with("maestro-turn-v2:")));
+        assert!(
+            first_body["lineage_id"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("maestro-turn-v2:"))
+        );
         assert_eq!(first_body, replay_body);
         assert_ne!(first_body, next_body);
     }
@@ -3157,7 +4312,7 @@ mod tests {
             let body = r#"{"error":{"type":"server_error","message":"operation timeout"}}"#;
             write!(
                 stream,
-                "HTTP/1.1 504 Gateway Timeout\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "HTTP/1.1 504 Gateway Timeout\r\nX-Request-ID: request-timeout\r\nX-EvalOps-Record-ID: record-timeout\r\nX-EvalOps-Lineage-ID: lineage-timeout\r\nX-EvalOps-Record-Status: failed\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),
                 body,
             )
@@ -3168,6 +4323,7 @@ mod tests {
             .unwrap()
             .with_managed_gateway_context(
                 "org_123",
+                "workspace_456",
                 serde_json::json!({
                     "provider": "openrouter",
                     "environment": "prod",
@@ -3188,11 +4344,24 @@ mod tests {
 
         assert!(matches!(
             events.recv().await,
+            Some(StreamEvent::ManagedGatewayReceipt(ManagedGatewayReceipt {
+                request_id,
+                record_id,
+                lineage_id,
+                record_status,
+            })) if request_id == "request-timeout"
+                && record_id == "record-timeout"
+                && lineage_id == "lineage-timeout"
+                && record_status == "failed"
+        ));
+        assert!(matches!(
+            events.recv().await,
             Some(StreamEvent::ProviderError {
                 kind: ProviderStreamErrorKind::TransientProtocol,
                 message,
             }) if message.contains("504 Gateway Timeout")
         ));
+        assert!(events.recv().await.is_none());
     }
 
     #[tokio::test]
@@ -3287,6 +4456,8 @@ mod tests {
             client.request_extensions["provider_ref"]["environment"],
             "prod"
         );
+        assert_eq!(client.request_extensions["organization_id"], "org_123");
+        assert_eq!(client.request_extensions["workspace_id"], "workspace_456");
         let body = client.build_request_body(
             &[Message {
                 role: Role::User,
@@ -3298,6 +4469,8 @@ mod tests {
             },
         );
         assert_eq!(body["model"], "openai/gpt-5.6");
+        assert_eq!(body["organization_id"], "org_123");
+        assert_eq!(body["workspace_id"], "workspace_456");
     }
 
     #[test]
@@ -3827,9 +5000,11 @@ data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"
             })
                 if message == "openai_response_exhausted: reason=max_output_tokens"
         ));
-        assert!(!events
-            .iter()
-            .any(|event| matches!(event, StreamEvent::MessageStop { .. })));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, StreamEvent::MessageStop { .. }))
+        );
     }
 
     #[tokio::test]
@@ -3855,6 +5030,24 @@ data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"
     }
 
     #[tokio::test]
+    async fn responses_failed_retryable_is_typed_transient_protocol() {
+        let events = collect_responses_sse(
+            r#"data: {"type":"response.failed","response":{"id":"resp_retryable","error":{"type":"server_error","message":"temporarily overloaded"}}}
+
+"#,
+        )
+        .await;
+
+        assert!(matches!(
+            events.last(),
+            Some(StreamEvent::ProviderError {
+                kind: ProviderStreamErrorKind::TransientProtocol,
+                message,
+            }) if message.contains("temporarily overloaded")
+        ));
+    }
+
+    #[tokio::test]
     async fn responses_eof_before_terminal_frame_is_transient_error() {
         let events = collect_responses_sse(
             r#"data: {"type":"response.created","response":{"id":"resp_cut"}}
@@ -3872,9 +5065,11 @@ data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"
                 if message
                     == "openai_response_protocol_error: kind=transient reason=missing_terminal_event"
         ));
-        assert!(!events
-            .iter()
-            .any(|event| matches!(event, StreamEvent::MessageStop { .. })));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, StreamEvent::MessageStop { .. }))
+        );
     }
 
     #[tokio::test]

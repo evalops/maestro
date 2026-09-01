@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use futures::future::join_all;
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
@@ -1090,9 +1090,11 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert!(results[0].result.output.contains("{{CRED:"));
-        assert!(vault
-            .resolve_all(&results[0].result.output)
-            .contains(&token));
+        assert!(
+            vault
+                .resolve_all(&results[0].result.output)
+                .contains(&token)
+        );
     }
 
     #[tokio::test]
@@ -1135,10 +1137,12 @@ mod tests {
             .iter()
             .find(|result| result.call_id == "stale")
             .expect("queued call should complete");
-        assert!(stale
-            .result
-            .output
-            .contains("[REDACTED:api_key:portable-export]"));
+        assert!(
+            stale
+                .result
+                .output
+                .contains("[REDACTED:api_key:portable-export]")
+        );
         assert!(!stale.result.output.contains(&token));
         assert_eq!(vault.stats().count, 0);
     }
